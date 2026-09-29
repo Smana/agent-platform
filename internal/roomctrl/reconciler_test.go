@@ -328,6 +328,31 @@ func TestMissingRoomIsNotAnError(t *testing.T) {
 	}
 }
 
+// Review M1: a room leaves the gauges when its CR is gone, not when reconciles
+// stop succeeding (a database outage keeps its last values).
+func TestAGoneRoomIsForgotten(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		objs []client.Object
+		want []string
+	}{
+		{"a room whose CR is gone is forgotten", nil, []string{roomID}},
+		{"a room that exists is not", []client.Object{newRoom()}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var forgot []string
+			r := &Reconciler{Client: build(c.objs...), Store: newStore(nil), Runs: runwatch.New(),
+				Forget: func(room string) { forgot = append(forgot, room) }}
+			if _, err := r.Reconcile(t.Context(), request()); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(forgot, c.want) {
+				t.Fatalf("forgot %v, want %v", forgot, c.want)
+			}
+		})
+	}
+}
+
 func TestInvalidRetentionIsTerminal(t *testing.T) {
 	room := newRoom()
 	room.Spec.Retention = "0d"

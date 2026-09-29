@@ -70,6 +70,8 @@ type Reconciler struct {
 	Ends runEnds
 	// Observe, when set, feeds the rooms{phase} and rooms_last_event_timestamp_seconds gauges.
 	Observe func(room string, st v1alpha1.RoomStatus, lastEventAt time.Time)
+	// Forget, when set, is told of a room whose CR is gone, so it leaves the gauges.
+	Forget func(room string)
 	// Now is the clock for the stall check and the seal timeout; nil means time.Now.
 	Now func() time.Time
 	// Log receives the seal-timeout warning; nil discards it.
@@ -81,6 +83,9 @@ type Reconciler struct {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var room v1alpha1.Room
 	if err := r.Client.Get(ctx, req.NamespacedName, &room); err != nil {
+		if apierrors.IsNotFound(err) && r.Forget != nil {
+			r.Forget(req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !room.DeletionTimestamp.IsZero() {

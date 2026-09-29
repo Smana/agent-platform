@@ -152,17 +152,27 @@ type informerSource interface {
 
 // Register attaches the watcher to the cache's informer for AgentRuns. ctx is
 // handed to every callback, so it must live as long as the informer does.
-func Register(ctx context.Context, c informerSource, w *Watcher) error {
+//
+// synced reports once this handler has been delivered the informer's first list,
+// so the Watcher holds every run. The cache's own sync does not say that: the
+// informer's store can be full while the handler's notifications are still
+// queued (client-go: HasSynced "doesn't tell you if an individual handler is
+// synced"). Anything that reads the Watcher as complete waits on synced.
+func Register(ctx context.Context, c informerSource, w *Watcher) (synced func() bool, err error) {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
 	inf, err := c.GetInformer(ctx, u)
 	if err != nil {
-		return fmt.Errorf("runwatch: agentrun informer: %w", err)
+		return nil, fmt.Errorf("runwatch: agentrun informer: %w", err)
 	}
-	if _, err := inf.AddEventHandler(handler(ctx, w)); err != nil {
-		return fmt.Errorf("runwatch: agentrun event handler: %w", err)
+	reg, err := inf.AddEventHandler(handler(ctx, w))
+	if err != nil {
+		return nil, fmt.Errorf("runwatch: agentrun event handler: %w", err)
 	}
-	return nil
+	if reg == nil { // an informer without registrations: its own sync is all there is
+		return inf.HasSynced, nil
+	}
+	return reg.HasSynced, nil
 }
 
 func handler(ctx context.Context, w *Watcher) toolscache.ResourceEventHandlerFuncs {

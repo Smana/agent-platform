@@ -145,6 +145,22 @@ func (c *jwksCache) get(ctx context.Context, kid string) (publicKey, error) {
 
 var errRateLimited = errors.New("jwks refresh rate-limited")
 
+// refresh takes sem, waiting for a fetch in flight or ctx, then fetches. A
+// fetch within the interval, the one in flight included, already did the job.
+func (c *jwksCache) refresh(ctx context.Context) error {
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("jwks refresh: %w", ctx.Err())
+	}
+	err := c.refreshHeld(ctx)
+	<-c.sem
+	if errors.Is(err, errRateLimited) {
+		return nil
+	}
+	return err
+}
+
 // refreshHeld fetches unless one started within the interval. The caller holds
 // sem. A caller already gone does not stamp the attempt, so it cannot spend the
 // interval for everyone else.

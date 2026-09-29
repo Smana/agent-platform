@@ -159,7 +159,7 @@ flowchart LR
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
-| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter both binaries serve | ✓ |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
 
 ## Security rules
 

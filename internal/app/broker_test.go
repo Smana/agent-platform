@@ -121,7 +121,7 @@ func TestMeteredLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			m, err := metrics.New(exp.Meter(), nil)
+			m, err := metrics.New(exp.Meter())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +199,7 @@ func TestBridgeSignals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			m, err := metrics.New(exp.Meter(), nil)
+			m, err := metrics.New(exp.Meter())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +247,14 @@ func TestLeader(t *testing.T) {
 			swept := make(chan struct{}, 10)
 			tick := make(chan time.Time)
 			l := &leader{active: &active, every: time.Hour,
-				synced: func(context.Context) bool { return c.synced },
+				// Review M5: marked leader before the wait, so what the informer
+				// delivers during the sync is appended by its callback.
+				synced: func(context.Context) bool {
+					mu.Lock()
+					defer mu.Unlock()
+					activeWhile = append(activeWhile, active.Load())
+					return c.synced
+				},
 				replay: func(context.Context) {
 					mu.Lock()
 					defer mu.Unlock()
@@ -294,9 +301,12 @@ func TestLeader(t *testing.T) {
 			if replays != c.replay || sweeps != c.sweeps {
 				t.Fatalf("replays=%d sweeps=%d, want %d and %d", replays, sweeps, c.replay, c.sweeps)
 			}
+			if len(activeWhile) != 1+c.replay+c.sweeps {
+				t.Fatalf("%d calls recorded, want the sync wait and every replay and sweep", len(activeWhile))
+			}
 			for i, a := range activeWhile {
 				if !a {
-					t.Fatalf("call %d ran while not marked leader", i)
+					t.Fatalf("call %d (0 is the sync wait) ran while not marked leader", i)
 				}
 			}
 			if active.Load() {
@@ -306,7 +316,8 @@ func TestLeader(t *testing.T) {
 	}
 }
 
-// Ledger 1.7 (a): a stalled database must not freeze the watch's handler.
+// Ledger 1.7 (a): a stalled database must not freeze the watch's handler. The
+// parent has no deadline (review I2), so only bounded's own can be the one seen.
 func TestBounded(t *testing.T) {
 	run := runwatch.Run{ID: "7f3cq2xz", Room: "3kq7x2ma"}
 	for _, c := range []struct {
@@ -318,8 +329,6 @@ func TestBounded(t *testing.T) {
 		{"the leader's append is bounded", true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-			defer cancel()
 			var leading atomic.Bool
 			leading.Store(c.leading)
 			called := false
@@ -332,24 +341,21 @@ func TestBounded(t *testing.T) {
 				}
 				return errors.New("stalled")
 			})
-			f(ctx, run)
+			if _, has := t.Context().Deadline(); has {
+				t.Fatal("the parent must have no deadline, or the test proves nothing")
+			}
+			f(t.Context(), run)
 			if called != c.called {
 				t.Fatalf("called=%v want %v", called, c.called)
 			}
-			if c.called && (deadline.IsZero() || time.Until(deadline) > observeTimeout) {
-				t.Fatalf("the append's deadline is %v, want within %s", deadline, observeTimeout)
+			if !c.called {
+				return
+			}
+			if left := time.Until(deadline); deadline.IsZero() || left <= observeTimeout-time.Second || left > observeTimeout {
+				t.Fatalf("the append's deadline is %v away, want about %s", left, observeTimeout)
 			}
 		})
 	}
-}
-
-type fakeSync bool
-
-func (f fakeSync) WaitForCacheSync(ctx context.Context) bool {
-	if _, ok := ctx.Deadline(); !ok {
-		panic("readiness must bound its wait on the watch")
-	}
-	return bool(f)
 }
 
 func TestOps(t *testing.T) {
@@ -360,25 +366,33 @@ func TestOps(t *testing.T) {
 	broken := func(context.Context) (bool, error) { return false, errors.New("refused") }
 	metricsH := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("rooms_build_info 1")) })
 	for _, c := range []struct {
-		name   string
-		path   string
-		ping   func(context.Context) error
-		schema func(context.Context) (bool, error)
-		synced fakeSync
-		want   int
+		name     string
+		path     string
+		ping     func(context.Context) error
+		schema   func(context.Context) (bool, error)
+		synced   bool
+		draining bool
+		want     int
 	}{
-		{"healthz answers while the process does", "/healthz", down, broken, false, http.StatusOK},
-		{"ready once the database answers and the watch synced", "/readyz", up, migrated, true, http.StatusOK},
-		{"not ready while the database does not answer", "/readyz", down, migrated, true, http.StatusServiceUnavailable},
-		{"not ready before the watch synced", "/readyz", up, migrated, false, http.StatusServiceUnavailable},
-		{"started once the schema is migrated", "/startupz", up, migrated, true, http.StatusOK},
-		{"not started before Atlas ran", "/startupz", up, unmigrated, true, http.StatusServiceUnavailable},
-		{"not started while the schema cannot be read", "/startupz", up, broken, true, http.StatusServiceUnavailable},
-		{"metrics are served", "/metrics", down, broken, false, http.StatusOK},
-		{"nothing else", "/debug/pprof/", up, migrated, true, http.StatusNotFound},
+		{"healthz answers while the process does", "/healthz", down, broken, false, true, http.StatusOK},
+		{"ready once the database answers and the watch synced", "/readyz", up, migrated, true, false, http.StatusOK},
+		{"not ready while the database does not answer", "/readyz", down, migrated, true, false, http.StatusServiceUnavailable},
+		{"not ready before the watch synced", "/readyz", up, migrated, false, false, http.StatusServiceUnavailable},
+		{"not ready while draining, so no new work is routed here", "/readyz", up, migrated, true, true, http.StatusServiceUnavailable},
+		{"started once the schema is migrated", "/startupz", up, migrated, true, false, http.StatusOK},
+		{"not started before Atlas ran", "/startupz", up, unmigrated, true, false, http.StatusServiceUnavailable},
+		{"not started while the schema cannot be read", "/startupz", up, broken, true, false, http.StatusServiceUnavailable},
+		{"metrics are served, while draining too", "/metrics", down, broken, false, true, http.StatusOK},
+		{"nothing else", "/debug/pprof/", up, migrated, true, false, http.StatusNotFound},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := opsHandler(c.ping, c.schema, cacheSynced(c.synced), metricsH)
+			synced := boundedSync(func(ctx context.Context) bool {
+				if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > syncCheck {
+					t.Error("readiness must bound its wait on the run watch")
+				}
+				return c.synced
+			})
+			h := opsHandler(c.ping, c.schema, synced, func() bool { return c.draining }, metricsH)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, c.path, nil))
 			if rec.Code != c.want {

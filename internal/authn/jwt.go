@@ -159,6 +159,19 @@ func (v *Verifier) LastRefresh() time.Time {
 	return v.jwks.lastRefresh()
 }
 
+// Refresh fetches the issuer's JWKS now, unless a fetch started within the
+// minimum refresh interval, which is no error (Ruling AQ: the broker calls it on
+// a timer, so an idle broker's keys and LastRefresh stay fresh). It waits for a
+// fetch already in flight. A failed fetch keeps the held keys, up to the stale
+// cap, and leaves LastRefresh where it was. A Verifier on a key function has
+// nothing to refresh.
+func (v *Verifier) Refresh(ctx context.Context) error {
+	if v.jwks == nil {
+		return nil
+	}
+	return v.jwks.refresh(ctx)
+}
+
 // NewVerifierWithKeyfunc builds a Verifier on a caller's key function, for tests
 // and for issuers whose keys are not a JWKS. Only WithClock applies.
 func NewVerifierWithKeyfunc(issuer string, kf jwt.Keyfunc, opts ...Option) *Verifier {

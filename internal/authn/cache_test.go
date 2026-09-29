@@ -235,3 +235,56 @@ func TestLastRefreshIsZeroOnAKeyfunc(t *testing.T) {
 		t.Fatalf("LastRefresh = %v", got)
 	}
 }
+
+// Ruling AQ: the broker refreshes every issuer on a timer, so an idle broker's
+// keys (and its LastRefresh gauge) stay fresh without a token arriving.
+func TestRefresh(t *testing.T) {
+	k := newKeyring(t)
+	s := newIssuerServer(t, rsaJWK("r1", &k.rsa.PublicKey))
+	clock := newClock()
+	v := newJWKSVerifier(t, s, clock)
+	last := v.LastRefresh()
+	for _, c := range []struct {
+		name     string
+		advance  time.Duration
+		status   int
+		wantErr  bool
+		wantHits int32
+		fresh    bool // LastRefresh moves to now
+	}{
+		{"within the refresh interval it fetches nothing and is no error", 30 * time.Second, http.StatusOK, false, 1, false},
+		{"an idle hour later it fetches and moves LastRefresh", time.Hour, http.StatusOK, false, 2, true},
+		{"a failed fetch is an error and keeps LastRefresh", time.Hour, http.StatusServiceUnavailable, true, 3, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clock.advance(c.advance)
+			if c.status != http.StatusOK {
+				s.serve(c.status, nil)
+			}
+			err := v.Refresh(t.Context())
+			if (err != nil) != c.wantErr {
+				t.Fatalf("Refresh = %v, want an error: %v", err, c.wantErr)
+			}
+			if got := s.hits.Load(); got != c.wantHits {
+				t.Fatalf("issuer fetched %d times, want %d", got, c.wantHits)
+			}
+			switch got := v.LastRefresh(); {
+			case c.fresh && !got.Equal(clock.now()):
+				t.Fatalf("LastRefresh = %v, want %v", got, clock.now())
+			case !c.fresh && !got.Equal(last):
+				t.Fatalf("LastRefresh moved to %v on a refresh that stored nothing", got)
+			}
+			last = v.LastRefresh()
+		})
+	}
+	t.Run("held keys still verify after a failed refresh", func(t *testing.T) {
+		if _, err := v.Verify(t.Context(), mint(t, clock, jwt.SigningMethodRS256, k.rsa, "r1"), AudienceRun); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("a verifier on a key function has nothing to refresh", func(t *testing.T) {
+		if err := newSigner(t).verifier().Refresh(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

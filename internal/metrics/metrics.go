@@ -31,10 +31,6 @@ import (
 // scope names the instrumentation scope; WithoutScopeInfo keeps it off the series.
 const scope = "github.com/Smana/agent-platform"
 
-// roomTTL drops a room from the gauges once it has not been reconciled for this
-// long: deleted, or reconciled by another leader. The reconciler resyncs every 15 s.
-const roomTTL = 2 * time.Minute
-
 // Bucket bounds sit on the thresholds that matter: SC-12's 0.5 s fan-out p95,
 // and the approval timeouts (15 min alert, 30 min attended, 4 h unattended).
 var (
@@ -111,7 +107,6 @@ type Set struct {
 	bridgeStalls  metric.Int64Counter
 	bridgeStubs   metric.Int64Counter
 
-	now   func() time.Time
 	mu    sync.Mutex
 	rooms map[string]roomGauge
 }
@@ -120,19 +115,14 @@ type roomGauge struct {
 	phase   string
 	pending int
 	last    time.Time
-	seen    time.Time
 }
 
-// New makes the instruments on meter; nil means a no-op meter. now is the
-// clock that ages rooms out of the gauges; nil means time.Now.
-func New(meter metric.Meter, now func() time.Time) (*Set, error) {
+// New makes the instruments on meter; nil means a no-op meter.
+func New(meter metric.Meter) (*Set, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter(scope)
 	}
-	if now == nil {
-		now = time.Now
-	}
-	s := &Set{meter: meter, now: now, rooms: map[string]roomGauge{}}
+	s := &Set{meter: meter, rooms: map[string]roomGauge{}}
 	var errs []error
 	check := func(err error) { errs = append(errs, err) }
 	var err error
@@ -195,15 +185,10 @@ func (s *Set) registerRoomGauges() error {
 		return err
 	}
 	_, err = s.meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
-		now := s.now()
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		byPhase, total := map[string]int64{}, int64(0)
 		for id, r := range s.rooms {
-			if now.Sub(r.seen) > roomTTL {
-				delete(s.rooms, id)
-				continue
-			}
 			byPhase[r.phase]++
 			total += int64(r.pending)
 			if r.phase == "Active" {
@@ -220,11 +205,21 @@ func (s *Set) registerRoomGauges() error {
 }
 
 // ObserveRoom records a reconciled room: its phase, its undecided approvals and
-// its last durable event. A room not observed for roomTTL leaves the gauges.
+// its last durable event. The values hold until the next successful reconcile,
+// so a database outage keeps them rather than emptying the gauges (review M1).
+// Only the leader reconciles, and a replica that loses the lease exits, so a
+// follower never serves stale values.
 func (s *Set) ObserveRoom(room, phase string, pendingApprovals int, lastEventAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rooms[room] = roomGauge{phase: phase, pending: pendingApprovals, last: lastEventAt, seen: s.now()}
+	s.rooms[room] = roomGauge{phase: phase, pending: pendingApprovals, last: lastEventAt}
+}
+
+// ForgetRoom takes a room whose CR is gone out of the gauges.
+func (s *Set) ForgetRoom(room string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rooms, room)
 }
 
 // AppendTook records one append's latency, whatever its outcome.

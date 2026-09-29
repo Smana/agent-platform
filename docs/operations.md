@@ -30,8 +30,10 @@ build-info gauge. All are defined in phase 1; the last column is the phase whose
 feature a metric measures. Ruling AC: the broker records them through the OpenTelemetry metric API
 with a Prometheus exporter that adds no suffix, so the names below are exposed byte for byte.
 `rooms`, `rooms_approvals_pending` and `rooms_last_event_timestamp_seconds` come from the Room
-controller, which runs on the leader only: a room drops out of them 2 minutes after its last
-reconcile. The append counters see every writer: the bridge API, the controller and the run events.
+controller, which runs on the leader only. A room keeps its last values until its next successful
+reconcile, so a database outage freezes them rather than emptying them, and it leaves them once its
+`Room` is gone. The append counters see every writer: the bridge API, the controller and the run
+events.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
@@ -39,10 +41,10 @@ reconcile. The append counters see every writer: the bridge API, the controller 
 | `rooms` | gauge | `phase` | Rooms per phase | 1 |
 | `rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended | 1 |
 | `rooms_append_seconds` | histogram | — | Append latency | 1 |
-| `rooms_append_errors_total` | counter | — | Appends the database refused | 1 |
+| `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease | 1 |
 | `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
 | `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each `Active` room | 1 |
-| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). The cache fetches only on use, so an idle broker ages it too | 1 |
+| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
 | `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed (`reauth`, `slow_consumer`, …) | 2 |
 | `rooms_participants` | gauge | — | Live participants | 2 |
@@ -161,7 +163,8 @@ the harnesses still hold.
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |
 | Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Delete the extra run. A dead holder frees the room within 2 minutes |
 | Bridge gets `410 sealed` | The room is closed or full | Start a new room; a full room means a run far beyond normal size |
-| Bridge refuses to start: missing CA or URL not `https://` | `room-broker-ca` is not in `agents`, or the composition predates GP-18 | `kubectl get externalsecret -n agents room-broker-ca`; pin a composition with CC-S2 |
+| A room run's pod waits in `ContainerCreating` | The `room-broker-ca` Secret is not in `agents`: the bridge mounts it, and the mount is not optional | `kubectl describe pod -n agents <pod>` names the missing Secret; `kubectl get externalsecret -n agents room-broker-ca` |
+| Bridge refuses to start: URL not `https://`, or no CA in the file | The composition predates GP-18 | Pin a composition with CC-S2 |
 | Bridge logs `x509: certificate signed by unknown authority` | The CA it trusts is not the one that signed the broker's certificate | Compare `room-broker-ca` with the `openbao` issuer's CA |
 | JWKS or identity-provider calls time out on gcp-0 only | A port-scoped egress rule to the cluster's own gateway is dropped by the socket-LB hairpin | Keep the `toEntities: [all]` rule without ports (ruling P11a) |
 | A run ends `pod_lost` | The pod died before the harness finished and before its deadline | Expected for evictions; `deadline` means it hit `maxMinutes` |

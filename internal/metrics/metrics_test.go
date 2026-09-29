@@ -35,7 +35,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	}
 	defer func() { _ = exp.Shutdown(ctx) }()
 	now := time.Unix(1_700_000_000, 0)
-	s, err := New(exp.Meter(), func() time.Time { return now })
+	s, err := New(exp.Meter())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,25 +101,29 @@ func TestRoomGauges(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		observe func(s *Set)
-		advance time.Duration
 		want    []string
 		absent  []string
 	}{
 		{"a room counts once, in its latest phase", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Open", 0, now)
 			s.ObserveRoom("3kq7x2ma", "Active", 0, now)
-		}, 0, []string{`rooms{phase="Active"} 1`}, []string{`rooms{phase="Open"}`}},
+		}, []string{`rooms{phase="Active"} 1`}, []string{`rooms{phase="Open"}`}},
 		{"only an Active room has a last-event series", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", 0, now)
 			s.ObserveRoom("3kq7x2ma", "Idle", 0, now)
-		}, 0, []string{`rooms{phase="Idle"} 1`}, []string{"rooms_last_event_timestamp_seconds{"}},
+		}, []string{`rooms{phase="Idle"} 1`}, []string{"rooms_last_event_timestamp_seconds{"}},
 		{"pending approvals sum over rooms", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", 2, now)
 			s.ObserveRoom("4kq7x2ma", "AwaitingHuman", 3, now)
-		}, 0, []string{`rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, nil},
-		{"a room no longer reconciled (deleted, or another leader) drops out", func(s *Set) {
+		}, []string{`rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, nil},
+		{"a room keeps its last values while it is not reconciled (a database outage)", func(s *Set) {
 			s.ObserveRoom("3kq7x2ma", "Active", 1, now)
-		}, roomTTL + time.Second, []string{`rooms_approvals_pending 0`}, []string{`rooms{`, `room="3kq7x2ma"`}},
+		}, []string{`rooms{phase="Active"} 1`, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"}`, `rooms_approvals_pending 1`}, nil},
+		{"a forgotten room (its CR is gone) drops out", func(s *Set) {
+			s.ObserveRoom("3kq7x2ma", "Active", 1, now)
+			s.ObserveRoom("4kq7x2ma", "Idle", 0, now)
+			s.ForgetRoom("3kq7x2ma")
+		}, []string{`rooms_approvals_pending 0`, `rooms{phase="Idle"} 1`}, []string{`rooms{phase="Active"}`, `room="3kq7x2ma"`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			exp, err := NewExporter("test")
@@ -127,13 +131,11 @@ func TestRoomGauges(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = exp.Shutdown(ctx) }()
-			at := now
-			s, err := New(exp.Meter(), func() time.Time { return at })
+			s, err := New(exp.Meter())
 			if err != nil {
 				t.Fatal(err)
 			}
 			c.observe(s)
-			at = now.Add(c.advance)
 			body := scrape(t, exp.Handler())
 			for _, w := range c.want {
 				if !strings.Contains(body, w) {
@@ -153,7 +155,7 @@ func TestRoomGauges(t *testing.T) {
 }
 
 func TestNoopMeterWorks(t *testing.T) {
-	s, err := New(nil, nil)
+	s, err := New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,4 +163,5 @@ func TestNoopMeterWorks(t *testing.T) {
 	s.AppendTook(t.Context(), time.Millisecond)
 	s.AppendFailed(t.Context())
 	s.ObserveRoom("3kq7x2ma", "Active", 0, time.Now())
+	s.ForgetRoom("3kq7x2ma")
 }

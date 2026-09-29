@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -25,7 +23,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/metrics"
@@ -104,8 +101,10 @@ func brokerEnv(getenv func(string) string) (cfgPath, dsn, ns string, err error) 
 	return cfgPath, dsn, ns, errors.Join(missing...)
 }
 
-// serveBroker runs the Room controller, the AgentRun watch, the :8443 API and
-// the :9090 metrics and probes until ctx ends or one of them fails.
+// serveBroker runs the Room controller, the AgentRun watch, the :8443 API, the
+// JWKS refresh and the :9090 metrics and probes until ctx ends or one of them
+// fails. :9090 stops last, so the drain's final counts are scraped and /readyz
+// answers 503 rather than refusing connections meanwhile (review M4).
 func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	cfgPath, dsn, ns, err := brokerEnv(getenv)
 	if err != nil {
@@ -124,7 +123,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	defer shutdownMetrics(ctx, log, exp)
-	m, err := metrics.New(exp.Meter(), nil)
+	m, err := metrics.New(exp.Meter())
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -138,7 +137,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: redaction rules: %w", err)
 	}
-	runs, systems, err := authenticators(ctx, log, cfg, m)
+	runs, systems, verifiers, err := authenticators(ctx, log, cfg, m)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -147,35 +146,13 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	watch := runwatch.New()
-	if err := runwatch.Register(ctx, mgr.GetCache(), watch); err != nil {
+	events := &runwatch.Events{Store: logStore}
+	rw, err := wireRuns(ctx, mgr.GetCache(), mgr.Add, log, st, events, nil)
+	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	// Every replica mirrors the runs (bridge admission); only the leader appends
-	// their lifecycle to the log.
-	var leading atomic.Bool
-	events := &runwatch.Events{Store: logStore}
-	watch.OnChange(bounded(&leading, log, "record a run's lifecycle", events.Observe))
-	// A claim deleted mid-run never reaches a terminal phase in the watch (review M15).
-	watch.OnRemove(bounded(&leading, log, "record a deleted run", events.ObserveDeleted))
-	if err := mgr.Add(&leader{active: &leading, synced: mgr.GetCache().WaitForCacheSync,
-		replay: func(ctx context.Context) {
-			for _, r := range watch.All() {
-				bounded(&leading, log, "replay a run's lifecycle", events.Observe)(ctx, r)
-			}
-		},
-		sweep: func(ctx context.Context) {
-			ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
-			defer cancel()
-			if err := events.Sweep(ctx, st, watch.Get); err != nil {
-				log.Error("sweep the runs that joined and never left", "err", err)
-			}
-		},
-		every: sweepEvery}); err != nil {
-		return fmt.Errorf("room-broker: leader: %w", err)
-	}
 	rc := &roomctrl.Reconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Store: logStore,
-		Runs: watch, Ends: events, Log: log,
+		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom,
 		Observe: func(room string, s v1alpha1.RoomStatus, last time.Time) {
 			m.ObserveRoom(room, s.Phase, int(s.PendingApprovals), last)
 		}}
@@ -183,18 +160,34 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 
-	api := &bridgeapi.Server{Log: logStore, Redactor: red, Runs: runs, Systems: systems, Watch: watch, Logger: log}
-	watch.OnGone(api.Drop)
-	ops := opsHandler(st.Ping, st.SchemaReady, cacheSynced(mgr.GetCache()), exp.Handler())
+	api := &bridgeapi.Server{Log: logStore, Redactor: red, Runs: runs, Systems: systems, Watch: rw.watch, Logger: log}
+	rw.watch.OnGone(api.Drop)
+	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig
 	opsLn, err := lc.Listen(ctx, "tcp", opsAddr)
 	if err != nil {
 		return fmt.Errorf("room-broker: ops listener: %w", err)
 	}
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return serveHTTP(gctx, opsServer(ops, log), opsLn, opsDrain) })
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	opsCtx, stopOps := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopOps()
+	opsDone := make(chan error, 1)
+	go func() {
+		err := serveHTTP(opsCtx, opsServer(ops, log), opsLn, opsDrain)
+		if err != nil {
+			cancelRun() // :9090 failing takes the rest down: the pod is unprobeable
+		}
+		opsDone <- err
+	}()
+	refreshers := make([]refresher, 0, len(verifiers))
+	for _, v := range verifiers {
+		refreshers = append(refreshers, v)
+	}
+	g, gctx := errgroup.WithContext(runCtx)
 	g.Go(func() error { return api.ListenAndServeTLS(gctx, bridgeAddr, tlsCfg, bridgeDrain) })
+	g.Go(func() error { return refreshJWKS(gctx, refreshers, nil) })
 	g.Go(func() error {
 		if err := mgr.Start(gctx); err != nil {
 			return fmt.Errorf("manager: %w", err)
@@ -202,57 +195,36 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return nil
 	})
 	log.Info("room-broker starting", "version", version.Version, "namespace", ns)
-	if err := g.Wait(); err != nil {
+	err = g.Wait()
+	stopOps()
+	if err = errors.Join(err, <-opsDone); err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	return nil
 }
 
-// authenticators builds the run and system verifiers; each fetches its JWKS now,
-// so an unreachable issuer fails the rollout.
-func authenticators(ctx context.Context, log *slog.Logger, cfg config.Config, m *metrics.Set) (*authn.Runs, *authn.Systems, error) {
-	lastRefresh := map[string]func() time.Time{}
-	var issuers []authn.RunIssuer
-	for _, is := range cfg.RunIssuers {
-		v, err := authn.NewVerifier(ctx, is.Issuer, is.JWKSURL, authn.WithLogger(log))
-		if err != nil {
-			return nil, nil, err
-		}
-		lastRefresh[is.Issuer] = v.LastRefresh
-		// config.Load compiled it with one capture group already.
-		issuers = append(issuers, authn.RunIssuer{Verifier: v, SubPattern: regexp.MustCompile(is.SubPattern)})
-	}
-	runs, err := authn.NewRuns(issuers...)
-	if err != nil {
-		return nil, nil, err
-	}
-	sys, err := authn.NewVerifier(ctx, cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, authn.WithLogger(log))
-	if err != nil {
-		return nil, nil, err
-	}
-	// One issuer can sign both kinds of token: its series is the freshest fetch.
-	if runLast, ok := lastRefresh[cfg.SystemIssuer.Issuer]; ok {
-		lastRefresh[cfg.SystemIssuer.Issuer] = func() time.Time { return later(runLast(), sys.LastRefresh()) }
-	} else {
-		lastRefresh[cfg.SystemIssuer.Issuer] = sys.LastRefresh
-	}
-	if err := m.WatchJWKS(lastRefresh); err != nil {
-		return nil, nil, err
-	}
-	return runs, authn.NewSystems(sys, cfg.SystemPrincipals), nil
-}
-
-func later(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
-// newManager watches Rooms in the broker's namespace and AgentRuns in theirs
+// managerOptions watches Rooms in the broker's namespace and AgentRuns in theirs
 // only: the RBAC (Task 1.18) grants exactly that, so a cluster-wide informer
-// would be refused. Unstructured reads stay uncached (the default), so the
-// finalizer's run list and deletes see the API server, not the watch.
+// would be refused. Unstructured reads stay uncached, so the finalizer's run
+// list and deletes see the API server, not the watch.
+func managerOptions(ns string) ctrl.Options {
+	runObj := &unstructured.Unstructured{}
+	runObj.SetGroupVersionKind(runwatch.GVK())
+	drain := managerDrain
+	return ctrl.Options{
+		LeaderElection: true, LeaderElectionID: "room-broker", LeaderElectionNamespace: ns,
+		LeaderElectionReleaseOnCancel: true, GracefulShutdownTimeout: &drain,
+		// :9090 serves the rooms_* set and the probes itself.
+		Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&v1alpha1.Room{}: {Namespaces: map[string]cache.Config{ns: {}}},
+			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace: {}}},
+		}},
+		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
+	}
+}
+
+// newManager builds the manager on managerOptions, logging through log.
 func newManager(log *slog.Logger, ns string) (ctrl.Manager, error) {
 	lr := logr.FromSlogHandler(log.Handler())
 	// controller-runtime and client-go's leader election log through these globals.
@@ -269,41 +241,13 @@ func newManager(log *slog.Logger, ns string) (ctrl.Manager, error) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
-	runObj := &unstructured.Unstructured{}
-	runObj.SetGroupVersionKind(runwatch.GVK())
-	drain := managerDrain
-	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
-		Scheme: scheme, Logger: lr,
-		LeaderElection: true, LeaderElectionID: "room-broker", LeaderElectionNamespace: ns,
-		LeaderElectionReleaseOnCancel: true, GracefulShutdownTimeout: &drain,
-		// :9090 serves the rooms_* set and the probes itself.
-		Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
-		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
-			&v1alpha1.Room{}: {Namespaces: map[string]cache.Config{ns: {}}},
-			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace: {}}},
-		}},
-		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
-	})
+	opts := managerOptions(ns)
+	opts.Scheme, opts.Logger = scheme, lr
+	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return nil, fmt.Errorf("manager: %w", err)
 	}
 	return mgr, nil
-}
-
-// bounded runs a lifecycle append for the leader only, bounded by observeTimeout,
-// and logs its failure: the watch's callbacks return nothing, and the sweep
-// retries what failed.
-func bounded(leading *atomic.Bool, log *slog.Logger, msg string, f func(context.Context, runwatch.Run) error) func(context.Context, runwatch.Run) {
-	return func(ctx context.Context, r runwatch.Run) {
-		if !leading.Load() {
-			return
-		}
-		ctx, cancel := context.WithTimeout(ctx, observeTimeout)
-		defer cancel()
-		if err := f(ctx, r); err != nil {
-			log.Error(msg, "run", r.ID, "room", r.Room, "err", err)
-		}
-	}
 }
 
 func shutdownMetrics(ctx context.Context, log *slog.Logger, exp *metrics.Exporter) {

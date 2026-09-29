@@ -16,10 +16,11 @@ import (
 const probeTimeout = 2 * time.Second
 
 // opsHandler serves :9090: /metrics, /healthz (the process answers), /readyz
-// (PostgreSQL answers and the watch has synced) and /startupz (the schema is
-// migrated, so a pod waits for Atlas instead of crash-looping).
+// (not draining, PostgreSQL answers and the run watch holds every run) and
+// /startupz (the schema is migrated, so a pod waits for Atlas instead of
+// crash-looping).
 func opsHandler(ping func(context.Context) error, schemaReady func(context.Context) (bool, error),
-	synced func(context.Context) bool, metrics http.Handler,
+	synced func(context.Context) bool, draining func() bool, metrics http.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metrics)
@@ -27,6 +28,10 @@ func opsHandler(ping func(context.Context) error, schemaReady func(context.Conte
 		_, _ = w.Write([]byte("ok " + version.Version + "\n"))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		if draining() {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 		defer cancel()
 		if err := ping(ctx); err != nil {
@@ -34,7 +39,7 @@ func opsHandler(ping func(context.Context) error, schemaReady func(context.Conte
 			return
 		}
 		if !synced(ctx) {
-			http.Error(w, "watch not synced", http.StatusServiceUnavailable)
+			http.Error(w, "run watch not synced", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte("ready\n"))
@@ -58,21 +63,14 @@ func opsServer(h http.Handler, log *slog.Logger) *http.Server {
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 }
 
-// syncWaiter is the one cache method readiness needs; a manager's cache has it.
-type syncWaiter interface {
-	WaitForCacheSync(ctx context.Context) bool
-}
-
-// syncCheck bounds readiness's wait on the watch. A synced cache answers at once;
-// an already-ended context would not do: the cache then picks at random between
-// "started" and "ended".
+// syncCheck bounds readiness's wait on the run watch: a synced one answers at once.
 const syncCheck = 250 * time.Millisecond
 
-// cacheSynced reports whether the watch has synced, waiting at most syncCheck.
-func cacheSynced(c syncWaiter) func(context.Context) bool {
+// boundedSync waits on synced for at most syncCheck.
+func boundedSync(synced func(context.Context) bool) func(context.Context) bool {
 	return func(ctx context.Context) bool {
 		ctx, cancel := context.WithTimeout(ctx, syncCheck)
 		defer cancel()
-		return c.WaitForCacheSync(ctx)
+		return synced(ctx)
 	}
 }

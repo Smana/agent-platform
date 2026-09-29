@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/store"
@@ -371,16 +373,20 @@ func TestADeletedRunEndsOnce(t *testing.T) {
 
 func TestRegisterFeedsTheWatcherFromTheInformer(t *testing.T) {
 	ctx := t.Context()
-	informers := &informertest.FakeInformers{}
+	// An informer not synced yet: the watch is not populated until its handler is.
+	inf := controllertest.NewFakeInformer()
+	informers := &informertest.FakeInformers{InformersByGVK: map[schema.GroupVersionKind]toolscache.SharedIndexInformer{GVK(): inf}}
 	w := New()
-	if err := Register(ctx, informers, w); err != nil {
-		t.Fatal(err)
-	}
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(GVK())
-	inf, err := informers.FakeInformerFor(ctx, u)
+	synced, err := Register(ctx, informers, w)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if synced() {
+		t.Fatal("the handler reports synced before the informer's first list")
+	}
+	inf.Synced()
+	if !synced() {
+		t.Fatal("the handler never reports synced")
 	}
 	var gone []string
 	w.OnGone(func(_ context.Context, r Run) { gone = append(gone, r.ID) })
@@ -402,7 +408,7 @@ func TestRegisterFeedsTheWatcherFromTheInformer(t *testing.T) {
 		t.Fatalf("gone = %v", gone)
 	}
 
-	if err := Register(ctx, &informertest.FakeInformers{Error: errBoom}, New()); !errors.Is(err, errBoom) {
+	if _, err := Register(ctx, &informertest.FakeInformers{Error: errBoom}, New()); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v", err)
 	}
 }

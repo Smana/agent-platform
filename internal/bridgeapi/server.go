@@ -95,8 +95,6 @@ type Server struct {
 	Notify func(roomID string, seq int64)
 	// RoomPolicy, when set, is the room's approval policy handed out at hello (phase 5).
 	RoomPolicy func(roomID string) wire.ApprovalPolicy
-	// OnAppend, when set, is told of every new event, for the metrics. It must not block.
-	OnAppend func(ctx context.Context, t envelope.Type, o envelope.Origin, redactions []string)
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
@@ -233,13 +231,12 @@ func authWhy(err error) string {
 	return "invalid"
 }
 
-// appended tells the optional hooks of a new event.
-func (s *Server) appended(ctx context.Context, ev envelope.Event) {
+// appended tells the fan-out of a new event. The metrics count appends in the
+// store every writer shares (app's meteredLog), not here: counting in both would
+// count twice.
+func (s *Server) appended(ev envelope.Event) {
 	if s.Notify != nil {
 		s.Notify(ev.RoomID, ev.Seq)
-	}
-	if s.OnAppend != nil {
-		s.OnAppend(ctx, ev.Type, ev.Origin, ev.Redactions)
 	}
 }
 
@@ -307,7 +304,7 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 		case err != nil:
 			s.log().Warn("record a concurrent run", "room", run.Room, "run", run.ID, errAttr(err))
 		case !dup:
-			s.appended(ctx, ev)
+			s.appended(ev)
 		}
 		s.log().Info("room busy", "room", run.Room, "run", run.ID, "holder", holder)
 		fail(w, http.StatusConflict, wire.ReasonRoomBusy)
@@ -413,7 +410,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !dup {
-			s.appended(ctx, ev)
+			s.appended(ev)
 		}
 		if it := b.Items[i]; it.Stream == wire.StreamEvents {
 			ack.AfterHarnessSeq = max(ack.AfterHarnessSeq, it.Seq)
