@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package version carries the build version, stamped by -ldflags at image build.
 package version
 
