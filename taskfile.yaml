@@ -4,12 +4,24 @@ tasks:
   check:
     desc: Every gate CI runs. Cite its exit code as evidence.
     cmds:
+      - task: tidy
       - task: lint
+      - task: vuln
       - task: test
+
+  tidy:
+    desc: Fail if go.mod or go.sum would change under go mod tidy.
+    cmds:
+      - go mod tidy -diff
 
   lint:
     cmds:
       - golangci-lint run ./...
+
+  vuln:
+    desc: Known vulnerabilities reachable from our code, the stdlib included.
+    cmds:
+      - govulncheck ./...
 
   test:
     cmds:
