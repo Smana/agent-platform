@@ -15,8 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+var gvk = schema.GroupVersionKind{Group: "cloud.ogenki.io", Version: "v1alpha1", Kind: "AgentRun"}
+
 // GVK is the AgentRun claim's kind (C3).
-var GVK = schema.GroupVersionKind{Group: "cloud.ogenki.io", Version: "v1alpha1", Kind: "AgentRun"}
+func GVK() schema.GroupVersionKind { return gvk }
 
 // Watcher runs on every replica: every replica must cut its own connections of a
 // run that ended (S4). Appending to the log is the leader's job (Events).
@@ -69,13 +71,15 @@ func (w *Watcher) Upsert(ctx context.Context, u *unstructured.Unstructured) {
 	w.runs[cur.ID] = cur
 	gone, changed := slices.Clone(w.gone), slices.Clone(w.changed)
 	w.mu.Unlock()
-	for _, f := range changed {
-		f(ctx, cur)
-	}
+	// OnGone first: cutting a dead run's connections must never wait behind
+	// OnChange's appends to the log.
 	if !cur.Live() && (!had || old.Live()) {
 		for _, f := range gone {
 			f(ctx, cur)
 		}
+	}
+	for _, f := range changed {
+		f(ctx, cur)
 	}
 }
 
@@ -150,7 +154,7 @@ type informerSource interface {
 // handed to every callback, so it must live as long as the informer does.
 func Register(ctx context.Context, c informerSource, w *Watcher) error {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(GVK)
+	u.SetGroupVersionKind(gvk)
 	inf, err := c.GetInformer(ctx, u)
 	if err != nil {
 		return fmt.Errorf("runwatch: agentrun informer: %w", err)

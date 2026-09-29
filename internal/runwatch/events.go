@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/store"
@@ -22,12 +21,7 @@ type Appender interface {
 // Events writes a run's lifecycle into its room. Every step has a fixed
 // idempotency key (broker:run:<runId>, step), so an informer replay or a new
 // leader appends nothing twice.
-type Events struct {
-	Store Appender
-	// Now stands in for a terminal run's missing finishedAt when judging its
-	// deadline. Nil means time.Now.
-	Now func() time.Time
-}
+type Events struct{ Store Appender }
 
 const (
 	stepJoined = iota + 1
@@ -35,13 +29,6 @@ const (
 	stepEnded
 	stepLeft
 )
-
-func (e *Events) now() time.Time {
-	if e.Now == nil {
-		return time.Now()
-	}
-	return e.Now()
-}
 
 // Observe appends every lifecycle step the run has reached and the log lacks:
 // joined, run_phase Running, run_phase <terminal> with its end reason, left. A
@@ -81,9 +68,6 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 	status, err := e.Store.LastHarnessStatus(ctx, r.Room, r.ID)
 	if err != nil {
 		return fmt.Errorf("runwatch: harness status of run %s: %w", r.ID, err)
-	}
-	if r.FinishedAt.IsZero() {
-		r.FinishedAt = e.now()
 	}
 	if err := put(stepEnded, envelope.StateChanged, envelope.StatePayload("run_phase",
 		map[string]any{"phase": r.Phase, "reason": EndReason(r, status)})); err != nil {

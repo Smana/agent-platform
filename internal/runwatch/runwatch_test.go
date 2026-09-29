@@ -33,6 +33,15 @@ func claim(name, room, phase, revoked string) *unstructured.Unstructured {
 	return u
 }
 
+// transitioned gives the claim conditions, the latest at transition, and no finishedAt.
+func transitioned(u *unstructured.Unstructured, transition string) *unstructured.Unstructured {
+	_ = unstructured.SetNestedSlice(u.Object, []any{
+		map[string]any{"type": "Synced", "status": "True", "lastTransitionTime": "2026-09-27T10:00:05Z"},
+		map[string]any{"type": "Ready", "status": "True", "lastTransitionTime": transition},
+	}, "status", "conditions")
+	return u
+}
+
 func TestFromUnstructured(t *testing.T) {
 	r, ok := FromUnstructured(claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", ""))
 	if !ok || r.ID != "7f3cq2xz" || r.Room != "3kq7x2ma" || r.Role != "reviewer" || r.MaxMinutes != 60 ||
@@ -64,6 +73,8 @@ func TestFromUnstructured(t *testing.T) {
 	unstructured.RemoveNestedField(defaults.Object, "spec", "budget")
 	unstructured.RemoveNestedField(defaults.Object, "status", "branch")
 	_ = unstructured.SetNestedField(defaults.Object, "agent/fork", "spec", "branch")
+	finished := transitioned(claim("xplane-run-7f3cq2xz", "", "Failed", ""), "2026-09-27T10:20:00Z")
+	_ = unstructured.SetNestedField(finished.Object, "2026-09-27T10:05:00Z", "status", "finishedAt")
 	for _, c := range []struct {
 		name string
 		u    *unstructured.Unstructured
@@ -74,6 +85,15 @@ func TestFromUnstructured(t *testing.T) {
 		{"a claim with no phase yet is Pending and live", defaults, func(r Run) bool { return r.Phase == "Pending" && r.Live() }},
 		{"a claim with no budget gets the default deadline", defaults, func(r Run) bool { return r.MaxMinutes == 120 }},
 		{"the branch falls back to spec.branch before status has one", defaults, func(r Run) bool { return r.Branch == "agent/fork" }},
+		{
+			"with no finishedAt the end is the last condition transition",
+			transitioned(claim("xplane-run-7f3cq2xz", "", "Failed", ""), "2026-09-27T10:20:00Z"),
+			func(r Run) bool { return r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 20, 0, 0, time.UTC)) },
+		},
+		{
+			"finishedAt wins over the conditions", finished,
+			func(r Run) bool { return r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 5, 0, 0, time.UTC)) },
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if r, ok := FromUnstructured(c.u); !ok || !c.ok(r) {
@@ -116,6 +136,33 @@ func TestWatcherFiresGoneOnceForTerminalRevokedOrDeleted(t *testing.T) {
 	}
 }
 
+// Important 1: cutting a dead run's connections (OnGone) never waits behind the
+// log's I/O (OnChange).
+func TestGoneFiresBeforeChange(t *testing.T) {
+	ctx := t.Context()
+	w := New()
+	var order []string
+	w.OnChange(func(context.Context, Run) { order = append(order, "change") })
+	w.OnGone(func(context.Context, Run) { order = append(order, "gone") })
+	w.Upsert(ctx, claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", ""))
+	if !slices.Equal(order, []string{"gone", "change"}) {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+// OnRemove reports what the watch knew, not the (possibly stale) deleted object.
+func TestOnRemoveGetsTheLastKnownState(t *testing.T) {
+	ctx := t.Context()
+	w := New()
+	var removed []Run
+	w.OnRemove(func(_ context.Context, r Run) { removed = append(removed, r) })
+	w.Upsert(ctx, claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", ""))
+	w.Remove(ctx, claim("xplane-run-7f3cq2xz", "zzzzzzzz", "Pending", ""))
+	if len(removed) != 1 || removed[0].Room != "3kq7x2ma" || removed[0].Phase != "Running" {
+		t.Fatalf("removed = %+v", removed)
+	}
+}
+
 func TestEndReason(t *testing.T) {
 	start := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 	run := func(phase, revoked string, end time.Time) Run {
@@ -140,6 +187,8 @@ func TestEndReason(t *testing.T) {
 		{"a run with no finish time is not past its deadline", run("Failed", "", time.Time{}), "", "pod_lost"},
 		{"a succeeded run without a harness status finished", run("Succeeded", "", early), "", "agent_finished"},
 		{"an exhausted budget names the budget", run("BudgetExhausted", "budget-run", early), "running", "budget-run"},
+		{"an exhausted budget takes its reason from the annotation", run("BudgetExhausted", "budget-principal", early), "running", "budget-principal"},
+		{"an exhausted budget without an annotation is the run's budget", run("BudgetExhausted", "", early), "running", "budget-run"},
 		{"a revoked run was revoked", run("Revoked", "manual", early), "running", "revoked"},
 		{"a deleted claim was deleted", deleted, "running", "deleted"},
 	} {
@@ -219,19 +268,21 @@ func TestObserveAppendsEachStepOnce(t *testing.T) {
 }
 
 func TestObserve(t *testing.T) {
-	start := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 	running, _ := FromUnstructured(claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", ""))
 	pending := running
 	pending.Phase = "Pending"
-	unfinished := running // Failed with no finishedAt: the clock stands in for it
-	unfinished.Phase = "Failed"
+	// Failed with no finishedAt: the end is the claim's last condition transition,
+	// whenever the broker observes it (a restart after downtime changes nothing).
+	failedAt := func(transition string) Run {
+		r, _ := FromUnstructured(transitioned(claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", ""), transition))
+		return r
+	}
 	noRoom, badRoom := running, running
 	noRoom.Room, badRoom.Room = "", "NOT-A-C2-ID"
 	boom := errors.New("boom")
 	for _, c := range []struct {
 		name      string
 		r         Run
-		now       time.Time
 		appendErr error
 		statusErr error
 		wantN     int
@@ -244,21 +295,19 @@ func TestObserve(t *testing.T) {
 		{name: "a run naming a missing room appends nothing", r: running, appendErr: fmt.Errorf("store: %w", store.ErrNoRoom)},
 		{name: "a run naming a sealed room appends nothing", r: running, appendErr: fmt.Errorf("store: %w", store.ErrSealed)},
 		{name: "a store failure is returned wrapped", r: running, appendErr: boom, wantErr: boom},
-		{name: "a harness status failure is returned wrapped", r: unfinished, now: start, statusErr: boom, wantErr: boom, wantN: 2},
+		{name: "a harness status failure is returned wrapped", r: failedAt("2026-09-27T10:01:00Z"), statusErr: boom, wantErr: boom, wantN: 2},
 		{
-			name: "an unfinished run past its budget by the clock hit the deadline", r: unfinished,
-			now: start.Add(2 * time.Hour), wantN: 4,
+			name: "a run that ended past its budget hit the deadline", r: failedAt("2026-09-27T12:00:00Z"), wantN: 4,
 			wantLast: `{"kind":"run_phase","phase":"Failed","reason":"deadline"}`,
 		},
 		{
-			name: "an unfinished run within its budget by the clock lost its pod", r: unfinished,
-			now: start.Add(time.Minute), wantN: 4,
+			name: "a run that ended within its budget lost its pod, however late it is observed", r: failedAt("2026-09-27T10:01:00Z"), wantN: 4,
 			wantLast: `{"kind":"run_phase","phase":"Failed","reason":"pod_lost"}`,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fs := &fakeStore{keys: map[string]bool{}, appendErr: c.appendErr, statusErr: c.statusErr}
-			e := &Events{Store: fs, Now: func() time.Time { return c.now }}
+			e := &Events{Store: fs}
 			err := e.Observe(t.Context(), c.r)
 			if c.wantErr == nil && err != nil || c.wantErr != nil && !errors.Is(err, c.wantErr) {
 				t.Fatalf("err = %v, want %v", err, c.wantErr)
@@ -311,7 +360,7 @@ func TestRegisterFeedsTheWatcherFromTheInformer(t *testing.T) {
 		t.Fatal(err)
 	}
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(GVK)
+	u.SetGroupVersionKind(GVK())
 	inf, err := informers.FakeInformerFor(ctx, u)
 	if err != nil {
 		t.Fatal(err)

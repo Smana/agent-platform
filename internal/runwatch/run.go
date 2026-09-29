@@ -63,6 +63,9 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	}
 	r.StartedAt, _ = time.Parse(time.RFC3339, str("status", "startedAt"))
 	r.FinishedAt, _ = time.Parse(time.RFC3339, str("status", "finishedAt"))
+	if r.FinishedAt.IsZero() {
+		r.FinishedAt = lastTransition(u)
+	}
 	r.MaxMinutes, _, _ = unstructured.NestedInt64(u.Object, "spec", "budget", "maxMinutes")
 	if r.MaxMinutes == 0 {
 		r.MaxMinutes = defaultMaxMinutes
@@ -71,16 +74,38 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	return r, true
 }
 
+// lastTransition is the latest lastTransitionTime among the claim's conditions: a
+// stand-in for a missing finishedAt that, unlike the broker's clock, does not move
+// with when the broker happens to observe the claim (after a restart, say).
+func lastTransition(u *unstructured.Unstructured) time.Time {
+	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
+	var last time.Time
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		s, _ := m["lastTransitionTime"].(string)
+		if t, err := time.Parse(time.RFC3339, s); err == nil && t.After(last) {
+			last = t
+		}
+	}
+	return last
+}
+
 // EndReason says why a run ended (ruling P15). The AgentRun only ever says
 // Failed/PodFailed; the room knows whether the agent itself ended its conversation.
-// It is pure: a run with no FinishedAt is never past its deadline, so the caller
-// stamps one from its clock first (Events does).
+// It is pure: a run with no end time (no finishedAt, no condition transition) is
+// never judged past its deadline.
 func EndReason(r Run, harnessStatus string) string {
 	if r.Deleted {
 		return "deleted"
 	}
 	switch r.Phase {
 	case "BudgetExhausted":
+		if r.Revoked == "" {
+			return "budget-run"
+		}
 		return r.Revoked
 	case "Revoked":
 		return "revoked"
