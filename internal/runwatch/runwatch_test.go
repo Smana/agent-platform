@@ -33,7 +33,7 @@ func claim(name, room, phase, revoked string) *unstructured.Unstructured {
 	return u
 }
 
-// transitioned gives the claim conditions, the latest at transition, and no finishedAt.
+// transitioned gives the claim conditions, Ready's at transition, and no finishedAt.
 func transitioned(u *unstructured.Unstructured, transition string) *unstructured.Unstructured {
 	_ = unstructured.SetNestedSlice(u.Object, []any{
 		map[string]any{"type": "Synced", "status": "True", "lastTransitionTime": "2026-09-27T10:00:05Z"},
@@ -86,7 +86,7 @@ func TestFromUnstructured(t *testing.T) {
 		{"a claim with no budget gets the default deadline", defaults, func(r Run) bool { return r.MaxMinutes == 120 }},
 		{"the branch falls back to spec.branch before status has one", defaults, func(r Run) bool { return r.Branch == "agent/fork" }},
 		{
-			"with no finishedAt the end is the last condition transition",
+			"with no finishedAt the end is the Ready transition",
 			transitioned(claim("xplane-run-7f3cq2xz", "", "Failed", ""), "2026-09-27T10:20:00Z"),
 			func(r Run) bool { return r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 20, 0, 0, time.UTC)) },
 		},
@@ -100,6 +100,23 @@ func TestFromUnstructured(t *testing.T) {
 				t.Fatalf("%+v %v", r, ok)
 			}
 		})
+	}
+}
+
+// A provider hiccup that flips Synced long after the pod was lost must not move
+// the end time past the deadline: only Ready's transition stands in for finishedAt.
+func TestALateSyncedTransitionIsNotTheEnd(t *testing.T) {
+	u := claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", "")
+	_ = unstructured.SetNestedSlice(u.Object, []any{
+		map[string]any{"type": "Ready", "status": "False", "lastTransitionTime": "2026-09-27T10:20:00Z"},
+		map[string]any{"type": "Synced", "status": "False", "lastTransitionTime": "2026-09-27T13:00:00Z"},
+	}, "status", "conditions")
+	r, ok := FromUnstructured(u)
+	if !ok || !r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 20, 0, 0, time.UTC)) {
+		t.Fatalf("finished at %s, want Ready's 10:20", r.FinishedAt)
+	}
+	if got := EndReason(r, ""); got != "pod_lost" {
+		t.Fatalf("end reason %s, want pod_lost", got)
 	}
 }
 
