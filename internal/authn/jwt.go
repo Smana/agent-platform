@@ -11,10 +11,13 @@ package authn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +68,20 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Groups          []string `json:"groups,omitempty"`
 	AuthorizedParty string   `json:"azp,omitempty"`
+	// ProjectRoles is the roles claim ZITADEL asserts natively: role name to granting orgs.
+	ProjectRoles map[string]json.RawMessage `json:"urn:zitadel:iam:org:project:roles,omitempty"`
+}
+
+// GroupNames is the groups claim our ZITADEL action sets on ID tokens, else the
+// project role names ZITADEL asserts natively, which is what a roomctl access
+// token may carry instead (accessTokenRoleAssertion). Sorted, never nil.
+func (c *Claims) GroupNames() []string {
+	if len(c.Groups) > 0 {
+		return c.Groups
+	}
+	out := slices.AppendSeq(make([]string, 0, len(c.ProjectRoles)), maps.Keys(c.ProjectRoles))
+	slices.Sort(out)
+	return out
 }
 
 // keyLookup returns the key a token claims to be signed with. It may fetch, so
@@ -183,6 +200,21 @@ func NewVerifierWithKeyfunc(issuer string, kf jwt.Keyfunc, opts ...Option) *Veri
 // Verify checks raw for audience and returns its claims. A refusal wraps
 // ErrUnauthenticated and, where one applies, a finer sentinel.
 func (v *Verifier) Verify(ctx context.Context, raw, audience string) (*Claims, error) {
+	c, err := v.parse(ctx, raw, audience)
+	if err != nil {
+		return nil, err
+	}
+	// jwt matches when any aud element does. A token minted for several
+	// audiences is refused: one presented here must be good for nothing else.
+	if len(c.Audience) != 1 || c.Audience[0] != audience {
+		return nil, fmt.Errorf("%w: want exactly one audience", ErrWrongAudience)
+	}
+	return c, nil
+}
+
+// parse checks raw's signature, algorithm, iss, exp, nbf and iat, and that one
+// of its aud elements is audience. The callers add their own audience rules.
+func (v *Verifier) parse(ctx context.Context, raw, audience string) (*Claims, error) {
 	if audience == "" {
 		return nil, fmt.Errorf("%w: no audience to check", ErrUnauthenticated)
 	}
@@ -198,11 +230,6 @@ func (v *Verifier) Verify(ctx context.Context, raw, audience string) (*Claims, e
 		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(clockSkew), jwt.WithTimeFunc(v.now))
 	if err != nil {
 		return nil, classify(err)
-	}
-	// jwt matches when any aud element does. A token minted for several
-	// audiences is refused: one presented here must be good for nothing else.
-	if len(c.Audience) != 1 || c.Audience[0] != audience {
-		return nil, fmt.Errorf("%w: want exactly one audience", ErrWrongAudience)
 	}
 	return c, nil
 }

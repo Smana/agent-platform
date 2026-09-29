@@ -137,7 +137,8 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: redaction rules: %w", err)
 	}
-	runs, systems, verifiers, err := authenticators(ctx, log, cfg, m)
+	// a.humans is served on :8080 from Task 2.6; its verifier refreshes already (AQ).
+	a, err := authenticators(ctx, cfg, m, jwksVerifier(log))
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -160,7 +161,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 
-	api := &bridgeapi.Server{Log: logStore, Redactor: red, Runs: runs, Systems: systems, Watch: rw.watch, Logger: log}
+	api := &bridgeapi.Server{Log: logStore, Redactor: red, Runs: a.runs, Systems: a.systems, Watch: rw.watch, Logger: log}
 	rw.watch.OnGone(api.Drop)
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
@@ -181,8 +182,8 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		}
 		opsDone <- err
 	}()
-	refreshers := make([]refresher, 0, len(verifiers))
-	for _, v := range verifiers {
+	refreshers := make([]refresher, 0, len(a.verifiers))
+	for _, v := range a.verifiers {
 		refreshers = append(refreshers, v)
 	}
 	g, gctx := errgroup.WithContext(runCtx)

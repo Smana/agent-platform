@@ -96,7 +96,7 @@ reads it once at start, so restart it after a change.
 | `runIssuers[]` | `{issuer, jwksURL, subPattern}`. The cluster's OIDC issuer today; its JWKS URI is per cloud (`<issuer>/keys` on EKS, `<issuer>/jwks` on GKE) | 1 |
 | `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens | 1 |
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
-| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, origin}` | 2, 6 |
+| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build (Ruling AS-a); the group names are literals | 2, 6 |
 | `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 

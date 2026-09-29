@@ -7,7 +7,10 @@ import (
 	"crypto/rand"
 	"log/slog"
 	"math/big"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/authn"
@@ -25,18 +28,40 @@ const (
 	jwksRefreshTimeout = 30 * time.Second
 )
 
-// authenticators builds the run and system verifiers; each fetches its JWKS now,
-// so an unreachable issuer fails the rollout. One verifier serves each (issuer,
-// JWKS URL): the cluster's issuer usually signs both kinds of token, and one
-// cache then refreshes once. It returns every distinct verifier, for refreshJWKS.
-func authenticators(ctx context.Context, log *slog.Logger, cfg config.Config, m *metrics.Set) (*authn.Runs, *authn.Systems, []*authn.Verifier, error) {
+// newVerifier builds one issuer's verifier; the broker passes authn.NewVerifier,
+// which fetches the JWKS now.
+type newVerifier func(ctx context.Context, issuer, jwksURL string) (*authn.Verifier, error)
+
+// jwksVerifier is the broker's newVerifier: a JWKS fetched through httpx, its
+// refreshes logged.
+func jwksVerifier(log *slog.Logger) newVerifier {
+	return func(ctx context.Context, issuer, jwksURL string) (*authn.Verifier, error) {
+		return authn.NewVerifier(ctx, issuer, jwksURL, authn.WithLogger(log))
+	}
+}
+
+// auth is every caller kind's authenticator, and the distinct verifiers behind
+// them for refreshJWKS.
+type auth struct {
+	runs      *authn.Runs
+	systems   *authn.Systems
+	humans    *authn.Humans
+	verifiers []*authn.Verifier
+}
+
+// authenticators builds the run, system and human verifiers; each fetches its
+// JWKS now, so an unreachable issuer fails the rollout. One verifier serves each
+// (issuer, JWKS URL): the cluster's issuer usually signs both kinds of machine
+// token, and one cache then refreshes once. Every distinct verifier, the human
+// one included, is refreshed and gauged (Ruling AQ).
+func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier) (auth, error) {
 	byKey := map[[2]string]*authn.Verifier{}
 	var all []*authn.Verifier
 	verifier := func(issuer, jwksURL string) (*authn.Verifier, error) {
 		if v, ok := byKey[[2]string{issuer, jwksURL}]; ok {
 			return v, nil
 		}
-		v, err := authn.NewVerifier(ctx, issuer, jwksURL, authn.WithLogger(log))
+		v, err := build(ctx, issuer, jwksURL)
 		if err != nil {
 			return nil, err
 		}
@@ -48,18 +73,23 @@ func authenticators(ctx context.Context, log *slog.Logger, cfg config.Config, m 
 	for _, is := range cfg.RunIssuers {
 		v, err := verifier(is.Issuer, is.JWKSURL)
 		if err != nil {
-			return nil, nil, nil, err
+			return auth{}, err
 		}
 		// config.Load compiled it with one capture group already.
 		issuers = append(issuers, authn.RunIssuer{Verifier: v, SubPattern: regexp.MustCompile(is.SubPattern)})
 	}
 	runs, err := authn.NewRuns(issuers...)
 	if err != nil {
-		return nil, nil, nil, err
+		return auth{}, err
 	}
 	sys, err := verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL)
 	if err != nil {
-		return nil, nil, nil, err
+		return auth{}, err
+	}
+	h := cfg.Human
+	hv, err := verifier(h.Issuer, h.JWKSURL)
+	if err != nil {
+		return auth{}, err
 	}
 	// An issuer behind two JWKS URLs is one series: the fresher fetch.
 	lastRefresh := map[string]func() time.Time{}
@@ -71,9 +101,26 @@ func authenticators(ctx context.Context, log *slog.Logger, cfg config.Config, m 
 		}
 	}
 	if err := m.WatchJWKS(lastRefresh); err != nil {
-		return nil, nil, nil, err
+		return auth{}, err
 	}
-	return runs, authn.NewSystems(sys, cfg.SystemPrincipals), all, nil
+	humans := authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
+	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all}, nil
+}
+
+// idFile reads an id from a mounted file on every call, so an id the IdP mints
+// anew needs no restart (Ruling AS-a). An unset or unreadable file reads as "",
+// which refuses every token that needs it.
+func idFile(path string) func() string {
+	return func() string {
+		if path == "" {
+			return ""
+		}
+		raw, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(raw))
+	}
 }
 
 func later(a, b time.Time) time.Time {
