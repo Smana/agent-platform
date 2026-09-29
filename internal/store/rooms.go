@@ -11,6 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// MinRetention is the schema's floor on a room's retention (rooms.retention >= 1 day),
+// like the Room CRD's <n>d.
+const MinRetention = 24 * time.Hour
+
 // NewRoom is what EnsureRoom needs from a Room CR.
 type NewRoom struct {
 	ID        string
@@ -32,9 +36,10 @@ type RoomState struct {
 // EnsureRoom inserts the room's row once. created is false when it already existed.
 // fallback_driver is the system holder a lapsed human driver falls back to (§2);
 // a room that starts with a human driver has none until a system principal holds it.
-// A retention of zero or less is refused: the Room CRD always defaults it (90d).
+// A retention under MinRetention is refused with ErrInvalidRetention before the
+// database, whose check (Ruling AE) would refuse it as a bare 23514.
 func (s *Store) EnsureRoom(ctx context.Context, r NewRoom) (bool, error) {
-	if r.Retention <= 0 {
+	if r.Retention < MinRetention {
 		return false, fmt.Errorf("store: room %s: %w", r.ID, ErrInvalidRetention)
 	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO rooms (room_id, driver, fallback_driver, retention)
