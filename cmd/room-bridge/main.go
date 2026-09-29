@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Command room-bridge is replaced in phase 1; this stub proves the image pipeline.
 package main
 

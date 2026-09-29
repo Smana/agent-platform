@@ -1,9 +1,66 @@
+# golangci-lint v2. Run it through `task lint` (hack/lint.sh), never a bare
+# `golangci-lint run`: a v1 binary earlier on PATH cannot read this file.
 version: "2"
+
+run:
+  timeout: 5m
+
+# The default (true) keeps one issue per line, so a forbidigo ban can be hidden
+# behind bodyclose or revive on the same line and the fixer chases the wrong rule.
+issues:
+  uniq-by-line: false
+
 linters:
-  default: standard
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
-    - bodyclose
-    - errorlint
+    - bodyclose # response bodies are closed
+    - errorlint # %w wrapping, errors.Is/As instead of == and type switches
+    - forbidigo # the bans below
+    - gocritic
     - gosec
-    - noctx
-    - sqlclosecheck
+    - misspell
+    - noctx # outbound requests and queries carry a context
+    - revive # exported symbols carry doc comments
+    - sqlclosecheck # rows and statements are closed
+    - unconvert
+  settings:
+    forbidigo:
+      forbid:
+        # Egress goes through one audited client (internal/httpx, added with the
+        # first outbound call): timeouts, redirect cap, no credential leak on a
+        # cross-host redirect. The bare helpers use http.DefaultClient, which has none.
+        - pattern: ^http\.DefaultClient$
+          msg: route egress through internal/httpx; in tests use httptest.Server.Client()
+        - pattern: ^http\.(Get|Head|Post|PostForm)$
+          msg: route egress through internal/httpx; in tests use httptest.Server.Client()
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: log through the injected *slog.Logger, or write to the io.Writer you were given
+        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          msg: log through the injected *slog.Logger; return the error instead of exiting
+        - pattern: ^time\.Sleep$
+          msg: inject a clock, or select on ctx.Done() and a timer, so shutdown and tests stay fast
+  exclusions:
+    rules:
+      # Fixtures use lax file modes and temp paths on purpose.
+      - path: _test\.go
+        linters: [gosec]
+      # Tests may print and wait; they must still not reach the network unguarded.
+      - path: _test\.go
+        linters: [forbidigo]
+        text: "use of `(fmt\\.Print|log\\.|time\\.Sleep)"
+      # A binary's main package owns its stdout.
+      - path: ^cmd/
+        linters: [forbidigo]
+        text: "use of `(fmt\\.Print|log\\.)"
+      # The egress client is the one place allowed to build on net/http directly.
+      - path: ^internal/httpx/
+        linters: [forbidigo]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Smana/agent-platform
