@@ -43,7 +43,7 @@ events.
 | `rooms_append_seconds` | histogram | — | Append latency | 1 |
 | `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease | 1 |
 | `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
-| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each `Active` room | 1 |
+| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip | 1 |
 | `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
 | `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed (`reauth`, `slow_consumer`, …) | 2 |
@@ -77,7 +77,7 @@ test enforces.
 | `RoomLogAppendErrors` | Any append failed on the database in 10 min | 10 min | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` | 1 |
 | `RoomRedactionsSpike` | More than 20 secrets redacted in 15 min | — | An agent is handling credentials: find the rooms with [the redactions query](#reading-the-log-with-sql) | 1 |
 | `RoomLogDiskFilling` | The log's volume is over 80 % | 15 min | Shorten `spec.retention` on busy rooms, or grow `storageSize` on `SQLInstance xplane-rooms` | 1 |
-| `RoomStalled` | An `Active` room has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) | 1 |
+| `RoomStalled` | A room with a `Running` run has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) | 1 |
 | `RoomRejectedActionsSpike` | More than 30 actions refused in 10 min | — | Someone is probing, or the UI disagrees with the policy | 2 |
 | `RoomVerdictsNotReachingGitHub` | Posting errors, and no successful post in 30 min | 30 min | The factory App's key at `agents/factory-app`; egress to `api.github.com` | 3 |
 | `RoomApprovalPendingTooLong` | An approval has waited over 15 min; reaches Slack through Alertmanager | — | Decide it; an unattended room auto-denies at `approvals.ttl` | 5 |
