@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package store
 
 import (
@@ -62,4 +64,12 @@ func exec(t *testing.T, dsn, sql string) {
 	if _, err := conn.Exec(context.Background(), sql); err != nil {
 		t.Fatalf("%v\n%s", err, sql)
 	}
+}
+
+// forge rewrites rooms as the superuser with triggers off (session_replication_role =
+// replica): the only way to build a state the schema otherwise refuses, such as an
+// expired close date.
+func forge(t *testing.T, super, sql string) {
+	t.Helper()
+	exec(t, super, "SET session_replication_role = replica; "+sql)
 }

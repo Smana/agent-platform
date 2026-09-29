@@ -1,10 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package store is the log of record (SP2 §4): one gapless, append-only
-// sequence per room, in PostgreSQL.
+// sequence per room, in PostgreSQL. The database enforces the invariants too
+// (migrations/20260927120000_rooms.sql), so a bug or a stolen broker credential
+// cannot rewrite history.
 package store
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,21 +20,40 @@ import (
 )
 
 var (
-	ErrNoRoom = errors.New("no such room")
-	ErrSealed = errors.New("room is sealed")
+	ErrNoRoom           = errors.New("no such room")
+	ErrSealed           = errors.New("room is sealed")
+	ErrLeaseLost        = errors.New("the bridge lease is held by another run")
+	ErrInvalidRetention = errors.New("retention must be positive")
 )
 
 type Store struct {
 	pool      *pgxpool.Pool
 	MaxEvents int64
 	MaxBytes  int64
-	Now       func() time.Time
+	// Now stamps event timestamps. Lease freshness and close dates use the
+	// database's now() instead: one clock for every broker replica.
+	Now func() time.Time
 }
 
+// Open connects with every session bounded, so no statement, lock queue or
+// abandoned transaction holds a room's row lock for long. A value set in the URL wins.
 func Open(ctx context.Context, url string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, url)
+	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: parse database url: %w", err)
+	}
+	for param, value := range map[string]string{
+		"statement_timeout":                   "15s",
+		"lock_timeout":                        "5s",
+		"idle_in_transaction_session_timeout": "30s",
+	} {
+		if _, set := cfg.ConnConfig.RuntimeParams[param]; !set {
+			cfg.ConnConfig.RuntimeParams[param] = value
+		}
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("store: connect: %w", err)
 	}
 	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, Now: time.Now}, nil
 }
@@ -61,49 +85,73 @@ func scan(row pgx.Row, roomID string) (envelope.Event, error) {
 	return e, err
 }
 
-// Append is one transaction: take the room's row lock by incrementing last_seq,
-// return the existing event for a replayed idempotency key (the rollback undoes the
-// increment), insert, and seal the room with a final limit event when it is full.
+// Append adds d to its room's log, for writers that hold no bridge lease (humans,
+// the broker, system callers). dup is true for a replayed idempotency key.
 func (s *Store) Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
+	return s.append(ctx, d, "")
+}
+
+// AppendAsBridge appends for the bridge of bridgeRun, and refuses with ErrLeaseLost
+// once another run holds the room's bridge lease (ruling P17, review I7).
+func (s *Store) AppendAsBridge(ctx context.Context, bridgeRun string, d envelope.Draft) (envelope.Event, bool, error) {
+	return s.append(ctx, d, bridgeRun)
+}
+
+// append is one transaction under the room's row lock: a replayed idempotency key
+// returns the stored event, a sealed room or a lost lease refuses, and otherwise the
+// event takes the next seq. A full room is then sealed with a final limit event.
+func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (envelope.Event, bool, error) {
 	if err := d.Validate(); err != nil {
 		return envelope.Event{}, false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return envelope.Event{}, false, err
+		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ev, dup, err := s.appendTx(ctx, tx, d)
-	if err != nil || dup {
-		return ev, dup, err
+	ev, dup, err := s.appendTx(ctx, tx, d, fence)
+	if err == nil && !dup {
+		err = tx.Commit(ctx)
 	}
-	return ev, false, tx.Commit(ctx)
+	if err != nil {
+		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, err)
+	}
+	return ev, dup, nil
 }
 
-func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft) (envelope.Event, bool, error) {
+func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence string) (envelope.Event, bool, error) {
 	if len(d.Payload) > envelope.MaxPayload {
 		d.Payload = envelope.Oversize(d.Type, len(d.Payload))
 	}
-	var seq, size int64
+	// The row lock serialises this room's writers, CloseRoom and ClaimBridge, so
+	// none of the checks below can race them.
 	var sealed bool
-	err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, bytes = bytes + $2, last_event_at = now()
-		WHERE room_id = $1 RETURNING last_seq, bytes, sealed`, d.RoomID, len(d.Payload)).Scan(&seq, &size, &sealed)
+	var holder *string
+	err := tx.QueryRow(ctx, `SELECT sealed, bridge_run FROM rooms WHERE room_id = $1 FOR UPDATE`, d.RoomID).Scan(&sealed, &holder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return envelope.Event{}, false, ErrNoRoom
 	}
 	if err != nil {
 		return envelope.Event{}, false, err
 	}
-	if sealed {
-		return envelope.Event{}, false, ErrSealed
-	}
-	// The row lock above serialises writers of this room, so this read cannot race.
+	// Before the seal check: a retry of the append that sealed the room is a duplicate.
 	existing, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM events
 		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
 	if err == nil {
 		return existing, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return envelope.Event{}, false, err
+	}
+	if sealed {
+		return envelope.Event{}, false, ErrSealed
+	}
+	if fence != "" && (holder == nil || *holder != fence) {
+		return envelope.Event{}, false, ErrLeaseLost
+	}
+	var seq, size int64
+	if err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, bytes = bytes + $2, last_event_at = now()
+		WHERE room_id = $1 RETURNING last_seq, bytes`, d.RoomID, len(d.Payload)).Scan(&seq, &size); err != nil {
 		return envelope.Event{}, false, err
 	}
 	ev := envelope.Event{V: envelope.Version, ID: ulid.Make().String(), Seq: seq, RoomID: d.RoomID,
@@ -139,37 +187,47 @@ func insert(ctx context.Context, tx pgx.Tx, ev envelope.Event, client string, n 
 	return err
 }
 
-// sealTx appends the room's last event and seals it, inside the caller's transaction.
+// sealTx appends the room's last event, then seals it, inside the caller's
+// transaction. The order matters: the database refuses any event into a sealed room.
 func (s *Store) sealTx(ctx context.Context, tx pgx.Tx, roomID, kind string, fields map[string]any) error {
 	var seq int64
-	if err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, sealed = true,
-		closed_at = coalesce(closed_at, now()) WHERE room_id = $1 RETURNING last_seq`, roomID).Scan(&seq); err != nil {
+	if err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, last_event_at = now()
+		WHERE room_id = $1 RETURNING last_seq`, roomID).Scan(&seq); err != nil {
 		return err
 	}
 	ev := envelope.Event{V: envelope.Version, ID: ulid.Make().String(), Seq: seq, RoomID: roomID,
 		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}, Type: envelope.StateChanged,
 		Origin: envelope.OriginBroker, TS: s.Now().UTC().Truncate(time.Microsecond), Redactions: []string{},
 		Payload: envelope.StatePayload(kind, fields)}
-	return insert(ctx, tx, ev, "broker:seal", 1)
+	if err := insert(ctx, tx, ev, "broker:seal", 1); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE rooms SET sealed = true, closed_at = now() WHERE room_id = $1`, roomID)
+	return err
 }
 
 // CloseRoom seals the log with a final state_changed{room_phase: Closed}. Its
 // retention clock starts now (OD-17). Closing twice is a no-op.
 func (s *Store) CloseRoom(ctx context.Context, roomID, reason string) error {
+	if err := s.closeRoom(ctx, roomID, reason); err != nil {
+		return fmt.Errorf("store: close room %s: %w", roomID, err)
+	}
+	return nil
+}
+
+func (s *Store) closeRoom(ctx context.Context, roomID, reason string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var sealed bool
-	if err := tx.QueryRow(ctx, `SELECT sealed FROM rooms WHERE room_id = $1 FOR UPDATE`, roomID).Scan(&sealed); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNoRoom
-		}
-		return err
+	err = tx.QueryRow(ctx, `SELECT sealed FROM rooms WHERE room_id = $1 FOR UPDATE`, roomID).Scan(&sealed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoRoom
 	}
-	if sealed {
-		return nil
+	if err != nil || sealed {
+		return err
 	}
 	if err := s.sealTx(ctx, tx, roomID, "room_phase", map[string]any{"phase": "Closed", "reason": reason}); err != nil {
 		return err
@@ -181,14 +239,14 @@ func (s *Store) Range(ctx context.Context, roomID string, afterSeq int64, limit 
 	rows, err := s.pool.Query(ctx, `SELECT `+cols+` FROM events WHERE room_id = $1 AND seq > $2
 		ORDER BY seq LIMIT $3`, roomID, afterSeq, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: range of room %s: %w", roomID, err)
 	}
 	defer rows.Close()
 	var out []envelope.Event
 	for rows.Next() {
 		ev, err := scan(rows, roomID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("store: range of room %s: %w", roomID, err)
 		}
 		out = append(out, ev)
 	}
