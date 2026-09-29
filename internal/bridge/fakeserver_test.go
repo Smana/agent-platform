@@ -23,6 +23,15 @@ type fakeAgentServer struct {
 	policy    string
 	pageSize  int
 	limits    []int
+	searches  int  // event searches asked
+	hang      bool // event searches never answer while set
+}
+
+// searched is how many event searches were asked so far.
+func (f *fakeAgentServer) searched() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.searches
 }
 
 func (f *fakeAgentServer) add(ev map[string]any) {
@@ -64,6 +73,12 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	})
 	mux.HandleFunc("GET "+base+"/events/search", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		f.searches++
+		if f.hang {
+			f.mu.Unlock()
+			<-r.Context().Done() // a hung agent-server: the caller's deadline ends it
+			return
+		}
 		defer f.mu.Unlock()
 		start := 0
 		if id := r.URL.Query().Get("page_id"); id != "" {

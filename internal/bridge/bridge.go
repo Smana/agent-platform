@@ -24,8 +24,14 @@ import (
 )
 
 const (
-	// flushGrace bounds the drain after SIGTERM, inside the pod's 30 s grace.
-	flushGrace = 25 * time.Second
+	// defaultFlushGrace bounds the drain after SIGTERM, inside the pod's 30 s
+	// grace. The kubelet signals a native sidecar only once the harness has
+	// exited, so a pod spec whose harness uses much of the grace sets FlushGrace
+	// lower (FLUSH_GRACE).
+	defaultFlushGrace = 25 * time.Second
+	// drainWait caps each wait inside the drain, whatever the backoff or a
+	// Retry-After says: past SIGTERM, one more attempt beats waiting politely.
+	drainWait = 2 * time.Second
 	// unreachableFail is how long the harness may be silent, once seen, before
 	// /healthz fails (ruling P6).
 	unreachableFail = 60 * time.Second
@@ -41,9 +47,17 @@ const (
 	defaultInterval   = time.Second
 	defaultMinBackoff = 250 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
-	// DefaultMaxBuffer is the MaxBuffer a zero value means: 8 MiB of encoded
-	// items, inside the sidecar's 64 Mi limit next to one harness page.
-	DefaultMaxBuffer = 8 << 20
+	// MemoryLimit is the soft heap limit room-bridge sets (GOMEMLIMIT) inside
+	// the sidecar's 64 Mi limit, leaving the rest to the runtime and stacks.
+	MemoryLimit = 48 << 20
+	// DefaultMaxBuffer is the MaxBuffer a zero value means. The heap's worst
+	// case is the buffer before a poll, plus what that poll's Next retains and
+	// reads, plus the items it maps; TestTheWorstCaseHeapFitsTheMemoryLimit
+	// pins the sum under MemoryLimit.
+	DefaultMaxBuffer = 3 << 20
+	// maxItemBytes is one encoded item at most: a payload within MaxPayload
+	// and the item's stream, seq and type around it.
+	maxItemBytes = envelope.MaxPayload + 256
 
 	metricStalls  = "rooms_bridge_harness_stalls_total"
 	metricStubbed = "rooms_bridge_items_stubbed_total"
@@ -65,6 +79,14 @@ const (
 	StubRefused  = "refused"  // refused by the broker for what it is (400)
 )
 
+// pageItemBytes is the most one poll adds to the buffer: maxPages pages of
+// pageLimit events, each mapped to at most two items.
+func pageItemBytes(maxPages int) int { return max(maxPages, 1) * pageLimit * 2 * maxItemBytes }
+
+// nextPeakBytes is what one Next holds while it runs: maxPages retained
+// bodies and one more being read (Task 1.10).
+func nextPeakBytes(maxPages int) int { return (max(maxPages, 1) + 1) * maxResponseBytes }
+
 func stallReason(err error) string {
 	switch {
 	case errors.Is(err, ErrEventTooLarge):
@@ -85,38 +107,48 @@ func StallNotice(reason string) Mapped {
 }
 
 // Stub stands in for an item of type t and n payload bytes that the broker
-// cannot take as sent (why is StubOversize or StubRefused). Its slot is kept so
-// the cursor moves on and nothing after it is lost (ruling P20, review I6).
-// Only turn, tool_call and tool_result accept the store's oversize stub; any
-// other item becomes a harness_event naming why.
-func Stub(t envelope.Type, n int, why string) Mapped {
+// cannot take as sent (why is StubOversize or StubRefused; reason is the
+// broker's wire reason, if any). Its slot is kept so the cursor moves on and
+// nothing after it is lost (ruling P20, review I6). Only turn, tool_call and
+// tool_result accept the store's oversize stub; any other item becomes a
+// harness_event naming why, the item's type (detail), its size and the reason.
+func Stub(t envelope.Type, n int, why, reason string) Mapped {
 	if why == StubOversize && (t == envelope.Turn || t == envelope.ToolCall || t == envelope.ToolResult) {
 		return Mapped{t, envelope.Oversize(t, n)}
 	}
-	return state("harness_event", map[string]string{"harnessKind": why})
+	fields := map[string]any{"harnessKind": why, "detail": cut(string(t), 64), "bytes": n}
+	if reason != "" {
+		fields["reason"] = cut(reason, 64)
+	}
+	return Mapped{envelope.StateChanged, envelope.StatePayload("harness_event", fields)}
 }
 
-// pending is a buffered item and its encoding, measured once and sent as is.
+// pending is a buffered item. Only its encoding holds the payload, measured
+// once and sent as is, so bufBytes counts what the buffer holds (review I2).
 type pending struct {
-	item wire.Item
-	enc  json.RawMessage
-	stub string // why the item is a stub, "" when it is as mapped
+	stream wire.Stream
+	seq    int64
+	typ    envelope.Type
+	n      int // the payload's bytes before encoding
+	enc    json.RawMessage
+	stub   string // why the item is a stub, "" when it is as mapped
 }
 
 func encode(it wire.Item) pending {
+	p := pending{stream: it.Stream, seq: it.Seq, typ: it.Type, n: len(it.Payload)}
 	enc, err := json.Marshal(it)
 	if err != nil {
 		// Only a payload that is not JSON fails, which Map never produces.
-		return encodeStub(it, len(it.Payload), StubRefused)
+		return encodeStub(p, StubRefused, "")
 	}
-	return pending{item: it, enc: enc}
+	p.enc = enc
+	return p
 }
 
-func encodeStub(it wire.Item, n int, why string) pending {
-	m := Stub(it.Type, n, why)
-	it.Type, it.Payload = m.Type, m.Payload
-	enc, _ := json.Marshal(it) // Stub's payloads are always JSON
-	return pending{item: it, enc: enc, stub: why}
+func encodeStub(p pending, why, reason string) pending {
+	m := Stub(p.typ, p.n, why, reason)
+	enc, _ := json.Marshal(wire.Item{Stream: p.stream, Seq: p.seq, Type: m.Type, Payload: m.Payload}) // Stub's payloads are always JSON
+	return pending{stream: p.stream, seq: p.seq, typ: m.Type, n: len(m.Payload), enc: enc, stub: why}
 }
 
 // nextBatch is how many items from the front of buf the next batch carries:
@@ -204,8 +236,12 @@ type Bridge struct {
 	// Interval is the poll period; zero means 1 s.
 	Interval time.Duration
 	// MaxBuffer caps the encoded bytes waiting for the broker; past it the
-	// harness is not read (back-pressure). Zero means DefaultMaxBuffer.
+	// harness's events are not read (back-pressure), so the buffer holds at
+	// most MaxBuffer plus one poll's items. Status changes are still recorded:
+	// at most two small items each. Zero means DefaultMaxBuffer.
 	MaxBuffer int
+	// FlushGrace bounds the drain after SIGTERM; zero means 25 s.
+	FlushGrace time.Duration
 	// MinBackoff and MaxBackoff bound the retry of a failed call; zero means
 	// 250 ms and 30 s.
 	MinBackoff, MaxBackoff time.Duration
@@ -295,11 +331,14 @@ func (b *Bridge) init() error {
 	if b.MaxBuffer <= 0 {
 		b.MaxBuffer = DefaultMaxBuffer
 	}
+	if b.FlushGrace <= 0 {
+		b.FlushGrace = defaultFlushGrace
+	}
 	return nil
 }
 
 // Run mirrors the conversation into the room until ctx ends, then flushes what
-// is buffered within flushGrace. It returns an error only if it cannot start.
+// is buffered within FlushGrace. It returns an error only if it cannot start.
 func (b *Bridge) Run(ctx context.Context) error {
 	if err := b.init(); err != nil {
 		return err
@@ -343,6 +382,9 @@ func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
 // to try again.
 func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
 	r, rep, err := b.Broker.Hello(ctx)
+	if err != nil && ctx.Err() != nil {
+		return r, false // cut short by SIGTERM: not the broker's failure
+	}
 	switch {
 	case err == nil && rep.Code == http.StatusOK:
 		b.sendRetry.reset()
@@ -353,7 +395,7 @@ func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
 		return r, false
 	case err == nil && rep.Code == http.StatusConflict:
 		b.log().Info("another run holds the room's bridge lease; saying hello again later", "reason", rep.Reason)
-	case ctx.Err() == nil:
+	default:
 		b.log().Warn("hello failed", "code", rep.Code, "reason", rep.Reason, "err", err)
 	}
 	b.sendAt = b.now().Add(b.retryIn(rep))
@@ -473,9 +515,7 @@ func (b *Bridge) pollStatus(ctx context.Context) {
 		return
 	}
 	b.sawHarness(b.now())
-	if b.bufBytes >= b.MaxBuffer {
-		return // a later poll records the status the harness settles on
-	}
+	// Not held back by a full buffer: a transition missed here is a turn lost.
 	for _, it := range b.status.Observe(status, b.RunID) {
 		b.pushStatus(ctx, it)
 	}
@@ -489,18 +529,18 @@ func (b *Bridge) pushStatus(ctx context.Context, it StatusItem) {
 func (b *Bridge) push(ctx context.Context, it wire.Item) {
 	p := encode(it)
 	if len(p.enc)+batchOverhead(1) > maxBatchBytes {
-		p = b.stubOf(ctx, p, StubOversize, 0)
+		p = b.stubOf(ctx, p, StubOversize, 0, "")
 	}
 	b.buf = append(b.buf, p)
 	b.bufBytes += len(p.enc)
 }
 
 // stubOf replaces p by its stub, counting and logging it by ids only.
-func (b *Bridge) stubOf(ctx context.Context, p pending, why string, code int) pending {
-	s := encodeStub(p.item, len(p.item.Payload), why)
+func (b *Bridge) stubOf(ctx context.Context, p pending, why string, code int, reason string) pending {
+	s := encodeStub(p, why, reason)
 	b.stubbed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", why)))
 	b.log().Error("an item the broker cannot take is kept as a stub in its slot",
-		"stream", p.item.Stream, "seq", p.item.Seq, "type", p.item.Type, "reason", why, "code", code)
+		"stream", p.stream, "seq", p.seq, "type", p.typ, "reason", why, "code", code, "brokerReason", reason)
 	return s
 }
 
@@ -526,14 +566,15 @@ func (b *Bridge) flush(ctx context.Context) {
 		n := nextBatch(b.buf, maxBatchBytes, limit)
 		rep, err := b.Broker.Send(ctx, encoded(b.buf[:n]))
 		switch {
+		case err != nil && ctx.Err() != nil:
+			return // cut short by SIGTERM: not the broker's failure, so no backoff
 		case err != nil:
-			if ctx.Err() == nil {
-				b.log().Warn("push a batch", "items", n, "err", err)
-			}
+			b.log().Warn("push a batch", "items", n, "err", err)
 			b.sendAt = b.now().Add(b.retryIn(rep))
 			return
 		case rep.Code == http.StatusOK:
 			b.sendRetry.reset()
+			limit = min(2*limit, batchItems) // grow back after a halving
 			for _, p := range b.buf[:n] {
 				b.bufBytes -= len(p.enc)
 			}
@@ -549,13 +590,13 @@ func (b *Bridge) flush(ctx context.Context) {
 			}
 			if b.buf[0].stub != "" {
 				// Even its stub is refused: nothing smaller exists. Stall loudly.
-				b.log().Error("the broker refuses an item's stub; retrying", "stream", b.buf[0].item.Stream,
-					"seq", b.buf[0].item.Seq, "code", rep.Code, "reason", rep.Reason)
+				b.log().Error("the broker refuses an item's stub; retrying", "stream", b.buf[0].stream,
+					"seq", b.buf[0].seq, "code", rep.Code, "reason", rep.Reason)
 				b.sendAt = b.now().Add(b.retryIn(rep))
 				return
 			}
 			old := len(b.buf[0].enc)
-			b.buf[0] = b.stubOf(ctx, b.buf[0], why, rep.Code)
+			b.buf[0] = b.stubOf(ctx, b.buf[0], why, rep.Code, rep.Reason)
 			b.bufBytes += len(b.buf[0].enc) - old
 		case rep.Code == http.StatusConflict:
 			// Ruling Y: another run took the room's lease. Stop appending, keep
@@ -578,27 +619,40 @@ func (b *Bridge) flush(ctx context.Context) {
 	}
 }
 
-// shutdown takes what the harness has left, since agent-run may stop it first,
-// and flushes it within flushGrace.
+// shutdown drains the buffer within FlushGrace, then takes what the harness
+// has left, since agent-run may stop it first, and drains that too (review I1).
+// The loop's backoff does not carry over: the buffer is sent first and at once,
+// before a poll that a hung harness could hold for its whole timeout, and each
+// wait after a refusal is capped at drainWait.
 func (b *Bridge) shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), flushGrace)
+	ctx, cancel := context.WithTimeout(context.Background(), b.FlushGrace)
 	defer cancel()
 	if b.sealed.Load() {
 		return
 	}
-	if b.positioned {
-		b.pollEvents(ctx)
-	}
-	b.pollStatus(ctx)
-	for len(b.buf) > 0 && !b.sealed.Load() {
-		if pause(ctx, b.sendAt.Sub(b.now())) != nil {
-			break
+	b.sendAt = time.Time{}
+	b.sendRetry.reset()
+	b.drain(ctx)
+	if ctx.Err() == nil && !b.sealed.Load() {
+		if b.positioned {
+			b.pollEvents(ctx)
 		}
-		b.send(ctx)
+		b.pollStatus(ctx)
+		b.drain(ctx)
 	}
-	if len(b.buf) > 0 {
+	if len(b.buf) > 0 && !b.sealed.Load() {
 		b.log().Warn("shutdown left items unmirrored; a restarted bridge resumes from the log",
 			"items", len(b.buf), "leaseLost", b.leaseLost)
+	}
+}
+
+// drain sends until the buffer is empty, the room is sealed or ctx ends.
+func (b *Bridge) drain(ctx context.Context) {
+	for len(b.buf) > 0 && !b.sealed.Load() {
+		if pause(ctx, min(b.sendAt.Sub(b.now()), drainWait)) != nil {
+			return
+		}
+		b.send(ctx)
 	}
 }
 

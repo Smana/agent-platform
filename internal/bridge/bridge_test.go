@@ -242,7 +242,8 @@ func TestARefusedItemBecomesAStub(t *testing.T) {
 	}
 	for _, it := range got {
 		switch {
-		case it.Seq == 12 && (!payloadHas(it, `"refused"`) || payloadHas(it, "poison")):
+		case it.Seq == 12 && (!payloadHas(it, `"harnessKind":"refused"`) || !payloadHas(it, `"reason":"bad_item"`) ||
+			!payloadHas(it, `"detail":"message"`) || payloadHas(it, "poison")):
 			t.Fatalf("the refused item was not stubbed: %s", it.Payload)
 		case it.Seq != 12 && it.Type != envelope.Message:
 			t.Fatalf("a neighbour was stubbed: %s", it.Payload)
@@ -412,19 +413,139 @@ func TestAStalledHarnessIsLoudAndNeverSkipped(t *testing.T) {
 	}
 }
 
-func TestShutdownFlushesWhatIsBuffered(t *testing.T) {
-	f := &fakeAgentServer{pageSize: 100, status: "running"}
-	for range 3 {
-		f.add(chatEvent("hi"))
+// SIGTERM (review I1): the drain ignores the loop's backoff, waits at most
+// drainWait after a refusal of its own, and sends the buffer before it polls a
+// harness that may hang. The loop's own sendAt is 30 s out in every case, so
+// only the drain can deliver.
+func TestTheSIGTERMDrainAlwaysSends(t *testing.T) {
+	busy := reply{code: http.StatusServiceUnavailable, reason: wire.ReasonLogUnavailable, retryAfter: "30"}
+	cases := []struct {
+		name    string
+		replies []reply
+		hang    bool
+		within  time.Duration
+	}{
+		{"the drain does not wait out the loop's backoff", []reply{busy}, false, time.Second},
+		{"a refusal inside the drain waits at most drainWait", []reply{busy, busy}, false, drainWait + time.Second},
+		{"the buffer goes before a hung harness is polled", []reply{busy}, true, 4 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeAgentServer{pageSize: 100, status: "running"}
+			for range 3 {
+				f.add(chatEvent("hi"))
+			}
+			fb := &fakeBroker{events: c.replies}
+			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+			r.b.MaxBackoff, r.b.FlushGrace = time.Hour, 3500*time.Millisecond
+			ctx, _ := r.run(t)
+			eventually(ctx, t, "the broker refused a batch", func() bool {
+				return slices.Contains(fb.callLog(), "events Service Unavailable")
+			})
+			time.Sleep(30 * time.Millisecond) // the loop honours the 30 s Retry-After
+			if n := len(fb.stored(wire.StreamEvents)); n != 0 {
+				t.Fatalf("the loop sent %d events inside its backoff: the case tests nothing", n)
+			}
+			if c.hang {
+				f.mu.Lock()
+				f.hang = true
+				f.mu.Unlock()
+			}
+			sigterm := time.Now()
+			r.cancel()
+			dctx, dcancel := context.WithTimeout(t.Context(), 6*time.Second)
+			defer dcancel()
+			eventually(dctx, t, "the drain delivers", func() bool { return len(fb.stored(wire.StreamEvents)) == 3 })
+			if took := time.Since(sigterm); took > c.within {
+				t.Fatalf("delivered %v after SIGTERM, want within %v", took, c.within)
+			}
+			<-r.done
+			seqs(t, fb.stored(wire.StreamEvents))
+		})
+	}
+}
+
+// Review I3: a full buffer stops reading the harness; once the broker drains
+// it, reading resumes and every event lands once.
+func TestBackPressureStopsPollingUntilTheBufferDrains(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 10 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
 	}
 	fb := &fakeBroker{hold: true}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer = 2 << 10 // one page of two events fills it
 	ctx, stop := r.run(t)
-	eventually(ctx, t, "the broker refused a batch", func() bool { return slices.Contains(fb.callLog(), "events Service Unavailable") })
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+	time.Sleep(20 * time.Millisecond) // the poll in flight, if any, lands
+	full := f.searched()
+	time.Sleep(50 * time.Millisecond) // ten polls
+	if n := f.searched(); n != full {
+		t.Fatalf("the harness was read %d more times with the buffer full", n-full)
+	}
 	fb.set(func(b *fakeBroker) { b.hold = false })
-	stop() // SIGTERM: Run drains what is buffered before it returns
-	if got := seqs(t, fb.stored(wire.StreamEvents)); len(got) != 3 {
-		t.Fatalf("flushed %v on shutdown, want three events", got)
+	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 10 })
+	stop()
+	if got := seqs(t, fb.stored(wire.StreamEvents)); got[9] != SeqFor(10, 0) {
+		t.Fatalf("seqs = %v", got)
+	}
+}
+
+// Review I3: a 410 seals the room. The bridge stops pushing and stays healthy,
+// since a restart cannot help, and Run still returns on SIGTERM.
+func TestASealedRoomStopsTheBridge(t *testing.T) {
+	sealed := reply{code: http.StatusGone, reason: wire.ReasonSealed}
+	cases := []struct {
+		name   string
+		broker *fakeBroker
+	}{
+		{"sealed at hello", &fakeBroker{hellos: []reply{sealed}}},
+		{"sealed on a batch", &fakeBroker{events: []reply{sealed}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeAgentServer{pageSize: 100, status: "running"}
+			f.add(chatEvent("hi"))
+			fb := c.broker
+			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+			ctx, _ := r.run(t)
+			eventually(ctx, t, "the broker sealed the room", func() bool {
+				return slices.ContainsFunc(fb.callLog(), func(c string) bool { return strings.HasSuffix(c, " Gone") })
+			})
+			calls := len(fb.callLog())
+			time.Sleep(50 * time.Millisecond) // ten polls
+			if got := fb.callLog(); len(got) != calls {
+				t.Fatalf("the bridge kept calling a sealed room: %v", got)
+			}
+			if !r.b.Healthy(time.Now().Add(2 * unreachableFail)) {
+				t.Fatal("a sealed room made the bridge unhealthy: the kubelet would restart it for nothing")
+			}
+			r.cancel()
+			select {
+			case <-r.done:
+			case <-time.After(time.Second):
+				t.Fatal("Run did not return on SIGTERM")
+			}
+			if n := len(fb.stored(wire.StreamEvents)); n != 0 {
+				t.Fatalf("%d events reached a sealed room", n)
+			}
+		})
+	}
+}
+
+// Review I2: the worst-case heap of the bridge fits the soft memory limit
+// room-bridge runs under: the buffer before a poll, what one Next retains and
+// reads, and the items that poll maps.
+func TestTheWorstCaseHeapFitsTheMemoryLimit(t *testing.T) {
+	worst := DefaultMaxBuffer + nextPeakBytes(DefaultMaxPages) + pageItemBytes(DefaultMaxPages)
+	if worst > MemoryLimit {
+		t.Fatalf("worst case %d MiB > MemoryLimit %d MiB", worst>>20, MemoryLimit>>20)
+	}
+	if MemoryLimit > 48<<20 {
+		t.Fatalf("MemoryLimit %d MiB leaves the 64 Mi sidecar too little headroom", MemoryLimit>>20)
 	}
 }
 

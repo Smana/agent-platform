@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -34,6 +35,8 @@ type bridgeConfig struct {
 	roomID, runID, conversationID  string
 	brokerURL, brokerCA, tokenFile string
 	harnessURL, healthAddr         string
+	flushGrace                     time.Duration // 0: the bridge's default
+	memLimitSet                    bool          // GOMEMLIMIT is in the environment
 }
 
 func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
@@ -47,7 +50,15 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 		brokerURL: getenv("BROKER_URL"), brokerCA: or("BROKER_CA_FILE", defaultBrokerCA),
 		tokenFile: getenv("ROOM_TOKEN_FILE"), harnessURL: or("HARNESS_URL", defaultHarnessURL),
 		healthAddr: or("HEALTH_ADDR", defaultHealthAddr)}
+	c.memLimitSet = getenv("GOMEMLIMIT") != ""
 	var missing []error
+	if v := getenv("FLUSH_GRACE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			missing = append(missing, fmt.Errorf("FLUSH_GRACE %q is not a positive duration", v))
+		}
+		c.flushGrace = d
+	}
 	for _, kv := range [][2]string{{"ROOM_ID", c.roomID}, {"RUN_ID", c.runID}, {"CONVERSATION_ID", c.conversationID},
 		{"BROKER_URL", c.brokerURL}, {"ROOM_TOKEN_FILE", c.tokenFile}} {
 		if kv[1] == "" {
@@ -85,8 +96,13 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 		return fmt.Errorf("room-bridge: %w", err)
 	}
 	log = log.With("run", cfg.runID, "room", cfg.roomID)
+	if !cfg.memLimitSet {
+		// The 64 Mi sidecar's soft limit (review I2), unless the pod spec sets
+		// GOMEMLIMIT itself; the runtime reads that one at start.
+		defer debug.SetMemoryLimit(debug.SetMemoryLimit(bridge.MemoryLimit))
+	}
 	b := &bridge.Bridge{Harness: bridge.NewHarness(cfg.harnessURL, cfg.conversationID), Broker: broker,
-		RunID: cfg.runID, Logger: log}
+		RunID: cfg.runID, Logger: log, FlushGrace: cfg.flushGrace}
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.healthAddr)

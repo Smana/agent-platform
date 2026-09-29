@@ -66,6 +66,8 @@ func TestRunBridge(t *testing.T) {
 		{"a plain-http broker fails startup (GP-18)", with("BROKER_URL", "http://room-broker:8443"), "https"},
 		{"an absent broker CA fails startup (GP-18)", with("BROKER_CA_FILE", filepath.Join(dir, "absent")), "broker CA"},
 		{"a health address it cannot bind fails startup", with("HEALTH_ADDR", "256.0.0.1:1"), "health listener"},
+		{"a flush grace that is not a duration fails startup", with("FLUSH_GRACE", "soon"), "FLUSH_GRACE"},
+		{"a flush grace that is not positive fails startup", with("FLUSH_GRACE", "-1s"), "FLUSH_GRACE"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

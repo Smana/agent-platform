@@ -67,7 +67,7 @@ func TestTheBridgeMappingPassesTheAcceptRules(t *testing.T) {
 	// tells the room when the harness stalls (Task 1.11).
 	for _, typ := range []envelope.Type{envelope.Message, envelope.Turn, envelope.ToolCall, envelope.ToolResult, envelope.StateChanged} {
 		for _, why := range []string{bridge.StubOversize, bridge.StubRefused} {
-			items = append(items, bridge.Stub(typ, 3<<20, why))
+			items = append(items, bridge.Stub(typ, 3<<20, why, "bad_item"))
 		}
 	}
 	for _, why := range []string{bridge.StallEventTooLarge, bridge.StallCursorLost, bridge.StallNextPageUnreadable} {

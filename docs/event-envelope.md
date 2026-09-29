@@ -127,7 +127,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 (planned, task 1.10) |
 | `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge | AP-1 (planned, tasks 1.10–1.11) |
 | `harness_paused` | — | Bridge | AP-1 (planned, task 1.10) |
-| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take | Bridge | AP-1 (planned, tasks 1.10–1.11) |
+| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge | AP-1 (planned, tasks 1.10–1.11) |
 | `verdict_posted`, `verdict_not_posted` | `url` or `reason`, and `verdictSeq` | Broker (leader) | Planned, phase 3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
 | `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1 (planned, task 1.11); acknowledgements phase 4 |

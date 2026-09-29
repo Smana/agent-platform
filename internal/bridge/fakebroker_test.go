@@ -215,6 +215,8 @@ func (l *lockedBuffer) String() string {
 // rig is a bridge wired to a fake harness and a fake broker, with fast timings,
 // a captured log and a readable meter.
 type rig struct {
+	cancel context.CancelFunc // SIGTERM: Run drains, then closes done
+	done   chan struct{}
 	b      *Bridge
 	fb     *fakeBroker
 	logs   *lockedBuffer
@@ -233,7 +235,7 @@ func newRig(t *testing.T, h *Harness, fb *fakeBroker) *rig {
 	logs := &lockedBuffer{}
 	reader := sdkmetric.NewManualReader()
 	b := &Bridge{Harness: h, Broker: br, RunID: runID, Interval: 5 * time.Millisecond, MaxBuffer: 1 << 20,
-		MinBackoff: time.Millisecond, MaxBackoff: 20 * time.Millisecond,
+		MinBackoff: time.Millisecond, MaxBackoff: 20 * time.Millisecond, FlushGrace: time.Second,
 		Logger: slog.New(slog.NewJSONHandler(logs, nil)),
 		Meter:  sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")}
 	t.Cleanup(func() {
@@ -252,6 +254,7 @@ func (r *rig) run(t *testing.T) (ctx context.Context, stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	done := make(chan struct{})
+	r.cancel, r.done = cancel, done
 	go func() {
 		defer close(done)
 		_ = r.b.Run(ctx)
