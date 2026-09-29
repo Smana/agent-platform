@@ -174,7 +174,7 @@ rules shape the tree.
 | `internal/brief`, `internal/runrequest` | The fenced brief, run requests | 4 |
 | `api/v1alpha1` | The `Room` types; `config/crd/` holds the generated CRD | 1 |
 | `internal/app` | The wiring of each binary and subcommand: `serve`, `retention`, the bridge, `roomctl` (Ruling AC) | 1, 6 |
-| `internal/httpx` | The one audited egress client: timeouts, a redirect cap, no credential header across hosts. It arrives with phase 1's first outbound call (the JWKS fetch or the bridge's calls to the broker) | 1 |
+| `internal/httpx` | The one audited egress client: timeouts, a redirect cap, no credential header across hosts. It arrives with the first outbound call (the JWKS fetch, task 1.6) | 1 |
 
 ## Where each piece lives
 
