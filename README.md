@@ -10,6 +10,9 @@ platform repo pins and deploys, as it does App Wizard.
 > **Status:** early. Both binaries are stubs until SP2 phase 1 lands; this repo only proves the
 > toolchain, gates and image pipeline today.
 
+**Documentation:** [docs/](docs/README.md) covers the architecture, the event envelope, the room
+log's guarantees, the API, security, integration, operations, development and the roadmap.
+
 ## Architecture
 
 ```mermaid
@@ -65,8 +68,11 @@ an SBOM as attestations, and a keyless cosign signature on its digest:
 ```bash
 cosign verify ghcr.io/smana/room-broker@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/Smana/agent-platform/.github/workflows/(ci|release).yaml@'
+  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/release\.yaml@refs/tags/v'
 ```
+
+That accepts released images only. PR pre-releases are not release-grade (they run unreviewed branch
+code): see [verifying an image](docs/security.md#supply-chain) for their variant.
 
 ## Where it plugs in
 
