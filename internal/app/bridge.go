@@ -29,6 +29,9 @@ const (
 	// healthDrain bounds the health server's shutdown, after the bridge's own
 	// flush and inside the pod's 30 s grace.
 	healthDrain = 2 * time.Second
+	// maxFlushGrace keeps the drain inside the pod's 30 s grace, with room for
+	// the "unmirrored" Warn line before the kubelet's SIGKILL.
+	maxFlushGrace = 28 * time.Second
 )
 
 type bridgeConfig struct {
@@ -54,8 +57,11 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 	var missing []error
 	if v := getenv("FLUSH_GRACE"); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
+		switch {
+		case err != nil || d <= 0:
 			missing = append(missing, fmt.Errorf("FLUSH_GRACE %q is not a positive duration", v))
+		case d > maxFlushGrace:
+			missing = append(missing, fmt.Errorf("FLUSH_GRACE %s must be at most %s, inside the pod's 30s grace", d, maxFlushGrace))
 		}
 		c.flushGrace = d
 	}

@@ -121,7 +121,7 @@ Set by the `AgentRun` composition (CC-S2).
 | `EGRESS_PROFILES` | The run's egress profiles, comma-separated. Reserved: nothing reads it in phase 1 |
 | `HEALTH_ADDR` | `:8085` (default) |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
-| `FLUSH_GRACE` | How long the SIGTERM drain may take; `25s` (default). Set it lower when the harness uses much of the pod's 30 s grace: the kubelet signals the sidecar only after the harness exits |
+| `FLUSH_GRACE` | How long the SIGTERM drain may take; `25s` (default), at most `28s`. Set it lower when the harness uses much of the pod's 30 s grace: the kubelet signals the sidecar only after the harness exits |
 | `GOMEMLIMIT` | Unset: the binary sets `48MiB`, the soft heap limit its buffer budget is sized for inside the 64 Mi limit. A pod spec may set its own |
 | `BRANCH` | The run's branch (phase 5, CC-S5) |
 

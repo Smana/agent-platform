@@ -83,6 +83,15 @@ const (
 // pageLimit events, each mapped to at most two items.
 func pageItemBytes(maxPages int) int { return max(maxPages, 1) * pageLimit * 2 * maxItemBytes }
 
+// statusItemsPerPoll is the most items one status poll adds.
+const statusItemsPerPoll = 2
+
+// statusCap is where status items stop too (review N1). They pass MaxBuffer,
+// since a transition missed is a turn lost, but a lease lost for good must not
+// grow the buffer for as long as the pod lives. Events are read only below
+// MaxBuffer, so a poll never runs with the buffer this full.
+func statusCap(maxBuffer int) int { return 2 * maxBuffer }
+
 // nextPeakBytes is what one Next holds while it runs: maxPages retained
 // bodies and one more being read (Task 1.10).
 func nextPeakBytes(maxPages int) int { return (max(maxPages, 1) + 1) * maxResponseBytes }
@@ -237,8 +246,8 @@ type Bridge struct {
 	Interval time.Duration
 	// MaxBuffer caps the encoded bytes waiting for the broker; past it the
 	// harness's events are not read (back-pressure), so the buffer holds at
-	// most MaxBuffer plus one poll's items. Status changes are still recorded:
-	// at most two small items each. Zero means DefaultMaxBuffer.
+	// most MaxBuffer plus one poll's items. Status changes are still recorded
+	// up to twice MaxBuffer. Zero means DefaultMaxBuffer.
 	MaxBuffer int
 	// FlushGrace bounds the drain after SIGTERM; zero means 25 s.
 	FlushGrace time.Duration
@@ -515,7 +524,9 @@ func (b *Bridge) pollStatus(ctx context.Context) {
 		return
 	}
 	b.sawHarness(b.now())
-	// Not held back by a full buffer: a transition missed here is a turn lost.
+	if b.bufBytes >= statusCap(b.MaxBuffer) {
+		return // a later poll records the status the harness settles on
+	}
 	for _, it := range b.status.Observe(status, b.RunID) {
 		b.pushStatus(ctx, it)
 	}

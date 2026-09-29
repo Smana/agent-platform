@@ -25,6 +25,7 @@ type fakeAgentServer struct {
 	limits    []int
 	searches  int  // event searches asked
 	hang      bool // event searches never answer while set
+	flap      bool // each status read flips running and paused
 }
 
 // searched is how many event searches were asked so far.
@@ -69,6 +70,9 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.flap {
+			f.status = map[string]string{"running": "paused", "paused": "running"}[f.status]
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": conv, "execution_status": f.status})
 	})
 	mux.HandleFunc("GET "+base+"/events/search", func(w http.ResponseWriter, r *http.Request) {

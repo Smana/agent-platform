@@ -68,6 +68,8 @@ func TestRunBridge(t *testing.T) {
 		{"a health address it cannot bind fails startup", with("HEALTH_ADDR", "256.0.0.1:1"), "health listener"},
 		{"a flush grace that is not a duration fails startup", with("FLUSH_GRACE", "soon"), "FLUSH_GRACE"},
 		{"a flush grace that is not positive fails startup", with("FLUSH_GRACE", "-1s"), "FLUSH_GRACE"},
+		{"a flush grace past the pod's grace fails startup", with("FLUSH_GRACE", "29s"), "at most 28s"},
+		{"a flush grace of 28 s starts", with("FLUSH_GRACE", "28s"), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

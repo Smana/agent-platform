@@ -540,12 +540,36 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 // room-bridge runs under: the buffer before a poll, what one Next retains and
 // reads, and the items that poll maps.
 func TestTheWorstCaseHeapFitsTheMemoryLimit(t *testing.T) {
-	worst := DefaultMaxBuffer + nextPeakBytes(DefaultMaxPages) + pageItemBytes(DefaultMaxPages)
+	// Events are read only below MaxBuffer; status items stop at statusCap.
+	worst := max(DefaultMaxBuffer+nextPeakBytes(DefaultMaxPages)+pageItemBytes(DefaultMaxPages),
+		statusCap(DefaultMaxBuffer)+statusItemsPerPoll*maxItemBytes)
 	if worst > MemoryLimit {
 		t.Fatalf("worst case %d MiB > MemoryLimit %d MiB", worst>>20, MemoryLimit>>20)
 	}
 	if MemoryLimit > 48<<20 {
 		t.Fatalf("MemoryLimit %d MiB leaves the 64 Mi sidecar too little headroom", MemoryLimit>>20)
+	}
+}
+
+// Review N1: status items pass a full buffer, but only up to statusCap, so a
+// lease lost for good cannot grow the buffer without bound.
+func TestStatusItemsAreBounded(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100, status: "running", flap: true}
+	fb := &fakeBroker{hold: true}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer, r.b.FlushGrace = 1<<10, 50*time.Millisecond
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "a batch was refused", func() bool {
+		return slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+	time.Sleep(300 * time.Millisecond) // about sixty status changes, a few KiB of items
+	stop()
+	// One poll past the cap adds two items, each well under 1 KiB for these short statuses.
+	if limit := statusCap(r.b.MaxBuffer) + 1<<10; r.b.bufBytes > limit {
+		t.Fatalf("the buffer holds %d bytes, over its %d-byte cap", r.b.bufBytes, limit)
+	}
+	if r.b.bufBytes <= r.b.MaxBuffer {
+		t.Fatalf("the buffer holds %d bytes: status items stopped at MaxBuffer, the case tests nothing", r.b.bufBytes)
 	}
 }
 
