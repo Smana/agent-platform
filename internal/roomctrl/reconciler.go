@@ -59,10 +59,11 @@ type runEnds interface {
 
 // Reconciler keeps a Room's log row, first event and status in step with the CR.
 type Reconciler struct {
-	// Client lists AgentRuns as unstructured objects, which controller-runtime's
-	// client reads from the API server, not its cache, unless told otherwise.
+	// Client reads and writes Rooms and deletes runs; without APIReader it also lists them.
 	Client client.Client
-	Store  Store
+	// APIReader, when set, lists the finalizer's runs uncached (mgr.GetAPIReader()), so a stale cache can't seal early; nil falls back to Client.
+	APIReader client.Reader
+	Store     Store
 	// Runs feeds the status projection; a deletion lists runs through Client.
 	Runs runIndex
 	// Ends is required: a deletion records every run's end before it seals.
@@ -196,7 +197,11 @@ func (r *Reconciler) finalize(ctx context.Context, room *v1alpha1.Room) (ctrl.Re
 func (r *Reconciler) deleteRuns(ctx context.Context, room string) (ended, live []runwatch.Run, err error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(runwatch.GVK().GroupVersion().WithKind(runwatch.GVK().Kind + "List"))
-	if err := r.Client.List(ctx, list, client.InNamespace(runwatch.Namespace)); err != nil {
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	if err := reader.List(ctx, list, client.InNamespace(runwatch.Namespace)); err != nil {
 		return nil, nil, fmt.Errorf("roomctrl: list the runs of room %s: %w", room, err)
 	}
 	for i := range list.Items {
@@ -282,8 +287,17 @@ func (r *Reconciler) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
-// SetupWithManager registers the reconciler for Rooms. controller-runtime runs one
+// SetupWithManager registers the reconciler for Rooms, refusing a missing
+// dependency: a nil one would panic on the first deletion, and controller-runtime
+// would recover and retry forever with the Room stuck Terminating. It runs one
 // reconcile at a time by default, which bounds the store's load.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	for field, missing := range map[string]bool{
+		"Client": r.Client == nil, "Store": r.Store == nil, "Runs": r.Runs == nil, "Ends": r.Ends == nil,
+	} {
+		if missing {
+			return fmt.Errorf("roomctrl: the reconciler needs %s", field)
+		}
+	}
 	return ctrl.NewControllerManagedBy(mgr).For(&v1alpha1.Room{}).Complete(r)
 }

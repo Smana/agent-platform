@@ -350,6 +350,46 @@ func TestConflictRequeuesWithoutError(t *testing.T) {
 	}
 }
 
+// A missing dependency fails at startup, not as a panic on the first deletion
+// that would leave the Room Terminating forever.
+func TestSetupRefusesMissingDependencies(t *testing.T) {
+	var ops []string
+	complete := func() *Reconciler {
+		return &Reconciler{Client: build(), Store: newStore(&ops), Runs: runwatch.New(), Ends: fakeEnds{&ops}}
+	}
+	for _, tc := range []struct {
+		field string
+		unset func(*Reconciler)
+	}{
+		{"Client", func(r *Reconciler) { r.Client = nil }},
+		{"Store", func(r *Reconciler) { r.Store = nil }},
+		{"Runs", func(r *Reconciler) { r.Runs = nil }},
+		{"Ends", func(r *Reconciler) { r.Ends = nil }},
+	} {
+		t.Run("without "+tc.field, func(t *testing.T) {
+			r := complete()
+			tc.unset(r)
+			if err := r.SetupWithManager(nil); err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("err = %v, want one naming %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// APIReader, when set, is where the finalizer lists runs: the cached client may
+// not have seen a run created moments ago.
+func TestDeleteListsRunsThroughTheAPIReader(t *testing.T) {
+	c := build(deletingRoom()) // the cache has not seen the run yet
+	api := build(agentRun("7f3cq2xz", roomID, "Running", true))
+	var ops []string
+	r := &Reconciler{Client: c, APIReader: api, Store: newStore(&ops, store.RoomState{ID: roomID}), Runs: runwatch.New(),
+		Ends: fakeEnds{&ops}, Now: clock(deletedAt.Add(10 * time.Second))}
+	res, err := r.Reconcile(t.Context(), request())
+	if err != nil || res.RequeueAfter <= 0 || len(ops) != 0 {
+		t.Fatalf("result %+v, err %v, ops %v: the run only the API reader lists must hold the seal", res, err, ops)
+	}
+}
+
 // Ruling AH, review I1: the runs are listed from the API, not the watcher, and a
 // live one holds the seal until the timeout.
 func TestDeleteWaitsForLiveRunsTheWatcherDoesNotKnow(t *testing.T) {
