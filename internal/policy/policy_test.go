@@ -29,7 +29,9 @@ func TestTheSection1Matrix(t *testing.T) {
 		"agent":    {Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz"},
 		"factory":  {Kind: envelope.ActorSystem, ID: "system:factory"},
 		"policy":   {Kind: envelope.ActorSystem, ID: "system:policy"},
-		"stranger": human(None, false, false),
+		// The factory while it holds the driver token, as it does in an unattended room.
+		"sysDriver": {Kind: envelope.ActorSystem, ID: "system:factory", Driver: true},
+		"stranger":  human(None, false, false),
 	}
 	rows := []struct {
 		a    Action
@@ -38,13 +40,14 @@ func TestTheSection1Matrix(t *testing.T) {
 		{Read, map[string]bool{"watcher": true, "collab": true, "driver": true, "owner": true, "agent": true, "factory": true, "stranger": false}},
 		{Chat, map[string]bool{"watcher": false, "collab": true, "driver": true, "owner": true, "agent": true, "factory": true}},
 		{Queue, map[string]bool{"watcher": false, "collab": true, "driver": true, "owner": true, "agent": false, "factory": true}},
-		{Steer, map[string]bool{"watcher": false, "collab": false, "driver": true, "owner": false, "agent": false}},
-		{Interrupt, map[string]bool{"collab": false, "driver": true, "owner": false, "agent": false}},
+		{Steer, map[string]bool{"watcher": false, "collab": false, "driver": true, "owner": false, "agent": false, "factory": false, "sysDriver": true}},
+		{Interrupt, map[string]bool{"collab": false, "driver": true, "owner": false, "agent": false, "factory": false, "sysDriver": true}},
 		{StartRun, map[string]bool{"collab": false, "driver": true, "owner": true, "agent": false, "factory": true}},
 		{Decide, map[string]bool{"collab": false, "approver": true, "driver": false, "owner": true, "agent": false, "factory": false, "policy": true}},
-		{DriverRequest, map[string]bool{"watcher": false, "collab": true, "driver": false, "agent": false}},
-		{DriverGive, map[string]bool{"collab": false, "driver": true, "agent": false}},
-		{DriverTake, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false}},
+		// A system holder gives, and never requests or seizes the token: it yields to humans.
+		{DriverRequest, map[string]bool{"watcher": false, "collab": true, "driver": false, "agent": false, "factory": false, "sysDriver": false}},
+		{DriverGive, map[string]bool{"collab": false, "driver": true, "agent": false, "sysDriver": true}},
+		{DriverTake, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": false, "sysDriver": false}},
 		{Fork, map[string]bool{"watcher": true, "collab": true, "driver": true, "owner": true, "agent": false, "factory": true, "stranger": false}},
 		{Invite, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": true}},
 		{Close, map[string]bool{"collab": false, "owner": true, "factory": true}},
@@ -63,21 +66,35 @@ func TestTheSection1Matrix(t *testing.T) {
 }
 
 // Ruling P18: a CLI token never steers, interrupts, takes the driver or decides.
+// Each subject would be allowed the refused action from the web UI, so only the
+// WebUI gate refuses it.
 func TestCLITokensNeverSteerOrDecide(t *testing.T) {
-	cli := human(Owner, true, true)
-	cli.WebUI = false
+	cli := func(s Subject) Subject { s.WebUI = false; return s }
+	ownerDriver := cli(human(Owner, true, true))     // the ui-only actions but DriverRequest
+	collab := cli(human(Collaborator, false, false)) // DriverRequest, which needs a non-holder
 	cases := []struct {
+		who  string
+		s    Subject
 		a    Action
 		want bool
 	}{
-		{Steer, false}, {Interrupt, false}, {Decide, false}, {DriverRequest, false},
-		{DriverGive, false}, {DriverTake, false}, {PromoteQueued, false},
-		{Read, true}, {Chat, true}, {Queue, true}, {Fork, true},
+		{"owner driver", ownerDriver, Steer, false}, {"owner driver", ownerDriver, Interrupt, false},
+		{"owner driver", ownerDriver, Decide, false}, {"owner driver", ownerDriver, DriverGive, false},
+		{"owner driver", ownerDriver, DriverTake, false}, {"owner driver", ownerDriver, PromoteQueued, false},
+		{"collaborator", collab, DriverRequest, false},
+		{"owner driver", ownerDriver, Read, true}, {"owner driver", ownerDriver, Chat, true},
+		{"owner driver", ownerDriver, Queue, true}, {"owner driver", ownerDriver, Fork, true},
 	}
 	for _, c := range cases {
-		t.Run(string(c.a), func(t *testing.T) {
-			if got := Allowed(cli, c.a); got != c.want {
-				t.Errorf("%s from a CLI token: got %v, want %v", c.a, got, c.want)
+		t.Run(c.who+"/"+string(c.a), func(t *testing.T) {
+			if web := c.s; !c.want {
+				web.WebUI = true
+				if !Allowed(web, c.a) {
+					t.Fatalf("%s by %s is refused from the web UI too: the case does not isolate the gate", c.a, c.who)
+				}
+			}
+			if got := Allowed(c.s, c.a); got != c.want {
+				t.Errorf("%s by %s from a CLI token: got %v, want %v", c.a, c.who, got, c.want)
 			}
 		})
 	}
