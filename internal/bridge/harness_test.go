@@ -202,6 +202,31 @@ func TestMalformedEventsNeverKeyTheCursor(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a pass carries across a page halved to the cursor's own events", func(t *testing.T) {
+		ctx := bounded(t)
+		f := &fakeAgentServer{pageSize: 100, status: "running"}
+		f.add(ok())
+		f.addAsIs(noID())
+		h := NewHarness(f.start(t, conv).URL, conv)
+		h.maxBody = 1500 // [e1,M] fits, [e1,M,e3] does not
+		evs, cur, err := h.Next(ctx, Cursor{})
+		if err != nil || len(evs) != 2 || cur != (Cursor{LastID: "e1", Count: 2, Unkeyed: 1}) {
+			t.Fatalf("first poll: %v %+v %v", ids(evs), cur, err)
+		}
+		f.add(map[string]any{"kind": "MessageEvent", "source": "agent", "text": strings.Repeat("x", 1200)})
+		f.add(ok())
+		var got []string
+		for range 5 {
+			evs, next, err := h.Next(ctx, cur)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, cur = append(got, ids(evs)...), next
+		}
+		if !slices.Equal(got, []string{"e3", "e4"}) || cur != (Cursor{LastID: "e4", Count: 4}) {
+			t.Fatalf("got %v %+v", got, cur)
+		}
+	})
 	t.Run("skip lands where next did", func(t *testing.T) {
 		ctx := bounded(t)
 		f := &fakeAgentServer{pageSize: 2, status: "running"}
@@ -288,6 +313,47 @@ func TestPagesOverTheCapAreHalved(t *testing.T) {
 		}
 		if !slices.Equal(got, []string{"e1", "e2", "e3", "e4", "e5"}) {
 			t.Fatalf("ten polls read %v", got)
+		}
+	})
+	t.Run("MaxPages below one still reads past a page halved to the cursor's event", func(t *testing.T) {
+		ctx := bounded(t)
+		f := &fakeAgentServer{pageSize: 100, status: "running"}
+		for range 3 {
+			f.add(map[string]any{"kind": "MessageEvent", "text": strings.Repeat("x", 1<<10)})
+		}
+		h := NewHarness(f.start(t, conv).URL, conv)
+		h.maxBody, h.MaxPages = 1500, 0
+		var got []string
+		var cur Cursor
+		for range 6 {
+			evs, next, err := h.Next(ctx, cur)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, cur = append(got, ids(evs)...), next
+		}
+		if !slices.Equal(got, []string{"e1", "e2", "e3"}) {
+			t.Fatalf("six polls read %v", got)
+		}
+	})
+	t.Run("a halved page that names no next page is ErrNextPageUnreadable, not a silent stall", func(t *testing.T) {
+		ctx := bounded(t)
+		f := &fakeAgentServer{pageSize: 100, status: "running"}
+		f.add(map[string]any{"kind": "MessageEvent", "source": "agent"})
+		h := NewHarness(f.start(t, conv).URL, conv)
+		h.maxBody = 1500
+		_, cur, err := h.Next(ctx, Cursor{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// id-less, so the fake's next_page_id for it is null, and too big to share a page with e1.
+		f.addAsIs(map[string]any{"kind": "MessageEvent", "text": strings.Repeat("x", 1420)})
+		f.add(map[string]any{"kind": "MessageEvent", "source": "agent"})
+		for range 2 {
+			evs, still, err := h.Next(ctx, cur)
+			if !errors.Is(err, ErrNextPageUnreadable) || len(evs) != 0 || still != cur {
+				t.Fatalf("%v %+v %v", ids(evs), still, err)
+			}
 		}
 	})
 	t.Run("one event alone over the cap is ErrEventTooLarge, and never skipped", func(t *testing.T) {
@@ -387,16 +453,47 @@ func TestHarnessRefusesWhatAgentServerMustNotSend(t *testing.T) {
 			want: func(err error) bool { return err == nil },
 		},
 		{
-			name:    "a next page id that is not a string ends the walk, not the page",
+			name:    "a next page id that is not a string is ErrNextPageUnreadable, after the page's events",
 			handler: page(`{"items":[{"id":"e1"}],"next_page_id":42}`),
 			call: func(ctx context.Context, h *Harness) error {
-				evs, _, err := h.Next(ctx, Cursor{})
-				if err == nil && len(evs) != 1 {
+				evs, cur, err := h.Next(ctx, Cursor{})
+				if !slices.Equal(ids(evs), []string{"e1"}) || cur != (Cursor{LastID: "e1", Count: 1}) {
 					return errors.New("the page was lost")
 				}
 				return err
 			},
-			want: func(err error) bool { return err == nil },
+			want: func(err error) bool { return errors.Is(err, ErrNextPageUnreadable) },
+		},
+		{
+			name:    "a well-formed event where the cursor passes a malformed one is ErrCursorLost, not lost",
+			handler: page(`{"items":[{"id":"e1"},{"id":"e5"},{"kind":"MessageEvent"}],"next_page_id":null}`),
+			call: func(ctx context.Context, h *Harness) error {
+				want := Cursor{LastID: "e1", Count: 2, Unkeyed: 1}
+				evs, cur, err := h.Next(ctx, want)
+				if len(evs) != 0 || cur != want {
+					return errors.New("the cursor moved")
+				}
+				return err
+			},
+			want: func(err error) bool { return errors.Is(err, ErrCursorLost) },
+		},
+		{
+			name: "a later page that sends a returned event again is ErrCursorLost, not a duplicate",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page_id") == "" {
+					_, _ = w.Write([]byte(`{"items":[{"id":"e1"},{"id":"e2"}],"next_page_id":"e3"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"items":[{"id":"e3"},{"id":"e1"}],"next_page_id":null}`))
+			},
+			call: func(ctx context.Context, h *Harness) error {
+				evs, cur, err := h.Next(ctx, Cursor{})
+				if !slices.Equal(ids(evs), []string{"e1", "e2", "e3"}) || cur != (Cursor{LastID: "e3", Count: 3}) {
+					return errors.New("the walk took the event twice")
+				}
+				return err
+			},
+			want: func(err error) bool { return errors.Is(err, ErrCursorLost) },
 		},
 		{
 			name:    "a server that ignores page_id is ErrCursorLost, not the log again",

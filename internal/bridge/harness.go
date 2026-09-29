@@ -44,6 +44,11 @@ var (
 	// event first. page_id is inclusive, so the server ignored it; accepting
 	// the page would append events already in the log under new seqs.
 	ErrCursorLost = errors.New("agent-server did not return the cursor's event first")
+	// ErrNextPageUnreadable is a page that must have a next page but names none
+	// that can be asked for: a next_page_id that is not a string, or none after
+	// a halved read (the larger read had more events). Ending the walk there
+	// would stall the cursor silently on every poll.
+	ErrNextPageUnreadable = errors.New("agent-server named no readable next page")
 )
 
 // RawEvent is one OpenHands event, kept whole for the mapping.
@@ -165,15 +170,20 @@ func (h *Harness) Status(ctx context.Context) (string, error) {
 // Page reads up to 100 events from pageID, inclusive, and the id of the first
 // event of the next page ("" on the last page). A page over the response cap is
 // asked again with half the limit; one event alone over it is ErrEventTooLarge.
+// With ErrNextPageUnreadable it still returns the page's events.
 func (h *Harness) Page(ctx context.Context, pageID string) ([]RawEvent, string, error) {
 	for limit := pageLimit; ; limit /= 2 {
 		evs, next, err := h.page(ctx, pageID, limit)
 		switch {
-		case !errors.Is(err, httpx.ErrBodyTooLarge):
-			return evs, next, err
-		case limit == 1:
+		case errors.Is(err, httpx.ErrBodyTooLarge) && limit == 1:
 			return nil, "", fmt.Errorf("%w: %w", ErrEventTooLarge, err)
+		case errors.Is(err, httpx.ErrBodyTooLarge):
+			continue
+		case err == nil && next == "" && limit < pageLimit:
+			// The larger read held more events than this one, so a next page exists.
+			return evs, "", fmt.Errorf("%w: page_id %q at limit %d", ErrNextPageUnreadable, pageID, limit)
 		}
+		return evs, next, err
 	}
 }
 
@@ -189,12 +199,14 @@ func (h *Harness) page(ctx context.Context, pageID string, limit int) ([]RawEven
 	if err := h.do(ctx, http.MethodGet, "/events/search?"+q.Encode(), nil, &page); err != nil {
 		return nil, "", err
 	}
-	// An empty page that names a next one makes no progress, and a next id that
-	// is not a string cannot be asked for: either ends the walk there. The next
-	// poll starts again from the cursor.
 	next := ""
-	if len(page.Items) == 0 || !optString(page.NextPageID, &next) {
-		next = ""
+	switch {
+	case len(page.Items) == 0:
+		// An empty page that names a next one makes no progress: end the walk.
+	case len(page.NextPageID) == 0 || string(page.NextPageID) == "null":
+		// The last page.
+	case !optString(page.NextPageID, &next):
+		return page.Items, "", fmt.Errorf("%w: page_id %q", ErrNextPageUnreadable, pageID)
 	}
 	return page.Items, next, nil
 }
@@ -222,8 +234,9 @@ func (h *Harness) Next(ctx context.Context, c Cursor) ([]RawEvent, Cursor, error
 }
 
 // Skip positions a fresh cursor after the first n events (a restarted bridge).
-// With fewer than n events, the cursor stops after the last one. It retains
-// nothing, so it reads as many pages as it takes.
+// With fewer than n events, the cursor stops after the last one. It retains no
+// events, only their ids (for the no-progress and duplicate checks), so it
+// reads as many pages as it takes.
 func (h *Harness) Skip(ctx context.Context, n int64) (Cursor, error) {
 	if n <= 0 {
 		return Cursor{}, nil
@@ -244,8 +257,10 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 	asked, seen := map[string]bool{}, map[string]bool{c.LastID: true}
 	for first, pages := true, 0; ; first = false {
 		asked[page] = true
+		// On ErrNextPageUnreadable the page's events are still taken, then the
+		// error returned.
 		evs, next, err := h.Page(ctx, page)
-		if err != nil {
+		if err != nil && len(evs) == 0 {
 			return c, err
 		}
 		if first && c.LastID != "" {
@@ -259,11 +274,19 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 		}
 		for _, e := range evs {
 			if pass > 0 {
-				pass-- // returned by an earlier walk
+				// Returned by an earlier walk, and Malformed by construction; a
+				// well-formed event here arrived out of order and would be lost.
+				if !e.Malformed {
+					return c, ErrCursorLost
+				}
+				pass--
 				continue
 			}
 			if full(c) {
 				return c, nil
+			}
+			if !e.Malformed && seen[e.ID] {
+				return c, ErrCursorLost // sent again: taking it would duplicate it
 			}
 			take(e)
 			c.Count++
@@ -274,8 +297,8 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 			c.LastID, c.Unkeyed = e.ID, 0
 			seen[e.ID] = true
 		}
-		if next == "" || pages >= maxPages || full(c) || asked[next] || seen[next] {
-			return c, nil
+		if err != nil || next == "" || pages >= maxPages || full(c) || asked[next] || seen[next] {
+			return c, err
 		}
 		page = next
 	}
