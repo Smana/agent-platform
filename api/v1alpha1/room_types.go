@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package v1alpha1
 
 import (
@@ -31,10 +33,14 @@ type RoomList struct {
 }
 
 type RoomSpec struct {
+	// A principal, "human:<sub>" or "system:<name>". OIDC Core §2 caps a sub at 255
+	// characters, hence 261 with the "human:" prefix, here and for every principal.
 	// +kubebuilder:validation:Pattern=`^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$`
+	// +kubebuilder:validation:MaxLength=261
 	Owner string `json:"owner"`
 	// The initial driver-token holder; afterwards the log decides.
 	// +kubebuilder:validation:Pattern=`^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$`
+	// +kubebuilder:validation:MaxLength=261
 	Driver string `json:"driver"`
 	// Runs join through their own spec.roomRef, never through this list.
 	// +kubebuilder:validation:MaxItems=20
@@ -61,6 +67,7 @@ type RoomSpec struct {
 
 type Member struct {
 	// +kubebuilder:validation:Pattern=`^human:[A-Za-z0-9@._-]+$`
+	// +kubebuilder:validation:MaxLength=261
 	Principal string `json:"principal"`
 	// Cumulative: watcher < collaborator < owner (§1).
 	// +kubebuilder:validation:Enum=watcher;collaborator;owner
@@ -80,7 +87,8 @@ type Approvals struct {
 	// +optional
 	Overrides map[string]string `json:"overrides,omitempty"`
 	// +kubebuilder:default="4h"
-	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*(m|h)$`
+	// At most 9999h, bounded like retention so it always fits a time.Duration.
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]{0,3}(m|h)$`
 	// +optional
 	TTL string `json:"ttl,omitempty"`
 	// OD-16: approver must differ from the humans who prompted the turn.

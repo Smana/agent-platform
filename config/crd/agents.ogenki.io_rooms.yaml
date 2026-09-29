@@ -83,7 +83,9 @@ spec:
                     type: string
                   ttl:
                     default: 4h
-                    pattern: ^[1-9][0-9]*(m|h)$
+                    description: At most 9999h, bounded like retention so it always
+                      fits a time.Duration.
+                    pattern: ^[1-9][0-9]{0,3}(m|h)$
                     type: string
                 type: object
               dataClass:
@@ -94,6 +96,7 @@ spec:
                 type: string
               driver:
                 description: The initial driver-token holder; afterwards the log decides.
+                maxLength: 261
                 pattern: ^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$
                 type: string
               members:
@@ -104,6 +107,7 @@ spec:
                     approver:
                       type: boolean
                     principal:
+                      maxLength: 261
                       pattern: ^human:[A-Za-z0-9@._-]+$
                       type: string
                     role:
@@ -123,6 +127,10 @@ spec:
                 - principal
                 x-kubernetes-list-type: map
               owner:
+                description: |-
+                  A principal, "human:<sub>" or "system:<name>". OIDC Core §2 caps a sub at 255
+                  characters, hence 261 with the "human:" prefix, here and for every principal.
+                maxLength: 261
                 pattern: ^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$
                 type: string
               repository:

@@ -8,7 +8,9 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
+	k8s.io/apiextensions-apiserver v0.37.0
 	k8s.io/apimachinery v0.37.0
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -158,7 +160,6 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/api v0.37.0 // indirect
-	k8s.io/apiextensions-apiserver v0.37.0 // indirect
 	k8s.io/code-generator v0.37.0 // indirect
 	k8s.io/gengo/v2 v2.0.0-20260408192533-25e2208e0dc3 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
@@ -168,7 +169,6 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
 tool sigs.k8s.io/controller-tools/cmd/controller-gen
