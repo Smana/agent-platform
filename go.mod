@@ -6,6 +6,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oklog/ulid/v2 v2.1.2
+	github.com/rs/zerolog v1.33.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
 	k8s.io/apiextensions-apiserver v0.37.1
@@ -123,7 +124,6 @@ require (
 	github.com/prometheus/common v0.70.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
-	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect

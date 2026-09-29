@@ -24,7 +24,7 @@ fails (GP-18). See [security](security.md#tls-on-8443) for the certificate and i
 Errors are JSON, `{"error": "<reason>"}`, with the status codes below. The reasons are stable
 strings, the `wire.Reason*` constants: branch on them, not on the status text.
 
-The events endpoint and both system endpoints limit each principal to 10 requests a second (burst
+`hello`, the events endpoint and both system endpoints limit each principal to 10 requests a second (burst
 20) and 10 in flight, §4's per-principal numbers. Over either, they answer `429 rate_limited` with
 `Retry-After: 1`, and the caller retries.
 
@@ -66,6 +66,7 @@ and is empty before.
 | `401` | `unauthenticated` | No token, a bad signature, a wrong audience or issuer, an expired token, a `sub` that names no run |
 | `403` | `run_not_live` | The run is terminal, revoked, deleted, or not yet in the watch |
 | `403` | `run_has_no_room` | The run has no `roomRef` |
+| `429` | `rate_limited` | Over the run's limits, shared with its batches |
 | `409` | `room_busy` | Another run holds the room's lease: it is live and was seen within 2 minutes (ruling P17). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
 | `503` | `no_room` | The room's row does not exist yet: its `Room` has not been reconciled |
 | `503` | `log_unavailable` | The database is unreachable |
@@ -90,7 +91,10 @@ check reads the redacted payload, the one stored. The whole batch is checked bef
 written, so a refused item leaves nothing behind. A payload's keys must each have one spelling:
 Go readers fold case (`Delivery`, `ſtatus` and a Kelvin-sign `K` all match), jsonb readers do not, so
 a key that folds onto another or onto a field of the type's envelope struct without being spelled as
-it is refused. A `message` is stored as its envelope struct re-marshals it.
+it is refused. A `message` is stored as its envelope struct re-marshals it; a chat's `verdict` and
+`commit` are dropped. An item whose keys are one once redacted (two tokens as keys of an env dump)
+cannot keep either value: that item alone is stored as a `{"refused": true, "type": …}` stub and the
+rest of the batch is appended.
 
 Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the highest key of the batch on each
 stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
@@ -99,7 +103,7 @@ appending again.
 | Status | `error` | When | The bridge then |
 |---|---|---|---|
 | `400` | `bad_batch` | Not JSON, an unknown field, or data after the batch | Drops the batch and logs it |
-| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), a key spelled two ways, or two keys that are one once redacted | Drops the batch and logs it |
+| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), or a key spelled two ways | Drops the batch and logs it |
 | `400` | `bad_payload` | The payload is not a JSON object | Drops the batch and logs it |
 | `413` | `batch_too_large` | Over 2 MiB or over 500 items | Must split the batch, not drop it |
 | `401` | `unauthenticated` | As for `hello` | Re-reads its token and retries |

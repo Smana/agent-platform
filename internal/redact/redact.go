@@ -13,8 +13,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"github.com/zricethezav/gitleaks/v8/config"
 	"github.com/zricethezav/gitleaks/v8/detect"
+	"github.com/zricethezav/gitleaks/v8/logging"
 )
 
 // ErrKeyCollision reports two object keys that are one once NULs and secrets
@@ -25,8 +27,11 @@ var ErrKeyCollision = errors.New("redact: two object keys are the same once reda
 // Redactor applies gitleaks' default rules to text and JSON payloads.
 type Redactor struct{ cfg config.Config }
 
-// New parses gitleaks' default configuration once.
+// New parses gitleaks' default configuration once. It also silences gitleaks'
+// own global logger, which logs each finding's secret at Trace to stderr,
+// outside slog: call it at startup, before any scan runs.
 func New() (*Redactor, error) {
+	logging.Logger = zerolog.Nop()
 	d, err := detect.NewDetectorDefaultConfig()
 	if err != nil {
 		return nil, err

@@ -159,7 +159,8 @@ func (s *Server) admit(w http.ResponseWriter, principal string) (release func(),
 	s.limitOnce.Do(func() { s.limit = newLimiter(s.Limits, s.now) })
 	release, ok = s.limit.acquire(principal)
 	if !ok {
-		s.log().Warn("principal over its limits", "principal", principal)
+		// Debug: under abuse this line would be as unbounded as the requests it refuses.
+		s.log().Debug("principal over its limits", "principal", principal)
 		w.Header().Set("Retry-After", strconv.Itoa(1))
 		fail(w, http.StatusTooManyRequests, wire.ReasonRateLimited)
 	}
@@ -271,10 +272,16 @@ func originClient(runID string, st wire.Stream) string {
 }
 
 func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
-	_, run, ok := s.bridgeAuth(w, r)
+	p, run, ok := s.bridgeAuth(w, r)
 	if !ok {
 		return
 	}
+	// Each hello runs a ClaimBridge transaction: it shares the run's limits.
+	release, ok := s.admit(w, p.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	ctx := r.Context()
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
 	// agrees (review I7). A holder still live and seen within connectedWindow keeps it.
@@ -398,7 +405,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			// A value PostgreSQL refuses can never be stored: keep the slot with a stub, as
 			// for an oversize payload, so the bridge's cursor moves on (review I6).
 			s.log().Error("payload refused by the database", "room", run.Room, "run", run.ID, "type", d.Type, errAttr(err))
-			d.Payload, d.Redactions = envelope.Must(map[string]any{"refused": true, "type": d.Type}), nil
+			d.Payload, d.Redactions = refusedStub(d.Type), nil
 			ev, dup, err = s.Log.AppendAsBridge(ctx, run.ID, d)
 		}
 		if err != nil {
@@ -428,10 +435,19 @@ func (s *Server) bridgeDraft(ctx context.Context, p authn.Principal, run runwatc
 	if it.Seq <= 0 || (it.Stream != wire.StreamEvents && it.Stream != wire.StreamStatus) || !it.Type.Valid() {
 		return envelope.Draft{}, refusal(wire.ReasonBadItem)
 	}
+	d := envelope.Draft{RoomID: run.Room, RunID: run.ID,
+		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: p.ID, Role: run.Role}, Type: it.Type,
+		Origin: envelope.OriginHarness, OriginClient: originClient(run.ID, it.Stream), OriginSeq: it.Seq}
 	redacted, rules, err := s.Redactor.Payload(ctx, it.Payload)
 	switch {
 	case errors.Is(err, redact.ErrKeyCollision):
-		return envelope.Draft{}, refusal(wire.ReasonBadItem)
+		// Keys that are one once redacted: as often an env dump holding two
+		// tokens as an attack. Neither value can be kept, so the item alone keeps
+		// its slot as a stub, as for a value PostgreSQL refuses, and its batch
+		// goes on (Ruling AI).
+		s.log().Warn("bridge item stored as a stub: its keys collide once redacted", "room", run.Room, "run", run.ID, "type", it.Type)
+		d.Payload = refusedStub(it.Type)
+		return d, nil
 	case err != nil && ctx.Err() != nil:
 		return envelope.Draft{}, err
 	case err != nil:
@@ -441,10 +457,14 @@ func (s *Server) bridgeDraft(ctx context.Context, p authn.Principal, run runwatc
 	if reason != "" {
 		return envelope.Draft{}, refusal(reason)
 	}
-	return envelope.Draft{RoomID: run.Room, RunID: run.ID,
-		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: p.ID, Role: run.Role}, Type: it.Type,
-		Origin: envelope.OriginHarness, OriginClient: originClient(run.ID, it.Stream), OriginSeq: it.Seq,
-		Redactions: rules, Payload: payload}, nil
+	d.Payload, d.Redactions = payload, rules
+	return d, nil
+}
+
+// refusedStub stands in for a payload that cannot be stored: the slot is kept,
+// so the bridge's cursor moves on (review I6).
+func refusedStub(t envelope.Type) json.RawMessage {
+	return envelope.Must(map[string]any{"refused": true, "type": t})
 }
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).

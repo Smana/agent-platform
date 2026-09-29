@@ -19,14 +19,21 @@ var bridgeKinds = map[string]bool{"harness_status": true, "harness_error": true,
 	"harness_event": true, "delivered": true, "interrupted": true, "policy_decision": true, "decision_applied": true}
 
 // knownFields are, per type a bridge may push, the top-level keys a reader of
-// the log looks up. state_changed has no envelope struct: its kind, and the
-// status the broker reads back for a run's end reason (LastHarnessStatus).
+// the log looks up. A key that folds onto one of them must be spelled as it.
+//
+// state_changed has no envelope struct, so its list is every field
+// docs/event-envelope.md documents for a state_changed kind. Any new reader of
+// a state_changed field must add that field here, or give its kind a struct:
+// otherwise a bridge can store a variant spelling that Go readers see and jsonb
+// readers do not.
 var knownFields = map[envelope.Type][]string{
-	envelope.Message:      jsonNames[envelope.MessagePayload](),
-	envelope.Turn:         jsonNames[envelope.TurnPayload](),
-	envelope.ToolCall:     jsonNames[envelope.ToolCallPayload](),
-	envelope.ToolResult:   jsonNames[envelope.ToolResultPayload](),
-	envelope.StateChanged: {"kind", "status"},
+	envelope.Message:    jsonNames[envelope.MessagePayload](),
+	envelope.Turn:       jsonNames[envelope.TurnPayload](),
+	envelope.ToolCall:   jsonNames[envelope.ToolCallPayload](),
+	envelope.ToolResult: jsonNames[envelope.ToolResultPayload](),
+	envelope.StateChanged: {"kind", "phase", "owner", "driver", "dataClass", "reason", "events", "bytes",
+		"running", "status", "previous", "code", "detail", "harnessKind", "url", "verdictSeq", "runId",
+		"ref", "callId", "class", "decision", "room", "seq", "note"},
 }
 
 // jsonNames lists a struct's JSON keys.
@@ -68,7 +75,8 @@ func bridgePayload(t envelope.Type, redacted json.RawMessage) (json.RawMessage, 
 			(m.Delivery != envelope.DeliveryNone && m.Delivery != "") {
 			return nil, wire.ReasonBadItem
 		}
-		m.Delivery = envelope.DeliveryNone
+		// A chat never carries a verdict's fields, whatever the bridge sent.
+		m.Delivery, m.Verdict, m.Commit = envelope.DeliveryNone, "", ""
 		return envelope.Must(m), ""
 	case envelope.StateChanged:
 		var kind string

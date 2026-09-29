@@ -3,6 +3,7 @@
 package redact
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog"
+	"github.com/zricethezav/gitleaks/v8/logging"
 )
 
 // Random alphanumerics: gitleaks' GitHub rules check entropy, so a repeated
@@ -156,5 +159,26 @@ func TestAnEndedContextRedactsNothing(t *testing.T) {
 	out, _, err := r.Payload(ctx, []byte(`{"output":"token `+secrets(t)["github-pat"]+`"}`))
 	if !errors.Is(err, context.Canceled) || out != nil {
 		t.Fatalf("%s, %v", out, err)
+	}
+}
+
+// gitleaks logs each finding's secret at Trace through its own global zerolog
+// logger, to stderr and outside slog: New silences it.
+func TestGitleaksNeverLogsASecret(t *testing.T) {
+	var out bytes.Buffer
+	logging.Logger = zerolog.New(&out).Level(zerolog.TraceLevel)
+	r, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lvl := logging.Logger.GetLevel(); lvl != zerolog.Disabled {
+		t.Fatalf("gitleaks logs at %s after New", lvl)
+	}
+	pat := secrets(t)["github-pat"]
+	if _, _, err := r.Payload(t.Context(), []byte(`{"output":"`+pat+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("gitleaks wrote %d bytes of log", out.Len())
 	}
 }
