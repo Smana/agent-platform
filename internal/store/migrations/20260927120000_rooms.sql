@@ -51,6 +51,11 @@ CREATE TABLE events (
   UNIQUE (room_id, origin_client, origin_seq)
 );
 
+-- The leader's sweep of runs that joined and never left reads only the broker's
+-- own scopes. The unique index cannot serve its origin_client prefix past room_id,
+-- so without this one it would read every event of every open room (review M2).
+CREATE INDEX events_broker_scopes ON events (room_id, origin_client, origin_seq) WHERE origin = 'broker';
+
 -- A room only moves forward: its id, retention and creation never change, last_seq
 -- steps by one, bytes never shrink, and it is sealed and closed once, at now().
 CREATE FUNCTION rooms_move_forward() RETURNS trigger

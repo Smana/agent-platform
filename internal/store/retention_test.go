@@ -3,8 +3,12 @@
 package store
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/envelope"
 )
 
 // OD-17: the retention job purges exactly the sealed rooms past their retention,
@@ -69,6 +73,50 @@ func TestPurgeExpired(t *testing.T) {
 	}
 }
 
+// Review M2: the sweep reads only the broker's own scopes through a partial index,
+// not every event of every open room.
+func TestUnfinishedUsesItsIndex(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, super := open(t)
+	// A long log of harness events, forged in bulk, and one broker scope.
+	forge(t, super, `INSERT INTO events (room_id, seq, id, actor_kind, actor_id, type, origin, origin_client,
+		origin_seq, ts, payload)
+		SELECT '`+room+`', g, 'id' || g, 'agent', 'agent:7f3cq2xz', 'message', 'harness', 'agent:7f3cq2xz', g, now(), '{}'
+		FROM generate_series(1, 20000) g;
+		INSERT INTO events (room_id, seq, id, run_id, actor_kind, actor_id, type, origin, origin_client,
+		origin_seq, ts, payload)
+		VALUES ('`+room+`', 20001, 'idj', '7f3cq2xz', 'system', 'system:room-broker', 'participant', 'broker',
+		'broker:run:7f3cq2xz', 1, now(), '{}');
+		ANALYZE events;`)
+	var plan []string
+	rows, err := s.pool.Query(ctx, `EXPLAIN `+unfinishedSQL, "broker:run:", int64(1), int64(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(plan, "\n")
+
+	// Both sides: the scopes it lists (e) and the closing event it looks for (c).
+	if !strings.Contains(text, "using events_broker_scopes on events e") ||
+		!strings.Contains(text, "using events_broker_scopes on events c") || strings.Contains(text, "Seq Scan on events") {
+		t.Fatalf("the sweep does not read through events_broker_scopes:\n%s", text)
+	}
+	evs, err := s.Unfinished(ctx, "broker:run:", 1, 4)
+	if err != nil || len(evs) != 1 || evs[0].RunID != "7f3cq2xz" {
+		t.Fatalf("Unfinished = %v, %v; want the one open broker scope", evs, err)
+	}
+}
+
 // The sweep's query: the first event of every scope that wrote its opening seq
 // and not its closing one, in rooms still open.
 func TestUnfinished(t *testing.T) {
@@ -77,20 +125,25 @@ func TestUnfinished(t *testing.T) {
 	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "sealedaa", Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
-	put := func(roomID, client, runID string, n int64) {
+	put := func(roomID, client, runID string, n int64, origin envelope.Origin) {
 		t.Helper()
 		d := draftIn(roomID, client, n)
-		d.RunID = runID
+		d.RunID, d.Origin = runID, origin
+		if origin == envelope.OriginBroker {
+			d.Actor = envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
+		}
 		if _, _, err := s.Append(ctx, d); err != nil {
 			t.Fatal(err)
 		}
 	}
-	put(room, "broker:run:aaaaaaaa", "aaaaaaaa", 1) // opened, never closed: listed
-	put(room, "broker:run:bbbbbbbb", "bbbbbbbb", 1) // opened and closed
-	put(room, "broker:run:bbbbbbbb", "bbbbbbbb", 4)
-	put(room, "agent:cccccccc", "cccccccc", 1)            // another prefix
-	put(room, "broker:run:dddddddd", "dddddddd", 2)       // never opened
-	put("sealedaa", "broker:run:eeeeeeee", "eeeeeeee", 1) // in a sealed room
+	broker, harness := envelope.OriginBroker, envelope.OriginHarness
+	put(room, "broker:run:aaaaaaaa", "aaaaaaaa", 1, broker) // opened, never closed: listed
+	put(room, "broker:run:bbbbbbbb", "bbbbbbbb", 1, broker) // opened and closed
+	put(room, "broker:run:bbbbbbbb", "bbbbbbbb", 4, broker)
+	put(room, "broker:busy:cccccccc", "cccccccc", 1, broker)      // another prefix
+	put(room, "broker:run:dddddddd", "dddddddd", 2, broker)       // never opened
+	put("sealedaa", "broker:run:eeeeeeee", "eeeeeeee", 1, broker) // in a sealed room
+	put(room, "broker:run:ffffffff", "ffffffff", 1, harness)      // not the broker's own scope
 	if err := s.CloseRoom(ctx, "sealedaa", "done"); err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +153,10 @@ func TestUnfinished(t *testing.T) {
 		first, last int64
 		want        []string
 	}{
-		{"opened and not closed, in open rooms only", "broker:run:", 1, 4, []string{"aaaaaaaa"}},
+		{"opened and not closed, the broker's, in open rooms only", "broker:run:", 1, 4, []string{"aaaaaaaa"}},
 		{"the prefix is literal, not a pattern", "broker:run%", 1, 4, nil},
-		{"another scope", "agent:", 1, 4, []string{"cccccccc"}},
+		{"another scope", "broker:busy:", 1, 4, []string{"cccccccc"}},
+		{"never a scope another origin wrote", "agent:", 1, 4, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			evs, err := s.Unfinished(ctx, c.prefix, c.first, c.last)
@@ -116,7 +170,7 @@ func TestUnfinished(t *testing.T) {
 				}
 				got = append(got, ev.RunID)
 			}
-			if len(got) != len(c.want) || (len(got) == 1 && got[0] != c.want[0]) {
+			if !slices.Equal(got, c.want) {
 				t.Fatalf("got %v want %v", got, c.want)
 			}
 		})
