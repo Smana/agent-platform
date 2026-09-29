@@ -229,3 +229,21 @@ func TestPoolBoundsEverySession(t *testing.T) {
 		})
 	}
 }
+
+// Until phase 5 migrates the approvals table, nothing is pending; once it exists,
+// only this room's pending rows count.
+func TestPendingApprovals(t *testing.T) {
+	s, _, _, super := open(t)
+	ctx := context.Background()
+	if n, err := s.PendingApprovals(ctx, room); err != nil || n != 0 {
+		t.Fatalf("without the table: %d, %v; want 0", n, err)
+	}
+	// A stand-in with the columns the count reads, shaped like phase 5's table.
+	exec(t, super, `CREATE TABLE approvals (approval_id text PRIMARY KEY, room_id text NOT NULL, state text NOT NULL);
+		GRANT SELECT ON approvals TO rooms_broker;
+		INSERT INTO approvals VALUES ('a1', '`+room+`', 'pending'), ('a2', '`+room+`', 'approved'),
+			('a3', 'otherroo', 'pending'), ('a4', '`+room+`', 'pending')`)
+	if n, err := s.PendingApprovals(ctx, room); err != nil || n != 2 {
+		t.Fatalf("with the table: %d, %v; want 2", n, err)
+	}
+}

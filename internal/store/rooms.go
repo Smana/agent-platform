@@ -57,3 +57,21 @@ func (s *Store) Room(ctx context.Context, id string) (RoomState, error) {
 	}
 	return st, err
 }
+
+// PendingApprovals counts the room's undecided approvals. Phase 5 migrates the
+// approvals table; until then nothing is pending.
+func (s *Store) PendingApprovals(ctx context.Context, roomID string) (int, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT to_regclass('public.approvals') IS NOT NULL`).Scan(&exists); err != nil {
+		return 0, fmt.Errorf("store: pending approvals of room %s: %w", roomID, err)
+	}
+	if !exists {
+		return 0, nil
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE room_id = $1 AND state = 'pending'`,
+		roomID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: pending approvals of room %s: %w", roomID, err)
+	}
+	return n, nil
+}
