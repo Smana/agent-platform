@@ -256,6 +256,8 @@ type Bridge struct {
 	MinBackoff, MaxBackoff time.Duration
 	Logger                 *slog.Logger
 	// Meter makes the rooms_bridge_* instruments; nil means a no-op meter.
+	// room-bridge passes none: nothing scrapes a sandbox (C4), so the broker
+	// counts the same signals from the events it appends (Ruling AP).
 	Meter metric.Meter
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time

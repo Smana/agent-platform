@@ -50,7 +50,7 @@ flowchart LR
 | 1.9 | The bridge and system API on `:8443`, TLS (GP-18), the lease `409` (Ruling Y) | AP-1, `internal/bridgeapi` | Planned |
 | 1.10 | The harness adapter and event mapping | AP-1, `internal/bridge` | Planned |
 | 1.11 | The `room-bridge` binary, trusting the broker CA (GP-18) | AP-1, `cmd/room-bridge` | Planned |
-| 1.12 | The broker binary, metrics, retention subcommand, AP-1's pre-release | AP-1, `cmd/room-broker` | Planned |
+| 1.12 | The broker binary, metrics, retention subcommand, AP-1's pre-release | AP-1, `cmd/room-broker`, `internal/app` | Implemented; pre-release pending |
 | 1.13 | `SQLInstance` generated credentials | CC-S1 (crossplane-configuration) | Implemented, in review |
 | 1.14 | The bridge in the `AgentRun` composition | CC-S2 | Planned |
 | 1.15–1.22 | ADR-0044, the vendored CRD, storage, the broker's manifests, alerts, `agent:run --room`, pins, the live gate | S1 (cloud-native-ref) | Planned |

@@ -279,3 +279,38 @@ func (s *Store) LastHarnessStatus(ctx context.Context, roomID, runID string) (st
 	}
 	return status, err
 }
+
+// Unfinished returns the opening event of every idempotency scope named
+// clientPrefix+<anything> that stored its seq first but not its seq last, in the
+// rooms still open. The prefix is literal. The caller owns what the scope and
+// its seqs mean (runwatch: a run that joined and never left).
+func (s *Store) Unfinished(ctx context.Context, clientPrefix string, first, last int64) ([]envelope.Event, error) {
+	rows, err := s.pool.Query(ctx, `SELECT e.room_id, `+cols+` FROM events e JOIN rooms r USING (room_id)
+		WHERE NOT r.sealed AND starts_with(e.origin_client, $1) AND e.origin_seq = $2
+		AND NOT EXISTS (SELECT 1 FROM events c
+			WHERE c.room_id = e.room_id AND c.origin_client = e.origin_client AND c.origin_seq = $3)
+		ORDER BY e.room_id, e.seq`, clientPrefix, first, last)
+	if err != nil {
+		return nil, fmt.Errorf("store: unfinished %s scopes: %w", clientPrefix, err)
+	}
+	defer rows.Close()
+	var out []envelope.Event
+	for rows.Next() {
+		var roomID string
+		ev, err := scan(withRoom{rows, &roomID}, "")
+		if err != nil {
+			return nil, fmt.Errorf("store: unfinished %s scopes: %w", clientPrefix, err)
+		}
+		ev.RoomID = roomID
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// withRoom scans a leading room_id column ahead of scan's columns.
+type withRoom struct {
+	pgx.Row
+	roomID *string
+}
+
+func (w withRoom) Scan(dest ...any) error { return w.Row.Scan(append([]any{w.roomID}, dest...)...) }

@@ -143,9 +143,10 @@ receives `410 sealed` stops mirroring.
 
 ## Retention
 
-A daily CronJob (planned, task 1.12 / S1), `room-broker-retention` (03:17, `concurrencyPolicy: Forbid`), runs
-`room-broker retention` as `rooms_retention`. It deletes the events, then the rows, of every room
-closed longer ago than its own retention. Its `WHERE` clause repeats what row-level security already
+A daily CronJob (S1), `room-broker-retention` (03:17, `concurrencyPolicy: Forbid`), runs
+`room-broker retention` as `rooms_retention`. It deletes the events, then the row, of every room
+closed longer ago than its own retention, one room per transaction so each stays under the session's
+`statement_timeout`. Its `WHERE` clause repeats what row-level security already
 enforces: the role cannot see, let alone delete, anything else.
 
 | Setting | Value |

@@ -25,10 +25,13 @@ over 60 s; it never depends on the broker.
 
 ## Metrics
 
-Scraped from `:9090/metrics` by a `VMServiceScrape` (planned, task 1.12 / S1). The §9 set, plus three
-the alerts need and a build-info gauge. All are defined in phase 1; the last column is the phase whose
+Scraped from `:9090/metrics` by a `VMServiceScrape` (S1). The §9 set, plus four the alerts need and a
+build-info gauge. All are defined in phase 1; the last column is the phase whose
 feature a metric measures. Ruling AC: the broker records them through the OpenTelemetry metric API
-with a Prometheus exporter, and the names below do not change.
+with a Prometheus exporter that adds no suffix, so the names below are exposed byte for byte.
+`rooms`, `rooms_approvals_pending` and `rooms_last_event_timestamp_seconds` come from the Room
+controller, which runs on the leader only: a room drops out of them 2 minutes after its last
+reconcile. The append counters see every writer: the bridge API, the controller and the run events.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
@@ -39,6 +42,7 @@ with a Prometheus exporter, and the names below do not change.
 | `rooms_append_errors_total` | counter | — | Appends the database refused | 1 |
 | `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
 | `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each `Active` room | 1 |
+| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). The cache fetches only on use, so an idle broker ages it too | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
 | `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed (`reauth`, `slow_consumer`, …) | 2 |
 | `rooms_participants` | gauge | — | Live participants | 2 |
@@ -46,17 +50,18 @@ with a Prometheus exporter, and the names below do not change.
 | `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) | 2 |
 | `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` | 3 |
 | `rooms_driver_changes_total` | counter | — | Driver token changes | 4 |
-| `rooms_approvals_pending` | gauge | — | Undecided approvals | 5 |
+| `rooms_approvals_pending` | gauge | — | Undecided approvals: the sum of the Rooms' `status.pendingApprovals`, 0 until phase 5 | 5 |
 | `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval | 5 |
 | `rooms_approval_decision_seconds` | histogram | — | Request to decision | 5 |
 
-The bridge records two more through the same API. It serves only the kubelet's `:8085`, so nothing
-scrapes them until a scrape path lands; a stall also reaches the room as `state_changed{harness_error}`.
+Two more count what bridges tell their rooms. Nothing dials into a sandbox (C4), so the bridge serves
+no metrics: the broker counts these events as it appends them, and exports them on `:9090` with the
+rest (Ruling AP). Neither carries a run or room label.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
-| `rooms_bridge_harness_stalls_total` | counter | `reason` | Polls the harness log could not move past (`event_too_large`, `cursor_lost`, `next_page_unreadable`); the cursor holds | 1 |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Items the broker could not take as sent, kept as a stub in their slot (`oversize`, `refused`) | 1 |
+| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The harness's own errors are not counted | 1 |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot: `oversize` (the bridge's or the store's size stub) or `refused` (a `harness_event{harnessKind: refused}`, or the broker's own stub for a value it cannot store) | 1 |
 
 ## Alerts
 

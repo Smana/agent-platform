@@ -135,11 +135,11 @@ flowchart LR
 
 | Stage | Package | Contract | Status |
 |---|---|---|---|
-| Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ stub |
+| Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ |
 | Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | 6 |
-| Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ `room-bridge` |
-| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | 1 |
+| Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ |
+| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | ✓ |
 | Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |
 | Entry | `internal/version` | build version stamped by `-ldflags` | ✓ |
 | Ingress | `internal/bridge` | harness adapter over loopback, event mapping, status, uploader, SSE consumer | 1, 4, 5 |
@@ -159,7 +159,7 @@ flowchart LR
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
-| Ops | `internal/metrics` | the §9 metric set | 1 |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter both binaries serve | ✓ |
 
 ## Security rules
 

@@ -7,13 +7,13 @@ get `:8090` in phase 3. Every body is JSON.
 | Port | Who calls it | Authentication | Phase / PR |
 |---|---|---|---|
 | `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 (planned, tasks 1.6, 1.9) |
-| `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (planned, task 1.12) |
+| `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (task 1.12) |
 | `:8080` | Humans, through oauth2-proxy | ZITADEL ID token and access token | 2 / AP-2 |
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
-| `:8085` (bridge) | kubelet | None | AP-1 (planned, task 1.11) |
+| `:8085` (bridge) | kubelet | None | AP-1 (task 1.11) |
 
-`:8443`'s handlers and the store methods they call are written on the AP-1 branch (task 1.9); nothing
-serves them until task 1.12 wires the binary. The rest is **planned**.
+`:8443`'s handlers and the store methods they call are written on the AP-1 branch (task 1.9), and
+`room-broker serve` serves them (task 1.12). The rest is **planned**.
 
 ## `:8443` — bridge and system API
 
@@ -198,7 +198,7 @@ never reuses a `clientSeq` for another message.
 | `GET /startupz` | The schema is migrated (`events` exists) | Startup: the first deploy waits for CNPG and the Atlas migration |
 | `GET /metrics` | Always | Prometheus metrics ([operations](operations.md#metrics)) |
 
-The bridge serves `GET /healthz` on `:8085`, for kubelet only. It reports unhealthy only when the
+The bridge serves `GET /healthz` on `:8085`, for kubelet only, and no metrics (Ruling AP). It reports unhealthy only when the
 harness answered once and has been unreachable for more than 60 s: as a native sidecar its startup
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
