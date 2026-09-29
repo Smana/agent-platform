@@ -15,13 +15,16 @@ tasks:
       - go mod tidy -diff
 
   lint:
+    desc: golangci-lint v2 (the mise pin, never a stale v1 on PATH) under go.mod's toolchain.
     cmds:
-      - golangci-lint run ./...
+      - hack/lint.sh
 
   vuln:
     desc: Known vulnerabilities reachable from our code, the stdlib included.
+    # go run builds govulncheck with the current Go: a binary built by an older Go
+    # cannot load packages that need a newer one. Same version as mise.toml.
     cmds:
-      - govulncheck ./...
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   test:
     cmds:
