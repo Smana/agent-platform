@@ -4,10 +4,16 @@ tasks:
   check:
     desc: Every gate CI runs. Cite its exit code as evidence.
     cmds:
+      - task: spdx
       - task: tidy
       - task: lint
       - task: vuln
       - task: test
+
+  spdx:
+    desc: Every .go file opens with the SPDX license line.
+    cmds:
+      - hack/spdx.sh
 
   tidy:
     desc: Fail if go.mod or go.sum would change under go mod tidy.
