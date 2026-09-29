@@ -63,7 +63,7 @@ rest (Ruling AP). Neither carries a run or room label.
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
 | `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The harness's own errors are not counted | 1 |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot: `oversize` (the bridge's or the store's size stub) or `refused` (a `harness_event{harnessKind: refused}`, or the broker's own stub for a value it cannot store) | 1 |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub) | 1 |
 
 ## Alerts
 

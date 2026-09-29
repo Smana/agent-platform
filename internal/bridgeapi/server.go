@@ -402,7 +402,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			// A value PostgreSQL refuses can never be stored: keep the slot with a stub, as
 			// for an oversize payload, so the bridge's cursor moves on (review I6).
 			s.log().Error("payload refused by the database", "room", run.Room, "run", run.ID, "type", d.Type, errAttr(err))
-			d.Payload, d.Redactions = refusedStub(d.Type), nil
+			d.Payload, d.Redactions = refusedStub(d.Type, StubInvalidValue), nil
 			ev, dup, err = s.Log.AppendAsBridge(ctx, run.ID, d)
 		}
 		if err != nil {
@@ -443,7 +443,7 @@ func (s *Server) bridgeDraft(ctx context.Context, p authn.Principal, run runwatc
 		// its slot as a stub, as for a value PostgreSQL refuses, and its batch
 		// goes on (Ruling AI).
 		s.log().Warn("bridge item stored as a stub: its keys collide once redacted", "room", run.Room, "run", run.ID, "type", it.Type)
-		d.Payload = refusedStub(it.Type)
+		d.Payload = refusedStub(it.Type, StubKeyCollision)
 		return d, nil
 	case err != nil && ctx.Err() != nil:
 		return envelope.Draft{}, err
@@ -458,10 +458,19 @@ func (s *Server) bridgeDraft(ctx context.Context, p authn.Principal, run runwatc
 	return d, nil
 }
 
+// Why the broker stored an item as a stub rather than as sent. Each is the stub's
+// reason field, and a label of rooms_bridge_items_stubbed_total (S1 review I-4).
+const (
+	// StubInvalidValue is a value the store rejected (SQLSTATE class 22, such as a NUL in jsonb).
+	StubInvalidValue = "invalid_value"
+	// StubKeyCollision is keys that are one once redacted: case-folded or NUL-equal (Ruling AI).
+	StubKeyCollision = "key_collision"
+)
+
 // refusedStub stands in for a payload that cannot be stored: the slot is kept,
-// so the bridge's cursor moves on (review I6).
-func refusedStub(t envelope.Type) json.RawMessage {
-	return envelope.Must(map[string]any{"refused": true, "type": t})
+// so the bridge's cursor moves on (review I6), and it says why.
+func refusedStub(t envelope.Type, why string) json.RawMessage {
+	return envelope.Must(map[string]any{"refused": true, "type": t, "reason": why})
 }
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).

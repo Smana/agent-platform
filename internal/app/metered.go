@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Smana/agent-platform/internal/bridge"
+	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/store"
@@ -71,10 +72,18 @@ func isStall(code string) bool {
 
 func isStub(kind string) bool { return kind == bridge.StubOversize || kind == bridge.StubRefused }
 
+// isBrokerStub is a reason the broker's own stub gives (bridgeapi.refusedStub).
+func isBrokerStub(why string) bool {
+	return why == bridgeapi.StubInvalidValue || why == bridgeapi.StubKeyCollision
+}
+
 // bridgeSignals counts what a bridge tells its room of its own trouble (Ruling
 // AP): a stall on the harness log, told once per stall as state_changed
-// {harness_error, code}, and an item kept as a stub, either the bridge's
-// harness_event{harnessKind} or a size or refusal stub in the item's own type.
+// {harness_error, code}, and an item kept as a stub, by why (S1 review I-4):
+// refused (the broker answered 400 to a lone item: the bridge's
+// harness_event{harnessKind}), oversize (the bridge's or the store's size stub),
+// invalid_value (the store rejected a value) and key_collision (redaction found
+// keys that are one once folded), the last two from the broker's own stub.
 func (l *meteredLog) bridgeSignals(ctx context.Context, ev envelope.Event) {
 	if ev.Origin != envelope.OriginHarness || len(ev.Payload) > maxSignalBytes {
 		return
@@ -85,6 +94,7 @@ func (l *meteredLog) bridgeSignals(ctx context.Context, ev envelope.Event) {
 		HarnessKind string `json:"harnessKind"`
 		Oversize    bool   `json:"oversize"`
 		Refused     bool   `json:"refused"`
+		Reason      string `json:"reason"`
 	}
 	if json.Unmarshal(ev.Payload, &p) != nil {
 		return
@@ -96,8 +106,8 @@ func (l *meteredLog) bridgeSignals(ctx context.Context, ev envelope.Event) {
 		l.m.BridgeStubbed(ctx, p.HarnessKind)
 	case p.Oversize: // envelope.Oversize, from the bridge or the store
 		l.m.BridgeStubbed(ctx, bridge.StubOversize)
-	case p.Refused: // the broker's own stub for a value it cannot store
-		l.m.BridgeStubbed(ctx, bridge.StubRefused)
+	case p.Refused && isBrokerStub(p.Reason): // the broker's own stub, saying why
+		l.m.BridgeStubbed(ctx, p.Reason)
 	}
 }
 

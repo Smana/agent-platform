@@ -571,7 +571,8 @@ func TestACollidingItemBecomesAStub(t *testing.T) {
 				t.Fatalf("%d events, want 3", len(evs))
 			}
 			stub := evs[1]
-			if got, want := string(stub.Payload), `{"refused":true,"type":"`+string(c.typ)+`"}`; got != want || stub.Type != c.typ || len(stub.Redactions) != 0 {
+			// S1 review I-4: the stub says why, so the metric can.
+			if got, want := string(stub.Payload), `{"reason":"key_collision","refused":true,"type":"`+string(c.typ)+`"}`; got != want || stub.Type != c.typ || len(stub.Redactions) != 0 {
 				t.Fatalf("stub = %s %s %v, want %s", stub.Type, got, stub.Redactions, want)
 			}
 		})
@@ -729,7 +730,7 @@ func TestARefusedPayloadBecomesAStub(t *testing.T) {
 	if rec := call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, batch(chat(4, "poison"))); rec.Code != http.StatusOK {
 		t.Fatalf("refused payload: %d %s", rec.Code, rec.Body)
 	}
-	if ev := log.stored()[0]; !strings.Contains(string(ev.Payload), `"refused":true`) || ev.Type != envelope.Message {
+	if ev := log.stored()[0]; string(ev.Payload) != `{"reason":"invalid_value","refused":true,"type":"message"}` || ev.Type != envelope.Message {
 		t.Fatalf("stub = %s %s", ev.Type, ev.Payload)
 	}
 }

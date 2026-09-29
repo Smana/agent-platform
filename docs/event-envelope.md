@@ -92,7 +92,7 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | Payload | 64 KiB (C4) | Stored as a stub, `{"oversize": true, "bytes": N, "type": "<type>"}`, never refused: a refused harness event would block the bridge's cursor forever (ruling P20). The content stays in the pod until it ends | AP-1 |
 | Tool output | 16 KiB | Truncated by the bridge; `truncated: true` and `bytes` keeps the original length | AP-1 (planned, task 1.10) |
 | Human message, system message text | 16 KiB | `400 bad_message` | AP-1 (planned, task 1.9: system API); phase 4 (humans) |
-| A value Postgres refuses (SQLSTATE class 22) | — | Stored as `{"refused": true, "type": "<type>"}` so the cursor moves on | AP-1 (planned, task 1.9) |
+| A value Postgres refuses (SQLSTATE class 22), or keys that collide once redacted | — | Stored as `{"refused": true, "type": "<type>", "reason": "invalid_value" \| "key_collision"}` so the cursor moves on | AP-1 (task 1.9; `reason` from task 1.12) |
 | NUL characters | — | Stripped from every string and key before storage (`jsonb` refuses them) | AP-1 |
 | Room size | 100 000 events or 256 MiB | The room is sealed with a final `state_changed{kind: limit, events, bytes}` | AP-1 |
 | Bridge batch | 2 MiB per request; the bridge sends at most 100 items | `400 bad_batch` above the byte limit | AP-1 (planned, task 1.9) |

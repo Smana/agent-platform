@@ -93,7 +93,7 @@ Go readers fold case (`Delivery`, `ſtatus` and a Kelvin-sign `K` all match), js
 a key that folds onto another or onto a field of the type's envelope struct without being spelled as
 it is refused. A `message` is stored as its envelope struct re-marshals it; a chat's `verdict` and
 `commit` are dropped. An item whose keys are one once redacted (two tokens as keys of an env dump)
-cannot keep either value: that item alone is stored as a `{"refused": true, "type": …}` stub and the
+cannot keep either value: that item alone is stored as a `{"refused": true, "type": …, "reason": "key_collision"}` stub and the
 rest of the batch is appended.
 
 Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the highest key of the batch on each
@@ -114,7 +114,7 @@ appending again.
 | `503` | `log_unavailable`, `timed_out` | The database refused the append, or the request's 30 s ran out before the batch was redacted | Retries; keeps buffering |
 
 A payload Postgres refuses outright (SQLSTATE class 22) is not an error: it is stored as a
-`{"refused": true}` stub so the cursor moves on.
+`{"refused": true, "type": …, "reason": "invalid_value"}` stub so the cursor moves on.
 
 ### `GET /v1/bridge/stream`
 
