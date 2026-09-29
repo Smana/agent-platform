@@ -54,8 +54,10 @@ type RoomSpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	Approvals Approvals `json:"approvals,omitempty"`
+	// Fixed at creation: the log's row keeps the retention it was created with.
 	// +kubebuilder:default="90d"
 	// +kubebuilder:validation:Pattern=`^[1-9][0-9]{0,3}d$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="retention is immutable"
 	// +optional
 	Retention string `json:"retention,omitempty"`
 	// Runs requested for this room inherit it (C3).

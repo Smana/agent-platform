@@ -50,6 +50,7 @@ func TestCRDCarriesTheDesignRules(t *testing.T) {
 		{"spec.approvals.profile", enum("attended", "unattended"), "enum attended, unattended"},
 		{"spec.retention", hasDefault(`"90d"`), "default 90d"},
 		{"spec.retention", pattern(`^[1-9][0-9]{0,3}d$`), "a bounded retention"},
+		{"spec.retention", rule("self == oldSelf"), "immutability: the log's retention is fixed at creation"},
 		{"spec.approvals.ttl", hasDefault(`"4h"`), "default 4h"},
 		{"spec.approvals.ttl", pattern(`^[1-9][0-9]{0,3}(m|h)$`), "a bounded ttl"},
 		{"spec.owner", maxLength(261), "maxLength 261"},
@@ -107,6 +108,12 @@ func hasDefault(raw string) func(apiextensionsv1.JSONSchemaProps) bool {
 
 func pattern(want string) func(apiextensionsv1.JSONSchemaProps) bool {
 	return func(p apiextensionsv1.JSONSchemaProps) bool { return p.Pattern == want }
+}
+
+func rule(want string) func(apiextensionsv1.JSONSchemaProps) bool {
+	return func(p apiextensionsv1.JSONSchemaProps) bool {
+		return slices.ContainsFunc(p.XValidations, func(r apiextensionsv1.ValidationRule) bool { return r.Rule == want })
+	}
 }
 
 func maxLength(want int64) func(apiextensionsv1.JSONSchemaProps) bool {
