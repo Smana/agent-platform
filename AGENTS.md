@@ -161,6 +161,27 @@ flowchart LR
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
 
+## Seams
+
+The core carries no platform-specific constants — no cluster names, domains, OpenBao paths,
+Crossplane kinds, ZITADEL ids or other cloud specifics — in `internal/envelope`,
+`internal/redact`, `internal/store`, `internal/httpx` or `internal/wire`. Platform facts enter
+through config, or through a consumer-side interface defined where they're used (see
+Idioms above).
+
+Packages that do touch the platform name their seam:
+
+| Package | Seam |
+|---|---|
+| `internal/authn` | issuer and audience are config |
+| `internal/runwatch` | the `AgentRun` GVK and namespace; a `RunSource` interface would replace them in a spin-out |
+| `internal/roomctrl` | the `Room` CRD group |
+| `internal/bridgeapi` | principal allowlists come from config |
+
+Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
+— daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,
+outside demand. Keeping the seams clean now makes that decision cheap.
+
 ## Security rules
 
 - **Nothing unredacted leaves the request.** `redact` runs on every payload before it is
