@@ -46,6 +46,7 @@ func (r *Redactor) scan(d *detect.Detector, s string, fired map[string]bool) (st
 }
 
 // Payload redacts every string value of a JSON document and keeps its shape.
+// Each value is scanned alone: a secret split across sibling fields is not detected, so callers must not split tokens.
 func (r *Redactor) Payload(raw json.RawMessage) (json.RawMessage, []string, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
