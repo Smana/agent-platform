@@ -10,6 +10,9 @@ platform repo pins and deploys, as it does App Wizard.
 > **Status:** early. Both binaries are stubs until SP2 phase 1 lands; this repo only proves the
 > toolchain, gates and image pipeline today.
 
+**Documentation:** [docs/](docs/README.md) covers the architecture, the event envelope, the room
+log's guarantees, the API, security, integration, operations, development and the roadmap.
+
 ## Architecture
 
 ```mermaid
