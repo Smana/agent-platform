@@ -1,0 +1,12 @@
+# Read by the SQLInstance composition's Flux Kustomization: the ConfigMap name
+# `atlas-db-migrations` is the composition's contract (cloud-native-ref apps/AGENTS.md).
+# Every migration file of every phase is listed here, with atlas.sum.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: atlas-db-migrations
+    files:
+      - ./20260927120000_rooms.sql
+      - atlas.sum
+    options:
+      disableNameSuffixHash: true
