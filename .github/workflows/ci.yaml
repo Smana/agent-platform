@@ -1,0 +1,65 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+      - run: task check
+
+  # One throwaway image per PR push, tagged v<next-patch>-pr<N>.<sha8>: it sorts after
+  # the last release and before the next, and each push is its own immutable tag.
+  # Never `latest`, never the release tag (the same channel as crossplane-configuration).
+  # <sha8> is the PR head's, not the synthetic merge commit a pull_request checks out,
+  # so a tag names a commit that exists on the branch (review M1).
+  prerelease:
+    needs: check
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [room-broker, room-bridge]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Derive the pre-release version
+        id: v
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          [ -n "$latest" ] || latest="v0.0.0"
+          base="${latest#v}"; major="${base%%.*}"; rest="${base#*.}"; minor="${rest%%.*}"; patch="${rest##*.}"
+          echo "version=v${major}.${minor}.$((patch + 1))-pr${{ github.event.pull_request.number }}.$(printf '%.8s' "${{ github.event.pull_request.head.sha }}")" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/${{ matrix.image }}/Dockerfile
+          # The sandbox pool mixes c/m gen 6+ families, Graviton included.
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          push: true
+          provenance: false
+          tags: ghcr.io/smana/${{ matrix.image }}:${{ steps.v.outputs.version }}
+      - run: |
+          echo "### ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "ghcr.io/smana/${{ matrix.image }}:${{ steps.v.outputs.version }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

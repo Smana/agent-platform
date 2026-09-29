@@ -1,0 +1,16 @@
+version: "3"
+
+tasks:
+  check:
+    desc: Every gate CI runs. Cite its exit code as evidence.
+    cmds:
+      - task: lint
+      - task: test
+
+  lint:
+    cmds:
+      - golangci-lint run ./...
+
+  test:
+    cmds:
+      - go test -race -count=1 ./...
