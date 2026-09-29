@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/Smana/agent-platform/internal/envelope"
 )
 
@@ -207,6 +209,32 @@ func TestEnsureRoomRefusesNonPositiveRetention(t *testing.T) {
 			created, err := s.EnsureRoom(context.Background(), NewRoom{ID: "zzzzzzzz", Driver: "system:factory", Retention: retention})
 			if created || !errors.Is(err, ErrInvalidRetention) {
 				t.Fatalf("created=%v err=%v, want ErrInvalidRetention", created, err)
+			}
+		})
+	}
+}
+
+// Ruling AE: the schema refuses a retention under a day, whoever writes the row.
+func TestRetentionHasAFloor(t *testing.T) {
+	s, _, _, _ := open(t)
+	for _, c := range []struct {
+		name      string
+		id        string
+		retention time.Duration
+		refused   bool
+	}{
+		{"a day is the floor", "dayaaaaa", 24 * time.Hour, false},
+		{"under a day is refused", "hourbbbb", 23 * time.Hour, true},
+		{"a second is refused", "secondcc", time.Second, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := s.EnsureRoom(t.Context(), NewRoom{ID: c.id, Driver: "system:factory", Retention: c.retention})
+			var pg *pgconn.PgError
+			switch {
+			case c.refused && (!errors.As(err, &pg) || pg.Code != "23514"):
+				t.Fatalf("err = %v, want a check violation (23514)", err)
+			case !c.refused && err != nil:
+				t.Fatal(err)
 			}
 		})
 	}

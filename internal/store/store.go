@@ -25,6 +25,8 @@ var (
 	ErrSealed           = errors.New("room is sealed")
 	ErrLeaseLost        = errors.New("the bridge lease is held by another run")
 	ErrInvalidRetention = errors.New("retention must be positive")
+	// ErrNoBridgeRun is AppendAsBridge without a run: it would append unfenced.
+	ErrNoBridgeRun = errors.New("a bridge append names its run")
 )
 
 // Store is the room log over a PostgreSQL pool, connected as rooms_broker.
@@ -99,6 +101,9 @@ func (s *Store) Append(ctx context.Context, d envelope.Draft) (envelope.Event, b
 // AppendAsBridge appends for the bridge of bridgeRun, and refuses with ErrLeaseLost
 // once another run holds the room's bridge lease (ruling P17, review I7).
 func (s *Store) AppendAsBridge(ctx context.Context, bridgeRun string, d envelope.Draft) (envelope.Event, bool, error) {
+	if bridgeRun == "" { // "" is append's "no fence": refuse it rather than append unfenced
+		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrNoBridgeRun)
+	}
 	return s.append(ctx, d, bridgeRun)
 }
 

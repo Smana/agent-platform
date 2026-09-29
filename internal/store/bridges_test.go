@@ -12,6 +12,16 @@ import (
 func alive(context.Context, string) bool { return true }
 func ended(context.Context, string) bool { return false }
 
+// Ruling AE: an empty bridge run would skip the lease fence and append as an
+// unfenced writer. It is refused before the database is touched (the zero
+// Store has no pool: reaching it would panic).
+func TestAppendAsBridgeRefusesAnEmptyRun(t *testing.T) {
+	_, _, err := (&Store{}).AppendAsBridge(t.Context(), "", draft("agent:7f3cq2xz", 1))
+	if !errors.Is(err, ErrNoBridgeRun) {
+		t.Fatalf("err = %v, want ErrNoBridgeRun", err)
+	}
+}
+
 // Ruling P17 across replicas (review I7): the lease lives in the room's row.
 func TestBridgeLeaseIsSharedAndExpires(t *testing.T) {
 	s, _, _, _ := open(t)

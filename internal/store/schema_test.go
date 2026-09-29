@@ -37,7 +37,7 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.EnsureRoom(ctx, NewRoom{ID: sealedRoom, Driver: "system:factory", Retention: time.Hour}); err != nil {
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: sealedRoom, Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CloseRoom(ctx, sealedRoom, "sealed for the test"); err != nil {

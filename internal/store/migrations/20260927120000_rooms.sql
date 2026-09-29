@@ -25,7 +25,9 @@ CREATE TABLE rooms (
   bridge_seen_at  timestamptz,
   sealed          boolean     NOT NULL DEFAULT false,
   closed_at       timestamptz,
-  retention       interval    NOT NULL DEFAULT interval '90 days' CHECK (retention > interval '0'),
+  -- A day at least, like the Room CRD's <n>d: a shorter one would purge a log
+  -- before anyone read it (Ruling AE).
+  retention       interval    NOT NULL DEFAULT interval '90 days' CHECK (retention >= interval '1 day'),
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 

@@ -74,7 +74,7 @@ func TestPurgeExpired(t *testing.T) {
 func TestUnfinished(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
-	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "sealedaa", Driver: "system:factory", Retention: time.Hour}); err != nil {
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "sealedaa", Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	put := func(roomID, client, runID string, n int64) {
