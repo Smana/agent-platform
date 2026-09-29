@@ -78,6 +78,12 @@ var mappingCases = []struct {
 	{"a known kind with fields of the wrong type still maps", map[string]any{"id": "13", "kind": "ActionEvent",
 		"tool_call_id": 42, "thought": "not a list", "action": "ls"},
 		[]envelope.Type{envelope.ToolCall}, `"args":"ls"`},
+	{"an event with no id records that a malformed event happened", map[string]any{"kind": "MessageEvent",
+		"llm_message": map[string]any{"content": text("hunter2")}},
+		[]envelope.Type{envelope.StateChanged}, `"harnessKind":"malformed"`},
+	{"an event with a non-string id records that a malformed event happened", map[string]any{"id": 42,
+		"kind": "ObservationEvent", "tool_call_id": "hunter2"},
+		[]envelope.Type{envelope.StateChanged}, `"harnessKind":"malformed"`},
 }
 
 func TestMapFollowsTheSpecTable(t *testing.T) {
@@ -147,6 +153,10 @@ func assertStorable(t *testing.T, m Mapped, seq int64) {
 	}
 }
 
+// tightFit is how far under MaxPayload a cut payload may end: one more rune, at
+// most a six-byte escape, would not have fit.
+const tightFit = 6
+
 func TestOversizeItemsFitTheLog(t *testing.T) {
 	huge := strings.Repeat("y", 3<<20)
 	cases := []struct {
@@ -166,19 +176,32 @@ func TestOversizeItemsFitTheLog(t *testing.T) {
 				return json.Unmarshal(m.Payload, &p) == nil && p.Oversize && p.Type == envelope.ToolCall && p.Bytes > len(huge)
 			},
 			"the stub records the type and the real size"},
-		{"a tool result whose escaped output passes MaxPayload is the oversize stub",
+		{"a tool result whose escaped output passes MaxPayload keeps its call, status and the longest prefix that fits",
 			map[string]any{"id": "2", "kind": "ObservationEvent", "tool_call_id": "c",
 				"observation": map[string]any{"content": text(strings.Repeat("\x01", envelope.MaxToolOutput))}},
-			func(m Mapped) bool { return strings.Contains(string(m.Payload), `"oversize":true`) },
-			"16 KiB of control bytes escape to 96 KiB"},
+			func(m Mapped) bool {
+				var p envelope.ToolResultPayload
+				return json.Unmarshal(m.Payload, &p) == nil && p.CallID == "c" && p.Status == "ok" && p.Truncated &&
+					p.Bytes == envelope.MaxToolOutput && len(p.Output) > 0 && strings.Trim(p.Output, "\x01") == "" &&
+					len(m.Payload) > envelope.MaxPayload-tightFit
+			},
+			"16 KiB of control bytes escape to 96 KiB, and the pairing with its tool_call keys on callId"},
 		{"a message over MaxPayload keeps its start and says it was cut",
 			map[string]any{"id": "3", "kind": "MessageEvent", "llm_message": map[string]any{"content": text(huge)}},
 			func(m Mapped) bool {
 				var p envelope.MessagePayload
 				return json.Unmarshal(m.Payload, &p) == nil && strings.HasPrefix(p.Text, "yyyy") &&
-					strings.HasSuffix(p.Text, truncatedMark) && len(m.Payload) > envelope.MaxPayload-64
+					strings.HasSuffix(p.Text, truncatedMark) && len(m.Payload) > envelope.MaxPayload-tightFit
 			},
 			"the broker refuses an oversize stub for a message, so its text is cut instead"},
+		{"an escape-heavy message keeps the longest prefix that fits, not nothing",
+			map[string]any{"id": "3b", "kind": "MessageEvent", "llm_message": map[string]any{"content": text(strings.Repeat("\x02é", 1<<16))}},
+			func(m Mapped) bool {
+				var p envelope.MessagePayload
+				return json.Unmarshal(m.Payload, &p) == nil && strings.HasPrefix(p.Text, "\x02é") &&
+					strings.HasSuffix(p.Text, truncatedMark) && len(m.Payload) > envelope.MaxPayload-tightFit
+			},
+			"each \\x02 escapes to six bytes, so a raw-byte estimate of the cut keeps nothing"},
 		{"a harness error keeps its kind and a bounded detail",
 			map[string]any{"id": "4", "kind": "ConversationErrorEvent", "code": "LLMError", "detail": huge},
 			func(m Mapped) bool {

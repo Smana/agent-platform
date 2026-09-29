@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -84,20 +85,35 @@ func fitted(t envelope.Type, p json.RawMessage) Mapped {
 	return Mapped{t, p}
 }
 
+// fitText is build(s) when that fits MaxPayload, else build of the longest
+// prefix of s, cut at a rune boundary, whose marshalled payload fits. Measuring
+// the marshalled payload matters: a control byte, <, > or & escapes to six
+// bytes, so a raw-byte estimate over-cuts. When not even the empty prefix fits
+// (a huge callId), it is the oversize stub.
+func fitText(t envelope.Type, s string, build func(kept string) json.RawMessage) Mapped {
+	full := build(s)
+	if len(full) <= envelope.MaxPayload {
+		return Mapped{t, full}
+	}
+	fits := func(n int) bool { return len(build(cut(s, n))) <= envelope.MaxPayload }
+	// Each kept byte is at least one byte of JSON, so no prefix past MaxPayload
+	// fits: the search marshals about 17 payloads of bounded size.
+	n := sort.Search(min(len(s), envelope.MaxPayload)+1, func(n int) bool { return !fits(n) })
+	if n == 0 {
+		return fitted(t, full)
+	}
+	return Mapped{t, build(cut(s, n-1))}
+}
+
 // chat is a message item. The broker decodes a message strictly, so an oversize
-// stub would be refused: the text is cut to fit instead.
+// stub would be refused: the text is cut to fit instead, and says so.
 func chat(text string, to []string) Mapped {
-	build := func(s string) json.RawMessage {
-		return envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: s, To: to, Delivery: envelope.DeliveryNone})
-	}
-	p := build(text)
-	// Each byte cut shortens the JSON by at least one, so this ends; the mark's
-	// escaped newline may take one more pass.
-	for len(p) > envelope.MaxPayload && text != "" {
-		text = cut(text, len(text)-(len(p)-envelope.MaxPayload)-len(truncatedMark))
-		p = build(text + truncatedMark)
-	}
-	return Mapped{envelope.Message, p}
+	return fitText(envelope.Message, text, func(kept string) json.RawMessage {
+		if len(kept) < len(text) {
+			kept += truncatedMark
+		}
+		return envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: kept, To: to, Delivery: envelope.DeliveryNone})
+	})
 }
 
 // state is a state_changed item. The broker refuses one without its kind, so its
@@ -112,9 +128,14 @@ func state(kind string, fields map[string]string) Mapped {
 
 // Map turns one harness event into zero, one or two C4 items, following the spec
 // table (§3 Event mapping). It is total: fields of the wrong type read as empty,
-// and a kind agent-server 1.49.6 did not have becomes a harness_event
-// state_changed that records the kind and nothing the event said.
+// a kind agent-server 1.49.6 did not have becomes a harness_event state_changed
+// that records the kind and nothing the event said, and a Malformed event one
+// that records only "malformed".
 func Map(e RawEvent, runID string) []Mapped {
+	if e.Malformed {
+		// Still one item: the room shows that the harness wrote something here.
+		return []Mapped{state("harness_event", map[string]string{"harnessKind": "malformed"})}
+	}
 	if dropped[e.Kind] {
 		return nil
 	}
@@ -129,7 +150,9 @@ func Map(e RawEvent, runID string) []Mapped {
 		SecurityRisk string          `json:"security_risk"`
 		Observation  struct {
 			Content []textPart `json:"content"`
-			IsError bool       `json:"is_error"`
+			// Not in the brief's fixtures: verify against 1.49.6's Observation.
+			// Without it an error observation maps to ok, a degradation only.
+			IsError bool `json:"is_error"`
 		} `json:"observation"`
 		RejectionReason string `json:"rejection_reason"`
 		Error           string `json:"error"`
@@ -139,9 +162,10 @@ func Map(e RawEvent, runID string) []Mapped {
 	// A type mismatch leaves that field empty and the rest decoded.
 	_ = json.Unmarshal(e.Raw, &f)
 	result := func(status, out string) Mapped {
-		t := cut(out, envelope.MaxToolOutput)
-		return fitted(envelope.ToolResult, envelope.Must(envelope.ToolResultPayload{CallID: f.ToolCallID,
-			Status: status, Output: t, Truncated: len(t) < len(out), Bytes: len(out)}))
+		return fitText(envelope.ToolResult, cut(out, envelope.MaxToolOutput), func(kept string) json.RawMessage {
+			return envelope.Must(envelope.ToolResultPayload{CallID: f.ToolCallID, Status: status, Output: kept,
+				Truncated: len(kept) < len(out), Bytes: len(out)})
+		})
 	}
 	switch e.Kind {
 	case "MessageEvent":

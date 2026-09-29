@@ -22,6 +22,7 @@ type fakeAgentServer struct {
 	responses []bool
 	policy    string
 	pageSize  int
+	limits    []int
 }
 
 func (f *fakeAgentServer) add(ev map[string]any) {
@@ -29,6 +30,20 @@ func (f *fakeAgentServer) add(ev map[string]any) {
 	defer f.mu.Unlock()
 	ev["id"] = "e" + strconv.Itoa(len(f.events)+1)
 	f.events = append(f.events, ev)
+}
+
+// addAsIs appends ev with whatever id it has, or none: a malformed event.
+func (f *fakeAgentServer) addAsIs(ev map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, ev)
+}
+
+// asked is the limit of every page request so far.
+func (f *fakeAgentServer) asked() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int{}, f.limits...)
 }
 
 // snapshot copies what the fake received, under its lock (the gate runs -race).
@@ -58,7 +73,12 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 				}
 			}
 		}
-		end := min(start+f.pageSize, len(f.events))
+		size := f.pageSize
+		if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+			f.limits = append(f.limits, l)
+			size = min(size, l)
+		}
+		end := min(start+size, len(f.events))
 		var next any
 		if end < len(f.events) {
 			next = f.events[end]["id"]

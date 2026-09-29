@@ -35,16 +35,24 @@ func TestTheBridgeMappingPassesTheAcceptRules(t *testing.T) {
 		{"kind": "InterruptEvent"},
 		{"kind": huge, "callId": "forged", "verdict": "approve"},
 		{"kind": "ActionEvent", "tool_call_id": 42, "thought": "not a list", "action": "ls"},
+		{"kind": "MessageEvent", "llm_message": map[string]any{"content": text(strings.Repeat("\x02é<", 1<<15))}},
 	}
-	var items []bridge.Mapped
+	var raws []string
 	for i, ev := range events {
 		ev["id"] = "e" + string(rune('a'+i))
 		b, err := json.Marshal(ev)
 		if err != nil {
 			t.Fatal(err)
 		}
+		raws = append(raws, string(b))
+	}
+	// Malformed events: no id, an id or kind of the wrong type, not an object.
+	raws = append(raws, `{"kind":"ActionEvent","tool_call_id":"c9"}`, `{"id":42,"kind":"MessageEvent"}`,
+		`{"id":"ez","kind":["ActionEvent"]}`, `[1,2]`, `null`)
+	var items []bridge.Mapped
+	for _, r := range raws {
 		var e bridge.RawEvent
-		if err := json.Unmarshal(b, &e); err != nil {
+		if err := json.Unmarshal([]byte(r), &e); err != nil {
 			t.Fatal(err)
 		}
 		items = append(items, bridge.Map(e, runA)...)
