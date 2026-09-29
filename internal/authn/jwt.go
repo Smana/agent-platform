@@ -46,6 +46,10 @@ var (
 	ErrWrongAudience = fmt.Errorf("%w: wrong audience", ErrUnauthenticated)
 	// ErrUnknownKey is a token whose kid the issuer's JWKS does not publish.
 	ErrUnknownKey = fmt.Errorf("%w: unknown signing key", ErrUnauthenticated)
+	// ErrKeysStale is a token whose key was last confirmed by the issuer longer
+	// ago than the stale cap: an outage long enough that a rotated-out key could
+	// still be in our hands.
+	ErrKeysStale = fmt.Errorf("%w: issuer keys past the stale cap", ErrUnauthenticated)
 )
 
 // validMethods pins the algorithms: the asymmetric ones Kubernetes and ZITADEL
@@ -73,6 +77,7 @@ type Verifier struct {
 	issuer string
 	keys   keyLookup
 	now    func() time.Time
+	jwks   *jwksCache // nil for NewVerifierWithKeyfunc
 }
 
 // Option configures a Verifier.
@@ -84,6 +89,7 @@ type options struct {
 	now         func() time.Time
 	ttl         time.Duration
 	minInterval time.Duration
+	maxStale    time.Duration
 }
 
 // WithClock replaces time.Now for token expiry and the JWKS cache.
@@ -105,10 +111,14 @@ func WithMinRefreshInterval(d time.Duration) Option {
 	return func(o *options) { o.minInterval = d }
 }
 
+// WithMaxStale sets how long held keys keep verifying after the last
+// successful fetch while the issuer is unreachable (default 24 h).
+func WithMaxStale(d time.Duration) Option { return func(o *options) { o.maxStale = d } }
+
 func newOptions(opts []Option) options {
 	o := options{
 		log: slog.New(slog.DiscardHandler), now: time.Now,
-		ttl: time.Hour, minInterval: time.Minute,
+		ttl: time.Hour, minInterval: time.Minute, maxStale: 24 * time.Hour,
 	}
 	for _, opt := range opts {
 		opt(&o)
@@ -118,8 +128,10 @@ func newOptions(opts []Option) options {
 
 // NewVerifier fetches the issuer's JWKS now, through the audited egress client,
 // and refetches it on use once it is older than the cache TTL or when a token
-// names an unknown kid, never more often than the minimum refresh interval. A
-// JWKS that cannot be fetched or holds no usable key fails construction.
+// names an unknown kid, never more often than the minimum refresh interval.
+// Held keys stop verifying once the last successful fetch is older than the
+// stale cap. A JWKS that cannot be fetched or holds no usable key fails
+// construction.
 func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*Verifier, error) {
 	if issuer == "" {
 		return nil, errors.New("authn: an issuer is required")
@@ -129,10 +141,22 @@ func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := c.refresh(ctx, o.now()); err != nil {
+	c.sem <- struct{}{} // not shared yet: never blocks
+	err = c.refreshHeld(ctx)
+	<-c.sem
+	if err != nil {
 		return nil, fmt.Errorf("authn: initial JWKS fetch for %s: %w", issuer, err)
 	}
-	return &Verifier{issuer: issuer, keys: c.lookup, now: o.now}, nil
+	return &Verifier{issuer: issuer, keys: c.lookup, now: o.now, jwks: c}, nil
+}
+
+// LastRefresh is when the issuer's keys were last fetched successfully; zero
+// for a Verifier built on a key function. The metrics set gauges its age.
+func (v *Verifier) LastRefresh() time.Time {
+	if v.jwks == nil {
+		return time.Time{}
+	}
+	return v.jwks.lastRefresh()
 }
 
 // NewVerifierWithKeyfunc builds a Verifier on a caller's key function, for tests
@@ -161,6 +185,11 @@ func (v *Verifier) Verify(ctx context.Context, raw, audience string) (*Claims, e
 		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(clockSkew), jwt.WithTimeFunc(v.now))
 	if err != nil {
 		return nil, classify(err)
+	}
+	// jwt matches when any aud element does. A token minted for several
+	// audiences is refused: one presented here must be good for nothing else.
+	if len(c.Audience) != 1 || c.Audience[0] != audience {
+		return nil, fmt.Errorf("%w: want exactly one audience", ErrWrongAudience)
 	}
 	return c, nil
 }
@@ -200,6 +229,11 @@ type Principal struct {
 
 // String is the principal's id, so %v and %+v never print AccessToken.
 func (p Principal) String() string { return p.ID }
+
+// GoString keeps AccessToken out of %#v.
+func (p Principal) GoString() string {
+	return fmt.Sprintf("authn.Principal{Kind:%q, ID:%q, RunID:%q}", p.Kind, p.ID, p.RunID)
+}
 
 // LogValue keeps AccessToken out of every log line that carries a Principal.
 func (p Principal) LogValue() slog.Value {

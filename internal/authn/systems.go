@@ -32,7 +32,7 @@ func (s *Systems) Authenticate(req *http.Request) (Principal, error) {
 	}
 	id, ok := s.allow[c.Subject]
 	if !ok {
-		return Principal{}, fmt.Errorf("%w: %q is not an allowlisted system principal", ErrForbidden, c.Subject)
+		return Principal{}, fmt.Errorf("%w: the subject is not an allowlisted system principal", ErrForbidden)
 	}
 	return Principal{Kind: envelope.ActorSystem, ID: id, Sub: c.Subject, Expiry: c.ExpiresAt.Time}, nil
 }

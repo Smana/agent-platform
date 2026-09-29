@@ -67,6 +67,7 @@ func TestCloudMetadataAddressesAreRefused(t *testing.T) {
 		"http://169.254.170.2/v2/credentials",              // ECS task role
 		"http://[fd00:ec2::254]/latest/meta-data/",         // IMDS over IPv6
 		"http://[fd00:ec2::23]/v1/credentials",             // Pod Identity over IPv6
+		"http://[fd20:ce::254]/computeMetadata/v1/",        // GCE metadata over IPv6
 		"http://[::ffff:169.254.169.254]/latest/api/token", // IPv4-mapped
 		"http://[fe80::1]/",                                // any link-local
 	} {

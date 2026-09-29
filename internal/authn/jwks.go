@@ -16,7 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -39,9 +39,20 @@ type publicKey struct {
 	alg string
 }
 
-// jwksCache holds one issuer's keys. The mutex is held across a fetch on
-// purpose: concurrent misses wait for that one fetch instead of each starting
-// their own. The fetch is bounded by the client's timeout.
+// keySet is one successful fetch. It is never mutated once published, so
+// lookups read it without a lock.
+type keySet struct {
+	keys    map[string]publicKey
+	fetched time.Time
+}
+
+// jwksCache holds one issuer's keys.
+//
+// Reads never wait: a fresh kid is served from the published snapshot while a
+// fetch is in flight. Fetches are single-flight behind sem, and run on a
+// context the caller cannot cancel, so a client that sends a random kid and
+// disconnects neither aborts the fetch nor burns the refresh interval: the
+// fetch it started still loads a rotated key.
 type jwksCache struct {
 	url         string
 	client      *http.Client
@@ -49,11 +60,11 @@ type jwksCache struct {
 	now         func() time.Time
 	ttl         time.Duration
 	minInterval time.Duration
+	maxStale    time.Duration
 
-	mu        sync.Mutex
-	keys      map[string]publicKey
-	fetched   time.Time // last successful fetch
-	attempted time.Time // last fetch, successful or not
+	snap      atomic.Pointer[keySet]
+	sem       chan struct{} // capacity 1: held by the one fetch in flight
+	attempted time.Time     // last fetch started; guarded by sem
 }
 
 func newJWKSCache(jwksURL string, o options) (*jwksCache, error) {
@@ -67,8 +78,14 @@ func newJWKSCache(jwksURL string, o options) (*jwksCache, error) {
 	if o.client == nil {
 		o.client = httpx.New(jwksTimeout, nil)
 	}
-	return &jwksCache{url: jwksURL, client: o.client, log: o.log, now: o.now, ttl: o.ttl, minInterval: o.minInterval}, nil
+	c := &jwksCache{url: jwksURL, client: o.client, log: o.log, now: o.now,
+		ttl: o.ttl, minInterval: o.minInterval, maxStale: o.maxStale, sem: make(chan struct{}, 1)}
+	c.snap.Store(&keySet{})
+	return c, nil
 }
+
+// lastRefresh is when the held keys were fetched; zero before the first fetch.
+func (c *jwksCache) lastRefresh() time.Time { return c.snap.Load().fetched }
 
 // lookup is the Verifier's key function: the key a token's kid names, if it
 // verifies the token's algorithm.
@@ -89,62 +106,94 @@ func (c *jwksCache) lookup(ctx context.Context, t *jwt.Token) (any, error) {
 }
 
 func (c *jwksCache) get(ctx context.Context, kid string) (publicKey, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now()
-	k, known := c.keys[kid]
-	if known && now.Sub(c.fetched) < c.ttl {
+	set := c.snap.Load()
+	k, known := set.keys[kid]
+	if known && c.now().Sub(set.fetched) < c.ttl {
 		return k, nil
 	}
-	if now.Sub(c.attempted) < c.minInterval {
-		if known {
-			return k, nil
+	if known {
+		// Stale but held: refresh only if no fetch is in flight, and never wait.
+		select {
+		case c.sem <- struct{}{}:
+			_ = c.refreshHeld(ctx)
+			<-c.sem
+		default:
 		}
-		c.log.DebugContext(ctx, "jwks refresh rate-limited", "url", c.url)
-		return publicKey{}, fmt.Errorf("%w: refresh rate-limited", ErrUnknownKey)
-	}
-	if err := c.refresh(ctx, now); err != nil {
-		// A key we already hold outlives an issuer outage; an unknown one cannot.
-		c.log.WarnContext(ctx, "jwks refresh failed", "url", c.url, "stale", known, "error", err)
-		if known {
-			return k, nil
+	} else {
+		// Unknown: wait for the fetch in flight, or start one.
+		select {
+		case c.sem <- struct{}{}:
+		case <-ctx.Done():
+			return publicKey{}, fmt.Errorf("%w: %w", ErrUnknownKey, ctx.Err())
 		}
-		return publicKey{}, fmt.Errorf("%w: %w", ErrUnknownKey, err)
+		err := c.refreshHeld(ctx)
+		<-c.sem
+		if errors.Is(err, errRateLimited) {
+			c.log.DebugContext(ctx, "jwks refresh rate-limited", "url", c.url)
+		}
 	}
-	if k, ok := c.keys[kid]; ok {
-		return k, nil
+	set = c.snap.Load()
+	k, known = set.keys[kid]
+	switch {
+	case !known:
+		return publicKey{}, ErrUnknownKey
+	case c.now().Sub(set.fetched) >= c.maxStale:
+		return publicKey{}, ErrKeysStale
 	}
-	return publicKey{}, ErrUnknownKey
+	return k, nil
 }
 
-// refresh fetches and replaces the key set. Callers hold mu, except
-// NewVerifier, which runs it before the cache is shared.
-func (c *jwksCache) refresh(ctx context.Context, now time.Time) error {
+var errRateLimited = errors.New("jwks refresh rate-limited")
+
+// refreshHeld fetches unless one started within the interval. The caller holds
+// sem. A caller already gone does not stamp the attempt, so it cannot spend the
+// interval for everyone else.
+func (c *jwksCache) refreshHeld(ctx context.Context) error {
+	now := c.now()
+	if now.Sub(c.attempted) < c.minInterval {
+		return errRateLimited
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("jwks refresh: %w", err)
+	}
 	c.attempted = now
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jwksTimeout)
+	defer cancel()
+	keys, err := c.fetch(fctx)
+	if err != nil {
+		held := c.snap.Load()
+		age := now.Sub(held.fetched)
+		if len(held.keys) > 0 && age < c.maxStale {
+			c.log.WarnContext(ctx, "jwks refresh failed; serving held keys", "url", c.url, "age", age, "error", err)
+		} else {
+			c.log.ErrorContext(ctx, "jwks refresh failed; held keys past the stale cap", "url", c.url, "age", age, "error", err)
+		}
+		return err
+	}
+	c.snap.Store(&keySet{keys: keys, fetched: now})
+	c.log.DebugContext(ctx, "jwks refreshed", "url", c.url, "keys", len(keys))
+	return nil
+}
+
+func (c *jwksCache) fetch(ctx context.Context) (map[string]publicKey, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
-		return fmt.Errorf("jwks request: %w", err)
+		return nil, fmt.Errorf("jwks request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("jwks fetch: %w", err)
+		return nil, fmt.Errorf("jwks fetch: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("jwks fetch: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("jwks fetch: status %d", resp.StatusCode)
 	}
 	body, err := httpx.ReadBody(resp.Body, maxJWKSBytes)
 	if err != nil {
-		return fmt.Errorf("jwks fetch: %w", err)
+		return nil, fmt.Errorf("jwks fetch: %w", err)
 	}
-	keys, err := parseJWKS(body)
-	if err != nil {
-		return err
-	}
-	c.keys, c.fetched = keys, now
-	c.log.DebugContext(ctx, "jwks refreshed", "url", c.url, "keys", len(keys))
-	return nil
+	return parseJWKS(body)
 }
 
 type rawJWK struct {

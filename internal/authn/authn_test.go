@@ -22,6 +22,49 @@ const runSub = "system:serviceaccount:agents:xplane-run-7f3cq2xz"
 
 var runPattern = regexp.MustCompile(`^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$`)
 
+func mustRuns(t *testing.T, issuers ...RunIssuer) *Runs {
+	t.Helper()
+	r, err := NewRuns(issuers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestNewRunsRefuses(t *testing.T) {
+	v := newSigner(t).verifier()
+	cases := map[string][]RunIssuer{
+		"no issuer":            nil,
+		"no verifier":          {{SubPattern: runPattern}},
+		"no pattern":           {{Verifier: v}},
+		"no capture group":     {{Verifier: v, SubPattern: regexp.MustCompile(`^xplane-run-[a-z2-7]{8}$`)}},
+		"two capture groups":   {{Verifier: v, SubPattern: regexp.MustCompile(`^(xplane)-run-([a-z2-7]{8})$`)}},
+		"one good, one broken": {{Verifier: v, SubPattern: runPattern}, {Verifier: v}},
+	}
+	for name, issuers := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewRuns(issuers...); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+}
+
+// Error text reaches logs; the subject claim must not ride along (package doc).
+func TestRefusalsNeverEchoTheSubject(t *testing.T) {
+	s := newSigner(t)
+	const odd = "system:serviceaccount:elsewhere:not-a-run"
+	runs := mustRuns(t, RunIssuer{Verifier: s.verifier(), SubPattern: runPattern})
+	_, runErr := runs.Authenticate(request(t, s.token(t, issuer, odd, AudienceRun, time.Minute)))
+	sys := NewSystems(s.verifier(), map[string]string{})
+	_, sysErr := sys.Authenticate(request(t, s.token(t, issuer, odd, AudienceSystem, time.Minute)))
+	for name, err := range map[string]error{"runs": runErr, "systems": sysErr} {
+		if err == nil || strings.Contains(err.Error(), odd) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func request(t *testing.T, token string) *http.Request {
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/bridge/hello", nil)
 	if token != "" {
@@ -32,7 +75,7 @@ func request(t *testing.T, token string) *http.Request {
 
 func TestRunTokens(t *testing.T) {
 	s := newSigner(t)
-	runs := NewRuns(RunIssuer{Verifier: s.verifier(), SubPattern: runPattern})
+	runs := mustRuns(t, RunIssuer{Verifier: s.verifier(), SubPattern: runPattern})
 	cases := map[string]struct {
 		token string
 		ok    bool
@@ -62,7 +105,7 @@ func TestRunTokens(t *testing.T) {
 // contains a run's name.
 func TestRunSubjectMustMatchWhole(t *testing.T) {
 	s := newSigner(t)
-	runs := NewRuns(RunIssuer{Verifier: s.verifier(), SubPattern: regexp.MustCompile(`xplane-run-([a-z2-7]{8})`)})
+	runs := mustRuns(t, RunIssuer{Verifier: s.verifier(), SubPattern: regexp.MustCompile(`xplane-run-([a-z2-7]{8})`)})
 	tok := s.token(t, issuer, "system:serviceaccount:evil:xplane-run-7f3cq2xz-x", AudienceRun, time.Minute)
 	if _, err := runs.Authenticate(request(t, tok)); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("a partial subject match was accepted: %v", err)
@@ -75,7 +118,7 @@ func TestRunsRouteByIssuer(t *testing.T) {
 	a, b := newSigner(t), newSigner(t)
 	const issuerB = "https://container.googleapis.com/v1/projects/p/locations/l/clusters/c"
 	var aCalls int
-	runs := NewRuns(
+	runs := mustRuns(t,
 		RunIssuer{Verifier: NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) {
 			aCalls++
 			return &a.key.PublicKey, nil
@@ -146,13 +189,16 @@ func TestVerify(t *testing.T) {
 		raw  string
 		want error // nil accepts; every refusal must also be ErrUnauthenticated
 	}{
-		"valid":                        {raw: valid},
-		"expired within the skew":      {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = at(-20 * time.Second) })},
-		"expired past the skew":        {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = at(-31 * time.Second) }), want: ErrTokenExpired},
-		"not before, within the skew":  {raw: rs256(func(c *jwt.RegisteredClaims) { c.NotBefore = at(20 * time.Second) })},
-		"not before, past the skew":    {raw: rs256(func(c *jwt.RegisteredClaims) { c.NotBefore = at(time.Minute) }), want: ErrTokenNotYetValid},
-		"issued in the future":         {raw: rs256(func(c *jwt.RegisteredClaims) { c.IssuedAt = at(time.Minute) }), want: ErrTokenNotYetValid},
-		"no expiry":                    {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = nil }), want: ErrUnauthenticated},
+		"valid":                       {raw: valid},
+		"expired within the skew":     {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = at(-20 * time.Second) })},
+		"expired past the skew":       {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = at(-31 * time.Second) }), want: ErrTokenExpired},
+		"not before, within the skew": {raw: rs256(func(c *jwt.RegisteredClaims) { c.NotBefore = at(20 * time.Second) })},
+		"not before, past the skew":   {raw: rs256(func(c *jwt.RegisteredClaims) { c.NotBefore = at(time.Minute) }), want: ErrTokenNotYetValid},
+		"issued in the future":        {raw: rs256(func(c *jwt.RegisteredClaims) { c.IssuedAt = at(time.Minute) }), want: ErrTokenNotYetValid},
+		"no expiry":                   {raw: rs256(func(c *jwt.RegisteredClaims) { c.ExpiresAt = nil }), want: ErrUnauthenticated},
+		"several audiences, ours among them": {raw: rs256(func(c *jwt.RegisteredClaims) {
+			c.Audience = jwt.ClaimStrings{"agent-router.implementer.public", AudienceRun, AudienceSystem}
+		}), want: ErrWrongAudience},
 		"wrong audience":               {raw: rs256(func(c *jwt.RegisteredClaims) { c.Audience = jwt.ClaimStrings{AudienceSystem} }), want: ErrWrongAudience},
 		"wrong issuer":                 {raw: rs256(func(c *jwt.RegisteredClaims) { c.Issuer = "https://evil.example" }), want: ErrWrongIssuer},
 		"alg none":                     {raw: sign(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, "", claims(nil)), want: ErrUnauthenticated},
@@ -219,7 +265,7 @@ func TestPrincipalNeverPrintsTheAccessToken(t *testing.T) {
 	var logged bytes.Buffer
 	slog.New(slog.NewJSONHandler(&logged, nil)).Info("caller", "principal", p)
 	for name, out := range map[string]string{
-		"%v": fmt.Sprintf("%v", p), "%+v": fmt.Sprintf("%+v", p), "slog": logged.String(),
+		"%v": fmt.Sprintf("%v", p), "%+v": fmt.Sprintf("%+v", p), "%#v": fmt.Sprintf("%#v", p), "slog": logged.String(),
 	} {
 		if strings.Contains(out, secret) {
 			t.Errorf("%s shows the access token: %s", name, out)

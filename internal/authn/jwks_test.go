@@ -41,20 +41,36 @@ func ecJWK(t *testing.T, kid, crv string, k *ecdsa.PublicKey) map[string]string 
 	return map[string]string{"kty": "EC", "kid": kid, "crv": crv, "x": b64(pt[1 : 1+n]), "y": b64(pt[1+n:])}
 }
 
-// issuerServer serves a JWKS the test can swap, break and count.
+// issuerServer serves a JWKS the test can swap, break, stall and count.
 type issuerServer struct {
-	srv    *httptest.Server
-	hits   atomic.Int32
-	mu     sync.Mutex
-	body   []byte
-	status int
+	srv     *httptest.Server
+	hits    atomic.Int32
+	arrived chan struct{} // one send per request
+	mu      sync.Mutex
+	body    []byte
+	status  int
+	hold    chan struct{} // when set, a request waits for it to close
 }
 
 func newIssuerServer(t *testing.T, keys ...map[string]string) *issuerServer {
-	s := &issuerServer{status: http.StatusOK}
+	s := &issuerServer{status: http.StatusOK, arrived: make(chan struct{}, 64)}
 	s.publish(t, keys...)
-	s.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	s.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
+		select { // never block the handler; tests that wait drain first
+		case s.arrived <- struct{}{}:
+		default:
+		}
+		s.mu.Lock()
+		hold := s.hold
+		s.mu.Unlock()
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		w.WriteHeader(s.status)
@@ -62,6 +78,31 @@ func newIssuerServer(t *testing.T, keys ...map[string]string) *issuerServer {
 	}))
 	t.Cleanup(s.srv.Close)
 	return s
+}
+
+// stall makes every request wait until the returned release is called.
+func (s *issuerServer) stall() (release func()) {
+	hold := make(chan struct{})
+	s.mu.Lock()
+	s.hold = hold
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.hold = nil
+		s.mu.Unlock()
+		close(hold)
+	}
+}
+
+// drain forgets the arrivals so far.
+func (s *issuerServer) drain() {
+	for {
+		select {
+		case <-s.arrived:
+		default:
+			return
+		}
+	}
 }
 
 func (s *issuerServer) publish(t *testing.T, keys ...map[string]string) {

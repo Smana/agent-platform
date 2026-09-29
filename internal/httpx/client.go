@@ -43,11 +43,12 @@ var (
 // drops Proxy-Authorization.
 var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "Cookie"}
 
-// metadataIPv6 are the IPv6 metadata endpoints outside fe80::/10: AWS IMDS and
-// the EKS Pod Identity agent.
+// metadataIPv6 are the IPv6 metadata endpoints outside fe80::/10: AWS IMDS,
+// the EKS Pod Identity agent and the GCE metadata server.
 var metadataIPv6 = []netip.Addr{
 	netip.MustParseAddr("fd00:ec2::254"),
 	netip.MustParseAddr("fd00:ec2::23"),
+	netip.MustParseAddr("fd20:ce::254"),
 }
 
 // New returns the egress client. A timeout ≤ 0 means DefaultTimeout. roots, when

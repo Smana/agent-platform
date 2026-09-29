@@ -22,8 +22,19 @@ type RunIssuer struct {
 // Runs authenticates run bridges against the allowlisted issuers.
 type Runs struct{ issuers []RunIssuer }
 
-// NewRuns allowlists issuers, tried in order.
-func NewRuns(issuers ...RunIssuer) *Runs { return &Runs{issuers: issuers} }
+// NewRuns allowlists issuers, tried in order. Each needs a Verifier and a
+// SubPattern with exactly one capture group.
+func NewRuns(issuers ...RunIssuer) (*Runs, error) {
+	if len(issuers) == 0 {
+		return nil, errors.New("authn: at least one run issuer is required")
+	}
+	for i, is := range issuers {
+		if is.Verifier == nil || is.SubPattern == nil || is.SubPattern.NumSubexp() != 1 {
+			return nil, fmt.Errorf("authn: run issuer %d needs a Verifier and a SubPattern with one capture group", i)
+		}
+	}
+	return &Runs{issuers: issuers}, nil
+}
 
 // Authenticate maps a bridge's token to agent:<runId>. It does NOT check that the
 // run is live: the caller does, against the AgentRun watch.
@@ -44,7 +55,7 @@ func (r *Runs) Authenticate(req *http.Request) (Principal, error) {
 		// subject that merely contains a run's name.
 		m := is.SubPattern.FindStringSubmatch(c.Subject)
 		if len(m) != 2 || m[0] != c.Subject || !envelope.ValidID(m[1]) {
-			return Principal{}, fmt.Errorf("%w: subject %q names no run", ErrUnauthenticated, c.Subject)
+			return Principal{}, fmt.Errorf("%w: the subject names no run", ErrUnauthenticated)
 		}
 		return Principal{Kind: envelope.ActorAgent, ID: "agent:" + m[1], RunID: m[1], Sub: c.Subject,
 			Expiry: c.ExpiresAt.Time}, nil
