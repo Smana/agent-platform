@@ -43,8 +43,9 @@ tasks:
       # controller-gen always writes //go:build first, and hack/spdx.sh wants the
       # license line there; Go allows line comments before the constraint.
       - |
-        f=api/v1alpha1/zz_generated.deepcopy.go
-        { printf '// SPDX-License-Identifier: Apache-2.0\n\n'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
+        for f in api/v1alpha1/zz_generated.deepcopy.go api/factory/v1alpha1/zz_generated.deepcopy.go; do
+          { printf '// SPDX-License-Identifier: Apache-2.0\n\n'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
+        done
 
   crd:check:
     desc: The committed CRD is exactly what the types generate.
