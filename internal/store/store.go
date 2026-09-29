@@ -19,6 +19,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 )
 
+// The store's sentinel errors; callers compare with errors.Is.
 var (
 	ErrNoRoom           = errors.New("no such room")
 	ErrSealed           = errors.New("room is sealed")
@@ -26,6 +27,7 @@ var (
 	ErrInvalidRetention = errors.New("retention must be positive")
 )
 
+// Store is the room log over a PostgreSQL pool, connected as rooms_broker.
 type Store struct {
 	pool      *pgxpool.Pool
 	MaxEvents int64
@@ -58,7 +60,10 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, Now: time.Now}, nil
 }
 
-func (s *Store) Close()                         { s.pool.Close() }
+// Close releases the pool.
+func (s *Store) Close() { s.pool.Close() }
+
+// Ping backs /readyz: PostgreSQL answers.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // SchemaReady backs /startupz: the Atlas migration has run.
@@ -235,6 +240,7 @@ func (s *Store) closeRoom(ctx context.Context, roomID, reason string) error {
 	return tx.Commit(ctx)
 }
 
+// Range returns up to limit events of the room after afterSeq, in seq order.
 func (s *Store) Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+cols+` FROM events WHERE room_id = $1 AND seq > $2
 		ORDER BY seq LIMIT $3`, roomID, afterSeq, limit)
@@ -253,6 +259,8 @@ func (s *Store) Range(ctx context.Context, roomID string, afterSeq int64, limit 
 	return out, rows.Err()
 }
 
+// Cursor is the highest origin_seq stored for originClient in the room, 0 if none:
+// where a reconnecting writer resumes.
 func (s *Store) Cursor(ctx context.Context, roomID, originClient string) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `SELECT coalesce(max(origin_seq), 0) FROM events

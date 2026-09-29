@@ -25,6 +25,7 @@ type Room struct {
 	Status            RoomStatus `json:"status,omitempty"`
 }
 
+// RoomList is a list of Rooms.
 // +kubebuilder:object:root=true
 type RoomList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -32,6 +33,7 @@ type RoomList struct {
 	Items           []Room `json:"items"`
 }
 
+// RoomSpec is who owns and drives the room, who may join, and its policies.
 type RoomSpec struct {
 	// A principal, "human:<sub>" or "system:<name>". OIDC Core §2 caps a sub at 255
 	// characters, hence 261 with the "human:" prefix, here and for every principal.
@@ -65,6 +67,7 @@ type RoomSpec struct {
 	Repository string `json:"repository,omitempty"`
 }
 
+// Member is a human admitted to the room, with a role and the approver flag.
 type Member struct {
 	// +kubebuilder:validation:Pattern=`^human:[A-Za-z0-9@._-]+$`
 	// +kubebuilder:validation:MaxLength=261
@@ -76,6 +79,7 @@ type Member struct {
 	Approver bool `json:"approver,omitempty"`
 }
 
+// Approvals is the room's approval policy (§6).
 type Approvals struct {
 	// +kubebuilder:default=attended
 	// +kubebuilder:validation:Enum=attended;unattended
@@ -96,6 +100,7 @@ type Approvals struct {
 	FourEyes bool `json:"fourEyes,omitempty"`
 }
 
+// RoomStatus mirrors the log: phase, last seq, driver and pending approvals.
 type RoomStatus struct {
 	// +kubebuilder:validation:Enum=Open;Active;Idle;AwaitingHuman;Closed
 	// +optional

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package redact removes secrets before anything reaches the log (SP2 §4, T8).
 // It uses gitleaks' default rules; the test pins the four the design names.
 package redact
@@ -12,6 +14,7 @@ import (
 	"github.com/zricethezav/gitleaks/v8/detect"
 )
 
+// Redactor applies gitleaks' default rules to text and JSON payloads.
 type Redactor struct{ cfg config.Config }
 
 // New parses gitleaks' default configuration once.

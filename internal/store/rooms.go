@@ -11,12 +11,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// NewRoom is what EnsureRoom needs from a Room CR.
 type NewRoom struct {
 	ID        string
 	Driver    string // spec.driver: the initial holder, and the system fallback
 	Retention time.Duration
 }
 
+// RoomState is a room's row as the broker reads it.
 type RoomState struct {
 	ID          string
 	LastSeq     int64
@@ -45,6 +47,7 @@ func (s *Store) EnsureRoom(ctx context.Context, r NewRoom) (bool, error) {
 	return tag.RowsAffected() == 1, nil
 }
 
+// Room reads a room's state, or ErrNoRoom.
 func (s *Store) Room(ctx context.Context, id string) (RoomState, error) {
 	st := RoomState{ID: id}
 	err := s.pool.QueryRow(ctx, `SELECT last_seq, driver, driver_epoch, sealed, closed_at, last_event_at

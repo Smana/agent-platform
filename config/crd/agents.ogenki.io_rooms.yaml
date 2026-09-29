@@ -55,6 +55,8 @@ spec:
           metadata:
             type: object
           spec:
+            description: RoomSpec is who owns and drives the room, who may join, and
+              its policies.
             properties:
               approvals:
                 default: {}
@@ -103,6 +105,8 @@ spec:
                 description: Runs join through their own spec.roomRef, never through
                   this list.
                 items:
+                  description: Member is a human admitted to the room, with a role
+                    and the approver flag.
                   properties:
                     approver:
                       type: boolean
@@ -147,6 +151,8 @@ spec:
             - owner
             type: object
           status:
+            description: 'RoomStatus mirrors the log: phase, last seq, driver and
+              pending approvals.'
             properties:
               driver:
                 type: string

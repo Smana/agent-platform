@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package v1alpha1 holds the Room API (SP2 §1).
 // +kubebuilder:object:generate=true
 // +groupName=agents.ogenki.io

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package envelope is the C4 event envelope, frozen at v1 (programme C4). SP2 owns it.
 package envelope
 
@@ -9,6 +11,7 @@ import (
 	"time"
 )
 
+// Envelope version and the size limits the broker enforces.
 const (
 	Version         = 1
 	MaxPayload      = 64 << 10 // C4
@@ -21,8 +24,10 @@ var idRE = regexp.MustCompile(`^[a-z2-7]{8}$`)
 // ValidID reports whether s is a C2 id: 8 characters of lowercase unpadded base32.
 func ValidID(s string) bool { return idRE.MatchString(s) }
 
+// ActorKind is who acted: an agent run, a human, or the platform.
 type ActorKind string
 
+// The three actor kinds.
 const (
 	ActorAgent  ActorKind = "agent"
 	ActorHuman  ActorKind = "human"
@@ -36,8 +41,10 @@ type Actor struct {
 	Role string    `json:"role,omitempty"`
 }
 
+// Type is an event's kind, one of the ten C4 types.
 type Type string
 
+// The ten C4 event types.
 const (
 	Message           Type = "message"
 	Turn              Type = "turn"
@@ -51,14 +58,20 @@ const (
 	StateChanged      Type = "state_changed"
 )
 
-var types = map[Type]bool{Message: true, Turn: true, ToolCall: true, ToolResult: true,
-	ApprovalRequested: true, ApprovalDecided: true, Participant: true, Driver: true,
-	Handoff: true, StateChanged: true}
+// Valid reports whether t is one of the ten C4 types.
+func (t Type) Valid() bool {
+	switch t {
+	case Message, Turn, ToolCall, ToolResult, ApprovalRequested, ApprovalDecided,
+		Participant, Driver, Handoff, StateChanged:
+		return true
+	}
+	return false
+}
 
-func (t Type) Valid() bool { return types[t] }
-
+// Origin is the path an event came in by.
 type Origin string
 
+// The three origins.
 const (
 	OriginHarness Origin = "harness"
 	OriginBroker  Origin = "broker"
@@ -97,6 +110,8 @@ type Draft struct {
 	Payload      json.RawMessage
 }
 
+// Validate checks everything the store cannot fix itself: ids, type, actor, origin,
+// idempotency scope and a JSON payload. It does not cap the payload's size; Append does.
 func (d Draft) Validate() error {
 	switch {
 	case !ValidID(d.RoomID):
