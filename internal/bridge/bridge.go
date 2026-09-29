@@ -1,0 +1,642 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package bridge
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
+
+	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/wire"
+)
+
+const (
+	// flushGrace bounds the drain after SIGTERM, inside the pod's 30 s grace.
+	flushGrace = 25 * time.Second
+	// unreachableFail is how long the harness may be silent, once seen, before
+	// /healthz fails (ruling P6).
+	unreachableFail = 60 * time.Second
+	// batchItems is the most items a batch carries; the broker takes 500.
+	batchItems = 100
+	// maxBatchBytes is the broker's body cap (bridgeapi: 2 MiB), measured on the
+	// encoded batch, JSON escaping included. A broker with a smaller cap
+	// answers 413, and the batch is halved.
+	maxBatchBytes = 2 << 20
+	// maxRetryWait caps a Retry-After, so a broker's answer cannot park the bridge.
+	maxRetryWait = 30 * time.Second
+
+	defaultInterval   = time.Second
+	defaultMinBackoff = 250 * time.Millisecond
+	defaultMaxBackoff = 30 * time.Second
+	// DefaultMaxBuffer is the MaxBuffer a zero value means: 8 MiB of encoded
+	// items, inside the sidecar's 64 Mi limit next to one harness page.
+	DefaultMaxBuffer = 8 << 20
+
+	metricStalls  = "rooms_bridge_harness_stalls_total"
+	metricStubbed = "rooms_bridge_items_stubbed_total"
+)
+
+// The reasons the harness's log stops moving: each is an adapter error that
+// holds the cursor where it is (Task 1.10). They label rooms_bridge_harness_stalls_total
+// and are the code of the harness_error the room is told.
+const (
+	StallEventTooLarge      = "event_too_large"
+	StallCursorLost         = "cursor_lost"
+	StallNextPageUnreadable = "next_page_unreadable"
+)
+
+// The reasons an item is replaced by a stub in its slot, labelling
+// rooms_bridge_items_stubbed_total.
+const (
+	StubOversize = "oversize" // alone over the broker's body cap
+	StubRefused  = "refused"  // refused by the broker for what it is (400)
+)
+
+func stallReason(err error) string {
+	switch {
+	case errors.Is(err, ErrEventTooLarge):
+		return StallEventTooLarge
+	case errors.Is(err, ErrCursorLost):
+		return StallCursorLost
+	case errors.Is(err, ErrNextPageUnreadable):
+		return StallNextPageUnreadable
+	}
+	return ""
+}
+
+// StallNotice is the status item that tells the room the harness's log stopped
+// moving for reason. Nothing after that point is mirrored until it moves again.
+func StallNotice(reason string) Mapped {
+	return state("harness_error", map[string]string{"code": reason,
+		"detail": "the bridge cannot read past this point of the harness log; it keeps trying"})
+}
+
+// Stub stands in for an item of type t and n payload bytes that the broker
+// cannot take as sent (why is StubOversize or StubRefused). Its slot is kept so
+// the cursor moves on and nothing after it is lost (ruling P20, review I6).
+// Only turn, tool_call and tool_result accept the store's oversize stub; any
+// other item becomes a harness_event naming why.
+func Stub(t envelope.Type, n int, why string) Mapped {
+	if why == StubOversize && (t == envelope.Turn || t == envelope.ToolCall || t == envelope.ToolResult) {
+		return Mapped{t, envelope.Oversize(t, n)}
+	}
+	return state("harness_event", map[string]string{"harnessKind": why})
+}
+
+// pending is a buffered item and its encoding, measured once and sent as is.
+type pending struct {
+	item wire.Item
+	enc  json.RawMessage
+	stub string // why the item is a stub, "" when it is as mapped
+}
+
+func encode(it wire.Item) pending {
+	enc, err := json.Marshal(it)
+	if err != nil {
+		// Only a payload that is not JSON fails, which Map never produces.
+		return encodeStub(it, len(it.Payload), StubRefused)
+	}
+	return pending{item: it, enc: enc}
+}
+
+func encodeStub(it wire.Item, n int, why string) pending {
+	m := Stub(it.Type, n, why)
+	it.Type, it.Payload = m.Type, m.Payload
+	enc, _ := json.Marshal(it) // Stub's payloads are always JSON
+	return pending{item: it, enc: enc, stub: why}
+}
+
+// nextBatch is how many items from the front of buf the next batch carries:
+// at most maxItems, and as many as encode within maxBytes. It is at least one
+// while buf is not empty: a lone item over the cap is the caller's to stub.
+func nextBatch(buf []pending, maxBytes, maxItems int) int {
+	size, n := batchOverhead(0), 0
+	for n < len(buf) && n < maxItems {
+		add := len(buf[n].enc)
+		if n > 0 {
+			add++ // the comma
+		}
+		if n > 0 && size+add > maxBytes {
+			break
+		}
+		size += add
+		n++
+	}
+	return n
+}
+
+func batchBody(p []pending) []byte { return joinBatch(encoded(p)) }
+
+func encoded(p []pending) []json.RawMessage {
+	out := make([]json.RawMessage, len(p))
+	for i := range p {
+		out[i] = p[i].enc
+	}
+	return out
+}
+
+// retryDelay reads a Retry-After, in seconds or as an HTTP date, capped at
+// maxRetryWait. Absent or unreadable, it is fallback.
+func retryDelay(header string, now time.Time, fallback time.Duration) time.Duration {
+	header = strings.TrimSpace(header)
+	if s, err := strconv.Atoi(header); err == nil {
+		switch {
+		case s < 0:
+			return fallback
+		case s >= int(maxRetryWait/time.Second):
+			return maxRetryWait
+		}
+		return time.Duration(s) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		return min(max(t.Sub(now), 0), maxRetryWait)
+	}
+	return fallback
+}
+
+// backoff doubles from lo to hi.
+type backoff struct{ cur time.Duration }
+
+func (b *backoff) next(lo, hi time.Duration) time.Duration {
+	if b.cur < lo {
+		b.cur = lo
+	} else {
+		b.cur = min(2*b.cur, hi)
+	}
+	return b.cur
+}
+
+func (b *backoff) reset() { b.cur = 0 }
+
+// pause waits d, or until ctx ends.
+func pause(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(max(d, 0))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// Bridge mirrors one run's harness into its room: it polls the harness, maps
+// its events, and pushes them to the broker in batches, never dropping one. A
+// broker outage never stops the sandbox (§3): the harness keeps its own store,
+// and the bridge resumes from the log's cursor.
+type Bridge struct {
+	Harness *Harness
+	Broker  *Broker
+	RunID   string
+	// Interval is the poll period; zero means 1 s.
+	Interval time.Duration
+	// MaxBuffer caps the encoded bytes waiting for the broker; past it the
+	// harness is not read (back-pressure). Zero means DefaultMaxBuffer.
+	MaxBuffer int
+	// MinBackoff and MaxBackoff bound the retry of a failed call; zero means
+	// 250 ms and 30 s.
+	MinBackoff, MaxBackoff time.Duration
+	Logger                 *slog.Logger
+	// Meter makes the rooms_bridge_* instruments; nil means a no-op meter.
+	Meter metric.Meter
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+
+	OnDeliver   func(ctx context.Context, d wire.Deliver)   // phase 4
+	OnInterrupt func(ctx context.Context, i wire.Interrupt) // phase 4
+	OnDecision  func(ctx context.Context, d wire.Decision)  // phase 5
+	OnResume    func(ctx context.Context, r wire.Resume)    // phase 5
+
+	buf        []pending
+	bufBytes   int
+	resumeAt   int64 // the log's AfterHarnessSeq at the first hello
+	positioned bool  // the cursor is past what the log holds
+	cursor     Cursor
+	status     StatusTracker
+	stall      string // the stall reason the room was last told, "" once the log moves
+	pollAt     time.Time
+	sendAt     time.Time
+	pollRetry  backoff
+	sendRetry  backoff
+	leaseLost  bool
+
+	sealed   atomic.Bool
+	lastSeen atomic.Int64
+
+	stalls  metric.Int64Counter
+	stubbed metric.Int64Counter
+}
+
+func (b *Bridge) log() *slog.Logger {
+	if b.Logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return b.Logger
+}
+
+func (b *Bridge) now() time.Time {
+	if b.Now != nil {
+		return b.Now()
+	}
+	return time.Now()
+}
+
+func (b *Bridge) backoffs() (lo, hi time.Duration) {
+	lo, hi = b.MinBackoff, b.MaxBackoff
+	if lo <= 0 {
+		lo = defaultMinBackoff
+	}
+	if hi <= 0 {
+		hi = defaultMaxBackoff
+	}
+	return lo, max(lo, hi)
+}
+
+func (b *Bridge) sawHarness(t time.Time) { b.lastSeen.Store(t.UnixNano()) }
+
+// Healthy backs /healthz (ruling P6): a native sidecar must not fail before the
+// harness starts, since its startup probe gates the harness container. A
+// sealed room has nothing left to mirror, which is not a failure.
+func (b *Bridge) Healthy(now time.Time) bool {
+	seen := b.lastSeen.Load()
+	return seen == 0 || b.sealed.Load() || now.Sub(time.Unix(0, seen)) <= unreachableFail
+}
+
+func (b *Bridge) init() error {
+	m := b.Meter
+	if m == nil {
+		m = noop.NewMeterProvider().Meter("")
+	}
+	var err error
+	if b.stalls, err = m.Int64Counter(metricStalls,
+		metric.WithDescription("Polls the harness log could not move past, by reason; the cursor holds.")); err != nil {
+		return fmt.Errorf("bridge: %s: %w", metricStalls, err)
+	}
+	if b.stubbed, err = m.Int64Counter(metricStubbed,
+		metric.WithDescription("Items the broker could not take as sent, kept as a stub in their slot, by reason.")); err != nil {
+		return fmt.Errorf("bridge: %s: %w", metricStubbed, err)
+	}
+	if b.Interval <= 0 {
+		b.Interval = defaultInterval
+	}
+	if b.MaxBuffer <= 0 {
+		b.MaxBuffer = DefaultMaxBuffer
+	}
+	return nil
+}
+
+// Run mirrors the conversation into the room until ctx ends, then flushes what
+// is buffered within flushGrace. It returns an error only if it cannot start.
+func (b *Bridge) Run(ctx context.Context) error {
+	if err := b.init(); err != nil {
+		return err
+	}
+	resume, ok := b.connect(ctx)
+	if !ok {
+		<-ctx.Done() // a sealed room: stay up, idle, until the pod ends
+		return nil
+	}
+	b.resumeAt = resume.AfterHarnessSeq
+	b.status.Resume(resume.AfterStatusSeq)
+	if b.OnResume != nil {
+		b.OnResume(ctx, resume)
+	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { b.consume(ctx) })
+	for {
+		b.step(ctx)
+		if pause(ctx, b.Interval) != nil {
+			b.shutdown()
+			return nil
+		}
+	}
+}
+
+// connect says hello until the broker hands over the lease. It reports false
+// if ctx ended first or the room is sealed.
+func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
+	for {
+		if r, ok := b.hello(ctx); ok {
+			return r, true
+		}
+		if b.sealed.Load() || pause(ctx, b.sendAt.Sub(b.now())) != nil {
+			return wire.Resume{}, false
+		}
+	}
+}
+
+// hello makes one attempt at the room's bridge lease; on failure sendAt is when
+// to try again.
+func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
+	r, rep, err := b.Broker.Hello(ctx)
+	switch {
+	case err == nil && rep.Code == http.StatusOK:
+		b.sendRetry.reset()
+		b.sendAt = time.Time{}
+		return r, true
+	case err == nil && rep.Code == http.StatusGone:
+		b.seal()
+		return r, false
+	case err == nil && rep.Code == http.StatusConflict:
+		b.log().Info("another run holds the room's bridge lease; saying hello again later", "reason", rep.Reason)
+	case ctx.Err() == nil:
+		b.log().Warn("hello failed", "code", rep.Code, "reason", rep.Reason, "err", err)
+	}
+	b.sendAt = b.now().Add(b.retryIn(rep))
+	return r, false
+}
+
+// retryIn is the wait before the next call to the broker: its Retry-After on a
+// 429 or 503, else the next backoff.
+func (b *Bridge) retryIn(rep Reply) time.Duration {
+	fallback := b.sendRetry.next(b.backoffs())
+	if rep.Code == http.StatusTooManyRequests || rep.Code == http.StatusServiceUnavailable {
+		return retryDelay(rep.RetryAfter, b.now(), fallback)
+	}
+	return fallback
+}
+
+func (b *Bridge) seal() {
+	b.sealed.Store(true)
+	b.log().Warn("the room is sealed; the bridge stops mirroring", "unmirrored", len(b.buf))
+	b.buf, b.bufBytes = nil, 0
+}
+
+// step is one poll and one flush, each when its backoff allows.
+func (b *Bridge) step(ctx context.Context) {
+	if b.sealed.Load() {
+		return
+	}
+	now := b.now()
+	if !now.Before(b.pollAt) {
+		b.pollEvents(ctx)
+	}
+	b.pollStatus(ctx)
+	if !now.Before(b.sendAt) {
+		b.send(ctx)
+	}
+}
+
+// pollEvents reads and maps the harness events after the cursor, unless the
+// buffer is full: the harness keeps its own store meanwhile.
+func (b *Bridge) pollEvents(ctx context.Context) {
+	if b.bufBytes >= b.MaxBuffer {
+		return
+	}
+	if !b.positioned {
+		b.position(ctx)
+		return
+	}
+	evs, next, err := b.Harness.Next(ctx, b.cursor)
+	start := b.cursor.Count
+	for i, e := range evs {
+		for k, m := range Map(e, b.RunID) {
+			b.push(ctx, wire.Item{Stream: wire.StreamEvents, Seq: SeqFor(start+int64(i)+1, k), Type: m.Type, Payload: m.Payload})
+		}
+	}
+	b.cursor = next // Next advances over exactly the events it returned, error or not
+	b.harnessRead(ctx, err)
+}
+
+// position rebuilds the cursor after a restart: the log holds events up to
+// resumeAt, and the last event it touched is mapped again, since only some of
+// its items may have landed (the store drops the rest). Skip rebuilds all three
+// fields of the cursor a bridge that never stopped would hold (Ruling AL c).
+func (b *Bridge) position(ctx context.Context) {
+	n := b.resumeAt/ItemsPerEvent - 1
+	if n <= 0 {
+		b.positioned = true
+		return
+	}
+	c, err := b.Harness.Skip(ctx, n)
+	b.harnessRead(ctx, err)
+	if err == nil {
+		b.cursor, b.positioned = c, true
+	}
+}
+
+// harnessRead handles the outcome of a read of the harness log. A typed
+// adapter error holds the cursor where it is: it is counted, logged at Error on
+// every poll, told to the room once, and polled again with backoff; it is never
+// skipped, since skipping would lose events or shift every later seq.
+func (b *Bridge) harnessRead(ctx context.Context, err error) {
+	now := b.now()
+	reason := stallReason(err)
+	switch {
+	case err == nil:
+		b.sawHarness(now)
+		if b.stall != "" {
+			b.log().Info("the harness log moves again", "reason", b.stall, "events", b.cursor.Count)
+			b.stall = ""
+		}
+		b.pollRetry.reset()
+		b.pollAt = time.Time{}
+		return
+	case reason != "":
+		b.sawHarness(now) // it answered: restarting the bridge would not help
+		b.stalls.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+		b.log().Error("the harness log is stalled; the cursor holds and the bridge keeps polling",
+			"reason", reason, "events", b.cursor.Count, "err", err)
+		if b.stall != reason {
+			b.stall = reason
+			b.pushStatus(ctx, b.status.Emit(StallNotice(reason)))
+		}
+	case ctx.Err() != nil:
+		return
+	default:
+		if se, ok := errors.AsType[*StatusError](err); ok && se.Code == http.StatusNotFound {
+			b.log().Debug("the conversation does not exist yet")
+		} else {
+			b.log().Warn("read the harness events", "err", err)
+		}
+	}
+	b.pollAt = now.Add(b.pollRetry.next(b.backoffs()))
+}
+
+func (b *Bridge) pollStatus(ctx context.Context) {
+	status, err := b.Harness.Status(ctx)
+	if err != nil {
+		return
+	}
+	b.sawHarness(b.now())
+	if b.bufBytes >= b.MaxBuffer {
+		return // a later poll records the status the harness settles on
+	}
+	for _, it := range b.status.Observe(status, b.RunID) {
+		b.pushStatus(ctx, it)
+	}
+}
+
+func (b *Bridge) pushStatus(ctx context.Context, it StatusItem) {
+	b.push(ctx, wire.Item{Stream: wire.StreamStatus, Seq: it.Seq, Type: it.Type, Payload: it.Payload})
+}
+
+// push buffers an item. One that could never fit a batch alone is stubbed now.
+func (b *Bridge) push(ctx context.Context, it wire.Item) {
+	p := encode(it)
+	if len(p.enc)+batchOverhead(1) > maxBatchBytes {
+		p = b.stubOf(ctx, p, StubOversize, 0)
+	}
+	b.buf = append(b.buf, p)
+	b.bufBytes += len(p.enc)
+}
+
+// stubOf replaces p by its stub, counting and logging it by ids only.
+func (b *Bridge) stubOf(ctx context.Context, p pending, why string, code int) pending {
+	s := encodeStub(p.item, len(p.item.Payload), why)
+	b.stubbed.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", why)))
+	b.log().Error("an item the broker cannot take is kept as a stub in its slot",
+		"stream", p.item.Stream, "seq", p.item.Seq, "type", p.item.Type, "reason", why, "code", code)
+	return s
+}
+
+// send re-acquires a lost lease first, then flushes.
+func (b *Bridge) send(ctx context.Context) {
+	if b.leaseLost {
+		if _, ok := b.hello(ctx); !ok {
+			return
+		}
+		b.leaseLost = false
+		b.log().Info("the bridge lease is held again; appending resumes", "buffered", len(b.buf))
+	}
+	b.flush(ctx)
+}
+
+// flush pushes the buffer in batches until it is empty or the broker refuses.
+// No batch is ever dropped: a 413 or 400 halves the batch, down to a lone item
+// that is then stubbed in its slot; a 409 keeps the buffer until hello takes the
+// lease back; anything else is retried after a backoff or Retry-After.
+func (b *Bridge) flush(ctx context.Context) {
+	limit := batchItems
+	for len(b.buf) > 0 && !b.sealed.Load() {
+		n := nextBatch(b.buf, maxBatchBytes, limit)
+		rep, err := b.Broker.Send(ctx, encoded(b.buf[:n]))
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				b.log().Warn("push a batch", "items", n, "err", err)
+			}
+			b.sendAt = b.now().Add(b.retryIn(rep))
+			return
+		case rep.Code == http.StatusOK:
+			b.sendRetry.reset()
+			for _, p := range b.buf[:n] {
+				b.bufBytes -= len(p.enc)
+			}
+			b.buf = b.buf[n:]
+		case rep.Code == http.StatusRequestEntityTooLarge || rep.Code == http.StatusBadRequest:
+			if n > 1 {
+				limit = n / 2
+				continue
+			}
+			why := StubRefused
+			if rep.Code == http.StatusRequestEntityTooLarge {
+				why = StubOversize
+			}
+			if b.buf[0].stub != "" {
+				// Even its stub is refused: nothing smaller exists. Stall loudly.
+				b.log().Error("the broker refuses an item's stub; retrying", "stream", b.buf[0].item.Stream,
+					"seq", b.buf[0].item.Seq, "code", rep.Code, "reason", rep.Reason)
+				b.sendAt = b.now().Add(b.retryIn(rep))
+				return
+			}
+			old := len(b.buf[0].enc)
+			b.buf[0] = b.stubOf(ctx, b.buf[0], why, rep.Code)
+			b.bufBytes += len(b.buf[0].enc) - old
+		case rep.Code == http.StatusConflict:
+			// Ruling Y: another run took the room's lease. Stop appending, keep
+			// the buffer and the cursor, and say hello until the lease is back.
+			b.leaseLost = true
+			b.log().Warn("the bridge lease was lost; appending stops until hello takes it back",
+				"reason", rep.Reason, "buffered", len(b.buf))
+			b.sendAt = b.now().Add(b.retryIn(rep))
+			return
+		case rep.Code == http.StatusGone:
+			b.seal()
+			return
+		default:
+			// 401 re-reads the token, 403 waits for the run watch, 429 and 5xx
+			// wait for the broker.
+			b.log().Warn("batch not accepted; retrying", "code", rep.Code, "reason", rep.Reason, "items", n)
+			b.sendAt = b.now().Add(b.retryIn(rep))
+			return
+		}
+	}
+}
+
+// shutdown takes what the harness has left, since agent-run may stop it first,
+// and flushes it within flushGrace.
+func (b *Bridge) shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), flushGrace)
+	defer cancel()
+	if b.sealed.Load() {
+		return
+	}
+	if b.positioned {
+		b.pollEvents(ctx)
+	}
+	b.pollStatus(ctx)
+	for len(b.buf) > 0 && !b.sealed.Load() {
+		if pause(ctx, b.sendAt.Sub(b.now())) != nil {
+			break
+		}
+		b.send(ctx)
+	}
+	if len(b.buf) > 0 {
+		b.log().Warn("shutdown left items unmirrored; a restarted bridge resumes from the log",
+			"items", len(b.buf), "leaseLost", b.leaseLost)
+	}
+}
+
+// consume keeps the broker's SSE stream open and dispatches its frames
+// (phases 4 and 5).
+func (b *Bridge) consume(ctx context.Context) {
+	var retry backoff
+	for {
+		err := b.Broker.Stream(ctx, func(event string, data []byte) { b.dispatch(ctx, event, data) })
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			retry.reset() // a stream that ran its life: re-dial with a fresh token
+		}
+		b.log().Info("the broker stream ended; re-dialling", "err", err)
+		if pause(ctx, retry.next(b.backoffs())) != nil {
+			return
+		}
+	}
+}
+
+func (b *Bridge) dispatch(ctx context.Context, event string, data []byte) {
+	switch event {
+	case wire.EventDeliver:
+		var d wire.Deliver
+		if json.Unmarshal(data, &d) == nil && b.OnDeliver != nil {
+			b.OnDeliver(ctx, d)
+		}
+	case wire.EventInterrupt:
+		var i wire.Interrupt
+		if json.Unmarshal(data, &i) == nil && b.OnInterrupt != nil {
+			b.OnInterrupt(ctx, i)
+		}
+	case wire.EventDecision:
+		var d wire.Decision
+		if json.Unmarshal(data, &d) == nil && b.OnDecision != nil {
+			b.OnDecision(ctx, d)
+		}
+	}
+}

@@ -125,12 +125,12 @@ From the design's Appendix A, with the plan's additive fields.
 | `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#glossary)) | Broker (leader) | AP-1 (planned, task 1.7) |
 | `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` (P17) | Broker | Seal AP-1 (store); `concurrent_run` AP-1 (planned, task 1.9) |
 | `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 (planned, task 1.10) |
-| `harness_error` | `code`, `detail` | Bridge | AP-1 (planned, task 1.10) |
+| `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge | AP-1 (planned, tasks 1.10–1.11) |
 | `harness_paused` | — | Bridge | AP-1 (planned, task 1.10) |
-| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content | Bridge | AP-1 (planned, task 1.10) |
+| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take | Bridge | AP-1 (planned, tasks 1.10–1.11) |
 | `verdict_posted`, `verdict_not_posted` | `url` or `reason`, and `verdictSeq` | Broker (leader) | Planned, phase 3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
-| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery | Bridge | Planned, phase 4 |
+| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1 (planned, task 1.11); acknowledgements phase 4 |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
 | `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
@@ -154,7 +154,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 | `AgentErrorEvent` | `tool_result`, `status: error` |
 | `ConversationErrorEvent` | `state_changed{harness_error}` |
 | `PauseEvent` | `state_changed{harness_paused}` |
-| `InterruptEvent` | `turn{phase: cancelled}` |
+| `InterruptEvent` | `state_changed{interrupted, runId}`; the status tracker ends the turn (Ruling AL) |
 | Any other kind | `state_changed{harness_event, harnessKind}` |
 | System prompt, token, condensation and completion-log events; streaming deltas | Dropped |
 | A change of `execution_status` | `state_changed{harness_status}`, plus `turn{started}` on entering `running`, and `turn{completed \| cancelled \| failed}` on leaving it |

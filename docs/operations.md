@@ -50,6 +50,14 @@ with a Prometheus exporter, and the names below do not change.
 | `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval | 5 |
 | `rooms_approval_decision_seconds` | histogram | — | Request to decision | 5 |
 
+The bridge records two more through the same API. It serves only the kubelet's `:8085`, so nothing
+scrapes them until a scrape path lands; a stall also reaches the room as `state_changed{harness_error}`.
+
+| Metric | Type | Labels | Meaning | Phase |
+|---|---|---|---|---|
+| `rooms_bridge_harness_stalls_total` | counter | `reason` | Polls the harness log could not move past (`event_too_large`, `cursor_lost`, `next_page_unreadable`); the cursor holds | 1 |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Items the broker could not take as sent, kept as a stub in their slot (`oversize`, `refused`) | 1 |
+
 ## Alerts
 
 One `VMRule`, `agent-rooms`, inside the `agent-platform` umbrella: silent while the umbrella is

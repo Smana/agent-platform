@@ -59,9 +59,25 @@ func TestTheBridgeMappingPassesTheAcceptRules(t *testing.T) {
 	}
 	var st bridge.StatusTracker
 	for _, s := range []string{"idle", "running", "waiting_for_confirmation", "running", "paused", "running", "stuck", huge} {
-		items = append(items, st.Observe(s, runA)...)
+		for _, it := range st.Observe(s, runA) {
+			items = append(items, it.Mapped)
+		}
 	}
+	// What the bridge puts in a slot the broker cannot take as sent, and what it
+	// tells the room when the harness stalls (Task 1.11).
+	for _, typ := range []envelope.Type{envelope.Message, envelope.Turn, envelope.ToolCall, envelope.ToolResult, envelope.StateChanged} {
+		for _, why := range []string{bridge.StubOversize, bridge.StubRefused} {
+			items = append(items, bridge.Stub(typ, 3<<20, why))
+		}
+	}
+	for _, why := range []string{bridge.StallEventTooLarge, bridge.StallCursorLost, bridge.StallNextPageUnreadable} {
+		items = append(items, bridge.StallNotice(why))
+	}
+	interrupted := false
 	for _, m := range items {
+		if m.Type == envelope.StateChanged && bytes.Contains(m.Payload, []byte(`"kind":"interrupted"`)) {
+			interrupted = true
+		}
 		stored, reason := bridgePayload(m.Type, m.Payload)
 		if reason != "" {
 			t.Errorf("%s refused (%s): %.200s", m.Type, reason, m.Payload)
@@ -70,5 +86,9 @@ func TestTheBridgeMappingPassesTheAcceptRules(t *testing.T) {
 		if !bytes.Equal(stored, m.Payload) {
 			t.Errorf("%s stored differently from what the bridge sent:\n%.200s\n%.200s", m.Type, m.Payload, stored)
 		}
+	}
+	// Ruling AL (a): an OpenHands InterruptEvent is state_changed{interrupted}.
+	if !interrupted {
+		t.Error("no InterruptEvent reached the accept rules as state_changed{interrupted}")
 	}
 }

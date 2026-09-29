@@ -120,6 +120,7 @@ Set by the `AgentRun` composition (CC-S2).
 | `ROOM_TOKEN_FILE` | `/var/run/secrets/agents/room/token` |
 | `EGRESS_PROFILES` | The run's egress profiles, comma-separated |
 | `HEALTH_ADDR` | `:8085` (default) |
+| `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
 | `BRANCH` | The run's branch (phase 5, CC-S5) |
 
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities

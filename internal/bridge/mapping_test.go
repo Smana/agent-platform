@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -66,8 +67,9 @@ var mappingCases = []struct {
 		[]envelope.Type{envelope.StateChanged}, `"kind":"harness_error"`},
 	{"a pause is a harness_paused", map[string]any{"id": "7b", "kind": "PauseEvent", "source": "user"},
 		[]envelope.Type{envelope.StateChanged}, `"kind":"harness_paused"`},
-	{"an interrupt cancels the turn", map[string]any{"id": "8", "kind": "InterruptEvent", "source": "user"},
-		[]envelope.Type{envelope.Turn}, `"phase":"cancelled"`},
+	{"an interrupt is recorded, and the status tracker cancels the turn", map[string]any{"id": "8",
+		"kind": "InterruptEvent", "source": "user"},
+		[]envelope.Type{envelope.StateChanged}, `"kind":"interrupted"`},
 	{"the system prompt is dropped", map[string]any{"id": "9", "kind": "SystemPromptEvent", "source": "agent"}, nil, ""},
 	{"a streaming delta is dropped", map[string]any{"id": "10", "kind": "StreamingDeltaEvent", "source": "agent"}, nil, ""},
 	{"a state update is dropped (status is polled)", map[string]any{"id": "11", "kind": "ConversationStateUpdateEvent",
@@ -249,14 +251,17 @@ func TestToolOutputIsTruncated(t *testing.T) {
 
 func TestStatusTransitionsBecomeTurnsAndStateChanges(t *testing.T) {
 	var st StatusTracker
-	var all []Mapped
+	var all []StatusItem
 	// running → waiting_for_confirmation → running stays one turn; finished ends it.
 	for _, s := range []string{"idle", "running", "waiting_for_confirmation", "running", "finished", "running", "error"} {
 		all = append(all, st.Observe(s, runID)...)
 	}
 	var b strings.Builder
 	for k, m := range all {
-		assertStorable(t, m, SeqFor(1, k%ItemsPerEvent))
+		if m.Seq != int64(k+1) {
+			t.Fatalf("item %d has status seq %d: the stream must be gapless", k, m.Seq)
+		}
+		assertStorable(t, m.Mapped, m.Seq)
 		b.WriteString(string(m.Type) + ":" + string(m.Payload) + "\n")
 	}
 	out := b.String()
@@ -270,6 +275,51 @@ func TestStatusTransitionsBecomeTurnsAndStateChanges(t *testing.T) {
 	}
 	if again := st.Observe("error", runID); again != nil {
 		t.Errorf("an unchanged status produced %d items", len(again))
+	}
+}
+
+// Ruling AL (b): turn ids derive from the status stream's seq, so a bridge
+// resumed after the log's status cursor never names a turn as an earlier one did.
+func TestResumedTrackersNeverReuseATurnID(t *testing.T) {
+	turnIDs := func(items []StatusItem) []string {
+		var out []string
+		for _, it := range items {
+			var p envelope.TurnPayload
+			if it.Type == envelope.Turn && json.Unmarshal(it.Payload, &p) == nil {
+				out = append(out, p.TurnID)
+			}
+		}
+		return out
+	}
+	cases := []struct {
+		name     string
+		statuses []string
+		want     []string
+	}{
+		{"a turn started and ended keeps one id", []string{"running", "finished"}, []string{"t12", "t12"}},
+		{"a turn ended without its start still gets an unused id", []string{"waiting_for_confirmation", "running", "finished"},
+			[]string{"t14"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var first StatusTracker
+			for _, s := range []string{"running", "finished"} {
+				first.Observe(s, runID)
+			}
+			// The first bridge used seqs 1–4 and named its turn t2; the log holds 10.
+			var st StatusTracker
+			st.Resume(10)
+			var items []StatusItem
+			for _, s := range c.statuses {
+				items = append(items, st.Observe(s, runID)...)
+			}
+			if items[0].Seq != 11 {
+				t.Fatalf("resumed at seq %d, want 11", items[0].Seq)
+			}
+			if got := turnIDs(items); !slices.Equal(got, c.want) {
+				t.Fatalf("turn ids %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

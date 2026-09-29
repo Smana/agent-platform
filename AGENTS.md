@@ -136,10 +136,11 @@ flowchart LR
 | Stage | Package | Contract | Status |
 |---|---|---|---|
 | Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ stub |
-| Entry | `cmd/room-bridge` | the sidecar binary | ✓ stub |
+| Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | 6 |
-| Entry | `internal/app` | wiring per binary, the only importer of every adapter | not in the SP2 plan |
+| Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ `room-bridge` |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | 1 |
+| Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |
 | Entry | `internal/version` | build version stamped by `-ldflags` | ✓ |
 | Ingress | `internal/bridge` | harness adapter over loopback, event mapping, status, uploader, SSE consumer | 1, 4, 5 |
 | Ingress | `internal/wire` | bridge and browser frames: the types both ends of a connection share | 1, 2 |

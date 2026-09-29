@@ -200,7 +200,10 @@ func Map(e RawEvent, runID string) []Mapped {
 	case "PauseEvent":
 		return []Mapped{state("harness_paused", nil)}
 	case "InterruptEvent":
-		return []Mapped{fitted(envelope.Turn, envelope.Must(envelope.TurnPayload{RunID: runID, TurnID: e.ID, Phase: "cancelled"}))}
+		// Not a turn: the status tracker already cancels the turn when the
+		// harness leaves running for paused, and a second cancel would end it
+		// twice (Ruling AL a).
+		return []Mapped{state("interrupted", map[string]string{"runId": runID})}
 	default:
 		return []Mapped{state("harness_event", map[string]string{"harnessKind": e.Kind})}
 	}
