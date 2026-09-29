@@ -1,0 +1,7 @@
+# The same pins as Smana/cloud-native-ref, so both repos build with one toolchain.
+[tools]
+go = "1.27.1"
+nodejs = "24.21.0"
+"aqua:golangci/golangci-lint" = "2.14.0"
+"aqua:go-task/task" = "3.53.1"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.8.0"

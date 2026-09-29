@@ -1,0 +1,93 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions: {}
+
+# A new push to a PR supersedes its running build; pushes to main each run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - run: task check
+
+  # One throwaway image per PR push, tagged v<next-patch>-pr<N>.<sha8>: it sorts after
+  # the last release and before the next, and each push is its own immutable tag.
+  # Never `latest`, never the release tag (the same channel as crossplane-configuration).
+  # <sha8> is the PR head's, not the synthetic merge commit a pull_request checks out,
+  # so a tag names a commit that exists on the branch (review M1).
+  # Dependabot's PRs get a read-only token, so they cannot push and are skipped.
+  prerelease:
+    needs: check
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing
+    strategy:
+      matrix:
+        image: [room-broker, room-bridge]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Derive the pre-release version
+        id: v
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          [ -n "$latest" ] || latest="v0.0.0"
+          base="${latest#v}"; major="${base%%.*}"; rest="${base#*.}"; minor="${rest%%.*}"; patch="${rest##*.}"
+          echo "version=v${major}.${minor}.$((patch + 1))-pr${PR_NUMBER}.$(printf '%.8s' "${HEAD_SHA}")" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: images/${{ matrix.image }}/Dockerfile
+          # The sandbox pool mixes c/m gen 6+ families, Graviton included.
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/smana/${{ matrix.image }}:${{ steps.v.outputs.version }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      # Signs the digest, never the tag, so a re-pushed tag cannot inherit the signature.
+      - env:
+          REF: ghcr.io/smana/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$REF"
+      - env:
+          IMAGE: ghcr.io/smana/${{ matrix.image }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          NAME: ${{ matrix.image }}
+        run: |
+          echo "### ${NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${IMAGE}:${VERSION}@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,44 @@
+version: 2
+# Majors are ignored while the SP2 stack stays open: nothing merges fast, so their PRs would pile up.
+# The 7-day cooldown lets a compromised release be yanked before it reaches a PR.
+updates:
+  # Keeps the SHA-pinned actions, and their version comments, current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      gomod:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # The digest-pinned golang and distroless base images.
+  - package-ecosystem: docker
+    directories: ["/images/*"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
