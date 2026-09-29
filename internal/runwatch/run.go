@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Package runwatch mirrors the AgentRuns that name a room (SP2 §1, S4): liveness
+// for every request, and the run's lifecycle into the log.
+package runwatch
+
+import (
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/Smana/agent-platform/internal/envelope"
+)
+
+const (
+	// Namespace is the only namespace AgentRun claims live in.
+	Namespace = "agents"
+	// RevokedAnnotation carries why a run was revoked; any value makes it not live.
+	RevokedAnnotation = "agents.ogenki.io/revoked"
+
+	defaultMaxMinutes  = 120
+	deadlineToleration = 30 * time.Second
+)
+
+// Run is the part of an AgentRun claim (C3) that SP2 relies on.
+type Run struct {
+	ID, Room, Role, Principal, Phase, Revoked, DataClass, Branch, Repository string
+	StartedAt, FinishedAt                                                    time.Time
+	MaxMinutes                                                               int64
+	EgressProfiles                                                           []string
+	Deleted                                                                  bool // the claim was deleted before a terminal phase (review M15)
+}
+
+// Terminal reports whether an AgentRun phase is final.
+func Terminal(phase string) bool {
+	switch phase {
+	case "Succeeded", "Failed", "BudgetExhausted", "Revoked":
+		return true
+	}
+	return false
+}
+
+// Live is the broker's check on every bridge request (S4): not terminal, not revoked.
+func (r Run) Live() bool { return !Terminal(r.Phase) && r.Revoked == "" }
+
+// FromUnstructured reads exactly the C3 fields SP2 relies on. ok is false for a
+// claim that is not a run: not named xplane-run-<C2 id>, or outside Namespace.
+func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
+	id, ok := strings.CutPrefix(u.GetName(), "xplane-run-")
+	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace {
+		return Run{}, false
+	}
+	str := func(path ...string) string { s, _, _ := unstructured.NestedString(u.Object, path...); return s }
+	r := Run{ID: id, Room: str("spec", "roomRef"), Role: str("spec", "role"), Principal: str("spec", "principal"),
+		Phase: str("status", "phase"), DataClass: str("spec", "dataClass"), Repository: str("spec", "repository"),
+		Branch: str("status", "branch"), Revoked: u.GetAnnotations()[RevokedAnnotation]}
+	if r.Phase == "" {
+		r.Phase = "Pending"
+	}
+	if r.Branch == "" {
+		r.Branch = str("spec", "branch")
+	}
+	r.StartedAt, _ = time.Parse(time.RFC3339, str("status", "startedAt"))
+	r.FinishedAt, _ = time.Parse(time.RFC3339, str("status", "finishedAt"))
+	r.MaxMinutes, _, _ = unstructured.NestedInt64(u.Object, "spec", "budget", "maxMinutes")
+	if r.MaxMinutes == 0 {
+		r.MaxMinutes = defaultMaxMinutes
+	}
+	r.EgressProfiles, _, _ = unstructured.NestedStringSlice(u.Object, "spec", "egress", "profiles")
+	return r, true
+}
+
+// EndReason says why a run ended (ruling P15). The AgentRun only ever says
+// Failed/PodFailed; the room knows whether the agent itself ended its conversation.
+// It is pure: a run with no FinishedAt is never past its deadline, so the caller
+// stamps one from its clock first (Events does).
+func EndReason(r Run, harnessStatus string) string {
+	if r.Deleted {
+		return "deleted"
+	}
+	switch r.Phase {
+	case "BudgetExhausted":
+		return r.Revoked
+	case "Revoked":
+		return "revoked"
+	}
+	switch harnessStatus {
+	case "finished":
+		return "agent_finished"
+	case "error":
+		return "agent_error"
+	case "stuck":
+		return "agent_stuck"
+	}
+	if !r.StartedAt.IsZero() && !r.FinishedAt.IsZero() &&
+		r.FinishedAt.Sub(r.StartedAt) >= time.Duration(r.MaxMinutes)*time.Minute-deadlineToleration {
+		return "deadline"
+	}
+	if r.Phase == "Succeeded" {
+		return "agent_finished"
+	}
+	return "pod_lost"
+}
