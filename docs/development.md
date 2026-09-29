@@ -36,7 +36,6 @@ CONTRIBUTING.md has the steps to add one. Two checks it does not spell out:
   rather than in the Atlas operator:
 
   ```bash
-  atlas migrate hash --dir file://internal/store/migrations
   atlas migrate validate --dir file://internal/store/migrations
   ```
 
