@@ -37,6 +37,9 @@ const (
 	PrincipalFactory = "system:factory"
 	QueueFactory     = "factory"
 	QueueInteractive = "interactive"
+	AnnTraceparent   = "agents.ogenki.io/traceparent" // W3C, set at CREATE; the composition hands it to the harness (R46)
+	LabelTier        = "agents.ogenki.io/tier"        // fixed per run, never re-routed within it (R47)
+	AnnTaskURL       = "agents.ogenki.io/task-url"    // set at CREATE; the harness footer's Agent-Task for a text task (SF)
 
 	namePrefix = "xplane-run-"
 )
@@ -51,11 +54,13 @@ func Scheme(s *runtime.Scheme) {
 }
 
 // Spec is what the factory decides about one run. TaskText and TaskURL are exclusive, as the
-// XRD's CEL requires: a URL wins.
+// XRD's CEL requires: a URL wins. SourceURL is the GitHub issue or PR the task narrates on
+// (R28), and is written as AnnTaskURL whatever the task field holds.
 type Spec struct {
-	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue string
-	MaxTokens, MaxMinutes                                                                                            int64
-	EgressProfiles                                                                                                   []string
+	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue, Traceparent, Tier string
+	SourceURL                                                                                                                           string
+	MaxTokens, MaxMinutes                                                                                                               int64
+	EgressProfiles                                                                                                                      []string
 }
 
 // Name is the claim's name for a run id.
@@ -93,7 +98,21 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.TaskID != "" {
 		labels[LabelTask] = s.TaskID // the composition copies it onto every composed object
 	}
+	if s.Tier != "" {
+		labels[LabelTier] = s.Tier
+	}
 	u.SetLabels(labels)
+	// Both are written at CREATE only: the phase-5 patch limit never has to admit them.
+	ann := map[string]string{}
+	if s.Traceparent != "" {
+		ann[AnnTraceparent] = s.Traceparent
+	}
+	if s.SourceURL != "" {
+		ann[AnnTaskURL] = s.SourceURL
+	}
+	if len(ann) > 0 {
+		u.SetAnnotations(ann)
+	}
 	return u
 }
 

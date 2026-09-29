@@ -61,6 +61,40 @@ func TestBuildWritesQueueAndEgressOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// R46, R47: the task's trace and the run's tier ride on the claim, and only when there is one.
+func TestBuildCarriesTraceparentAndTier(t *testing.T) {
+	s := spec()
+	s.Traceparent, s.Tier = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "standard"
+	u := Build(s)
+	if u.GetAnnotations()[AnnTraceparent] != s.Traceparent || u.GetLabels()[LabelTier] != "standard" {
+		t.Fatalf("%v %v", u.GetAnnotations(), u.GetLabels())
+	}
+	u = Build(spec())
+	if _, ok := u.GetAnnotations()[AnnTraceparent]; ok {
+		t.Error("no task trace, no annotation: the harness starts its own")
+	}
+	if _, ok := u.GetLabels()[LabelTier]; ok {
+		t.Error("no tier, no label")
+	}
+}
+
+// Ruling SF: the harness footer writes `Agent-Task: <URL>` from TASK_URL, which the composition
+// takes from spec.task.url, else from this CREATE-time annotation. A text task gets it too.
+func TestBuildCarriesTheTaskURLAnnotation(t *testing.T) {
+	s := spec()
+	s.Traceparent, s.SourceURL = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "https://github.com/Smana/cloud-native-ref/issues/2112"
+	u := Build(s)
+	if u.GetAnnotations()[AnnTaskURL] != s.SourceURL || u.GetAnnotations()[AnnTraceparent] != s.Traceparent {
+		t.Fatalf("both annotations ride together: %v", u.GetAnnotations())
+	}
+	if text, _, _ := unstructured.NestedString(u.Object, "spec", "task", "text"); text != "brief" {
+		t.Errorf("the annotation leaves task.text alone: %q", text)
+	}
+	if _, ok := Build(spec()).GetAnnotations()[AnnTaskURL]; ok {
+		t.Error("no source URL, no annotation")
+	}
+}
+
 func TestFromUnstructuredSkipsWhatIsNotARun(t *testing.T) {
 	for name, edit := range map[string]func(*unstructured.Unstructured){
 		"not xplane-run-":    func(u *unstructured.Unstructured) { u.SetName("other-7f3cq2xz") },
