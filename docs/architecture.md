@@ -14,7 +14,8 @@ sandbox**; every connection from the `agents` namespace is one the pod opens (C4
 | `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream | AP-1 (planned, tasks 1.10–1.11) |
 | Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log | AP-1 (planned, task 1.8) |
 | `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons | AP-1 (planned, task 1.7) |
-| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1 (schema and store written) |
+| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1 (schema and store written; the claim planned, S1) |
+| `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#the-room-crd)) | AP-1 |
 | Fan-out hints | Valkey `KVStore xplane-rooms` | Tells every replica a room has new events. A hint only: replicas poll Postgres every second when it is down | Planned, phase 2 / AP-2 |
 | Web UI | Embedded in the broker, TypeScript, behind oauth2-proxy | Watch, then post, steer, approve and fork | Planned, phases 2–6 |
 | `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve (ruling P18) | Planned, phase 6 / AP-6 |
@@ -151,9 +152,10 @@ rules shape the tree.
 | Rule | In practice |
 |---|---|
 | Packages split by domain or pipeline stage, never by layer | `envelope`, `redact`, `store`, `authn`, `runwatch`, `roomctrl`, `bridgeapi`, `bridge`, `policy`, `fanout`, `humanapi`, `mcp`: no `service/`, `repository/` or `handler/` |
-| `cmd/<bin>` stays thin | `cmd/room-broker`, `cmd/room-bridge` and `cmd/roomctl` parse arguments and dispatch; the wiring lives in `internal/app` |
+| `cmd/<bin>` stays thin | `cmd/room-broker`, `cmd/room-bridge` and `cmd/roomctl` parse arguments and dispatch; the wiring lives in `internal/app` (Ruling AC: the plan's task 1.12 wires the broker in `cmd/room-broker`, and moves there instead) |
 | Interfaces are declared on the consumer side | A package asks for the few methods it calls (the bridge API's `Log`, the controller's `Store`) instead of importing a wide type |
-| The store is the only SQL adapter | Nothing outside `internal/store` writes SQL |
+| The store is the only SQL adapter | Nothing outside `internal/store` writes SQL, the retention job's `DELETE`s included |
+| One egress client | Every outbound HTTP call goes through `internal/httpx`; a lint rule bans the bare `net/http` helpers elsewhere |
 
 | Package | Stage | Phase |
 |---|---|---|
@@ -171,7 +173,8 @@ rules shape the tree.
 | `internal/mcp`, `internal/github`, `internal/verdictpost` | Room tools, the factory App client, verdict comments | 3 |
 | `internal/brief`, `internal/runrequest` | The fenced brief, run requests | 4 |
 | `api/v1alpha1` | The `Room` types; `config/crd/` holds the generated CRD | 1 |
-| `internal/app` | The wiring of each binary and subcommand: `serve`, `retention`, the bridge, `roomctl` | 1, 6 |
+| `internal/app` | The wiring of each binary and subcommand: `serve`, `retention`, the bridge, `roomctl` (Ruling AC) | 1, 6 |
+| `internal/httpx` | The one audited egress client: timeouts, a redirect cap, no credential header across hosts. It arrives with phase 1's first outbound call (the JWKS fetch or the bridge's calls to the broker) | 1 |
 
 ## Where each piece lives
 

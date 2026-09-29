@@ -22,7 +22,7 @@ a later phase are defined now but produced only from that phase.
 | `type` | string | writer | One of the ten [types](#payloads-by-type) |
 | `causedBy` | integer | writer | The `seq` this event answers, when there is one. Omitted otherwise |
 | `origin` | string | broker | `harness`, `client` or `broker`. See [origins](#origins) |
-| `ts` | string | broker | RFC 3339, UTC, microsecond precision |
+| `ts` | string | broker | RFC 3339, UTC, up to microsecond precision (Go drops trailing zeros) |
 | `redactions` | array of strings | broker | The redaction rule ids that fired on this payload. Always present, `[]` when none |
 | `payload` | object | writer, then redacted | The type's payload, at most 64 KiB |
 
@@ -73,13 +73,13 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 
 | `originClient` | `originSeq` | Writer | Status |
 |---|---|---|---|
-| `agent:<runId>` | Item key of the harness event: event *i* owns `4i … 4i+3` | The bridge, harness events | AP-1 |
-| `agent:<runId>:status` | A counter of status transitions | The bridge, status tracker | AP-1 |
-| `system:<name>` | The caller's `clientSeq` | The system API | AP-1 |
-| `broker:room` | `1` | The Room controller, `room_phase: Open` | AP-1 |
-| `broker:run:<runId>` | `1` joined, `2` running, `3` ended, `4` left | The leader's run events | AP-1 |
+| `agent:<runId>` | Item key of the harness event: event *i* owns `4i … 4i+3` | The bridge, harness events | AP-1 (planned, tasks 1.9–1.11) |
+| `agent:<runId>:status` | A counter of status transitions | The bridge, status tracker | AP-1 (planned, tasks 1.9–1.11) |
+| `system:<name>` | The caller's `clientSeq` | The system API | AP-1 (planned, task 1.9) |
+| `broker:room` | `1` | The Room controller, `room_phase: Open` | AP-1 (planned, task 1.8) |
+| `broker:run:<runId>` | `1` joined, `2` running, `3` ended, `4` left | The leader's run events | AP-1 (planned, task 1.7) |
 | `broker:seal` | `1` | The seal | AP-1 |
-| `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 |
+| `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 (planned, task 1.9) |
 | `human:<sub>` | The browser's `clientSeq` | Human actions | Planned, phase 4 |
 | `agent:<runId>` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | Planned, phase 3 |
 | `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, callId)` | The bridge's approval requests | Planned, phase 5 |
@@ -91,7 +91,7 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 |---|---|---|---|
 | Payload | 64 KiB (C4) | Stored as a stub, `{"oversize": true, "bytes": N, "type": "<type>"}`, never refused: a refused harness event would block the bridge's cursor forever (ruling P20). The content stays in the pod until it ends | AP-1 |
 | Tool output | 16 KiB | Truncated by the bridge; `truncated: true` and `bytes` keeps the original length | AP-1 (planned, task 1.10) |
-| Human message, system message text | 16 KiB | `400 bad_message` | AP-1 (system API); phase 4 (humans) |
+| Human message, system message text | 16 KiB | `400 bad_message` | AP-1 (planned, task 1.9: system API); phase 4 (humans) |
 | A value Postgres refuses (SQLSTATE class 22) | — | Stored as `{"refused": true, "type": "<type>"}` so the cursor moves on | AP-1 (planned, task 1.9) |
 | NUL characters | — | Stripped from every string and key before storage (`jsonb` refuses them) | AP-1 |
 | Room size | 100 000 events or 256 MiB | The room is sealed with a final `state_changed{kind: limit, events, bytes}` | AP-1 |
@@ -106,13 +106,13 @@ From the design's Appendix A, with the plan's additive fields.
 
 | `type` | Payload | Written by | Status |
 |---|---|---|---|
-| `message` | `{kind: chat \| review_verdict \| task_state, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit, pullRequest}`. SP3 defines `task_state`'s text | Harness (chat), system callers (`task_state`), room tools and humans | `chat` and `task_state` AP-1; `review_verdict` phase 3; `queued`, `steering` phase 4 |
-| `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 (task 1.10) |
-| `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
-| `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 (task 1.10) |
+| `message` | `{kind: chat \| review_verdict \| task_state, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive, phase 3, P29). SP3 defines `task_state`'s text | Harness (chat), system callers (`task_state`), room tools and humans | `chat` and `task_state` AP-1; `review_verdict` phase 3; `queued`, `steering` phase 4 |
+| `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 (planned, task 1.10) |
+| `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1 (the type); produced from task 1.10 (planned); `class` and `decidedBy` from phase 5 |
+| `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 (planned, task 1.10) |
 | `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
-| `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
+| `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1 (planned, task 1.7); humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken \| lease_expired}` | The broker | Planned, phase 4 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | Planned, phase 3 |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge | Per kind |
@@ -121,13 +121,13 @@ From the design's Appendix A, with the plan's additive fields.
 
 | `kind` | Fields | Written by | Status |
 |---|---|---|---|
-| `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker | AP-1 |
-| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#glossary)) | Broker (leader) | AP-1 (task 1.7) |
-| `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` (P17) | Broker | AP-1 |
-| `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 (task 1.10) |
-| `harness_error` | `code`, `detail` | Bridge | AP-1 (task 1.10) |
-| `harness_paused` | — | Bridge | AP-1 (task 1.10) |
-| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content | Bridge | AP-1 (task 1.10) |
+| `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker | `Closed` AP-1 (store); `Open` AP-1 (planned, task 1.8) |
+| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#glossary)) | Broker (leader) | AP-1 (planned, task 1.7) |
+| `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` (P17) | Broker | Seal AP-1 (store); `concurrent_run` AP-1 (planned, task 1.9) |
+| `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 (planned, task 1.10) |
+| `harness_error` | `code`, `detail` | Bridge | AP-1 (planned, task 1.10) |
+| `harness_paused` | — | Bridge | AP-1 (planned, task 1.10) |
+| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content | Bridge | AP-1 (planned, task 1.10) |
 | `verdict_posted`, `verdict_not_posted` | `url` or `reason`, and `verdictSeq` | Broker (leader) | Planned, phase 3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
 | `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery | Bridge | Planned, phase 4 |
@@ -143,7 +143,7 @@ a driver change or a decision (review M5).
 
 ## Where harness events come from
 
-The bridge maps each OpenHands agent-server event to zero, one or two C4 items (AP-1, task 1.10).
+The bridge maps each OpenHands agent-server event to zero, one or two C4 items (AP-1, planned, task 1.10).
 
 | Harness event | C4 |
 |---|---|
@@ -203,7 +203,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6Q8VHTPRE95B9EE0ZBGJ09","seq":7,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"agent","id":"agent:7f3cq2xz","role":"implementer"},"type":"tool_result",
- "causedBy":6,"origin":"harness","ts":"2026-09-23T14:00:04.417730Z","redactions":[],
+ "causedBy":6,"origin":"harness","ts":"2026-09-23T14:00:04.41773Z","redactions":[],
  "payload":{"callId":"call_42","status":"ok","output":"README.md\narchitecture\nrunbooks","truncated":false,"bytes":31}}
 ```
 
@@ -212,7 +212,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QTQM83XSSSS6YS3C4DWA7","seq":1850,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"agent","id":"agent:7f3cq2xz","role":"implementer"},"type":"approval_requested",
- "origin":"harness","ts":"2026-09-23T14:30:00.000120Z","redactions":[],
+ "origin":"harness","ts":"2026-09-23T14:30:00.00012Z","redactions":[],
  "payload":{"approvalId":"01JB6QN36096Q14DR9GPQY77ZX","callId":"call_97","class":"forge.pr",
    "action":{"tool":"terminal","args":{"command":"gh pr create --fill"}},"expiresAt":"2026-09-23T15:00:00Z"}}
 ```
@@ -222,7 +222,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QYYK596NGYA1DQ91K5GQA","seq":1851,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"human","id":"human:291847362183"},"type":"approval_decided",
- "causedBy":1850,"origin":"client","ts":"2026-09-23T14:31:12.550000Z","redactions":[],
+ "causedBy":1850,"origin":"client","ts":"2026-09-23T14:31:12.55Z","redactions":[],
  "payload":{"approvalId":"01JB6QN36096Q14DR9GPQY77ZX","decision":"approved","reason":"PR scope matches the task"}}
 ```
 
@@ -231,7 +231,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QPENECFSECZP11HYGCPWP","seq":2,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"system","id":"system:room-broker"},"type":"participant",
- "origin":"broker","ts":"2026-09-23T13:59:58.001200Z","redactions":[],
+ "origin":"broker","ts":"2026-09-23T13:59:58.0012Z","redactions":[],
  "payload":{"principal":"agent:7f3cq2xz","change":"joined","role":"implementer"}}
 ```
 
@@ -240,7 +240,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QQ5E6EYCNDY0YP57RCYBV","seq":1845,"roomId":"3kq7x2ma",
  "actor":{"kind":"human","id":"human:291847362183"},"type":"driver",
- "origin":"client","ts":"2026-09-23T14:20:01.000300Z","redactions":[],
+ "origin":"client","ts":"2026-09-23T14:20:01.0003Z","redactions":[],
  "payload":{"from":"system:factory","to":"human:291847362183","epoch":8,"reason":"requested"}}
 ```
 
@@ -249,7 +249,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QN5SXS5AA819X9YP98106","seq":1848,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"agent","id":"agent:7f3cq2xz","role":"implementer"},"type":"handoff",
- "origin":"client","ts":"2026-09-23T14:45:09.310000Z","redactions":[],
+ "origin":"client","ts":"2026-09-23T14:45:09.31Z","redactions":[],
  "payload":{"fromRole":"implementer","toRole":"reviewer","summary":"Fixed the broken link and added a check.",
    "commit":"4be1c9d","branch":"agent/3kq7x2ma"}}
 ```
@@ -259,6 +259,6 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items (
 ```json
 {"v":1,"id":"01JB6QD7W2K4M6P8R0T2V4X6Z8","seq":1849,"roomId":"3kq7x2ma","runId":"7f3cq2xz",
  "actor":{"kind":"system","id":"system:room-broker"},"type":"state_changed",
- "origin":"broker","ts":"2026-09-23T14:46:30.000000Z","redactions":[],
+ "origin":"broker","ts":"2026-09-23T14:46:30Z","redactions":[],
  "payload":{"kind":"run_phase","phase":"Succeeded","reason":"agent_finished"}}
 ```

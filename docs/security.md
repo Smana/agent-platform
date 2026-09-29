@@ -1,7 +1,8 @@
 # Security
 
-The broker is the one place that authorizes room actions, so it is built to fail safe: **a
-compromised broker still cannot rewrite history, create a run, or reach a harness's keys**. The
+The broker is the one place that authorizes room actions, so it is designed to fail safe (phase 1;
+the database guarantees land with AP-1, Ruling Y): **a compromised broker still cannot rewrite
+history, create a run, or reach a harness's keys**. The
 database enforces append-only storage (Ruling Y), only SP3's factory creates runs (C3), and events
 are pushed by the sandbox rather than pulled from it. Approvals are oversight, not a boundary: what
 a run can do is fixed when it is created, by controls outside the sandbox.
@@ -26,6 +27,8 @@ The design's threats, with the controls this repository implements and where eac
 | T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human |
 
 ## Identities
+
+Runs and system callers: phase 1 / AP-1 task 1.6 (planned). Humans: phase 2 / AP-2.
 
 | Principal | Credential | Validated by the broker | Canonical id |
 |---|---|---|---|
@@ -88,7 +91,7 @@ encrypt pod traffic, and one configuration for both clouds is simpler than two. 
 | Names | `room-broker.agent-system.svc.cluster.local`, `room-broker.agent-system.svc` |
 | Lifetime | `duration: 720h`, `renewBefore: 240h` |
 | Broker | Mounts the Secret at `/etc/room-broker/tls/{tls.crt,tls.key}`; `ListenAndServeTLS` with a `GetCertificate` that re-reads the pair when the files change, so a renewal needs no restart. A plain-HTTP request fails |
-| CA distribution | An `ExternalSecret room-broker-ca` in `agents` copies the platform CA (`openbao-ca`, key `ca.crt`) through the `agents-secrets` store |
+| CA distribution | An ExternalSecret `room-broker-ca` in `agents` copies the platform CA chain, key `ca.crt` (S1 picks the store: `agents-secrets` is a namespaced SecretStore in `agent-system` and cannot serve `agents`) |
 | Bridge | Mounts `room-broker-ca` read-only at `/etc/room-broker-ca`; loads `$BROKER_CA_FILE` (default `/etc/room-broker-ca/ca.crt`) as its only root. It refuses to start if the file is missing or `BROKER_URL` is not `https://` |
 | Operators | Call `:8443` with `https://` and `--cacert` on the same CA |
 
@@ -130,13 +133,14 @@ printing (cloud-native-ref H-1, review M4).
 |---|---|---|
 | `rooms_owner` | Own and migrate the schema | Create roles |
 | `rooms_broker` | Append and read events; insert room rows; update only the `rooms` columns it must move (Ruling Y) | Update or delete events; unseal, re-date or re-time a room; move `last_seq` by anything but +1 |
-| `rooms_retention` | Delete events and rows of sealed rooms closed past their retention | See or delete anything else (row-level security) |
+| `rooms_retention` | Delete events and rows of sealed (Ruling Y) rooms closed past their retention | See or delete anything else (row-level security) |
 
 Details and the tests that prove them: [room log](room-log.md#the-guarantees).
 
 ## Network
 
-Default deny everywhere; one allow per flow (spec §9, as the plan builds it in cloud-native-ref).
+Planned, S1 onwards: these policies live in cloud-native-ref. Default deny everywhere; one allow per
+flow (spec §9, as the plan builds it).
 
 | Endpoint | Ingress | Egress |
 |---|---|---|
@@ -154,7 +158,7 @@ cluster's own gateway hairpins through the socket load balancer and is dropped (
 |---|---|
 | Pinned actions | Every `uses:` is pinned to a 40-character commit SHA, with the version in a comment; Dependabot keeps them current |
 | Least privilege in CI | `permissions: {}` at the top of every workflow, granted per job; `persist-credentials: false` on every checkout; timeouts on every job |
-| Static analysis | CodeQL (`security-extended`, Go) on every PR, on `main` and weekly; `golangci-lint` with `gosec`, `noctx`, `errorlint`, `bodyclose`, `sqlclosecheck`, and no rule ever disabled |
+| Static analysis | CodeQL (`security-extended`, Go) on every PR, on `main` and weekly; `golangci-lint` with `gosec`, `noctx`, `errorlint`, `bodyclose`, `sqlclosecheck` and more ([AGENTS.md](../AGENTS.md)); no rule disabled in production code, while tests and `cmd/` carry scoped exclusions |
 | Vulnerabilities | `govulncheck` in `task check`, so on every PR and before every release |
 | Dependency drift | `go mod tidy -diff` in `task check`. Dependabot for actions, Go modules and the Docker base images: weekly, a 7-day cooldown, majors ignored while the stack is open |
 | Scorecard | OpenSSF Scorecard weekly on `main`, results published and uploaded to code scanning |
@@ -162,23 +166,34 @@ cluster's own gateway hairpins through the socket load balancer and is dropped (
 | Attestations | An SPDX SBOM and SLSA provenance (`mode=max`) attached to every pushed image |
 | Signing | A keyless cosign signature on the digest, never the tag, from the workflow's OIDC identity |
 | Releases | The release job re-runs `task check` (a tag can name a commit that never passed CI) and uses no build cache |
-| Repository | `main` is protected by a ruleset: pull requests only, squash merges, required checks `check` and `analyze`, linear history, no force-push or deletion, admin-only bypass. Private vulnerability reporting and Dependabot security updates are on |
+| Repository | `main` is protected by a ruleset: pull requests only, squash merges, required checks `check` and `analyze`, linear history, no force-push or deletion; admins may bypass, through a pull request only. Private vulnerability reporting and Dependabot security updates are on |
 
-Verify an image before you pin it:
+Verify an image before you pin it. **The default accepts only images built by the release workflow
+from a `v*` tag:**
 
 ```bash
 IMAGE=ghcr.io/smana/room-broker@sha256:<digest>
 
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/Smana/agent-platform/.github/workflows/(ci|release).yaml@'
+  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/release\.yaml@refs/tags/v'
 
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .SBOM }}'        # SPDX SBOM per platform
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}'  # SLSA provenance
 ```
 
-The identity regexp accepts both the PR pre-release workflow and the release workflow. To accept
-only released images, anchor it on `release.yaml@refs/tags/v`.
+No `v*` tag exists yet, so today this fails for every image: the first release, and a ruleset that
+restricts who may push `v*` tags, are Phase 7 items. Until that ruleset exists, the tag anchor proves
+which workflow built an image, not who was allowed to tag it.
+
+**PR pre-releases are not release-grade: they run unreviewed branch code. Use them for integration
+testing only.** To verify one, accept the PR workflow instead:
+
+```bash
+cosign verify "$IMAGE" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/ci\.yaml@'
+```
 
 ## Reporting a vulnerability
 

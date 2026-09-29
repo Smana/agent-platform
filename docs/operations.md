@@ -25,11 +25,14 @@ over 60 s; it never depends on the broker.
 
 ## Metrics
 
-Scraped from `:9090/metrics` by a `VMServiceScrape`. The §9 set, plus three the alerts need. All are
-defined in phase 1; the last column is the phase whose feature a metric measures.
+Scraped from `:9090/metrics` by a `VMServiceScrape` (planned, task 1.12 / S1). The §9 set, plus three
+the alerts need and a build-info gauge. All are defined in phase 1; the last column is the phase whose
+feature a metric measures. Ruling AC: the broker records them through the OpenTelemetry metric API
+with a Prometheus exporter, and the names below do not change.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
+| `rooms_build_info` | gauge | `version` | Always 1; carries the running version | 1 |
 | `rooms` | gauge | `phase` | Rooms per phase | 1 |
 | `rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended | 1 |
 | `rooms_append_seconds` | histogram | — | Append latency | 1 |
@@ -139,7 +142,7 @@ the harnesses still hold.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Broker `CrashLoopBackOff` right after a config change | The config file failed strict parsing (unknown key, a `subPattern` without one capture group) | Read the first log line, fix `room-broker-config` |
-| Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or the `atlasSchema.ref` branch is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at a live branch or tag |
+| Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or the `atlasSchema.ref` branch is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at `main` once the AP branch has merged |
 | Bridge `hello` gets `503 log_unavailable` | The `Room` has not been reconciled, so its row does not exist, or the database is down | `kubectl get room -n agent-system <id>`; check the CNPG cluster |
 | Bridge gets `401 unauthenticated` | Wrong audience, an issuer not in `runIssuers`, or the broker cannot fetch the JWKS | Check the run's `room-token` audience (`room-broker`), the issuer, and the broker's egress to the JWKS host |
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |

@@ -68,7 +68,7 @@ umbrella, suspended by default.
 |---|---|---|---|
 | cloud-native-ref `infrastructure/base/room-broker/app.yaml` and `retention-cronjob.yaml` | The broker image, same digest in both | This repo's PR pre-release, then the release | `v0.0.1-pr<N>.<sha8>@sha256:…`, `<sha8>` = the PR head |
 | cloud-native-ref `crd-rooms.yaml` | The `Room` CRD | This repo's `config/crd/`, re-copied with every broker pin | — |
-| cloud-native-ref `sqlinstance.yaml` `atlasSchema.ref` | The migrations | This repo's branch holding the phase's migrations, then a `v*` tag | A branch, then a tag |
+| cloud-native-ref `sqlinstance.yaml` `atlasSchema.ref` | The migrations | The AP branch holding the phase's migrations while its PR is open; `main` once it merges; a `v*` tag from Phase 7 | A branch, then a tag |
 | crossplane-configuration `apis/agentrun/kcl/main.k` `_BRIDGE_IMAGE` | The bridge image | This repo's PR pre-release, then the release | `v0.0.1-pr<N>.<sha8>@sha256:…` |
 | cloud-native-ref `configuration-packages.yaml` | The composition package | crossplane-configuration's PR pre-release, then its release | `v0.7.2-pr<N>.<sha7>`, `<sha7>` = the PR's **synthetic merge commit**: copy it from the CI summary, never derive it |
 
@@ -78,8 +78,7 @@ Rules that keep pins honest:
   `skopeo inspect --raw docker://<ref> | sha256sum`, or copy it from the CI job summary.
 - **Verify before pinning**: [security](security.md#supply-chain) gives the cosign command.
 - **Re-vendor the CRD and move `atlasSchema.ref` with every broker pin**, so the three never drift.
-- **Set `atlasSchema.ref` to the release tag before deleting a branch**: a deleted branch 404s the
-  composition's Git source.
+- **A merged AP branch is gone**: a deleted branch 404s the composition's Git source. Once an AP PR merges, point `ref` at `main`: this repository deletes a branch on merge, and it has no release tag before Phase 7. The composition resolves a `v*` ref as a tag and anything else as a branch, so pin a commit SHA only if the composition accepts one; release tags come in Phase 7.
 - **Crossplane never upgrades an installed package dependency.** During a live check, patch the core
   package to the same pre-release by hand.
 
@@ -137,7 +136,7 @@ annotation `agents.ogenki.io/revoked`, and `metadata.uid`. The run's CNP already
 
 | Contract | Where |
 |---|---|
-| Create a room | Create a `Room` CR, `spec.owner` and `spec.driver: system:factory` |
+| Create a room | Create a `Room` CR with `spec.owner` and `spec.driver: system:factory` and the required `spec.dataClass` ([fields](concepts.md#the-room-crd)) |
 | Read a room | `GET /v1/rooms/{id}/events` on `:8443`, audience `rooms-system` ([API](api.md#get-v1roomsidevents)) |
 | Report task state | `POST /v1/rooms/{id}/messages`, `kind: task_state` |
 | Verdicts and handoffs | `message{kind: review_verdict}` and `handoff` in the log (phase 3); the verdict comment is the broker's, SP3 never posts it again |

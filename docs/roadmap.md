@@ -1,8 +1,8 @@
 # Roadmap
 
 **Phase 0 is merged. Phase 1 is in progress**: on the AP-1 branch the envelope, redaction, the log
-schema and the store are written and tested (tasks 1.1–1.4), Ruling Y's hardening of the log is
-being applied, and the `Room` CRD (task 1.5) is underway. Phases 2 to 6 are planned. Phase 7 is the
+schema, the store and the `Room` CRD are written and tested (tasks 1.1–1.5), Ruling Y's hardening
+of the log is being applied, and tasks 1.6 onwards are next. Phases 2 to 6 are planned. Phase 7 is the
 owner's UX sign-off, after which cloud-native-ref and crossplane-configuration merge in one wave.
 
 Status as of 2026-09-29.
@@ -43,7 +43,7 @@ flowchart LR
 | 1.2 | Redaction | AP-1, `internal/redact` | Implemented |
 | 1.3 | Log schema and Atlas migration | AP-1, `internal/store/migrations` | Implemented; Ruling Y's grants, trigger and check being added |
 | 1.4 | The store | AP-1, `internal/store` | Implemented; Ruling Y's lease fencing being added |
-| 1.5 | The `Room` CRD | AP-1, `api/v1alpha1`, `config/crd` | In progress |
+| 1.5 | The `Room` CRD, bounds included | AP-1, `api/v1alpha1`, `config/crd` | Implemented |
 | 1.6 | Offline authentication for runs and system callers | AP-1, `internal/authn` | Planned |
 | 1.7 | The `AgentRun` watch, run events, end reasons | AP-1, `internal/runwatch` | Planned |
 | 1.8 | The `Room` controller | AP-1, `internal/roomctrl` | Planned |
@@ -97,8 +97,10 @@ flowchart LR
   S --> DEL["integration on tags,<br/>then delete branches"]
 ```
 
-Automatic branch deletion is turned off during the wave: a deleted branch would 404 every Git source
-still tracking it, `atlasSchema.ref` first. The branches go last, once nothing tracks them.
+In cloud-native-ref and crossplane-configuration, automatic branch deletion is turned off during the
+wave: a deleted branch would 404 every Git source still tracking it. This repository already deletes
+branches on merge, so once an AP PR merges, `atlasSchema.ref` points at `main` until the release
+tags of Phase 7.
 
 ## Not in this roadmap
 

@@ -10,9 +10,11 @@ delivers it.
 | Tag | Meaning |
 |---|---|
 | **shipped** | Merged on `main` |
-| **AP-1** | Written and tested on the phase-1 branch (`feat/room-log`), not merged yet |
+| **AP-1** | Written and tested on the phase-1 branch (`feat/room-log`), not merged yet. Today: tasks 1.1–1.5 (envelope, redaction, schema, store, `Room` CRD) |
 | **AP-1, Ruling Y** | Designed and being implemented on the phase-1 branch (see [room log](room-log.md#the-guarantees)) |
+| **AP-1 (planned, task 1.N)** | In AP-1's scope, not written yet |
 | **planned, phase N / AP-N** | Specified in the design and plan, not written. `AP-N` is the pull request in this repository that delivers it |
+| **planned, S*N* / CC-S*N*** | Not written; delivered by that pull request in cloud-native-ref or crossplane-configuration |
 
 Phases follow the implementation plan's numbering, which differs from the design's: see
 [roadmap](roadmap.md#phase-numbering).
@@ -21,7 +23,7 @@ Phases follow the implementation plan's numbering, which differs from the design
 
 | Page | Answers |
 |---|---|
-| [Concepts](concepts.md) | What a room, run, driver, handoff, seal, lease or envelope is |
+| [Concepts](concepts.md) | What a room, run, driver, handoff, seal, lease or envelope is; the `Room` CRD's fields |
 | [Architecture](architecture.md) | Components, trust boundaries, one run's life, where each piece is deployed and which repository owns it |
 | [Event envelope](event-envelope.md) | The C4 envelope every log entry uses, its payloads, limits and an example of each event type |
 | [Room log](room-log.md) | The Postgres schema, the guarantees the database enforces, sealing, retention, the bridge lease and Atlas migrations |
@@ -29,7 +31,7 @@ Phases follow the implementation plan's numbering, which differs from the design
 | [Security](security.md) | Threat model, identities, TLS, redaction, database roles, network policy and the supply chain |
 | [Integration](integration.md) | What cloud-native-ref and crossplane-configuration deploy, and which pre-release pins which |
 | [Operations](operations.md) | Metrics, alerts, retention, backups, reading the log with SQL, common failures, upgrades |
-| [Development](development.md) | Toolchain, `task check`, tests, migrations, lint, releases, conventions |
+| [Development](development.md) | Where the workflow and coding standard live, the store test harness, checks around a migration |
 | [Roadmap](roadmap.md) | Phases 0 to 7, their pull requests across the three repositories, and where each stands |
 
 ## Reading order
@@ -42,8 +44,8 @@ Phases follow the implementation plan's numbering, which differs from the design
 
 ## Sources
 
-This guide restates, it does not decide. Where the sources disagree it follows the plan, then the
-plan's rulings, then the amendments recorded while executing it.
+This guide restates, it does not decide. Where the sources disagree, the amendments recorded while
+executing the plan override the plan's rulings, which override the plan text and the design.
 
 | Source | Holds |
 |---|---|

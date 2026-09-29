@@ -6,13 +6,14 @@ get `:8090` in phase 3. Every body is JSON.
 
 | Port | Who calls it | Authentication | Phase / PR |
 |---|---|---|---|
-| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | 1 / AP-1 |
-| `:9090` | kubelet, `vmagent` | None: probes and metrics only | 1 / AP-1 |
+| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 (planned, tasks 1.6, 1.9) |
+| `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (planned, task 1.12) |
 | `:8080` | Humans, through oauth2-proxy | ZITADEL ID token and access token | 2 / AP-2 |
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
-| `:8085` (bridge) | kubelet | None | 1 / AP-1 |
+| `:8085` (bridge) | kubelet | None | AP-1 (planned, task 1.11) |
 
-All of it is **planned**: AP-1 is being written, and none of these handlers is on `main` yet.
+All of it is **planned**: no handler is written yet. The store methods they call (append, range,
+cursor, lease) are written on the AP-1 branch.
 
 ## `:8443` — bridge and system API
 
@@ -36,12 +37,12 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 
 | Method and path | Caller | Does | Phase / PR |
 |---|---|---|---|
-| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | 1 / AP-1 |
-| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | 1 / AP-1 |
-| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | 1 / AP-1 (pings); 4 / AP-4; 5 / AP-5 |
+| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | AP-1 (planned, task 1.9) |
+| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | AP-1 (planned, task 1.9) |
+| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | AP-1 (planned, task 1.9: pings); 4 / AP-4; 5 / AP-5 |
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
-| `GET /v1/rooms/{id}/events` | System | Reads a room's log | 1 / AP-1 |
-| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | 1 / AP-1 |
+| `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 (planned, task 1.9) |
+| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 (planned, task 1.9) |
 
 ### `POST /v1/bridge/hello`
 
@@ -80,8 +81,9 @@ Request, at most 2 MiB; the bridge sends up to 100 items:
 transitions, scope `agent:<runId>:status`); `seq` is the item's key in that scope, greater than 0.
 Each item is checked against the bridge allowlist, redacted, then appended in order.
 
-Response `200`, the highest key stored per stream: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`.
-A replayed key is acknowledged without appending again.
+Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the key of the batch's last item on
+each stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
+appending again.
 
 | Status | `error` | When | The bridge then |
 |---|---|---|---|
@@ -90,7 +92,7 @@ A replayed key is acknowledged without appending again.
 | `400` | `bad_payload` | The payload is not a JSON document | Drops the batch and logs it |
 | `401` | `unauthenticated` | As for `hello` | Re-reads its token and retries |
 | `403` | `run_not_live`, `run_has_no_room` | As for `hello` | Retries on the next tick |
-| `409` | *(named by AP-1)* | **Ruling Y:** this run no longer holds the room's lease. Nothing is appended | Its handling lands with AP-1 |
+| `409` | *(named by AP-1)* | **Ruling Y:** this run no longer holds the room's lease. Nothing is appended | Must not drop the batch: the events are not in the log. Its exact handling lands with AP-1 |
 | `410` | `sealed` | The room is sealed | Stops mirroring |
 | `503` | `log_unavailable` | The database refused the append | Retries; keeps buffering |
 

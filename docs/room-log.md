@@ -74,7 +74,7 @@ one.
 
 | Guarantee | Enforced by | Proved by | Status |
 |---|---|---|---|
-| The broker cannot change or delete an event | Grant: `rooms_broker` has only `SELECT`, `INSERT` on `events` | `TestBrokerRoleIsAppendOnly` (`42501 permission denied`); SC-10 live | AP-1 |
+| The broker cannot change or delete an event | Grant: `rooms_broker` has only `SELECT`, `INSERT` on `events` | `TestBrokerRoleIsAppendOnly` (`42501 permission denied`); SC-10 (S1 live gate) | AP-1 |
 | `seq` is gapless per room, from 1 | Row lock: every append increments `rooms.last_seq` in the same transaction as its insert, and a rollback undoes the increment. Ruling Y adds a `BEFORE INSERT` check on `events`: `seq` must equal the room's `last_seq` | `TestAppendIsGapless`; SC-1 live (`max(seq) = count(*)`); the check's test lands with Ruling Y | Lock AP-1; check AP-1, Ruling Y |
 | An append is idempotent | Unique key `(room_id, origin_client, origin_seq)`, read under the row lock; a replay rolls back and returns the stored event | `TestAppendIsIdempotentAndStaysGapless` | AP-1 |
 | Nothing appends to a sealed room | The store refuses under the row lock (`ErrSealed`, `410 sealed`). Ruling Y adds the database check: the `events` insert check refuses a sealed room | `TestSealedRoomRefusesAppends`; the database check's test lands with Ruling Y | Store AP-1; check AP-1, Ruling Y |
@@ -86,7 +86,7 @@ one.
 | Retention deletes only sealed rooms closed longer ago than their retention | Row-level security on `rooms_retention`: `closed_at < now() - retention`; Ruling Y adds `sealed` | `TestRetentionDeletesOnlyExpiredClosedRooms` | RLS AP-1; `sealed` AP-1, Ruling Y |
 | A full room seals itself | The store: at 100 000 events or 256 MiB the append also writes the seal | `TestLimitSealsTheRoom` | AP-1 |
 | An oversize payload keeps its slot | The store replaces a payload over 64 KiB with a stub | `TestOversizePayloadIsStubbed` | AP-1 |
-| A value Postgres refuses keeps its slot | `IsDataError` spots SQLSTATE class 22; the API stores a stub instead | `TestNULIsADataError` | AP-1 |
+| A value Postgres refuses keeps its slot | `IsDataError` spots SQLSTATE class 22; the API stores a stub instead | `TestNULIsADataError` | Store AP-1; stub planned, task 1.9 |
 | One bridge holds a room | The lease in the room's row, shared by every replica (ruling P17) | `TestBridgeLeaseIsSharedAndExpires` | AP-1 |
 | A displaced bridge cannot append | Ruling Y: renewing the lease reports whether it is still held, and an append carries the expected `bridge_run`, checked under the row lock. `POST /v1/bridge/events` answers `409` when it is not held | Tests land with Ruling Y (store) and task 1.9 (API) | AP-1, Ruling Y |
 
@@ -143,7 +143,7 @@ receives `410 sealed` stops mirroring.
 
 ## Retention
 
-A daily CronJob, `room-broker-retention` (03:17, `concurrencyPolicy: Forbid`), runs
+A daily CronJob (planned, task 1.12 / S1), `room-broker-retention` (03:17, `concurrencyPolicy: Forbid`), runs
 `room-broker retention` as `rooms_retention`. It deletes the events, then the rows, of every room
 closed longer ago than its own retention. Its `WHERE` clause repeats what row-level security already
 enforces: the role cannot see, let alone delete, anything else.
@@ -184,7 +184,7 @@ and applies only if `UPDATE rooms … WHERE driver_epoch = $epoch` matches.
 | Integrity file | `internal/store/migrations/atlas.sum` |
 | ConfigMap generator | `internal/store/migrations/kustomization.yaml` builds the ConfigMap `atlas-db-migrations`, the name the `SQLInstance` composition reads. Every migration file of every phase is listed there, with `atlas.sum` |
 | Applied by | The Atlas operator in the cluster, connected as `rooms_owner`, from the claim's `atlasSchema: {url, ref, path: internal/store/migrations}` |
-| `ref` | The agent-platform branch that holds the phase's migrations until a release exists; then a `v*` tag. Set to the tag before the branch is deleted: a deleted branch 404s the composition's Git source |
+| `ref` | The AP branch that holds the phase's migrations while its PR is open. A deleted branch 404s the composition's Git source. Once an AP PR merges, point `ref` at `main`: this repository deletes a branch on merge, and it has no release tag before Phase 7. The composition resolves a `v*` ref as a tag and anything else as a branch, so pin a commit SHA only if the composition accepts one; release tags come in Phase 7 |
 
 | Migration | Adds | Phase |
 |---|---|---|
