@@ -74,12 +74,14 @@ const (
 	ReasonSealed          = "sealed"            // 410: the room's log is sealed
 	ReasonBadBatch        = "bad_batch"         // 400: the body is not a batch
 	ReasonBatchTooLarge   = "batch_too_large"   // 413: over the byte or item cap; split it
-	ReasonBadItem         = "bad_item"          // 400: an item a bridge may not push (review M5)
+	ReasonBadItem         = "bad_item"          // 400: an item a bridge may not push (review M5), or keys spelled two ways
 	ReasonBadPayload      = "bad_payload"       // 400: a payload that is not a JSON object
 	ReasonBadRoom         = "bad_room"          // 400: not a C2 room id
 	ReasonBadMessage      = "bad_message"       // 400: not a task_state message
 	ReasonNoRoom          = "no_room"           // 404 (system API) or 503 (hello, before the Room's first reconcile)
+	ReasonRateLimited     = "rate_limited"      // 429: over the principal's request rate or requests in flight; retry after Retry-After
 	ReasonLogUnavailable  = "log_unavailable"   // 503: the log could not be read or written; retry
+	ReasonTimedOut        = "timed_out"         // 503: the request's deadline passed before it was written; retry
 	ReasonStreamingFailed = "streaming_refused" // 500: the connection cannot stream
 )
 

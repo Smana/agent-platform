@@ -3,11 +3,13 @@
 package redact
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"slices"
 	"strings"
@@ -75,7 +77,7 @@ func TestPayloadKeepsItsShape(t *testing.T) {
 	in := map[string]any{"callId": "c1", "output": "token=" + s["github-app-token"],
 		"nested": []any{map[string]any{"env": s["jwt"]}}, "bytes": 12}
 	raw, _ := json.Marshal(in)
-	out, rules, err := r.Payload(raw)
+	out, rules, err := r.Payload(t.Context(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +97,7 @@ func TestPayloadKeepsItsShape(t *testing.T) {
 // bridge's cursor for good, so NULs are stripped from every string and every key.
 func TestNULsAreStripped(t *testing.T) {
 	r, _ := New()
-	out, _, err := r.Payload([]byte(`{"output":"a\u0000b","k\u0000":1}`))
+	out, _, err := r.Payload(t.Context(), []byte(`{"output":"a\u0000b","k\u0000":1}`))
 	if err != nil || string(out) != `{"k":1,"output":"ab"}` {
 		t.Fatalf("%s %v", out, err)
 	}
@@ -106,5 +108,53 @@ func TestCleanTextIsUntouched(t *testing.T) {
 	in := "Fixed the broken link in docs/README.md"
 	if out, rules := r.String(in); out != in || len(rules) != 0 {
 		t.Fatalf("clean text changed: %q %v", out, rules)
+	}
+}
+
+// An env dump puts secrets in keys: every key is scanned like a value.
+func TestSecretsInKeysAreRedacted(t *testing.T) {
+	r, _ := New()
+	pat := secrets(t)["github-pat"]
+	raw, _ := json.Marshal(map[string]any{"env": map[string]any{pat: "set", "HOME": "/root"}})
+	out, rules, err := r.Payload(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), pat) || !slices.Contains(rules, "github-pat") ||
+		!strings.Contains(string(out), `"[REDACTED:github-pat]":"set"`) {
+		t.Fatalf("%s %v", out, rules)
+	}
+}
+
+// Two keys that redaction would turn into one would silently lose a value, and
+// which one depends on map order: the payload is refused instead.
+func TestKeysThatMergeAreRefused(t *testing.T) {
+	r, _ := New()
+	s := secrets(t)
+	cases := map[string]string{
+		"two secrets":  `{"env":{"` + s["github-pat"] + `":"a","ghp_` + alnum(t, 36) + `":"b"}}`,
+		"a NUL in key": `{"kind":"chat","ki\u0000nd":"review_verdict"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, _, err := r.Payload(t.Context(), []byte(raw))
+			if !errors.Is(err, ErrKeyCollision) || out != nil {
+				t.Fatalf("%s, %v", out, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "ghp_") {
+				t.Fatalf("the error quotes a key: %v", err)
+			}
+		})
+	}
+}
+
+// A payload whose scan the caller's deadline cut short never comes back as redacted.
+func TestAnEndedContextRedactsNothing(t *testing.T) {
+	r, _ := New()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	out, _, err := r.Payload(ctx, []byte(`{"output":"token `+secrets(t)["github-pat"]+`"}`))
+	if !errors.Is(err, context.Canceled) || out != nil {
+		t.Fatalf("%s, %v", out, err)
 	}
 }

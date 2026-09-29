@@ -12,8 +12,8 @@ get `:8090` in phase 3. Every body is JSON.
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
 | `:8085` (bridge) | kubelet | None | AP-1 (planned, task 1.11) |
 
-All of it is **planned**: no handler is written yet. The store methods they call (append, range,
-cursor, lease) are written on the AP-1 branch.
+`:8443`'s handlers and the store methods they call are written on the AP-1 branch (task 1.9); nothing
+serves them until task 1.12 wires the binary. The rest is **planned**.
 
 ## `:8443` — bridge and system API
 
@@ -21,7 +21,12 @@ Served with `ListenAndServeTLS` on the pair cert-manager writes to `/etc/room-br
 broker re-reads the files when they change, so a renewal needs no restart, and a plain-HTTP request
 fails (GP-18). See [security](security.md#tls-on-8443) for the certificate and its CA.
 
-Errors are JSON, `{"error": "<reason>"}`, with the status codes below.
+Errors are JSON, `{"error": "<reason>"}`, with the status codes below. The reasons are stable
+strings, the `wire.Reason*` constants: branch on them, not on the status text.
+
+The events endpoint and both system endpoints limit each principal to 10 requests a second (burst
+20) and 10 in flight, §4's per-principal numbers. Over either, they answer `429 rate_limited` with
+`Retry-After: 1`, and the caller retries.
 
 ### Authentication
 
@@ -62,7 +67,8 @@ and is empty before.
 | `403` | `run_not_live` | The run is terminal, revoked, deleted, or not yet in the watch |
 | `403` | `run_has_no_room` | The run has no `roomRef` |
 | `409` | `room_busy` | Another run holds the room's lease: it is live and was seen within 2 minutes (ruling P17). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
-| `503` | `log_unavailable` | The database is unreachable, or the room's row does not exist yet (its `Room` has not been reconciled) |
+| `503` | `no_room` | The room's row does not exist yet: its `Room` has not been reconciled |
+| `503` | `log_unavailable` | The database is unreachable |
 
 ### `POST /v1/bridge/events`
 
@@ -79,22 +85,29 @@ Request, at most 2 MiB; the bridge sends up to 100 items:
 
 `stream` is `events` (harness events, idempotency scope `agent:<runId>`) or `status` (status
 transitions, scope `agent:<runId>:status`); `seq` is the item's key in that scope, greater than 0.
-Each item is checked against the bridge allowlist, redacted, then appended in order.
+Each payload is redacted, object keys included, then checked against the bridge allowlist: the
+check reads the redacted payload, the one stored. The whole batch is checked before anything is
+written, so a refused item leaves nothing behind. A payload's keys must each have one spelling:
+Go readers fold case (`Delivery`, `ſtatus` and a Kelvin-sign `K` all match), jsonb readers do not, so
+a key that folds onto another or onto a field of the type's envelope struct without being spelled as
+it is refused. A `message` is stored as its envelope struct re-marshals it.
 
-Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the key of the batch's last item on
-each stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
+Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the highest key of the batch on each
+stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
 appending again.
 
 | Status | `error` | When | The bridge then |
 |---|---|---|---|
-| `400` | `bad_batch` | Not JSON, or over 2 MiB | Drops the batch and logs it |
-| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, or a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)) | Drops the batch and logs it |
-| `400` | `bad_payload` | The payload is not a JSON document | Drops the batch and logs it |
+| `400` | `bad_batch` | Not JSON, an unknown field, or data after the batch | Drops the batch and logs it |
+| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), a key spelled two ways, or two keys that are one once redacted | Drops the batch and logs it |
+| `400` | `bad_payload` | The payload is not a JSON object | Drops the batch and logs it |
+| `413` | `batch_too_large` | Over 2 MiB or over 500 items | Must split the batch, not drop it |
 | `401` | `unauthenticated` | As for `hello` | Re-reads its token and retries |
 | `403` | `run_not_live`, `run_has_no_room` | As for `hello` | Retries on the next tick |
-| `409` | *(named by AP-1)* | **Ruling Y:** this run no longer holds the room's lease. Nothing is appended | Must not drop the batch: the events are not in the log. Its exact handling lands with AP-1 |
+| `409` | `lease_lost` | **Ruling Y:** this run no longer holds the room's lease, seen by the lease renewal or by the append's fence. Nothing is appended | Must not drop the batch: the events are not in the log. Keeps it and says hello again |
 | `410` | `sealed` | The room is sealed | Stops mirroring |
-| `503` | `log_unavailable` | The database refused the append | Retries; keeps buffering |
+| `429` | `rate_limited` | Over the run's request rate or requests in flight | Must not drop the batch: retries after `Retry-After` |
+| `503` | `log_unavailable`, `timed_out` | The database refused the append, or the request's 30 s ran out before the batch was redacted | Retries; keeps buffering |
 
 A payload Postgres refuses outright (SQLSTATE class 22) is not an error: it is stored as a
 `{"refused": true}` stub so the cursor moves on.
@@ -145,6 +158,7 @@ the room's current high-water mark. Page by passing the last `seq` you received 
 | `401` | `unauthenticated` | Bad, expired or wrong-audience token |
 | `403` | `not_permitted` | A valid token whose `sub` is not in `systemPrincipals` |
 | `404` | `no_room` | No such room in the log |
+| `429` | `rate_limited` | Over the principal's limits |
 | `503` | `log_unavailable` | The database is unreachable. Never a `lastSeq` of 0 in its place |
 
 ### `POST /v1/rooms/{id}/messages`
@@ -155,8 +169,12 @@ For system callers; appends the reserved kind SP3 owns (C4). Request, at most 32
 {"kind": "task_state", "text": "Reviewing", "clientSeq": 1}
 ```
 
-`kind` must be `task_state`, `clientSeq` greater than 0, `text` at most 16 KiB. The idempotency key
-is `(principal, clientSeq)`: a replay returns the original `seq`. Response `201`: `{"seq": 1843}`.
+`kind` must be `task_state`, `clientSeq` greater than 0, `text` at most 16 KiB; the text is redacted.
+Response `201`: `{"seq": 1843}`.
+
+The idempotency key is `(principal, clientSeq)` alone: a replay answers `200` with the original
+`seq`, **even when its body differs**. The new body is not stored and no error says so, so a caller
+never reuses a `clientSeq` for another message.
 
 | Status | `error` | When |
 |---|---|---|
@@ -164,7 +182,8 @@ is `(principal, clientSeq)`: a replay returns the original `seq`. Response `201`
 | `401`, `403` | `unauthenticated`, `not_permitted` | As for reads |
 | `404` | `no_room` | No such room |
 | `410` | `sealed` | The room is sealed |
-| `503` | `log_unavailable` | The database refused it |
+| `429` | `rate_limited` | Over the principal's limits |
+| `503` | `log_unavailable`, `timed_out` | The database refused it, or the request ran out of time |
 
 ## `:9090` — probes and metrics
 

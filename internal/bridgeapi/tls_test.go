@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -107,6 +108,9 @@ func TestPlainHTTPIsRefused(t *testing.T) {
 	cfg, err := TLSConfig(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), quiet)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion %x, want TLS 1.3", cfg.MinVersion)
 	}
 	s, _, _ := newServer(t)
 	addr := freeAddr(t)

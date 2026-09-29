@@ -15,13 +15,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -43,9 +45,9 @@ const (
 	// The stream (§4): a 30 s ping, and a life of min(token exp, 1 h).
 	defaultPing   = 30 * time.Second
 	maxStreamLife = time.Hour
-	// streamWriteWait bounds one write to a stream, so a bridge that stops
+	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
 	// reading cannot pin a handler until its token expires.
-	streamWriteWait = 10 * time.Second
+	defaultStreamWriteWait = 10 * time.Second
 
 	brokerActor = "system:room-broker"
 )
@@ -69,9 +71,10 @@ type Log interface {
 	TouchBridge(ctx context.Context, roomID, runID string) (held bool, err error)
 }
 
-// Redactor removes secrets from a JSON payload; *redact.Redactor implements it.
+// Redactor removes secrets from a JSON payload, keys included, and fails once
+// ctx ends rather than return it partly scanned; *redact.Redactor implements it.
 type Redactor interface {
-	Payload(raw json.RawMessage) (json.RawMessage, []string, error)
+	Payload(ctx context.Context, raw json.RawMessage) (json.RawMessage, []string, error)
 }
 
 // Liveness answers whether a run is live; *runwatch.Watcher implements it.
@@ -98,10 +101,19 @@ type Server struct {
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
-	// Now is the clock of request and stream deadlines; nil means time.Now.
+	// StreamWriteWait bounds each write to a stream; 0 means 10 s.
+	StreamWriteWait time.Duration
+	// Limits bound each principal on the events endpoint and the system API.
+	Limits Limits
+	// Now is the limits' clock; nil means time.Now. Deadlines handed to the
+	// runtime (a context's, a connection's) stay on its own clock: a fake one
+	// there would expire a request before it starts, or never.
 	Now    func() time.Time
 	Logger *slog.Logger
-	conns  registry
+
+	conns     registry
+	limitOnce sync.Once
+	limit     *limiter
 }
 
 // Routes is the :8443 handler.
@@ -116,7 +128,7 @@ func (s *Server) Routes() http.Handler {
 		// Every response, the mux's own 404 and 405 included, has a write deadline;
 		// the stream replaces it with one per write.
 		// ErrNotSupported only from a writer that is not a connection (a test's recorder).
-		_ = http.NewResponseController(w).SetWriteDeadline(s.now().Add(routeTimeout))
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(routeTimeout))
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -141,10 +153,23 @@ func (s *Server) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+// admit applies principal's limits, answering 429 when it is over them. release
+// is called once the request is served.
+func (s *Server) admit(w http.ResponseWriter, principal string) (release func(), ok bool) {
+	s.limitOnce.Do(func() { s.limit = newLimiter(s.Limits, s.now) })
+	release, ok = s.limit.acquire(principal)
+	if !ok {
+		s.log().Warn("principal over its limits", "principal", principal)
+		w.Header().Set("Retry-After", strconv.Itoa(1))
+		fail(w, http.StatusTooManyRequests, wire.ReasonRateLimited)
+	}
+	return release, ok
+}
+
 // bounded caps a non-streaming route's body and its work; Routes caps its response.
 func (s *Server) bounded(maxBody int64, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithDeadline(r.Context(), s.now().Add(routeTimeout))
+		ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 		defer cancel()
 		r = r.WithContext(ctx)
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -313,6 +338,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.admit(w, p.ID)
+	if !ok {
+		return
+	}
+	defer release()
+	ctx := r.Context()
 	var b wire.Batch
 	if err := decodeStrict(r.Body, &b); err != nil {
 		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
@@ -330,15 +361,25 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// leaves half a batch in the log.
 	drafts := make([]envelope.Draft, len(b.Items))
 	for i, it := range b.Items {
-		d, reason := s.bridgeDraft(p, run, it)
-		if reason != "" {
-			s.log().Warn("bridge item refused", "room", run.Room, "run", run.ID, "type", it.Type, "reason", reason)
-			fail(w, http.StatusBadRequest, reason)
+		d, err := s.bridgeDraft(ctx, p, run, it)
+		var refused refusal
+		switch {
+		case errors.As(err, &refused):
+			// The type is logged only when valid: an invalid one is the sender's text.
+			typ := "invalid"
+			if it.Type.Valid() {
+				typ = string(it.Type)
+			}
+			s.log().Warn("bridge item refused", "room", run.Room, "run", run.ID, "type", typ, "reason", string(refused))
+			fail(w, http.StatusBadRequest, string(refused))
+			return
+		case err != nil:
+			s.log().Warn("bridge batch not redacted in time", "room", run.Room, "run", run.ID, "err", err)
+			fail(w, http.StatusServiceUnavailable, wire.ReasonTimedOut)
 			return
 		}
 		drafts[i] = d
 	}
-	ctx := r.Context()
 	// The holder's pushes renew the room's bridge lease (P17). A bridge another run
 	// displaced learns it here and must stop: 409, never a silent append (Ruling Y).
 	held, err := s.Log.TouchBridge(ctx, run.Room, run.ID)
@@ -376,91 +417,34 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, ack)
 }
 
-// bridgeDraft redacts and checks one pushed item. reason is empty for an item
-// the bridge may push.
-func (s *Server) bridgeDraft(p authn.Principal, run runwatch.Run, it wire.Item) (envelope.Draft, string) {
+// refusal is an item refused for what it is, carrying its wire reason.
+type refusal string
+
+func (r refusal) Error() string { return "bridge item refused: " + string(r) }
+
+// bridgeDraft redacts and checks one pushed item. A refusal means the item may not
+// be pushed; any other error, that ctx ended before the redaction finished.
+func (s *Server) bridgeDraft(ctx context.Context, p authn.Principal, run runwatch.Run, it wire.Item) (envelope.Draft, error) {
 	if it.Seq <= 0 || (it.Stream != wire.StreamEvents && it.Stream != wire.StreamStatus) || !it.Type.Valid() {
-		return envelope.Draft{}, wire.ReasonBadItem
+		return envelope.Draft{}, refusal(wire.ReasonBadItem)
 	}
-	payload, rules, err := s.Redactor.Payload(it.Payload)
-	if err != nil {
-		return envelope.Draft{}, wire.ReasonBadPayload
+	redacted, rules, err := s.Redactor.Payload(ctx, it.Payload)
+	switch {
+	case errors.Is(err, redact.ErrKeyCollision):
+		return envelope.Draft{}, refusal(wire.ReasonBadItem)
+	case err != nil && ctx.Err() != nil:
+		return envelope.Draft{}, err
+	case err != nil:
+		return envelope.Draft{}, refusal(wire.ReasonBadPayload)
 	}
-	obj, ok := object(payload)
-	if !ok {
-		return envelope.Draft{}, wire.ReasonBadPayload
-	}
-	if !unambiguous(it.Payload) || !allowedFromBridge(it.Type, obj) {
-		return envelope.Draft{}, wire.ReasonBadItem
+	payload, reason := bridgePayload(it.Type, redacted)
+	if reason != "" {
+		return envelope.Draft{}, refusal(reason)
 	}
 	return envelope.Draft{RoomID: run.Room, RunID: run.ID,
 		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: p.ID, Role: run.Role}, Type: it.Type,
 		Origin: envelope.OriginHarness, OriginClient: originClient(run.ID, it.Stream), OriginSeq: it.Seq,
-		Redactions: rules, Payload: payload}, ""
-}
-
-// bridgeKinds are the state_changed kinds a bridge produces: its status tracker and
-// mapping (phase 1), its acks (phase 4) and its local decisions (phase 5).
-var bridgeKinds = map[string]bool{"harness_status": true, "harness_error": true, "harness_paused": true,
-	"harness_event": true, "delivered": true, "interrupted": true, "policy_decision": true, "decision_applied": true}
-
-// allowedFromBridge is what a room bridge may push (review M5): what its own code
-// produces, never a verdict, a driver change or a decision it could forge. obj is
-// the redacted payload, the one stored.
-func allowedFromBridge(t envelope.Type, obj map[string]json.RawMessage) bool {
-	switch t {
-	case envelope.Turn, envelope.ToolCall, envelope.ToolResult:
-		return true
-	case envelope.Message:
-		kind, ok1 := field(obj, "kind")
-		delivery, ok2 := field(obj, "delivery")
-		return ok1 && ok2 && kind == string(envelope.KindChat) &&
-			(delivery == string(envelope.DeliveryNone) || delivery == "")
-	case envelope.StateChanged:
-		kind, ok := field(obj, "kind")
-		return ok && bridgeKinds[kind]
-	}
-	return false
-}
-
-// object decodes a payload's top level; ok is false for anything but a JSON object.
-func object(payload json.RawMessage) (map[string]json.RawMessage, bool) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(payload, &obj); err != nil || obj == nil {
-		return nil, false
-	}
-	return obj, true
-}
-
-// field reads a top-level string by its exact key: "" when absent, ok false when
-// it is not a string.
-func field(obj map[string]json.RawMessage, key string) (string, bool) {
-	raw, present := obj[key]
-	if !present {
-		return "", true
-	}
-	var v string
-	return v, json.Unmarshal(raw, &v) == nil
-}
-
-// unambiguous refuses top-level keys that differ only by case or by a NUL. Go's
-// decoder folds case and keeps the last match, jsonb keeps both keys, and redaction
-// drops NULs from keys and merges them: each reader could see another "kind" than
-// the one checked here.
-func unambiguous(raw json.RawMessage) bool {
-	obj, ok := object(raw)
-	if !ok {
-		return false
-	}
-	seen := make(map[string]bool, len(obj))
-	for k := range obj {
-		n := strings.ToLower(strings.ReplaceAll(k, "\x00", ""))
-		if seen[n] {
-			return false
-		}
-		seen[n] = true
-	}
-	return true
+		Redactions: rules, Payload: payload}, nil
 }
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).
@@ -479,13 +463,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, wire.ReasonRunNotLive)
 		return
 	}
-	// The token's own expiry bounds the stream (§4); the bridge re-dials with a fresh one.
-	end := s.now().Add(maxStreamLife)
-	if !p.Expiry.IsZero() && p.Expiry.Before(end) {
-		end = p.Expiry
-	}
-	ctx, stop := context.WithDeadline(ctx, end)
+	// min(token exp, 1 h) bounds the stream (§4); the bridge re-dials with a fresh token.
+	ctx, stop := context.WithTimeout(ctx, maxStreamLife)
 	defer stop()
+	if !p.Expiry.IsZero() {
+		var stopAtExpiry context.CancelFunc
+		ctx, stopAtExpiry = context.WithDeadline(ctx, p.Expiry)
+		defer stopAtExpiry()
+	}
 	every := s.PingEvery
 	if every <= 0 {
 		every = defaultPing
@@ -496,7 +481,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	for {
-		_ = rc.SetWriteDeadline(s.now().Add(streamWriteWait))
+		_ = rc.SetWriteDeadline(time.Now().Add(s.streamWriteWait()))
 		if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
 			return
 		}
@@ -509,6 +494,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-tick:
 		}
 	}
+}
+
+func (s *Server) streamWriteWait() time.Duration {
+	if s.StreamWriteWait > 0 {
+		return s.StreamWriteWait
+	}
+	return defaultStreamWriteWait
 }
 
 func (s *Server) ticker(d time.Duration) (<-chan time.Time, func()) {

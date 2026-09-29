@@ -35,9 +35,15 @@ func (s *Server) systemAuth(w http.ResponseWriter, r *http.Request) (authn.Princ
 
 // roomEvents: GET /v1/rooms/{id}/events?afterSeq=&limit= (SP3 reads verdicts here).
 func (s *Server) roomEvents(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.systemAuth(w, r); !ok {
+	p, ok := s.systemAuth(w, r)
+	if !ok {
 		return
 	}
+	release, ok := s.admit(w, p.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	id := r.PathValue("id")
 	if !envelope.ValidID(id) {
 		fail(w, http.StatusBadRequest, wire.ReasonBadRoom)
@@ -67,11 +73,18 @@ func (s *Server) roomEvents(w http.ResponseWriter, r *http.Request) {
 
 // roomMessage: POST /v1/rooms/{id}/messages, system:* only, reserved kind task_state
 // (C4). 201 for a new event, 200 for a replayed clientSeq; both carry its seq.
+// A replay is keyed on (principal, clientSeq) alone: a different body under a
+// seen clientSeq also answers 200 with the original seq, and is not stored.
 func (s *Server) roomMessage(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.systemAuth(w, r)
 	if !ok {
 		return
 	}
+	release, ok := s.admit(w, p.ID)
+	if !ok {
+		return
+	}
+	defer release()
 	id := r.PathValue("id")
 	if !envelope.ValidID(id) { // review M4: 400, not a 503 from the draft check
 		fail(w, http.StatusBadRequest, wire.ReasonBadRoom)
@@ -87,10 +100,11 @@ func (s *Server) roomMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, wire.ReasonBadMessage)
 		return
 	}
-	payload, rules, err := s.Redactor.Payload(envelope.Must(envelope.MessagePayload{
+	payload, rules, err := s.Redactor.Payload(r.Context(), envelope.Must(envelope.MessagePayload{
 		Kind: in.Kind, Text: in.Text, Delivery: envelope.DeliveryNone}))
-	if err != nil {
-		fail(w, http.StatusBadRequest, wire.ReasonBadMessage)
+	if err != nil { // the struct always marshals: only an ended request fails here
+		s.log().Warn("system message not redacted in time", "room", id, "principal", p.ID, "err", err)
+		fail(w, http.StatusServiceUnavailable, wire.ReasonTimedOut)
 		return
 	}
 	ev, dup, err := s.Log.Append(r.Context(), envelope.Draft{RoomID: id,
