@@ -47,6 +47,8 @@ packages that need a newer one.
   two packages is fine. Constructors return concrete types.
 - **Plain constructor injection.** No package-level state beyond `version.Version`, no `init()`
   doing work.
+- **Exported symbols carry doc comments** (enforced by `revive`): the comment states the
+  contract, and a non-obvious *why* sits next to the code rather than in a separate log.
 
 ### Idioms
 

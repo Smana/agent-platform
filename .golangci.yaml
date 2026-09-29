@@ -5,6 +5,11 @@ version: "2"
 run:
   timeout: 5m
 
+# The default (true) keeps one issue per line, so a forbidigo ban can be hidden
+# behind bodyclose or revive on the same line and the fixer chases the wrong rule.
+issues:
+  uniq-by-line: false
+
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
