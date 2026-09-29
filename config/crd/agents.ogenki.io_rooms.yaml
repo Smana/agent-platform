@@ -1,0 +1,175 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: rooms.agents.ogenki.io
+spec:
+  group: agents.ogenki.io
+  names:
+    kind: Room
+    listKind: RoomList
+    plural: rooms
+    singular: room
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.driver
+      name: Driver
+      type: string
+    - jsonPath: .status.lastSeq
+      name: Seq
+      type: integer
+    - jsonPath: .status.pendingApprovals
+      name: Pending
+      type: integer
+    - jsonPath: .spec.dataClass
+      name: Class
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Room is one append-only session log (SP2 §1). Rooms are runtime objects, created
+          by SP3's factory or the broker, never committed to Git.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              approvals:
+                default: {}
+                description: '{} so that the profile and ttl defaults apply even when
+                  approvals is omitted (review M2).'
+                properties:
+                  fourEyes:
+                    description: 'OD-16: approver must differ from the humans who
+                      prompted the turn.'
+                    type: boolean
+                  overrides:
+                    additionalProperties:
+                      type: string
+                    description: Per-class override of the profile table (§6).
+                    type: object
+                    x-kubernetes-validations:
+                    - message: unknown approval class
+                      rule: self.all(k, k in ['forge.push','forge.pr','forge.other','mcp.write','shell.high'])
+                    - message: an override is allow, deny or human
+                      rule: self.all(k, self[k] in ['allow','deny','human'])
+                  profile:
+                    default: attended
+                    enum:
+                    - attended
+                    - unattended
+                    type: string
+                  ttl:
+                    default: 4h
+                    pattern: ^[1-9][0-9]*(m|h)$
+                    type: string
+                type: object
+              dataClass:
+                description: Runs requested for this room inherit it (C3).
+                enum:
+                - public
+                - internal
+                type: string
+              driver:
+                description: The initial driver-token holder; afterwards the log decides.
+                pattern: ^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$
+                type: string
+              members:
+                description: Runs join through their own spec.roomRef, never through
+                  this list.
+                items:
+                  properties:
+                    approver:
+                      type: boolean
+                    principal:
+                      pattern: ^human:[A-Za-z0-9@._-]+$
+                      type: string
+                    role:
+                      description: 'Cumulative: watcher < collaborator < owner (§1).'
+                      enum:
+                      - watcher
+                      - collaborator
+                      - owner
+                      type: string
+                  required:
+                  - principal
+                  - role
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-map-keys:
+                - principal
+                x-kubernetes-list-type: map
+              owner:
+                pattern: ^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$
+                type: string
+              repository:
+                default: Smana/cloud-native-ref
+                pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
+                type: string
+              retention:
+                default: 90d
+                pattern: ^[1-9][0-9]{0,3}d$
+                type: string
+            required:
+            - dataClass
+            - driver
+            - owner
+            type: object
+          status:
+            properties:
+              driver:
+                type: string
+              driverEpoch:
+                format: int64
+                type: integer
+              lastSeq:
+                format: int64
+                type: integer
+              observedGeneration:
+                format: int64
+                type: integer
+              pendingApprovals:
+                format: int32
+                type: integer
+              phase:
+                enum:
+                - Open
+                - Active
+                - Idle
+                - AwaitingHuman
+                - Closed
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: 'a Room is named with a C2 id: 8 characters of [a-z2-7]'
+          rule: self.metadata.name.matches('^[a-z2-7]{8}$')
+    served: true
+    storage: true
+    subresources:
+      status: {}

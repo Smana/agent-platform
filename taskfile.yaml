@@ -9,6 +9,7 @@ tasks:
       - task: lint
       - task: vuln
       - task: test
+      - task: crd:check
 
   spdx:
     desc: Every .go file opens with the SPDX license line.
@@ -35,3 +36,13 @@ tasks:
   test:
     cmds:
       - go test -race -count=1 ./...
+
+  crd:gen:
+    cmds:
+      - go tool controller-gen object crd paths=./api/... output:crd:dir=./config/crd
+
+  crd:check:
+    desc: The committed CRD is exactly what the types generate.
+    cmds:
+      - task: crd:gen
+      - git diff --exit-code -- config/crd api
