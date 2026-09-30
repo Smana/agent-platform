@@ -166,7 +166,7 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 |---|---|
 | `hello` | `ClaimBridge` locks the row. Another run keeps the lease while it is still live in the `AgentRun` watch **and** was seen within 2 minutes; otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes updates `bridge_seen_at` |
+| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a quiet run (a long LLM call, a pending confirmation) keeps its room |
 | A run that ended | Frees the lease at once |
 | A holder that died without ending its run | Blocks the room for at most 2 minutes |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |

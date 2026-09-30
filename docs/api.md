@@ -98,7 +98,8 @@ rest of the batch is appended.
 
 Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the highest key of the batch on each
 stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
-appending again.
+appending again. An empty batch, `{"items":[]}`, is the bridge's heartbeat: it renews the lease
+and nothing else, and the bridge sends one when it has pushed nothing for 30 s.
 
 | Status | `error` | When | The bridge then |
 |---|---|---|---|

@@ -31,7 +31,8 @@ import (
 
 const (
 	// A bridge seen within this window holds its room's lease (ruling P17, kept in
-	// the store: review I7). It pushes every second, so two minutes of silence means gone.
+	// the store: review I7). It pushes at least every 30 s, an empty batch when its
+	// run is quiet, so two minutes of silence means gone.
 	connectedWindow = 2 * time.Minute
 
 	// Request bounds. A bridge sends at most 100 items per batch (Task 1.11).

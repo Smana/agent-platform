@@ -432,6 +432,32 @@ func TestADisplacedBridgeGets409AndWritesNothing(t *testing.T) {
 	}
 }
 
+// Review I2: a quiet bridge's heartbeat is an empty batch. It renews the lease,
+// fenced like an append: the holder gets a zero ack, a displaced bridge 409.
+func TestAnEmptyBatchRenewsTheLeaseFenced(t *testing.T) {
+	s, log, w := newServer(t)
+	h := s.Routes()
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	hello(t, h, runA)
+	empty := []byte(`{"items":[]}`)
+	rec := call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, empty)
+	var ack wire.BatchAck
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &ack) != nil || ack != (wire.BatchAck{}) {
+		t.Fatalf("holder's heartbeat: %d %s", rec.Code, rec.Body)
+	}
+	log.mu.Lock()
+	touches := log.touches
+	log.leases[room] = runB
+	log.mu.Unlock()
+	if touches != 1 {
+		t.Fatalf("the heartbeat renewed the lease %d times", touches)
+	}
+	rec = call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, empty)
+	if rec.Code != http.StatusConflict || reason(t, rec) != wire.ReasonLeaseLost {
+		t.Fatalf("displaced heartbeat: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestEventsWithoutHelloLoseTheLease(t *testing.T) {
 	s, log, w := newServer(t)
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))

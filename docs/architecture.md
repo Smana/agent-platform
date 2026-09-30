@@ -94,6 +94,7 @@ sequenceDiagram
     BR->>PG: append, one transaction per item, gapless seq
     BR-->>B: ack {afterHarnessSeq, afterStatusSeq}
   end
+  Note over B,BR: nothing pushed for 30 s: an empty batch renews the lease
   H->>R: room_handoff(reviewer, summary, commit) (phase 3)
   R->>BR: MCP on :8090
   BR->>PG: handoff{fromRole, toRole, summary, commit, branch}
