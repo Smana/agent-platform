@@ -41,16 +41,16 @@ const (
 	LabelTier        = "agents.ogenki.io/tier"        // fixed per run, never re-routed within it (R47)
 	AnnTaskURL       = "agents.ogenki.io/task-url"    // set at CREATE; the harness footer's Agent-Task for a text task (SF)
 
-	namePrefix = "xplane-run-"
+	namePrefix = runwatch.ClaimPrefix
 )
 
-// GVK is SP1's AgentRun claim.
-var GVK = schema.GroupVersionKind{Group: "cloud.ogenki.io", Version: "v1alpha1", Kind: "AgentRun"}
+// GVK is SP1's AgentRun claim: the broker's own, so the two readers of a claim never disagree.
+func GVK() schema.GroupVersionKind { return runwatch.GVK() }
 
 // Scheme registers AgentRun as an unstructured kind (the XRD has no Go types).
 func Scheme(s *runtime.Scheme) {
-	s.AddKnownTypeWithName(GVK, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(GVK.GroupVersion().WithKind("AgentRunList"), &unstructured.UnstructuredList{})
+	s.AddKnownTypeWithName(GVK(), &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(GVK().GroupVersion().WithKind("AgentRunList"), &unstructured.UnstructuredList{})
 }
 
 // Spec is what the factory decides about one run. TaskText and TaskURL are exclusive, as the
@@ -91,7 +91,7 @@ func Build(s Spec) *unstructured.Unstructured {
 		spec["egress"] = map[string]any{"profiles": profiles}
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
-	u.SetGroupVersionKind(GVK)
+	u.SetGroupVersionKind(GVK())
 	u.SetNamespace(Namespace)
 	u.SetName(Name(s.RunID))
 	labels := map[string]string{LabelRole: s.Role, LabelPrincipal: strings.ReplaceAll(s.Principal, ":", ".")}
@@ -156,7 +156,7 @@ type Client struct{ C client.Client }
 
 func empty() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(GVK)
+	u.SetGroupVersionKind(GVK())
 	return u
 }
 
@@ -169,14 +169,28 @@ func named(id string) *unstructured.Unstructured {
 
 // Create creates the claim for s.
 func (c Client) Create(ctx context.Context, s Spec) error {
+	if err := validID("create", s.RunID); err != nil {
+		return err
+	}
 	if err := c.C.Create(ctx, Build(s)); err != nil {
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
 	return nil
 }
 
+// validID refuses an id that names no run, before it reaches the API as xplane-run-<id>.
+func validID(op, id string) error {
+	if !envelope.ValidID(id) {
+		return fmt.Errorf("%s run %q: not a C2 id", op, id)
+	}
+	return nil
+}
+
 // Get reads run id; found is false when it does not exist.
 func (c Client) Get(ctx context.Context, id string) (Run, bool, error) {
+	if err := validID("get", id); err != nil {
+		return Run{}, false, err
+	}
 	u := empty()
 	err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace, Name: Name(id)}, u)
 	if apierrors.IsNotFound(err) {
@@ -192,7 +206,7 @@ func (c Client) Get(ctx context.Context, id string) (Run, bool, error) {
 // List reads every run in Namespace.
 func (c Client) List(ctx context.Context) ([]Run, error) {
 	l := &unstructured.UnstructuredList{}
-	l.SetGroupVersionKind(GVK.GroupVersion().WithKind("AgentRunList"))
+	l.SetGroupVersionKind(GVK().GroupVersion().WithKind("AgentRunList"))
 	if err := c.C.List(ctx, l, client.InNamespace(Namespace)); err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
@@ -208,6 +222,9 @@ func (c Client) List(ctx context.Context) ([]Run, error) {
 // Annotate merge-patches annotations only: the Kyverno patch-limit rule (phase 5) refuses
 // anything else from the factory's ServiceAccount.
 func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) error {
+	if err := validID("annotate", id); err != nil {
+		return err
+	}
 	body, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": kv}})
 	if err != nil {
 		return fmt.Errorf("annotate run %s: %w", id, err)
@@ -220,6 +237,9 @@ func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) e
 
 // Delete deletes run id; a run already gone is not an error.
 func (c Client) Delete(ctx context.Context, id string) error {
+	if err := validID("delete", id); err != nil {
+		return err
+	}
 	if err := client.IgnoreNotFound(c.C.Delete(ctx, named(id))); err != nil {
 		return fmt.Errorf("delete run %s: %w", id, err)
 	}

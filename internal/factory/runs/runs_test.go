@@ -5,6 +5,7 @@ package runs
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -93,6 +94,47 @@ func TestBuildCarriesTheTaskURLAnnotation(t *testing.T) {
 	if _, ok := Build(spec()).GetAnnotations()[AnnTaskURL]; ok {
 		t.Error("no source URL, no annotation")
 	}
+}
+
+// An id that is not a C2 id names no run: nothing is read, patched or deleted under it, even
+// when a claim with that name exists.
+func TestClientRefusesAnIDThatIsNotARun(t *testing.T) {
+	c := newClient()
+	for _, id := range []string{"notanid1", "7f3cq2x"} {
+		u := Build(spec())
+		u.SetName(Name(id))
+		if err := c.C.Create(t.Context(), u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"", "NOTANID1", "notanid1", "7f3cq2x", "7f3cq2xz/.."} {
+		if _, found, err := c.Get(t.Context(), id); err == nil || found {
+			t.Errorf("Get(%q) = %v %v", id, found, err)
+		}
+		if err := c.Annotate(t.Context(), id, map[string]string{AnnUsage: "1"}); err == nil {
+			t.Errorf("Annotate(%q)", id)
+		}
+		if err := c.Delete(t.Context(), id); err == nil {
+			t.Errorf("Delete(%q)", id)
+		}
+	}
+}
+
+func TestFromUnstructuredReadsFinishedAt(t *testing.T) {
+	u := Build(spec())
+	if err := unstructured.SetNestedField(u.Object, "2026-09-30T10:20:00Z", "status", "finishedAt"); err != nil {
+		t.Fatal(err)
+	}
+	r, ok := FromUnstructured(u)
+	if want := time.Date(2026, 9, 30, 10, 20, 0, 0, time.UTC); !ok || !r.Finished.Equal(want) {
+		t.Fatalf("%v %v", r.Finished, ok)
+	}
+}
+
+func newClient() Client {
+	s := runtime.NewScheme()
+	Scheme(s)
+	return Client{C: fake.NewClientBuilder().WithScheme(s).Build()}
 }
 
 func TestFromUnstructuredSkipsWhatIsNotARun(t *testing.T) {

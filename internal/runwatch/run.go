@@ -18,6 +18,8 @@ const (
 	Namespace = "agents"
 	// RevokedAnnotation carries why a run was revoked; any value makes it not live.
 	RevokedAnnotation = "agents.ogenki.io/revoked"
+	// ClaimPrefix starts every AgentRun claim's name: xplane-run-<C2 id>.
+	ClaimPrefix = "xplane-run-"
 
 	defaultMaxMinutes  = 120
 	deadlineToleration = 30 * time.Second
@@ -47,7 +49,7 @@ func (r Run) Live() bool { return !Terminal(r.Phase) && r.Revoked == "" }
 // FromUnstructured reads exactly the C3 fields SP2 relies on. ok is false for a
 // claim that is not a run: not named xplane-run-<C2 id>, or outside Namespace.
 func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
-	id, ok := strings.CutPrefix(u.GetName(), "xplane-run-")
+	id, ok := strings.CutPrefix(u.GetName(), ClaimPrefix)
 	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace {
 		return Run{}, false
 	}
