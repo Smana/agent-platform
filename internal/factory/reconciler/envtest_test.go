@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/tracing"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
 
@@ -53,7 +55,8 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	}
 	r := &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: forge.NewFake(), Runs: runs.Client{C: c},
 		Rooms: &fakeLog{}, Triage: triage.Static{Cfg: cfg()}, Metrics: &fakeMetrics{},
-		Now: time.Now, NewRunID: func() string { return "7f3cq2xz" }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
+		Now: time.Now, NewRunID: func() string { return "7f3cq2xz" }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler),
+		Trace: &fakeSink{}}
 	if err := r.SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +82,17 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	}
 	if got.Status.Phase != v1alpha1.PhaseImplementing || u.GetLabels()[runs.LabelTask] != "3buqdlot" {
 		t.Fatalf("no AgentRun, or the task never reached Implementing: %q %v", got.Status.Phase, u.GetLabels())
+	}
+	// R46: the API server keeps the minted trace, and the claim carries it with the tier.
+	if tr := got.Status.Trace; tr == nil || u.GetAnnotations()[runs.AnnTraceparent] != tracing.Traceparent(tr.TraceID, tr.SpanID) ||
+		u.GetLabels()[runs.LabelTier] != "standard" {
+		t.Fatalf("trace %+v, claim %v %v", got.Status.Trace, u.GetAnnotations(), u.GetLabels())
+	}
+	// Every run of the task is parented on these ids: the CRD refuses a change of them.
+	moved := got.DeepCopy()
+	moved.Status.Trace.TraceID = strings.Repeat("c", 32)
+	if err := c.Status().Update(ctx, moved); err == nil || !strings.Contains(err.Error(), "a task's trace ids never change") {
+		t.Fatalf("a changed trace id is refused: %v", err)
 	}
 
 	// A change of the run is a reconcile of its task: the AgentRun watch maps the label back.

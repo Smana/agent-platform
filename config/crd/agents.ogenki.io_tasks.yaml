@@ -425,6 +425,36 @@ spec:
                   type: object
                 maxItems: 256
                 type: array
+              trace:
+                description: 'The task''s root span (R46): minted at acceptance, exported
+                  once when the task ends.'
+                properties:
+                  exported:
+                    type: boolean
+                  spanID:
+                    maxLength: 16
+                    pattern: ^[0-9a-f]{16}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: an all-zero span id is invalid W3C
+                      rule: self != '0000000000000000'
+                  traceID:
+                    maxLength: 32
+                    pattern: ^[0-9a-f]{32}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: an all-zero trace id is invalid W3C
+                      rule: self != '00000000000000000000000000000000'
+                required:
+                - spanID
+                - traceID
+                type: object
+                x-kubernetes-validations:
+                - message: a task's trace ids never change
+                  rule: self.traceID == oldSelf.traceID && self.spanID == oldSelf.spanID
+                - message: an exported span stays exported
+                  rule: '!has(oldSelf.exported) || !oldSelf.exported || (has(self.exported)
+                    && self.exported)'
               usage:
                 description: Usage is the task's token spend.
                 properties:

@@ -16,6 +16,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/tracing"
 )
 
 // runEndGrace is how long a finished run waits for the room's end reason before falling back to
@@ -103,7 +104,15 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 	return runs.Spec{TaskID: t.Name, Role: "implementer", Repository: t.Spec.Repository, BaseRef: "main",
 		Branch: "agent/" + t.Name, TaskText: text, Principal: runs.PrincipalFactory, DataClass: t.Spec.DataClass,
 		Model: t.Spec.Budget.Model, RoomRef: t.Status.RoomRef, SourceURL: sourceURL(t),
-		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes}
+		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
+}
+
+// traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.
+func traceparent(t *v1alpha1.Task) string {
+	if t.Status.Trace == nil {
+		return ""
+	}
+	return tracing.Traceparent(t.Status.Trace.TraceID, t.Status.Trace.SpanID)
 }
 
 func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec, trigger string) error {

@@ -180,6 +180,26 @@ type TaskStatus struct {
 	// The last room event seen for the running run (stuck detection, §6.3).
 	// +optional
 	LastActivity *metav1.Time `json:"lastActivity,omitempty"`
+	// The task's root span (R46): minted at acceptance, exported once when the task ends.
+	// +optional
+	Trace *TraceRef `json:"trace,omitempty"`
+}
+
+// TraceRef names the task's root span; the factory exports it from these ids at the end (R46).
+// The ids never change once minted: every run of the task is parented on them.
+// +kubebuilder:validation:XValidation:rule="self.traceID == oldSelf.traceID && self.spanID == oldSelf.spanID",message="a task's trace ids never change"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.exported) || !oldSelf.exported || (has(self.exported) && self.exported)",message="an exported span stays exported"
+type TraceRef struct {
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{32}$`
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:XValidation:rule="self != '00000000000000000000000000000000'",message="an all-zero trace id is invalid W3C"
+	TraceID string `json:"traceID"`
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{16}$`
+	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:XValidation:rule="self != '0000000000000000'",message="an all-zero span id is invalid W3C"
+	SpanID string `json:"spanID"`
+	// +optional
+	Exported bool `json:"exported,omitempty"`
 }
 
 // Classification is the complexity classifier's verdict on the task (C7).

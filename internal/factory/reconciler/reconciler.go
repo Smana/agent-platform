@@ -26,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/tracing"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
 
@@ -76,6 +77,7 @@ type Reconciler struct {
 	NewRunID  func() string
 	Nonce     func() string
 	Log       *slog.Logger
+	Trace     tracing.Sink // nil: tracing off (R46)
 }
 
 // SetupWithManager watches Tasks and the AgentRuns that carry a task label.
@@ -101,7 +103,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ended := v1alpha1.TerminalPhase(t.Status.Phase)
-	if ended && len(t.Status.Outbox) == 0 {
+	if ended && len(t.Status.Outbox) == 0 && !r.spanDue(&t) {
 		return ctrl.Result{}, nil
 	}
 	before := t.Status.DeepCopy()
@@ -121,11 +123,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			f(ctx)
 		}
 	}
-	// Only a written outbox is posted (review M-a): a write that conflicts posts nothing, and its
-	// replay may take another path. The second write records what was posted.
-	if len(t.Status.Outbox) > 0 {
+	// Only a written outbox is posted (review M-a), and only a written end exports the task's span:
+	// a write that conflicts posts and exports nothing, and its replay may take another path. The
+	// second write records what was posted and exported.
+	if len(t.Status.Outbox) > 0 || r.spanDue(&t) {
 		queued := t.Status.DeepCopy()
 		err = errors.Join(err, r.drain(ctx, &t))
+		r.endTrace(ctx, &t)
 		if !equality.Semantic.DeepEqual(*queued, t.Status) {
 			if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
 				return ctrl.Result{}, errors.Join(err, uerr)
@@ -290,6 +294,32 @@ func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason st
 	return nil
 }
 
+// spanDue: the task has ended and its root span is still to export (R46).
+func (r *Reconciler) spanDue(t *v1alpha1.Task) bool {
+	return r.Trace != nil && v1alpha1.TerminalPhase(t.Status.Phase) && t.Status.Trace != nil && !t.Status.Trace.Exported
+}
+
+// endTrace exports the task's root span once (R46), from the label's acceptance (the Task's
+// creation) to the end its status recorded, so a retry exports the same span. Best effort: a
+// lost span never holds a task; a failed export is retried when the task is next reconciled.
+func (r *Reconciler) endTrace(ctx context.Context, t *v1alpha1.Task) {
+	if !r.spanDue(t) {
+		return
+	}
+	end := r.Now()
+	if t.Status.PhaseSince != nil {
+		end = t.Status.PhaseSince.Time
+	}
+	tr := t.Status.Trace
+	err := r.Trace.Export(ctx, tracing.Task{TraceID: tr.TraceID, SpanID: tr.SpanID, TaskID: t.Name, Tier: t.Spec.Budget.Tier,
+		Phase: t.Status.Phase, Reason: t.Status.Reason, Start: t.CreationTimestamp.Time, End: end})
+	if err != nil {
+		r.log().Warn("task span not exported", "task", t.Name, "err", err)
+		return
+	}
+	tr.Exported = true
+}
+
 func (r *Reconciler) countTasks(ctx context.Context, keep func(*v1alpha1.Task) bool) (int, error) {
 	var l v1alpha1.TaskList
 	if err := r.Client.List(ctx, &l, client.InNamespace(r.Namespace)); err != nil {
@@ -333,6 +363,10 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if reason != "" {
 		return r.end(ctx, t, v1alpha1.PhaseRejected, reason)
+	}
+	if r.Trace != nil && t.Status.Trace == nil { // R46: the task's root span, minted once at acceptance
+		tr, sp := tracing.Mint()
+		t.Status.Trace = &v1alpha1.TraceRef{TraceID: tr, SpanID: sp}
 	}
 	d, err := r.Triage.Triage(ctx, t)
 	if err != nil {

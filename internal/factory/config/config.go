@@ -66,6 +66,7 @@ type Config struct {
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
 	Meter        Meter               `json:"meter"`
+	Tracing      Tracing             `json:"tracing"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -127,9 +128,15 @@ type Meter struct {
 	Query string `json:"query"`
 }
 
+// Tracing is where task spans go (R46): the trace collector's platform port. Empty: tracing off.
+type Tracing struct {
+	OTLPEndpoint string `json:"otlpEndpoint"`
+}
+
 var (
-	repoRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
-	hostRE = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+	repoRE     = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+	hostPortRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
+	hostRE     = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
 )
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
@@ -268,6 +275,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Caps.MaxTextBytes < 1 || c.Caps.MaxTextBytes > MaxTextCeiling {
 		bad("caps.maxTextBytes must be 1..%d (R6)", MaxTextCeiling)
+	}
+	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
+		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)
 	}
 	return errors.Join(errs...)
 }

@@ -192,3 +192,19 @@ func TestBadConfigsFail(t *testing.T) {
 		})
 	}
 }
+
+// R46: task spans go to the trace collector's platform port, host:port; no block, no tracing.
+func TestTracingEndpoint(t *testing.T) {
+	c, err := Parse([]byte(good + "tracing: {otlpEndpoint: agent-traces-collector.observability.svc.cluster.local:4317}\n"))
+	if err != nil || c.Tracing.OTLPEndpoint != "agent-traces-collector.observability.svc.cluster.local:4317" {
+		t.Fatalf("%v %+v", err, c)
+	}
+	for _, bad := range []string{`"http://collector:4317"`, "collector", "collector:", ":4317", "-collector:4317", "Collector:4317", "collector:123456"} {
+		if _, err := Parse([]byte(good + "tracing: {otlpEndpoint: " + bad + "}\n")); err == nil {
+			t.Errorf("%s is not host:port", bad)
+		}
+	}
+	if c, err := Parse([]byte(good)); err != nil || c.Tracing.OTLPEndpoint != "" {
+		t.Fatal("no tracing block: tracing off")
+	}
+}
