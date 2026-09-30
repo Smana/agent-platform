@@ -50,7 +50,7 @@ const (
 	// sweepEvery and sweepTimeout pace the leader's "joined, never left" sweep.
 	sweepEvery   = 5 * time.Minute
 	sweepTimeout = time.Minute
-	// The drains fit the pod's 30 s grace: the manager, :8443 and :8080 in
+	// The drains fit the pod's 30 s grace: the manager, :8443, :8080 and :8090 in
 	// parallel, then :9090 and the metrics provider. :8080's covers a WebSocket
 	// write blocked for WriteWait (10 s) plus the 5 s close handshake (review M11).
 	bridgeDrain  = 20 * time.Second
@@ -61,7 +61,8 @@ const (
 )
 
 // RunBroker runs room-broker's subcommand args[0]: serve (the default) or
-// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL and POD_NAMESPACE.
+// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
+// ROOMS_MCP_KEY and ROOMS_GITHUB_APP_DIR.
 func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func(string) string) error {
 	cmd := "serve"
 	if len(args) > 0 {
@@ -110,7 +111,7 @@ func brokerEnv(getenv func(string) string) (cfgPath, dsn, ns string, err error) 
 }
 
 // serveBroker runs the Room controller, the AgentRun watch, the :8443 API, the
-// :8080 human API and its fan-out hub, the JWKS refresh and the :9090 metrics
+// :8080 human API and its fan-out hub, the :8090 room tools, the JWKS refresh and the :9090 metrics
 // and probes until ctx ends or one of them fails. :9090 stops last, so the drain's final counts are scraped and /readyz
 // answers 503 rather than refusing connections meanwhile (review M4).
 func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
@@ -172,6 +173,14 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	humans := humanServer(cfg.Human, a.humans, mgr.GetClient(), ns, st, hub, rw.watch, m, log)
+	key := mcpKey(getenv)
+	if key == "" {
+		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
+	}
+	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
+	if err := addVerdictPoster(getenv("ROOMS_GITHUB_APP_DIR"), mgr.Add, logStore, mgr.GetClient(), ns, cfg.PublicURL, m, log); err != nil {
+		return fmt.Errorf("room-broker: verdict poster: %w", err)
+	}
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig
@@ -179,9 +188,15 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: human listener: %w", err)
 	}
+	mcpLn, err := lc.Listen(ctx, "tcp", mcpAddr)
+	if err != nil {
+		_ = humanLn.Close()
+		return fmt.Errorf("room-broker: room tools listener: %w", err)
+	}
 	opsLn, err := lc.Listen(ctx, "tcp", opsAddr)
 	if err != nil {
 		_ = humanLn.Close()
+		_ = mcpLn.Close()
 		return fmt.Errorf("room-broker: ops listener: %w", err)
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -204,6 +219,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	g.Go(func() error { return api.ListenAndServeTLS(gctx, bridgeAddr, tlsCfg, bridgeDrain) })
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return humans.Serve(gctx, humanLn, humanDrain) })
+	g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
 	g.Go(func() error { return refreshJWKS(gctx, refreshers, nil) })
 	g.Go(func() error {
 		if err := mgr.Start(gctx); err != nil {

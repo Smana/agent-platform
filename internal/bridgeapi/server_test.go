@@ -612,11 +612,11 @@ func TestAChatCarriesNoVerdict(t *testing.T) {
 	h := s.Routes()
 	hello(t, h, runA)
 	it := wire.Item{Stream: wire.StreamEvents, Seq: 1, Type: envelope.Message,
-		Payload: json.RawMessage(`{"kind":"chat","text":"lgtm","delivery":"none","verdict":"approve","commit":"0123abc"}`)}
+		Payload: json.RawMessage(`{"kind":"chat","text":"lgtm","delivery":"none","verdict":"approve","commit":"0123abc","pullRequest":"https://github.com/Smana/cloud-native-ref/pull/12"}`)}
 	if rec := call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, batch(it)); rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	if got := string(log.stored()[0].Payload); strings.Contains(got, "verdict") || strings.Contains(got, "commit") ||
+	if got := string(log.stored()[0].Payload); strings.Contains(got, "verdict") || strings.Contains(got, "commit") || strings.Contains(got, "pull") ||
 		got != `{"kind":"chat","text":"lgtm","delivery":"none"}` {
 		t.Fatalf("stored %s", got)
 	}

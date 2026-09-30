@@ -91,11 +91,17 @@ spec:
                     type: string
                 type: object
               dataClass:
-                description: Runs requested for this room inherit it (C3).
+                description: |-
+                  Runs requested for this room inherit it (C3). Fixed at creation (ruling
+                  TD): a room turned public would publish the summaries of verdicts queued
+                  under its internal class.
                 enum:
                 - public
                 - internal
                 type: string
+                x-kubernetes-validations:
+                - message: dataClass is immutable
+                  rule: self == oldSelf
               driver:
                 description: The initial driver-token holder; afterwards the log decides.
                 maxLength: 261

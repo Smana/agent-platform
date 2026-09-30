@@ -172,6 +172,8 @@ the harnesses still hold.
 | A run ends `pod_lost` | The pod died before the harness finished and before its deadline | Expected for evictions; `deadline` means it hit `maxMinutes` |
 | Duplicate harness events after a bridge restart | The harness skipped an unreadable event file (ruling P35) | A known limit, confined to that run; nothing to repair |
 | `RoomStalled` | The run is silent: a stuck harness, or a bridge that lost the broker | Bridge logs; the harness's step log in VictoriaLogs |
+| The `20260929120000_verdicts` migration failed, or `events_agent_verdicts` is `INVALID` (`\d events` in `psql`) | `CREATE INDEX CONCURRENTLY` was interrupted; it runs outside a transaction, so a failure leaves an invalid index behind and the re-run refuses with "already exists" | As `rooms_owner`: `DROP INDEX CONCURRENTLY events_agent_verdicts;`, then let the Atlas operator re-run the migration |
+| Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key (ruling SZ): each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
 
 ## Upgrades
 
