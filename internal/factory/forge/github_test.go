@@ -151,11 +151,36 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"id":1}`)
 	}))
-	mux.HandleFunc("GET /repos/Smana/demo/issues/7/comments", g.authed(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query(); q.Get("sort") != "created" || q.Get("direction") != "desc" || q.Get("per_page") != "50" {
-			t.Errorf("query %v", q)
+	// An issue's comments as GitHub serves them: ascending id, paged, sort and direction ignored
+	// (review R1). Issue 7 has one comment; 9, 10 and 11 have 130, 180 and 60.
+	mux.HandleFunc("GET /repos/Smana/demo/issues/{n}/comments", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		total := map[string]int{"7": 1, "9": 130, "10": 180, "11": 60}[r.PathValue("n")]
+		q := r.URL.Query()
+		per, _ := strconv.Atoi(q.Get("per_page"))
+		page, _ := strconv.Atoi(q.Get("page"))
+		if per == 0 {
+			per = 30
 		}
-		_, _ = io.WriteString(w, `[{"id":9,"body":"hi","user":{"login":"Smana"},"created_at":"2026-09-27T10:00:00Z"}]`)
+		page = max(page, 1)
+		last := max((total+per-1)/per, 1)
+		link := func(p int, rel string) string {
+			return fmt.Sprintf(`<%s/repos/Smana/demo/issues/%s/comments?per_page=%d&page=%d>; rel="%s"`, g.srv.URL, r.PathValue("n"), per, p, rel)
+		}
+		var rels []string
+		if page < last {
+			rels = append(rels, link(page+1, "next"), link(last, "last"))
+		}
+		if page > 1 {
+			rels = append(rels, link(1, "first"), link(page-1, "prev"))
+		}
+		if len(rels) > 0 {
+			w.Header().Set("Link", strings.Join(rels, ", "))
+		}
+		var cs []string
+		for id := (page-1)*per + 1; id <= min(page*per, total); id++ {
+			cs = append(cs, fmt.Sprintf(`{"id":%d,"body":"c%d","user":{"login":"Smana"},"created_at":"2026-09-27T10:00:00Z"}`, id, id))
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(cs, ",")+"]")
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
@@ -297,6 +322,24 @@ func TestLabelEventsPastThePageCapAreTruncated(t *testing.T) {
 	}
 }
 
+// Review R1: GitHub lists an issue's comments oldest first and ignores sort and direction, so the
+// newest 50 are on the last pages. A marker posted after the 50th comment must still be found.
+func TestRecentCommentsAreTheNewest(t *testing.T) {
+	r := newRig(t)
+	// A short last page, a full one, and one page of more than 50.
+	for issue, total := range map[int]int64{9: 130, 10: 180, 11: 60} {
+		cs, err := r.g.RecentComments(t.Context(), issue)
+		if err != nil || len(cs) != 50 {
+			t.Fatalf("#%d: %d %v", issue, len(cs), err)
+		}
+		for i, c := range cs {
+			if want := total - int64(i); c.ID != want {
+				t.Fatalf("#%d: comment %d is id %d, want %d (newest first)", issue, i, c.ID, want)
+			}
+		}
+	}
+}
+
 func TestIssueAndLabels(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -336,7 +379,7 @@ func TestIssueAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs, err := r.g.RecentComments(ctx, 7)
-	if err != nil || len(cs) != 1 || cs[0].ID != 9 || cs[0].Author != "Smana" || cs[0].Body != "hi" {
+	if err != nil || len(cs) != 1 || cs[0].ID != 1 || cs[0].Author != "Smana" || cs[0].Body != "c1" {
 		t.Fatalf("%+v %v", cs, err)
 	}
 	if err := r.g.AddLabels(ctx, 7, "factory/class:docs-links"); err != nil {

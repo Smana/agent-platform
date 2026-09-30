@@ -172,16 +172,43 @@ func (g *GitHub) Comment(ctx context.Context, number int, body string) error {
 	return wrap("comment", err)
 }
 
+// recentComments is how many of an issue's newest comments RecentComments returns.
+const recentComments = 50
+
 // RecentComments are the 50 newest comments, newest first (R22 searches them for its marker).
+// GitHub lists an issue's comments by ascending id and ignores sort and direction there (review
+// R1), so the newest are on the last page, and on the one before it when the last is short: one
+// to three calls.
 func (g *GitHub) RecentComments(ctx context.Context, number int) ([]Comment, error) {
-	cs, _, err := g.rest.Issues.ListComments(ctx, g.owner, g.name, number, &github.IssueListCommentsOptions{
-		Sort: new("created"), Direction: new("desc"), ListOptions: github.ListOptions{PerPage: 50}})
-	g.mark(err)
-	if err != nil {
-		return nil, wrap("list comments", err)
+	page := func(n int) ([]*github.IssueComment, *github.Response, error) {
+		cs, resp, err := g.rest.Issues.ListComments(ctx, g.owner, g.name, number,
+			&github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100, Page: n}})
+		g.mark(err)
+		if err != nil {
+			return nil, nil, wrap("list comments", err)
+		}
+		return cs, resp, nil
 	}
+	cs, resp, err := page(1)
+	if err != nil {
+		return nil, err
+	}
+	if last := resp.LastPage; last > 1 {
+		if cs, _, err = page(last); err != nil {
+			return nil, err
+		}
+		if len(cs) < recentComments {
+			prev, _, err := page(last - 1)
+			if err != nil {
+				return nil, err
+			}
+			cs = append(prev, cs...)
+		}
+	}
+	cs = cs[max(len(cs)-recentComments, 0):]
 	out := make([]Comment, 0, len(cs))
-	for _, c := range cs {
+	for i := len(cs) - 1; i >= 0; i-- {
+		c := cs[i]
 		out = append(out, Comment{ID: c.GetID(), Author: c.GetUser().GetLogin(), Body: c.GetBody(), At: c.GetCreatedAt().Time})
 	}
 	return out, nil
