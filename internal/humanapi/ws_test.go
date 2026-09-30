@@ -43,16 +43,27 @@ const (
 
 var groups = policy.Groups{Admin: "agents-admin", Member: member}
 
-// memLog is the room's log. roomErr, when set, fails every Room read.
+// memLog is the room's log. roomErr, when set, fails every Room read;
+// appendAfter, when set, appends one event just after the Room read of that
+// number (1-based, the hub's reads included) has taken its mark; from read
+// driverFrom on, driver is the room's driver.
 type memLog struct {
-	mu      sync.Mutex
-	evs     []envelope.Event
-	roomErr error
+	mu          sync.Mutex
+	evs         []envelope.Event
+	roomErr     error
+	appendAfter int
+	driverFrom  int
+	driver      string
+	roomReads   int
 }
 
 func (m *memLog) add(n int) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addLocked(n)
+}
+
+func (m *memLog) addLocked(n int) int64 {
 	for range n {
 		m.evs = append(m.evs, envelope.Event{V: 1, Seq: int64(len(m.evs) + 1), RoomID: roomID,
 			Type: envelope.Message, Payload: []byte(`{"kind":"chat","text":"x","delivery":"none"}`), TS: time.Now()})
@@ -78,7 +89,34 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	if m.roomErr != nil {
 		return store.RoomState{}, m.roomErr
 	}
-	return store.RoomState{ID: id, LastSeq: int64(len(m.evs)), Driver: "system:factory", DriverEpoch: 3}, nil
+	m.roomReads++
+	st := store.RoomState{ID: id, LastSeq: int64(len(m.evs)), Driver: "system:factory", DriverEpoch: 3}
+	if m.driverFrom > 0 && m.roomReads >= m.driverFrom {
+		st.Driver = m.driver
+	}
+	if m.roomReads == m.appendAfter {
+		m.addLocked(1)
+	}
+	return st, nil
+}
+
+// countingHub counts the subscriptions a Server holds open.
+type countingHub struct {
+	Hub
+	open atomic.Int64
+}
+
+func (h *countingHub) Subscribe(ctx context.Context, room string) (*fanout.Sub, error) {
+	sub, err := h.Hub.Subscribe(ctx, room)
+	if err == nil {
+		h.open.Add(1)
+	}
+	return sub, err
+}
+
+func (h *countingHub) Unsubscribe(sub *fanout.Sub) {
+	h.open.Add(-1)
+	h.Hub.Unsubscribe(sub)
 }
 
 // hubView is the hub's read of the log. It never returns seq skip, as a read
@@ -129,11 +167,12 @@ func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
 }
 
 type env struct {
-	ts  *httptest.Server
-	srv *Server
-	log *memLog
-	hub *fanout.Hub
-	exp *metrics.Exporter
+	ts   *httptest.Server
+	srv  *Server
+	log  *memLog
+	hub  *fanout.Hub
+	subs *countingHub
+	exp  *metrics.Exporter
 }
 
 type option func(*Server, *fanout.Hub, *hubView)
@@ -163,9 +202,10 @@ func setup(t *testing.T, opts ...option) env {
 		t.Fatal(err)
 	}
 	runs := runwatch.New()
+	subs := &countingHub{Hub: hub}
 	srv := &Server{Humans: headerAuth{}, Groups: groups, WebClient: func() string { return "web" },
 		Rooms: fake.NewClientBuilder().WithScheme(s).WithObjects(room, elsewhere).Build(), Namespace: namespace,
-		Log: log, Hub: hub, Runs: runs, Metrics: m}
+		Log: log, Hub: subs, Runs: runs, Metrics: m}
 	for _, o := range opts {
 		o(srv, hub, view)
 	}
@@ -181,7 +221,7 @@ func setup(t *testing.T, opts ...option) env {
 		<-done
 		_ = exp.Shutdown(context.Background())
 	})
-	return env{ts: ts, srv: srv, log: log, hub: hub, exp: exp}
+	return env{ts: ts, srv: srv, log: log, hub: hub, subs: subs, exp: exp}
 }
 
 func wsURL(ts *httptest.Server) string {
@@ -346,7 +386,7 @@ func TestWhereReplayStarts(t *testing.T) {
 		{"a tail longer than the log starts at 1", hello(nil, 50), 1, 10},
 		{"no afterSeq and no tail: the last 500", hello(nil, 0), 1, 10},
 		{"a negative afterSeq starts at 1", hello(&neg, 0), 1, 10},
-		{"an afterSeq past the mark replays nothing", hello(&far, 0), 100, 99},
+		{"an afterSeq past the mark is clamped to it", hello(&far, 0), 11, 10},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -776,4 +816,145 @@ func agentRun(id, room, role string) *unstructured.Unstructured {
 		"spec":     map[string]any{"roomRef": room, "role": role},
 		"status":   map[string]any{"phase": "Running"},
 	}}
+}
+
+// slotsFree reports whether no connection holds a slot.
+func (s *Server) slotsFree() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.perUser) == 0 && len(s.perRoom) == 0
+}
+
+// released waits until the server holds no connection, slot or subscription.
+func released(t *testing.T, e env) {
+	t.Helper()
+	eventually(t, "the handler ends", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
+	})
+	eventually(t, "the slot is freed", e.srv.slotsFree)
+	eventually(t, "the subscription is released", func() bool { return e.subs.open.Load() == 0 })
+}
+
+// A peer whose TCP window stopped is cut within WriteWait and counted: the
+// broker closed it, whatever the reader then saw (review I1, I2).
+func TestAPeerThatStopsReadingIsCut(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.WriteWait = 50 * time.Millisecond })
+	e.log.add(80_000) // far past the loopback socket buffers
+	c, _, err := connect(t, e, header("dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	send(t, c, hello(&zero, 0)) // then never read
+	eventually(t, "the drop is counted", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="write_timeout"} 1`)
+	})
+	released(t, e)
+}
+
+// The budget covers what the socket has not taken: a viewer that keeps reading
+// moves many budgets' worth of events and is never dropped (review I2).
+func TestAReadingViewerOutlastsItsBudget(t *testing.T) {
+	e := setup(t, func(_ *Server, h *fanout.Hub, _ *hubView) { h.Budget = 1000 }) // about 22 events
+	after := int64(10)
+	c := dial(t, e, "dev", hello(&after, 0))
+	read(t, c)
+	read(t, c)
+	for i := range 20 { // 200 events, about 9 budgets
+		e.log.add(10)
+		consecutive(t, events(t, c, 10), int64(11+10*i))
+	}
+}
+
+// However a connection ends, its hub subscription goes with it (review I2).
+func TestEverySubscriptionIsReleased(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opt option
+		end func(env, *websocket.Conn)
+	}{
+		"the peer leaves": {nil, func(_ env, c *websocket.Conn) { _ = c.Close(websocket.StatusNormalClosure, "") }},
+		"a slow consumer": {func(_ *Server, h *fanout.Hub, _ *hubView) { h.Budget = 100 }, func(e env, _ *websocket.Conn) { e.log.add(50) }},
+		"shutdown":        {nil, func(e env, _ *websocket.Conn) { e.srv.closeAll() }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var opts []option
+			if tc.opt != nil {
+				opts = append(opts, tc.opt)
+			}
+			e := setup(t, opts...)
+			c := dial(t, e, "dev", hello(nil, 0))
+			read(t, c)
+			read(t, c)
+			if n := e.subs.open.Load(); n != 1 {
+				t.Fatalf("%d subscriptions open, want 1", n)
+			}
+			tc.end(e, c)
+			go func() { // read on, so the broker's close handshake completes
+				for {
+					if _, _, err := c.Read(context.Background()); err != nil {
+						return
+					}
+				}
+			}()
+			released(t, e)
+		})
+	}
+}
+
+// MaxLifetime caps a connection whose token outlives it, closing 4001 (review M1).
+func TestTheLifetimeCap(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.MaxLifetime = 200 * time.Millisecond })
+	c := dial(t, e, "dev", hello(nil, 0)) // the token lives 1 h
+	if code, reason := closed(t, c); code != closeReauth || reason != "reauth" {
+		t.Fatalf("closed %d %q", code, reason)
+	}
+}
+
+// The mark is read after subscribing, so an append racing the subscription is
+// replayed at once, not left as a hole until the next one (review M2).
+func TestAnAppendRacingTheSubscriptionIsReplayed(t *testing.T) {
+	for name, n := range map[string]int{"after the pre-upgrade read": 1, "after the second read": 2} {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t)
+			e.log.mu.Lock()
+			e.log.appendAfter = n
+			e.log.mu.Unlock()
+			after := int64(10)
+			c := dial(t, e, "dev", hello(&after, 0))
+			var seqs []int64
+			for len(seqs) == 0 || seqs[len(seqs)-1] < 11 {
+				if f := read(t, c); f.Type == wire.FrameEvent {
+					seqs = append(seqs, f.Event.Seq)
+				}
+			}
+			consecutive(t, seqs, 11)
+		})
+	}
+}
+
+// The snapshot's you is resolved against the driver the snapshot reports, read
+// after subscribing, not against the pre-upgrade read (review M5).
+func TestYouFollowsTheSnapshotsDriver(t *testing.T) {
+	e := setup(t)
+	e.log.mu.Lock()
+	e.log.driverFrom, e.log.driver = 2, "human:dev"
+	e.log.mu.Unlock()
+	c := dial(t, e, "dev", hello(nil, 0))
+	if f := read(t, c); f.Snapshot.Driver != "human:dev" || !f.Snapshot.You.Driver {
+		t.Fatalf("driver %q, you %+v", f.Snapshot.Driver, f.Snapshot.You)
+	}
+}
+
+// A Server missing a dependency refuses to serve rather than panic per request (review M6).
+func TestServeRefusesAMissingDependency(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	e := setup(t)
+	e.srv.WebClient = nil
+	if err := e.srv.Serve(t.Context(), ln, time.Second); err == nil {
+		t.Fatal("served without a WebClient")
+	}
 }

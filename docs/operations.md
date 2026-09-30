@@ -46,7 +46,7 @@ events.
 | `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each `Active` room | 1 |
 | `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
-| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `ping_timeout`, `shutdown`, `log_unavailable` | 2 |
+| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable` | 2 |
 | `rooms_participants` | gauge | — | Live participants | 2 |
 | `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; SC-12 wants p95 < 0.5 s | 2 |
 | `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose | 2 |

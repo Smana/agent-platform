@@ -2,8 +2,9 @@
 
 // Package humanapi is the broker's human listener, :8080, reached only through
 // oauth2-proxy (§3): the UI, the room list, and one WebSocket per open room.
-// Every request is authenticated and admitted by group first; a room's reads
-// then go through policy.Allowed. Live events come from the fan-out hub.
+// Every API and WebSocket request is authenticated and admitted by group first;
+// a room's reads then go through policy.Allowed. The UI's static files are not:
+// oauth2-proxy fronts the listener. Live events come from the fan-out hub.
 package humanapi
 
 import (
@@ -97,6 +98,9 @@ type Server struct {
 	WriteWait time.Duration // one frame to the socket (10 s)
 	PingEvery time.Duration // the keep-alive period (30 s)
 	PongWait  time.Duration // a ping's pong must arrive within it (10 s)
+	// MaxLifetime caps a connection below its token's expiry (1 h): ZITADEL's
+	// tokens live 12 h by default, and this bounds a revoked member's socket.
+	MaxLifetime time.Duration
 
 	mu      sync.Mutex
 	perUser map[string]int
@@ -138,6 +142,10 @@ func withCSP(h http.Handler) http.Handler {
 // Serve serves the API on ln until ctx ends, then drains for at most drain.
 // WebSockets end at once, 1001: their clients re-dial another replica.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, drain time.Duration) error {
+	if s.Humans == nil || s.WebClient == nil || s.Rooms == nil || s.Log == nil || s.Hub == nil || s.Runs == nil {
+		// Unchecked, each would panic on every request instead (review M6).
+		return errors.New("humanapi: Humans, WebClient, Rooms, Log, Hub and Runs are required")
+	}
 	srv := &http.Server{Handler: s.Routes(),
 		ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout, WriteTimeout: 0,
 		IdleTimeout: idleTimeout, MaxHeaderBytes: maxHeaderBytes,
@@ -222,6 +230,7 @@ const (
 
 	dropReauth         = "reauth"
 	dropSlowConsumer   = "slow_consumer"
+	dropWriteTimeout   = "write_timeout" // a live peer took no frame within WriteWait
 	dropPingTimeout    = "ping_timeout"
 	dropShutdown       = "shutdown"
 	dropLogUnavailable = "log_unavailable"

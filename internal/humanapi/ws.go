@@ -25,12 +25,15 @@ import (
 const (
 	maxPerUser  = 10 // §4
 	maxPerRoom  = 20 // humans per room (§4), per replica (ruling P22)
-	maxLifetime = time.Hour
 	defaultTail = 500
 	pageSize    = 500
 	// maxClientFrame bounds one client frame: an act carries at most a human
-	// message (§4) and its envelope. Larger closes the socket 1009.
+	// message (§4) and its envelope. Larger closes the socket 1009. It equals
+	// coder/websocket's default read limit today: set it anyway, so a larger
+	// MaxHumanMessage is not silently capped at 32 KiB.
 	maxClientFrame = 2 * envelope.MaxHumanMessage
+
+	defaultMaxLifetime = time.Hour
 
 	defaultHelloWait = 10 * time.Second
 	defaultWriteWait = 10 * time.Second
@@ -44,6 +47,7 @@ const (
 // Why a connection ended, as its life's cause or a failed operation's error.
 var (
 	errSlowConsumer = errors.New(dropSlowConsumer)
+	errWriteTimeout = errors.New(dropWriteTimeout)
 	errPingTimeout  = errors.New(dropPingTimeout)
 	errClientGone   = errors.New(dropClientGone)
 	errShutdown     = errors.New(dropShutdown)
@@ -135,25 +139,13 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("room")
-	room, found, err := s.room(r.Context(), id)
-	if err != nil {
-		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
+	room, st, ok := s.lookup(w, r, id)
+	if !ok {
 		return
 	}
-	if !found {
-		http.Error(w, "no such room", http.StatusNotFound)
-		return
-	}
-	st, err := s.Log.Room(r.Context(), id)
-	if errors.Is(err, store.ErrNoRoom) {
-		http.Error(w, "no such room", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		http.Error(w, "log unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	sub, you := s.you(room, p, st.Driver)
+	// The Read gate only: serve resolves the snapshot's standing again against
+	// the mark it reads after subscribing, so the two agree.
+	sub, _ := s.you(room, p, st.Driver)
 	if !policy.Allowed(sub, policy.Read) {
 		http.Error(w, wire.ReasonNotPermitted, http.StatusForbidden)
 		return
@@ -186,11 +178,11 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	defer s.untrack(&cancel)
 	s.count(base, 1)
 	defer s.count(base, -1)
-	life, stopLife := context.WithTimeout(life, min(time.Until(p.Expiry), maxLifetime))
+	life, stopLife := context.WithTimeout(life, min(time.Until(p.Expiry), or(s.MaxLifetime, defaultMaxLifetime)))
 	defer stopLife()
 
 	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id}
-	reason := v.serve(you, st)
+	reason := v.serve()
 	if reason != "" && reason != dropClientGone {
 		s.dropped(base, reason)
 	}
@@ -210,6 +202,32 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	v.wg.Wait()
 }
 
+// lookup reads the room and its log row before the upgrade, within routeTimeout,
+// or writes the refusal.
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1alpha1.Room, store.RoomState, bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
+	defer cancel()
+	room, found, err := s.room(ctx, id)
+	if err != nil {
+		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
+		return nil, store.RoomState{}, false
+	}
+	if !found {
+		http.Error(w, "no such room", http.StatusNotFound)
+		return nil, store.RoomState{}, false
+	}
+	st, err := s.Log.Room(ctx, id)
+	if errors.Is(err, store.ErrNoRoom) {
+		http.Error(w, "no such room", http.StatusNotFound)
+		return nil, store.RoomState{}, false
+	}
+	if err != nil {
+		http.Error(w, "log unavailable", http.StatusServiceUnavailable)
+		return nil, store.RoomState{}, false
+	}
+	return room, st, true
+}
+
 // viewer is one open WebSocket.
 type viewer struct {
 	s      *Server
@@ -224,16 +242,21 @@ type viewer struct {
 	wg     sync.WaitGroup // the reader and the pinger
 }
 
-// write sends one frame within WriteWait.
+// write sends one frame within WriteWait. A peer that does not take it in time
+// has stopped reading: errWriteTimeout, and the socket is gone.
 func (v *viewer) write(f wire.ServerFrame) error {
 	ctx, cancel := context.WithTimeout(v.base, or(v.s.WriteWait, defaultWriteWait))
 	defer cancel()
-	return wsjson.Write(ctx, v.c, f)
+	err := wsjson.Write(ctx, v.c, f)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.Join(errWriteTimeout, err)
+	}
+	return err
 }
 
 // serve runs the connection and returns why it ended: a drop reason, or ""
 // when it already closed on a bad first frame.
-func (v *viewer) serve(you wire.You, st store.RoomState) string {
+func (v *viewer) serve() string {
 	hctx, hcancel := context.WithTimeout(v.life, or(v.s.HelloWait, defaultHelloWait))
 	var hello wire.ClientFrame
 	err := wsjson.Read(hctx, v.c, &hello)
@@ -251,9 +274,11 @@ func (v *viewer) serve(you wire.You, st store.RoomState) string {
 	}
 	defer v.s.Hub.Unsubscribe(feed)
 	// The mark is read AFTER subscribing: everything above it arrives through the hub.
-	if st, err = v.s.Log.Room(v.life, v.id); err != nil {
+	st, err := v.s.Log.Room(v.life, v.id)
+	if err != nil {
 		return v.failed(errors.Join(errLog, err))
 	}
+	_, you := v.s.you(v.room, v.p, st.Driver)
 	if err := v.write(wire.ServerFrame{Type: wire.FrameState, ThroughSeq: st.LastSeq, Snapshot: v.snapshot(you, st)}); err != nil {
 		return v.failed(err)
 	}
@@ -262,7 +287,9 @@ func (v *viewer) serve(you wire.You, st store.RoomState) string {
 		after = max(st.LastSeq-int64(hello.Tail), 0)
 	}
 	if hello.AfterSeq != nil {
-		after = max(*hello.AfterSeq, 0)
+		// Past the mark is clamped to it: the sync's fromSeq resets the client's
+		// baseline, rather than skip live events up to its bogus seq.
+		after = min(max(*hello.AfterSeq, 0), st.LastSeq)
 	}
 	if err := v.sendRange(after, st.LastSeq); err != nil {
 		return v.failed(err)
@@ -310,10 +337,17 @@ func (v *viewer) serve(you wire.You, st store.RoomState) string {
 	}
 }
 
-// failed names why an operation failed: the log, or else the connection's end.
+// failed names why an operation failed: the log or a write deadline while the
+// connection was alive, or else the connection's end.
 func (v *viewer) failed(err error) string {
-	if errors.Is(err, errLog) && v.life.Err() == nil {
+	alive := v.life.Err() == nil
+	switch {
+	case errors.Is(err, errLog) && alive:
 		return dropLogUnavailable
+	// The timed-out write tore the socket down, and the reader may already have
+	// reported that as the peer leaving: that end is the broker's, not the peer's.
+	case errors.Is(err, errWriteTimeout) && (alive || errors.Is(context.Cause(v.life), errClientGone)):
+		return dropWriteTimeout
 	}
 	return v.ended()
 }

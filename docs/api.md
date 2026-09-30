@@ -245,7 +245,7 @@ One JSON object per text frame (Appendix B).
 
 | Direction | Frame | Fields |
 |---|---|---|
-| client → broker | `hello` | `roomId`, `afterSeq?` or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
+| client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
 | client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
 | broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs}` |
@@ -267,7 +267,8 @@ live `seq` triggers a range read.
 | `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
 
 The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
-close frame. Every frame to the client must be written within 10 s.
+close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with
+`afterSeq`.
 
 ### Actions (planned, phases 4–6)
 
