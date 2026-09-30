@@ -144,7 +144,7 @@ flow (spec §9, as the plan builds it).
 
 | Endpoint | Ingress | Egress |
 |---|---|---|
-| `room-broker` | Run pods in `agents` (label `agents.ogenki.io/run-id`) and the factory on 8443; oauth2-proxy on 8080 (phase 2); `agent-router` proxies on 8090 (phase 3); `vmagent` and kubelet on 9090 | DNS with an L7 rule; the Kubernetes API; CNPG on 5432; Valkey on 6379 (phase 2); the run issuer's JWKS host on 443; the identity provider (phase 2); `api.github.com` on 443 (phase 3); the factory's run API (phase 4) |
+| `room-broker` | Run pods in `agents` (label `agents.ogenki.io/run-id`) and the factory on 8443; oauth2-proxy on 8080 (phase 2); `agent-router` proxies on 8090 (phase 3); `vmagent` and kubelet on 9090 | DNS with an L7 rule; the Kubernetes API; CNPG on 5432; the run issuer's JWKS host on 443; the identity provider (phase 2); `api.github.com` on 443 (phase 3); the factory's run API (phase 4) |
 | Run pod | kubelet on the bridge's 8085 | The broker on 8443, only when `roomRef` is set (the run's own CNP) |
 | CNPG `xplane-rooms` | The broker and the retention job on 5432; the Atlas and CNPG operators; `vmagent` on 9187 | DNS, the Kubernetes API, peers, the backup plugin, object storage |
 | Retention job | None | DNS; CNPG on 5432 |

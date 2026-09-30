@@ -16,7 +16,7 @@ sandbox**; every connection from the `agents` namespace is one the pod opens (C4
 | `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons | AP-1 (planned, task 1.7) |
 | Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1 (schema and store written; the claim planned, S1) |
 | `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#the-room-crd)) | AP-1 |
-| Fan-out hints | Valkey `KVStore xplane-rooms` | Tells every replica a room has new events. A hint only: replicas poll Postgres every second when it is down | Planned, phase 2 / AP-2 |
+| Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) | Planned, phase 2 / AP-2 |
 | Web UI | Embedded in the broker, TypeScript, behind oauth2-proxy | Watch, then post, steer, approve and fork | Planned, phases 2–6 |
 | `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve (ruling P18) | Planned, phase 6 / AP-6 |
 
@@ -39,7 +39,6 @@ flowchart LR
   subgraph sys["namespace agent-system"]
     broker["room-broker<br/>+ Room controller<br/>+ AgentRun watch"]
     pg[("CNPG xplane-rooms<br/>log of record")]
-    vk[("Valkey xplane-rooms<br/>hints · phase 2")]
     factory["SP3 factory<br/>(system caller)"]
   end
   factory -->|":8443 system API<br/>rooms-system token"| broker
@@ -47,7 +46,7 @@ flowchart LR
   router -.->|":8090 injected key + x-ar-agent"| broker
 
   broker -->|"append-only role"| pg
-  broker <-.->|pub/sub| vk
+  pg -.->|"NOTIFY rooms_events · phase 2"| broker
   broker <-->|"watch Room CRs (CRUD)<br/>watch AgentRuns (read, delete)"| kube["Kubernetes API"]
 ```
 
@@ -124,6 +123,19 @@ Any replica serves any room. The replicas elect one leader through a Kubernetes 
 | Append run lifecycle events (`participant`, `run_phase`) | The leader | Every step has a fixed idempotency key, so a new leader replays without writing twice |
 | Project `Room.status` | The leader, every 15 s and on phase changes (ruling P21) | One status write per event would load the API server |
 | Post verdicts to GitHub | The leader, sweeping every 15 s (phase 3) | One comment per verdict, marked so a new leader never posts twice |
+| Deliver new events to viewers | Every replica, for its own viewers (phase 2) | Each `LISTEN`s once; notifications coalesce per room, so one read serves every viewer |
+
+### Connection budget
+
+About 30 of the database's 100 connections (PostgreSQL's default `max_connections`). There is no
+PgBouncer, so `LISTEN` holds a plain session.
+
+| Holder | Connections |
+|---|---|
+| Two replicas: a pool of 8 (`pool_max_conns`, overridable in the URL) plus 1 listener each | 18 |
+| A third pod during a rolling update | 9 |
+| The daily retention job | up to 8, in practice 1 |
+| The Atlas operator's migrations | 1–2 |
 
 ## Nothing is lost while the sandbox lives
 
@@ -169,7 +181,7 @@ rules shape the tree.
 | `internal/bridgeapi` | The `:8443` handlers | 1, 4, 5 |
 | `internal/bridge` | The sidecar: harness adapter, mapping, uploader, SSE consumer, classifier | 1, 4, 5 |
 | `internal/config`, `internal/metrics` | The broker's config file and metric set | 1 |
-| `internal/policy`, `internal/fanout`, `internal/humanapi` | The §1 matrix, Valkey hints, the `:8080` API and UI | 2 onwards |
+| `internal/policy`, `internal/fanout`, `internal/humanapi` | The §1 matrix, the LISTEN/NOTIFY fan-out hub, the `:8080` API and UI | 2 onwards |
 | `internal/mcp`, `internal/github`, `internal/verdictpost` | Room tools, the factory App client, verdict comments | 3 |
 | `internal/brief`, `internal/runrequest` | The fenced brief, run requests | 4 |
 | `api/v1alpha1` | The `Room` types; `config/crd/` holds the generated CRD | 1 |

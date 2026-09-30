@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,14 +38,26 @@ type Store struct {
 	// Now stamps event timestamps. Lease freshness and close dates use the
 	// database's now() instead: one clock for every broker replica.
 	Now func() time.Time
+	// ListenPing is how long Listen waits for a notification before it pings,
+	// so a half-open connection after a failover is noticed (default 30 s).
+	ListenPing time.Duration
 }
 
+// defaultMaxConns caps the pool, which pgxpool would otherwise size by the
+// node's CPUs, not the pod's limit. Listen holds one more connection outside it.
+// The deployment's connection budget is in docs/architecture.md.
+const defaultMaxConns = 8
+
 // Open connects with every session bounded, so no statement, lock queue or
-// abandoned transaction holds a room's row lock for long. A value set in the URL wins.
+// abandoned transaction holds a room's row lock for long, and the pool capped at
+// 8 connections. A value set in the URL wins.
 func Open(ctx context.Context, url string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse database url: %w", err)
+	}
+	if !strings.Contains(cfg.ConnString(), "pool_max_conns") {
+		cfg.MaxConns = defaultMaxConns
 	}
 	for param, value := range map[string]string{
 		"statement_timeout":                   "15s",
@@ -59,7 +72,7 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: connect: %w", err)
 	}
-	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, Now: time.Now}, nil
+	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, Now: time.Now, ListenPing: 30 * time.Second}, nil
 }
 
 // Close releases the pool.
@@ -173,6 +186,9 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 	if err := insert(ctx, tx, ev, d.OriginClient, d.OriginSeq); err != nil {
 		return envelope.Event{}, false, err
 	}
+	if err := notify(ctx, tx, d.RoomID, seq); err != nil {
+		return envelope.Event{}, false, err
+	}
 	if seq+1 >= s.MaxEvents || size >= s.MaxBytes {
 		if err := s.sealTx(ctx, tx, d.RoomID, "limit", map[string]any{"events": seq + 1, "bytes": size}); err != nil {
 			return envelope.Event{}, false, err
@@ -210,6 +226,9 @@ func (s *Store) sealTx(ctx context.Context, tx pgx.Tx, roomID, kind string, fiel
 		Origin: envelope.OriginBroker, TS: s.Now().UTC().Truncate(time.Microsecond), Redactions: []string{},
 		Payload: envelope.StatePayload(kind, fields)}
 	if err := insert(ctx, tx, ev, "broker:seal", 1); err != nil {
+		return err
+	}
+	if err := notify(ctx, tx, roomID, seq); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE rooms SET sealed = true, closed_at = now() WHERE room_id = $1`, roomID)

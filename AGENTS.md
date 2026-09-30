@@ -155,7 +155,7 @@ flowchart LR
 | API | `internal/mcp` | `:8090` MCP server, the `room_*` tools | 3 |
 | API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments | 3 |
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
-| Viewers | `internal/fanout` | Valkey hint hub with a Postgres poll fallback | 2 |
+| Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
