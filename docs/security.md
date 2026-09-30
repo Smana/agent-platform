@@ -34,7 +34,7 @@ Runs and system callers: phase 1 / AP-1 task 1.6 (planned). Humans: phase 2 / AP
 |---|---|---|---|
 | Agent run | A projected ServiceAccount token of `xplane-run-<runId>` in `agents`, audience `room-broker`, 600 s, mounted **only** in the bridge container | Offline against the JWKS of an issuer in `runIssuers`; `sub` must match the issuer's `subPattern`; then the `AgentRun` must be live and name a room | `agent:<runId>` |
 | System caller | A ServiceAccount token with audience `rooms-system` (ruling P3: SP1's Kyverno policies reserve every `room-broker*` audience for `agents`) | Offline against `systemIssuer`; `sub` must be a key of the `systemPrincipals` allowlist | e.g. `system:factory` |
-| Human | A ZITADEL ID token and a JWT access token, both from oauth2-proxy (phase 2) | Offline: issuer, expiry, groups; `aud` holds the project id and a rooms client, and `azp` names that client (Ruling AS); the access token must share the `sub` and the client | `human:<sub>` |
+| Human | A ZITADEL ID token and a JWT access token, both from oauth2-proxy (phase 2) | Offline: issuer, expiry, groups; `aud` holds the project id and a rooms client, and the token names that client: the ID token in `azp` (Ruling AS), the access token in `client_id`, since ZITADEL access tokens carry no `azp`. The two must share the `sub` and the client | `human:<sub>` |
 
 Why offline: every consumer validates issuer-agnostically (C2 r5). A runtime whose identities are
 not ServiceAccounts needs one more `runIssuers` entry, not a new code path. Liveness comes from the
@@ -72,7 +72,7 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
 
 - **Never an agent approves** (S10): one injected transcript would otherwise approve another's
   action.
-- **Never from `roomctl`**: a token whose `azp` is the `roomctl` client cannot decide, steer,
+- **Never from `roomctl`**: a token issued to the `roomctl` client cannot decide, steer,
   interrupt or move the driver token (ruling P18), because a local agent could run it.
 - **Four-eyes** (OD-16, off by default, per room): the humans in the triggering turn's `causedBy`
   chain cannot decide it.

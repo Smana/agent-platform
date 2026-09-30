@@ -68,6 +68,8 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Groups          []string `json:"groups,omitempty"`
 	AuthorizedParty string   `json:"azp,omitempty"`
+	// ClientID is where ZITADEL names the client in a JWT access token, which has no azp.
+	ClientID string `json:"client_id,omitempty"`
 	// ProjectRoles is the roles claim ZITADEL asserts natively: role name to granting orgs.
 	ProjectRoles map[string]json.RawMessage `json:"urn:zitadel:iam:org:project:roles,omitempty"`
 }
@@ -262,7 +264,7 @@ type Principal struct {
 	RunID       string
 	Sub         string
 	Groups      []string
-	ClientID    string    // azp, for humans (ruling P18)
+	ClientID    string    // humans: the rooms client, the ID token's azp or roomctl's client_id (ruling P18)
 	Expiry      time.Time // a connection lives min(exp, 1 h)
 	AccessToken string    // humans only; forwarded to the factory (C4), never logged
 }

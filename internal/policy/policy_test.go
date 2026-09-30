@@ -46,12 +46,12 @@ func TestTheSection1Matrix(t *testing.T) {
 		{Decide, map[string]bool{"collab": false, "approver": true, "driver": false, "owner": true, "agent": false, "factory": false, "policy": true}},
 		// A system holder gives, and never requests or seizes the token: it yields to humans.
 		{DriverRequest, map[string]bool{"watcher": false, "collab": true, "driver": false, "agent": false, "factory": false, "sysDriver": false}},
-		{DriverGive, map[string]bool{"collab": false, "driver": true, "agent": false, "sysDriver": true}},
+		{DriverGive, map[string]bool{"collab": false, "driver": true, "agent": false, "factory": false, "sysDriver": true}},
 		{DriverTake, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": false, "sysDriver": false}},
 		{Fork, map[string]bool{"watcher": true, "collab": true, "driver": true, "owner": true, "agent": false, "factory": true, "stranger": false}},
 		{Invite, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": true}},
 		{Close, map[string]bool{"collab": false, "owner": true, "factory": true}},
-		{PromoteQueued, map[string]bool{"collab": false, "driver": true, "owner": false, "agent": false}},
+		{PromoteQueued, map[string]bool{"collab": false, "driver": true, "owner": false, "agent": false, "factory": false, "sysDriver": true}},
 		{RemoveQueued, map[string]bool{"watcher": false, "collab": true, "agent": false}},
 	}
 	for _, r := range rows {

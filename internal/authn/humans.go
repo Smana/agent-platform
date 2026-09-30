@@ -35,18 +35,29 @@ func NewHumans(v *Verifier, projectID, webClientID, roomctlClientID func() strin
 	return &Humans{v: v, projectID: projectID, web: webClientID, roomctl: roomctlClientID, origin: origin}
 }
 
-// VerifyHuman checks a ZITADEL ID or access token (Ruling AS). Its aud holds the
-// project id and an allowlisted rooms client, and azp names that client:
-// ZITADEL lists every app of the project in aud, so only azp says which app the
-// token was issued to. Machine tokens stay on Verify's one-audience rule (AF).
-// The accepted client is the returned claims' AuthorizedParty.
+// VerifyHuman checks a ZITADEL ID token (Ruling AS). Its aud holds the project id
+// and an allowlisted rooms client, and azp names that client: ZITADEL lists every
+// app of the project in aud, so only azp says which app the token was issued to.
+// Machine tokens stay on Verify's one-audience rule (AF). The accepted client is
+// the returned claims' AuthorizedParty.
 func (h *Humans) VerifyHuman(ctx context.Context, raw string) (*Claims, error) {
+	return h.verify(ctx, raw, func(c *Claims) string { return c.AuthorizedParty })
+}
+
+// VerifyHumanAccess checks a ZITADEL JWT access token by the same rule, with the
+// client read from client_id: ZITADEL mints access tokens without azp (review C1).
+// The accepted client is the returned claims' ClientID.
+func (h *Humans) VerifyHumanAccess(ctx context.Context, raw string) (*Claims, error) {
+	return h.verify(ctx, raw, func(c *Claims) string { return c.ClientID })
+}
+
+func (h *Humans) verify(ctx context.Context, raw string, client func(*Claims) string) (*Claims, error) {
 	c, err := h.v.parse(ctx, raw, h.projectID())
 	if err != nil {
 		return nil, err
 	}
 	clients := slices.DeleteFunc([]string{h.web(), h.roomctl()}, func(s string) bool { return s == "" })
-	if c.AuthorizedParty == "" || !slices.Contains(clients, c.AuthorizedParty) || !slices.Contains(c.Audience, c.AuthorizedParty) {
+	if cli := client(c); cli == "" || !slices.Contains(clients, cli) || !slices.Contains(c.Audience, cli) {
 		return nil, fmt.Errorf("%w: not issued to a rooms client", ErrWrongAudience)
 	}
 	if c.Subject == "" {
@@ -68,13 +79,16 @@ func (h *Humans) Authenticate(r *http.Request) (Principal, error) {
 	if err != nil {
 		return Principal{}, err
 	}
+	// roomctl sends its own access token as the bearer (phase 6).
+	if cli := h.roomctl(); cli != "" {
+		if ac, err := h.VerifyHumanAccess(r.Context(), raw); err == nil && ac.ClientID == cli {
+			return Principal{Kind: envelope.ActorHuman, ID: "human:" + ac.Subject, Sub: ac.Subject, Groups: ac.GroupNames(),
+				ClientID: cli, Expiry: ac.ExpiresAt.Time, AccessToken: raw}, nil
+		}
+	}
 	id, err := h.VerifyHuman(r.Context(), raw)
 	if err != nil {
 		return Principal{}, err
-	}
-	if cli := h.roomctl(); cli != "" && id.AuthorizedParty == cli {
-		return Principal{Kind: envelope.ActorHuman, ID: "human:" + id.Subject, Sub: id.Subject, Groups: id.GroupNames(),
-			ClientID: cli, Expiry: id.ExpiresAt.Time, AccessToken: raw}, nil
 	}
 	// A web session carries two different tokens. A bearer oauth2-proxy lets
 	// through (skip-jwt-bearer-tokens, phase 6) arrives as both at once, and must
@@ -83,8 +97,8 @@ func (h *Humans) Authenticate(r *http.Request) (Principal, error) {
 	if access == "" || access == raw {
 		return Principal{}, fmt.Errorf("%w: a web session needs a distinct access token", ErrUnauthenticated)
 	}
-	ac, err := h.VerifyHuman(r.Context(), access)
-	if err != nil || ac.AuthorizedParty != id.AuthorizedParty || ac.Subject != id.Subject {
+	ac, err := h.VerifyHumanAccess(r.Context(), access)
+	if err != nil || ac.ClientID != id.AuthorizedParty || ac.Subject != id.Subject {
 		return Principal{}, fmt.Errorf("%w: the access token does not match the ID token", ErrUnauthenticated)
 	}
 	exp := id.ExpiresAt.Time

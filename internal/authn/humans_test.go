@@ -21,13 +21,35 @@ const (
 	uiOrigin  = "https://rooms.example.test"
 )
 
-// humanToken mints a ZITADEL-shaped token: aud holds the client and the project.
+// humanToken mints a ZITADEL-shaped ID token: aud holds the client and the
+// project, and the client is in both azp and client_id.
 func (s signer) humanToken(t *testing.T, sub string, aud []string, azp string, groups []string, ttl time.Duration) string {
 	t.Helper()
 	return sign(t, jwt.SigningMethodRS256, s.key, "", Claims{
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: issuer, Subject: sub, Audience: aud,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl))},
-		Groups: groups, AuthorizedParty: azp,
+		Groups: groups, AuthorizedParty: azp, ClientID: azp,
+	})
+}
+
+// accessToken mints a ZITADEL-shaped JWT access token: the client is in
+// client_id, never in azp (zitadel/oidc NewAccessTokenClaims).
+func (s signer) accessToken(t *testing.T, sub string, aud []string, clientID string, groups []string, ttl time.Duration) string {
+	t.Helper()
+	return sign(t, jwt.SigningMethodRS256, s.key, "", Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Issuer: issuer, Subject: sub, Audience: aud,
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl))},
+		Groups: groups, ClientID: clientID,
+	})
+}
+
+// azpOnlyToken is an access token of the shape ZITADEL never mints: azp set, no client_id.
+func (s signer) azpOnlyToken(t *testing.T, sub string, aud []string, azp string) string {
+	t.Helper()
+	return sign(t, jwt.SigningMethodRS256, s.key, "", Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Issuer: issuer, Subject: sub, Audience: aud,
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+		AuthorizedParty: azp,
 	})
 }
 
@@ -62,6 +84,7 @@ func TestVerifyHuman(t *testing.T) {
 			s.humanToken(t, "2918", web, cliClient, nil, time.Hour), project, cliClient, ErrWrongAudience, ""},
 		{"no subject", s.humanToken(t, "", web, webClient, nil, time.Hour), project, "", ErrUnauthenticated, ""},
 		{"no azp with several audiences", s.humanToken(t, "2918", web, "", nil, time.Hour), project, "", ErrWrongAudience, ""},
+		{"an access token: client_id, no azp", s.accessToken(t, "2918", web, webClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
 		{"a machine token", s.token(t, issuer, runSub, AudienceRun, time.Hour), project, "", ErrWrongAudience, ""},
 		{"no project id to check (an unreadable file)", s.humanToken(t, "2918", web, webClient, nil, time.Hour), "", "", ErrUnauthenticated, ""},
 		{"an expired token", s.humanToken(t, "2918", web, webClient, nil, -time.Hour), project, "", ErrTokenExpired, ""},
@@ -75,6 +98,48 @@ func TestVerifyHuman(t *testing.T) {
 			got, err := s.humans(c.projectID, c.roomctl).VerifyHuman(t.Context(), c.token)
 			if c.wantErr == nil {
 				if err != nil || got.AuthorizedParty != c.wantClient {
+					t.Fatalf("got %+v, %v; want accepted for %s", got, err, c.wantClient)
+				}
+				return
+			}
+			if !errors.Is(err, c.wantErr) || !errors.Is(err, ErrUnauthenticated) {
+				t.Fatalf("got %v, want %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// A ZITADEL JWT access token names its client in client_id and never in azp
+// (review C1): the client must be allowlisted and in aud, beside the project.
+func TestVerifyHumanAccess(t *testing.T) {
+	s := newSigner(t)
+	web := []string{webClient, project}
+	cases := []struct {
+		name       string
+		token      string
+		projectID  string
+		roomctl    string
+		wantErr    error // nil: accepted
+		wantClient string
+	}{
+		{"a web access token", s.accessToken(t, "2918", web, webClient, nil, time.Hour), project, "", nil, webClient},
+		{"a roomctl access token once its client is set",
+			s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, cliClient, nil, cliClient},
+		{"azp but no client_id, a shape ZITADEL never mints", s.azpOnlyToken(t, "2918", web, webClient), project, "", ErrWrongAudience, ""},
+		{"a roomctl access token before roomctl has a client",
+			s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
+		{"a client outside the allowlist",
+			s.accessToken(t, "2918", []string{"other-app", webClient, project}, "other-app", nil, time.Hour), project, "", ErrWrongAudience, ""},
+		{"a client_id that is not in aud",
+			s.accessToken(t, "2918", []string{"other-app", project}, webClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
+		{"an aud without the project id", s.accessToken(t, "2918", []string{webClient}, webClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
+		{"no subject", s.accessToken(t, "", web, webClient, nil, time.Hour), project, "", ErrUnauthenticated, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := s.humans(c.projectID, c.roomctl).VerifyHumanAccess(t.Context(), c.token)
+			if c.wantErr == nil {
+				if err != nil || got.ClientID != c.wantClient {
 					t.Fatalf("got %+v, %v; want accepted for %s", got, err, c.wantClient)
 				}
 				return
@@ -103,8 +168,8 @@ func TestHumansAuthenticate(t *testing.T) {
 	s := newSigner(t)
 	web := []string{webClient, project}
 	id := s.humanToken(t, "2918", web, webClient, []string{"agents-member"}, time.Hour)
-	access := s.humanToken(t, "2918", web, webClient, nil, 30*time.Minute)
-	cli := s.humanToken(t, "2918", []string{cliClient, project}, cliClient, []string{"agents-member"}, time.Hour)
+	access := s.accessToken(t, "2918", web, webClient, nil, 30*time.Minute)
+	cli := s.accessToken(t, "2918", []string{cliClient, project}, cliClient, []string{"agents-member"}, time.Hour)
 	type want struct {
 		err         error // nil: accepted
 		client      string
@@ -118,10 +183,17 @@ func TestHumansAuthenticate(t *testing.T) {
 		{"a web session from our origin", id, access, uiOrigin, want{client: webClient, accessToken: access}},
 		{"a roomctl bearer", cli, "", "", want{client: cliClient, accessToken: cli}},
 		{"a cross-site WebSocket (T9)", id, access, "https://evil.example", want{err: ErrForbidden}},
-		{"an access token for another sub", id, s.humanToken(t, "9999", web, webClient, nil, time.Hour), "", want{err: ErrUnauthenticated}},
+		{"an opaque origin (Origin: null)", id, access, "null", want{err: ErrForbidden}},
+		{"our host over another scheme", id, access, "http://rooms.example.test", want{err: ErrForbidden}},
+		{"our host on another port", id, access, "https://rooms.example.test:8443", want{err: ErrForbidden}},
+		{"an access token for another sub", id, s.accessToken(t, "9999", web, webClient, nil, time.Hour), "", want{err: ErrUnauthenticated}},
+		{"an access token with azp but no client_id (review C1)", id, s.azpOnlyToken(t, "2918", web, webClient), "",
+			want{err: ErrUnauthenticated}},
+		{"a roomctl bearer with azp but no client_id", s.azpOnlyToken(t, "2918", []string{cliClient, project}, cliClient), "", "",
+			want{err: ErrUnauthenticated}},
 		{"no access token", id, "", "", want{err: ErrUnauthenticated}},
 		{"the ID token in both headers, a bearer oauth2-proxy let through (review M16)", id, id, "", want{err: ErrUnauthenticated}},
-		{"an access token issued to roomctl", id, s.humanToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), "",
+		{"an access token issued to roomctl", id, s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), "",
 			want{err: ErrUnauthenticated}},
 		{"a token for another ZITADEL app", s.humanToken(t, "2918", []string{"other-app", project}, "other-app", nil, time.Hour), access, "",
 			want{err: ErrUnauthenticated}},

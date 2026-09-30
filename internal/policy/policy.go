@@ -97,7 +97,9 @@ func Allowed(s Subject, a Action) bool {
 		switch a {
 		case Decide:
 			return s.ID == policyEngine // never an agent, never the factory (S10)
-		case Steer, Interrupt:
+		case Steer, Interrupt, PromoteQueued, DriverGive:
+			// A give from a non-holder is a take, and promoting a queued message
+			// is steering (review I1).
 			return s.Driver
 		case DriverRequest, DriverTake:
 			return false // a system holder gives, and yields to humans
