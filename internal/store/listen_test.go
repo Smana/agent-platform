@@ -74,7 +74,7 @@ func TestNotifyFollowsCommit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := s.appendTx(ctx, tx, draft("agent:w", 2), ""); err != nil {
+		if _, _, err := s.appendTx(ctx, tx, draft("agent:w", 2), fence{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Rollback(ctx); err != nil {
@@ -88,7 +88,7 @@ func TestNotifyFollowsCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		if _, _, err := s.appendTx(ctx, tx, draft("agent:w", 2), ""); err != nil {
+		if _, _, err := s.appendTx(ctx, tx, draft("agent:w", 2), fence{}); err != nil {
 			t.Fatal(err)
 		}
 		expectNone(t, notes)

@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-
-	"github.com/Smana/agent-platform/internal/envelope"
 )
 
 const (
@@ -52,9 +50,20 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 	if _, err := s.EnsureRoom(ctx, NewRoom{ID: sealedRoom, Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{room, sealedRoom} { // one queued message in each
+		q := queuedDraft(1, "queued")
+		q.RoomID = id
+		if _, err := s.Enqueue(ctx, q, "human:alice", "queued"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := s.CloseRoom(ctx, sealedRoom, "sealed for the test"); err != nil {
 		t.Fatal(err)
 	}
+	const (
+		queuedRef = `(SELECT max(ref) FROM queue WHERE room_id = '3kq7x2ma')`
+		queueRow  = `INSERT INTO queue (room_id, ref, author, text, state) VALUES `
+	)
 
 	for _, tc := range []struct {
 		name, sql, code, msg string
@@ -98,8 +107,14 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 		{"move the driver with its event by hand", moveDriver + driverEvent(`{"epoch": 1, "from": "system:factory", "to": "human:mallory"}`, 4), "", ""},
 		{"keep the system fallback on a human-to-human move", `UPDATE rooms SET driver = 'human:alice', fallback_driver = 'human:mallory', driver_epoch = driver_epoch + 1
 			WHERE room_id = '3kq7x2ma'`, "23514", "previous system holder"},
-		{"queue a message with no event", `INSERT INTO queue (room_id, ref, author, text, state) VALUES ('3kq7x2ma', 9999, 'human:bob', 'planted', 'queued')`, "23503", "queue"},
-		{"consume by a run that is no run id", `INSERT INTO queue (room_id, ref, author, text, state, run_id) VALUES ('3kq7x2ma', 1, 'human:bob', 'x', 'consumed', 'NOT A RUN')`, "23514", "run_id"},
+		{"queue a message with no event", queueRow + `('3kq7x2ma', 9999, 'human:bob', 'planted', 'queued')`, "23514", "not its queued message"},
+		{"queue a plain message", queueRow + `('3kq7x2ma', 1, 'agent:7f3cq2xz', 'm1', 'queued')`, "23514", "not its queued message"},
+		{"queue someone's message as another's", queueRow + `('3kq7x2ma', ` + queuedRef + `, 'human:mallory', 'queued', 'queued')`, "23514", "not its queued message"},
+		{"queue a message with other text", queueRow + `('3kq7x2ma', ` + queuedRef + `, 'human:alice', 'planted', 'queued')`, "23514", "not its queued message"},
+		{"queue into a sealed room", queueRow + `('sealedaa', 1, 'human:alice', 'queued', 'queued')`, "23514", "queue stays"},
+		{"move a sealed room's queue", `UPDATE queue SET state = 'removed' WHERE room_id = 'sealedaa'`, "23514", "queue stays"},
+		{"consume by a run that is no run id", `UPDATE queue SET run_id = 'NOT A RUN' WHERE room_id = '3kq7x2ma'`, "23514", "run_id"},
+		{"move a queued message", `UPDATE queue SET state = 'removed' WHERE room_id = '3kq7x2ma'`, "", ""},
 		{"move a sealed room's driver", `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = 'sealedaa'`, "23514", "driver stays"},
 		{"rewrite a queued message", `UPDATE queue SET text = 'forged'`, "42501", ""},
 		{"re-attribute a queued message", `UPDATE queue SET author = 'human:mallory'`, "42501", ""},
@@ -152,8 +167,8 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		if _, _, err := s.Append(ctx, draftIn(id, "agent:x", 1)); err != nil {
 			t.Fatal(err)
 		}
-		q := draftIn(id, "human:alice:s1", 1)
-		q.RunID, q.Actor = "", envelope.Actor{Kind: envelope.ActorHuman, ID: "human:alice"}
+		q := queuedDraft(1, "queued text")
+		q.RoomID = id
 		if _, err := s.Enqueue(ctx, q, "human:alice", "queued text"); err != nil {
 			t.Fatal(err)
 		}
@@ -204,6 +219,11 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 				t.Fatalf("count = %d, %v; want %d", n, err, tc.want)
 			}
 		})
+	}
+	// The queue references its events: they cannot go first (review 4.1 M3).
+	_, err = r.pool.Exec(ctx, `DELETE FROM events WHERE room_id = 'expiredx'`)
+	if pg, ok := errors.AsType[*pgconn.PgError](err); !ok || pg.Code != "23503" {
+		t.Fatalf("deleting queued events before their queue rows: want SQLSTATE 23503, got %v", err)
 	}
 	if rooms, events, err := r.PurgeExpired(ctx); err != nil || rooms != 1 || events != int64(held) {
 		t.Fatalf("purge under the narrowed role: %d rooms, %d events, %v", rooms, events, err)

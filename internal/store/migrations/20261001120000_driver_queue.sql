@@ -70,6 +70,26 @@ CREATE TABLE queue (
   FOREIGN KEY (room_id, ref) REFERENCES events (room_id, seq)
 );
 
+-- A queue row is the queued message it records: it enters with that event, by
+-- its actor and with its text, so no row is planted or re-attributed. A sealed
+-- room's queue neither grows nor moves.
+CREATE FUNCTION queue_is_its_event() RETURNS trigger
+  LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF (SELECT sealed FROM public.rooms WHERE room_id = NEW.room_id) THEN
+    RAISE EXCEPTION 'room log: room % is sealed and its queue stays', NEW.room_id USING ERRCODE = 'check_violation';
+  END IF;
+  IF TG_OP = 'INSERT' AND NOT EXISTS (SELECT 1 FROM public.events WHERE room_id = NEW.room_id AND seq = NEW.ref
+      AND type = 'message' AND payload->>'delivery' = 'queued' AND actor_id = NEW.author AND payload->>'text' = NEW.text) THEN
+    RAISE EXCEPTION 'room log: queue row % of room % is not its queued message', NEW.ref, NEW.room_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER queue_is_its_event BEFORE INSERT OR UPDATE ON queue
+  FOR EACH ROW EXECUTE FUNCTION queue_is_its_event();
+
 -- The broker moves a queued message's state, never its text or author.
 GRANT SELECT, INSERT ON queue TO rooms_broker;
 GRANT UPDATE (state, run_id) ON queue TO rooms_broker;

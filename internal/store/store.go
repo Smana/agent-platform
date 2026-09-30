@@ -111,7 +111,7 @@ func scan(row pgx.Row, roomID string) (envelope.Event, error) {
 // Append adds d to its room's log, for writers that hold no bridge lease (humans,
 // the broker, system callers). dup is true for a replayed idempotency key.
 func (s *Store) Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
-	return s.append(ctx, d, "")
+	return s.append(ctx, d, fence{})
 }
 
 // AppendAsBridge appends for the bridge of bridgeRun, and refuses with ErrLeaseLost
@@ -120,13 +120,32 @@ func (s *Store) AppendAsBridge(ctx context.Context, bridgeRun string, d envelope
 	if bridgeRun == "" { // "" is append's "no fence": refuse it rather than append unfenced
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrNoBridgeRun)
 	}
-	return s.append(ctx, d, bridgeRun)
+	return s.append(ctx, d, fence{bridgeRun: bridgeRun})
+}
+
+// AppendAsDriver appends a driver-only action for driver, and refuses with
+// ErrStaleEpoch unless driver still holds the token at epoch (§2): the check
+// runs under the room's row lock, so it holds across broker replicas.
+func (s *Store) AppendAsDriver(ctx context.Context, driver string, epoch int64, d envelope.Draft) (envelope.Event, bool, error) {
+	if driver == "" { // "" is append's "no fence": refuse it rather than append unfenced
+		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrStaleEpoch)
+	}
+	return s.append(ctx, d, fence{driver: driver, epoch: epoch})
+}
+
+// fence is what an append requires of the room under its row lock: the bridge
+// lease held by bridgeRun, or the driver token held by driver at epoch. The zero
+// fence requires nothing.
+type fence struct {
+	bridgeRun string
+	driver    string
+	epoch     int64
 }
 
 // append is one transaction under the room's row lock: a replayed idempotency key
 // returns the stored event, a sealed room or a lost lease refuses, and otherwise the
 // event takes the next seq. A full room is then sealed with a final limit event.
-func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (envelope.Event, bool, error) {
+func (s *Store) append(ctx context.Context, d envelope.Draft, f fence) (envelope.Event, bool, error) {
 	if err := d.Validate(); err != nil {
 		return envelope.Event{}, false, err
 	}
@@ -135,7 +154,7 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (env
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ev, dup, err := s.appendTx(ctx, tx, d, fence)
+	ev, dup, err := s.appendTx(ctx, tx, d, f)
 	if err == nil && !dup {
 		err = tx.Commit(ctx)
 	}
@@ -145,7 +164,7 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (env
 	return ev, dup, nil
 }
 
-func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence string) (envelope.Event, bool, error) {
+func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fence) (envelope.Event, bool, error) {
 	if len(d.Payload) > envelope.MaxPayload {
 		d.Payload = envelope.Oversize(d.Type, len(d.Payload))
 	}
@@ -153,7 +172,10 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 	// none of the checks below can race them.
 	var sealed bool
 	var holder *string
-	err := tx.QueryRow(ctx, `SELECT sealed, bridge_run FROM rooms WHERE room_id = $1 FOR UPDATE`, d.RoomID).Scan(&sealed, &holder)
+	var driver string
+	var epoch int64
+	err := tx.QueryRow(ctx, `SELECT sealed, bridge_run, driver, driver_epoch FROM rooms WHERE room_id = $1 FOR UPDATE`,
+		d.RoomID).Scan(&sealed, &holder, &driver, &epoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return envelope.Event{}, false, ErrNoRoom
 	}
@@ -167,8 +189,11 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 	if sealed {
 		return envelope.Event{}, false, ErrSealed
 	}
-	if fence != "" && (holder == nil || *holder != fence) {
+	if f.bridgeRun != "" && (holder == nil || *holder != f.bridgeRun) {
 		return envelope.Event{}, false, ErrLeaseLost
+	}
+	if f.driver != "" && (driver != f.driver || epoch != f.epoch) {
+		return envelope.Event{}, false, ErrStaleEpoch
 	}
 	var seq, size int64
 	if err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, bytes = bytes + $2, last_event_at = now()
