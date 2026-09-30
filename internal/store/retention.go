@@ -48,13 +48,14 @@ func (s *Store) purge(ctx context.Context, roomID string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// queue references events, so it goes first.
+	if _, err := tx.Exec(ctx, `DELETE FROM queue WHERE room_id = $1
+		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+		return 0, err
+	}
 	tag, err := tx.Exec(ctx, `DELETE FROM events WHERE room_id = $1
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID)
 	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM queue WHERE room_id = $1
-		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM rooms WHERE room_id = $1 AND `+expired, roomID); err != nil {

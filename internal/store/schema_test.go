@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,12 @@ const (
 	moveDriver = `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = '3kq7x2ma';
 		`
 )
+
+// driverEvent is handAppend for a driver event with this payload, under key test:hand/n.
+func driverEvent(payload string, n int) string {
+	return strings.NewReplacer("'message'", "'driver'", "'{}'", "'"+payload+"'",
+		"'test:hand', 1", fmt.Sprintf("'test:hand', %d", n)).Replace(handAppend)
+}
 
 func eventInto(roomID, seq string) string {
 	return `INSERT INTO events (room_id, seq, id, actor_kind, actor_id, type, origin, origin_client, origin_seq, ts, payload)
@@ -80,10 +87,19 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 		{"rewind the driver epoch", `UPDATE rooms SET driver_epoch = driver_epoch - 1 WHERE room_id = '3kq7x2ma'`, "23514", "driver_epoch"},
 		{"move the driver off the record", `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = '3kq7x2ma'`, "23514", "no driver event"},
 		{"move the driver behind another event", moveDriver + handAppend, "23514", "no driver event"},
-		{"move the driver behind another epoch's event", moveDriver + strings.NewReplacer("'message'", "'driver'",
-			"'{}'", `'{"epoch": 99}'`).Replace(handAppend), "23514", "no driver event"},
-		{"move the driver with its event by hand", moveDriver + strings.NewReplacer("'message'", "'driver'",
-			"'{}'", `'{"epoch": 1}'`, "'test:hand', 1", "'test:hand', 2").Replace(handAppend), "", ""},
+		{"move the driver behind another epoch's event", moveDriver + driverEvent(`{"epoch": 99, "from": "system:factory", "to": "human:mallory"}`, 2), "23514", "no driver event"},
+		{"move the driver behind an event naming another holder", moveDriver + driverEvent(`{"epoch": 1, "from": "system:factory", "to": "human:alice"}`, 2), "23514", "no driver event"},
+		{"move the driver behind an event naming another previous holder", moveDriver + driverEvent(`{"epoch": 1, "from": "human:x", "to": "human:mallory"}`, 2), "23514", "no driver event"},
+		// Review I1: the event must follow the move, or one planted earlier would cover it.
+		{"move the driver behind an earlier driver event", driverEvent(`{"epoch": 1, "from": "system:factory", "to": "human:mallory"}`, 3) + ";\n" + moveDriver, "23514", "no driver event"},
+		{"move the fallback to a human", `UPDATE rooms SET driver = 'human:mallory', fallback_driver = 'human:mallory', driver_epoch = driver_epoch + 1
+			WHERE room_id = '3kq7x2ma'`, "23514", "previous system holder"},
+		// Committed: the room is at epoch 1 from here on.
+		{"move the driver with its event by hand", moveDriver + driverEvent(`{"epoch": 1, "from": "system:factory", "to": "human:mallory"}`, 4), "", ""},
+		{"keep the system fallback on a human-to-human move", `UPDATE rooms SET driver = 'human:alice', fallback_driver = 'human:mallory', driver_epoch = driver_epoch + 1
+			WHERE room_id = '3kq7x2ma'`, "23514", "previous system holder"},
+		{"queue a message with no event", `INSERT INTO queue (room_id, ref, author, text, state) VALUES ('3kq7x2ma', 9999, 'human:bob', 'planted', 'queued')`, "23503", "queue"},
+		{"consume by a run that is no run id", `INSERT INTO queue (room_id, ref, author, text, state, run_id) VALUES ('3kq7x2ma', 1, 'human:bob', 'x', 'consumed', 'NOT A RUN')`, "23514", "run_id"},
 		{"move a sealed room's driver", `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = 'sealedaa'`, "23514", "driver stays"},
 		{"rewrite a queued message", `UPDATE queue SET text = 'forged'`, "42501", ""},
 		{"re-attribute a queued message", `UPDATE queue SET author = 'human:mallory'`, "42501", ""},

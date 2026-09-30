@@ -23,6 +23,13 @@ BEGIN
   IF OLD.sealed AND NEW.driver_epoch <> OLD.driver_epoch THEN
     RAISE EXCEPTION 'room log: room % is sealed and its driver stays', OLD.room_id USING ERRCODE = 'check_violation';
   END IF;
+  -- The fallback is the previous system holder (SP2 §2): the outgoing holder if it is
+  -- a system one, otherwise the fallback stays. ChangeDriver's rule, held here too.
+  -- Parenthesised: PL/pgSQL would end the IF condition at the CASE's first THEN.
+  IF NEW.driver_epoch <> OLD.driver_epoch AND NEW.fallback_driver <>
+      (CASE WHEN OLD.driver LIKE 'system:%' THEN OLD.driver ELSE OLD.fallback_driver END) THEN
+    RAISE EXCEPTION 'room log: the fallback of room % is its previous system holder', OLD.room_id USING ERRCODE = 'check_violation';
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -31,13 +38,15 @@ CREATE TRIGGER rooms_driver_fenced BEFORE UPDATE ON rooms
 
 -- Every epoch has its driver event by commit, appended after the move (seq past the
 -- row's last_seq at the time), so the token cannot move off the record, nor in a
--- sealed room, which takes no event. Deferred, like rooms_seq_has_event. jsonb
--- equality, not a cast: no payload can make it fail.
+-- sealed room, which takes no event. The event names this move, from the old holder
+-- to the new one. Deferred, like rooms_seq_has_event. jsonb equality, not a cast: no
+-- payload can make it fail.
 CREATE FUNCTION rooms_epoch_has_event() RETURNS trigger
   LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM public.events WHERE room_id = NEW.room_id AND seq > NEW.last_seq
-      AND type = 'driver' AND payload->'epoch' = to_jsonb(NEW.driver_epoch)) THEN
+      AND type = 'driver' AND payload->'epoch' = to_jsonb(NEW.driver_epoch)
+      AND payload->>'from' = OLD.driver AND payload->>'to' = NEW.driver) THEN
     RAISE EXCEPTION 'room log: driver epoch % of room % has no driver event', NEW.driver_epoch, NEW.room_id
       USING ERRCODE = 'check_violation';
   END IF;
@@ -54,8 +63,11 @@ CREATE TABLE queue (
   author  text   NOT NULL,
   text    text   NOT NULL,
   state   text   NOT NULL CHECK (state IN ('queued', 'removed', 'promoted', 'consumed')),
-  run_id  text,             -- the run whose brief consumed it
-  PRIMARY KEY (room_id, ref)
+  -- the run whose brief consumed it
+  run_id  text   CHECK (run_id IS NULL OR run_id ~ '^[a-z2-7]{8}$'),
+  PRIMARY KEY (room_id, ref),
+  -- A queued message is an event of the log: no row without one.
+  FOREIGN KEY (room_id, ref) REFERENCES events (room_id, seq)
 );
 
 -- The broker moves a queued message's state, never its text or author.

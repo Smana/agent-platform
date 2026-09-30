@@ -39,8 +39,14 @@ func (s *Store) enqueue(ctx context.Context, d envelope.Draft, author, text stri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	ev, dup, err := s.appendTx(ctx, tx, d, "")
-	if err != nil || dup {
-		return ev, err
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	if dup {
+		if ev.Type != envelope.Message {
+			return envelope.Event{}, ErrKeyConflict
+		}
+		return ev, nil
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO queue (room_id, ref, author, text, state) VALUES ($1, $2, $3, $4, 'queued')`,
 		d.RoomID, ev.Seq, author, text); err != nil {

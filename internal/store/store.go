@@ -28,6 +28,9 @@ var (
 	ErrInvalidRetention = errors.New("retention must be at least a day")
 	// ErrNoBridgeRun is AppendAsBridge without a run: it would append unfenced.
 	ErrNoBridgeRun = errors.New("a bridge append names its run")
+	// ErrKeyConflict is an idempotency key already stored for another kind of event:
+	// a replay of it would report a change that never happened.
+	ErrKeyConflict = errors.New("idempotency key already used by another event type")
 )
 
 // Store is the room log over a PostgreSQL pool, connected as rooms_broker.

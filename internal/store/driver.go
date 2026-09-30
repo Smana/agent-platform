@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -13,8 +14,15 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 )
 
-// ErrStaleEpoch is a driver change whose expected epoch the room has moved past.
-var ErrStaleEpoch = errors.New("stale_epoch")
+var (
+	// ErrStaleEpoch is a driver change whose expected epoch the room has moved past.
+	ErrStaleEpoch = errors.New("stale_epoch")
+	// ErrInvalidDriver is a change to no principal, or to the current holder.
+	ErrInvalidDriver = errors.New("the next driver is a principal other than the holder")
+)
+
+// principalKinds are the prefixes a driver can carry.
+var principalKinds = []string{"human:", "system:", "agent:"}
 
 // ChangeDriver moves the token only if the room's epoch is still expect, the
 // fence that makes a give, a take and a lease expiry safe across replicas (§2).
@@ -29,7 +37,12 @@ func (s *Store) ChangeDriver(ctx context.Context, roomID string, expect int64, t
 }
 
 func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
-	d.RoomID, d.Type = roomID, envelope.Driver
+	if !slices.ContainsFunc(principalKinds, func(p string) bool { return strings.HasPrefix(to, p) && len(to) > len(p) }) {
+		return envelope.Event{}, ErrInvalidDriver
+	}
+	// The payload the change stores, but for its from, known only under the row lock.
+	payload := envelope.DriverPayload{To: to, Epoch: expect + 1, Reason: reason}
+	d.RoomID, d.Type, d.Payload = roomID, envelope.Driver, envelope.Must(payload)
 	if err := d.Validate(); err != nil {
 		return envelope.Event{}, err
 	}
@@ -51,6 +64,9 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	}
 	// Before the epoch check: the retry of a change that won sees the epoch it moved.
 	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
+		if err == nil && existing.Type != envelope.Driver {
+			return envelope.Event{}, ErrKeyConflict
+		}
 		return existing, err
 	}
 	if sealed {
@@ -59,6 +75,9 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	if epoch != expect {
 		return envelope.Event{}, ErrStaleEpoch
 	}
+	if to == from {
+		return envelope.Event{}, ErrInvalidDriver
+	}
 	if strings.HasPrefix(from, "system:") {
 		fallback = from
 	}
@@ -66,7 +85,8 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 		driver_seen_at = now(), driver_acted_at = now() WHERE room_id = $1`, roomID, to, fallback); err != nil {
 		return envelope.Event{}, err
 	}
-	d.Payload = envelope.Must(envelope.DriverPayload{From: from, To: to, Epoch: epoch + 1, Reason: reason})
+	payload.From = from
+	d.Payload = envelope.Must(payload)
 	ev, _, err := s.appendTx(ctx, tx, d, "")
 	if err != nil {
 		return envelope.Event{}, err

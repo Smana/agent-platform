@@ -71,6 +71,75 @@ func TestDriverChangeRefusals(t *testing.T) {
 	}
 }
 
+// Review M4: a change names a principal other than the holder. Review M2: a key
+// already stored for another event type is a conflict, not a change.
+func TestDriverChangeRefusesBadTargetsAndForeignKeys(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	for _, to := range []string{"", "alice", "human:", "robot:x", "system:factory"} {
+		if _, err := s.ChangeDriver(ctx, room, 0, to, "given", humanDraft("human:alice", 1)); !errors.Is(err, ErrInvalidDriver) {
+			t.Fatalf("to %q: %v", to, err)
+		}
+	}
+	if _, _, err := s.Append(ctx, draftIn(room, "human:zed:s1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ChangeDriver(ctx, room, 0, "human:zed", "requested", humanDraft("human:zed", 1)); !errors.Is(err, ErrKeyConflict) {
+		t.Fatalf("a message's key replayed as a driver change: %v", err)
+	}
+	if st, _ := s.Room(ctx, room); st.DriverEpoch != 0 || st.LastSeq != 1 {
+		t.Fatalf("a refused change moved the token or appended: %+v", st)
+	}
+	// Callers need not pass a payload: the store writes it.
+	d := humanDraft("human:alice", 1)
+	d.Payload = nil
+	if ev, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", d); err != nil || ev.Type != envelope.Driver {
+		t.Fatalf("%+v, %v", ev, err)
+	}
+}
+
+func queuedDraft(n int64, text string) envelope.Draft {
+	return envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:alice"},
+		Type: envelope.Message, Origin: envelope.OriginClient, OriginClient: "human:alice:s1", OriginSeq: n,
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: text, Delivery: envelope.DeliveryQueued})}
+}
+
+// Review I2: the queue is FIFO, and a removed message leaves the others in order.
+func TestQueueKeepsFIFOOrder(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	var refs []int64
+	for i, text := range []string{"first", "second", "third"} {
+		ev, err := s.Enqueue(ctx, queuedDraft(int64(i+1), text), "human:alice", text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, ev.Seq)
+	}
+	if err := s.SetQueued(ctx, room, refs[1], "queued", "removed", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Queue(ctx, room)
+	if err != nil || len(got) != 2 || got[0].Ref != refs[0] || got[0].Text != "first" || got[1].Ref != refs[2] || got[1].Text != "third" {
+		t.Fatalf("queue = %+v, %v; want [first, third]", got, err)
+	}
+}
+
+// Review M2: a key already stored for another event type is not an enqueue.
+func TestEnqueueRefusesAForeignKey(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(ctx, queuedDraft(1, "late"), "human:alice", "late"); !errors.Is(err, ErrKeyConflict) {
+		t.Fatalf("a driver change's key replayed as an enqueue: %v", err)
+	}
+	if got, err := s.Queue(ctx, room); err != nil || len(got) != 0 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
 // A human-to-human give keeps the system fallback; a system holder becomes it.
 func TestFallbackIsTheLastSystemHolder(t *testing.T) {
 	ctx := t.Context()
