@@ -142,6 +142,10 @@ func TestTaskCRDKeepsTheTraceIds(t *testing.T) {
 	if !rules["self.traceID == oldSelf.traceID && self.spanID == oldSelf.spanID"] || !rules["!has(oldSelf.exported) || !oldSelf.exported || (has(self.exported) && self.exported)"] {
 		t.Errorf("status.trace rules %v", tr.XValidations)
 	}
+	status := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	if len(status.XValidations) != 1 || status.XValidations[0].Rule != "!has(oldSelf.trace) || has(self.trace)" {
+		t.Errorf("status rules %v: a trace is never removed (review M3)", status.XValidations)
+	}
 	for field, want := range map[string]string{"traceID": `^[0-9a-f]{32}$`, "spanID": `^[0-9a-f]{16}$`} {
 		p := tr.Properties[field]
 		if p.Pattern != want || len(p.XValidations) != 1 || !strings.HasPrefix(p.XValidations[0].Rule, "self != '0000") {

@@ -5,12 +5,14 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -215,5 +217,137 @@ func TestNoIssueTextReachesTheSpan(t *testing.T) {
 		if strings.Contains(x, canary) {
 			t.Fatalf("issue text on the span: %q", x)
 		}
+	}
+}
+
+// Ruling ST2: a collector that never answers costs one reconcile at most ExportTimeout, the span
+// is retried on later reconciles, and given up once the task has been over for spanGiveUp,
+// recorded in status and counted, so an outage never grows an unbounded serial backlog.
+func TestABlackHoledCollectorNeverStallsTheWorker(t *testing.T) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer func() { _ = c.Close() }()
+		}
+	}()
+	exp, err := tracing.NewOTLP(t.Context(), ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = exp.Shutdown(ctx)
+	}()
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Trace = exp
+	stopTask(t, g, g.reconcile(t, "3buqdlot", 3))
+	start := time.Now()
+	res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
+	if took := time.Since(start); err != nil || took > tracing.ExportTimeout+time.Second {
+		t.Fatalf("one reconcile took %s (err %v): the worker must not wait on the collector", took, err)
+	}
+	tk := g.reconcile(t, "3buqdlot", 0)
+	if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Trace.Exported || tk.Status.Trace.ExportAbandoned || res.RequeueAfter != spanRetry {
+		t.Fatalf("%s %+v, requeue %s: retried later", tk.Status.Phase, tk.Status.Trace, res.RequeueAfter)
+	}
+	g.r.Now = func() time.Time { return now.Add(spanGiveUp) }
+	if res, _ = g.r.Reconcile(t.Context(), reqFor("3buqdlot")); res.RequeueAfter != 0 {
+		t.Fatalf("given up: no requeue, got %s", res.RequeueAfter)
+	}
+	tk = g.reconcile(t, "3buqdlot", 1) // nothing left to do: no export attempted, nothing counted twice
+	if !tk.Status.Trace.ExportAbandoned || tk.Status.Trace.Exported {
+		t.Fatalf("given up %s after the end: %+v", spanGiveUp, tk.Status.Trace)
+	}
+	if n := strings.Count(strings.Join(g.metrics.recorded, "|"), "trace_export_abandoned"); n != 1 {
+		t.Fatalf("counted %d times: %q", n, g.metrics.recorded)
+	}
+}
+
+// Review M1: delivery is at least once. A 409 on the write that records Exported re-exports the
+// identical span on the replay; the collector keeps one per span id.
+func TestTheSpanIsExportedAtLeastOnce(t *testing.T) {
+	armed, n := false, 0
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
+		WithObjects(issueTask("3buqdlot", 7, "x")).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if armed {
+				n++
+				if n == 2 {
+					return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
+				}
+			}
+			return cl.SubResource(sub).Update(ctx, o, opts...)
+		}}).Build()
+	g := newRig(t)
+	g.c, g.r.Client = c, c
+	sink := &fakeSink{}
+	g.r.Trace = sink
+	stopTask(t, g, g.reconcile(t, "3buqdlot", 3))
+	armed = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the second write's conflict is returned")
+	}
+	armed = false
+	if tk := g.reconcile(t, "3buqdlot", 2); !tk.Status.Trace.Exported || len(sink.got) != 2 || sink.got[0] != sink.got[1] {
+		t.Fatalf("exports %+v", sink.got)
+	}
+}
+
+// Review M2: a reason recorded in status reaches the export; issue-like text in it never reaches the
+// span. The task is seeded as a restart finds it: ended, its span still to export.
+func TestARecordedReasonReachesTheSpanOnlyAsACode(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, "x")
+	ended := metav1.NewTime(now)
+	tk.Status = v1alpha1.TaskStatus{Phase: v1alpha1.PhaseStopped, Reason: "canary7q the agent said", PhaseSince: &ended,
+		Trace: &v1alpha1.TraceRef{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16)}}
+	g := newRig(t, tk)
+	mem := tracetest.NewInMemoryExporter()
+	g.r.Trace = tracing.New(mem)
+	if got := g.reconcile(t, "3buqdlot", 1); !got.Status.Trace.Exported {
+		t.Fatal("a restart exports the recorded span")
+	}
+	spans := mem.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans", len(spans))
+	}
+	for _, kv := range spans[0].Attributes {
+		if strings.Contains(kv.Value.String(), "canary7q") {
+			t.Fatalf("%s = %q", kv.Key, kv.Value.String())
+		}
+		if kv.Key == "agent.task.reason" && kv.Value.String() != "other" {
+			t.Fatalf("reason %q", kv.Value.String())
+		}
+	}
+}
+
+// A given-up span is counted once, with the write that records it, even when a later write (the
+// outbox draining after a GitHub outage) passes the same block again.
+func TestAGivenUpSpanIsCountedOnce(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	ff := &flakyForge{Fake: g.f}
+	g.r.Forge = ff
+	g.r.Trace = &fakeSink{down: true}
+	stopTask(t, g, g.reconcile(t, "3buqdlot", 3))
+	ff.down = true
+	_, _ = g.r.Reconcile(t.Context(), reqFor("3buqdlot")) // ends, GitHub down: the end stays queued
+	g.r.Now = func() time.Time { return now.Add(spanGiveUp) }
+	_, _ = g.r.Reconcile(t.Context(), reqFor("3buqdlot")) // a day later: given up, GitHub still down
+	ff.down = false
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if !tk.Status.Trace.ExportAbandoned || len(tk.Status.Outbox) != 0 {
+		t.Fatalf("%+v, outbox %d", tk.Status.Trace, len(tk.Status.Outbox))
+	}
+	if n := strings.Count(strings.Join(g.metrics.recorded, "|"), "trace_export_abandoned"); n != 1 {
+		t.Fatalf("counted %d times: %q", n, g.metrics.recorded)
 	}
 }

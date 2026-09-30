@@ -117,6 +117,7 @@ type Budget struct {
 
 // TaskStatus is the task's audit record: the whole §4 record, including the fields later
 // phases fill.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.trace) || has(self.trace)",message="a task's trace is never removed: its runs are parented on it"
 type TaskStatus struct {
 	// +kubebuilder:validation:Enum=Received;Rejected;Triaged;Queued;Implementing;NoOp;Reviewing;AwaitingCI;AutoMerging;AwaitingHuman;Merged;Verifying;Done;Reverted;Escalated;Closed;Stopped
 	// +optional
@@ -200,6 +201,9 @@ type TraceRef struct {
 	SpanID string `json:"spanID"`
 	// +optional
 	Exported bool `json:"exported,omitempty"`
+	// The collector refused the span for a day after the task ended: given up, never retried (ST2).
+	// +optional
+	ExportAbandoned bool `json:"exportAbandoned,omitempty"`
 }
 
 // Classification is the complexity classifier's verdict on the task (C7).

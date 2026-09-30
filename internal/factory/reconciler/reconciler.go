@@ -59,7 +59,16 @@ type metrics interface {
 	PROutcome(ctx context.Context, class, outcome string)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
+	TraceExportAbandoned(ctx context.Context)
 }
+
+// A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
+// the end (ruling ST2): each try costs the single worker up to tracing.ExportTimeout, so a
+// collector outage must not grow an unbounded backlog of them.
+const (
+	spanRetry  = 15 * time.Minute
+	spanGiveUp = 24 * time.Hour
+)
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
 // every change of one of its AgentRuns; one worker, so the caps are counted without a race
@@ -134,7 +143,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
 				return ctrl.Result{}, errors.Join(err, uerr)
 			}
+			if t.Status.Trace != nil && t.Status.Trace.ExportAbandoned && !queued.Trace.ExportAbandoned {
+				r.Metrics.TraceExportAbandoned(ctx) // once: counted with the write that records it
+			}
 		}
+	}
+	if err == nil && r.spanDue(&t) {
+		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
 	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
 		return ctrl.Result{}, err
@@ -296,12 +311,14 @@ func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason st
 
 // spanDue: the task has ended and its root span is still to export (R46).
 func (r *Reconciler) spanDue(t *v1alpha1.Task) bool {
-	return r.Trace != nil && v1alpha1.TerminalPhase(t.Status.Phase) && t.Status.Trace != nil && !t.Status.Trace.Exported
+	tr := t.Status.Trace
+	return r.Trace != nil && v1alpha1.TerminalPhase(t.Status.Phase) && tr != nil && !tr.Exported && !tr.ExportAbandoned
 }
 
-// endTrace exports the task's root span once (R46), from the label's acceptance (the Task's
-// creation) to the end its status recorded, so a retry exports the same span. Best effort: a
-// lost span never holds a task; a failed export is retried when the task is next reconciled.
+// endTrace exports the task's root span (R46), from the label's acceptance (the Task's creation)
+// to the end its status recorded, so a retry exports the same span: at least once, since a
+// conflict on the write that records Exported replays it. Best effort: a lost span never holds a
+// task. A failed export is retried every spanRetry and given up spanGiveUp after the end (ST2).
 func (r *Reconciler) endTrace(ctx context.Context, t *v1alpha1.Task) {
 	if !r.spanDue(t) {
 		return
@@ -314,6 +331,11 @@ func (r *Reconciler) endTrace(ctx context.Context, t *v1alpha1.Task) {
 	err := r.Trace.Export(ctx, tracing.Task{TraceID: tr.TraceID, SpanID: tr.SpanID, TaskID: t.Name, Tier: t.Spec.Budget.Tier,
 		Phase: t.Status.Phase, Reason: t.Status.Reason, Start: t.CreationTimestamp.Time, End: end})
 	if err != nil {
+		if r.Now().Sub(end) >= spanGiveUp {
+			tr.ExportAbandoned = true
+			r.log().Warn("task span given up", "task", t.Name, "err", err)
+			return
+		}
 		r.log().Warn("task span not exported", "task", t.Name, "err", err)
 		return
 	}

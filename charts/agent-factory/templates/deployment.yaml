@@ -21,6 +21,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # The kubelet gives mounted Secrets this group: with defaultMode 0440 the App key is
+        # readable by uid 65532 and nobody else (review C1).
+        fsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
       topologySpreadConstraints:
         - maxSkew: 1
@@ -56,7 +59,7 @@ spec:
         - name: broker-ca
           secret: {secretName: {{ .Values.brokerCASecret }}, items: [{key: ca.crt, path: ca.crt}]}
         - name: github
-          secret: {secretName: {{ .Values.githubSecret }}, defaultMode: 0400}
+          secret: {secretName: {{ .Values.githubSecret }}, defaultMode: 0440}
         - name: rooms-token
           projected:
             sources:

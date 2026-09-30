@@ -71,6 +71,7 @@ type Set struct {
 	eventsTruncated metric.Int64Counter
 	revocations     metric.Int64Counter
 	githubRemaining metric.Int64Gauge
+	traceAbandoned  metric.Int64Counter
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -116,6 +117,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.githubRemaining, err = meter.Int64Gauge("agent_factory_github_rate_remaining",
 		metric.WithDescription("The factory App's remaining REST rate limit."))
+	check(err)
+	s.traceAbandoned, err = meter.Int64Counter("agent_factory_trace_export_abandoned_total",
+		metric.WithDescription("Task spans given up after the collector refused them for a day (ruling ST2)."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -222,6 +226,9 @@ func (s *Set) LabelEventsTruncated(ctx context.Context, label string) {
 func (s *Set) Revoked(ctx context.Context, reason string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations()))))
 }
+
+// TraceExportAbandoned counts a task span given up unexported (ruling ST2).
+func (s *Set) TraceExportAbandoned(ctx context.Context) { s.traceAbandoned.Add(ctx, 1) }
 
 // GitHubRemaining sets the factory App's remaining REST rate limit.
 func (s *Set) GitHubRemaining(ctx context.Context, remaining int64) {

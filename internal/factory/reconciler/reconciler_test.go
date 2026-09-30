@@ -117,6 +117,7 @@ func (m *fakeMetrics) TaskTokens(_ context.Context, _ int64, tier, template, cla
 	m.add("task_tokens " + tier + " " + template + " " + class)
 }
 func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("intervention " + kind) }
+func (m *fakeMetrics) TraceExportAbandoned(context.Context)        { m.add("trace_export_abandoned") }
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 

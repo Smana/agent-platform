@@ -429,6 +429,10 @@ spec:
                 description: 'The task''s root span (R46): minted at acceptance, exported
                   once when the task ends.'
                 properties:
+                  exportAbandoned:
+                    description: 'The collector refused the span for a day after the
+                      task ended: given up, never retried (ST2).'
+                    type: boolean
                   exported:
                     type: boolean
                   spanID:
@@ -469,6 +473,10 @@ spec:
                 maxLength: 32
                 type: string
             type: object
+            x-kubernetes-validations:
+            - message: 'a task''s trace is never removed: its runs are parented on
+                it'
+              rule: '!has(oldSelf.trace) || has(self.trace)'
         required:
         - spec
         type: object

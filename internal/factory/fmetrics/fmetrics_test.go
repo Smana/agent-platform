@@ -120,6 +120,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.LabelEventsTruncated(ctx, "factory/ready")
 	s.Revoked(ctx, "budget-run")
 	s.GitHubRemaining(ctx, 4990)
+	s.TraceExportAbandoned(ctx)
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -133,6 +134,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_intake_errors_total{source="issue"} 1`,
 		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
 		`agent_factory_github_rate_remaining 4990`,
+		`agent_factory_trace_export_abandoned_total 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -183,5 +185,6 @@ func TestANilMeterIsANoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Revoked(t.Context(), "budget-run")
+	s.TraceExportAbandoned(t.Context())
 	s.IntakeError(t.Context(), "issue")
 }

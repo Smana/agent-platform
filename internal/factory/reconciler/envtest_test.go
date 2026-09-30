@@ -94,6 +94,12 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	if err := c.Status().Update(ctx, moved); err == nil || !strings.Contains(err.Error(), "a task's trace ids never change") {
 		t.Fatalf("a changed trace id is refused: %v", err)
 	}
+	// Review M3: nor removed, which would let a new mint through.
+	dropped := got.DeepCopy()
+	dropped.Status.Trace = nil
+	if err := c.Status().Update(ctx, dropped); err == nil || !strings.Contains(err.Error(), "a task's trace is never removed") {
+		t.Fatalf("a removed trace is refused: %v", err)
+	}
 
 	// A change of the run is a reconcile of its task: the AgentRun watch maps the label back.
 	if err := unstructured.SetNestedField(u.Object, "Succeeded", "status", "phase"); err != nil {

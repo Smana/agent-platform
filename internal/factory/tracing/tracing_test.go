@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"regexp"
 	"strings"
 	"testing"
@@ -104,6 +105,59 @@ func TestAFailedExportIsAnError(t *testing.T) {
 	tr, sp := Mint()
 	if err := New(failingExporter{}).Export(context.Background(), Task{TraceID: tr, SpanID: sp}); err == nil {
 		t.Fatal("a failed export is reported")
+	}
+}
+
+// blackHole accepts connections and never answers: the collector outage that stalls a caller
+// longest, since the TCP connect succeeds.
+func blackHole(t *testing.T) string {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, c)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
+
+// Ruling ST2: an export gives up within ExportTimeout, the SDK's retry off, whatever the collector does.
+func TestAnExportNeverOutlastsItsTimeout(t *testing.T) {
+	exp, err := NewOTLP(t.Context(), blackHole(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = exp.Shutdown(ctx)
+	}()
+	tr, sp := Mint()
+	start := time.Now()
+	err = exp.Export(t.Context(), Task{TraceID: tr, SpanID: sp, Start: start, End: start})
+	if took := time.Since(start); err == nil || took > ExportTimeout+time.Second {
+		t.Fatalf("export: %v after %s, want an error within %s", err, took, ExportTimeout)
+	}
+	if ExportTimeout > 3*time.Second {
+		t.Fatalf("ExportTimeout %s: ST2 caps it at 3 s", ExportTimeout)
 	}
 }
 

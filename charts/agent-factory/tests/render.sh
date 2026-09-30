@@ -31,8 +31,18 @@ check "limits:" "resource limits"
 check "requests:" "resource requests"
 check "minAvailable: 1" "PDB"
 check "resources: [agentruns]" "AgentRun RBAC"
+# Review C1: a 0400 root-owned key is unreadable to uid 65532; the group bit plus fsGroup is not.
+check "fsGroup: 65532" "the pod's fsGroup owns the mounted Secrets"
+check "secret: {secretName: agent-factory-github, defaultMode: 0440}" "the App key readable by the group only"
+# Review M4: exactly the verbs the code uses.
+check "verbs: [get, list, watch, create, update, patch]" "tasks without delete"
+check "verbs: [get, create, update]" "leases: what leader election calls"
+check "resourceNames: [agent-factory-stop]" "configmaps: the stop object only"
 if grep -qF "resources: [secrets]" <<<"$out"; then
   echo "FAIL: the factory never reads Secrets through the API" >&2; fail=1
+fi
+if grep -qE "defaultMode: 0?400" <<<"$out"; then
+  echo "FAIL: a 0400 Secret is root-only: the factory runs as 65532" >&2; fail=1
 fi
 for bad in "" "v0.0.0" "latest"; do
   if helm template agent-factory . --namespace agent-system --set image.tag="$bad" >/dev/null 2>&1; then
