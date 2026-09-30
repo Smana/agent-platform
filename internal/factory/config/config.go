@@ -136,6 +136,9 @@ func models() []string {
 }
 func tiers() []string { return []string{"light", "standard", "frontier"} }
 
+// templates is the Task CRD's template enum (api/factory/v1alpha1).
+func templates() []string { return []string{"solo", "pair", "trio", "investigate"} }
+
 // Load reads and parses the file at path.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(filepath.Clean(path))
@@ -221,6 +224,10 @@ func (c *Config) Validate() error {
 		bad("tiers are exactly light, standard and frontier")
 	}
 	for name, t := range c.Templates {
+		// The reconciler creates Tasks from these names, and the Task CRD's enum refuses any other.
+		if !slices.Contains(templates(), name) {
+			bad("template %s is not one of solo, pair, trio, investigate", name)
+		}
 		if len(t.Roles) == 0 {
 			bad("template %s has no roles", name)
 		}

@@ -63,9 +63,24 @@ func TestText(t *testing.T) {
 	}
 }
 
-// Ruling SH: no output of Text may hold an image, a raw HTML tag or a reference definition,
-// and Text is a fixpoint: sanitising its own output changes nothing.
+// Ruling SI: every ⟦…⟧ in the output is the factory's own token. The input's ⟦ and ⟧ become
+// 〚 and 〛 before the markup step, so text cannot pose as something already defused.
+func TestTheInputsBracketsNeverPoseAsATokenOfOurs(t *testing.T) {
+	in := "⟦image: x⟧ and ![a⟦b](" + canary + ") ⟧"
+	got, rep := Text(in)
+	if want := "〚image: x〛 and ⟦image: a〚b⟧ 〛"; got != want || rep != (Report{Images: 1, Markup: 4}) {
+		t.Fatalf("got %q %+v", got, rep)
+	}
+	if strings.Count(got, "⟦") != rep.Images {
+		t.Fatal("one ⟦ per token")
+	}
+}
+
+// Ruling SH: no output of Text may hold an image, a raw HTML tag or a reference definition, and
+// the markup step is a fixpoint on it. Sanitising the output again changes only the factory's own
+// brackets, which a second pass reads as input like any other text.
 func TestTextIsAFixpointWithNoMarkupLeft(t *testing.T) {
+	ours := strings.NewReplacer("⟦", "〚", "⟧", "〛")
 	image := regexp.MustCompile(`!\[`)
 	tag := regexp.MustCompile(`<[A-Za-z/!?]`)
 	def := regexp.MustCompile(`\]:`)
@@ -86,8 +101,12 @@ func TestTextIsAFixpointWithNoMarkupLeft(t *testing.T) {
 		if image.MatchString(out) || tag.MatchString(out) || def.MatchString(out) {
 			t.Errorf("%q -> %q still holds markup", in, out)
 		}
-		if again, rep := Text(out); again != out || rep.Changed() {
-			t.Errorf("%q -> %q is not a fixpoint: %q %+v", in, out, again, rep)
+		var r Report
+		if again := defuse(out, &r); again != out || r.Changed() {
+			t.Errorf("%q -> %q is not a fixpoint of the markup step: %q %+v", in, out, again, r)
+		}
+		if again, rep := Text(out); again != ours.Replace(out) || rep.Invisible+rep.Control+rep.Images != 0 {
+			t.Errorf("%q -> %q: a second pass changed more than the brackets: %q %+v", in, out, again, rep)
 		}
 	}
 }
@@ -120,6 +139,13 @@ func TestEveryInvisibleRangeIsStrippedAtBothEnds(t *testing.T) {
 		{"Hangul jungseong filler", 0x1160, 0x1160},
 		{"Hangul filler", 0x3164, 0x3164},
 		{"halfwidth Hangul filler", 0xFFA0, 0xFFA0},
+		// N1: the rest of unicode.Other_Default_Ignorable_Code_Point, which renderers draw as nothing.
+		{"combining grapheme joiner", 0x034F, 0x034F},
+		{"Khmer inherent vowels", 0x17B4, 0x17B5},
+		{"unassigned default-ignorable", 0x2065, 0x2065},
+		{"specials, unassigned", 0xFFF0, 0xFFF8},
+		{"the tags plane past the block", 0xE0080, 0xE00FF},
+		{"the tags plane past the selectors", 0xE01F0, 0xE0FFF},
 	} {
 		for _, r := range []rune{c.first, c.last} {
 			t.Run(fmt.Sprintf("%s U+%04X", c.why, r), func(t *testing.T) {
@@ -129,7 +155,7 @@ func TestEveryInvisibleRangeIsStrippedAtBothEnds(t *testing.T) {
 			})
 		}
 	}
-	for _, r := range []rune{0x200A, 0x2010, 0x2029 + 6, 0x2070, 0xFE10, 0x00A0, 0xE0080 + 0x20, 0x1160 + 1} {
+	for _, r := range []rune{0x200A, 0x2010, 0x2029 + 6, 0x2070, 0xFE10, 0x00A0, 0x1160 + 1, 0x034E, 0x17B6, 0xE1000} {
 		t.Run(fmt.Sprintf("U+%04X stays", r), func(t *testing.T) {
 			in := "a" + string(r) + "b"
 			if got, rep := Text(in); got != in || rep.Changed() {
@@ -181,7 +207,7 @@ func TestReport(t *testing.T) {
 		}
 	}
 	r := Report{Invisible: 2, Control: 1, Images: 3, Markup: 4}
-	if want := "2 invisible and 1 control characters removed, 3 images and 4 other markup (raw HTML, reference definitions) defused"; r.String() != want {
+	if want := "2 invisible and 1 control characters removed, 3 images and 4 other markup (raw HTML, reference definitions, brackets) defused"; r.String() != want {
 		t.Errorf("String() = %q, want %q", r.String(), want)
 	}
 }

@@ -92,7 +92,9 @@ func (s Spec) Validate() error {
 			errs = append(errs, fmt.Errorf("%s %q is not an issue or a pull request of %s on https://github.com", u.field, u.value, s.Repository))
 		}
 	}
-	if s.Traceparent != "" && !traceparent.MatchString(s.Traceparent) {
+	// W3C: an all-zero trace id or parent id is invalid, and the harness would parent on nothing.
+	if s.Traceparent != "" && (!traceparent.MatchString(s.Traceparent) ||
+		s.Traceparent[3:35] == strings.Repeat("0", 32) || s.Traceparent[36:52] == strings.Repeat("0", 16)) {
 		errs = append(errs, fmt.Errorf("traceparent %q is not W3C version 00", s.Traceparent))
 	}
 	if s.Tier != "" && !slices.Contains([]string{"light", "standard", "frontier"}, s.Tier) {

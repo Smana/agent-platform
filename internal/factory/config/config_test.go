@@ -3,10 +3,15 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"sigs.k8s.io/yaml"
 )
 
 const good = `
@@ -68,6 +73,29 @@ func TestLoadReadsTheFile(t *testing.T) {
 	}
 }
 
+// The template names are exactly the Task CRD's enum: a config can name no template a Task refuses.
+func TestTemplatesAreTheTaskCRDEnum(t *testing.T) {
+	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	var enum []string
+	for _, v := range crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["template"].Enum {
+		var s string
+		if err := json.Unmarshal(v.Raw, &s); err != nil {
+			t.Fatal(err)
+		}
+		enum = append(enum, s)
+	}
+	if !slices.Equal(enum, templates()) {
+		t.Fatalf("CRD %v, config %v", enum, templates())
+	}
+}
+
 // The rules refuse only what they name: each variant here is a valid config.
 func TestGoodVariantsParse(t *testing.T) {
 	for name, c := range map[string][2]string{
@@ -101,12 +129,15 @@ func TestBadConfigsFail(t *testing.T) {
 		"missing tier":          {"  light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}\n", "", "tier light is missing"},
 		"a fourth tier": {"tiers:\n", "tiers:\n  huge: {model: agent-default, runTokens: 1, taskTokens: 1, runMinutes: 1}\n",
 			"tiers are exactly light, standard and frontier"},
-		"minutes above 480":      {"runMinutes: 90", "runMinutes: 600", "tier frontier: runMinutes must be 1..480"},
-		"minutes below one":      {"runMinutes: 90", "runMinutes: 0", "tier frontier: runMinutes must be 1..480"},
-		"default template gone":  {"template: solo", "template: duo", `defaults.template "duo" is not a template`},
-		"no maintainer":          {"maintainers: [Smana]", "maintainers: []", "maintainers is empty"},
-		"bad duration":           {"issues: 60s", "issues: 60", "a duration is a string"},
-		"unknown model":          {"model: agent-default, runTokens: 1500000", "model: gpt-5, runTokens: 1500000", `tier standard: model "gpt-5" is not a C5 logical name`},
+		"minutes above 480":     {"runMinutes: 90", "runMinutes: 600", "tier frontier: runMinutes must be 1..480"},
+		"minutes below one":     {"runMinutes: 90", "runMinutes: 0", "tier frontier: runMinutes must be 1..480"},
+		"default template gone": {"template: solo", "template: duo", `defaults.template "duo" is not a template`},
+		"no maintainer":         {"maintainers: [Smana]", "maintainers: []", "maintainers is empty"},
+		"bad duration":          {"issues: 60s", "issues: 60", "a duration is a string"},
+		"unknown model":         {"model: agent-default, runTokens: 1500000", "model: gpt-5, runTokens: 1500000", `tier standard: model "gpt-5" is not a C5 logical name`},
+		// Ruling SI: the reconciler creates Tasks from these names, and the Task CRD's enum refuses others.
+		"a template off the CRD enum": {"  solo: {roles: [implementer]}\n", "  solo: {roles: [implementer]}\n  duo: {roles: [implementer]}\n",
+			"template duo is not one of solo, pair, trio, investigate"},
 		"template without roles": {"solo: {roles: [implementer]}", "solo: {roles: []}", "template solo has no roles"},
 		// R38 (owner default): only a lone triager may go without an implementer.
 		"a reviewer without an implementer": {"investigate: {roles: [triager]}", "investigate: {roles: [reviewer]}",

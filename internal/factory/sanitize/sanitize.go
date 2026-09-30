@@ -19,10 +19,10 @@ import (
 
 // Report counts what Text removed or replaced. The intake logs it, so an injection attempt shows.
 type Report struct {
-	Invisible int // format (Cf) characters, variation selectors, Unicode tags and fillers
+	Invisible int // default-ignorable code points: format (Cf), variation selectors, tags, fillers
 	Control   int // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
 	Images    int // markdown and HTML images, reduced to their alt text or defused
-	Markup    int // other raw HTML tags and reference definitions, defused
+	Markup    int // other raw HTML tags, reference definitions and the input's ⟦ ⟧, defused
 }
 
 // Changed is whether Text altered anything.
@@ -31,7 +31,7 @@ func (r Report) Changed() bool { return r.Invisible+r.Control+r.Images+r.Markup 
 // String is the report as one log-safe line: counts only, never the removed text.
 func (r Report) String() string {
 	return fmt.Sprintf("%d invisible and %d control characters removed, %d images and %d other markup "+
-		"(raw HTML, reference definitions) defused", r.Invisible, r.Control, r.Images, r.Markup)
+		"(raw HTML, reference definitions, brackets) defused", r.Invisible, r.Control, r.Images, r.Markup)
 }
 
 var (
@@ -44,18 +44,25 @@ var (
 	htmlOpen = regexp.MustCompile(`<[A-Za-z/!?]`)
 )
 
-// invisible is a character that renders as nothing yet reaches the model. The categories
-// cover R43's enumeration (U+200B–200F, 202A–202E, 2060–2064, 2066–2069, FEFF, the tags) and
-// what it missed: U+061C, 206A–206F, 00AD, 180E, FFF9–FFFB, 1D173–1D17A, and the variation
-// selectors that carry the 2025 "emoji smuggling" payloads.
+// invisible is a character that renders as nothing yet reaches the model: every default-ignorable
+// code point. The categories cover R43's enumeration (U+200B–200F, 202A–202E, 2060–2064,
+// 2066–2069, FEFF, the tags) and what it missed: U+061C, 206A–206F, 00AD, 180E, FFF9–FFFB,
+// 1D173–1D17A, the variation selectors that carry the 2025 "emoji smuggling" payloads, the
+// Hangul fillers, U+034F, 17B4–17B5, 2065, FFF0–FFF8 and the rest of the tags plane up to E0FFF.
 func invisible(r rune) bool {
-	switch {
-	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Variation_Selector, r),
-		r >= 0xE0000 && r <= 0xE001F,                       // the Tags block's unassigned points: the rest of it is Cf
-		r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0: // Hangul fillers, letters that draw nothing
-		return true
+	return unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Variation_Selector, r) ||
+		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r)
+}
+
+// lookalike maps the input's own ⟦ and ⟧ away, so every ⟦…⟧ in the output is a token of ours.
+func lookalike(r rune) (rune, bool) {
+	switch r {
+	case '⟦':
+		return '〚', true
+	case '⟧':
+		return '〛', true
 	}
-	return false
+	return r, false
 }
 
 // Text removes invisible and control characters, then defuses every image, reference
@@ -79,6 +86,10 @@ func Text(s string) (string, Report) {
 		case unicode.IsControl(r) && r != '\n' && r != '\t':
 			rep.Control++
 			return -1
+		}
+		if m, ok := lookalike(r); ok {
+			rep.Markup++
+			return m
 		}
 		return r
 	}, s)
