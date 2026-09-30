@@ -235,7 +235,8 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Status before upgrade | When |
 |---|---|
-| `401` / `403` | Not authenticated; not in an agents group; not allowed to read this room (`not_permitted`) |
+| `401` | Not authenticated, or the token is already past its expiry |
+| `403` | A foreign `Origin` (T9); not in an agents group; not allowed to read this room (`not_permitted`) |
 | `404` | No such room |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica, ruling P22) |
 | `503` | The log is unavailable |
@@ -245,7 +246,7 @@ One JSON object per text frame (Appendix B).
 | Direction | Frame | Fields |
 |---|---|---|
 | client → broker | `hello` | `roomId`, `afterSeq?` or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
-| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards) |
+| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
 | broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs}` |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
@@ -260,7 +261,13 @@ triggers a range read.
 |---|---|---|
 | `4001` | `reauth` | Reconnect: the connection reached `min(token expiry, 1 h)` |
 | `1008` | `slow_consumer` | Reconnect with `afterSeq`: over 2 MiB was pending |
-| `1008` | `hello first` | Send `hello` first |
+| `1008` | `hello first` | Send `hello` first, within 10 s |
+| `1009` | — | Keep a frame under 32 KiB |
+| `1001` | `shutdown` | Reconnect: the replica is stopping |
+| `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
+
+The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
+close frame. Every frame to the client must be written within 10 s.
 
 ### Actions (planned, phases 4–6)
 
