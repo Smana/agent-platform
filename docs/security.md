@@ -134,7 +134,7 @@ printing (cloud-native-ref H-1, review M4).
 |---|---|---|
 | `rooms_owner` | Own and migrate the schema | Create roles |
 | `rooms_broker` | Append and read events; insert room rows; update only the `rooms` columns it must move (Ruling Y) | Update or delete events; unseal, re-date or re-time a room; move `last_seq` by anything but +1 |
-| `rooms_retention` | Delete events and rows of sealed (Ruling Y) rooms closed past their retention | See or delete anything else (row-level security) |
+| `rooms_retention` | Find sealed (Ruling Y) rooms closed past their retention, then delete their events and rows | Read any event column but `room_id`, or any `rooms` column but the four that decide expiry (column grants); see or delete a room that is not expired, or its events (row-level security, Ruling AX) |
 
 Details and the tests that prove them: [room log](room-log.md#the-guarantees).
 

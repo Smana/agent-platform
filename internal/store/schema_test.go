@@ -103,6 +103,68 @@ func inTx(ctx context.Context, s *Store, sql string) error {
 	return tx.Commit(ctx)
 }
 
+// Ruling AX: the retention role reads only what purging needs, the room ids and
+// the four columns of the expiry predicate, and only for expired rooms. It never
+// reads a transcript, not even one it is about to delete.
+func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
+	s, _, retention, super := open(t)
+	ctx := context.Background()
+	for _, id := range []string{"openaaaa", "expiredx"} {
+		if _, err := s.EnsureRoom(ctx, NewRoom{ID: id, Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Append(ctx, draftIn(id, "agent:x", 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CloseRoom(ctx, "expiredx", "done"); err != nil {
+		t.Fatal(err)
+	}
+	forge(t, super, `UPDATE rooms SET closed_at = now() - interval '2 days' WHERE room_id = 'expiredx'`)
+	var held int // the expired room's events: its append and its close
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = 'expiredx'`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(ctx, retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	for _, tc := range []struct{ name, sql string }{
+		{"an event's payload", `SELECT payload FROM events`},
+		{"an event's actor", `SELECT actor_id FROM events`},
+		{"a whole event", `SELECT * FROM events`},
+		{"a room's driver", `SELECT driver FROM rooms`},
+	} {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			_, err := r.pool.Exec(ctx, tc.sql)
+			if pg, ok := errors.AsType[*pgconn.PgError](err); !ok || pg.Code != "42501" {
+				t.Fatalf("want SQLSTATE 42501, got %v", err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, sql string
+		want      int
+	}{
+		{"a live room's events are invisible", `SELECT count(*) FROM events WHERE room_id = 'openaaaa'`, 0},
+		{"a live room's row is invisible", `SELECT count(*) FROM rooms WHERE room_id = 'openaaaa'`, 0},
+		{"an expired room's row is visible", `SELECT count(*) FROM rooms WHERE room_id = 'expiredx'`, 1},
+		{"an expired room's events are countable", `SELECT count(*) FROM events WHERE room_id = 'expiredx'`, held},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var n int
+			if err := r.pool.QueryRow(ctx, tc.sql).Scan(&n); err != nil || n != tc.want {
+				t.Fatalf("count = %d, %v; want %d", n, err, tc.want)
+			}
+		})
+	}
+	if rooms, events, err := r.PurgeExpired(ctx); err != nil || rooms != 1 || events != int64(held) {
+		t.Fatalf("purge under the narrowed role: %d rooms, %d events, %v", rooms, events, err)
+	}
+}
+
 // OD-17: the retention role deletes a room's log only once it is sealed and its
 // close date is older than its retention.
 func TestRetentionDeletesOnlyExpiredSealedRooms(t *testing.T) {

@@ -150,8 +150,11 @@ GRANT SELECT ON rooms TO rooms_broker;
 GRANT INSERT (room_id, driver, fallback_driver, retention) ON rooms TO rooms_broker;
 -- Only the columns the store moves: the sequencer, the seal and the bridge lease.
 GRANT UPDATE (last_seq, bytes, last_event_at, sealed, closed_at, bridge_run, bridge_seen_at) ON rooms TO rooms_broker;
--- The retention job deletes, and only what RLS below lets it see as expired.
-GRANT SELECT, DELETE ON events, rooms TO rooms_retention;
+-- The retention job deletes, and only what RLS below lets it see as expired. It
+-- reads only the columns that find an expired room, never a transcript (Ruling AX).
+GRANT DELETE ON events, rooms TO rooms_retention;
+GRANT SELECT (room_id) ON events TO rooms_retention;
+GRANT SELECT (room_id, sealed, closed_at, retention) ON rooms TO rooms_retention;
 
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
@@ -165,8 +168,11 @@ CREATE POLICY broker_create_rooms  ON rooms  FOR INSERT TO rooms_broker
 -- The column grants and rooms_move_forward decide which moves are legal.
 CREATE POLICY broker_move_rooms    ON rooms  FOR UPDATE TO rooms_broker USING (true) WITH CHECK (true);
 
-CREATE POLICY retention_read_rooms  ON rooms  FOR SELECT TO rooms_retention USING (true);
-CREATE POLICY retention_read_events ON events FOR SELECT TO rooms_retention USING (true);
+-- Retention sees expired rooms only: a DELETE's WHERE reads through these too.
+CREATE POLICY retention_read_rooms  ON rooms  FOR SELECT TO rooms_retention
+  USING (sealed AND closed_at < now() - retention);
+CREATE POLICY retention_read_events ON events FOR SELECT TO rooms_retention
+  USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
 CREATE POLICY retention_purge_rooms ON rooms  FOR DELETE TO rooms_retention
   USING (sealed AND closed_at < now() - retention);
 CREATE POLICY retention_purge_events ON events FOR DELETE TO rooms_retention

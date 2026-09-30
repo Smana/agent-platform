@@ -56,7 +56,7 @@ Later phases add columns and tables (see [migrations](#migrations-with-atlas)).
 |---|---|---|---|
 | `rooms_owner` | CNPG, from the `SQLInstance` claim; owns the database | Owns the schema. No `CREATEROLE` | The Atlas migration |
 | `rooms_broker` | CNPG managed role, owning no database | `SELECT`, `INSERT` on `events`; `SELECT`, `INSERT` and (Ruling Y) a column-level `UPDATE` on `rooms` | The broker |
-| `rooms_retention` | CNPG managed role, owning no database | `SELECT`, `DELETE` on `events` and `rooms`, narrowed by row-level security to expired rooms | The retention job |
+| `rooms_retention` | CNPG managed role, owning no database | `DELETE` on `events` and `rooms`; `SELECT` on `events.room_id` and on the expiry columns of `rooms` only; both narrowed by row-level security to expired rooms | The retention job |
 
 Each role's password is generated in the cluster by an External Secrets `Password` generator, never
 seeded by hand, through the `SQLInstance`'s `credentials.source: generated` (CC-S1, ruling P7). The
@@ -84,6 +84,7 @@ one.
 | `last_seq` moves only by +1 | The same trigger | Test lands with Ruling Y | AP-1, Ruling Y |
 | The broker updates only what it must move on `rooms` | Grant: a column-level `UPDATE` instead of the table-wide one, and no `FOR ALL` policy | Test lands with Ruling Y | AP-1, Ruling Y |
 | Retention deletes only sealed rooms closed longer ago than their retention | Row-level security on `rooms_retention`: `closed_at < now() - retention`; Ruling Y adds `sealed` | `TestRetentionDeletesOnlyExpiredClosedRooms` | RLS AP-1; `sealed` AP-1, Ruling Y |
+| Retention never reads a transcript | Grant: `rooms_retention` may `SELECT` only `events.room_id` and the expiry columns of `rooms` (`room_id`, `sealed`, `closed_at`, `retention`); its `SELECT` policies show only expired rooms (Ruling AX) | `TestRetentionRoleCannotReadTranscripts` (`42501`, and a live room's rows invisible) | AP-1, Ruling AX |
 | A full room seals itself | The store: at 100 000 events or 256 MiB the append also writes the seal | `TestLimitSealsTheRoom` | AP-1 |
 | An oversize payload keeps its slot | The store replaces a payload over 64 KiB with a stub | `TestOversizePayloadIsStubbed` | AP-1 |
 | A value Postgres refuses keeps its slot | `IsDataError` spots SQLSTATE class 22; the API stores a stub instead | `TestNULIsADataError` | Store AP-1; stub planned, task 1.9 |
