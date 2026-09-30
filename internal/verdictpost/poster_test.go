@@ -181,7 +181,8 @@ func TestATransientErrorIsRetried(t *testing.T) {
 		"GitHub down":      &github.APIError{Status: 502},
 		"a network error":  errors.New("dial tcp: connection refused"),
 		"no key file":      errors.New("github: private key: open /etc/x: permission denied"),
-		"a revoked token":  nil, // Comment retried the 401 itself; a success here
+		"a revoked token":  nil,                           // Comment retried the 401 itself; a success here
+		"a rejected key":   &github.APIError{Status: 401}, // ruling SZ: the operator can fix it
 		"a rate limit 403": &github.APIError{Status: 403, RateLimited: true},
 	} {
 		t.Run(name, func(t *testing.T) {

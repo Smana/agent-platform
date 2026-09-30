@@ -32,6 +32,9 @@ const (
 	jwtLifetime = 9 * time.Minute
 	// refreshBefore renews an installation token (one hour) while it still has this long to live.
 	refreshBefore = 5 * time.Minute
+	// maxRetryAfter caps a rate limit's pause: a larger value is a bad header,
+	// and a verdict waits at most a day in any case.
+	maxRetryAfter = time.Hour
 	// perPage and maxPages bound the search for the App's comment: 3 000 comments.
 	// A page of 30 comments of GitHub's 65 536 characters, JSON-escaped, stays under maxPage.
 	perPage  = 30
@@ -47,9 +50,10 @@ var ErrTooManyComments = errors.New("github: too many comments to search for the
 // ErrNotAPullRequest reports a URL that is not a GitHub pull request's.
 var ErrNotAPullRequest = errors.New("github: not a GitHub pull request URL")
 
-// Permanent reports an error a retry cannot heal: GitHub's 4xx other than 429,
-// a URL that names no pull request, or one too long to search. An unreadable
-// key or a bad App id is not: the owner's Secret can still land or be fixed.
+// Permanent reports an error a retry cannot heal: GitHub's 4xx other than a
+// rate limit or a 401, a URL that names no pull request, or one too long to
+// search. A key that cannot be read, that is no App id's, or that GitHub
+// rejects is not: the owner's Secret can still land or be fixed (ruling SZ).
 func Permanent(err error) bool {
 	var ae *APIError
 	if errors.As(err, &ae) {
@@ -73,10 +77,13 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("github %s: HTTP %d", e.Path, e.Status) }
 
-// Permanent reports a 4xx other than a rate limit, which a retry does not heal
-// (the App is not installed, the pull request is gone, the comment is refused).
+// Permanent reports a 4xx other than a rate limit or a 401, which a retry does
+// not heal (the App is not installed, the pull request is gone, the comment is
+// refused). A 401 that survives Comment's fresh-token retry is a key GitHub
+// rejects, which the operator can fix (ruling SZ).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.RateLimited
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests &&
+		e.Status != http.StatusUnauthorized && !e.RateLimited
 }
 
 // apiError reads a refusal's rate-limit headers: Retry-After (seconds or an
@@ -86,19 +93,21 @@ func apiError(resp *http.Response, path string, now time.Time) *APIError {
 	e := &APIError{Status: resp.StatusCode, Path: path}
 	h := resp.Header
 	if v := h.Get("Retry-After"); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s >= 0 {
-			e.RetryAfter = time.Duration(s) * time.Second
+		// Seconds are clamped before they are multiplied: a huge value would overflow.
+		if s, err := strconv.ParseInt(v, 10, 64); err == nil {
+			e.RetryAfter = time.Duration(min(max(s, 0), int64(maxRetryAfter/time.Second))) * time.Second
 		} else if t, err := http.ParseTime(v); err == nil {
-			e.RetryAfter = max(t.Sub(now), 0)
+			e.RetryAfter = t.Sub(now)
 		}
 		e.RateLimited = true
 	}
 	if h.Get("X-Ratelimit-Remaining") == "0" {
 		if reset, err := strconv.ParseInt(h.Get("X-Ratelimit-Reset"), 10, 64); err == nil && e.RetryAfter == 0 {
-			e.RetryAfter = max(time.Unix(reset, 0).Sub(now), 0)
+			e.RetryAfter = time.Unix(reset, 0).Sub(now)
 		}
 		e.RateLimited = true
 	}
+	e.RetryAfter = min(max(e.RetryAfter, 0), maxRetryAfter)
 	e.RateLimited = e.RateLimited && (e.Status == http.StatusForbidden || e.Status == http.StatusTooManyRequests)
 	return e
 }

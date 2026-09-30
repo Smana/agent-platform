@@ -4,8 +4,12 @@ package store
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 )
@@ -111,5 +115,64 @@ func TestASealedRoomsVerdictIsSkipped(t *testing.T) {
 	}
 	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10); len(got) != 0 {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// One posted verdict suppresses only itself: its room's other verdict is still
+// listed (review 3.4, mutant verdicts-any-origin-seq).
+func TestAPostedVerdictHidesOnlyItself(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := t.Context()
+	first, _, err := s.Append(ctx, verdictDraft(1, reviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.Append(ctx, verdictDraft(2, reviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(ctx, envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		Type: envelope.StateChanged, Origin: envelope.OriginBroker, OriginClient: VerdictsClient, OriginSeq: first.Seq,
+		Payload: envelope.StatePayload("verdict_posted", map[string]any{"verdictSeq": first.Seq})}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10)
+	if err != nil || len(got) != 1 || got[0].Seq != second.Seq {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+}
+
+// since is exclusive: a verdict stamped exactly then is outside the window.
+func TestUnpostedVerdictsSinceIsExclusive(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := t.Context()
+	v, _, err := s.Append(ctx, verdictDraft(1, reviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.UnpostedVerdicts(ctx, v.TS, 10); err != nil || len(got) != 0 {
+		t.Fatalf("at the verdict's ts: %+v, %v", got, err)
+	}
+	if got, err := s.UnpostedVerdicts(ctx, v.TS.Add(-time.Microsecond), 10); err != nil || len(got) != 1 {
+		t.Fatalf("a microsecond before: %+v, %v", got, err)
+	}
+}
+
+// The index is built CONCURRENTLY, outside a transaction (review 3.4 m1), and
+// must come out valid: a failed concurrent build leaves an invalid one behind.
+func TestTheVerdictIndexIsValid(t *testing.T) {
+	_, _, _, super := testDB(t)
+	conn, err := pgx.Connect(t.Context(), super)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(t.Context()) }()
+	var valid bool
+	if err := conn.QueryRow(t.Context(), `SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+		WHERE c.relname = 'events_agent_verdicts'`).Scan(&valid); err != nil || !valid {
+		t.Fatalf("valid %v, err %v", valid, err)
+	}
+	if b, err := os.ReadFile("migrations/20260929120000_verdicts.sql"); err != nil || !strings.HasPrefix(string(b), "-- atlas:txmode none\n") {
+		t.Fatal("Atlas must run the migration outside a transaction: CONCURRENTLY refuses one")
 	}
 }

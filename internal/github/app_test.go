@@ -21,6 +21,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -58,6 +59,7 @@ type fakeGitHub struct {
 	postHdr  http.Header       // headers sent with postCode
 	stale    string            // an installation token GitHub now refuses with 401
 	refuse   bool              // GitHub refuses every installation token with 401
+	refused  int               // calls refused with 401
 	current  string            // the last token minted
 	repoOf   map[string]string // the repository each token was minted for
 }
@@ -108,6 +110,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// A token scoped to one repository sees no other: GitHub answers 404.
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && strings.HasPrefix(auth, "ghs_installation-") && (auth == f.stale || f.refuse):
+		f.refused++
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 	case (r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" || r.URL.Path == "/repos/Smana/other/issues/12/comments") &&
 		strings.HasPrefix(auth, "ghs_installation-"):
@@ -329,7 +332,9 @@ func TestErrorsSayWhetherARetryCanHelp(t *testing.T) {
 	if !errors.As(err, &ae) || ae.Status != http.StatusNotFound || !ae.Permanent() {
 		t.Fatalf("err = %v", err)
 	}
-	for status, permanent := range map[int]bool{401: true, 403: true, 404: true, 422: true, 429: false, 500: false, 502: false} {
+	// Ruling SZ: a 401 that survives the fresh-token retry is a key the
+	// operator can fix, so it is not permanent.
+	for status, permanent := range map[int]bool{401: false, 403: true, 404: true, 422: true, 429: false, 500: false, 502: false} {
 		if (&APIError{Status: status}).Permanent() != permanent {
 			t.Errorf("HTTP %d: Permanent() != %v", status, permanent)
 		}
@@ -526,6 +531,7 @@ func TestPermanent(t *testing.T) {
 		"not a pull request":   {notPR, true},
 		"too many comments":    {fmt.Errorf("post: %w", ErrTooManyComments), true},
 		"not installed":        {fmt.Errorf("x: %w", &APIError{Status: 404}), true},
+		"a key GitHub rejects": {&APIError{Status: 401}, false},
 		"rate limited":         {&APIError{Status: 429}, false},
 		"GitHub down":          {&APIError{Status: 502}, false},
 		"no key file yet":      {noKey, false},
@@ -557,16 +563,19 @@ func TestA401RetriesOnceWithAFreshToken(t *testing.T) {
 		if f.tokens != 2 || f.posts != 2 {
 			t.Fatalf("%d mints, %d posts", f.tokens, f.posts)
 		}
-		f.refuse = true
+		if f.refused != 1 {
+			t.Fatalf("%d refused calls for one stale token", f.refused)
+		}
+		f.refuse, f.refused = true, 0
 	})
 	_, err := a.Comment(t.Context(), pr, "<!-- agent-room:3kq7x2ma:44 -->", "z")
 	var ae *APIError
-	if !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized || !Permanent(err) {
-		t.Fatalf("err = %v", err)
+	if !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized || Permanent(err) {
+		t.Fatalf("err = %v: a rejected key is retried later, not dropped (ruling SZ)", err)
 	}
 	f.locked(func() {
-		if f.tokens != 3 {
-			t.Fatalf("%d mints: one retry, not a loop", f.tokens)
+		if f.tokens != 3 || f.refused != 2 {
+			t.Fatalf("%d mints, %d refused calls: exactly one retry", f.tokens, f.refused)
 		}
 	})
 }
@@ -588,6 +597,14 @@ func TestRateLimitsAreTransient(t *testing.T) {
 		{"a plain 403", 403, nil, true, 0},
 		{"a 403 with requests left", 403, http.Header{"X-Ratelimit-Remaining": {"12"}}, true, 0},
 		{"a 422", 422, http.Header{"Retry-After": {"60"}}, true, time.Minute},
+		// Review 3.4 m2: bounded both ways.
+		{"a negative Retry-After", 403, http.Header{"Retry-After": {"-5"}}, false, 0},
+		{"a huge Retry-After", 429, http.Header{"Retry-After": {"99999999999"}}, false, maxRetryAfter},
+		{"a Retry-After that would overflow negative", 429, http.Header{"Retry-After": {"9223372037"}}, false, maxRetryAfter},
+		{"a date in the past", 429, http.Header{"Retry-After": {"%PASTDATE%"}}, false, 0},
+		{"a reset in the past", 403, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"%PAST%"}}, false, 0},
+		{"a reset days away", 403, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"%FAR%"}}, false, maxRetryAfter},
+		{"a date days away", 429, http.Header{"Retry-After": {"%FARDATE%"}}, false, maxRetryAfter},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, f, c := app(t)
@@ -595,6 +612,10 @@ func TestRateLimitsAreTransient(t *testing.T) {
 			for k, v := range tc.hdr {
 				v := strings.ReplaceAll(v[0], "%RESET%", strconv.FormatInt(c.now().Add(2*time.Minute).Unix(), 10))
 				v = strings.ReplaceAll(v, "%DATE%", c.now().Add(3*time.Minute).UTC().Format(http.TimeFormat))
+				v = strings.ReplaceAll(v, "%PASTDATE%", c.now().Add(-time.Hour).UTC().Format(http.TimeFormat))
+				v = strings.ReplaceAll(v, "%PAST%", strconv.FormatInt(c.now().Add(-time.Hour).Unix(), 10))
+				v = strings.ReplaceAll(v, "%FAR%", strconv.FormatInt(c.now().Add(72*time.Hour).Unix(), 10))
+				v = strings.ReplaceAll(v, "%FARDATE%", c.now().Add(72*time.Hour).UTC().Format(http.TimeFormat))
 				hdr[k] = []string{v}
 			}
 			f.locked(func() { f.postCode, f.postHdr = tc.code, hdr })
@@ -655,6 +676,16 @@ func TestNeutralise(t *testing.T) {
 		{"zero-width and BOM", "a\u200bb\u200dc\ufeffd\u2060e\u00adf", "abcdef"},
 		{"controls", "a\u0000b\u001b[31mc\u0085d\re", "ab[31mcde"},
 		{"an entity that would decode", "&lt;!-- agent-room:x:1 --&gt;", "&amp;lt;!-- agent-room:x:1 --&amp;gt;"},
+		// Review 3.4 I1: a dropped character must not join what it separated.
+		{"a zero-width space inside an image", "!\u200b[x](https://evil/p.png)", "!\\[x](https://evil/p.png)"},
+		{"a CR inside an image", "!\r[x](https://evil/p.png)", "!\\[x](https://evil/p.png)"},
+		{"a zero-width space inside a mention", "@\u200bsmana", "＠smana"},
+		{"a NUL inside a team mention", "@\u0000org/team", "＠org/team"},
+		{"a word joiner inside an image", "!\u2060[x](u)", "!\\[x](u)"},
+		{"a BOM inside a mention", "@\ufeffsmana", "＠smana"},
+		{"a bidi override inside an image", "!\u202e[x](u)", "!\\[x](u)"},
+		{"a bidi override inside a mention", "@\u202esmana", "＠smana"},
+		{"a control inside an HTML tag", "<\u0000img src=u>", "&lt;img src=u>"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Neutralise(tc.in); got != tc.want {
@@ -677,6 +708,40 @@ func TestTokensArePerRepository(t *testing.T) {
 	f.locked(func() {
 		if f.tokens != 2 || f.repoOf["ghs_installation-1"] != "cloud-native-ref" || f.repoOf["ghs_installation-2"] != "other" {
 			t.Fatalf("%d mints, %v", f.tokens, f.repoOf)
+		}
+	})
+}
+
+// safe is Neutralise's contract on its output: nothing GitHub would render as
+// HTML, an image or a mention, and no hidden character.
+func safe(o string) bool {
+	rs := []rune(o)
+	for i, r := range rs {
+		next := rune(0)
+		if i+1 < len(rs) {
+			next = rs[i+1]
+		}
+		switch {
+		case r != '\n' && r != '\t' && (unicode.Is(unicode.Cf, r) || unicode.IsControl(r)),
+			r == '<',
+			r == '!' && next == '[',
+			r == '@' && (unicode.IsLetter(next) || unicode.IsDigit(next)),
+			r == '&' && !strings.HasPrefix(string(rs[i:]), "&amp;") && !strings.HasPrefix(string(rs[i:]), "&lt;"):
+			return false
+		}
+	}
+	return true
+}
+
+// FuzzNeutralise holds the contract for any input, the review's probes seeded.
+func FuzzNeutralise(f *testing.F) {
+	for _, s := range []string{"!\u200b[x](u)", "!\r[x](u)", "@\u200bsmana", "@\x00org/team", "!\u200b\u200b[x](u)",
+		"<!-- m -->", "&#60;img>", "!!\u202e[[x](u)", "@@\ufeffa", "a\u00ad@\u2060b"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		if out := Neutralise(in); !safe(out) {
+			t.Fatalf("Neutralise(%q) = %q", in, out)
 		}
 	})
 }
