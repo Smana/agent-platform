@@ -8,7 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 )
 
@@ -130,5 +137,40 @@ func TestTheStartIsPostedAfterAnOutage(t *testing.T) {
 	ff.down = false
 	if tk := g.reconcile(t, "3buqdlot", 1); len(tk.Status.Outbox) != 0 || len(g.f.Comments(7)) != 1 || len(g.runs.specs) != 1 {
 		t.Fatalf("%+v %q", tk.Status.Outbox, g.f.Comments(7))
+	}
+}
+
+// Review M-a: a narration is posted only once the status write that queued it has succeeded.
+// Here the write recording "ended, no PR" conflicts; the replay finds the PR the agent opened
+// meanwhile, and the issue never hears "no pull request".
+func TestNothingIsPostedBeforeItsTransitionIsWritten(t *testing.T) {
+	conflict := false
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
+		WithObjects(issueTask("3buqdlot", 7, "x")).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if conflict {
+				conflict = false
+				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
+			}
+			return cl.SubResource(sub).Update(ctx, o, opts...)
+		}}).Build()
+	g := newRig(t)
+	g.c, g.r.Client = c, c
+	g.reconcile(t, "3buqdlot", 3)
+	g.runs.set("7f3cq2xz", "Succeeded")
+	g.log.end("7f3cq2xz", "Succeeded", "agent_finished")
+	conflict = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the conflict is returned")
+	}
+	if c := g.f.Comments(7); len(c) != 1 {
+		t.Fatalf("posted before its transition was written: %q", c)
+	}
+	g.f.SetBranch("agent/3buqdlot", 12)
+	g.f.SetPR(forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN"})
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if all := strings.Join(g.f.Comments(7), "\n"); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman ||
+		strings.Contains(all, "no pull request") || !strings.Contains(all, "#12") {
+		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 }

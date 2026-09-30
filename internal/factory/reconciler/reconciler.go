@@ -113,13 +113,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !ended {
 		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
 	}
-	err = errors.Join(err, r.drain(ctx, &t)) // the outbox is written with the phase either way
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
 			return ctrl.Result{}, errors.Join(err, uerr)
 		}
 		for _, f := range fx.after {
 			f(ctx)
+		}
+	}
+	// Only a written outbox is posted (review M-a): a write that conflicts posts nothing, and its
+	// replay may take another path. The second write records what was posted.
+	if len(t.Status.Outbox) > 0 {
+		queued := t.Status.DeepCopy()
+		err = errors.Join(err, r.drain(ctx, &t))
+		if !equality.Semantic.DeepEqual(*queued, t.Status) {
+			if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
+				return ctrl.Result{}, errors.Join(err, uerr)
+			}
 		}
 	}
 	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
