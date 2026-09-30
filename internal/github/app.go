@@ -44,21 +44,63 @@ const (
 // searches, so it cannot know whether the App already posted, and does not post.
 var ErrTooManyComments = errors.New("github: too many comments to search for the marker")
 
+// ErrNotAPullRequest reports a URL that is not a GitHub pull request's.
+var ErrNotAPullRequest = errors.New("github: not a GitHub pull request URL")
+
+// Permanent reports an error a retry cannot heal: GitHub's 4xx other than 429,
+// a URL that names no pull request, or one too long to search. An unreadable
+// key or a bad App id is not: the owner's Secret can still land or be fixed.
+func Permanent(err error) bool {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Permanent()
+	}
+	return errors.Is(err, ErrNotAPullRequest) || errors.Is(err, ErrTooManyComments)
+}
+
 var prURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$`)
 
 // APIError is a GitHub answer outside 2xx. It names the status and path only:
-// a reply body can quote a credential.
+// a reply body can quote a credential. RateLimited marks a 403 or 429 that is
+// GitHub's primary or secondary rate limit, and RetryAfter is when it lifts,
+// when GitHub says.
 type APIError struct {
-	Status int
-	Path   string
+	Status      int
+	Path        string
+	RateLimited bool
+	RetryAfter  time.Duration
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("github %s: HTTP %d", e.Path, e.Status) }
 
-// Permanent reports a 4xx other than 429, which a retry does not heal (the App
-// is not installed, the pull request is gone, the comment is refused).
+// Permanent reports a 4xx other than a rate limit, which a retry does not heal
+// (the App is not installed, the pull request is gone, the comment is refused).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.RateLimited
+}
+
+// apiError reads a refusal's rate-limit headers: Retry-After (seconds or an
+// HTTP date) for the secondary limit, X-RateLimit-Remaining 0 and its reset for
+// the primary one. Only a 403 or a 429 can be a rate limit.
+func apiError(resp *http.Response, path string, now time.Time) *APIError {
+	e := &APIError{Status: resp.StatusCode, Path: path}
+	h := resp.Header
+	if v := h.Get("Retry-After"); v != "" {
+		if s, err := strconv.Atoi(v); err == nil && s >= 0 {
+			e.RetryAfter = time.Duration(s) * time.Second
+		} else if t, err := http.ParseTime(v); err == nil {
+			e.RetryAfter = max(t.Sub(now), 0)
+		}
+		e.RateLimited = true
+	}
+	if h.Get("X-Ratelimit-Remaining") == "0" {
+		if reset, err := strconv.ParseInt(h.Get("X-Ratelimit-Reset"), 10, 64); err == nil && e.RetryAfter == 0 {
+			e.RetryAfter = max(time.Unix(reset, 0).Sub(now), 0)
+		}
+		e.RateLimited = true
+	}
+	e.RateLimited = e.RateLimited && (e.Status == http.StatusForbidden || e.Status == http.StatusTooManyRequests)
+	return e
 }
 
 // App reads its id and key from Dir (app_id, private_key) at every mint. Dir is
@@ -75,6 +117,47 @@ type App struct {
 	mu     sync.Mutex // held across a mint: concurrent callers wait for one
 	slug   string
 	tokens map[string]token // by owner/repo
+
+	postMu  sync.Mutex
+	posting map[string]*markerLock // by pull request + marker, while held or awaited
+}
+
+// markerLock serialises one marker's search and post; waiters counts its holder
+// and those queued, so the last one out removes it.
+type markerLock struct {
+	sem     chan struct{}
+	waiters int
+}
+
+// lockMarker holds key until unlock is called, or fails once ctx ends first.
+// Search then post is not atomic on GitHub, so two calls for one marker would
+// both find nothing and both post.
+func (a *App) lockMarker(ctx context.Context, key string) (func(), error) {
+	a.postMu.Lock()
+	if a.posting == nil {
+		a.posting = map[string]*markerLock{}
+	}
+	l := a.posting[key]
+	if l == nil {
+		l = &markerLock{sem: make(chan struct{}, 1)}
+		a.posting[key] = l
+	}
+	l.waiters++
+	a.postMu.Unlock()
+	release := func() {
+		a.postMu.Lock()
+		if l.waiters--; l.waiters == 0 {
+			delete(a.posting, key)
+		}
+		a.postMu.Unlock()
+	}
+	select {
+	case l.sem <- struct{}{}:
+		return func() { <-l.sem; release() }, nil
+	case <-ctx.Done():
+		release()
+		return nil, ctx.Err()
+	}
 }
 
 type token struct {
@@ -157,7 +240,7 @@ func (a *App) do(ctx context.Context, api *url.URL, method, path, query, bearer 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return &APIError{Status: resp.StatusCode, Path: path}
+		return apiError(resp, path, a.Now())
 	}
 	raw, err := httpx.ReadBody(resp.Body, limit)
 	if err != nil {
@@ -226,20 +309,47 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 // Comment posts body, then marker, on the pull request, once. The App's own
 // comment that already ends with marker is returned instead: a retry after a
 // crash, or a new leader. Another author's copy of the marker never counts.
+// Calls for one marker run one at a time; other markers are not held up.
 func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, error) {
 	m := prURL.FindStringSubmatch(pr)
 	if m == nil || m[2] == "." || m[2] == ".." {
-		return "", errors.New("github: not a GitHub pull request URL")
+		return "", ErrNotAPullRequest
 	}
 	api, err := a.api()
 	if err != nil {
 		return "", err
 	}
-	tok, slug, err := a.installation(ctx, api, m[1], m[2])
+	unlock, err := a.lockMarker(ctx, pr+marker)
 	if err != nil {
 		return "", err
 	}
-	path := "repos/" + m[1] + "/" + m[2] + "/issues/" + m[3] + "/comments"
+	defer unlock()
+	// The body never opens an HTML comment, so it cannot plant another verdict's marker.
+	body = strings.ReplaceAll(body, "<!--", "&lt;!--")
+	url, err := a.comment(ctx, api, m[1], m[2], m[3], marker, body)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		// A revoked token, or a rotated key: one fresh token, one retry.
+		a.evict(m[1] + "/" + m[2])
+		url, err = a.comment(ctx, api, m[1], m[2], m[3], marker, body)
+	}
+	return url, err
+}
+
+// evict drops the cached installation token of owner/repo.
+func (a *App) evict(repo string) {
+	a.mu.Lock()
+	delete(a.tokens, repo)
+	a.mu.Unlock()
+}
+
+// comment is one attempt: a token, the search for the marker, then the post.
+func (a *App) comment(ctx context.Context, api *url.URL, owner, repo, number, marker, body string) (string, error) {
+	tok, slug, err := a.installation(ctx, api, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	path := "repos/" + owner + "/" + repo + "/issues/" + number + "/comments"
 	found, err := a.find(ctx, api, path, tok, slug+"[bot]", marker)
 	if err != nil || found != "" {
 		return found, err

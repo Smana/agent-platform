@@ -76,7 +76,7 @@ func bridgePayload(t envelope.Type, redacted json.RawMessage) (json.RawMessage, 
 			return nil, wire.ReasonBadItem
 		}
 		// A chat never carries a verdict's fields, whatever the bridge sent.
-		m.Delivery, m.Verdict, m.Commit = envelope.DeliveryNone, "", ""
+		m.Delivery, m.Verdict, m.Commit, m.PullRequest = envelope.DeliveryNone, "", "", ""
 		return envelope.Must(m), ""
 	case envelope.StateChanged:
 		var kind string

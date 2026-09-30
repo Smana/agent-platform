@@ -25,11 +25,11 @@ const (
 
 // Run is the part of an AgentRun claim (C3) that SP2 relies on.
 type Run struct {
-	ID, Room, Role, Principal, Phase, Revoked, DataClass, Branch, Repository string
-	StartedAt, FinishedAt                                                    time.Time
-	MaxMinutes                                                               int64
-	EgressProfiles                                                           []string
-	Deleted                                                                  bool // the claim was deleted before a terminal phase (review M15)
+	ID, Room, Role, Principal, Phase, Revoked, DataClass, Branch, Repository, TaskURL string
+	StartedAt, FinishedAt                                                             time.Time
+	MaxMinutes                                                                        int64
+	EgressProfiles                                                                    []string
+	Deleted                                                                           bool // the claim was deleted before a terminal phase (review M15)
 }
 
 // Terminal reports whether an AgentRun phase is final.
@@ -54,7 +54,7 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	str := func(path ...string) string { s, _, _ := unstructured.NestedString(u.Object, path...); return s }
 	r := Run{ID: id, Room: str("spec", "roomRef"), Role: str("spec", "role"), Principal: str("spec", "principal"),
 		Phase: str("status", "phase"), DataClass: str("spec", "dataClass"), Repository: str("spec", "repository"),
-		Branch: str("status", "branch"), Revoked: u.GetAnnotations()[RevokedAnnotation]}
+		Branch: str("status", "branch"), Revoked: u.GetAnnotations()[RevokedAnnotation], TaskURL: str("spec", "task", "url")}
 	if r.Phase == "" {
 		r.Phase = "Pending"
 	}

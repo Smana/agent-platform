@@ -399,3 +399,48 @@ func callWith(t *testing.T, s *Server, name string, args any) (map[string]any, s
 	}
 	return res, text
 }
+
+func TestVerdictNamesThePullRequestUnderReview(t *testing.T) {
+	const prURL = "https://github.com/Smana/cloud-native-ref/pull/12"
+	args := json.RawMessage(`{"verdict":"approve","summary":"Looks right.","commit":"4be1c9d"}`)
+	for _, tc := range []struct {
+		name, repo, task, want string
+	}{
+		{"a pull request of the run's repository", "Smana/cloud-native-ref", prURL, prURL},
+		{"another repository's pull request", "Smana/cloud-native-ref", "https://github.com/someone/else/pull/3", ""},
+		{"a repository whose name extends the run's", "Smana/cloud-native-ref", "https://github.com/Smana/cloud-native-ref-evil/pull/3", ""},
+		{"an issue, not a pull request", "Smana/cloud-native-ref", "https://github.com/Smana/cloud-native-ref/issues/12", ""},
+		{"a pull request page, not the pull request", "Smana/cloud-native-ref", prURL + "/files", ""},
+		{"pull request zero", "Smana/cloud-native-ref", "https://github.com/Smana/cloud-native-ref/pull/0", ""},
+		{"plain http", "Smana/cloud-native-ref", "http://github.com/Smana/cloud-native-ref/pull/12", ""},
+		{"a run with no repository", "", prURL, ""},
+		{"a run with no task", "Smana/cloud-native-ref", "", ""},
+		{"a repository with regexp in its name", "Smana/cloud.native-ref", "https://github.com/Smana/cloudXnative-ref/pull/12", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &memLog{}
+			rev := Caller{Run: runwatch.Run{ID: "7f3cq2xz", Room: "3kq7x2ma", Role: "reviewer", Repository: tc.repo, TaskURL: tc.task}}
+			if _, err := tool(tools(log), "room_verdict").Call(t.Context(), rev, args); err != nil {
+				t.Fatal(err)
+			}
+			var p envelope.MessagePayload
+			_ = json.Unmarshal(log.drafts[0].Payload, &p)
+			if p.PullRequest != tc.want {
+				t.Fatalf("pullRequest = %q, want %q", p.PullRequest, tc.want)
+			}
+		})
+	}
+}
+
+// A chat never names a pull request: only a verdict is posted on one.
+func TestAChatNamesNoPullRequest(t *testing.T) {
+	log := &memLog{}
+	rev := Caller{Run: runwatch.Run{ID: "7f3cq2xz", Room: "3kq7x2ma", Role: "reviewer", Repository: "Smana/cloud-native-ref",
+		TaskURL: "https://github.com/Smana/cloud-native-ref/pull/12"}}
+	if _, err := tool(tools(log), "room_post").Call(t.Context(), rev, json.RawMessage(`{"text":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log.drafts[0].Payload), "pullRequest") {
+		t.Fatalf("%s", log.drafts[0].Payload)
+	}
+}

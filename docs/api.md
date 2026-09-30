@@ -12,7 +12,7 @@ get `:8090` in phase 3. Every body is JSON.
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
 | `:8085` (bridge) | kubelet | None | AP-1 (task 1.11) |
 
-`room-broker serve` serves `:8443` and `:9090` (AP-1). The rest is **planned**.
+`room-broker serve` serves `:8443`, `:9090` (AP-1), `:8080` (AP-2) and `:8090` (AP-3).
 
 ## `:8443` — bridge and system API
 
@@ -297,20 +297,47 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 
-## `:8090` — room tools (planned, phase 3 / AP-3)
+## `:8090` — room tools (phase 3 / AP-3)
 
 An MCP server on `POST /mcp`, reached only through an `agent-router` `MCPRoute`, which authenticates
-the run first and injects a generated key in `X-Room-Mcp-Key` (ruling P13). The broker derives the
-run from `X-Ar-Agent`, the gateway's verified `sub`, and reads the run's role from its `AgentRun`,
-never from a header. It exposes `tools/list` and `tools/call` only: no `resources` or `prompts`,
-which the gateway would not authorize by role. One call per second per run.
+the run first and injects a generated key in `X-Room-Mcp-Key` (ruling P13, `ROOMS_MCP_KEY`). The
+broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against the
+first run issuer's `subPattern`, and reads the run's room and role from its `AgentRun`, never from a
+header or an argument. It exposes `initialize`, `ping`, `tools/list` and `tools/call` only: no
+`resources` or `prompts`, which the gateway would not authorize by role. It answers `POST` only and
+never opens a stream or sends a request of its own (agent-router#2715).
+
+| HTTP | When |
+|---|---|
+| `401` | `X-Room-Mcp-Key` wrong or missing, or `ROOMS_MCP_KEY` unset: every call is refused |
+| `403` | `X-Ar-Agent` names no run, or the run is not live or in no room |
+| `405` | Anything but `POST` |
+| `413` | A body over 128 KiB |
+| `503` | A call over 15 s |
+
+`tools/list` lists the tools of the run's role. A call needs the role and the §1 matrix's action
+(`read` for `room_read`, `chat` for the three writes), then spends the run's one call per second.
+The limit is per broker replica. Arguments are strict: an unknown field is refused, and text holds
+no control character but tab, newline and carriage return. Every write is redacted before it is
+appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 
 | Tool | Roles | Arguments | Result | Appends |
 |---|---|---|---|---|
-| `room_read` | all | `sinceSeq`, `limit` ≤ 100 | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted | nothing |
-| `room_post` | all | `text` | `{seq}` | `message{kind: chat}`, delivered to nobody |
-| `room_handoff` | implementer, tester, triager | `toRole`, `summary`, `commit` | `{seq}` | `handoff` |
-| `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, pullRequest}`; the leader then posts it on the PR |
+| `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted. Pass `lastSeq` as the next `sinceSeq` | nothing |
+| `room_post` | all | `text`, 1–16 384 bytes | `{seq}` | `message{kind: chat}`, delivered to nobody |
+| `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (lowercase hex, 7–40) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch}`; `fromRole` and `branch` from the `AgentRun` |
+| `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |
+
+A refused call is a tool result with `isError: true`, whose text starts with its reason:
+
+| Reason | Meaning |
+|---|---|
+| `not_permitted` | The tool is unknown, or not one of the run's role |
+| `rate_limited` | A second call within the second |
+| `invalid_arguments` | The arguments break the tool's schema; the text says how |
+| `room_sealed` | The room takes no more events |
+| `no_room` | The run's room has no log |
+| `log_unavailable` | The log failed; try again later |
 
 Tool calls carry no idempotency key (MCP request ids are per session), so a retried call can append
 twice; both copies are attributed and visible (ruling P26).

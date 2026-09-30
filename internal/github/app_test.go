@@ -3,6 +3,7 @@
 package github
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -54,6 +55,10 @@ type fakeGitHub struct {
 	missing  bool          // the App is not installed on the repository
 	expires  time.Duration // an installation token's life; an hour by default
 	postCode int           // the comment POST's status; 201 by default
+	postHdr  http.Header   // headers sent with postCode
+	stale    string        // an installation token GitHub now refuses with 401
+	refuse   bool          // GitHub refuses every installation token with 401
+	current  string        // the last token minted
 }
 
 // locked runs fn under the fake's lock: the handler runs on the server's goroutines.
@@ -83,14 +88,17 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":77}`))
 	case r.Method == http.MethodPost && r.URL.Path == "/app/installations/77/access_tokens" && appJWT():
 		f.tokens++
+		f.current = fmt.Sprintf("ghs_installation-%d", f.tokens)
 		_ = json.NewDecoder(r.Body).Decode(&f.scope)
 		life := f.expires
 		if life == 0 {
 			life = time.Hour
 		}
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_installation", "expires_at": time.Now().Add(life)})
-	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && auth == "ghs_installation":
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": f.current, "expires_at": time.Now().Add(life)})
+	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && strings.HasPrefix(auth, "ghs_installation-") && (auth == f.stale || f.refuse):
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && strings.HasPrefix(auth, "ghs_installation-"):
 		if r.Method == http.MethodGet {
 			f.pages = append(f.pages, r.URL.RawQuery)
 			per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
@@ -100,6 +108,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if f.postCode != 0 {
+			for k, v := range f.postHdr {
+				w.Header()[k] = v
+			}
 			http.Error(w, `{"message":"nope ghs_installation"}`, f.postCode)
 			return
 		}
@@ -433,4 +444,210 @@ func mustAPI(t *testing.T, a *App) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// Concurrent posts of one verdict search and post one at a time: the second
+// finds the first's comment instead of posting its own.
+func TestConcurrentCallsForOneMarkerPostOnce(t *testing.T) {
+	a, f, _ := app(t)
+	urls := make([]string, 8)
+	var wg sync.WaitGroup
+	for i := range urls {
+		wg.Go(func() {
+			u, err := a.Comment(t.Context(), pr, marker, "### Agent review: approved")
+			if err != nil {
+				t.Error(err)
+			}
+			urls[i] = u
+		})
+	}
+	wg.Wait()
+	f.locked(func() {
+		if f.posts != 1 {
+			t.Fatalf("%d posts for one marker", f.posts)
+		}
+	})
+	for _, u := range urls {
+		if u != urls[0] {
+			t.Fatalf("urls %v", urls)
+		}
+	}
+	if len(a.posting) != 0 {
+		t.Fatalf("%d marker locks left held", len(a.posting))
+	}
+}
+
+// Another marker is not held up by one whose post is in flight.
+func TestAnotherMarkerIsNotHeld(t *testing.T) {
+	a, _, _ := app(t)
+	unlock, err := a.lockMarker(t.Context(), pr+marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if _, err := a.Comment(t.Context(), pr, "<!-- agent-room:3kq7x2ma:43 -->", "x"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := a.Comment(ctx, pr, marker, "x"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a held marker waits until ctx ends: %v", err)
+	}
+}
+
+// Permanent tells the poster what a retry cannot heal (review forwards for 3.5):
+// GitHub's 4xx other than 429, a URL that is no pull request, and a pull
+// request too long to search. A key that cannot be read or an App id that is
+// not one may heal once the Secret lands, so they are not.
+func TestPermanent(t *testing.T) {
+	a, _, _ := app(t)
+	_, notPR := a.Comment(t.Context(), "https://github.com/Smana/cloud-native-ref/issues/1", marker, "x")
+	b, _, _ := app(t)
+	if err := os.Remove(filepath.Join(b.Dir, "private_key")); err != nil {
+		t.Fatal(err)
+	}
+	_, noKey := b.Comment(t.Context(), pr, marker, "x")
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"not a pull request":   {notPR, true},
+		"too many comments":    {fmt.Errorf("post: %w", ErrTooManyComments), true},
+		"not installed":        {fmt.Errorf("x: %w", &APIError{Status: 404}), true},
+		"rate limited":         {&APIError{Status: 429}, false},
+		"GitHub down":          {&APIError{Status: 502}, false},
+		"no key file yet":      {noKey, false},
+		"a network failure":    {errors.New("dial tcp: connection refused"), false},
+		"no error":             {nil, false},
+		"the caller cancelled": {context.Canceled, false},
+	} {
+		if tc.err == nil && name != "no error" {
+			t.Fatalf("%s: no error to classify", name)
+		}
+		if got := Permanent(tc.err); got != tc.want {
+			t.Errorf("%s (%v): Permanent = %v", name, tc.err, got)
+		}
+	}
+}
+
+// A 401 on an installation token (revoked, or the App's key rotated) is healed
+// by one fresh token: the cached one is evicted and the call retried once.
+func TestA401RetriesOnceWithAFreshToken(t *testing.T) {
+	a, f, _ := app(t)
+	if _, err := a.Comment(t.Context(), pr, marker, "x"); err != nil {
+		t.Fatal(err)
+	}
+	f.locked(func() { f.stale = f.current })
+	if _, err := a.Comment(t.Context(), pr, "<!-- agent-room:3kq7x2ma:43 -->", "y"); err != nil {
+		t.Fatal(err)
+	}
+	f.locked(func() {
+		if f.tokens != 2 || f.posts != 2 {
+			t.Fatalf("%d mints, %d posts", f.tokens, f.posts)
+		}
+		f.refuse = true
+	})
+	_, err := a.Comment(t.Context(), pr, "<!-- agent-room:3kq7x2ma:44 -->", "z")
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized || !Permanent(err) {
+		t.Fatalf("err = %v", err)
+	}
+	f.locked(func() {
+		if f.tokens != 3 {
+			t.Fatalf("%d mints: one retry, not a loop", f.tokens)
+		}
+	})
+}
+
+// A 403 that says when to come back is GitHub's secondary rate limit, and a
+// 403 or 429 with no requests left is its primary one: both heal, so the
+// verdict is retried rather than dropped.
+func TestRateLimitsAreTransient(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		code      int
+		hdr       http.Header
+		permanent bool
+		after     time.Duration
+	}{
+		{"a 403 with Retry-After", 403, http.Header{"Retry-After": {"60"}}, false, time.Minute},
+		{"a 403 with no requests left", 403, http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"%RESET%"}}, false, 2 * time.Minute},
+		{"a 429 with an HTTP date", 429, http.Header{"Retry-After": {"%DATE%"}}, false, 3 * time.Minute},
+		{"a plain 403", 403, nil, true, 0},
+		{"a 403 with requests left", 403, http.Header{"X-Ratelimit-Remaining": {"12"}}, true, 0},
+		{"a 422", 422, http.Header{"Retry-After": {"60"}}, true, time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, f, c := app(t)
+			hdr := http.Header{}
+			for k, v := range tc.hdr {
+				v := strings.ReplaceAll(v[0], "%RESET%", strconv.FormatInt(c.now().Add(2*time.Minute).Unix(), 10))
+				v = strings.ReplaceAll(v, "%DATE%", c.now().Add(3*time.Minute).UTC().Format(http.TimeFormat))
+				hdr[k] = []string{v}
+			}
+			f.locked(func() { f.postCode, f.postHdr = tc.code, hdr })
+			_, err := a.Comment(t.Context(), pr, marker, "x")
+			var ae *APIError
+			if !errors.As(err, &ae) || ae.Status != tc.code {
+				t.Fatalf("err = %v", err)
+			}
+			if Permanent(err) != tc.permanent {
+				t.Fatalf("Permanent = %v, want %v", !tc.permanent, tc.permanent)
+			}
+			if d := ae.RetryAfter - tc.after; d < -2*time.Second || d > 2*time.Second {
+				t.Fatalf("RetryAfter = %s, want %s", ae.RetryAfter, tc.after)
+			}
+		})
+	}
+}
+
+// The body is the poster's; whatever it holds, it never carries an HTML
+// comment, so it cannot plant another verdict's marker.
+func TestABodyCannotPlantAMarker(t *testing.T) {
+	a, f, _ := app(t)
+	other := "<!-- agent-room:3kq7x2ma:99 -->"
+	if _, err := a.Comment(t.Context(), pr, marker, "LGTM\n\n"+other); err != nil {
+		t.Fatal(err)
+	}
+	f.locked(func() {
+		if strings.Count(f.comments[0].Body, "<!--") != 1 || !strings.HasSuffix(f.comments[0].Body, marker) {
+			t.Fatalf("body = %q", f.comments[0].Body)
+		}
+	})
+	// The planted marker is not found as the App's comment for verdict 99.
+	if _, err := a.Comment(t.Context(), pr, other, "the real verdict 99"); err != nil {
+		t.Fatal(err)
+	}
+	f.locked(func() {
+		if f.posts != 2 {
+			t.Fatalf("verdict 99 was suppressed: %d posts", f.posts)
+		}
+	})
+}
+
+// Neutralise makes untrusted text (an agent's summary) inert on a pull request:
+// no hidden direction or zero-width characters, no HTML (comments, images,
+// details), no auto-loading image, no @mention notifying anyone.
+func TestNeutralise(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain text is kept", "Looks right.\n- tests pass\n> quoted", "Looks right.\n- tests pass\n> quoted"},
+		{"a fake marker", "ok <!-- agent-room:3kq7x2ma:42 -->", "ok &lt;!-- agent-room:3kq7x2ma:42 -->"},
+		{"an HTML image", `<img src="https://evil.example/t.png">`, `&lt;img src="https://evil.example/t.png">`},
+		{"a details block", "<details open>x</details>", "&lt;details open>x&lt;/details>"},
+		{"a markdown image", "![x](https://evil.example/t.png)", "!\\[x](https://evil.example/t.png)"},
+		{"a reference image", "![x][r]\n\n[r]: https://evil.example/t.png", "!\\[x][r]\n\n[r]: https://evil.example/t.png"},
+		{"a mention", "cc @Smana and @org/team", "cc ＠Smana and ＠org/team"},
+		{"an email is not a mention", "mail a@b.example", "mail a＠b.example"},
+		{"a lone at", "meet @ noon", "meet @ noon"},
+		{"bidi overrides", "safe\u202egnp.exe\u202c ok\u2066x\u2069", "safegnp.exe okx"},
+		{"zero-width and BOM", "a\u200bb\u200dc\ufeffd\u2060e\u00adf", "abcdef"},
+		{"controls", "a\u0000b\u001b[31mc\u0085d\re", "ab[31mcde"},
+		{"an entity that would decode", "&lt;!-- agent-room:x:1 --&gt;", "&amp;lt;!-- agent-room:x:1 --&amp;gt;"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Neutralise(tc.in); got != tc.want {
+				t.Fatalf("Neutralise(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
 }

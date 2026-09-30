@@ -14,6 +14,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 // Log is what the tools read and append; the broker's store implements it.
@@ -144,9 +145,22 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					return nil, argError("verdict is approve or changes; summary 1 to 8192 bytes; commit a lowercase hex sha of 7 to 40")
 				}
 				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
-					Text: a.Summary, Verdict: a.Verdict, Commit: a.Commit, Delivery: envelope.DeliveryNone})
+					Text: a.Summary, Verdict: a.Verdict, Commit: a.Commit, Delivery: envelope.DeliveryNone,
+					PullRequest: pullRequestOf(c.Run)})
 			}},
 	}
+}
+
+// pullRequestOf is the pull request a verdict is about: the run's task URL, when
+// it is a pull request of the run's repository. A reviewer's always is (ruling
+// P24). It comes from the AgentRun, never from the model's arguments.
+func pullRequestOf(r runwatch.Run) string {
+	// An empty Repository matches nothing: no pull request URL has "//pull/".
+	re := regexp.MustCompile(`^https://github\.com/` + regexp.QuoteMeta(r.Repository) + `/pull/[1-9][0-9]*$`)
+	if re.MatchString(r.TaskURL) {
+		return r.TaskURL
+	}
+	return ""
 }
 
 // decodeArgs reads one JSON object into dst, refusing unknown fields and
