@@ -15,38 +15,49 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Report counts what Text removed or replaced. The intake logs it, so an injection attempt shows.
+// The NFKC fold is not counted: it rewrites ordinary text too (CJK punctuation, ligatures).
 type Report struct {
 	Invisible int  // default-ignorable code points: format (Cf), variation selectors, tags, fillers
 	Control   int  // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
 	Images    int  // markdown and HTML images, reduced to their alt text or defused
 	Markup    int  // other raw HTML tags, reference definitions and the input's ⟦ ⟧, defused
+	Fences    int  // look-alikes of the brief's TASK-DATA fence, replaced (Batch A I1)
 	Withheld  bool // the markup step did not settle: the whole text was replaced by Withheld
 }
 
 // Changed is whether Text altered anything.
-func (r Report) Changed() bool { return r.Withheld || r.Invisible+r.Control+r.Images+r.Markup > 0 }
+func (r Report) Changed() bool {
+	return r.Withheld || r.Invisible+r.Control+r.Images+r.Markup+r.Fences > 0
+}
 
 // String is the report as one log-safe line: counts only, never the removed text.
 func (r Report) String() string {
 	if r.Withheld {
 		return "text withheld: the markup step did not settle"
 	}
-	return fmt.Sprintf("%d invisible and %d control characters removed, %d images and %d other markup "+
-		"(raw HTML, reference definitions, brackets) defused", r.Invisible, r.Control, r.Images, r.Markup)
+	return fmt.Sprintf("%d invisible and %d control characters removed, %d images, %d other markup "+
+		"(raw HTML, reference definitions, brackets) and %d fence look-alikes defused",
+		r.Invisible, r.Control, r.Images, r.Markup, r.Fences)
 }
+
+// FenceLookalike replaces text that could pass for the brief's fence.
+const FenceLookalike = "⟦fence lookalike⟧"
 
 // Withheld replaces a text whose markup step did not settle: Text fails closed.
 const Withheld = "⟦text withheld by the factory's sanitiser⟧"
 
 const (
-	// maxPasses caps the markup step's fixpoint. One pass defuses every trigger, and nothing it
-	// writes is a trigger, so a second pass only confirms; the cap leaves room for one more.
+	// maxPasses caps the markup step's fixpoint. One pass defuses every trigger. Nothing it
+	// writes is a trigger, except an image token's "⟧" between fence halves ("![TASK](x)DATA"),
+	// which the second pass replaces; the third confirms. The cap leaves room for one more.
 	maxPasses = 4
 	// maxGrowth bounds the markup step's output against its input: its largest replacement
-	// ratio is "![]()" (5 bytes) to "⟦image: ⟧" (13), 2.6.
+	// ratio is "TASKDATA" (8 bytes) to FenceLookalike (21), 2.625.
 	maxGrowth = 3
 )
 
@@ -58,6 +69,11 @@ var (
 	// CommonMark raw HTML opens with "<" and a letter, "/", "!" or "?": tags, comments,
 	// declarations and processing instructions. "<" before a space or a digit stays.
 	htmlOpen = regexp.MustCompile(`<[A-Za-z/!?]`)
+	// TASK and DATA in any case, with up to three separators that are neither letters, digits nor
+	// a line break between them: the brief's fence is TASK-DATA-<nonce>, and a model does not
+	// compare nonces character by character. Each letter also admits its common Cyrillic and Greek
+	// homoglyphs, which NFKC does not fold (a full UTS #39 skeleton would; this covers the fence).
+	fenceLike = regexp.MustCompile(`(?i)[tтτ][aаα][sѕ][kкκ][^\p{L}\p{N}\n]{0,3}[dԁ][aаα][tтτ][aаα]`)
 )
 
 // invisible is a character that renders as nothing yet reaches the model: every default-ignorable
@@ -81,13 +97,16 @@ func lookalike(r rune) (rune, bool) {
 	return r, false
 }
 
-// Text removes invisible and control characters, then defuses every image, reference
-// definition and raw HTML tag. The order matters: an image split by a zero-width space is
-// still an image. Neither step inserts what the first removes, and the second repeats until
-// its output stops changing, so no replacement can complete a new image with its neighbours.
+// Text removes invisible and control characters, folds compatibility forms (NFKC), then defuses
+// every fence look-alike, image, reference definition and raw HTML tag. The order matters: an
+// image split by a zero-width space is still an image, and a fullwidth one is an image once
+// folded; folding after the strip also composes what the strip left apart, so a second pass finds
+// nothing to fold. No step inserts what an earlier one removes, and the last repeats until its
+// output stops changing, so no replacement can complete a new image with its neighbours.
 // A markup step that does not settle within maxPasses and maxGrowth fails closed (Withheld).
 //
-// Every step is linear (RE2) and the passes are capped; callers bound the input (Snapshot
+// Every step is linear (RE2), NFKC grows a string at most 11-fold (UAX #15) and the passes are
+// capped; callers bound the input (Snapshot
 // truncates; RunLore's text is bounded by its caller).
 func Text(s string) (string, Report) { return text(s, defuse) }
 
@@ -113,6 +132,7 @@ func text(s string, markup func(string, *Report) string) (string, Report) {
 		}
 		return r
 	}, s)
+	s = norm.NFKC.String(s)
 	limit := maxGrowth * len(s)
 	for range maxPasses {
 		next := markup(s, &rep)
@@ -131,6 +151,11 @@ func text(s string, markup func(string, *Report) string) (string, Report) {
 // joins; its escapes leave the text readable ("!\[", "]\:", "&lt;"). An entity, not a
 // backslash, escapes "<": a backslash already before it would escape ours instead.
 func defuse(s string, rep *Report) string {
+	// First, while the separators are still the input's: the escapes below only lengthen them.
+	s = fenceLike.ReplaceAllStringFunc(s, func(string) string {
+		rep.Fences++
+		return FenceLookalike
+	})
 	s = mdImage.ReplaceAllStringFunc(s, func(m string) string {
 		rep.Images++
 		return "⟦image: " + mdImage.FindStringSubmatch(m)[1] + "⟧"

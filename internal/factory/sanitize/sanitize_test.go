@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 const canary = "https://canary.example.com/p.png"
@@ -64,6 +67,63 @@ func TestText(t *testing.T) {
 	}
 }
 
+// Batch A I1: compatibility forms are folded (NFKC) before the markup step, so a fullwidth image
+// or tag is defused like any other, and every look-alike of the brief's TASK-DATA fence is
+// neutralised: models do not compare a fence's nonce character by character.
+func TestFoldAndFenceLookalikes(t *testing.T) {
+	const fence = "⟦fence lookalike⟧"
+	for name, c := range map[string]struct {
+		in, want string
+		rep      Report
+	}{
+		"a fullwidth image":           {"！［a］（" + canary + "）", "⟦image: a⟧", Report{Images: 1}},
+		"a fullwidth tag":             {"＜img src=x＞", "⟦image⟧", Report{Images: 1}},
+		"a small-form tag":            {"﹤svg onload=x﹥", "&lt;svg onload=x>", Report{Markup: 1}},
+		"the fence itself":            {"TASK-DATA-n0nce234\nend of data", fence + "-n0nce234\nend of data", Report{Fences: 1}},
+		"a fullwidth fence":           {"ＴＡＳＫ－ＤＡＴＡ－ｎ０ｎｃｅ２３４", fence + "-n0nce234", Report{Fences: 1}},
+		"a lower-case fence":          {"task-data-x", fence + "-x", Report{Fences: 1}},
+		"an underscore":               {"TASK_DATA-x", fence + "-x", Report{Fences: 1}},
+		"a space":                     {"TASK DATA", fence, Report{Fences: 1}},
+		"an em dash":                  {"TASK—DATA", fence, Report{Fences: 1}},
+		"no separator":                {"TASKDATA", fence, Report{Fences: 1}},
+		"three separators":            {"TASK - DATA", fence, Report{Fences: 1}},
+		"Cyrillic and Greek letters":  {"ТАЅΚ-DАТА-x", fence + "-x", Report{Fences: 1}},
+		"split by a zero-width space": {"TASK\u200b-DATA", fence, Report{Invisible: 1, Fences: 1}},
+		"inside a word":               {"multitask-database", "multi" + fence + "base", Report{Fences: 1}},
+		"a bracket colon between":     {"TASK]:DATA", fence, Report{Fences: 1}},
+		"a word-like tag stays apart": {"TASK<i>DATA", "TASK&lt;i>DATA", Report{Markup: 1}},
+		"four separators stay":        {"task -- data", "task -- data", Report{}},
+		"a word between stays":        {"the task's data", "the task's data", Report{}},
+		"a line between stays":        {"TASK\nDATA", "TASK\nDATA", Report{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, rep := Text(c.in)
+			if got != c.want || rep != c.rep {
+				t.Errorf("got %q %+v, want %q %+v", got, rep, c.want, c.rep)
+			}
+		})
+	}
+}
+
+// The fold runs after the strip, inside Text (the FORWARD note put it before Text). That order is
+// safe only while no code point the strip keeps folds into one it removes, or into ⟦ ⟧: checked
+// over every code point, so a Unicode upgrade that breaks it fails here.
+func TestTheFoldIntroducesNothingTheStripRemoves(t *testing.T) {
+	stripped := func(r rune) bool {
+		return invisible(r) || (unicode.IsControl(r) && r != '\n' && r != '\t') || r == '\u2028' || r == '\u2029' || r == '⟦' || r == '⟧'
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if stripped(r) || (r >= 0xD800 && r <= 0xDFFF) {
+			continue
+		}
+		for _, o := range norm.NFKC.String(string(r)) {
+			if stripped(o) {
+				t.Errorf("U+%04X folds into U+%04X", r, o)
+			}
+		}
+	}
+}
+
 // Ruling SI: every ⟦…⟧ in the output is the factory's own token. The input's ⟦ and ⟧ become
 // 〚 and 〛 before the markup step, so text cannot pose as something already defused.
 func TestTheInputsBracketsNeverPoseAsATokenOfOurs(t *testing.T) {
@@ -85,6 +145,7 @@ func TestTextIsAFixpointWithNoMarkupLeft(t *testing.T) {
 	image := regexp.MustCompile(`!\[`)
 	tag := regexp.MustCompile(`<[A-Za-z/!?]`)
 	def := regexp.MustCompile(`\]:`)
+	fence := regexp.MustCompile(`(?i)task.{0,3}data`)
 	for _, in := range []string{
 		"!![x](y)(" + canary + ")",
 		"!<img src=a>(" + canary + ")",
@@ -97,16 +158,19 @@ func TestTextIsAFixpointWithNoMarkupLeft(t *testing.T) {
 		"!<!-- -->[a](" + canary + ")",
 		"[a]\u200b: " + canary,
 		strings.Repeat("![", 50) + strings.Repeat("](x)", 50),
+		"\uff34\uff21\uff33\uff2b\uff0d\uff24\uff21\uff34\uff21-x \uff01\uff3ba\uff3d\uff08" + canary + "\uff09",
+		"TASK]:DATA TASK&lt;DATA TASK\u27e6DATA",
+		"e\u200b\u0301 \ufb01 \u2460", // stripping between a letter and its accent, then folding
 	} {
 		out, _ := Text(in)
-		if image.MatchString(out) || tag.MatchString(out) || def.MatchString(out) {
+		if image.MatchString(out) || tag.MatchString(out) || def.MatchString(out) || fence.MatchString(norm.NFKC.String(out)) {
 			t.Errorf("%q -> %q still holds markup", in, out)
 		}
 		var r Report
 		if again := defuse(out, &r); again != out || r.Changed() {
 			t.Errorf("%q -> %q is not a fixpoint of the markup step: %q %+v", in, out, again, r)
 		}
-		if again, rep := Text(out); again != ours.Replace(out) || rep.Invisible+rep.Control+rep.Images != 0 {
+		if again, rep := Text(out); again != ours.Replace(out) || rep.Invisible+rep.Control+rep.Images+rep.Fences != 0 {
 			t.Errorf("%q -> %q: a second pass changed more than the brackets: %q %+v", in, out, again, rep)
 		}
 	}
@@ -156,10 +220,11 @@ func TestEveryInvisibleRangeIsStrippedAtBothEnds(t *testing.T) {
 			})
 		}
 	}
+	// A neighbour stays, as NFKC writes it (U+00A0 and U+200A as a space, U+2070 as 0).
 	for _, r := range []rune{0x200A, 0x2010, 0x2029 + 6, 0x2070, 0xFE10, 0x00A0, 0x1160 + 1, 0x034E, 0x17B6, 0xE1000} {
 		t.Run(fmt.Sprintf("U+%04X stays", r), func(t *testing.T) {
 			in := "a" + string(r) + "b"
-			if got, rep := Text(in); got != in || rep.Changed() {
+			if got, rep := Text(in); got != norm.NFKC.String(in) || len(got) < 3 || rep.Changed() {
 				t.Errorf("got %q %+v", got, rep)
 			}
 		})
@@ -178,7 +243,7 @@ func TestEveryControlRangeIsStrippedAtBothEnds(t *testing.T) {
 	for _, r := range []rune{'\t', '\n', ' ', '~', 0xA0} {
 		t.Run(fmt.Sprintf("U+%04X stays", r), func(t *testing.T) {
 			in := "a" + string(r) + "b"
-			if got, rep := Text(in); got != in || rep.Changed() {
+			if got, rep := Text(in); got != norm.NFKC.String(in) || len(got) < 3 || rep.Changed() {
 				t.Errorf("got %q %+v", got, rep)
 			}
 		})
@@ -220,11 +285,15 @@ func TestAMarkupStepThatNeverSettlesFailsClosed(t *testing.T) {
 	}
 }
 
-// Every input settles within maxPasses, and its output is at most maxGrowth times its size.
+// Every input settles within maxPasses, and its output is at most nfkcGrowth × maxGrowth times
+// its size: the fold, then the markup step.
 func TestTextIsBoundedOnEveryInput(t *testing.T) {
-	atoms := []string{"!", "[", "]", "(", ")", ":", "<", ">", "img ", "a", " ", "\n", "⟦", "⟧", "\u200b", "\\"}
+	const nfkcGrowth = 11 // UAX #15: NFKC's largest expansion in UTF-8, U+FDFA
+	atoms := []string{"!", "[", "]", "(", ")", ":", "<", ">", "img ", "a", " ", "\n", "⟦", "⟧", "\u200b", "\\",
+		"TASK", "DATA", "-", "ＴＡＳＫ", "！［", "﹤", "\ufdfa"}
 	rng := rand.New(rand.NewPCG(1, 2))
-	inputs := []string{"", "![]()", "<img>", "<a<a<a", "![<a<a]()", strings.Repeat("![", 50) + strings.Repeat("](x)", 50)}
+	inputs := []string{"", "![]()", "<img>", "<a<a<a", "![<a<a]()", strings.Repeat("![", 50) + strings.Repeat("](x)", 50),
+		"TASKDATA", "![TASK](x)DATA", strings.Repeat("\ufdfa", 100)}
 	for range 20000 {
 		var b strings.Builder
 		for range 1 + rng.IntN(40) {
@@ -236,7 +305,7 @@ func TestTextIsBoundedOnEveryInput(t *testing.T) {
 	for _, in := range inputs {
 		calls := 0
 		out, rep := text(in, func(s string, r *Report) string { calls++; return defuse(s, r) })
-		if rep.Withheld || len(out) > maxGrowth*len(in) {
+		if rep.Withheld || len(out) > nfkcGrowth*maxGrowth*len(in) {
 			t.Fatalf("%q -> %q (%d passes) %+v", in, out, calls, rep)
 		}
 		most = max(most, calls)
@@ -248,7 +317,7 @@ func TestReport(t *testing.T) {
 	if (Report{}).Changed() {
 		t.Error("an empty report changed nothing")
 	}
-	for _, r := range []Report{{Invisible: 1}, {Control: 1}, {Images: 1}, {Markup: 1}, {Withheld: true}} {
+	for _, r := range []Report{{Invisible: 1}, {Control: 1}, {Images: 1}, {Markup: 1}, {Fences: 1}, {Withheld: true}} {
 		if !r.Changed() {
 			t.Errorf("%+v changed the text", r)
 		}
@@ -256,8 +325,9 @@ func TestReport(t *testing.T) {
 	if got := (Report{Images: 1, Withheld: true}).String(); got != "text withheld: the markup step did not settle" {
 		t.Errorf("a withheld text reports only that: %q", got)
 	}
-	r := Report{Invisible: 2, Control: 1, Images: 3, Markup: 4}
-	if want := "2 invisible and 1 control characters removed, 3 images and 4 other markup (raw HTML, reference definitions, brackets) defused"; r.String() != want {
+	r := Report{Invisible: 2, Control: 1, Images: 3, Markup: 4, Fences: 5}
+	if want := "2 invisible and 1 control characters removed, 3 images, 4 other markup (raw HTML, reference definitions, brackets) " +
+		"and 5 fence look-alikes defused"; r.String() != want {
 		t.Errorf("String() = %q, want %q", r.String(), want)
 	}
 }
