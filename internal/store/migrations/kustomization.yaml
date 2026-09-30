@@ -8,6 +8,7 @@ configMapGenerator:
     files:
       - ./20260927120000_rooms.sql
       - ./20260929120000_verdicts.sql
+      - ./20261001120000_driver_queue.sql
       - atlas.sum
     options:
       disableNameSuffixHash: true

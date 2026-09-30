@@ -158,13 +158,8 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 		return envelope.Event{}, false, err
 	}
 	// Before the seal check: a retry of the append that sealed the room is a duplicate.
-	existing, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM events
-		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
-	if err == nil {
-		return existing, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return envelope.Event{}, false, err
+	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
+		return existing, dup, err
 	}
 	if sealed {
 		return envelope.Event{}, false, ErrSealed
@@ -195,6 +190,19 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 		}
 	}
 	return ev, false, nil
+}
+
+// stored returns the event already stored under d's idempotency key, if any.
+func stored(ctx context.Context, tx pgx.Tx, d envelope.Draft) (envelope.Event, bool, error) {
+	existing, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM events
+		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return envelope.Event{}, false, nil
+	}
+	if err != nil {
+		return envelope.Event{}, false, err
+	}
+	return existing, true, nil
 }
 
 func insert(ctx context.Context, tx pgx.Tx, ev envelope.Event, client string, n int64) error {

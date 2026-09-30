@@ -28,9 +28,11 @@ type RoomState struct {
 	LastSeq     int64
 	Driver      string
 	DriverEpoch int64
-	Sealed      bool
-	ClosedAt    *time.Time
-	LastEventAt time.Time
+	// FallbackDriver is the system holder a lapsed human driver falls back to, or "".
+	FallbackDriver string
+	Sealed         bool
+	ClosedAt       *time.Time
+	LastEventAt    time.Time
 }
 
 // EnsureRoom inserts the room's row once. created is false when it already existed.
@@ -55,8 +57,9 @@ func (s *Store) EnsureRoom(ctx context.Context, r NewRoom) (bool, error) {
 // Room reads a room's state, or ErrNoRoom.
 func (s *Store) Room(ctx context.Context, id string) (RoomState, error) {
 	st := RoomState{ID: id}
-	err := s.pool.QueryRow(ctx, `SELECT last_seq, driver, driver_epoch, sealed, closed_at, last_event_at
-		FROM rooms WHERE room_id = $1`, id).Scan(&st.LastSeq, &st.Driver, &st.DriverEpoch, &st.Sealed, &st.ClosedAt, &st.LastEventAt)
+	err := s.pool.QueryRow(ctx, `SELECT last_seq, driver, driver_epoch, fallback_driver, sealed, closed_at, last_event_at
+		FROM rooms WHERE room_id = $1`, id).Scan(&st.LastSeq, &st.Driver, &st.DriverEpoch, &st.FallbackDriver, &st.Sealed,
+		&st.ClosedAt, &st.LastEventAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return st, ErrNoRoom
 	}

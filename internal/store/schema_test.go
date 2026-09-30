@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/Smana/agent-platform/internal/envelope"
 )
 
 const (
@@ -19,6 +21,9 @@ const (
 		INSERT INTO events (room_id, seq, id, actor_kind, actor_id, type, origin, origin_client, origin_seq, ts, payload)
 		SELECT room_id, last_seq, 'hand', 'system', 'system:test', 'message', 'broker', 'test:hand', 1, now(), '{}'
 		FROM rooms WHERE room_id = '3kq7x2ma'`
+	// A driver move by hand, from epoch 0; its driver event must follow.
+	moveDriver = `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = '3kq7x2ma';
+		`
 )
 
 func eventInto(roomID, seq string) string {
@@ -69,7 +74,22 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 		{"advance a sealed room", `UPDATE rooms SET last_seq = last_seq + 1 WHERE room_id = 'sealedaa'`, "23514", "sealed"},
 		{"insert out of sequence", eventInto(room, "99"), "23514", "next"},
 		{"insert into a sealed room", eventInto(sealedRoom, "last_seq + 1"), "23514", "sealed"},
+		{"move the driver without its epoch", `UPDATE rooms SET driver = 'human:mallory' WHERE room_id = '3kq7x2ma'`, "23514", "epoch"},
+		{"move the fallback without its epoch", `UPDATE rooms SET fallback_driver = 'human:mallory' WHERE room_id = '3kq7x2ma'`, "23514", "epoch"},
+		{"jump the driver epoch", `UPDATE rooms SET driver_epoch = driver_epoch + 2 WHERE room_id = '3kq7x2ma'`, "23514", "driver_epoch"},
+		{"rewind the driver epoch", `UPDATE rooms SET driver_epoch = driver_epoch - 1 WHERE room_id = '3kq7x2ma'`, "23514", "driver_epoch"},
+		{"move the driver off the record", `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = '3kq7x2ma'`, "23514", "no driver event"},
+		{"move the driver behind another event", moveDriver + handAppend, "23514", "no driver event"},
+		{"move the driver behind another epoch's event", moveDriver + strings.NewReplacer("'message'", "'driver'",
+			"'{}'", `'{"epoch": 99}'`).Replace(handAppend), "23514", "no driver event"},
+		{"move the driver with its event by hand", moveDriver + strings.NewReplacer("'message'", "'driver'",
+			"'{}'", `'{"epoch": 1}'`, "'test:hand', 1", "'test:hand', 2").Replace(handAppend), "", ""},
+		{"move a sealed room's driver", `UPDATE rooms SET driver = 'human:mallory', driver_epoch = driver_epoch + 1 WHERE room_id = 'sealedaa'`, "23514", "driver stays"},
+		{"rewrite a queued message", `UPDATE queue SET text = 'forged'`, "42501", ""},
+		{"re-attribute a queued message", `UPDATE queue SET author = 'human:mallory'`, "42501", ""},
+		{"delete a queued message", `DELETE FROM queue`, "42501", ""},
 		{"a legitimate append by hand", handAppend, "", ""},
+		{"a driver heartbeat", `UPDATE rooms SET driver_seen_at = now(), driver_acted_at = now() WHERE room_id = '3kq7x2ma'`, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := inTx(ctx, s, tc.sql)
@@ -116,6 +136,11 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		if _, _, err := s.Append(ctx, draftIn(id, "agent:x", 1)); err != nil {
 			t.Fatal(err)
 		}
+		q := draftIn(id, "human:alice:s1", 1)
+		q.RunID, q.Actor = "", envelope.Actor{Kind: envelope.ActorHuman, ID: "human:alice"}
+		if _, err := s.Enqueue(ctx, q, "human:alice", "queued text"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.CloseRoom(ctx, "expiredx", "done"); err != nil {
 		t.Fatal(err)
@@ -136,6 +161,8 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		{"an event's actor", `SELECT actor_id FROM events`},
 		{"a whole event", `SELECT * FROM events`},
 		{"a room's driver", `SELECT driver FROM rooms`},
+		{"a queued message's text", `SELECT text FROM queue`},
+		{"a queued message's author", `SELECT author FROM queue`},
 	} {
 		t.Run("refused: "+tc.name, func(t *testing.T) {
 			_, err := r.pool.Exec(ctx, tc.sql)
@@ -152,6 +179,8 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		{"a live room's row is invisible", `SELECT count(*) FROM rooms WHERE room_id = 'openaaaa'`, 0},
 		{"an expired room's row is visible", `SELECT count(*) FROM rooms WHERE room_id = 'expiredx'`, 1},
 		{"an expired room's events are countable", `SELECT count(*) FROM events WHERE room_id = 'expiredx'`, held},
+		{"a live room's queue is invisible", `SELECT count(*) FROM queue WHERE room_id = 'openaaaa'`, 0},
+		{"an expired room's queue is countable", `SELECT count(*) FROM queue WHERE room_id = 'expiredx'`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var n int
