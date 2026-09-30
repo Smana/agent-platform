@@ -2,7 +2,8 @@
 
 The Go services behind SP2 collaboration rooms: `room-broker` (the log of record, its API and
 the `Room` controller) and `room-bridge` (the sidecar that mirrors a run's harness into its
-room). Architecture and ports: [README](README.md). Prerequisites, commits, migrations and
+room); and SP3's `agent-factory` (the `Task` reconciler that turns an issue label into a
+narrated run, the issue poller and the run meter). Architecture and ports: [README](README.md). Prerequisites, commits, migrations and
 releases: `CONTRIBUTING.md`.
 
 ## Quality gate: run before every commit
@@ -18,6 +19,8 @@ task check      # exit 0, or it is not done
 | `lint` | `hack/lint.sh` | any golangci-lint issue under [`.golangci.yaml`](.golangci.yaml), gofmt and goimports included |
 | `vuln` | `go run …/govulncheck@v1.8.0 ./...` | a known vulnerability reachable from our code, stdlib included |
 | `test` | `go test -race -count=1 ./...` | a failing test or a data race; never cached |
+| `crd:check` | `task crd:gen`, then `git diff` | a CRD, deepcopy or the chart's CRD copy not regenerated |
+| `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 
 CI's `check` job runs the same `task check`; `analyze` (CodeQL) is the other required check.
 Store tests use testcontainers, so from phase 1 `task test` needs a running Docker daemon.
@@ -102,14 +105,18 @@ packages that need a newer one.
 ### Observability
 
 - **Metrics:** the OpenTelemetry metric API with the Prometheus exporter on `:9090`. Every name
-  starts `rooms_` (the SP2 §9 set, e.g. `rooms_events_appended_total`); counters end `_total`,
+  starts `rooms_` (the SP2 §9 set, e.g. `rooms_events_appended_total`), or `agent_factory_` in
+  the factory (SP3 §7, `internal/factory/fmetrics`); counters end `_total`,
   durations `_seconds`. Buckets per histogram family sit on real thresholds (SC-12: fan-out p95
   under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
   Label values are bounded: never a payload field; `room` only on the per-Active-room gauge.
-- **`rooms_build_info{version}` = 1** from the first metric.
+- **`rooms_build_info{version}` = 1** from the first metric; `agent_factory_build_info{version}`
+  in the factory.
 - **Traces are expected here** (RunLore has none): OTel spans across bridge → broker → store and
   outbound calls, W3C `traceparent` propagated on every hop. Spans carry ids (room, run, seq),
-  event types and end reasons, never payload text or an error message that could echo it.
+  event types and end reasons, never payload text or an error message that could echo it. The
+  factory's spans reach the trace router with no allowlist (O-1 M3): ids, tier, phase and a
+  reason code only, never issue text; `internal/factory/tracing` and the rooms client pin it.
 
 ### Added with first use, not before
 
@@ -160,6 +167,22 @@ flowchart LR
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
+
+The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; its chart,
+`charts/agent-factory`, ships the `Task` CRD.
+
+| Stage | Package | Contract |
+|---|---|---|
+| Entry | `cmd/agent-factory` | the binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
+| Entry | `internal/factory/config` | the factory's config file: strict decode, defaults, validation, its hash |
+| Intake | `internal/factory/intake` | the issue poller: maintainer labels, snapshots, dedup, stop labels |
+| Intake | `internal/factory/sanitize`, `internal/factory/taskid` | untrusted text defused to a fixpoint; C2 task names and ids |
+| Tasks | `api/factory/v1alpha1` | `Task` types and deepcopy; CRD generated into `config/crd/` |
+| Tasks | `internal/factory/triage`, `internal/factory/reconciler` | template, tier and budget; the `Task` state machine |
+| Tasks | `internal/factory/runs`, `internal/factory/killswitch` | the `AgentRun` claim; the stop object |
+| Out | `internal/factory/forge`, `internal/factory/narrate` | GitHub as the factory App; narration, at least once |
+| Out | `internal/factory/rooms` | the broker's system API over TLS |
+| Ops | `internal/factory/meter`, `internal/factory/fmetrics`, `internal/factory/tracing` | the run meter; the §7 metrics; one root span per task |
 
 ## Security rules
 

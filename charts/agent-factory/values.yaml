@@ -1,0 +1,19 @@
+image:
+  repository: ghcr.io/smana/agent-factory
+  # Required: "<version>@sha256:<digest>". Never a bare tag.
+  tag: ""
+replicas: 2
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+# The factory App's key (keys app_id, private_key), from the agents-secrets store. Mounted at
+# /etc/agent-factory-github: config.github.{appIDFile,privateKeyFile} name the files there.
+githubSecret: agent-factory-github
+# The broker's CA (key ca.crt, ruling SC), mounted at /etc/agent-factory/openbao-ca: config.broker.caFile.
+brokerCASecret: openbao-ca
+# The broker's system API audience (SP2 ruling P3). The token is at
+# /var/run/secrets/agents/rooms/token: config.broker.tokenFile.
+roomsAudience: rooms-system
+# The factory config (internal/factory/config), rendered verbatim to
+# /etc/agent-factory/config/config.yaml. A gate path. An empty config fails the start (§4).
+config: {}

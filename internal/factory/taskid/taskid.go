@@ -6,6 +6,7 @@
 package taskid
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
@@ -17,6 +18,14 @@ import (
 func Name(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))[:8]
+}
+
+// Random is a fresh C2 id for a run or a brief's nonce: 5 random bytes are exactly 8 base32
+// characters.
+func Random() string {
+	var b [5]byte
+	_, _ = rand.Read(b[:]) // crypto/rand never fails on Linux; Go 1.24 aborts rather than return an error
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:]))
 }
 
 // IssueKey is an issue task's key; gen counts maintainers' factory/ready labels on the issue (R4).

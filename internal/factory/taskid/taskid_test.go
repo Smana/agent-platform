@@ -23,3 +23,16 @@ func TestNamesArePinned(t *testing.T) {
 		}
 	}
 }
+
+// Run ids and brief nonces are random C2 ids: 40 bits, so two draws differ.
+func TestRandomIsAC2Id(t *testing.T) {
+	c2 := regexp.MustCompile(`^[a-z2-7]{8}$`)
+	seen := map[string]bool{}
+	for range 64 {
+		id := Random()
+		if !c2.MatchString(id) || seen[id] {
+			t.Fatalf("%q (seen %v)", id, seen[id])
+		}
+		seen[id] = true
+	}
+}

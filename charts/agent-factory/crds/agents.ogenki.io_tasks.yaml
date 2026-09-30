@@ -1,0 +1,481 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: tasks.agents.ogenki.io
+spec:
+  group: agents.ogenki.io
+  names:
+    kind: Task
+    listKind: TaskList
+    plural: tasks
+    singular: task
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.source.ref
+      name: Source
+      type: string
+    - jsonPath: .spec.predictedClass
+      name: Class
+      type: string
+    - jsonPath: .spec.template
+      name: Template
+      type: string
+    - jsonPath: .status.pullRequest.url
+      name: PR
+      type: string
+    - jsonPath: .status.usage.tokens
+      name: Tokens
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Task is one unit of factory work (SP3 §4). The factory creates it at runtime and never
+          commits it to Git. Its name derives from the idempotency key, so AlreadyExists is the dedup.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TaskSpec is what the task was asked to do, fixed at admission.
+            properties:
+              budget:
+                description: Budget is the task's tier and caps, resolved at triage.
+                properties:
+                  model:
+                    maxLength: 64
+                    type: string
+                  runMinutes:
+                    format: int64
+                    maximum: 480
+                    type: integer
+                  runTokens:
+                    description: The per-run cap; SP1's XRD refuses more than the
+                      gateway ceiling (C3).
+                    format: int64
+                    maximum: 5000000
+                    type: integer
+                  taskTokens:
+                    format: int64
+                    type: integer
+                  tier:
+                    enum:
+                    - light
+                    - standard
+                    - frontier
+                    type: string
+                type: object
+              dataClass:
+                description: Every run of the task gets it as spec.dataClass (C3,
+                  OD-13).
+                enum:
+                - public
+                - internal
+                type: string
+              issue:
+                description: The issue the factory narrates on; 0 for a task without
+                  one (R28).
+                minimum: 0
+                type: integer
+              predictedClass:
+                description: 'Intent, not authority: it picks team and budget; only
+                  policy-bot merges (§2).'
+                maxLength: 64
+                type: string
+              repository:
+                maxLength: 140
+                pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
+                type: string
+              source:
+                description: Source is where the task came from and how far its text
+                  is trusted.
+                properties:
+                  contentSHA256:
+                    maxLength: 64
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  key:
+                    maxLength: 512
+                    type: string
+                  kind:
+                    enum:
+                    - issue
+                    - runlore
+                    - schedule
+                    type: string
+                  ref:
+                    description: Smana/cloud-native-ref#2112, runlore:<alert>/<resource>,
+                      or the schedule name.
+                    maxLength: 512
+                    type: string
+                  requestedBy:
+                    description: github:<login>, system:runlore or system:scheduler.
+                    maxLength: 128
+                    type: string
+                  trust:
+                    description: untrusted text is fenced as data for the harness
+                      (T1).
+                    enum:
+                    - untrusted
+                    - trusted
+                    type: string
+                required:
+                - contentSHA256
+                - key
+                - kind
+                - ref
+                - requestedBy
+                - trust
+                type: object
+              template:
+                enum:
+                - solo
+                - pair
+                - trio
+                - investigate
+                type: string
+              text:
+                description: The snapshot. Admission caps it at caps.maxTextBytes
+                  (R6); this bound only protects etcd.
+                maxLength: 65536
+                type: string
+            required:
+            - dataClass
+            - repository
+            - source
+            - text
+            type: object
+          status:
+            description: |-
+              TaskStatus is the task's audit record: the whole §4 record, including the fields later
+              phases fill.
+            properties:
+              classification:
+                description: The C7 answer, recorded as-is (§2).
+                properties:
+                  classifier:
+                    maxLength: 128
+                    type: string
+                  confidence:
+                    description: '0.0–1.0, as a string: CRDs avoid floats.'
+                    maxLength: 16
+                    type: string
+                  control:
+                    description: 'OD-14: forced to tier-frontier whatever the classifier
+                      said.'
+                    type: boolean
+                  fallback:
+                    enum:
+                    - none
+                    - default
+                    - static
+                    type: string
+                  fit:
+                    description: 'Scored when the task ends (§7): under, over or fit.'
+                    maxLength: 16
+                    type: string
+                  shadow:
+                    items:
+                      description: 'ShadowVerdict is a classifier consulted in shadow:
+                        recorded, never acted on.'
+                      properties:
+                        classifier:
+                          maxLength: 128
+                          type: string
+                        confidence:
+                          maxLength: 16
+                          type: string
+                        tier:
+                          maxLength: 16
+                          type: string
+                      required:
+                      - classifier
+                      - tier
+                      type: object
+                    maxItems: 16
+                    type: array
+                  tier:
+                    enum:
+                    - light
+                    - standard
+                    - frontier
+                    type: string
+                required:
+                - classifier
+                - fallback
+                - tier
+                type: object
+              configHash:
+                description: 'The config that triaged the task: the circuit breaker
+                  resets with a new one (§6.4).'
+                maxLength: 64
+                type: string
+              fixRuns:
+                format: int32
+                type: integer
+              handled:
+                description: GitHub review and comment ids already acted on (Δ5, commands).
+                  The reconciler trims the oldest.
+                items:
+                  format: int64
+                  type: integer
+                maxItems: 512
+                type: array
+                x-kubernetes-list-type: set
+              lastActivity:
+                description: The last room event seen for the running run (stuck detection,
+                  §6.3).
+                format: date-time
+                type: string
+              narrated:
+                description: |-
+                  Idempotency keys of the comments already posted (R22), and of the room messages
+                  (room/<seq>/<key>). narrate trims the oldest: a display list, not a ledger (ruling SK).
+                items:
+                  maxLength: 512
+                  type: string
+                maxItems: 512
+                type: array
+                x-kubernetes-list-type: set
+              outbox:
+                description: |-
+                  Comments the task owes its issue or PR (ruling SO): written with the transition that caused
+                  them, removed once posted. A task with any left is reconciled even after it ends.
+                items:
+                  description: |-
+                    Narration is one pending comment. Its key is the comment's idempotency key: in status.narrated
+                    once posted, and in the comment's marker, which a retry finds when a post landed but failed.
+                  properties:
+                    body:
+                      description: The factory's own words, never text a user wrote.
+                      maxLength: 4096
+                      type: string
+                    key:
+                      maxLength: 128
+                      type: string
+                    number:
+                      description: The issue or PR it goes to.
+                      minimum: 1
+                      type: integer
+                  required:
+                  - body
+                  - key
+                  - number
+                  type: object
+                maxItems: 16
+                type: array
+              phase:
+                enum:
+                - Received
+                - Rejected
+                - Triaged
+                - Queued
+                - Implementing
+                - NoOp
+                - Reviewing
+                - AwaitingCI
+                - AutoMerging
+                - AwaitingHuman
+                - Merged
+                - Verifying
+                - Done
+                - Reverted
+                - Escalated
+                - Closed
+                - Stopped
+                type: string
+              phaseSince:
+                format: date-time
+                type: string
+              pullRequest:
+                description: PullRequestRef is the task's pull request and what happened
+                  to it.
+                properties:
+                  armedAt:
+                    format: date-time
+                    type: string
+                  autoMerged:
+                    type: boolean
+                  headSHA:
+                    maxLength: 64
+                    type: string
+                  mergeCommitSHA:
+                    maxLength: 64
+                    type: string
+                  mergedAt:
+                    format: date-time
+                    type: string
+                  mergedBy:
+                    maxLength: 64
+                    type: string
+                  nodeID:
+                    maxLength: 128
+                    type: string
+                  number:
+                    type: integer
+                  revertNumber:
+                    type: integer
+                  url:
+                    maxLength: 2048
+                    type: string
+                required:
+                - number
+                - url
+                type: object
+              reason:
+                maxLength: 1024
+                type: string
+              retries:
+                format: int32
+                type: integer
+              reviewRounds:
+                format: int32
+                type: integer
+              roomRef:
+                maxLength: 253
+                type: string
+              roomSeq:
+                description: |-
+                  The last clientSeq the task took for a task_state message in its room (ruling SK). The
+                  broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
+                  narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
+                format: int64
+                minimum: 0
+                type: integer
+                x-kubernetes-validations:
+                - message: 'roomSeq never goes down: the broker would drop a reused
+                    clientSeq'
+                  rule: self >= oldSelf
+              runs:
+                items:
+                  description: RunRecord is one AgentRun the task started.
+                  properties:
+                    finished:
+                      format: date-time
+                      type: string
+                    id:
+                      maxLength: 8
+                      pattern: ^[a-z2-7]{8}$
+                      type: string
+                    phase:
+                      maxLength: 64
+                      type: string
+                    reason:
+                      description: The room's end reason (SP2 P15), else the AgentRun's.
+                      maxLength: 1024
+                      type: string
+                    role:
+                      enum:
+                      - implementer
+                      - reviewer
+                      - tester
+                      - triager
+                      type: string
+                    round:
+                      format: int32
+                      type: integer
+                    startSeq:
+                      description: 'The room''s lastSeq when the run was created:
+                        verdicts are read after it.'
+                      format: int64
+                      type: integer
+                    started:
+                      format: date-time
+                      type: string
+                    tokens:
+                      format: int64
+                      type: integer
+                    trigger:
+                      description: Why the run exists.
+                      enum:
+                      - initial
+                      - review
+                      - human
+                      - ci
+                      - retry
+                      type: string
+                    verdict:
+                      maxLength: 32
+                      type: string
+                  required:
+                  - id
+                  - role
+                  - trigger
+                  type: object
+                maxItems: 256
+                type: array
+              trace:
+                description: 'The task''s root span (R46): minted at acceptance, exported
+                  once when the task ends.'
+                properties:
+                  exported:
+                    type: boolean
+                  spanID:
+                    maxLength: 16
+                    pattern: ^[0-9a-f]{16}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: an all-zero span id is invalid W3C
+                      rule: self != '0000000000000000'
+                  traceID:
+                    maxLength: 32
+                    pattern: ^[0-9a-f]{32}$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: an all-zero trace id is invalid W3C
+                      rule: self != '00000000000000000000000000000000'
+                required:
+                - spanID
+                - traceID
+                type: object
+                x-kubernetes-validations:
+                - message: a task's trace ids never change
+                  rule: self.traceID == oldSelf.traceID && self.spanID == oldSelf.spanID
+                - message: an exported span stays exported
+                  rule: '!has(oldSelf.exported) || !oldSelf.exported || (has(self.exported)
+                    && self.exported)'
+              usage:
+                description: Usage is the task's token spend.
+                properties:
+                  tokens:
+                    description: Σ of the task's run usage; it never drops (SP1 §2).
+                    format: int64
+                    type: integer
+                type: object
+              verdict:
+                description: 'The effective verdict of the last review: approve, changes
+                  or none.'
+                maxLength: 32
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: 'a Task is named with a C2 id: 8 characters of [a-z2-7]'
+          rule: self.metadata.name.matches('^[a-z2-7]{8}$')
+    served: true
+    storage: true
+    subresources:
+      status: {}

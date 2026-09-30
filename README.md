@@ -52,6 +52,7 @@ Later phases add the driver/steering channel (4), approvals (5) and forking with
 |---|---|---|
 | `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/room-broker` |
 | `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
+| `agent-factory` | SP3's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/agent-factory` | `ghcr.io/smana/agent-factory` |
 
 Both images are multi-arch (`linux/amd64`, `linux/arm64`), static binaries on distroless `nonroot`.
 
@@ -60,6 +61,7 @@ Both images are multi-arch (`linux/amd64`, `linux/arm64`), static binaries on di
 | Trigger | Tag | Workflow |
 |---|---|---|
 | Each push to a PR from this repo | `v<next-patch>-pr<N>.<sha8>`, `<sha8>` = the PR **head** | `ci.yaml` → `prerelease` |
+| The same push, the factory chart | `<next-patch>-pr<N>.g<sha8>` (the `g` keeps it semver) | `ci.yaml` → `chart-prerelease` |
 | A `v*` git tag | the tag, e.g. `v0.1.0` | `release.yaml` |
 
 Never `latest`. Consumers pin by digest. Every pushed image carries SLSA provenance (`mode=max`) and
