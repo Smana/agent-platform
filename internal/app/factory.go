@@ -37,6 +37,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
+	"github.com/Smana/agent-platform/internal/factory/tracing"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/metrics"
@@ -51,6 +52,8 @@ const (
 	vmTimeout     = 10 * time.Second
 	// pingEvery keeps "App token fresh" (forge.freshFor, 3 min) true on every healthy replica.
 	pingEvery = time.Minute
+	// traceDrain bounds the span exporter's flush at exit, inside the pod's grace.
+	traceDrain = 2 * time.Second
 )
 
 // RunFactory runs agent-factory (SP3): the Task reconciler, the issue poller and the run meter
@@ -110,6 +113,12 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 
+	sink, shutdownTrace, err := taskSink(ctx, cfg.Tracing.OTLPEndpoint)
+	if err != nil {
+		return err
+	}
+	defer shutdownTrace(context.WithoutCancel(ctx))
+
 	mgr, err := newFactoryManager(log, ns)
 	if err != nil {
 		return err
@@ -120,7 +129,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	rc := runs.Client{C: mgr.GetClient()}
 	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Runs: rc, Rooms: broker,
-		Triage: triage.Static{Cfg: cfg}, Metrics: m, Now: time.Now, NewRunID: taskid.Random, Nonce: taskid.Random, Log: log}
+		Triage: triage.Static{Cfg: cfg}, Metrics: m, Now: time.Now, NewRunID: taskid.Random, Nonce: taskid.Random, Log: log,
+		Trace: sink}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -172,6 +182,24 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	err = g.Wait()
 	stopOps()
 	return errors.Join(err, <-opsDone)
+}
+
+// taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface
+// otherwise, never a typed nil the reconciler would call. The exporter dials lazily: an
+// unreachable collector loses spans, never the factory's start.
+func taskSink(ctx context.Context, endpoint string) (tracing.Sink, func(context.Context), error) {
+	if endpoint == "" {
+		return nil, func(context.Context) {}, nil
+	}
+	exp, err := tracing.NewOTLP(ctx, endpoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	return exp, func(ctx context.Context) {
+		dctx, cancel := context.WithTimeout(ctx, traceDrain)
+		defer cancel()
+		_ = exp.Shutdown(dctx)
+	}, nil
 }
 
 // factoryOps is :9090 for the factory: /readyz once the caches synced and the App token is fresh

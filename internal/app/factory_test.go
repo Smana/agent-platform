@@ -22,6 +22,7 @@ import (
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/tracing"
 )
 
 func TestRunFactoryRefuses(t *testing.T) {
@@ -167,4 +168,25 @@ func TestPingerPingsAtOnceThenEveryPeriod(t *testing.T) {
 	if calls.Load() != 2 || period != time.Minute {
 		t.Fatalf("%d pings, period %s", calls.Load(), period)
 	}
+}
+
+// R46: no tracing block, no sink, and a nil interface rather than a typed nil, which the
+// reconciler would call. A configured endpoint gives an exporter without dialling it: an
+// unreachable collector loses spans, never the factory's start.
+func TestTaskSink(t *testing.T) {
+	sink, shutdown, err := taskSink(t.Context(), "")
+	if err != nil || sink != nil {
+		t.Fatalf("tracing off: %v %v", sink, err)
+	}
+	shutdown(t.Context())
+	sink, shutdown, err = taskSink(t.Context(), "127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sink.(*tracing.Exporter); !ok {
+		t.Fatalf("tracing on: %T", sink)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	shutdown(ctx)
 }
