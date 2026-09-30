@@ -7,9 +7,13 @@
 package forge
 
 import (
+	"errors"
 	"strings"
 	"time"
 )
+
+// ErrEventsTruncated is LabelEvents reaching its page cap: the newest events are unread.
+var ErrEventsTruncated = errors.New("forge: label events past the page cap are unread")
 
 // Item is an open issue or pull request carrying a label.
 type Item struct {

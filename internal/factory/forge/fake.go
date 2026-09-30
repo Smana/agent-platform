@@ -24,6 +24,7 @@ type Fake struct {
 	comments map[int][]Comment
 	added    map[int][]string
 	removed  map[int][]string
+	cut      map[int]bool
 	nextID   int64
 }
 
@@ -31,7 +32,7 @@ type Fake struct {
 func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
-		removed: map[int][]string{}}
+		removed: map[int][]string{}, cut: map[int]bool{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -102,10 +103,26 @@ func (f *Fake) Labeled(_ context.Context, label string) ([]Item, error) {
 }
 
 // LabelEvents implements the forge's LabelEvents.
-func (f *Fake) LabelEvents(_ context.Context, n int, _ string) ([]LabelEvent, error) {
+func (f *Fake) LabelEvents(_ context.Context, n int, label string) ([]LabelEvent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.events[n]), nil
+	var out []LabelEvent
+	for _, e := range f.events[n] {
+		if e.Label == label {
+			out = append(out, e)
+		}
+	}
+	if f.cut[n] {
+		return out, ErrEventsTruncated
+	}
+	return out, nil
+}
+
+// SetEventsTruncated makes issue n's LabelEvents report the page cap, as GitHub does past it.
+func (f *Fake) SetEventsTruncated(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cut[n] = true
 }
 
 // Issue implements the forge's Issue.

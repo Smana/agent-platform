@@ -135,9 +135,12 @@ func (g *GitHub) Labeled(ctx context.Context, label string) ([]Item, error) {
 }
 
 // LabelEvents are the times label was added to an issue, oldest first; at most ten pages of 100.
+// Past them it returns what it read and ErrEventsTruncated: GitHub lists events oldest first, so
+// the unread ones are the newest.
 func (g *GitHub) LabelEvents(ctx context.Context, number int, label string) ([]LabelEvent, error) {
 	var out []LabelEvent
 	opt := &github.ListOptions{PerPage: 100}
+	truncated := true
 	for range 10 {
 		evs, resp, err := g.rest.Issues.ListIssueEvents(ctx, g.owner, g.name, number, opt)
 		g.mark(err)
@@ -150,11 +153,15 @@ func (g *GitHub) LabelEvents(ctx context.Context, number int, label string) ([]L
 			}
 		}
 		if resp.NextPage == 0 {
+			truncated = false
 			break
 		}
 		opt.Page = resp.NextPage
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	if truncated {
+		return out, ErrEventsTruncated
+	}
 	return out, nil
 }
 

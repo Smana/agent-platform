@@ -117,6 +117,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.ClassMismatch(ctx, "docs-links", "review")
 	s.TierFit(ctx, "static", "standard", "fit", false)
 	s.IntakeError(ctx, "issue")
+	s.LabelEventsTruncated(ctx, "factory/ready")
 	s.Revoked(ctx, "budget-run")
 	s.GitHubRemaining(ctx, 4990)
 	body := scrape()
@@ -126,6 +127,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_task_tokens_bucket{predicted_class="review",template="solo",tier="standard",le="200000"} 1`,
 		`agent_factory_budget_remaining_tokens{principal="system:factory"} 2.4e+07`,
 		`agent_factory_human_interventions_total{kind="stop"} 1`,
+		`agent_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`agent_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
 		`agent_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
 		`agent_factory_intake_errors_total{source="issue"} 1`,

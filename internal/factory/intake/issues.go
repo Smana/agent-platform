@@ -48,9 +48,10 @@ type issueForge interface {
 	Comment(ctx context.Context, number int, body string) error
 }
 
-// errorCounter counts a failed poll (fmetrics.Set).
+// errorCounter counts a failed poll, and a label left for the next one (fmetrics.Set).
 type errorCounter interface {
 	IntakeError(ctx context.Context, source string)
+	LabelEventsTruncated(ctx context.Context, label string)
 }
 
 // IssuePoller is a leader-only manager.Runnable: it reads factory/ready and factory/stop labels
@@ -66,6 +67,8 @@ type IssuePoller struct {
 	Log       *slog.Logger
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
+	// Sanitize is the snapshot's sanitiser; nil means sanitize.Text. A test forces a withheld text.
+	Sanitize func(string) (string, sanitize.Report)
 }
 
 // NeedLeaderElection is true: two pollers would race each label.
@@ -76,6 +79,24 @@ func (p *IssuePoller) log() *slog.Logger {
 		return slog.New(slog.DiscardHandler)
 	}
 	return p.Log
+}
+
+// labelEvents reads label's events on issue n. ok is false when the poller should leave the label
+// for the next poll: GitHub has not listed its event yet, or the events passed the forge's cap
+// and the newest, the one that counts, is unread (ruling SP).
+func (p *IssuePoller) labelEvents(ctx context.Context, n int, label string) ([]forge.LabelEvent, bool, error) {
+	evs, err := p.Forge.LabelEvents(ctx, n, label)
+	if errors.Is(err, forge.ErrEventsTruncated) {
+		p.log().Warn("label events truncated: the label waits", "issue", n, "label", label, "events", len(evs))
+		if p.Errors != nil {
+			p.Errors.LabelEventsTruncated(ctx, label)
+		}
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return evs, len(evs) > 0, nil
 }
 
 func (p *IssuePoller) narrator() narrate.Narrator {
@@ -156,10 +177,12 @@ func Generation(evs []forge.LabelEvent, isMaintainer func(string) bool) (int, fo
 // Snapshot is the text the task keeps, sanitised (G2), and the sha256 of the issue as the
 // maintainer labelled it, so they can match it (§1). sanitize.Text folds compatibility forms and
 // neutralises look-alikes of the brief's fence (Batch A I1) along with images and markup.
-func Snapshot(i forge.Issue) (string, string, sanitize.Report) {
+func Snapshot(i forge.Issue) (string, string, sanitize.Report) { return snapshot(i, sanitize.Text) }
+
+func snapshot(i forge.Issue, clean func(string) (string, sanitize.Report)) (string, string, sanitize.Report) {
 	raw := "# " + i.Title + "\n\n" + i.Body
 	sum := sha256.Sum256([]byte(raw))
-	text, rep := sanitize.Text(raw)
+	text, rep := clean(raw)
 	if len(text) > maxSnapshot {
 		text = strings.ToValidUTF8(text[:maxSnapshot], "")
 	}
@@ -168,12 +191,9 @@ func Snapshot(i forge.Issue) (string, string, sanitize.Report) {
 
 func (p *IssuePoller) one(ctx context.Context, n int) error {
 	label := p.Cfg.TriggerLabel
-	evs, err := p.Forge.LabelEvents(ctx, n, label)
-	if err != nil {
+	evs, ok, err := p.labelEvents(ctx, n, label)
+	if err != nil || !ok {
 		return err
-	}
-	if len(evs) == 0 {
-		return nil // the events trail the listing right after a label: the next poll sees them
 	}
 	gen, last, ok := Generation(evs, p.Cfg.IsMaintainer)
 	if !ok {
@@ -185,6 +205,17 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	}
 	if iss.LastEditedAt.After(last.At) || iss.TitleEditedAt.After(last.At) {
 		return p.refuse(ctx, n, last, "edited_after_label") // R5: the body and the title are the snapshot
+	}
+	clean := p.Sanitize
+	if clean == nil {
+		clean = sanitize.Text
+	}
+	text, sum, rep := snapshot(iss, clean)
+	if rep.Withheld {
+		return p.refuse(ctx, n, last, "unsanitisable") // ruling SM: no task runs on a withheld text
+	}
+	if rep.Changed() {
+		p.log().Info("issue text sanitised", "issue", n, "report", rep.String())
 	}
 	key := taskid.IssueKey(p.Cfg.Repository, n, gen)
 	name := taskid.Name(key)
@@ -208,10 +239,6 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 		if err := p.annotateStop(ctx, t, "superseded"); err != nil {
 			return err
 		}
-	}
-	text, sum, rep := Snapshot(iss)
-	if rep.Changed() {
-		p.log().Info("issue text sanitised", "issue", n, "report", rep.String())
 	}
 	t := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace, Labels: map[string]string{v1alpha1.LabelIssue: strconv.Itoa(n)}},
@@ -263,9 +290,10 @@ func (p *IssuePoller) annotateStop(ctx context.Context, t *v1alpha1.Task, why st
 	return nil
 }
 
-// stops maps factory/stop on an issue or a PR to its running task (≤ 60 s, §6.1), then consumes
-// the label. A stop label with no running task stays, so a task started later on that issue
-// stops at once: the maintainer asked for no factory work there.
+// stops maps a maintainer's factory/stop on an issue or a PR to its running task (≤ 60 s, §6.1),
+// then consumes the label. A maintainer's stop with no running task stays, so a task started later
+// on that issue stops at once. Anyone else's is removed and answered once (ruling SP): left on,
+// it would stop that later task on their say.
 func (p *IssuePoller) stops(ctx context.Context) error {
 	items, err := p.Forge.Labeled(ctx, LabelStop)
 	if err != nil {
@@ -279,6 +307,23 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 		return fmt.Errorf("list tasks: %w", err)
 	}
 	for _, it := range items {
+		evs, ok, err := p.labelEvents(ctx, it.Number, LabelStop)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if _, last, byMaintainer := Generation(evs, p.Cfg.IsMaintainer); !byMaintainer {
+			if err := p.narrator().PostOnce(ctx, it.Number, fmt.Sprintf("issue-%d", it.Number),
+				narrate.StopIgnored(it.Number, "unauthorised_stopper", last.At)); err != nil {
+				return err
+			}
+			if err := p.Forge.RemoveLabel(ctx, it.Number, LabelStop); err != nil {
+				return err
+			}
+			continue
+		}
 		hit := false
 		for i := range l.Items {
 			t := &l.Items[i]

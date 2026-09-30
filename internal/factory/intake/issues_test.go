@@ -26,6 +26,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
 
@@ -34,8 +35,15 @@ var t0 = time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC)
 // counter keeps the first few sources only: a Start that never returns calls it in a tight loop,
 // and an unbounded slice once grew the test binary to 22 GB before any timeout fired.
 type counter struct {
-	mu      sync.Mutex
-	sources []string
+	mu        sync.Mutex
+	sources   []string
+	truncated []string
+}
+
+func (c *counter) LabelEventsTruncated(_ context.Context, label string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.truncated = append(c.truncated, label)
 }
 
 func (c *counter) IntakeError(_ context.Context, source string) {
@@ -257,6 +265,9 @@ func TestStopLabelReachesTheTask(t *testing.T) {
 		Spec: v1alpha1.TaskSpec{Issue: 11}, Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone}}
 	f := forge.NewFake()
 	f.SetLabeled(LabelStop, forge.Item{Number: 12, PullRequest: true}, forge.Item{Number: 9}, forge.Item{Number: 11})
+	for _, n := range []int{12, 9, 11} {
+		f.SetEvents(n, forge.LabelEvent{Actor: "Smana", Label: LabelStop, At: t0})
+	}
 	labelled(f, 13, "Smana")
 	p, c := poller(t, f, running, byIssue, ended)
 	p.Stopped = func(context.Context) bool { return true } // stop labels work even with intake paused
@@ -411,5 +422,89 @@ func TestErrorsJoinPerIssue(t *testing.T) {
 	err := p.Poll(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "#7") || len(tasks(t, c)) != 1 || !slices.Equal(f.Removed(8), []string{"factory/ready"}) {
 		t.Fatalf("one issue's failure spares the next: %v", err)
+	}
+}
+
+// Ruling SM: a text the sanitiser withholds refuses the label; no Task runs on a token.
+func TestAWithheldSnapshotIsRefused(t *testing.T) {
+	f := forge.NewFake()
+	labelled(f, 7, "Smana")
+	p, c := poller(t, f)
+	p.Sanitize = func(string) (string, sanitize.Report) { return sanitize.Withheld, sanitize.Report{Withheld: true} }
+	for range 2 {
+		if err := p.Poll(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		f.SetLabeled("factory/ready", forge.Item{Number: 7})
+	}
+	if n := len(tasks(t, c)); n != 0 || len(f.Comments(7)) != 1 || !strings.Contains(f.Comments(7)[0], "could not be made safe") ||
+		len(f.Removed(7)) != 2 {
+		t.Fatalf("tasks %d comments %q removed %q", n, f.Comments(7), f.Removed(7))
+	}
+}
+
+// Ruling SP (M3): only a maintainer's factory/stop stops a task. Anyone else's is removed and
+// answered once; it never lingers to stop a task started later.
+func TestANonMaintainersStopIsIgnored(t *testing.T) {
+	running := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Spec: v1alpha1.TaskSpec{Issue: 7}, Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseImplementing}}
+	f := forge.NewFake()
+	f.SetEvents(7, forge.LabelEvent{Actor: "Smana", Label: LabelStop, At: t0}, forge.LabelEvent{Actor: "someone", Label: LabelStop, At: t0.Add(time.Minute)})
+	p, c := poller(t, f, running)
+	for range 2 {
+		f.SetLabeled(LabelStop, forge.Item{Number: 7})
+		if err := p.Poll(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got v1alpha1.Task
+	_ = c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+	if got.Annotations[v1alpha1.AnnotationStop] != "" || len(f.Comments(7)) != 1 || !strings.Contains(f.Comments(7)[0], "factory/stop") ||
+		len(f.Removed(7)) != 2 {
+		t.Fatalf("%v %q %q", got.Annotations, f.Comments(7), f.Removed(7))
+	}
+}
+
+// A stop label whose event GitHub has not listed yet waits for the next poll.
+func TestAStopWithoutItsEventWaits(t *testing.T) {
+	running := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Spec: v1alpha1.TaskSpec{Issue: 7}, Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseImplementing}}
+	f := forge.NewFake()
+	f.SetLabeled(LabelStop, forge.Item{Number: 7})
+	p, c := poller(t, f, running)
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var got v1alpha1.Task
+	_ = c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+	if got.Annotations[v1alpha1.AnnotationStop] != "" || len(f.Removed(7)) != 0 || len(f.Comments(7)) != 0 {
+		t.Fatalf("%v %q", got.Annotations, f.Removed(7))
+	}
+}
+
+// Ruling SP (M4): past the forge's event cap the newest label may be unread. The poller counts
+// it, logs it and keeps the label for the next poll: it never acts on a partial history.
+func TestTruncatedLabelEventsKeepTheLabel(t *testing.T) {
+	running := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Spec: v1alpha1.TaskSpec{Issue: 9}, Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseImplementing}}
+	f := forge.NewFake()
+	labelled(f, 7, "Smana")
+	f.SetEventsTruncated(7)
+	f.SetEvents(9, forge.LabelEvent{Actor: "Smana", Label: LabelStop, At: t0})
+	f.SetLabeled(LabelStop, forge.Item{Number: 9})
+	f.SetEventsTruncated(9)
+	p, c := poller(t, f, running)
+	var buf bytes.Buffer
+	p.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var got v1alpha1.Task
+	_ = c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+	cnt := p.Errors.(*counter)
+	if len(tasks(t, c)) != 1 || len(f.Removed(7)) != 0 || len(f.Removed(9)) != 0 || len(f.Comments(7)) != 0 ||
+		got.Annotations[v1alpha1.AnnotationStop] != "" || strings.Join(cnt.truncated, ",") != "factory/stop,factory/ready" ||
+		strings.Count(buf.String(), "label events truncated") != 2 || len(cnt.sources) != 0 {
+		t.Fatalf("removed %q %q, counted %q %q\n%s", f.Removed(7), f.Removed(9), cnt.truncated, cnt.sources, buf.String())
 	}
 }

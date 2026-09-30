@@ -4,6 +4,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -108,6 +109,13 @@ func TestFakeRecordsWhatTheFactoryDid(t *testing.T) {
 	}
 	if evs, _ := f.LabelEvents(ctx, 7, "factory/ready"); len(evs) != 1 {
 		t.Errorf("events %v", evs)
+	}
+	if evs, _ := f.LabelEvents(ctx, 7, "factory/stop"); len(evs) != 0 {
+		t.Errorf("another label's events: %v", evs)
+	}
+	f.SetEventsTruncated(7)
+	if evs, err := f.LabelEvents(ctx, 7, "factory/ready"); len(evs) != 1 || !errors.Is(err, ErrEventsTruncated) {
+		t.Errorf("truncated: %v %v", evs, err)
 	}
 	if _, err := f.Issue(ctx, 8); err == nil {
 		t.Error("an unknown issue is an error")

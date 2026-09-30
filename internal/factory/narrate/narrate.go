@@ -185,6 +185,9 @@ func reasons() map[string]string {
 		"unauthorised_labeller": "only a maintainer's factory/ready starts a task",
 		"edited_after_label":    "the issue was edited after it was labelled",
 		"task_active":           "a task for this issue is still running",
+		"unsanitisable":         "the issue text could not be made safe for an agent to read; simplify its markup",
+		"unauthorised_stopper":  "only a maintainer's factory/stop stops a task",
+		"foreign_room":          "a room of the task's name exists and is not the factory's",
 	}
 }
 
@@ -247,6 +250,12 @@ func Ended(t *v1alpha1.Task, phase, reason string) Event {
 	}
 	fmt.Fprintf(&b, "\n\nTokens used: %s.", Tokens(t.Status.Usage.Tokens))
 	return Event{Key: fmt.Sprintf("end-%s-%d", strings.ToLower(phase), len(t.Status.Runs)), Body: b.String()}
+}
+
+// StopIgnored answers a factory/stop the poller will not act on, once per label.
+func StopIgnored(number int, reason string, at time.Time) Event {
+	return Event{Key: fmt.Sprintf("stop-ignored-%s-%d", reason, at.Unix()),
+		Body: fmt.Sprintf("The agent factory ignored `factory/stop` on #%d: %s.", number, Reason(reason))}
 }
 
 // Refused answers a factory/ready the poller will not act on; keyed by the label's time, so each

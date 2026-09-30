@@ -8,11 +8,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -111,6 +114,12 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		_, _ = io.WriteString(w, issueJSON)
 	}))
 	mux.HandleFunc("GET /repos/Smana/demo/issues/7/events", g.authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, eventsJSON)
+	}))
+	// Issue 8 has more events than the forge reads: every page links to a next one.
+	mux.HandleFunc("GET /repos/Smana/demo/issues/8/events", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		w.Header().Set("Link", fmt.Sprintf(`<%s/repos/Smana/demo/issues/8/events?page=%d>; rel="next"`, g.srv.URL, page+1))
 		_, _ = io.WriteString(w, eventsJSON)
 	}))
 	mux.HandleFunc("DELETE /repos/Smana/demo/issues/7/labels/{name}", g.authed(func(w http.ResponseWriter, r *http.Request) {
@@ -275,6 +284,16 @@ func TestLabelEventsKeepOnlyTheLabelsAdditions(t *testing.T) {
 	}
 	if len(evs) != 2 || evs[0].Actor != "someone" || evs[1].Actor != "Smana" || evs[1].Label != "factory/ready" {
 		t.Fatalf("%+v", evs)
+	}
+}
+
+// Past the forge's page cap the newest events are unread: the caller is told, not handed a
+// silently partial list (review M4).
+func TestLabelEventsPastThePageCapAreTruncated(t *testing.T) {
+	r := newRig(t)
+	evs, err := r.g.LabelEvents(t.Context(), 8, "factory/ready")
+	if !errors.Is(err, ErrEventsTruncated) || len(evs) != 20 {
+		t.Fatalf("%d %v", len(evs), err)
 	}
 }
 
