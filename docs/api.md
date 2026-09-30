@@ -203,7 +203,7 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
-## `:8080` — human API (planned, phase 2 / AP-2)
+## `:8080` — human API (phase 2 / AP-2)
 
 Reached only through oauth2-proxy on `rooms.<private domain>`. Every request carries the human's
 ZITADEL **ID token** in `Authorization` and their **JWT access token** in `X-Forwarded-Access-Token`,

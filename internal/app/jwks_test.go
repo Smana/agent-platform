@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,8 +52,8 @@ func TestAuthenticators(t *testing.T) {
 			ClientIDFile: clientFile, ProjectIDFile: projectFile, Origin: "https://rooms.example.test"},
 	}
 	var built []string
-	build := func(_ context.Context, issuer, jwksURL string) (*authn.Verifier, error) {
-		built = append(built, issuer+" "+jwksURL)
+	build := func(_ context.Context, issuer, jwksURL string, lazy bool) (*authn.Verifier, error) {
+		built = append(built, fmt.Sprint(issuer, " ", jwksURL, " lazy=", lazy))
 		return authn.NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) { return &key.PublicKey, nil }), nil
 	}
 	m, err := metrics.New(nil)
@@ -62,9 +64,9 @@ func TestAuthenticators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{clusterIssuer + " " + clusterIssuer + "/keys", humanIssuer + " " + humanIssuer + "/oauth/v2/keys"}
+	want := []string{clusterIssuer + " " + clusterIssuer + "/keys lazy=false", humanIssuer + " " + humanIssuer + "/oauth/v2/keys lazy=true"}
 	if !slices.Equal(built, want) || len(a.verifiers) != 2 || a.runs == nil || a.systems == nil || a.humans == nil {
-		t.Fatalf("built %v, %d verifiers; want one per issuer, the human one refreshed too", built, len(a.verifiers))
+		t.Fatalf("built %v, %d verifiers; want one per issuer, the human one lazy and refreshed too", built, len(a.verifiers))
 	}
 	token := func(client, project string) string {
 		raw, err := jwt.NewWithClaims(jwt.SigningMethodRS256, authn.Claims{
@@ -96,24 +98,51 @@ func TestAuthenticators(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorsFailsOnAnIssuer(t *testing.T) {
+// A machine issuer the broker cannot reach fails the rollout; the humans' IdP
+// never does, so ZITADEL down cannot take :8443 with it (FORWARD 2.6).
+func TestAuthenticatorsFailsOnlyOnAMachineIssuer(t *testing.T) {
 	cfg := config.Config{
 		RunIssuers:   []config.IssuerConfig{{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys", SubPattern: `^run-(\w+)$`}},
 		SystemIssuer: config.IssuerConfig{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys"},
 		Human:        config.HumanConfig{Issuer: humanIssuer, JWKSURL: humanIssuer + "/oauth/v2/keys"},
 	}
 	down := errors.New("jwks unreachable")
-	build := func(_ context.Context, issuer, _ string) (*authn.Verifier, error) {
-		if issuer == humanIssuer {
-			return nil, down
-		}
-		return authn.NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) { return nil, errors.New("unused") }), nil
-	}
 	m, err := metrics.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authenticators(t.Context(), cfg, m, build); !errors.Is(err, down) {
-		t.Fatalf("got %v, want the human issuer's failure", err)
+	for name, c := range map[string]struct {
+		down string
+		want error
+	}{
+		"the cluster issuer": {clusterIssuer, down},
+		"the humans' IdP":    {humanIssuer, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			build := func(_ context.Context, issuer, _ string, lazy bool) (*authn.Verifier, error) {
+				// jwksVerifier's contract: only an eager build fetches, so only it fails.
+				if issuer == c.down && !lazy {
+					return nil, down
+				}
+				return authn.NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) { return nil, errors.New("unused") }), nil
+			}
+			if _, err := authenticators(t.Context(), cfg, m, build); !errors.Is(err, c.want) {
+				t.Fatalf("got %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+// jwksVerifier fetches at construction only when eager.
+func TestJWKSVerifier(t *testing.T) {
+	build := jwksVerifier(slog.New(slog.DiscardHandler))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	const unreachable = "https://127.0.0.1:1/keys"
+	if _, err := build(ctx, humanIssuer, unreachable, true); err != nil {
+		t.Fatalf("lazy, an unreachable issuer: %v", err)
+	}
+	if _, err := build(ctx, clusterIssuer, unreachable, false); err == nil {
+		t.Fatal("eager, an unreachable issuer was accepted")
 	}
 }

@@ -88,7 +88,9 @@ Rules that keep pins honest:
 
 One file, `ROOMS_CONFIG` (a ConfigMap, Flux-substituted). Parsing is strict: an unknown key or a
 `subPattern` without exactly one capture group fails the rollout, not the first request. The broker
-reads it once at start, so restart it after a change.
+reads it once at start, so restart it after a change. A machine issuer whose JWKS the broker cannot
+fetch at start fails the rollout too; the `human` issuer does not: until it answers, humans get
+`401` and agents are unaffected.
 
 | Key | Meaning | Phase |
 |---|---|---|

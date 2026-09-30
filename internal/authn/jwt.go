@@ -152,6 +152,24 @@ func newOptions(opts []Option) options {
 // stale cap. A JWKS that cannot be fetched or holds no usable key fails
 // construction.
 func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*Verifier, error) {
+	v, err := NewLazyVerifier(issuer, jwksURL, opts...)
+	if err != nil {
+		return nil, err
+	}
+	c := v.jwks
+	c.sem <- struct{}{} // not shared yet: never blocks
+	err = c.refreshHeld(ctx)
+	<-c.sem
+	if err != nil {
+		return nil, fmt.Errorf("authn: initial JWKS fetch for %s: %w", issuer, err)
+	}
+	return v, nil
+}
+
+// NewLazyVerifier is NewVerifier without the fetch at construction: the first
+// token or Refresh fetches the keys, and until then every token is refused. It
+// suits an issuer the process must start without, such as the humans' IdP.
+func NewLazyVerifier(issuer, jwksURL string, opts ...Option) (*Verifier, error) {
 	if issuer == "" {
 		return nil, errors.New("authn: an issuer is required")
 	}
@@ -159,12 +177,6 @@ func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*
 	c, err := newJWKSCache(jwksURL, o)
 	if err != nil {
 		return nil, err
-	}
-	c.sem <- struct{}{} // not shared yet: never blocks
-	err = c.refreshHeld(ctx)
-	<-c.sem
-	if err != nil {
-		return nil, fmt.Errorf("authn: initial JWKS fetch for %s: %w", issuer, err)
 	}
 	return &Verifier{issuer: issuer, keys: c.lookup, now: o.now, jwks: c}, nil
 }
