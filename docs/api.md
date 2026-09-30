@@ -278,7 +278,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `message` | `text`, `delivery: none \| queued \| steering`, `to?` | Collaborator and up; `steering` driver only | 4 |
 | `remove_queued`, `promote_queued` | `ref` | The author or the driver; promote: driver | 4 |
 | `interrupt` | — | Driver | 4 |
-| `driver_request`, `driver_give`, `driver_take` | `to?`, `reason?` | Request: collaborator; give: driver; take: owner or `agents-admin`, with a reason | 4 |
+| `driver_request`, `driver_give`, `driver_take` | `to?`, `reason?` | Request: collaborator; give: driver, to a collaborator or better or the room's system holder; take: owner or `agents-admin`, with a reason of at most 256 bytes | 4 |
 | `start_run` | `role`, `prUrl?`, `egressProfiles?` | Driver, owner. Before SP3 it returns the rendered `AgentRun` for the owner to apply (ruling P14) | 4 |
 | `invite` | `principal`, `memberRole`, `approver` | Owner | 4 |
 | `close` | `reason?` | Owner | 4 |
@@ -292,8 +292,11 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `rate_limited` | Over 10 actions per second (burst 20), per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
 | `room_busy` | A run is already running |
-| `bad_action` | Malformed, or about another room |
+| `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for another action |
 | `not_queued` | The queued message was already delivered or removed |
+| `sealed` | The room's log is sealed |
+| `conflict` | The Room changed under an `invite`: retry |
+| `log_unavailable` | The log or the Room could not be read or written: retry |
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 

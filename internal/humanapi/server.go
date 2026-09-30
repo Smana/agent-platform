@@ -32,7 +32,6 @@ import (
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // Listener bounds. WriteTimeout is 0 for the WebSocket's sake: every other
@@ -68,9 +67,6 @@ type Runs interface {
 	InRoom(room string) []runwatch.Run
 }
 
-// ActHandler serves an act frame (phase 4 onwards) and returns its ack.
-type ActHandler func(ctx context.Context, p authn.Principal, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame
-
 // T10: markdown is rendered with HTML off, and nothing but this origin may run or load.
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; " +
 	"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -89,8 +85,8 @@ type Server struct {
 	Hub       Hub
 	Runs      Runs
 	Metrics   *metrics.Set
-	UI        fs.FS // Task 2.5; nil serves 404
-	Acts      ActHandler
+	UI        fs.FS  // Task 2.5; nil serves 404
+	Actor     *Actor // serves act frames (phase 4); nil refuses every one
 	Logger    *slog.Logger
 
 	// Connection bounds; zero takes the default.

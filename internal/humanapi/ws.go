@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
@@ -40,6 +41,9 @@ const (
 	defaultWriteWait = 10 * time.Second
 	defaultPingEvery = 30 * time.Second
 	defaultPongWait  = 10 * time.Second
+	// actWait bounds one act: the serve loop, and so the room's live events,
+	// waits for it.
+	actWait = 15 * time.Second
 
 	// closeReauth asks the client to reconnect with a fresh token (docs/api.md).
 	closeReauth websocket.StatusCode = 4001
@@ -183,7 +187,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	life, stopLife := context.WithTimeout(life, min(time.Until(p.Expiry), or(s.MaxLifetime, defaultMaxLifetime)))
 	defer stopLife()
 
-	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id}
+	// session scopes the connection's clientSeq, its acts' idempotency key.
+	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String()}
 	reason := v.serve()
 	if reason != dropClientGone {
 		s.dropped(base, reason)
@@ -232,16 +237,17 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1a
 
 // viewer is one open WebSocket.
 type viewer struct {
-	s      *Server
-	c      *websocket.Conn
-	base   context.Context // I/O: ends with the handler
-	life   context.Context // the connection's life: token, shutdown, liveness
-	cancel context.CancelCauseFunc
-	p      authn.Principal
-	room   *v1alpha1.Room
-	id     string
-	last   int64          // the last seq written
-	wg     sync.WaitGroup // the reader and the pinger
+	s       *Server
+	c       *websocket.Conn
+	base    context.Context // I/O: ends with the handler
+	life    context.Context // the connection's life: token, shutdown, liveness
+	cancel  context.CancelCauseFunc
+	p       authn.Principal
+	room    *v1alpha1.Room
+	id      string
+	session string         // this connection's idempotency scope
+	last    int64          // the last seq written
+	wg      sync.WaitGroup // the reader and the pinger
 }
 
 // write sends one frame within WriteWait. A peer that does not take it in time
@@ -332,15 +338,33 @@ func (v *viewer) serve() string {
 			if f.Type != wire.FrameAct {
 				continue // ping, or a repeated hello
 			}
-			ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Rejected: wire.ReasonNotPermitted}
-			if v.s.Acts != nil {
-				ack = v.s.Acts(v.life, v.p, v.room, f)
-			}
-			if err := v.write(ack); err != nil {
+			if err := v.write(v.act(f)); err != nil {
 				return v.failed(err)
 			}
 		}
 	}
+}
+
+// act serves one act frame against the Room as it is now: an invite may have
+// changed the members since the connection opened.
+func (v *viewer) act(f wire.ClientFrame) wire.ServerFrame {
+	refuse := func(reason string) wire.ServerFrame {
+		return wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Rejected: reason}
+	}
+	if v.s.Actor == nil {
+		return refuse(wire.ReasonNotPermitted)
+	}
+	ctx, cancel := context.WithTimeout(v.life, actWait)
+	defer cancel()
+	room, found, err := v.s.room(ctx, v.id)
+	switch {
+	case err != nil:
+		return refuse(wire.ReasonLogUnavailable)
+	case !found:
+		return refuse(wire.ReasonNotPermitted)
+	}
+	sub, _ := v.s.you(room, v.p, "")
+	return v.s.Actor.Handle(ctx, v.p, sub.WebUI, v.session, room, f)
 }
 
 // failed names why an operation failed: the log or a write deadline while the
@@ -416,6 +440,11 @@ func (v *viewer) ping() {
 		if err != nil {
 			v.cancel(errPingTimeout)
 			return
+		}
+		if v.s.Actor != nil { // the holder's heartbeat, a no-op for anyone else (§2 lease)
+			ctx, cancel := context.WithTimeout(v.life, or(v.s.PongWait, defaultPongWait))
+			_ = v.s.Actor.Log.DriverSeen(ctx, v.id, v.p.ID, false)
+			cancel()
 		}
 	}
 }

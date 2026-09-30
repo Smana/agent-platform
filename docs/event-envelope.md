@@ -113,7 +113,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
-| `driver` | `{from, to, epoch, reason: given \| requested \| taken \| lease_expired}` | The broker | Planned, phase 4 |
+| `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker | Store AP-4 (Task 4.1); written by human actions from Task 4.2 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge | Per kind |
 

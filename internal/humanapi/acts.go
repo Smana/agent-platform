@@ -1,0 +1,357 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package humanapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"regexp"
+	"strings"
+	"sync"
+	"unicode/utf8"
+
+	"golang.org/x/time/rate"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/agent-platform/internal/wire"
+)
+
+// ActLog is the part of the store the actions write; *store.Store implements it.
+type ActLog interface {
+	Room(ctx context.Context, id string) (store.RoomState, error)
+	Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
+	AppendAsDriver(ctx context.Context, driver string, epoch int64, d envelope.Draft) (envelope.Event, bool, error)
+	Enqueue(ctx context.Context, d envelope.Draft, author, text string) (envelope.Event, error)
+	PromoteQueued(ctx context.Context, roomID string, ref int64, driver string, epoch int64, runID string, d envelope.Draft) (envelope.Event, error)
+	RemoveQueued(ctx context.Context, roomID string, ref int64, d envelope.Draft) (envelope.Event, error)
+	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error)
+	DriverSeen(ctx context.Context, roomID, principal string, acted bool) error
+	CloseRoom(ctx context.Context, roomID, reason string) error
+}
+
+// Redactor removes secrets from a JSON payload before it is appended (§4);
+// *redact.Redactor implements it.
+type Redactor interface {
+	Payload(ctx context.Context, raw json.RawMessage) (json.RawMessage, []string, error)
+}
+
+// Action is an act frame's action (docs/api.md, Actions).
+type Action struct {
+	Kind           string   `json:"kind"`
+	Text           string   `json:"text,omitempty"`
+	Delivery       string   `json:"delivery,omitempty"`
+	Ref            int64    `json:"ref,omitempty"`
+	To             string   `json:"to,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Role           string   `json:"role,omitempty"`
+	PRURL          string   `json:"prUrl,omitempty"`
+	EgressProfiles []string `json:"egressProfiles,omitempty"`
+	Principal      string   `json:"principal,omitempty"`  // invite
+	MemberRole     string   `json:"memberRole,omitempty"` // invite
+	Approver       bool     `json:"approver,omitempty"`   // invite
+}
+
+// Actor serves humans' act frames: every write a human makes to a room. Log,
+// Groups, Runs and Redactor are required; Rooms is required for invite.
+type Actor struct {
+	Log      ActLog
+	Groups   policy.Groups
+	Runs     Runs
+	Redactor Redactor
+	Rooms    client.Client
+	OnReject func(reason string)
+
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+}
+
+// The rejections an ack carries (docs/api.md).
+const (
+	rejectNotPermitted   = wire.ReasonNotPermitted
+	rejectStaleEpoch     = "stale_epoch"
+	rejectRateLimited    = wire.ReasonRateLimited
+	rejectNoRunningRun   = "no_running_run"
+	rejectBadAction      = "bad_action"
+	rejectNotQueued      = "not_queued"
+	rejectSealed         = wire.ReasonSealed
+	rejectConflict       = "conflict" // the Room changed under an invite: retry
+	rejectLogUnavailable = wire.ReasonLogUnavailable
+)
+
+// maxReason bounds a take's reason, which the driver event carries.
+const maxReason = 256
+
+// memberPrincipal is the Room CRD's pattern for a member.
+var memberPrincipal = regexp.MustCompile(`^human:[A-Za-z0-9@._-]{1,255}$`)
+
+func (a *Actor) limited(principal string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.limiters == nil {
+		a.limiters = map[string]*rate.Limiter{}
+	}
+	l, ok := a.limiters[principal]
+	if !ok {
+		l = rate.NewLimiter(10, 20) // 10 actions/s per human, burst 20 (§4); per replica (P22)
+		a.limiters[principal] = l
+	}
+	return !l.Allow()
+}
+
+var kinds = map[string]policy.Action{"remove_queued": policy.RemoveQueued, "promote_queued": policy.PromoteQueued,
+	"interrupt": policy.Interrupt, "driver_request": policy.DriverRequest, "driver_give": policy.DriverGive,
+	"driver_take": policy.DriverTake, "start_run": policy.StartRun, "invite": policy.Invite, "close": policy.Close}
+
+var deliveries = map[string]policy.Action{"none": policy.Chat, "queued": policy.Queue, "steering": policy.Steer}
+
+// fenced actions carry the driverEpoch they were decided on (§2); the store checks
+// it again under the room's row lock.
+var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrupt": true, "driver_give": true}
+
+// Handle serves one act frame of p in room, through the web UI or not (ruling
+// P18), on the connection session, and returns its ack.
+func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
+	ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq}
+	reject := func(reason string) wire.ServerFrame {
+		if a.OnReject != nil {
+			a.OnReject(reason)
+		}
+		ack.Rejected = reason
+		return ack
+	}
+	if a.limited(p.ID) {
+		return reject(rejectRateLimited)
+	}
+	var act Action
+	if json.Unmarshal(f.Action, &act) != nil || f.ClientSeq <= 0 {
+		return reject(rejectBadAction)
+	}
+	if a.Redactor == nil {
+		return reject(rejectLogUnavailable) // nothing is stored unredacted
+	}
+	st, err := a.Log.Room(ctx, room.Name)
+	if err != nil {
+		return reject(rejectLogUnavailable)
+	}
+	pa, ok := kinds[act.Kind]
+	fenceKey := act.Kind
+	if act.Kind == "message" {
+		pa, ok = deliveries[act.Delivery]
+		fenceKey = act.Delivery
+	}
+	if !ok {
+		return reject(rejectBadAction)
+	}
+	sub := a.Groups.Resolve(room, p, st.Driver, webUI)
+	if !policy.Allowed(sub, pa) {
+		return reject(rejectNotPermitted)
+	}
+	if fenced[fenceKey] && (f.DriverEpoch == nil || *f.DriverEpoch != st.DriverEpoch) {
+		return reject(rejectStaleEpoch)
+	}
+	d := envelope.Draft{RoomID: room.Name, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: p.ID},
+		Origin: envelope.OriginClient, OriginClient: p.ID + ":" + session, OriginSeq: f.ClientSeq}
+	var ev envelope.Event
+	var why string
+	if act.Kind == "start_run" {
+		ev, ack.Result, why = a.startRun(ctx, p, room, act, d)
+	} else {
+		ev, why = a.dispatch(ctx, p, room, st, act, d)
+	}
+	if why != "" {
+		return reject(why)
+	}
+	if sub.Driver {
+		_ = a.Log.DriverSeen(ctx, room.Name, p.ID, true) // a no-op once the holder gave the token away
+	}
+	ack.Seq = ev.Seq
+	return ack
+}
+
+func (a *Actor) running(room string) (runwatch.Run, bool) {
+	for _, r := range a.Runs.InRoom(room) {
+		if r.Live() {
+			return r, true
+		}
+	}
+	return runwatch.Run{}, false
+}
+
+// reason maps a store error to the ack's rejection.
+func reason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, store.ErrStaleEpoch):
+		return rejectStaleEpoch
+	case errors.Is(err, store.ErrNotQueued):
+		return rejectNotQueued
+	case errors.Is(err, store.ErrNotAuthor):
+		return rejectNotPermitted
+	case errors.Is(err, store.ErrSealed):
+		return rejectSealed
+	case errors.Is(err, store.ErrInvalidDriver), errors.Is(err, store.ErrKeyConflict), store.IsDataError(err):
+		return rejectBadAction
+	}
+	return rejectLogUnavailable
+}
+
+func done(ev envelope.Event, err error) (envelope.Event, string) { return ev, reason(err) }
+
+func done3(ev envelope.Event, _ bool, err error) (envelope.Event, string) { return ev, reason(err) }
+
+// redacted runs d's payload through the redactor, before any append (§4).
+func (a *Actor) redacted(ctx context.Context, d envelope.Draft) (envelope.Draft, error) {
+	payload, rules, err := a.Redactor.Payload(ctx, d.Payload)
+	if err != nil {
+		return d, err
+	}
+	d.Payload, d.Redactions = payload, rules
+	return d, nil
+}
+
+// redactText is the redactor over one string, such as a take's reason.
+func (a *Actor) redactText(ctx context.Context, s string) (string, []string, error) {
+	raw, rules, err := a.Redactor.Payload(ctx, envelope.Must(s))
+	if err != nil {
+		return "", nil, err
+	}
+	var out string
+	return out, rules, json.Unmarshal(raw, &out)
+}
+
+func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, string) {
+	state := func(kind string, fields map[string]any) envelope.Draft {
+		d.Type, d.Payload = envelope.StateChanged, envelope.StatePayload(kind, fields)
+		return d
+	}
+	switch act.Kind {
+	case "message":
+		return a.message(ctx, room, st, act, d)
+	case "remove_queued":
+		return done(a.Log.RemoveQueued(ctx, room.Name, act.Ref, d)) // the author or the driver (§2)
+	case "promote_queued":
+		run, ok := a.running(room.Name)
+		if !ok {
+			return envelope.Event{}, rejectNoRunningRun
+		}
+		return done(a.Log.PromoteQueued(ctx, room.Name, act.Ref, p.ID, st.DriverEpoch, run.ID, d))
+	case "interrupt":
+		run, ok := a.running(room.Name)
+		if !ok {
+			return envelope.Event{}, rejectNoRunningRun
+		}
+		return done3(a.Log.AppendAsDriver(ctx, p.ID, st.DriverEpoch, state("interrupt", map[string]any{"runId": run.ID})))
+	case "driver_request":
+		if strings.HasPrefix(st.Driver, "system:") { // a system holder yields at once (§2)
+			return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "requested", d))
+		}
+		return done3(a.Log.Append(ctx, state("driver_request", map[string]any{"by": p.ID, "holder": st.Driver})))
+	case "driver_give":
+		if !a.receives(room, st, act.To) {
+			return envelope.Event{}, rejectBadAction
+		}
+		return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, act.To, "given", d))
+	case "driver_take":
+		why := strings.TrimSpace(act.Reason)
+		if why == "" || len(why) > maxReason || !utf8.ValidString(why) {
+			return envelope.Event{}, rejectBadAction // take needs a reason (§2), and a short one
+		}
+		why, rules, err := a.redactText(ctx, why)
+		if err != nil {
+			return envelope.Event{}, rejectLogUnavailable
+		}
+		d.Redactions = rules
+		return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "taken: "+why, d))
+	case "invite":
+		return a.invite(ctx, room, act, d)
+	case "close":
+		return envelope.Event{}, reason(a.Log.CloseRoom(ctx, room.Name, "closed by "+p.ID))
+	}
+	return envelope.Event{}, rejectBadAction
+}
+
+// message appends a chat, queues a message, or steers the running run (§2).
+func (a *Actor) message(ctx context.Context, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, string) {
+	if strings.TrimSpace(act.Text) == "" || len(act.Text) > envelope.MaxHumanMessage {
+		return envelope.Event{}, rejectBadAction
+	}
+	payload := envelope.MessagePayload{Kind: envelope.KindChat, Text: act.Text, Delivery: envelope.Delivery(act.Delivery)}
+	var run runwatch.Run
+	if act.Delivery == "steering" {
+		var ok bool
+		if run, ok = a.running(room.Name); !ok {
+			return envelope.Event{}, rejectNoRunningRun
+		}
+		payload.To = []string{"agent:" + run.ID}
+	}
+	d.Type, d.Payload = envelope.Message, envelope.Must(payload)
+	d, err := a.redacted(ctx, d)
+	if err != nil {
+		return envelope.Event{}, rejectLogUnavailable
+	}
+	switch act.Delivery {
+	case "queued":
+		// The row keeps the redacted text: the next run's brief quotes it (review M7).
+		var stored envelope.MessagePayload
+		if err := json.Unmarshal(d.Payload, &stored); err != nil {
+			return envelope.Event{}, rejectLogUnavailable
+		}
+		return done(a.Log.Enqueue(ctx, d, d.Actor.ID, stored.Text))
+	case "steering":
+		return done3(a.Log.AppendAsDriver(ctx, d.Actor.ID, st.DriverEpoch, d))
+	}
+	return done3(a.Log.Append(ctx, d))
+}
+
+// receives reports whether to may take the token from a give: a collaborator or
+// better, or the room's own system holder, the one it falls back to.
+func (a *Actor) receives(room *v1alpha1.Room, st store.RoomState, to string) bool {
+	if strings.HasPrefix(to, "system:") {
+		return to == room.Spec.Driver || to == st.FallbackDriver
+	}
+	sub := a.Groups.Resolve(room, authn.Principal{Kind: envelope.ActorHuman, ID: to}, "", true)
+	return strings.HasPrefix(to, "human:") && sub.Role >= policy.Collaborator
+}
+
+// invite adds or changes a member on the Room CR and records it (§1: owner only).
+func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, string) {
+	if !memberPrincipal.MatchString(act.Principal) || policy.ParseRole(act.MemberRole) == policy.None {
+		return envelope.Event{}, rejectBadAction
+	}
+	if a.Rooms == nil {
+		return envelope.Event{}, rejectLogUnavailable
+	}
+	updated := room.DeepCopy()
+	members := []v1alpha1.Member{}
+	for _, m := range updated.Spec.Members {
+		if m.Principal != act.Principal {
+			members = append(members, m)
+		}
+	}
+	if len(members) >= 20 { // the CRD's MaxItems
+		return envelope.Event{}, rejectBadAction
+	}
+	members = append(members, v1alpha1.Member{Principal: act.Principal, Role: act.MemberRole, Approver: act.Approver})
+	updated.Spec.Members = members
+	// Update, not a patch: the room's resourceVersion makes a concurrent change a conflict.
+	if err := a.Rooms.Update(ctx, updated); err != nil {
+		return envelope.Event{}, rejectConflict
+	}
+	d.Type = envelope.Participant
+	d.Payload = envelope.Must(envelope.ParticipantPayload{Principal: act.Principal, Change: "role_changed",
+		Role: act.MemberRole, Approver: act.Approver})
+	return done3(a.Log.Append(ctx, d))
+}
+
+// startRun is Task 4.4's.
+func (a *Actor) startRun(context.Context, authn.Principal, *v1alpha1.Room, Action, envelope.Draft) (envelope.Event, json.RawMessage, string) {
+	return envelope.Event{}, nil, rejectBadAction
+}

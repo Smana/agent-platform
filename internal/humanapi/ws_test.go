@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
@@ -693,22 +694,68 @@ func TestActs(t *testing.T) {
 			t.Fatalf("ack = %+v", f)
 		}
 	})
-	t.Run("handed to the handler with the caller and the room", func(t *testing.T) {
-		var got atomic.Value
+	t.Run("served by the actor against the Room as it is now, on the connection's session", func(t *testing.T) {
+		log := &actLog{st: store.RoomState{ID: roomID, Driver: "system:factory", DriverEpoch: 3}}
 		e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
-			s.Acts = func(_ context.Context, p authn.Principal, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
-				got.Store(p.ID + " " + room.Name)
-				return wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Seq: 11}
-			}
+			s.Actor = &Actor{Log: log, Runs: s.Runs, Groups: groups, Redactor: testRedactor{}}
 		})
-		c := dial(t, e, "dev", hello(nil, 0))
-		read(t, c)
-		read(t, c)
-		events(t, c, 10)
-		send(t, c, act)
-		if f := read(t, c); f.Type != wire.FrameAck || f.ClientSeq != 7 || f.Seq != 11 || got.Load() != "human:dev "+roomID {
-			t.Fatalf("ack = %+v, handler saw %v", f, got.Load())
+		chat := wire.ClientFrame{Type: wire.FrameAct, ClientSeq: 7, Action: json.RawMessage(`{"kind":"message","text":"hi","delivery":"none"}`)}
+		open := func() *websocket.Conn {
+			c := dial(t, e, "dev", hello(nil, 0))
+			read(t, c)
+			read(t, c)
+			events(t, c, 10)
+			return c
 		}
+		c := open()
+		send(t, c, chat)
+		if f := read(t, c); f.Type != wire.FrameAck || f.ClientSeq != 7 || f.Rejected != wire.ReasonNotPermitted {
+			t.Fatalf("a watcher chats: %+v", f)
+		}
+		// The owner invites dev after the connection opened: the next act sees it.
+		rooms := e.srv.Rooms.(client.Client)
+		var room v1alpha1.Room
+		if err := rooms.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: roomID}, &room); err != nil {
+			t.Fatal(err)
+		}
+		room.Spec.Members = append(room.Spec.Members, v1alpha1.Member{Principal: "human:dev", Role: "collaborator"})
+		if err := rooms.Update(t.Context(), &room); err != nil {
+			t.Fatal(err)
+		}
+		chat.ClientSeq = 8
+		send(t, c, chat)
+		if f := read(t, c); f.Rejected != "" || f.Seq != 1 {
+			t.Fatalf("a collaborator chats: %+v", f)
+		}
+		first := log.last()
+		session, ok := strings.CutPrefix(first.OriginClient, "human:dev:")
+		if !ok || len(session) != 26 || first.Actor.ID != "human:dev" || first.RoomID != roomID {
+			t.Fatalf("draft %+v", first)
+		}
+		c2 := open()
+		send(t, c2, chat)
+		if f := read(t, c2); f.Rejected != "" || log.last().OriginClient == first.OriginClient {
+			t.Fatalf("a second connection shares the first one's idempotency scope: %+v %s", f, log.last().OriginClient)
+		}
+	})
+}
+
+// §2 lease: every answered ping is the connection's heartbeat to the driver token.
+func TestPingsAreTheDriversHeartbeat(t *testing.T) {
+	log := &actLog{st: store.RoomState{ID: roomID, Driver: "human:dev", DriverEpoch: 3}}
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
+		s.PingEvery = 20 * time.Millisecond
+		s.Actor = &Actor{Log: log, Runs: s.Runs, Groups: groups, Redactor: testRedactor{}}
+	})
+	c := dial(t, e, "dev", hello(nil, 0))
+	read(t, c)
+	read(t, c)
+	events(t, c, 10)
+	c.CloseRead(t.Context()) // reads on, so pongs are sent; no data frame follows
+	eventually(t, "a heartbeat after a pong", func() bool {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		return log.seen["human:dev"] >= 2 && log.seen["human:dev+acted"] == 0
 	})
 }
 
