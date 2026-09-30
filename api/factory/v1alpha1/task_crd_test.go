@@ -58,7 +58,7 @@ func TestTaskCRDBoundsEveryStringAndList(t *testing.T) {
 		bounded(t, top, &s)
 	}
 	status := root.Properties["status"].Properties
-	for list, want := range map[string]int64{"narrated": 512, "handled": 512} {
+	for list, want := range map[string]int64{"narrated": 512, "handled": 512, "outbox": 16} {
 		if got := status[list].MaxItems; got == nil || *got != want {
 			t.Errorf("status.%s maxItems = %v, want %d", list, got, want)
 		}

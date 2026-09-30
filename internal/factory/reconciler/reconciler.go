@@ -100,7 +100,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Client.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if v1alpha1.TerminalPhase(t.Status.Phase) {
+	ended := v1alpha1.TerminalPhase(t.Status.Phase)
+	if ended && len(t.Status.Outbox) == 0 {
 		return ctrl.Result{}, nil
 	}
 	before := t.Status.DeepCopy()
@@ -108,7 +109,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.to(&t, v1alpha1.PhaseReceived, "")
 	}
 	fx := &effects{}
-	err := r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
+	var err error
+	if !ended {
+		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
+	}
+	err = errors.Join(err, r.drain(ctx, &t)) // the outbox is written with the phase either way
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
 			return ctrl.Result{}, errors.Join(err, uerr)
@@ -228,6 +233,31 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
 
+// narrateLater queues e in the task's outbox (ruling SO), written with the transition that caused it,
+// so an outage never loses it: drain posts it, now or on a later reconcile. A key queued twice is
+// posted once: Post skips a key already in status.narrated.
+func narrateLater(t *v1alpha1.Task, e narrate.Event) {
+	n := target(t)
+	if n == 0 {
+		return
+	}
+	t.Status.Outbox = append(t.Status.Outbox, v1alpha1.Narration{Key: e.Key, Number: n, Body: e.Body})
+}
+
+// drain posts the outbox in order and stops at the first failure, which the next reconcile
+// retries. A post that landed but failed is found by its marker then, not posted twice.
+func (r *Reconciler) drain(ctx context.Context, t *v1alpha1.Task) error {
+	for len(t.Status.Outbox) > 0 {
+		o := t.Status.Outbox[0]
+		if err := r.narrator().Post(ctx, t, o.Number, narrate.Event{Key: o.Key, Body: o.Body}); err != nil {
+			return err
+		}
+		t.Status.Outbox = t.Status.Outbox[1:]
+	}
+	t.Status.Outbox = nil
+	return nil
+}
+
 // target is where a task narrates: its issue, else its PR (R28), else nowhere.
 func target(t *v1alpha1.Task) int {
 	if t.Spec.Issue > 0 {
@@ -246,7 +276,8 @@ func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason st
 		tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
 		record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
 	}
-	return r.narrator().Post(ctx, t, target(t), narrate.Ended(t, phase, reason))
+	narrateLater(t, narrate.Ended(t, phase, reason))
+	return nil
 }
 
 func (r *Reconciler) countTasks(ctx context.Context, keep func(*v1alpha1.Task) bool) (int, error) {

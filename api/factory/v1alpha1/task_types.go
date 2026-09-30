@@ -156,6 +156,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:items:MaxLength=512
 	// +optional
 	Narrated []string `json:"narrated,omitempty"`
+	// Comments the task owes its issue or PR (ruling SO): written with the transition that caused
+	// them, removed once posted. A task with any left is reconciled even after it ends.
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Outbox []Narration `json:"outbox,omitempty"`
 	// The last clientSeq the task took for a task_state message in its room (ruling SK). The
 	// broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
 	// narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
@@ -277,4 +282,17 @@ type Usage struct {
 	// Σ of the task's run usage; it never drops (SP1 §2).
 	// +optional
 	Tokens int64 `json:"tokens,omitempty"`
+}
+
+// Narration is one pending comment. Its key is the comment's idempotency key: in status.narrated
+// once posted, and in the comment's marker, which a retry finds when a post landed but failed.
+type Narration struct {
+	// +kubebuilder:validation:MaxLength=128
+	Key string `json:"key"`
+	// The issue or PR it goes to.
+	// +kubebuilder:validation:Minimum=1
+	Number int `json:"number"`
+	// The factory's own words, never text a user wrote.
+	// +kubebuilder:validation:MaxLength=4096
+	Body string `json:"body"`
 }

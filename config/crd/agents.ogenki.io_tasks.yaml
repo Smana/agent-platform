@@ -258,6 +258,33 @@ spec:
                 maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
+              outbox:
+                description: |-
+                  Comments the task owes its issue or PR (ruling SO): written with the transition that caused
+                  them, removed once posted. A task with any left is reconciled even after it ends.
+                items:
+                  description: |-
+                    Narration is one pending comment. Its key is the comment's idempotency key: in status.narrated
+                    once posted, and in the comment's marker, which a retry finds when a post landed but failed.
+                  properties:
+                    body:
+                      description: The factory's own words, never text a user wrote.
+                      maxLength: 4096
+                      type: string
+                    key:
+                      maxLength: 128
+                      type: string
+                    number:
+                      description: The issue or PR it goes to.
+                      minimum: 1
+                      type: integer
+                  required:
+                  - body
+                  - key
+                  - number
+                  type: object
+                maxItems: 16
+                type: array
               phase:
                 enum:
                 - Received

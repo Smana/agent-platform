@@ -115,7 +115,8 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
 		Round: t.Status.ReviewRounds, Started: &now})
 	r.to(t, phaseFor(s.Role), "")
-	return r.narrator().Post(ctx, t, target(t), narrate.Started(t, s, r.Cfg.RoomsURL))
+	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
+	return nil
 }
 
 // current is the task's last run record.
@@ -231,7 +232,8 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 	}
 	d, source, tier, tmpl := r.Now().Sub(t.CreationTimestamp.Time), t.Spec.Source.Kind, t.Spec.Budget.Tier, t.Spec.Template
 	record(ctx, func(ctx context.Context) { r.Metrics.TimeToPR(ctx, d, source, tier, tmpl) })
-	return r.narrator().Post(ctx, t, target(t), narrate.PROpened(t, pr.Number, pr.URL, run.ID))
+	narrateLater(t, narrate.PROpened(t, pr.Number, pr.URL, run.ID))
+	return nil
 }
 
 func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error {
