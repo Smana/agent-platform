@@ -4,6 +4,7 @@ package sanitize
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 	"testing"
@@ -197,14 +198,63 @@ func TestTextFinishesOnHostileInput(t *testing.T) {
 	}
 }
 
+// 2026-09-30: a step that re-arms itself (a mutant whose token matched a trigger) looped the
+// fixpoint forever. The markup step now settles within maxPasses and maxGrowth, or Text fails
+// closed: the text is withheld, never passed on half-defused, and so are the step's counts.
+func TestAMarkupStepThatNeverSettlesFailsClosed(t *testing.T) {
+	for name, c := range map[string]struct {
+		step  func(string, *Report) string
+		calls int // the pass that gives up: past maxGrowth, else at maxPasses
+	}{
+		"re-arms":    {func(s string, _ *Report) string { return "⟦" + s + "⟧" }, 1},
+		"doubles":    {func(s string, _ *Report) string { return s + s }, 2},
+		"oscillates": {func(s string, _ *Report) string { return map[string]string{"a": "b", "b": "a"}[s] }, maxPasses},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			got, rep := text("a", func(s string, r *Report) string { calls++; r.Images++; return c.step(s, r) })
+			if got != Withheld || rep != (Report{Withheld: true}) || calls != c.calls {
+				t.Fatalf("got %q %+v after %d passes", got, rep, calls)
+			}
+		})
+	}
+}
+
+// Every input settles within maxPasses, and its output is at most maxGrowth times its size.
+func TestTextIsBoundedOnEveryInput(t *testing.T) {
+	atoms := []string{"!", "[", "]", "(", ")", ":", "<", ">", "img ", "a", " ", "\n", "⟦", "⟧", "\u200b", "\\"}
+	rng := rand.New(rand.NewPCG(1, 2))
+	inputs := []string{"", "![]()", "<img>", "<a<a<a", "![<a<a]()", strings.Repeat("![", 50) + strings.Repeat("](x)", 50)}
+	for range 20000 {
+		var b strings.Builder
+		for range 1 + rng.IntN(40) {
+			b.WriteString(atoms[rng.IntN(len(atoms))])
+		}
+		inputs = append(inputs, b.String())
+	}
+	most := 0
+	for _, in := range inputs {
+		calls := 0
+		out, rep := text(in, func(s string, r *Report) string { calls++; return defuse(s, r) })
+		if rep.Withheld || len(out) > maxGrowth*len(in) {
+			t.Fatalf("%q -> %q (%d passes) %+v", in, out, calls, rep)
+		}
+		most = max(most, calls)
+	}
+	t.Logf("%d inputs, at most %d passes", len(inputs), most)
+}
+
 func TestReport(t *testing.T) {
 	if (Report{}).Changed() {
 		t.Error("an empty report changed nothing")
 	}
-	for _, r := range []Report{{Invisible: 1}, {Control: 1}, {Images: 1}, {Markup: 1}} {
+	for _, r := range []Report{{Invisible: 1}, {Control: 1}, {Images: 1}, {Markup: 1}, {Withheld: true}} {
 		if !r.Changed() {
 			t.Errorf("%+v changed the text", r)
 		}
+	}
+	if got := (Report{Images: 1, Withheld: true}).String(); got != "text withheld: the markup step did not settle" {
+		t.Errorf("a withheld text reports only that: %q", got)
 	}
 	r := Report{Invisible: 2, Control: 1, Images: 3, Markup: 4}
 	if want := "2 invisible and 1 control characters removed, 3 images and 4 other markup (raw HTML, reference definitions, brackets) defused"; r.String() != want {

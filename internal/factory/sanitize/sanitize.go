@@ -19,20 +19,36 @@ import (
 
 // Report counts what Text removed or replaced. The intake logs it, so an injection attempt shows.
 type Report struct {
-	Invisible int // default-ignorable code points: format (Cf), variation selectors, tags, fillers
-	Control   int // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
-	Images    int // markdown and HTML images, reduced to their alt text or defused
-	Markup    int // other raw HTML tags, reference definitions and the input's ⟦ ⟧, defused
+	Invisible int  // default-ignorable code points: format (Cf), variation selectors, tags, fillers
+	Control   int  // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
+	Images    int  // markdown and HTML images, reduced to their alt text or defused
+	Markup    int  // other raw HTML tags, reference definitions and the input's ⟦ ⟧, defused
+	Withheld  bool // the markup step did not settle: the whole text was replaced by Withheld
 }
 
 // Changed is whether Text altered anything.
-func (r Report) Changed() bool { return r.Invisible+r.Control+r.Images+r.Markup > 0 }
+func (r Report) Changed() bool { return r.Withheld || r.Invisible+r.Control+r.Images+r.Markup > 0 }
 
 // String is the report as one log-safe line: counts only, never the removed text.
 func (r Report) String() string {
+	if r.Withheld {
+		return "text withheld: the markup step did not settle"
+	}
 	return fmt.Sprintf("%d invisible and %d control characters removed, %d images and %d other markup "+
 		"(raw HTML, reference definitions, brackets) defused", r.Invisible, r.Control, r.Images, r.Markup)
 }
+
+// Withheld replaces a text whose markup step did not settle: Text fails closed.
+const Withheld = "⟦text withheld by the factory's sanitiser⟧"
+
+const (
+	// maxPasses caps the markup step's fixpoint. One pass defuses every trigger, and nothing it
+	// writes is a trigger, so a second pass only confirms; the cap leaves room for one more.
+	maxPasses = 4
+	// maxGrowth bounds the markup step's output against its input: its largest replacement
+	// ratio is "![]()" (5 bytes) to "⟦image: ⟧" (13), 2.6.
+	maxGrowth = 3
+)
 
 var (
 	// ![alt](url "title") and ![alt][ref] on one line: the URL goes, the alt text stays (R43).
@@ -69,10 +85,14 @@ func lookalike(r rune) (rune, bool) {
 // definition and raw HTML tag. The order matters: an image split by a zero-width space is
 // still an image. Neither step inserts what the first removes, and the second repeats until
 // its output stops changing, so no replacement can complete a new image with its neighbours.
+// A markup step that does not settle within maxPasses and maxGrowth fails closed (Withheld).
 //
-// Text has no length bound of its own: every step is linear (RE2), and callers bound the
-// input (Snapshot truncates; RunLore's text is bounded by its caller).
-func Text(s string) (string, Report) {
+// Every step is linear (RE2) and the passes are capped; callers bound the input (Snapshot
+// truncates; RunLore's text is bounded by its caller).
+func Text(s string) (string, Report) { return text(s, defuse) }
+
+// text is Text with its markup step as a parameter, so a step that never settles is testable.
+func text(s string, markup func(string, *Report) string) (string, Report) {
 	var rep Report
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.Map(func(r rune) rune {
@@ -93,13 +113,18 @@ func Text(s string) (string, Report) {
 		}
 		return r
 	}, s)
-	for {
-		next := defuse(s, &rep)
+	limit := maxGrowth * len(s)
+	for range maxPasses {
+		next := markup(s, &rep)
 		if next == s {
 			return s, rep
 		}
+		if len(next) > limit {
+			break
+		}
 		s = next
 	}
+	return Withheld, Report{Withheld: true}
 }
 
 // defuse is one pass of the markup step. Its tokens open with "⟦", which no markdown syntax
