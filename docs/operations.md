@@ -62,8 +62,8 @@ rest (Ruling AP). Neither carries a run or room label.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
-| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The harness's own errors are not counted | 1 |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub) | 1 |
+| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not | 1 |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way | 1 |
 
 ## Alerts
 
@@ -133,7 +133,7 @@ The CronJob `room-broker-retention` runs daily at 03:17. Run it by hand to check
 ```bash
 kubectl create job -n agent-system --from=cronjob/room-broker-retention retention-check
 kubectl wait -n agent-system job/retention-check --for=condition=Complete --timeout=5m
-kubectl logs -n agent-system job/retention-check          # one "purged" line per statement
+kubectl logs -n agent-system job/retention-check          # one "purged expired rooms" line per run, with its rooms and events counts
 kubectl delete job -n agent-system retention-check
 ```
 
@@ -158,7 +158,8 @@ the harnesses still hold.
 |---|---|---|
 | Broker `CrashLoopBackOff` right after a config change | The config file failed strict parsing (unknown key, a `subPattern` without one capture group) | Read the first log line, fix `room-broker-config` |
 | Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or the `atlasSchema.ref` branch is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at `main` once the AP branch has merged |
-| Bridge `hello` gets `503 log_unavailable` | The `Room` has not been reconciled, so its row does not exist, or the database is down | `kubectl get room -n agent-system <id>`; check the CNPG cluster |
+| Bridge `hello` gets `503 no_room` | The `Room` has not been reconciled, so its row does not exist | `kubectl get room -n agent-system <id>`; the bridge retries |
+| Bridge gets `503 log_unavailable` | The database is down or refused the call | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` |
 | Bridge gets `401 unauthenticated` | Wrong audience, an issuer not in `runIssuers`, or the broker cannot fetch the JWKS | Check the run's `room-token` audience (`room-broker`), the issuer, and the broker's egress to the JWKS host |
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |
 | Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Delete the extra run. A dead holder frees the room within 2 minutes |

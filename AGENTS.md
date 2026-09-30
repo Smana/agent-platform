@@ -109,8 +109,9 @@ packages that need a newer one.
   under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
   Label values are bounded: never a payload field; `room` only on the per-Active-room gauge.
 - **`rooms_build_info{version}` = 1** from the first metric.
-- **Traces are expected here** (RunLore has none): OTel spans across bridge → broker → store and
-  outbound calls, W3C `traceparent` propagated on every hop. Spans carry ids (room, run, seq),
+- **Traces: none yet.** Phase 1 has no span and propagates no `traceparent`; a tracked follow-up
+  adds OTel spans across bridge → broker → store and outbound calls, W3C `traceparent` on every hop.
+  When they land, spans carry ids (room, run, seq),
   event types and end reasons, never payload text or an error message that could echo it.
 
 ### Added with first use, not before
@@ -175,10 +176,11 @@ Packages that do touch the platform name their seam:
 
 | Package | Seam |
 |---|---|
-| `internal/authn` | issuer and audience are config |
-| `internal/runwatch` | the `AgentRun` GVK and namespace; a `RunSource` interface would replace them in a spin-out |
+| `internal/authn` | issuers, subject patterns and the system allowlist are config; the audiences `room-broker` and `rooms-system` are constants in `internal/authn/jwt.go` |
+| `internal/runwatch` | the `AgentRun` GVK, its `agents` namespace, the `xplane-run-` claim-name prefix and the `agents.ogenki.io/revoked` annotation; a `RunSource` interface would replace them in a spin-out |
 | `internal/roomctrl` | the `Room` CRD group |
 | `internal/bridgeapi` | principal allowlists come from config |
+| `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,

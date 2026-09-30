@@ -11,10 +11,10 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by SP3's factory, the broker or the owner, never committed to Git | `Room` CR (`agents.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id; its log in Postgres | AP-1 (the CRD, task 1.5, [reference below](#the-room-crd)) |
 | **Run** | One agent, one role, one task, one branch, with a deadline. It joins a room by naming it in `spec.roomRef`. One run is `Running` per room at a time | `AgentRun` claim (`cloud.ogenki.io`) in `agents`, owned by SP1 | Built in SP1 |
 | **Harness** | The agent loop inside the sandbox: the OpenHands agent-server on `127.0.0.1:8000` | The run's pod | Built in SP1 |
-| **Bridge** | `room-bridge`, a native sidecar in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` | AP-1 (planned, task 1.11) |
-| **Broker** | `room-broker`, the stateless service that owns rooms: it authenticates writers, redacts, sequences and stores events, and serves them | `agent-system` | AP-1 (planned, tasks 1.6–1.12) |
-| **Participant** | Anyone in a room: a human, a run, or a system principal. Joining and leaving are `participant` events | The log | AP-1 (planned, task 1.7) for runs; planned, phase 2 for humans |
-| **Principal** | A canonical identity: `agent:<runId>`, `human:<zitadel sub>` or `system:<component>` (C2). The broker stamps it on every event from the authenticated credential | Every event's `actor.id` | AP-1 (the type); stamping planned, tasks 1.6, 1.9 |
+| **Bridge** | `room-bridge`, a native sidecar in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` | AP-1 |
+| **Broker** | `room-broker`, the stateless service that owns rooms: it authenticates writers, redacts, sequences and stores events, and serves them | `agent-system` | AP-1 |
+| **Participant** | Anyone in a room: a human, a run, or a system principal. Joining and leaving are `participant` events | The log | AP-1 for runs; planned, phase 2 for humans |
+| **Principal** | A canonical identity: `agent:<runId>`, `human:<zitadel sub>` or `system:<component>` (C2). The broker stamps it on every event from the authenticated credential | Every event's `actor.id` | AP-1 |
 | **C2 id** | 8 characters of lowercase unpadded base32, `[a-z2-7]{8}`. Room, run and task ids share the format, so `agent/<id>` branches match the merge gate | Names of rooms and runs | AP-1 |
 | **Run role** | What a run may do: `implementer`, `reviewer`, `tester` or `triager` (C2). A policy input, not an identity | `AgentRun.spec.role`; an agent event's `actor.role` | Built in SP1 |
 | **Room role** | What a human may do in a room: `watcher` < `collaborator` < `owner`, cumulative. **Approver** is a separate flag | `Room.spec.members` | Planned, phase 2 / AP-2 |
@@ -30,11 +30,11 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Origin** | Who produced an event: `harness` (mirrored from a run), `client` (a human, a system caller, a room tool) or `broker` | Every event | AP-1 |
 | **Idempotency key** | `(roomId, originClient, originSeq)`: a writer's own sequence number. A replayed key returns the stored event and appends nothing | `events` unique index | AP-1 |
 | **Seal** | The last event of a room. After it, nothing can append. A room seals when it closes or fills up (100 000 events or 256 MiB), and sealing starts its retention clock | `rooms.sealed`, `closed_at` | AP-1 |
-| **Retention** | How long a closed room's log is kept: `spec.retention`, `<n>d`, default `90d` (OD-17). A daily job deletes expired sealed rooms | `rooms.retention` | AP-1 (the column); CronJob planned, task 1.12 / S1 |
-| **Bridge lease** | Which run's bridge holds the room. A second live run's bridge is refused `409 room_busy`. With Ruling Y, the lease also fences writes: a displaced bridge cannot append | `rooms.bridge_run`, `bridge_seen_at` | AP-1 (store); the `409` planned, task 1.9; fencing AP-1, Ruling Y |
+| **Retention** | How long a closed room's log is kept: `spec.retention`, `<n>d`, default `90d` (OD-17). A daily job deletes expired sealed rooms | `rooms.retention` | AP-1 (the column and `room-broker retention`); the CronJob S1 (planned) |
+| **Bridge lease** | Which run's bridge holds the room. A second live run's bridge is refused `409 room_busy`. With Ruling Y, the lease also fences writes: a displaced bridge cannot append | `rooms.bridge_run`, `bridge_seen_at` | AP-1, fencing from Ruling Y |
 | **Data class** | `public` or `internal` (C3): which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary (phase 3) | `Room.spec.dataClass` | AP-1 (the field); the verdict rule planned, phase 3 |
 | **Tier** | A logical model name on the agent gateway: `tier-light`, `tier-standard`, `tier-frontier` (C5), chosen once per task by SP3's classifier (C7). Rooms do not carry or change it: escalating a task means a new run, never a switch inside one | `AgentRun.spec.model` | Owned by SP4 |
-| **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker | AP-1 (the library); applied planned, task 1.9 |
+| **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker | AP-1 |
 | **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation (ruling P15). That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` | AP-1 |
 
 ## The Room CRD
@@ -72,7 +72,7 @@ prints `Phase`, `Driver`, `Seq`, `Pending` and `Class`.
 | `pendingApprovals` | integer | Undecided approvals (phase 5; 0 before) |
 | `observedGeneration` | integer | The `spec` generation last projected |
 
-The broker's leader writes `status` from the log (task 1.8, planned). A minimal room:
+The broker's leader writes `status` from the log (task 1.8). A minimal room:
 
 ```yaml
 apiVersion: agents.ogenki.io/v1alpha1

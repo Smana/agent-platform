@@ -6,14 +6,13 @@ get `:8090` in phase 3. Every body is JSON.
 
 | Port | Who calls it | Authentication | Phase / PR |
 |---|---|---|---|
-| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 (planned, tasks 1.6, 1.9) |
+| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 |
 | `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (task 1.12) |
 | `:8080` | Humans, through oauth2-proxy | ZITADEL ID token and access token | 2 / AP-2 |
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
 | `:8085` (bridge) | kubelet | None | AP-1 (task 1.11) |
 
-`:8443`'s handlers and the store methods they call are written on the AP-1 branch (task 1.9), and
-`room-broker serve` serves them (task 1.12). The rest is **planned**.
+`room-broker serve` serves `:8443` and `:9090` (AP-1). The rest is **planned**.
 
 ## `:8443` — bridge and system API
 
@@ -42,12 +41,12 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 
 | Method and path | Caller | Does | Phase / PR |
 |---|---|---|---|
-| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | AP-1 (planned, task 1.9) |
-| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | AP-1 (planned, task 1.9) |
-| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | AP-1 (planned, task 1.9: pings); 4 / AP-4; 5 / AP-5 |
+| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | AP-1 |
+| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | AP-1 |
+| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | AP-1 (pings); 4 / AP-4; 5 / AP-5 |
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
-| `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 (planned, task 1.9) |
-| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 (planned, task 1.9) |
+| `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 |
+| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 |
 
 ### `POST /v1/bridge/hello`
 
@@ -103,10 +102,10 @@ and nothing else, and the bridge sends one when it has pushed nothing for 30 s.
 
 | Status | `error` | When | The bridge then |
 |---|---|---|---|
-| `400` | `bad_batch` | Not JSON, an unknown field, or data after the batch | Drops the batch and logs it |
-| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), or a key spelled two ways | Drops the batch and logs it |
-| `400` | `bad_payload` | The payload is not a JSON object | Drops the batch and logs it |
-| `413` | `batch_too_large` | Over 2 MiB or over 500 items | Must split the batch, not drop it |
+| `400` | `bad_batch` | Not JSON, an unknown field, or data after the batch | Never drops it: halves the batch until the refused item is alone, then keeps its slot with a `state_changed{harness_event, harnessKind: refused}` stub naming the broker's reason (Ruling AM). If even the stub is refused, it retries with backoff and logs at Error |
+| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), or a key spelled two ways | As for `bad_batch` |
+| `400` | `bad_payload` | The payload is not a JSON object | As for `bad_batch` |
+| `413` | `batch_too_large` | Over 2 MiB or over 500 items | Halves the batch; a lone item still too large keeps its slot with a size stub |
 | `401` | `unauthenticated` | As for `hello` | Re-reads its token and retries |
 | `403` | `run_not_live`, `run_has_no_room` | As for `hello` | Retries on the next tick |
 | `409` | `lease_lost` | **Ruling Y:** this run no longer holds the room's lease, seen by the lease renewal or by the append's fence. Nothing is appended | Must not drop the batch: the events are not in the log. Keeps it and says hello again |

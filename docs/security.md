@@ -28,7 +28,7 @@ The design's threats, with the controls this repository implements and where eac
 
 ## Identities
 
-Runs and system callers: phase 1 / AP-1 task 1.6 (planned). Humans: phase 2 / AP-2.
+Runs and system callers: phase 1 / AP-1. Humans: phase 2 / AP-2.
 
 | Principal | Credential | Validated by the broker | Canonical id |
 |---|---|---|---|
@@ -82,8 +82,8 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
 ## TLS on :8443
 
 The bridge-to-broker hop serves TLS **on both clouds** (GP-18). gcp-0's Cilium has no WireGuard to
-encrypt pod traffic, and one configuration for both clouds is simpler than two. Planned in AP-1
-(tasks 1.9, 1.11), CC-S2 and S1.
+encrypt pod traffic, and one configuration for both clouds is simpler than two. The broker and bridge
+sides are AP-1; the manifests are CC-S2 and S1 (planned).
 
 | Piece | Setting |
 |---|---|
@@ -99,8 +99,10 @@ encrypt pod traffic, and one configuration for both clouds is simpler than two. 
 
 ## Redaction
 
-Every payload is redacted **in the broker, before it is appended**: every string value of the JSON
-document, at any depth (keys are only stripped of NUL characters). It uses gitleaks' `detect` package with its
+Every payload is redacted **in the broker, before it is appended**: every string of the JSON
+document, at any depth, object keys included: an env dump puts secrets in keys. NUL characters
+are stripped first, since `jsonb` refuses them. Two keys that are one once redacted cannot keep
+both values, so that item is stored as a `key_collision` stub. It uses gitleaks' `detect` package with its
 default rule set. A match becomes `[REDACTED:<rule>]`, the rule id is listed in the event's
 `redactions`, and `rooms_redactions_total{rule}` counts it. Broker logs carry envelope metadata only,
 never payloads. Status: AP-1 (`internal/redact`).

@@ -7,8 +7,9 @@ append-only, redacted Postgres log that outlives the sandbox pod. The programme 
 code in this one repo (the SP3 factory joins it later), released as versioned images that the
 platform repo pins and deploys, as it does App Wizard.
 
-> **Status:** early. Both binaries are stubs until SP2 phase 1 lands; this repo only proves the
-> toolchain, gates and image pipeline today.
+> **Status:** phase 1. `room-broker` keeps the append-only room log, serves the bridge and
+> system API on `:8443` and reconciles `Room`s; `room-bridge` mirrors a run's harness into its
+> room. Nothing is deployed yet: cloud-native-ref's S1 deploys it. Phases 2 to 6 are planned.
 
 **Documentation:** [docs/](docs/README.md) covers the architecture, the event envelope, the room
 log's guarantees, the API, security, integration, operations, development and the roadmap.
