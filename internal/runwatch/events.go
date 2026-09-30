@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/store"
@@ -19,10 +20,24 @@ type Appender interface {
 	LastHarnessStatus(ctx context.Context, roomID, runID string) (string, error)
 }
 
+// Redactor removes secrets from free text; *redact.Redactor implements it.
+type Redactor interface {
+	String(s string) (string, []string)
+}
+
+// maxReasonBytes bounds an end reason: a revocation's is the claim's annotation,
+// which may hold 256 KiB of free text.
+const maxReasonBytes = 64
+
 // Events writes a run's lifecycle into its room. Every step has a fixed
 // idempotency key (broker:run:<runId>, step), so an informer replay or a new
 // leader appends nothing twice.
-type Events struct{ Store Appender }
+type Events struct {
+	Store Appender
+	// Redactor scans the one free text a run's events carry, a revocation's
+	// reason. Nil drops that text: nothing unredacted reaches the log.
+	Redactor Redactor
+}
 
 // runScope prefixes a run's idempotency scope: broker:run:<runId>.
 const runScope = "broker:run:"
@@ -43,10 +58,11 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 	if !envelope.ValidID(r.Room) {
 		return nil
 	}
-	put := func(step int64, t envelope.Type, payload []byte) error {
+	put := func(step int64, t envelope.Type, payload []byte, redactions ...string) error {
 		_, _, err := e.Store.Append(ctx, envelope.Draft{RoomID: r.Room, RunID: r.ID,
 			Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}, Type: t,
-			Origin: envelope.OriginBroker, OriginClient: runScope + r.ID, OriginSeq: step, Payload: payload})
+			Origin: envelope.OriginBroker, OriginClient: runScope + r.ID, OriginSeq: step, Payload: payload,
+			Redactions: redactions})
 		if errors.Is(err, store.ErrNoRoom) || errors.Is(err, store.ErrSealed) {
 			return nil // a run naming a missing or closed room joins nothing
 		}
@@ -73,12 +89,32 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 	if err != nil {
 		return fmt.Errorf("runwatch: harness status of run %s: %w", r.ID, err)
 	}
+	reason, rules := e.endReason(r, status)
 	if err := put(stepEnded, envelope.StateChanged, envelope.StatePayload("run_phase",
-		map[string]any{"phase": r.Phase, "reason": EndReason(r, status)})); err != nil {
+		map[string]any{"phase": r.Phase, "reason": reason}), rules...); err != nil {
 		return err
 	}
 	return put(stepLeft, envelope.Participant, envelope.Must(envelope.ParticipantPayload{
 		Principal: principal, Change: "left", Role: r.Role}))
+}
+
+// endReason is EndReason as the log may hold it. EndReason's own reasons are
+// constants; a revocation's annotation is free text, so it is redacted, then cut
+// to maxReasonBytes, whole runes kept: cutting first could split a secret past
+// recognition.
+func (e *Events) endReason(r Run, status string) (string, []string) {
+	reason := EndReason(r, status)
+	if r.Revoked == "" || reason != r.Revoked {
+		return reason, nil
+	}
+	if e.Redactor == nil {
+		return "revoked", nil
+	}
+	text, rules := e.Redactor.String(reason)
+	if len(text) > maxReasonBytes {
+		text = strings.ToValidUTF8(text[:maxReasonBytes], "")
+	}
+	return text, rules
 }
 
 // Unfinished lists the opening event of every scope that never stored its

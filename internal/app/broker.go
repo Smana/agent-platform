@@ -146,7 +146,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	events := &runwatch.Events{Store: logStore}
+	events := &runwatch.Events{Store: logStore, Redactor: red}
 	rw, err := wireRuns(ctx, mgr.GetCache(), mgr.Add, log, st, events, nil)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
