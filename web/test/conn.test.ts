@@ -20,14 +20,16 @@ function setup(random = () => 0) {
   const sockets: FakeSocket[] = [];
   const seen: number[] = [];
   const status: string[] = [];
+  const counted: string[] = [];
   const conn = new RoomConnection("3kq7x2ma", {
     onEvent: (e: RoomEvent) => seen.push(e.seq),
     onState: () => {},
     onStatus: (s) => status.push(s),
+    onCounters: (n) => counted.push(`${n.last}/${n.gaps}/${n.duplicates}`),
   }, { socket: (url) => { const s = new FakeSocket(url); sockets.push(s); return s; }, random });
   conn.connect();
   const last = () => sockets[sockets.length - 1];
-  return { conn, sockets, seen, status, last };
+  return { conn, sockets, seen, status, counted, last };
 }
 
 // Closes a socket n times in a row without letting it live, and returns the waits.
@@ -115,11 +117,39 @@ describe("RoomConnection", () => {
     c.last().recv({ type: "sync", fromSeq: 1, throughSeq: 1 });
     c.last().recv(event(1));
     c.last().recv(event(3));
+    expect(c.seen).toEqual([1]); // 3 never reaches the page ahead of 2 (review I2)
     expect(c.conn.counters()).toEqual({ last: 1, gaps: 1, duplicates: 0 });
     vi.advanceTimersByTime(500);
     expect(c.sockets).toHaveLength(2);
     c.last().open();
     expect(c.last().sent[0]).toMatchObject({ afterSeq: 1 });
+  });
+
+  it("keeps a duplicate off the page, and the footer's counters current", () => {
+    const c = setup();
+    c.last().open();
+    c.last().recv({ type: "sync", fromSeq: 1, throughSeq: 2 });
+    [1, 2, 2].forEach((s) => c.last().recv(event(s)));
+    expect(c.seen).toEqual([1, 2]);
+    expect(c.counted.at(-1)).toBe("2/0/1"); // refreshed on the duplicate itself (review M1)
+  });
+
+  // A resume answered past the seq sent skipped events: resume again (review I1).
+  it("closes on a sync past what it holds, and resumes from it", () => {
+    const c = setup();
+    c.last().open();
+    c.last().recv({ type: "sync", fromSeq: 1, throughSeq: 30 });
+    for (let s = 1; s <= 30; s++) c.last().recv(event(s));
+    c.last().drop(1001, "shutdown");
+    vi.advanceTimersByTime(500);
+    c.last().open();
+    c.last().recv({ type: "sync", fromSeq: 41, throughSeq: 40 });
+    expect(c.conn.counters()).toEqual({ last: 30, gaps: 1, duplicates: 0 });
+    expect(c.counted.at(-1)).toBe("30/1/0");
+    vi.advanceTimersByTime(1000);
+    expect(c.sockets).toHaveLength(3); // the sync itself closed the socket
+    c.last().open();
+    expect(c.last().sent[0]).toMatchObject({ afterSeq: 30 });
   });
 
   it("pings every 30 s while open, and stops when closed", () => {

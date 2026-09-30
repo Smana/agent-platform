@@ -225,7 +225,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Method and path | Does | Phase / PR |
 |---|---|---|
-| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy | 2 / AP-2 |
+| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log | 2 / AP-2 |
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller | 4 / AP-4 |

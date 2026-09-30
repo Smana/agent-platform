@@ -20,7 +20,11 @@ export interface Handlers {
   onState(s: Snapshot): void;
   onStatus(s: string): void;
   onAck?(f: Frame): void;
+  // After every sync and event frame, delivered or not, so the footer is never stale.
+  onCounters?(c: Counters): void;
 }
+
+export interface Counters { last: number; gaps: number; duplicates: number }
 
 // The part of a WebSocket the connection uses, so tests can drive it.
 export interface SocketLike {
@@ -96,7 +100,7 @@ export class RoomConnection {
 
   send(frame: Record<string, unknown>) { this.ws?.send(JSON.stringify(frame)); }
 
-  counters() { return { last: this.tracker.last, gaps: this.tracker.gaps, duplicates: this.tracker.duplicates }; }
+  counters(): Counters { return { last: this.tracker.last, gaps: this.tracker.gaps, duplicates: this.tracker.duplicates }; }
 
   private frame(f: Frame) {
     switch (f.type) {
@@ -104,13 +108,16 @@ export class RoomConnection {
         if (f.snapshot) this.h.onState(f.snapshot);
         break;
       case "sync": // before any event, and before a live gap's range: the broker's baseline
-        if (typeof f.fromSeq === "number") this.tracker.baseline(f.fromSeq);
+        if (typeof f.fromSeq !== "number") break;
+        if (!this.tracker.baseline(f.fromSeq)) this.ws?.close(); // skipped events: resume
+        this.h.onCounters?.(this.counters());
         break;
       case "event": {
         if (!f.event) break;
         const verdict = this.tracker.observe(f.event.seq);
         if (verdict === "next") this.h.onEvent(f.event);
         else if (verdict === "gap") this.ws?.close(); // resume from the last contiguous seq
+        this.h.onCounters?.(this.counters());
         break;
       }
       case "ack":

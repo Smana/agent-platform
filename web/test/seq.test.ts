@@ -21,4 +21,13 @@ describe("SeqTracker (the SC-2 client check)", () => {
     expect(t.observe(41)).toBe("next");
     expect([t.gaps, t.duplicates]).toEqual([0, 0]);
   });
+  // The broker only clamps a resume down, and a live gap's range starts at last + 1:
+  // a baseline past that skipped events, and is a gap (review I1).
+  it("counts a baseline past what it holds as a gap, and keeps its last", () => {
+    const t = new SeqTracker(30); // resumed with afterSeq 30, the room's mark is 40
+    expect(t.baseline(41)).toBe(false);
+    expect([t.last, t.gaps]).toEqual([30, 1]);
+    expect(t.baseline(31)).toBe(true);
+    expect(t.observe(31)).toBe("next");
+  });
 });
