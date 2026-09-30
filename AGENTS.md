@@ -18,6 +18,8 @@ task check      # exit 0, or it is not done
 | `lint` | `hack/lint.sh` | any golangci-lint issue under [`.golangci.yaml`](.golangci.yaml), gofmt and goimports included |
 | `vuln` | `go run …/govulncheck@v1.8.0 ./...` | a known vulnerability reachable from our code, stdlib included |
 | `test` | `go test -race -count=1 ./...` | a failing test or a data race; never cached |
+| `ui:test` | `npm ci`, `tsc --noEmit`, `vitest run` in `web/` | a type error or a failing UI test |
+| `ui:check` | `web/`'s build into `internal/humanapi/ui/dist/` | a committed bundle that differs from what `web/` builds, or a built file not committed |
 
 CI's `check` job runs the same `task check`; `analyze` (CodeQL) is the other required check.
 Store tests use testcontainers, so from phase 1 `task test` needs a running Docker daemon.

@@ -128,6 +128,8 @@ func (s *Server) Routes() http.Handler {
 		// by net/http, and each of its frames gets WriteWait instead.
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(routeTimeout))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// A room's page names the room in its path: no link out may carry it.
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		mux.ServeHTTP(w, r)
 	})
 }

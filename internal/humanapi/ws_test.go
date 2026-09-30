@@ -28,6 +28,7 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/humanapi/ui"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/runwatch"
@@ -758,6 +759,72 @@ func TestUI(t *testing.T) {
 	}
 	if code, _, _ := get(bare.ts, "/"); code != http.StatusNotFound {
 		t.Fatalf("no UI: %d", code)
+	}
+}
+
+// The committed bundle is served from the broker alone, under the strict CSP, with
+// no inline script and every response's hardening headers (T10).
+func TestTheBuiltUI(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.UI = ui.FS })
+	get := func(path string) (int, http.Header, string) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := e.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = r.Body.Close() }()
+		b, _ := io.ReadAll(r.Body)
+		return r.StatusCode, r.Header, string(b)
+	}
+	for _, tc := range []struct{ path, ctype string }{
+		{"/", "text/html"}, {"/r/" + roomID, "text/html"},
+		{"/assets/app.js", "text/javascript"}, {"/assets/app.css", "text/css"},
+	} {
+		code, h, body := get(tc.path)
+		if code != http.StatusOK || !strings.HasPrefix(h.Get("Content-Type"), tc.ctype) || body == "" {
+			t.Fatalf("%s: %d %q", tc.path, code, h.Get("Content-Type"))
+		}
+		if h.Get("Content-Security-Policy") != csp || h.Get("X-Content-Type-Options") != "nosniff" ||
+			h.Get("Referrer-Policy") != "no-referrer" {
+			t.Fatalf("%s: headers %v", tc.path, h)
+		}
+	}
+	for _, d := range []string{"script-src 'self'", "connect-src 'self'", "frame-ancestors 'none'", "default-src 'none'"} {
+		if !strings.Contains(csp, d) {
+			t.Fatalf("csp lacks %q", d)
+		}
+	}
+	_, _, index := get("/")
+	if strings.Count(index, "<script") != 1 || !strings.Contains(index, `<script type="module" src="/assets/app.js"></script>`) {
+		t.Fatalf("index.html must load only /assets/app.js, no inline script:\n%s", index)
+	}
+	// Nothing is fetched from anywhere but the broker.
+	for _, f := range []string{"/", "/assets/app.js", "/assets/app.css"} {
+		if _, _, body := get(f); strings.Contains(body, "src=\"http") || strings.Contains(body, "href=\"http") ||
+			strings.Contains(body, "@import") {
+			t.Fatalf("%s references another origin", f)
+		}
+	}
+}
+
+// Every response, API and refusal included, carries the hardening headers.
+func TestEveryResponseIsHardened(t *testing.T) {
+	e := setup(t)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := e.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized || r.Header.Get("X-Content-Type-Options") != "nosniff" ||
+		r.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("%d %v", r.StatusCode, r.Header)
 	}
 }
 

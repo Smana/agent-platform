@@ -10,6 +10,8 @@ tasks:
       - task: vuln
       - task: test
       - task: crd:check
+      - task: ui:test
+      - task: ui:check
 
   spdx:
     desc: Every .go file opens with the SPDX license line.
@@ -51,3 +53,25 @@ tasks:
     cmds:
       - task: crd:gen
       - git diff --exit-code -- config/crd api
+
+  # web/ builds on the nodejs mise.toml pins, from package-lock.json only (npm ci).
+  ui:build:
+    dir: web
+    cmds:
+      - npm ci --no-audit --no-fund
+      - npm run build
+
+  ui:test:
+    dir: web
+    cmds:
+      - npm ci --no-audit --no-fund
+      - npm run typecheck
+      - npm test
+
+  ui:check:
+    desc: The committed UI bundle is exactly what web/ builds.
+    cmds:
+      - task: ui:build
+      - git diff --exit-code -- internal/humanapi/ui/dist
+      # A file the build adds is untracked, which git diff does not see.
+      - test -z "$(git ls-files --others --exclude-standard -- internal/humanapi/ui/dist)"
