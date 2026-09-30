@@ -36,6 +36,10 @@ tasks:
   test:
     cmds:
       - go test -race -count=1 ./...
+    env:
+      # envtest's kube-apiserver and etcd, downloaded once per version into the user cache.
+      KUBEBUILDER_ASSETS:
+        sh: go tool setup-envtest use -p path 1.36.x
 
   crd:gen:
     cmds:
