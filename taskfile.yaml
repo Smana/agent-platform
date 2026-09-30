@@ -9,6 +9,8 @@ tasks:
       - task: lint
       - task: vuln
       - task: test
+      - task: crd:check
+      - task: migrations
 
   spdx:
     desc: Every .go file opens with the SPDX license line.
@@ -35,3 +37,23 @@ tasks:
   test:
     cmds:
       - go test -race -count=1 ./...
+
+  migrations:
+    desc: atlas.sum matches the migration directory, as the Atlas operator checks it. Offline.
+    cmds:
+      - atlas migrate validate --dir file://internal/store/migrations
+
+  crd:gen:
+    cmds:
+      - go tool controller-gen object crd paths=./api/... output:crd:dir=./config/crd
+      # controller-gen always writes //go:build first, and hack/spdx.sh wants the
+      # license line there; Go allows line comments before the constraint.
+      - |
+        f=api/v1alpha1/zz_generated.deepcopy.go
+        { printf '// SPDX-License-Identifier: Apache-2.0\n\n'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
+
+  crd:check:
+    desc: The committed CRD is exactly what the types generate.
+    cmds:
+      - task: crd:gen
+      - git diff --exit-code -- config/crd api

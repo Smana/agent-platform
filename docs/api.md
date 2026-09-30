@@ -6,14 +6,13 @@ get `:8090` in phase 3. Every body is JSON.
 
 | Port | Who calls it | Authentication | Phase / PR |
 |---|---|---|---|
-| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 (planned, tasks 1.6, 1.9) |
-| `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (planned, task 1.12) |
+| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as SP3's factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) | AP-1 |
+| `:9090` | kubelet, `vmagent` | None: probes and metrics only | AP-1 (task 1.12) |
 | `:8080` | Humans, through oauth2-proxy | ZITADEL ID token and access token | 2 / AP-2 |
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
-| `:8085` (bridge) | kubelet | None | AP-1 (planned, task 1.11) |
+| `:8085` (bridge) | kubelet | None | AP-1 (task 1.11) |
 
-All of it is **planned**: no handler is written yet. The store methods they call (append, range,
-cursor, lease) are written on the AP-1 branch.
+`room-broker serve` serves `:8443` and `:9090` (AP-1). The rest is **planned**.
 
 ## `:8443` — bridge and system API
 
@@ -21,7 +20,12 @@ Served with `ListenAndServeTLS` on the pair cert-manager writes to `/etc/room-br
 broker re-reads the files when they change, so a renewal needs no restart, and a plain-HTTP request
 fails (GP-18). See [security](security.md#tls-on-8443) for the certificate and its CA.
 
-Errors are JSON, `{"error": "<reason>"}`, with the status codes below.
+Errors are JSON, `{"error": "<reason>"}`, with the status codes below. The reasons are stable
+strings, the `wire.Reason*` constants: branch on them, not on the status text.
+
+`hello`, the events endpoint and both system endpoints limit each principal to 10 requests a second (burst
+20) and 10 in flight, §4's per-principal numbers. Over either, they answer `429 rate_limited` with
+`Retry-After: 1`, and the caller retries.
 
 ### Authentication
 
@@ -37,12 +41,12 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 
 | Method and path | Caller | Does | Phase / PR |
 |---|---|---|---|
-| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | AP-1 (planned, task 1.9) |
-| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | AP-1 (planned, task 1.9) |
-| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | AP-1 (planned, task 1.9: pings); 4 / AP-4; 5 / AP-5 |
+| `POST /v1/bridge/hello` | Bridge | Claims the room's bridge lease, returns where the log is | AP-1 |
+| `POST /v1/bridge/events` | Bridge | Appends a batch of harness items | AP-1 |
+| `GET /v1/bridge/stream` | Bridge | One SSE stream down: pings; `deliver` and `interrupt` from phase 4; `decision` from phase 5 | AP-1 (pings); 4 / AP-4; 5 / AP-5 |
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
-| `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 (planned, task 1.9) |
-| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 (planned, task 1.9) |
+| `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 |
+| `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 |
 
 ### `POST /v1/bridge/hello`
 
@@ -61,8 +65,10 @@ and is empty before.
 | `401` | `unauthenticated` | No token, a bad signature, a wrong audience or issuer, an expired token, a `sub` that names no run |
 | `403` | `run_not_live` | The run is terminal, revoked, deleted, or not yet in the watch |
 | `403` | `run_has_no_room` | The run has no `roomRef` |
+| `429` | `rate_limited` | Over the run's limits, shared with its batches |
 | `409` | `room_busy` | Another run holds the room's lease: it is live and was seen within 2 minutes (ruling P17). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
-| `503` | `log_unavailable` | The database is unreachable, or the room's row does not exist yet (its `Room` has not been reconciled) |
+| `503` | `no_room` | The room's row does not exist yet: its `Room` has not been reconciled |
+| `503` | `log_unavailable` | The database is unreachable |
 
 ### `POST /v1/bridge/events`
 
@@ -79,25 +85,36 @@ Request, at most 2 MiB; the bridge sends up to 100 items:
 
 `stream` is `events` (harness events, idempotency scope `agent:<runId>`) or `status` (status
 transitions, scope `agent:<runId>:status`); `seq` is the item's key in that scope, greater than 0.
-Each item is checked against the bridge allowlist, redacted, then appended in order.
+Each payload is redacted, object keys included, then checked against the bridge allowlist: the
+check reads the redacted payload, the one stored. The whole batch is checked before anything is
+written, so a refused item leaves nothing behind. A payload's keys must each have one spelling:
+Go readers fold case (`Delivery`, `ſtatus` and a Kelvin-sign `K` all match), jsonb readers do not, so
+a key that folds onto another or onto a field of the type's envelope struct without being spelled as
+it is refused. A `message` is stored as its envelope struct re-marshals it; a chat's `verdict` and
+`commit` are dropped. An item whose keys are one once redacted (two tokens as keys of an env dump)
+cannot keep either value: that item alone is stored as a `{"refused": true, "type": …, "reason": "key_collision"}` stub and the
+rest of the batch is appended.
 
-Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the key of the batch's last item on
-each stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
-appending again.
+Response `200`: `{"afterHarnessSeq": 36, "afterStatusSeq": 5}`, the highest key of the batch on each
+stream, or `0` for a stream the batch did not carry. A replayed key is acknowledged without
+appending again. An empty batch, `{"items":[]}`, is the bridge's heartbeat: it renews the lease
+and nothing else, and the bridge sends one when it has pushed nothing for 30 s.
 
 | Status | `error` | When | The bridge then |
 |---|---|---|---|
-| `400` | `bad_batch` | Not JSON, or over 2 MiB | Drops the batch and logs it |
-| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, or a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)) | Drops the batch and logs it |
-| `400` | `bad_payload` | The payload is not a JSON document | Drops the batch and logs it |
+| `400` | `bad_batch` | Not JSON, an unknown field, or data after the batch | Never drops it: halves the batch until the refused item is alone, then keeps its slot with a `state_changed{harness_event, harnessKind: refused}` stub naming the broker's reason (Ruling AM). If even the stub is refused, it retries with backoff and logs at Error |
+| `400` | `bad_item` | Unknown type or stream, `seq` ≤ 0, a type or `state_changed` kind a bridge may not push ([allowlist](event-envelope.md#state_changed-kinds)), or a key spelled two ways | As for `bad_batch` |
+| `400` | `bad_payload` | The payload is not a JSON object | As for `bad_batch` |
+| `413` | `batch_too_large` | Over 2 MiB or over 500 items | Halves the batch; a lone item still too large keeps its slot with a size stub |
 | `401` | `unauthenticated` | As for `hello` | Re-reads its token and retries |
 | `403` | `run_not_live`, `run_has_no_room` | As for `hello` | Retries on the next tick |
-| `409` | *(named by AP-1)* | **Ruling Y:** this run no longer holds the room's lease. Nothing is appended | Must not drop the batch: the events are not in the log. Its exact handling lands with AP-1 |
+| `409` | `lease_lost` | **Ruling Y:** this run no longer holds the room's lease, seen by the lease renewal or by the append's fence. Nothing is appended | Must not drop the batch: the events are not in the log. Keeps it and says hello again |
 | `410` | `sealed` | The room is sealed | Stops mirroring |
-| `503` | `log_unavailable` | The database refused the append | Retries; keeps buffering |
+| `429` | `rate_limited` | Over the run's request rate or requests in flight | Must not drop the batch: retries after `Retry-After` |
+| `503` | `log_unavailable`, `timed_out` | The database refused the append, or the request's 30 s ran out before the batch was redacted | Retries; keeps buffering |
 
 A payload Postgres refuses outright (SQLSTATE class 22) is not an error: it is stored as a
-`{"refused": true}` stub so the cursor moves on.
+`{"refused": true, "type": …, "reason": "invalid_value"}` stub so the cursor moves on.
 
 ### `GET /v1/bridge/stream`
 
@@ -145,6 +162,7 @@ the room's current high-water mark. Page by passing the last `seq` you received 
 | `401` | `unauthenticated` | Bad, expired or wrong-audience token |
 | `403` | `not_permitted` | A valid token whose `sub` is not in `systemPrincipals` |
 | `404` | `no_room` | No such room in the log |
+| `429` | `rate_limited` | Over the principal's limits |
 | `503` | `log_unavailable` | The database is unreachable. Never a `lastSeq` of 0 in its place |
 
 ### `POST /v1/rooms/{id}/messages`
@@ -155,8 +173,12 @@ For system callers; appends the reserved kind SP3 owns (C4). Request, at most 32
 {"kind": "task_state", "text": "Reviewing", "clientSeq": 1}
 ```
 
-`kind` must be `task_state`, `clientSeq` greater than 0, `text` at most 16 KiB. The idempotency key
-is `(principal, clientSeq)`: a replay returns the original `seq`. Response `201`: `{"seq": 1843}`.
+`kind` must be `task_state`, `clientSeq` greater than 0, `text` at most 16 KiB; the text is redacted.
+Response `201`: `{"seq": 1843}`.
+
+The idempotency key is `(principal, clientSeq)` alone: a replay answers `200` with the original
+`seq`, **even when its body differs**. The new body is not stored and no error says so, so a caller
+never reuses a `clientSeq` for another message.
 
 | Status | `error` | When |
 |---|---|---|
@@ -164,7 +186,8 @@ is `(principal, clientSeq)`: a replay returns the original `seq`. Response `201`
 | `401`, `403` | `unauthenticated`, `not_permitted` | As for reads |
 | `404` | `no_room` | No such room |
 | `410` | `sealed` | The room is sealed |
-| `503` | `log_unavailable` | The database refused it |
+| `429` | `rate_limited` | Over the principal's limits |
+| `503` | `log_unavailable`, `timed_out` | The database refused it, or the request ran out of time |
 
 ## `:9090` — probes and metrics
 
@@ -175,7 +198,7 @@ is `(principal, clientSeq)`: a replay returns the original `seq`. Response `201`
 | `GET /startupz` | The schema is migrated (`events` exists) | Startup: the first deploy waits for CNPG and the Atlas migration |
 | `GET /metrics` | Always | Prometheus metrics ([operations](operations.md#metrics)) |
 
-The bridge serves `GET /healthz` on `:8085`, for kubelet only. It reports unhealthy only when the
+The bridge serves `GET /healthz` on `:8085`, for kubelet only, and no metrics (Ruling AP). It reports unhealthy only when the
 harness answered once and has been unreachable for more than 60 s: as a native sidecar its startup
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
