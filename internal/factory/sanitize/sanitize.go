@@ -4,76 +4,114 @@
 // (external review G2, ruling R43). Every 2025–26 agent incident entered through such text:
 // invisible instructions, and markdown images that exfiltrate when rendered. It is a filter,
 // not a boundary: egress policy and the merge gate's paths are the controls.
+//
+// Ruling SH: it neutralises instead of parsing. A regex cannot follow CommonMark, so every
+// trigger of an image, a reference definition or raw HTML is defused wherever it appears, code
+// spans included. The cost, accepted by the ruling, is a stray backslash or entity in benign text.
 package sanitize
 
 import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Report counts what Text removed or replaced. The intake logs it, so an injection attempt shows.
 type Report struct {
-	Invisible int // zero-width, bidi, word-joiner and Unicode tag characters
-	Control   int // C0 and C1 controls other than \n and \t
-	Images    int // markdown and HTML images
+	Invisible int // format (Cf) characters, variation selectors, Unicode tags and fillers
+	Control   int // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
+	Images    int // markdown and HTML images, reduced to their alt text or defused
+	Markup    int // other raw HTML tags and reference definitions, defused
 }
 
 // Changed is whether Text altered anything.
-func (r Report) Changed() bool { return r.Invisible+r.Control+r.Images > 0 }
+func (r Report) Changed() bool { return r.Invisible+r.Control+r.Images+r.Markup > 0 }
 
 // String is the report as one log-safe line: counts only, never the removed text.
 func (r Report) String() string {
-	return fmt.Sprintf("%d invisible and %d control characters removed, %d images reduced to their alt text",
-		r.Invisible, r.Control, r.Images)
+	return fmt.Sprintf("%d invisible and %d control characters removed, %d images and %d other markup "+
+		"(raw HTML, reference definitions) defused", r.Invisible, r.Control, r.Images, r.Markup)
 }
 
 var (
-	// ![alt](url "title") and ![alt][ref]: the URL goes, the alt text stays (R43).
+	// ![alt](url "title") and ![alt][ref] on one line: the URL goes, the alt text stays (R43).
+	// Only a convenience: whatever it misses is still defused by its "![" below.
 	mdImage = regexp.MustCompile(`!\[([^\]\n]*)\](?:\([^)\n]*\)|\[[^\]\n]*\])`)
 	htmlImg = regexp.MustCompile(`(?i)<img\b[^>]*>`)
+	// CommonMark raw HTML opens with "<" and a letter, "/", "!" or "?": tags, comments,
+	// declarations and processing instructions. "<" before a space or a digit stays.
+	htmlOpen = regexp.MustCompile(`<[A-Za-z/!?]`)
 )
 
+// invisible is a character that renders as nothing yet reaches the model. The categories
+// cover R43's enumeration (U+200B–200F, 202A–202E, 2060–2064, 2066–2069, FEFF, the tags) and
+// what it missed: U+061C, 206A–206F, 00AD, 180E, FFF9–FFFB, 1D173–1D17A, and the variation
+// selectors that carry the 2025 "emoji smuggling" payloads.
 func invisible(r rune) bool {
 	switch {
-	case r >= 0x200B && r <= 0x200F, // zero-width space and joiners, LRM, RLM
-		r >= 0x202A && r <= 0x202E,   // bidi embeddings and overrides
-		r >= 0x2060 && r <= 0x2064,   // word joiner, invisible operators
-		r >= 0x2066 && r <= 0x2069,   // bidi isolates
-		r == 0xFEFF,                  // zero-width no-break space
-		r >= 0xE0000 && r <= 0xE007F: // Unicode tags: invisible ASCII, the "ASCII smuggling" vector
+	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Variation_Selector, r),
+		r >= 0xE0000 && r <= 0xE001F,                       // the Tags block's unassigned points: the rest of it is Cf
+		r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0: // Hangul fillers, letters that draw nothing
 		return true
 	}
 	return false
 }
 
-func control(r rune) bool {
-	return (r < 0x20 && r != '\n' && r != '\t') || (r >= 0x7F && r <= 0x9F)
-}
-
-// Text removes invisible and control characters, then reduces every image to its alt text:
-// in that order, so an image split by a zero-width space is still an image.
+// Text removes invisible and control characters, then defuses every image, reference
+// definition and raw HTML tag. The order matters: an image split by a zero-width space is
+// still an image. Neither step inserts what the first removes, and the second repeats until
+// its output stops changing, so no replacement can complete a new image with its neighbours.
+//
+// Text has no length bound of its own: every step is linear (RE2), and callers bound the
+// input (Snapshot truncates; RunLore's text is bounded by its caller).
 func Text(s string) (string, Report) {
 	var rep Report
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.Map(func(r rune) rune {
 		switch {
+		case r == '\u2028' || r == '\u2029': // a line break the maintainer never saw as one
+			rep.Control++
+			return '\n'
 		case invisible(r):
 			rep.Invisible++
 			return -1
-		case control(r):
+		case unicode.IsControl(r) && r != '\n' && r != '\t':
 			rep.Control++
 			return -1
 		}
 		return r
 	}, s)
+	for {
+		next := defuse(s, &rep)
+		if next == s {
+			return s, rep
+		}
+		s = next
+	}
+}
+
+// defuse is one pass of the markup step. Its tokens open with "⟦", which no markdown syntax
+// joins; its escapes leave the text readable ("!\[", "]\:", "&lt;"). An entity, not a
+// backslash, escapes "<": a backslash already before it would escape ours instead.
+func defuse(s string, rep *Report) string {
 	s = mdImage.ReplaceAllStringFunc(s, func(m string) string {
 		rep.Images++
-		return "[image: " + mdImage.FindStringSubmatch(m)[1] + "]"
+		return "⟦image: " + mdImage.FindStringSubmatch(m)[1] + "⟧"
 	})
 	s = htmlImg.ReplaceAllStringFunc(s, func(string) string {
 		rep.Images++
-		return "[image]"
+		return "⟦image⟧"
 	})
-	return s, rep
+	// No markdown image exists without "![", however its destination or alt text is written.
+	rep.Images += strings.Count(s, "![")
+	s = strings.ReplaceAll(s, "![", `!\[`)
+	// No reference definition exists without "]:"; a definition may span lines, sit in a quote
+	// or a list, so the pair is defused wherever it appears.
+	rep.Markup += strings.Count(s, "]:")
+	s = strings.ReplaceAll(s, "]:", `]\:`)
+	return htmlOpen.ReplaceAllStringFunc(s, func(m string) string {
+		rep.Markup++
+		return "&lt;" + m[1:]
+	})
 }
