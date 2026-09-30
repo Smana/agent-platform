@@ -658,43 +658,6 @@ func TestABodyCannotPlantAMarker(t *testing.T) {
 	})
 }
 
-// Neutralise makes untrusted text (an agent's summary) inert on a pull request:
-// no hidden direction or zero-width characters, no HTML (comments, images,
-// details), no auto-loading image, no @mention notifying anyone.
-func TestNeutralise(t *testing.T) {
-	for _, tc := range []struct{ name, in, want string }{
-		{"plain text is kept", "Looks right.\n- tests pass\n> quoted", "Looks right.\n- tests pass\n> quoted"},
-		{"a fake marker", "ok <!-- agent-room:3kq7x2ma:42 -->", "ok &lt;!-- agent-room:3kq7x2ma:42 -->"},
-		{"an HTML image", `<img src="https://evil.example/t.png">`, `&lt;img src="https://evil.example/t.png">`},
-		{"a details block", "<details open>x</details>", "&lt;details open>x&lt;/details>"},
-		{"a markdown image", "![x](https://evil.example/t.png)", "!\\[x](https://evil.example/t.png)"},
-		{"a reference image", "![x][r]\n\n[r]: https://evil.example/t.png", "!\\[x][r]\n\n[r]: https://evil.example/t.png"},
-		{"a mention", "cc @Smana and @org/team", "cc ＠Smana and ＠org/team"},
-		{"an email is not a mention", "mail a@b.example", "mail a＠b.example"},
-		{"a lone at", "meet @ noon", "meet @ noon"},
-		{"bidi overrides", "safe\u202egnp.exe\u202c ok\u2066x\u2069", "safegnp.exe okx"},
-		{"zero-width and BOM", "a\u200bb\u200dc\ufeffd\u2060e\u00adf", "abcdef"},
-		{"controls", "a\u0000b\u001b[31mc\u0085d\re", "ab[31mcde"},
-		{"an entity that would decode", "&lt;!-- agent-room:x:1 --&gt;", "&amp;lt;!-- agent-room:x:1 --&amp;gt;"},
-		// Review 3.4 I1: a dropped character must not join what it separated.
-		{"a zero-width space inside an image", "!\u200b[x](https://evil/p.png)", "!\\[x](https://evil/p.png)"},
-		{"a CR inside an image", "!\r[x](https://evil/p.png)", "!\\[x](https://evil/p.png)"},
-		{"a zero-width space inside a mention", "@\u200bsmana", "＠smana"},
-		{"a NUL inside a team mention", "@\u0000org/team", "＠org/team"},
-		{"a word joiner inside an image", "!\u2060[x](u)", "!\\[x](u)"},
-		{"a BOM inside a mention", "@\ufeffsmana", "＠smana"},
-		{"a bidi override inside an image", "!\u202e[x](u)", "!\\[x](u)"},
-		{"a bidi override inside a mention", "@\u202esmana", "＠smana"},
-		{"a control inside an HTML tag", "<\u0000img src=u>", "&lt;img src=u>"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := Neutralise(tc.in); got != tc.want {
-				t.Fatalf("Neutralise(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 // m2: a token is scoped to one repository, so it is cached per owner/repo: a
 // second repository of the same owner gets its own, and the first keeps its.
 func TestTokensArePerRepository(t *testing.T) {
@@ -712,36 +675,85 @@ func TestTokensArePerRepository(t *testing.T) {
 	})
 }
 
-// safe is Neutralise's contract on its output: nothing GitHub would render as
-// HTML, an image or a mention, and no hidden character.
-func safe(o string) bool {
-	rs := []rune(o)
-	for i, r := range rs {
-		next := rune(0)
-		if i+1 < len(rs) {
-			next = rs[i+1]
-		}
-		switch {
-		case r != '\n' && r != '\t' && (unicode.Is(unicode.Cf, r) || unicode.IsControl(r)),
-			r == '<',
-			r == '!' && next == '[',
-			r == '@' && (unicode.IsLetter(next) || unicode.IsDigit(next)),
-			r == '&' && !strings.HasPrefix(string(rs[i:]), "&amp;") && !strings.HasPrefix(string(rs[i:]), "&lt;"):
-			return false
+// fencedBody reads o as CommonMark reads a fenced code block: the opening
+// fence, then every line up to the first that could close it. ok is false
+// when the block ends anywhere but at o's last line.
+func fencedBody(o string) (string, bool) {
+	lines := strings.Split(o, "\n")
+	fence := lines[0]
+	if len(fence) < 3 || strings.Trim(fence, "`") != "" {
+		return "", false
+	}
+	for i := 1; i < len(lines); i++ {
+		l := strings.TrimRight(strings.TrimLeft(lines[i], " "), " \t")
+		if len(lines[i])-len(strings.TrimLeft(lines[i], " ")) <= 3 && len(l) >= len(fence) && strings.Trim(l, "`") == "" {
+			return strings.Join(lines[1:i], "\n"), i == len(lines)-1
 		}
 	}
-	return true
+	return "", false
 }
 
-// FuzzNeutralise holds the contract for any input, the review's probes seeded.
-func FuzzNeutralise(f *testing.F) {
-	for _, s := range []string{"!\u200b[x](u)", "!\r[x](u)", "@\u200bsmana", "@\x00org/team", "!\u200b\u200b[x](u)",
-		"<!-- m -->", "&#60;img>", "!!\u202e[[x](u)", "@@\ufeffa", "a\u00ad@\u2060b"} {
+func hidden(r rune) bool {
+	return r != '\n' && r != '\t' && (unicode.Is(unicode.Cf, r) || unicode.IsControl(r) ||
+		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || unicode.Is(unicode.Variation_Selector, r))
+}
+
+// Quote puts untrusted text where GitHub renders it as text only: a fenced code
+// block that nothing in the text can close, with no hidden character. In a code
+// block GitHub renders no mention, cross-reference (a URL, #N, GH-N, owner/repo#N,
+// a SHA), image, link or HTML (reviews 3.4 I1, 3.5 m3).
+func TestQuote(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain text", "Looks right.\n- tests pass", "Looks right.\n- tests pass"},
+		{"references stay text", "see #12, GH-12, Smana/other#3, 4be1c9d and https://github.com/Smana/other/issues/3",
+			"see #12, GH-12, Smana/other#3, 4be1c9d and https://github.com/Smana/other/issues/3"},
+		{"mentions, images and HTML stay text", "cc @Smana ![x](https://evil/p.png) <img src=x> <!-- m -->",
+			"cc @Smana ![x](https://evil/p.png) <img src=x> <!-- m -->"},
+		{"a fence inside cannot close the block", "a\n```\n@Smana\n````\nb", "a\n```\n@Smana\n````\nb"},
+		{"an indented fence inside", "   `````\n@x", "   `````\n@x"},
+		{"code spans keep their backticks", "run `go test` and `task check`", "run `go test` and `task check`"},
+		{"review 3.4's probes lose their hidden characters", "!\u200b[x](u) !\r[y](u) @\u200bsmana @\u0000org/team",
+			"![x](u) ![y](u) @smana @org/team"},
+		{"bidi, joiners, BOM, soft hyphen", "a\u202eb\u2066c\u2060d\ufeffe\u00adf", "abcdef"},
+		{"every default-ignorable", "a\u034fb\u115fc\u3164d\ufe0fe\U000e0041f", "abcdef"},
+		{"controls", "a\u0000b\u001b[31mc\u0085d\re", "ab[31mcde"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Quote(tc.in)
+			body, ok := fencedBody(out)
+			if !ok || body != tc.want {
+				t.Fatalf("Quote(%q) = %q: body %q, closes at the end %v", tc.in, out, body, ok)
+			}
+		})
+	}
+}
+
+// FuzzQuote holds the contract for any input: one fenced block, closed only
+// at its end, holding the input minus its hidden characters.
+func FuzzQuote(f *testing.F) {
+	for _, s := range []string{"!\u200b[x](u)", "```", "````\n```", "  ```\n", "`\n``\n```\n````", "@\u034fa", "a\r\n```"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
-		if out := Neutralise(in); !safe(out) {
-			t.Fatalf("Neutralise(%q) = %q", in, out)
+		out := Quote(in)
+		body, ok := fencedBody(out)
+		if !ok || body != strings.Map(func(r rune) rune {
+			if hidden(r) {
+				return -1
+			}
+			return r
+		}, in) {
+			t.Fatalf("Quote(%q) = %q", in, out)
 		}
 	})
+}
+
+// The fence is the shortest that holds: three backticks, or one more than the
+// longest run in the text, so a summary with code spans still reads plainly.
+func TestQuotesFenceIsTheShortestThatHolds(t *testing.T) {
+	for in, fence := range map[string]string{"plain": "```", "`a` `b` `c`": "```", "``a``": "```", "a ``` b": "````", "a ````` b": "``````"} {
+		if got := strings.SplitN(Quote(in), "\n", 2)[0]; got != fence {
+			t.Errorf("Quote(%q) opens with %q, want %q", in, got, fence)
+		}
+	}
 }

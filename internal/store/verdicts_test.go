@@ -65,7 +65,7 @@ func TestUnpostedVerdicts(t *testing.T) {
 	if _, _, err := s.Append(ctx, verdictDraft(2, envelope.Actor{Kind: envelope.ActorHuman, ID: "human:ana"})); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10)
+	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10, nil)
 	if err != nil || len(got) != 1 || got[0].Seq != agent.Seq || got[0].RoomID != room {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
@@ -73,7 +73,7 @@ func TestUnpostedVerdicts(t *testing.T) {
 	if err := json.Unmarshal(got[0].Payload, &p); err != nil || p.PullRequest == "" || got[0].Actor != reviewer {
 		t.Fatalf("the whole event is returned: %+v %+v", got[0], p)
 	}
-	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(time.Minute), 10); len(got) != 0 {
+	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(time.Minute), 10, nil); len(got) != 0 {
 		t.Fatal("outside the window")
 	}
 	if _, _, err := s.Append(ctx, envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
@@ -81,7 +81,7 @@ func TestUnpostedVerdicts(t *testing.T) {
 		Payload: envelope.StatePayload("verdict_posted", map[string]any{"verdictSeq": agent.Seq})}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10); len(got) != 0 {
+	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10, nil); len(got) != 0 {
 		t.Fatalf("recorded, still returned: %+v", got)
 	}
 }
@@ -97,7 +97,7 @@ func TestUnpostedVerdictsOldestFirstAndLimited(t *testing.T) {
 		}
 		seqs = append(seqs, ev.Seq)
 	}
-	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 2)
+	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 2, nil)
 	if err != nil || len(got) != 2 || got[0].Seq != seqs[0] || got[1].Seq != seqs[1] {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
@@ -113,7 +113,7 @@ func TestASealedRoomsVerdictIsSkipped(t *testing.T) {
 	if err := s.CloseRoom(ctx, room, "deleted"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10); len(got) != 0 {
+	if got, _ := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10, nil); len(got) != 0 {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -136,7 +136,7 @@ func TestAPostedVerdictHidesOnlyItself(t *testing.T) {
 		Payload: envelope.StatePayload("verdict_posted", map[string]any{"verdictSeq": first.Seq})}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10)
+	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10, nil)
 	if err != nil || len(got) != 1 || got[0].Seq != second.Seq {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
@@ -150,10 +150,10 @@ func TestUnpostedVerdictsSinceIsExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.UnpostedVerdicts(ctx, v.TS, 10); err != nil || len(got) != 0 {
+	if got, err := s.UnpostedVerdicts(ctx, v.TS, 10, nil); err != nil || len(got) != 0 {
 		t.Fatalf("at the verdict's ts: %+v, %v", got, err)
 	}
-	if got, err := s.UnpostedVerdicts(ctx, v.TS.Add(-time.Microsecond), 10); err != nil || len(got) != 1 {
+	if got, err := s.UnpostedVerdicts(ctx, v.TS.Add(-time.Microsecond), 10, nil); err != nil || len(got) != 1 {
 		t.Fatalf("a microsecond before: %+v, %v", got, err)
 	}
 }
@@ -174,5 +174,58 @@ func TestTheVerdictIndexIsValid(t *testing.T) {
 	}
 	if b, err := os.ReadFile("migrations/20260929120000_verdicts.sql"); err != nil || !strings.HasPrefix(string(b), "-- atlas:txmode none\n") {
 		t.Fatal("Atlas must run the migration outside a transaction: CONCURRENTLY refuses one")
+	}
+}
+
+// A verdict in backoff is excluded by id, so the next ones fill the batch
+// (ruling TC: stuck verdicts never starve new ones).
+func TestUnpostedVerdictsExcludeByID(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := t.Context()
+	var evs []envelope.Event
+	for n := range int64(3) {
+		ev, _, err := s.Append(ctx, verdictDraft(n+1, reviewer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	got, err := s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 1, []string{evs[0].ID})
+	if err != nil || len(got) != 1 || got[0].Seq != evs[1].Seq {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+	got, err = s.UnpostedVerdicts(ctx, time.Now().Add(-time.Hour), 10, []string{evs[0].ID, evs[2].ID})
+	if err != nil || len(got) != 1 || got[0].Seq != evs[1].Seq {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+}
+
+// ExpiredVerdicts are the unposted ones at or before the window's start, so
+// the poster can say once why they never reached GitHub (review 3.5 m2b).
+func TestExpiredVerdicts(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := t.Context()
+	old, _, err := s.Append(ctx, verdictDraft(1, reviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ExpiredVerdicts(ctx, old.TS.Add(-time.Microsecond), 10); err != nil || len(got) != 0 {
+		t.Fatalf("inside the window: %+v, %v", got, err)
+	}
+	got, err := s.ExpiredVerdicts(ctx, old.TS, 10)
+	if err != nil || len(got) != 1 || got[0].Seq != old.Seq {
+		t.Fatalf("got %+v, err %v", got, err)
+	}
+	// A chat or a human's verdict never expires as an agent's.
+	if _, _, err := s.Append(ctx, verdictDraft(2, envelope.Actor{Kind: envelope.ActorHuman, ID: "human:ana"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Append(ctx, envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		Type: envelope.StateChanged, Origin: envelope.OriginBroker, OriginClient: VerdictsClient, OriginSeq: old.Seq,
+		Payload: envelope.StatePayload("verdict_not_posted", map[string]any{"verdictSeq": old.Seq, "reason": "expired"})}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ExpiredVerdicts(ctx, time.Now(), 10); err != nil || len(got) != 0 {
+		t.Fatalf("recorded, or not an agent's: %+v, %v", got, err)
 	}
 }

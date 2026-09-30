@@ -32,7 +32,7 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Seal** | The last event of a room. After it, nothing can append. A room seals when it closes or fills up (100 000 events or 256 MiB), and sealing starts its retention clock | `rooms.sealed`, `closed_at` | AP-1 |
 | **Retention** | How long a closed room's log is kept: `spec.retention`, `<n>d`, default `90d` (OD-17). A daily job deletes expired sealed rooms | `rooms.retention` | AP-1 (the column and `room-broker retention`); the CronJob S1 (planned) |
 | **Bridge lease** | Which run's bridge holds the room. A second live run's bridge is refused `409 room_busy`. With Ruling Y, the lease also fences writes: a displaced bridge cannot append | `rooms.bridge_run`, `bridge_seen_at` | AP-1, fencing from Ruling Y |
-| **Data class** | `public` or `internal` (C3): which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary (phase 3) | `Room.spec.dataClass` | AP-1 (the field); the verdict rule planned, phase 3 |
+| **Data class** | `public` or `internal` (C3): which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary. Fixed at creation (ruling TD) | `Room.spec.dataClass` | AP-1 (the field); the verdict rule AP-3 |
 | **Tier** | A logical model name on the agent gateway: `tier-light`, `tier-standard`, `tier-frontier` (C5), chosen once per task by SP3's classifier (C7). Rooms do not carry or change it: escalating a task means a new run, never a switch inside one | `AgentRun.spec.model` | Owned by SP4 |
 | **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker | AP-1 |
 | **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation (ruling P15). That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` | AP-1 |
@@ -60,7 +60,7 @@ prints `Phase`, `Driver`, `Seq`, `Pending` and `Class`.
 | `approvals.ttl` | string | no | `4h` | `^[1-9][0-9]{0,3}(m\|h)$` (at most 9999h) | Auto-deny delay for an unattended approval |
 | `approvals.fourEyes` | bool | no | `false` | — | OD-16: the approver must not have prompted the turn |
 | `retention` | string | no | `90d` | `^[1-9][0-9]{0,3}d$` | How long the sealed log is kept (OD-17) |
-| `dataClass` | string | **yes** | — | `public`, `internal` | Runs requested for this room inherit it (C3) |
+| `dataClass` | string | **yes** | — | `public`, `internal`; immutable (ruling TD) | Runs requested for this room inherit it (C3) |
 | `repository` | string | no | `Smana/cloud-native-ref` | `^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$` | The repository its runs work on (ruling P25) |
 
 | `status` field | Type | Meaning |

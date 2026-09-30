@@ -52,7 +52,11 @@ func TestLeaderLoop(t *testing.T) {
 
 type fakeVerdictLog struct{ drafts []envelope.Draft }
 
-func (f *fakeVerdictLog) UnpostedVerdicts(context.Context, time.Time, int) ([]envelope.Event, error) {
+func (f *fakeVerdictLog) UnpostedVerdicts(context.Context, time.Time, int, []string) ([]envelope.Event, error) {
+	return nil, nil
+}
+
+func (f *fakeVerdictLog) ExpiredVerdicts(context.Context, time.Time, int) ([]envelope.Event, error) {
 	return nil, nil
 }
 
@@ -135,7 +139,7 @@ func (*leadingProbe) Comment(context.Context, string, string, string) (string, e
 // true while the loop runs it (ruling SY).
 func TestThePosterLeadsWithItsLoop(t *testing.T) {
 	probe := &leadingProbe{seen: make(chan bool, 1)}
-	p := &verdictpost.Poster{Now: time.Now}
+	p := &verdictpost.Poster{Now: time.Now, Log: &fakeVerdictLog{}}
 	probe.p, p.GitHub = p, probe
 	tick := make(chan time.Time)
 	l := posterLoop(p, slog.New(slog.DiscardHandler), func(time.Duration) (<-chan time.Time, func()) { return tick, func() {} })
