@@ -203,7 +203,7 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
-## `:8080` — human API (planned, phase 2 / AP-2)
+## `:8080` — human API (phase 2 / AP-2)
 
 Reached only through oauth2-proxy on `rooms.<private domain>`. Every request carries the human's
 ZITADEL **ID token** in `Authorization` and their **JWT access token** in `X-Forwarded-Access-Token`,
@@ -225,7 +225,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Method and path | Does | Phase / PR |
 |---|---|---|
-| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy | 2 / AP-2 |
+| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log | 2 / AP-2 |
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller | 4 / AP-4 |
@@ -235,7 +235,8 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Status before upgrade | When |
 |---|---|
-| `401` / `403` | Not authenticated; not in an agents group; not allowed to read this room (`not_permitted`) |
+| `401` | Not authenticated, or the token is already past its expiry |
+| `403` | A foreign `Origin` (T9); not in an agents group; not allowed to read this room (`not_permitted`) |
 | `404` | No such room |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica, ruling P22) |
 | `503` | The log is unavailable |
@@ -244,23 +245,31 @@ One JSON object per text frame (Appendix B).
 
 | Direction | Frame | Fields |
 |---|---|---|
-| client → broker | `hello` | `roomId`, `afterSeq?` or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
-| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards) |
+| client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
+| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
 | broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs}` |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
 
-Replay is lossless: the broker subscribes to the room's hints, reads the high-water mark, pages the
-log up to it, then streams live events, dropping any at or below the mark. A gap in live `seq`
-triggers a range read.
+Replay is lossless: the broker subscribes to the room's fan-out (the hub), reads the high-water
+mark, pages the log up to it, then streams live events, dropping any at or below the mark. A gap in
+live `seq` triggers a range read.
 
 | Close code | Reason | Client should |
 |---|---|---|
 | `4001` | `reauth` | Reconnect: the connection reached `min(token expiry, 1 h)` |
 | `1008` | `slow_consumer` | Reconnect with `afterSeq`: over 2 MiB was pending |
-| `1008` | `hello first` | Send `hello` first |
+| `1008` | `hello first` | Send `hello` first, within 10 s |
+| `1009` | — | Keep a frame under 32 KiB |
+| `1007` | `failed to unmarshal JSON` | Send each frame as one JSON object |
+| `1001` | `shutdown` | Reconnect: the replica is stopping |
+| `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
+
+The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
+close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with
+`afterSeq`. So is a client that sends no `hello` within 10 s.
 
 ### Actions (planned, phases 4–6)
 

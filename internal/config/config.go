@@ -31,14 +31,24 @@ type IssuerConfig struct {
 	SubPattern string `json:"subPattern,omitempty"`
 }
 
-// HumanConfig is the viewers' identity provider (phase 2). Client ids are read
-// from mounted files at use, so a rotation needs no restart.
+// HumanConfig is the viewers' identity provider (phase 2). The client and project
+// ids are read from mounted files at use, never literals (Ruling AS-a): the IdP
+// mints them, anew on every gcp-0 build, and a rotation needs no restart.
 type HumanConfig struct {
-	Issuer              string `json:"issuer"`
-	JWKSURL             string `json:"jwksURL"`
-	ClientIDFile        string `json:"clientIDFile"`                  // the rooms-proxy client id, from agents-secrets
-	RoomctlClientIDFile string `json:"roomctlClientIDFile,omitempty"` // phase 6
-	Origin              string `json:"origin"`
+	Issuer              string       `json:"issuer"`
+	JWKSURL             string       `json:"jwksURL"`
+	ClientIDFile        string       `json:"clientIDFile"`                  // the rooms-proxy client id, from agents-secrets
+	RoomctlClientIDFile string       `json:"roomctlClientIDFile,omitempty"` // phase 6
+	ProjectIDFile       string       `json:"projectIDFile"`                 // a human token's aud must hold it (Ruling AS)
+	Origin              string       `json:"origin"`
+	Groups              GroupsConfig `json:"groups"`
+}
+
+// GroupsConfig names the IdP's two agent groups, which feed policy.Groups. They
+// are literals: names we choose, not ids the IdP mints.
+type GroupsConfig struct {
+	Admin  string `json:"admin"`
+	Member string `json:"member"`
 }
 
 // TLSConfig names the :8443 key pair, re-read when it changes (GP-18).
@@ -105,7 +115,32 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("systemPrincipals[%s]: %q must be system:<component>", sub, id))
 		}
 	}
+	errs = append(errs, c.Human.validate()...)
 	return errors.Join(errs...)
+}
+
+func (h HumanConfig) validate() []error {
+	errs := issuer("human", IssuerConfig{Issuer: h.Issuer, JWKSURL: h.JWKSURL})
+	if h.ClientIDFile == "" {
+		errs = append(errs, errors.New("human.clientIDFile: is required"))
+	}
+	if h.ProjectIDFile == "" {
+		errs = append(errs, errors.New("human.projectIDFile: is required"))
+	}
+	// Compared verbatim with the Origin header, which is scheme://host[:port].
+	if u, err := url.Parse(h.Origin); err != nil || u.Scheme != "https" || u.Host == "" || u.Scheme+"://"+u.Host != h.Origin {
+		errs = append(errs, errors.New("human.origin: must be https://host[:port], as a browser sends it"))
+	}
+	if h.Groups.Admin == "" {
+		errs = append(errs, errors.New("human.groups.admin: is required"))
+	}
+	if h.Groups.Member == "" {
+		errs = append(errs, errors.New("human.groups.member: is required"))
+	}
+	if h.Groups.Admin != "" && h.Groups.Admin == h.Groups.Member {
+		errs = append(errs, errors.New("human.groups: admin and member must differ"))
+	}
+	return errs
 }
 
 func issuer(field string, is IssuerConfig) []error {

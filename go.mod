@@ -3,6 +3,7 @@ module github.com/Smana/agent-platform
 go 1.27.1
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-logr/logr v1.4.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.11.0

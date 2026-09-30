@@ -262,7 +262,8 @@ func (f *fakeRefresher) Refresh(ctx context.Context) error {
 	return f.err
 }
 
-// Ruling AQ: every replica refreshes each issuer about hourly, whatever fails.
+// Ruling AQ: every replica refreshes each issuer at start, then about hourly,
+// whatever fails; the start is a lazy verifier's first fetch.
 func TestRefreshJWKS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -273,11 +274,11 @@ func TestRefreshJWKS(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- refreshJWKS(runCtx, []refresher{failing, ok}, after) }()
 	for round := range int32(3) {
-		d := <-waits // the loop waits: every verifier has had round refreshes
+		d := <-waits // the loop waits: every verifier has had round+1 refreshes
 		if d < jwksRefreshEvery || d >= jwksRefreshEvery+jwksJitter {
 			t.Fatalf("waits %s, want an hour plus under %s of jitter", d, jwksJitter)
 		}
-		if ok.calls.Load() != round || failing.calls.Load() != round {
+		if ok.calls.Load() != round+1 || failing.calls.Load() != round+1 {
 			t.Fatalf("round %d: refreshed %d and %d times; a failure must not skip the others",
 				round, failing.calls.Load(), ok.calls.Load())
 		}

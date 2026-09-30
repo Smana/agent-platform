@@ -1,0 +1,19 @@
+body { font: 14px/1.45 system-ui, sans-serif; margin: 0; }
+header, footer { padding: 8px 16px; background: #f4f4f5; position: sticky; }
+header { top: 0; } footer { bottom: 0; font-family: ui-monospace, monospace; }
+footer .status { float: right; color: #52525b; }
+footer[data-status="live"] .status { color: #15803d; }
+main { padding: 8px 16px; }
+.ev { border-bottom: 1px solid #e4e4e7; padding: 6px 0; }
+.ev-head { color: #52525b; font-size: 12px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
+.md a { overflow-wrap: anywhere; }
+.status-error, .status-rejected { color: #b91c1c; }
+.verdict-approve { color: #15803d; } .verdict-changes { color: #b45309; }
+.redacted { color: #7c3aed; font-size: 12px; }
+@media (prefers-color-scheme: dark) {
+  body { background: #18181b; color: #e4e4e7; }
+  header, footer { background: #27272a; }
+  .ev { border-color: #3f3f46; }
+  .ev-head, footer .status { color: #a1a1aa; }
+}
