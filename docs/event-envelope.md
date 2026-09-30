@@ -81,9 +81,9 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | `broker:seal` | `1` | The seal | AP-1 |
 | `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 |
 | `human:<sub>` | The browser's `clientSeq` | Human actions | Planned, phase 4 |
-| `agent:<runId>` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | Planned, phase 3 |
+| `agent:<runId>:tools` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | AP-3 |
 | `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, callId)` | The bridge's approval requests | Planned, phase 5 |
-| `broker:verdicts` | The verdict's `seq` | The verdict poster's outcome | Planned, phase 3 |
+| `broker:verdicts` | The verdict's `seq` | The verdict poster's outcome | AP-3 |
 
 ## Limits
 
@@ -114,7 +114,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken \| lease_expired}` | The broker | Planned, phase 4 |
-| `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | Planned, phase 3 |
+| `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge | Per kind |
 
 ### `state_changed` kinds
@@ -128,7 +128,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge | AP-1 |
 | `harness_paused` | — | Bridge | AP-1 |
 | `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge | AP-1 |
-| `verdict_posted`, `verdict_not_posted` | `url` or `reason`, and `verdictSeq` | Broker (leader) | Planned, phase 3 |
+| `verdict_posted`, `verdict_not_posted` | `verdictSeq`, and `url` or `reason`: `no_pull_request`, or `github_refused` with `detail` `http_<status>` or `too_many_comments` | Broker (leader) | AP-3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
 | `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements phase 4 |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |

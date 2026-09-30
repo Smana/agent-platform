@@ -317,7 +317,8 @@ never opens a stream or sends a request of its own (agent-router#2715).
 
 `tools/list` lists the tools of the run's role. A call needs the role and the §1 matrix's action
 (`read` for `room_read`, `chat` for the three writes), then spends the run's one call per second.
-The limit is per broker replica. Arguments are strict: an unknown field is refused, and text holds
+The limit is per broker replica: with the two replicas of phase 2, a run whose calls the gateway
+spreads across both can make two a second (review M4). Arguments are strict: an unknown field is refused, and text holds
 no control character but tab, newline and carriage return. Every write is redacted before it is
 appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 

@@ -61,8 +61,8 @@ const (
 )
 
 // RunBroker runs room-broker's subcommand args[0]: serve (the default) or
-// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE and
-// ROOMS_MCP_KEY.
+// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
+// ROOMS_MCP_KEY and ROOMS_GITHUB_APP_DIR.
 func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func(string) string) error {
 	cmd := "serve"
 	if len(args) > 0 {
@@ -178,6 +178,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
 	}
 	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
+	if err := addVerdictPoster(getenv("ROOMS_GITHUB_APP_DIR"), mgr.Add, logStore, mgr.GetClient(), ns, cfg.PublicURL, m, log); err != nil {
+		return fmt.Errorf("room-broker: verdict poster: %w", err)
+	}
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig

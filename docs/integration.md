@@ -108,7 +108,8 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `ROOMS_DATABASE_URL` | The `uri` of `xplane-rooms-cnpg-role-rooms-broker` (the retention job: `…-rooms-retention`) | 1 |
 | `POD_NAMESPACE` | Where Rooms and the leader lease live | 1 |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally | 1 |
-| `ROOMS_MCP_KEY` | The key the MCPRoute injects | 3 |
+| `ROOMS_MCP_KEY` | The key the MCPRoute injects. Unset: `:8090` refuses every call | 3 |
+| `ROOMS_GITHUB_APP_DIR` | The factory App's key volume (`app_id`, `private_key`; P31: optional, `defaultMode: 0440` with the pod's `fsGroup`). Unset: no verdict is posted. Set but empty: verdicts wait, up to 24 h, for the key | 3 |
 
 ### The bridge's environment
 
