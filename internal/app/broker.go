@@ -118,7 +118,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	exp, err := metrics.NewExporter(version.Version)
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, version.Version)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}

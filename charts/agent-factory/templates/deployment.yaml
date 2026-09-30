@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-factory
+  labels: {{- include "agent-factory.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: agent-factory}
+  template:
+    metadata:
+      labels: {{- include "agent-factory.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: agent-factory
+      automountServiceAccountToken: true  # a controller: it watches Tasks and AgentRuns
+      # The factory's drains (manager 20 s, then :9090) fit inside it.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The kubelet gives mounted Secrets this group: with defaultMode 0440 the App key is
+        # readable by uid 65532 and nobody else (review C1).
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: {matchLabels: {app.kubernetes.io/name: agent-factory}}
+      containers:
+        - name: agent-factory
+          image: {{ include "agent-factory.image" . | quote }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - {name: FACTORY_CONFIG, value: /etc/agent-factory/config/config.yaml}
+          ports:
+            - {name: ops, containerPort: 9090, protocol: TCP}
+          startupProbe: {httpGet: {path: /startupz, port: ops}, periodSeconds: 2, failureThreshold: 30}
+          livenessProbe: {httpGet: {path: /healthz, port: ops}, periodSeconds: 10}
+          readinessProbe: {httpGet: {path: /readyz, port: ops}, periodSeconds: 10}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          # Sibling mounts, never one inside another's read-only volume.
+          volumeMounts:
+            - {name: config, mountPath: /etc/agent-factory/config, readOnly: true}
+            - {name: broker-ca, mountPath: /etc/agent-factory/openbao-ca, readOnly: true}
+            - {name: github, mountPath: /etc/agent-factory-github, readOnly: true}
+            - {name: rooms-token, mountPath: /var/run/secrets/agents/rooms, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: agent-factory-config}
+        - name: broker-ca
+          secret: {secretName: {{ .Values.brokerCASecret }}, items: [{key: ca.crt, path: ca.crt}]}
+        - name: github
+          secret: {secretName: {{ .Values.githubSecret }}, defaultMode: 0440}
+        - name: rooms-token
+          projected:
+            sources:
+              - serviceAccountToken: {audience: {{ .Values.roomsAudience }}, expirationSeconds: 3600, path: token}

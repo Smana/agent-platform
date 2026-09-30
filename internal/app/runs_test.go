@@ -174,7 +174,7 @@ func TestRoomObserver(t *testing.T) {
 		{"an Idle room has none", "Idle", "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			exp, err := metrics.NewExporter("test")
+			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
