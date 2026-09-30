@@ -364,6 +364,76 @@ func TestSlowConsumerIsDropped(t *testing.T) {
 	}
 }
 
+// A viewer that stops reading fills its channel long before a big budget: it is
+// dropped there, and the worker, which holds the hub's lock while it offers,
+// never waits on it. Every other viewer of the room keeps every seq (review I1).
+func TestAStalledViewerIsDroppedAtItsChannelCap(t *testing.T) {
+	log, b := &memLog{}, newBus()
+	h := New(log, b, discard)
+	h.Budget = 1 << 30
+	ctx := run(t, h)
+	waitOpened(t, b)
+	stalled, err := h.Subscribe(ctx, roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := h.Subscribe(ctx, roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Runs before run's cleanup: were the offer to block, the worker would hang on
+	// stalled for good and the test would die on go test's timeout, not its own.
+	t.Cleanup(func() {
+		for {
+			select {
+			case <-stalled.C:
+			case <-time.After(200 * time.Millisecond):
+				return
+			}
+		}
+	})
+	const batch = 1000
+	for i := range 5 { // 5000 events: past the 4096-slot channel
+		b.publish(roomID, log.add(batch))
+		drain(t, live, int64(i*batch+1), batch)
+	}
+	select {
+	case <-stalled.Dropped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled viewer was never dropped")
+	}
+}
+
+// A read that started before its room was forgotten and subscribed again must
+// not offer the new viewer what it already holds from the log (review M7, F6).
+func TestAReadForAForgottenRoomIsDiscarded(t *testing.T) {
+	log, b := &memLog{gate: make(chan struct{})}, newBus()
+	h := New(log, b, discard)
+	ctx := run(t, h)
+	waitOpened(t, b)
+	first, err := h.Subscribe(ctx, roomID) // its read (after 0) is held on the gate
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for log.ranges.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first read never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	log.add(5)
+	h.Unsubscribe(first)
+	second, err := h.Subscribe(ctx, roomID) // starts after seq 5
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(log.gate) // the stale read now returns 1..5
+	expectQuiet(t, second)
+	b.publish(roomID, log.add(1))
+	drain(t, second, 6, 1)
+}
+
 // A failed read is logged and retried by the next poll with the listener still
 // up: the notification that prompted it is not repeated.
 func TestFailedReadIsRetried(t *testing.T) {

@@ -42,7 +42,7 @@ flowchart LR
 | PR | Phase | Carries |
 |---|---|---|
 | S1 | 1 | ADR-0044 (session protocol); the vendored `Room` CRD and its schema in the validation catalog; `SQLInstance xplane-rooms` with generated credentials and its CNPG network policy; the broker's `App` claim, config, RBAC and CNP; the `Certificate room-broker-tls` and `ExternalSecret room-broker-ca` (GP-18); the retention CronJob; the `VMServiceScrape`; the phase-1 `VMRule`; `task agent:run -- --room`; the umbrella child `room-broker` |
-| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; `KVStore xplane-rooms`; two broker replicas; the log's recovery seed |
+| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; two broker replicas; the log's recovery seed |
 | S3 | 3 | The `room-broker` backend on both MCPRoutes with its key and CNP; the factory App's key; egress to `api.github.com`; `RoomVerdictsNotReachingGitHub` |
 | S4 | 4 | Pins |
 | S5 | 5 | `RoomApprovalPendingTooLong`; pins |

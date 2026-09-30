@@ -253,9 +253,9 @@ One JSON object per text frame (Appendix B).
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
 
-Replay is lossless: the broker subscribes to the room's hints, reads the high-water mark, pages the
-log up to it, then streams live events, dropping any at or below the mark. A gap in live `seq`
-triggers a range read.
+Replay is lossless: the broker subscribes to the room's fan-out (the hub), reads the high-water
+mark, pages the log up to it, then streams live events, dropping any at or below the mark. A gap in
+live `seq` triggers a range read.
 
 | Close code | Reason | Client should |
 |---|---|---|

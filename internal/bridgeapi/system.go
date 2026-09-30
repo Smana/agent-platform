@@ -118,7 +118,6 @@ func (s *Server) roomMessage(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusOK
 	if !dup {
 		code = http.StatusCreated
-		s.appended(ev)
 	}
 	reply(w, code, map[string]int64{"seq": ev.Seq})
 }

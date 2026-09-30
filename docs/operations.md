@@ -49,6 +49,7 @@ events.
 | `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `ping_timeout`, `shutdown`, `log_unavailable` | 2 |
 | `rooms_participants` | gauge | — | Live participants | 2 |
 | `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; SC-12 wants p95 < 0.5 s | 2 |
+| `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose | 2 |
 | `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) | 2 |
 | `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` | 3 |
 | `rooms_driver_changes_total` | counter | — | Driver token changes | 4 |

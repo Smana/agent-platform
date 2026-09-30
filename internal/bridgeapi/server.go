@@ -90,9 +90,6 @@ type Server struct {
 	Runs     Authenticator
 	Systems  Authenticator
 	Watch    Liveness
-	// Notify, when set, is told of every new event: a fan-out hint (phase 2). It
-	// runs on the request and must not block.
-	Notify func(roomID string, seq int64)
 	// RoomPolicy, when set, is the room's approval policy handed out at hello (phase 5).
 	RoomPolicy func(roomID string) wire.ApprovalPolicy
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
@@ -231,15 +228,6 @@ func authWhy(err error) string {
 	return "invalid"
 }
 
-// appended tells the fan-out of a new event. The metrics count appends in the
-// store every writer shares (app's meteredLog), not here: counting in both would
-// count twice.
-func (s *Server) appended(ev envelope.Event) {
-	if s.Notify != nil {
-		s.Notify(ev.RoomID, ev.Seq)
-	}
-}
-
 // bridgeAuth admits a run token for a run that is live and names a room (§1 Admission).
 func (s *Server) bridgeAuth(w http.ResponseWriter, r *http.Request) (authn.Principal, runwatch.Run, bool) {
 	p, err := s.Runs.Authenticate(r)
@@ -296,15 +284,12 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !took {
-		ev, dup, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
+		_, _, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
 			Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: brokerActor}, Type: envelope.StateChanged,
 			Origin: envelope.OriginBroker, OriginClient: "broker:busy:" + run.ID, OriginSeq: 1,
 			Payload: envelope.StatePayload("limit", map[string]any{"reason": "concurrent_run", "running": holder})})
-		switch {
-		case err != nil:
+		if err != nil {
 			s.log().Warn("record a concurrent run", "room", run.Room, "run", run.ID, errAttr(err))
-		case !dup:
-			s.appended(ev)
 		}
 		s.log().Info("room busy", "room", run.Room, "run", run.ID, "holder", holder)
 		fail(w, http.StatusConflict, wire.ReasonRoomBusy)
@@ -397,20 +382,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	var ack wire.BatchAck
 	for i, d := range drafts {
-		ev, dup, err := s.Log.AppendAsBridge(ctx, run.ID, d)
+		_, _, err := s.Log.AppendAsBridge(ctx, run.ID, d)
 		if store.IsDataError(err) {
 			// A value PostgreSQL refuses can never be stored: keep the slot with a stub, as
 			// for an oversize payload, so the bridge's cursor moves on (review I6).
 			s.log().Error("payload refused by the database", "room", run.Room, "run", run.ID, "type", d.Type, errAttr(err))
 			d.Payload, d.Redactions = refusedStub(d.Type), nil
-			ev, dup, err = s.Log.AppendAsBridge(ctx, run.ID, d)
+			_, _, err = s.Log.AppendAsBridge(ctx, run.ID, d)
 		}
 		if err != nil {
 			s.logFailure(w, err, "append a bridge event", "room", run.Room, "run", run.ID, "type", d.Type)
 			return
-		}
-		if !dup {
-			s.appended(ev)
 		}
 		if it := b.Items[i]; it.Stream == wire.StreamEvents {
 			ack.AfterHarnessSeq = max(ack.AfterHarnessSeq, it.Seq)

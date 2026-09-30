@@ -200,7 +200,7 @@ rules shape the tree.
 | `room-bridge` sidecar and its `room-token` volume | `agents` | crossplane-configuration's `AgentRun` composition (CC-S2) | Image `ghcr.io/smana/room-bridge`, this repo |
 | Secret `room-broker-ca` | `agents` | cloud-native-ref ExternalSecret (S1, GP-18) | The platform's private CA |
 | CNPs, `VMServiceScrape`, `VMRule` | `agent-system`, `observability` | cloud-native-ref (S1 onwards) | — |
-| oauth2-proxy, `HTTPRoute`, `KVStore` | `agent-system` | cloud-native-ref (S2) | — |
+| oauth2-proxy, `HTTPRoute` | `agent-system` | cloud-native-ref (S2) | — |
 | `agent-router` MCPRoute backend for `:8090` | `agent-system` | cloud-native-ref (S3) | — |
 
 [Integration](integration.md) lists every pull request and pin.
