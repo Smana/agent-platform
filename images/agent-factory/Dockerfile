@@ -1,12 +1,16 @@
 # Static binary on distroless: no shell, no package manager, uid 65532. The
 # factory's pod securityContext (restricted PSS) overrides the uid anyway.
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
+# The build stage runs on the runner's own arch and cross-compiles: compiling under QEMU
+# arm64 emulation outran the prerelease job's 30 minute timeout.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath \
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags="-s -w -X github.com/Smana/agent-platform/internal/version.Version=${VERSION}" \
       -o /out/agent-factory ./cmd/agent-factory
 
