@@ -44,7 +44,16 @@ func New() (*Redactor, error) {
 // in a long-lived broker.
 func (r *Redactor) String(s string) (string, []string) {
 	fired := map[string]bool{}
-	return r.scan(detect.NewDetector(r.cfg), s, fired), keys(fired)
+	return r.scan(r.detector(), s, fired), keys(fired)
+}
+
+// detector makes a Detector that honours no allow marker: gitleaks otherwise
+// drops every finding on a line carrying one, and the text we scan is harness
+// output, which can carry anything.
+func (r *Redactor) detector() *detect.Detector {
+	d := detect.NewDetector(r.cfg)
+	d.IgnoreGitleaksAllow = true
+	return d
 }
 
 func (r *Redactor) scan(d *detect.Detector, s string, fired map[string]bool) string {
@@ -77,7 +86,7 @@ func (r *Redactor) Payload(ctx context.Context, raw json.RawMessage) (json.RawMe
 	if err := dec.Decode(&v); err != nil {
 		return nil, nil, err
 	}
-	d := detect.NewDetector(r.cfg)
+	d := r.detector()
 	fired := map[string]bool{}
 	v, err := r.walk(ctx, d, v, fired)
 	if err == nil {

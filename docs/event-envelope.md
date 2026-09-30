@@ -73,13 +73,13 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 
 | `originClient` | `originSeq` | Writer | Status |
 |---|---|---|---|
-| `agent:<runId>` | Item key of the harness event: event *i* owns `4i … 4i+3` | The bridge, harness events | AP-1 (planned, tasks 1.9–1.11) |
-| `agent:<runId>:status` | A counter of status transitions | The bridge, status tracker | AP-1 (planned, tasks 1.9–1.11) |
-| `system:<name>` | The caller's `clientSeq` | The system API | AP-1 (planned, task 1.9) |
-| `broker:room` | `1` | The Room controller, `room_phase: Open` | AP-1 (planned, task 1.8) |
-| `broker:run:<runId>` | `1` joined, `2` running, `3` ended, `4` left | The leader's run events | AP-1 (planned, task 1.7) |
+| `agent:<runId>` | Item key of the harness event: event *i* owns `4i … 4i+3` | The bridge, harness events | AP-1 |
+| `agent:<runId>:status` | A counter of status transitions | The bridge, status tracker | AP-1 |
+| `system:<name>` | The caller's `clientSeq` | The system API | AP-1 |
+| `broker:room` | `1` | The Room controller, `room_phase: Open` | AP-1 |
+| `broker:run:<runId>` | `1` joined, `2` running, `3` ended, `4` left | The leader's run events | AP-1 |
 | `broker:seal` | `1` | The seal | AP-1 |
-| `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 (planned, task 1.9) |
+| `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 |
 | `human:<sub>` | The browser's `clientSeq` | Human actions | Planned, phase 4 |
 | `agent:<runId>` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | Planned, phase 3 |
 | `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, callId)` | The bridge's approval requests | Planned, phase 5 |
@@ -90,12 +90,12 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | Limit | Value | What happens | Status |
 |---|---|---|---|
 | Payload | 64 KiB (C4) | Stored as a stub, `{"oversize": true, "bytes": N, "type": "<type>"}`, never refused: a refused harness event would block the bridge's cursor forever (ruling P20). The content stays in the pod until it ends | AP-1 |
-| Tool output | 16 KiB | Truncated by the bridge; `truncated: true` and `bytes` keeps the original length | AP-1 (planned, task 1.10) |
-| Human message, system message text | 16 KiB | `400 bad_message` | AP-1 (planned, task 1.9: system API); phase 4 (humans) |
-| A value Postgres refuses (SQLSTATE class 22) | — | Stored as `{"refused": true, "type": "<type>"}` so the cursor moves on | AP-1 (planned, task 1.9) |
+| Tool output | 16 KiB | Truncated by the bridge; `truncated: true` and `bytes` keeps the original length | AP-1 |
+| Human message, system message text | 16 KiB | `400 bad_message` | AP-1 (system API); phase 4 (humans) |
+| A value Postgres refuses (SQLSTATE class 22), or keys that collide once redacted | — | Stored as `{"refused": true, "type": "<type>", "reason": "invalid_value" \| "key_collision"}` so the cursor moves on | AP-1 (task 1.9; `reason` from task 1.12) |
 | NUL characters | — | Stripped from every string and key before storage (`jsonb` refuses them) | AP-1 |
 | Room size | 100 000 events or 256 MiB | The room is sealed with a final `state_changed{kind: limit, events, bytes}` | AP-1 |
-| Bridge batch | 2 MiB per request; the bridge sends at most 100 items | `400 bad_batch` above the byte limit | AP-1 (planned, task 1.9) |
+| Bridge batch | 2 MiB per request; the bridge sends at most 100 items | `413 batch_too_large` above 2 MiB or 500 items | AP-1 |
 
 Streaming deltas, presence and typing never enter the log (C4). Human presence is not built at all
 (ruling P27).
@@ -107,12 +107,12 @@ From the design's Appendix A, with the plan's additive fields.
 | `type` | Payload | Written by | Status |
 |---|---|---|---|
 | `message` | `{kind: chat \| review_verdict \| task_state, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive, phase 3, P29). SP3 defines `task_state`'s text | Harness (chat), system callers (`task_state`), room tools and humans | `chat` and `task_state` AP-1; `review_verdict` phase 3; `queued`, `steering` phase 4 |
-| `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 (planned, task 1.10) |
-| `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1 (the type); produced from task 1.10 (planned); `class` and `decidedBy` from phase 5 |
-| `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 (planned, task 1.10) |
+| `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 |
+| `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
+| `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 |
 | `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
-| `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1 (planned, task 1.7); humans phase 2 |
+| `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken \| lease_expired}` | The broker | Planned, phase 4 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | Planned, phase 3 |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge | Per kind |
@@ -121,16 +121,16 @@ From the design's Appendix A, with the plan's additive fields.
 
 | `kind` | Fields | Written by | Status |
 |---|---|---|---|
-| `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker | `Closed` AP-1 (store); `Open` AP-1 (planned, task 1.8) |
-| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#glossary)) | Broker (leader) | AP-1 (planned, task 1.7) |
-| `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` (P17) | Broker | Seal AP-1 (store); `concurrent_run` AP-1 (planned, task 1.9) |
-| `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 (planned, task 1.10) |
-| `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge | AP-1 (planned, tasks 1.10–1.11) |
-| `harness_paused` | — | Bridge | AP-1 (planned, task 1.10) |
-| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge | AP-1 (planned, tasks 1.10–1.11) |
+| `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker | AP-1 |
+| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#glossary)) | Broker (leader) | AP-1 |
+| `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` (P17) | Broker | AP-1 |
+| `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge | AP-1 |
+| `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge | AP-1 |
+| `harness_paused` | — | Bridge | AP-1 |
+| `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge | AP-1 |
 | `verdict_posted`, `verdict_not_posted` | `url` or `reason`, and `verdictSeq` | Broker (leader) | Planned, phase 3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
-| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1 (planned, task 1.11); acknowledgements phase 4 |
+| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements phase 4 |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
 | `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
@@ -143,7 +143,7 @@ a driver change or a decision (review M5).
 
 ## Where harness events come from
 
-The bridge maps each OpenHands agent-server event to zero, one or two C4 items (AP-1, planned, task 1.10).
+The bridge maps each OpenHands agent-server event to zero, one or two C4 items (AP-1).
 
 | Harness event | C4 |
 |---|---|

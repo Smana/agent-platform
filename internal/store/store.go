@@ -24,7 +24,7 @@ var (
 	ErrNoRoom           = errors.New("no such room")
 	ErrSealed           = errors.New("room is sealed")
 	ErrLeaseLost        = errors.New("the bridge lease is held by another run")
-	ErrInvalidRetention = errors.New("retention must be positive")
+	ErrInvalidRetention = errors.New("retention must be at least a day")
 	// ErrNoBridgeRun is AppendAsBridge without a run: it would append unfenced.
 	ErrNoBridgeRun = errors.New("a bridge append names its run")
 )

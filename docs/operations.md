@@ -43,7 +43,7 @@ events.
 | `rooms_append_seconds` | histogram | — | Append latency | 1 |
 | `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease | 1 |
 | `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
-| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each `Active` room | 1 |
+| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip | 1 |
 | `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
 | `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed (`reauth`, `slow_consumer`, …) | 2 |
@@ -62,8 +62,8 @@ rest (Ruling AP). Neither carries a run or room label.
 
 | Metric | Type | Labels | Meaning | Phase |
 |---|---|---|---|---|
-| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The harness's own errors are not counted | 1 |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot: `oversize` (the bridge's or the store's size stub) or `refused` (a `harness_event{harnessKind: refused}`, or the broker's own stub for a value it cannot store) | 1 |
+| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not | 1 |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way | 1 |
 
 ## Alerts
 
@@ -77,7 +77,7 @@ test enforces.
 | `RoomLogAppendErrors` | Any append failed on the database in 10 min | 10 min | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` | 1 |
 | `RoomRedactionsSpike` | More than 20 secrets redacted in 15 min | — | An agent is handling credentials: find the rooms with [the redactions query](#reading-the-log-with-sql) | 1 |
 | `RoomLogDiskFilling` | The log's volume is over 80 % | 15 min | Shorten `spec.retention` on busy rooms, or grow `storageSize` on `SQLInstance xplane-rooms` | 1 |
-| `RoomStalled` | An `Active` room has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) | 1 |
+| `RoomStalled` | A room with a `Running` run has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) | 1 |
 | `RoomRejectedActionsSpike` | More than 30 actions refused in 10 min | — | Someone is probing, or the UI disagrees with the policy | 2 |
 | `RoomVerdictsNotReachingGitHub` | Posting errors, and no successful post in 30 min | 30 min | The factory App's key at `agents/factory-app`; egress to `api.github.com` | 3 |
 | `RoomApprovalPendingTooLong` | An approval has waited over 15 min; reaches Slack through Alertmanager | — | Decide it; an unattended room auto-denies at `approvals.ttl` | 5 |
@@ -133,7 +133,7 @@ The CronJob `room-broker-retention` runs daily at 03:17. Run it by hand to check
 ```bash
 kubectl create job -n agent-system --from=cronjob/room-broker-retention retention-check
 kubectl wait -n agent-system job/retention-check --for=condition=Complete --timeout=5m
-kubectl logs -n agent-system job/retention-check          # one "purged" line per statement
+kubectl logs -n agent-system job/retention-check          # one "purged expired rooms" line per run, with its rooms and events counts
 kubectl delete job -n agent-system retention-check
 ```
 
@@ -158,7 +158,8 @@ the harnesses still hold.
 |---|---|---|
 | Broker `CrashLoopBackOff` right after a config change | The config file failed strict parsing (unknown key, a `subPattern` without one capture group) | Read the first log line, fix `room-broker-config` |
 | Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or the `atlasSchema.ref` branch is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at `main` once the AP branch has merged |
-| Bridge `hello` gets `503 log_unavailable` | The `Room` has not been reconciled, so its row does not exist, or the database is down | `kubectl get room -n agent-system <id>`; check the CNPG cluster |
+| Bridge `hello` gets `503 no_room` | The `Room` has not been reconciled, so its row does not exist | `kubectl get room -n agent-system <id>`; the bridge retries |
+| Bridge gets `503 log_unavailable` | The database is down or refused the call | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` |
 | Bridge gets `401 unauthenticated` | Wrong audience, an issuer not in `runIssuers`, or the broker cannot fetch the JWKS | Check the run's `room-token` audience (`room-broker`), the issuer, and the broker's egress to the JWKS host |
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |
 | Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Delete the extra run. A dead holder frees the room within 2 minutes |

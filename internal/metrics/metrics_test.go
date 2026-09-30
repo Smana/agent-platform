@@ -42,8 +42,8 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	s.Appended(ctx, "message", "harness", []string{"jwt"})
 	s.AppendTook(ctx, 3*time.Millisecond)
 	s.AppendFailed(ctx)
-	s.ObserveRoom("3kq7x2ma", "Active", 2, now.Add(-time.Minute))
-	s.ObserveRoom("4kq7x2ma", "Closed", 0, now)
+	s.ObserveRoom("3kq7x2ma", "Active", true, 2, now.Add(-time.Minute))
+	s.ObserveRoom("4kq7x2ma", "Closed", false, 0, now)
 	s.Participants.Add(ctx, 1)
 	s.Connections.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", "human")))
 	s.FanoutLag.Record(ctx, 0.01)
@@ -52,6 +52,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	s.DriverChanges.Add(ctx, 1)
 	s.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "not_permitted")))
 	s.Dropped.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "slow")))
+	s.VerdictPosts.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "posted")))
 	if err := s.WatchJWKS(map[string]func() time.Time{"https://issuer": func() time.Time { return now }}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +77,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 		`rooms_redactions_total{rule="jwt"} 1`,
 		`rooms_rejected_actions_total{reason="not_permitted"} 1`,
 		`rooms_connections_dropped_total{reason="slow"} 1`,
+		`rooms_verdict_posts_total{result="posted"} 1`,
 		`rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999994e+09`,
 		`rooms_authn_jwks_last_refresh_timestamp_seconds{issuer="https://issuer"} 1.7e+09`,
 		`rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`,
@@ -105,23 +107,29 @@ func TestRoomGauges(t *testing.T) {
 		absent  []string
 	}{
 		{"a room counts once, in its latest phase", func(s *Set) {
-			s.ObserveRoom("3kq7x2ma", "Open", 0, now)
-			s.ObserveRoom("3kq7x2ma", "Active", 0, now)
+			s.ObserveRoom("3kq7x2ma", "Open", false, 0, now)
+			s.ObserveRoom("3kq7x2ma", "Active", true, 0, now)
 		}, []string{`rooms{phase="Active"} 1`}, []string{`rooms{phase="Open"}`}},
-		{"only an Active room has a last-event series", func(s *Set) {
-			s.ObserveRoom("3kq7x2ma", "Active", 0, now)
-			s.ObserveRoom("3kq7x2ma", "Idle", 0, now)
+		{"a room without a Running run has no activity series", func(s *Set) {
+			s.ObserveRoom("3kq7x2ma", "Active", true, 0, now)
+			s.ObserveRoom("3kq7x2ma", "Idle", false, 0, now)
 		}, []string{`rooms{phase="Idle"} 1`}, []string{"rooms_last_event_timestamp_seconds{"}},
+		// S1 review I-3: 30 silent minutes flip a running room to AwaitingHuman,
+		// which is exactly when RoomStalled must still see its series.
+		{"a stalled room keeps its activity series through the flip to AwaitingHuman", func(s *Set) {
+			s.ObserveRoom("3kq7x2ma", "Active", true, 0, now.Add(-31*time.Minute))
+			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", true, 0, now.Add(-31*time.Minute))
+		}, []string{`rooms{phase="AwaitingHuman"} 1`, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999814e+09`}, nil},
 		{"pending approvals sum over rooms", func(s *Set) {
-			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", 2, now)
-			s.ObserveRoom("4kq7x2ma", "AwaitingHuman", 3, now)
-		}, []string{`rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, nil},
+			s.ObserveRoom("3kq7x2ma", "AwaitingHuman", false, 2, now)
+			s.ObserveRoom("4kq7x2ma", "AwaitingHuman", false, 3, now)
+		}, []string{`rooms_approvals_pending 5`, `rooms{phase="AwaitingHuman"} 2`}, []string{"rooms_last_event_timestamp_seconds{"}},
 		{"a room keeps its last values while it is not reconciled (a database outage)", func(s *Set) {
-			s.ObserveRoom("3kq7x2ma", "Active", 1, now)
+			s.ObserveRoom("3kq7x2ma", "Active", true, 1, now)
 		}, []string{`rooms{phase="Active"} 1`, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"}`, `rooms_approvals_pending 1`}, nil},
 		{"a forgotten room (its CR is gone) drops out", func(s *Set) {
-			s.ObserveRoom("3kq7x2ma", "Active", 1, now)
-			s.ObserveRoom("4kq7x2ma", "Idle", 0, now)
+			s.ObserveRoom("3kq7x2ma", "Active", true, 1, now)
+			s.ObserveRoom("4kq7x2ma", "Idle", false, 0, now)
 			s.ForgetRoom("3kq7x2ma")
 		}, []string{`rooms_approvals_pending 0`, `rooms{phase="Idle"} 1`}, []string{`rooms{phase="Active"}`, `room="3kq7x2ma"`}},
 	} {
@@ -177,6 +185,6 @@ func TestNoopMeterWorks(t *testing.T) {
 	s.Appended(t.Context(), "message", "broker", nil)
 	s.AppendTook(t.Context(), time.Millisecond)
 	s.AppendFailed(t.Context())
-	s.ObserveRoom("3kq7x2ma", "Active", 0, time.Now())
+	s.ObserveRoom("3kq7x2ma", "Active", true, 0, time.Now())
 	s.ForgetRoom("3kq7x2ma")
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
@@ -154,6 +155,46 @@ func TestWireRuns(t *testing.T) {
 	if _, err := wireRuns(ctx, &informertest.FakeInformers{}, func(manager.Runnable) error { return errors.New("started") },
 		slog.New(slog.DiscardHandler), open, &runwatch.Events{Store: store}, nil); err == nil {
 		t.Fatal("a leader the manager refuses fails startup")
+	}
+}
+
+// S1 review I-3: RoomStalled needs the activity series of every room with a
+// Running run, and the stall itself flips such a room to AwaitingHuman.
+func TestRoomObserver(t *testing.T) {
+	last := time.Unix(1_700_000_000, 0)
+	for _, c := range []struct {
+		name   string
+		phase  string
+		run    string // the room's one run's phase; "" means no run
+		series bool
+	}{
+		{"an Active room with a Running run", "Active", "Running", true},
+		{"a stalled room, flipped to AwaitingHuman, keeps its series", "AwaitingHuman", "Running", true},
+		{"a room awaiting an approval with no Running run has none", "AwaitingHuman", "Succeeded", false},
+		{"an Idle room has none", "Idle", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := metrics.New(exp.Meter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			watch := runwatch.New()
+			if c.run != "" {
+				watch.Upsert(t.Context(), runClaim("7f3cq2xz", "3kq7x2ma", c.run))
+			}
+			roomObserver(m, watch)("3kq7x2ma", v1alpha1.RoomStatus{Phase: c.phase}, last)
+			body := scrape(t, exp.Handler())
+			if got := strings.Contains(body, `rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.7e+09`); got != c.series {
+				t.Fatalf("activity series exposed=%v, want %v:\n%s", got, c.series, body)
+			}
+			if !strings.Contains(body, `rooms{phase="`+c.phase+`"} 1`) {
+				t.Fatalf("the room is not counted in its phase:\n%s", body)
+			}
+		})
 	}
 }
 

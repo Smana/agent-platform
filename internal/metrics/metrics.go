@@ -90,7 +90,7 @@ func (e *Exporter) Shutdown(ctx context.Context) error { return e.provider.Shutd
 
 // Set is the broker's instruments. The exported ones have no phase-1 caller;
 // the phase that feeds each is named beside it. Label values stay bounded:
-// never a payload field, and room only on the per-Active-room gauge.
+// never a payload field, and room only on the gauge of rooms with a Running run.
 type Set struct {
 	// Participants is rooms_participants: live participants (phase 2).
 	Participants metric.Int64UpDownCounter
@@ -108,6 +108,8 @@ type Set struct {
 	Rejected metric.Int64Counter
 	// Dropped is rooms_connections_dropped_total{reason} (phase 2).
 	Dropped metric.Int64Counter
+	// VerdictPosts is rooms_verdict_posts_total{result}: posted, not_posted or error (phase 3).
+	VerdictPosts metric.Int64Counter
 
 	meter         metric.Meter
 	appended      metric.Int64Counter
@@ -123,6 +125,7 @@ type Set struct {
 
 type roomGauge struct {
 	phase   string
+	running bool
 	pending int
 	last    time.Time
 }
@@ -163,6 +166,8 @@ func New(meter metric.Meter) (*Set, error) {
 	check(err)
 	s.Dropped, err = meter.Int64Counter("rooms_connections_dropped_total", metric.WithDescription("Connections the broker closed, by reason."))
 	check(err)
+	s.VerdictPosts, err = meter.Int64Counter("rooms_verdict_posts_total", metric.WithDescription("Verdict comments, by result."))
+	check(err)
 	// Ruling AP: counted by the broker from the events bridges append, since
 	// nothing dials into a sandbox to scrape a bridge.
 	s.bridgeStalls, err = meter.Int64Counter("rooms_bridge_harness_stalls_total",
@@ -190,7 +195,7 @@ func (s *Set) registerRoomGauges() error {
 		return err
 	}
 	last, err := s.meter.Float64ObservableGauge("rooms_last_event_timestamp_seconds",
-		metric.WithDescription("Last durable event of each Active room, in Unix seconds."))
+		metric.WithDescription("Last durable event of each room with a Running run, in Unix seconds."))
 	if err != nil {
 		return err
 	}
@@ -201,7 +206,7 @@ func (s *Set) registerRoomGauges() error {
 		for id, r := range s.rooms {
 			byPhase[r.phase]++
 			total += int64(r.pending)
-			if r.phase == "Active" {
+			if r.running {
 				o.ObserveFloat64(last, float64(r.last.UnixMilli())/1e3, metric.WithAttributes(attribute.String("room", id)))
 			}
 		}
@@ -214,15 +219,18 @@ func (s *Set) registerRoomGauges() error {
 	return err
 }
 
-// ObserveRoom records a reconciled room: its phase, its undecided approvals and
-// its last durable event. The values hold until the next successful reconcile,
+// ObserveRoom records a reconciled room: its phase, whether a run of it is
+// Running, its undecided approvals and its last durable event. The last event is
+// exposed for a room with a Running run whatever its phase: 30 silent minutes
+// turn such a room AwaitingHuman, which is exactly when RoomStalled reads it
+// (S1 review I-3). The values hold until the next successful reconcile,
 // so a database outage keeps them rather than emptying the gauges (review M1).
 // Only the leader reconciles, and a replica that loses the lease exits, so a
 // follower never serves stale values.
-func (s *Set) ObserveRoom(room, phase string, pendingApprovals int, lastEventAt time.Time) {
+func (s *Set) ObserveRoom(room, phase string, running bool, pendingApprovals int, lastEventAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rooms[room] = roomGauge{phase: phase, pending: pendingApprovals, last: lastEventAt}
+	s.rooms[room] = roomGauge{phase: phase, running: running, pending: pendingApprovals, last: lastEventAt}
 }
 
 // ForgetRoom takes a room whose CR is gone out of the gauges.

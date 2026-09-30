@@ -146,16 +146,13 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	events := &runwatch.Events{Store: logStore}
+	events := &runwatch.Events{Store: logStore, Redactor: red}
 	rw, err := wireRuns(ctx, mgr.GetCache(), mgr.Add, log, st, events, nil)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	rc := &roomctrl.Reconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Store: logStore,
-		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom,
-		Observe: func(room string, s v1alpha1.RoomStatus, last time.Time) {
-			m.ObserveRoom(room, s.Phase, int(s.PendingApprovals), last)
-		}}
+		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom, Observe: roomObserver(m, rw.watch)}
 	if err := rc.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -201,6 +198,23 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	return nil
+}
+
+// roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.
+type roomRuns interface {
+	InRoom(room string) []runwatch.Run
+}
+
+// roomObserver feeds the room gauges from a reconciled status and the watch: a
+// room with a Running run keeps its activity series in any phase (S1 review I-3).
+func roomObserver(m *metrics.Set, runs roomRuns) func(string, v1alpha1.RoomStatus, time.Time) {
+	return func(room string, s v1alpha1.RoomStatus, last time.Time) {
+		running := false
+		for _, r := range runs.InRoom(room) {
+			running = running || r.Phase == "Running"
+		}
+		m.ObserveRoom(room, s.Phase, running, int(s.PendingApprovals), last)
+	}
 }
 
 // managerOptions watches Rooms in the broker's namespace and AgentRuns in theirs

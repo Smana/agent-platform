@@ -11,6 +11,7 @@ tasks:
       - task: test
       - task: crd:check
       - task: chart:check
+      - task: migrations
 
   spdx:
     desc: Every .go file opens with the SPDX license line.
@@ -41,6 +42,11 @@ tasks:
       # envtest's kube-apiserver and etcd, downloaded once per version into the user cache.
       KUBEBUILDER_ASSETS:
         sh: go tool setup-envtest use -p path 1.36.x
+
+  migrations:
+    desc: atlas.sum matches the migration directory, as the Atlas operator checks it. Offline.
+    cmds:
+      - atlas migrate validate --dir file://internal/store/migrations
 
   crd:gen:
     cmds:
