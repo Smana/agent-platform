@@ -29,7 +29,7 @@ func scrape(t *testing.T, h http.Handler) string {
 // exporter must add no unit or counter suffix, and drop no _total.
 func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	ctx := t.Context()
-	exp, err := NewExporter("v1.2.3")
+	exp, err := NewExporter(BrokerBuildInfo, "v1.2.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestRoomGauges(t *testing.T) {
 		}, []string{`rooms_approvals_pending 0`, `rooms{phase="Idle"} 1`}, []string{`rooms{phase="Active"}`, `room="3kq7x2ma"`}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			exp, err := NewExporter("test")
+			exp, err := NewExporter(BrokerBuildInfo, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,6 +151,21 @@ func TestRoomGauges(t *testing.T) {
 				t.Log(body)
 			}
 		})
+	}
+}
+
+func TestEachBinaryHasItsOwnBuildInfo(t *testing.T) {
+	exp, err := NewExporter(FactoryBuildInfo, "v0.7.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exp.Shutdown(t.Context()) }()
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "agent_factory_build_info{version=\"v0.7.0\"} 1\n") ||
+		strings.Contains(body, "rooms_build_info") {
+		t.Fatal(body)
+	}
+	if _, err := NewExporter("build_info", "v0.7.0"); err == nil {
+		t.Fatal("a gauge outside both prefixes is refused")
 	}
 }
 

@@ -63,6 +63,12 @@ func TestTaskCRDBoundsEveryStringAndList(t *testing.T) {
 			t.Errorf("status.%s maxItems = %v, want %d", list, got, want)
 		}
 	}
+	// Ruling SK: roomSeq is the task_state clientSeq ledger, never trimmed, never lowered.
+	seq := status["roomSeq"]
+	if seq.Type != "integer" || seq.Minimum == nil || *seq.Minimum != 0 ||
+		len(seq.XValidations) != 1 || seq.XValidations[0].Rule != "self >= oldSelf" {
+		t.Errorf("status.roomSeq = %+v", seq)
+	}
 }
 
 // bounded fails for a string without maxLength, other than an enum or a timestamp, and for a

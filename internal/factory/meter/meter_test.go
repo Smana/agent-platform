@@ -61,7 +61,7 @@ func TestTick(t *testing.T) {
 	var revoked []string
 	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1000, "bbbbbbbb": 400, "cccccccc": 5000, "dddddddd": 500,
 		"eeeeeeee": 1300, "ffffffff": 9_000_000, "hhhhhhhh": 999},
-		OnRevoke: func(r string) { revoked = append(revoked, r) }}
+		OnRevoke: func(_ context.Context, r string) { revoked = append(revoked, r) }}
 	if err := m.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestAFailedAnnotationIsNotARevocation(t *testing.T) {
 	st := &store{patches: map[string]map[string]string{}, fail: map[string]bool{"aaaaaaaa": true}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 10}, {ID: "bbbbbbbb", Phase: "Running", MaxTokens: 10}}}
 	var revoked int
-	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 20, "bbbbbbbb": 20}, OnRevoke: func(string) { revoked++ }}
+	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 20, "bbbbbbbb": 20}, OnRevoke: func(context.Context, string) { revoked++ }}
 	if err := m.Tick(t.Context()); err == nil {
 		t.Fatal("the failure is reported")
 	}

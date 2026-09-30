@@ -249,8 +249,9 @@ spec:
                 format: date-time
                 type: string
               narrated:
-                description: Idempotency keys of the comments already posted (R22).
-                  The reconciler trims the oldest.
+                description: |-
+                  Idempotency keys of the comments already posted (R22), and of the room messages
+                  (room/<seq>/<key>). narrate trims the oldest: a display list, not a ledger (ruling SK).
                 items:
                   maxLength: 512
                   type: string
@@ -327,6 +328,18 @@ spec:
               roomRef:
                 maxLength: 253
                 type: string
+              roomSeq:
+                description: |-
+                  The last clientSeq the task took for a task_state message in its room (ruling SK). The
+                  broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
+                  narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
+                format: int64
+                minimum: 0
+                type: integer
+                x-kubernetes-validations:
+                - message: 'roomSeq never goes down: the broker would drop a reused
+                    clientSeq'
+                  rule: self >= oldSelf
               runs:
                 items:
                   description: RunRecord is one AgentRun the task started.

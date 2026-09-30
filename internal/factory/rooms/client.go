@@ -52,6 +52,26 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("broker: %d %s", e.Status, e.Reason) }
 
+// The two refusals callers branch on, matched by errors.Is against an *APIError.
+var (
+	// ErrNoRoom is 404 no_room: the broker has not made the room's log yet. Retry later.
+	ErrNoRoom = errors.New("rooms: the broker has no log for the room yet")
+	// ErrNotPermitted is 403 not_permitted: the broker's systemPrincipals does not list the
+	// factory. Expected until FR-1 enables the entry (SP2 M9); a config fix, not a retry.
+	ErrNotPermitted = errors.New("rooms: the broker does not allow system:factory")
+)
+
+// Is matches ErrNoRoom and ErrNotPermitted.
+func (e *APIError) Is(target error) bool {
+	switch target {
+	case ErrNoRoom:
+		return e.Reason == wire.ReasonNoRoom
+	case ErrNotPermitted:
+		return e.Reason == wire.ReasonNotPermitted
+	}
+	return false
+}
+
 // Client calls the broker's system API as system:factory. The token is a projected
 // ServiceAccount token (audience rooms-system) re-read before every call: kubelet rotates it.
 type Client struct {

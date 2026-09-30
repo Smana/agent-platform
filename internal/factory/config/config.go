@@ -127,7 +127,10 @@ type Meter struct {
 	Query string `json:"query"`
 }
 
-var repoRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+var (
+	repoRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+	hostRE = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+)
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
 func roles() []string { return []string{"implementer", "reviewer", "tester", "triager"} }
@@ -196,6 +199,13 @@ func (c *Config) Validate() error {
 	// GP-18: the broker serves TLS only, and the factory never talks to it in the clear.
 	if u, err := url.Parse(c.Broker.URL); c.Broker.URL != "" && (err != nil || u.Scheme != "https" || u.Host == "") {
 		bad("broker.url %q must be an https:// URL", c.Broker.URL)
+	}
+	// Narration posts roomsURL on public issues as the watch link: the rooms UI's origin over TLS,
+	// with nothing a reader could be sent elsewhere by, and nothing that could break the markdown.
+	// url.Parse accepts "(", ")", "<" and ">" in a host name; hostRE does not.
+	if u, err := url.Parse(c.RoomsURL); c.RoomsURL != "" && (err != nil || u.Scheme != "https" || !hostRE.MatchString(u.Host) ||
+		u.User != nil || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "") {
+		bad("roomsURL must be https://<host>, without credentials, path or query: %q", c.RoomsURL)
 	}
 	for _, p := range []struct {
 		key string

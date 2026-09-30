@@ -39,16 +39,26 @@ var (
 	decisionBuckets = []float64{1, 5, 15, 30, 60, 120, 300, 900, 1800, 3600, 14400}
 )
 
+// Each binary's build-info gauge carries its own prefix (rooms_ for room-broker,
+// agent_factory_ for agent-factory), so the two never share a series.
+const (
+	BrokerBuildInfo  = "rooms_build_info"
+	FactoryBuildInfo = "agent_factory_build_info"
+)
+
 // Exporter is a MeterProvider whose metrics Handler serves in the Prometheus
-// text format. It exposes rooms_build_info{version} = 1 from the start.
+// text format. It exposes its binary's build-info gauge {version} = 1 from the start.
 type Exporter struct {
 	provider *sdkmetric.MeterProvider
 	handler  http.Handler
 }
 
 // NewExporter builds a provider on its own registry: no global state, so two
-// in one process (tests) never collide.
-func NewExporter(version string) (*Exporter, error) {
+// in one process (tests) never collide. buildInfo is BrokerBuildInfo or FactoryBuildInfo.
+func NewExporter(buildInfo, version string) (*Exporter, error) {
+	if buildInfo != BrokerBuildInfo && buildInfo != FactoryBuildInfo {
+		return nil, fmt.Errorf("metrics: %q is no binary's build-info gauge", buildInfo)
+	}
 	reg := prometheus.NewRegistry()
 	reader, err := otelprom.New(otelprom.WithRegisterer(reg),
 		otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithoutSuffixes),
@@ -58,13 +68,13 @@ func NewExporter(version string) (*Exporter, error) {
 	}
 	e := &Exporter{provider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
 		handler: promhttp.HandlerFor(reg, promhttp.HandlerOpts{})}
-	if _, err := e.Meter().Int64ObservableGauge("rooms_build_info",
+	if _, err := e.Meter().Int64ObservableGauge(buildInfo,
 		metric.WithDescription("The running build: always 1, labelled with its version."),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			o.Observe(1, metric.WithAttributes(attribute.String("version", version)))
 			return nil
 		})); err != nil {
-		return nil, fmt.Errorf("metrics: rooms_build_info: %w", err)
+		return nil, fmt.Errorf("metrics: %s: %w", buildInfo, err)
 	}
 	return e, nil
 }

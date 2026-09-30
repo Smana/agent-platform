@@ -117,7 +117,7 @@ func TestMeteredLog(t *testing.T) {
 			nil, []string{"rooms_append_errors_total"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			exp, err := metrics.NewExporter("test")
+			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestBridgeSignals(t *testing.T) {
 			json.RawMessage(`{"kind":"chat","text":"\"oversize\":true","delivery":"none"}`), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			exp, err := metrics.NewExporter("test")
+			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 			if err != nil {
 				t.Fatal(err)
 			}

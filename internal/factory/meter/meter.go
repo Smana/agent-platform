@@ -38,8 +38,8 @@ type Meter struct {
 	Runs   Store
 	Source Source
 	Every  time.Duration
-	// OnRevoke is told of each revocation written, with its reason (the fmetrics hook, 1.8).
-	OnRevoke func(reason string)
+	// OnRevoke is told of each revocation written, with its reason: fmetrics.Set.Revoked.
+	OnRevoke func(ctx context.Context, reason string)
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	Log    *slog.Logger
@@ -153,7 +153,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 		if why := kv[runs.AnnRevoked]; why != "" {
 			m.log().Info("run revoked at its cap", "run", r.ID, "tokens", n, "maxTokens", r.MaxTokens, "reason", why)
 			if m.OnRevoke != nil {
-				m.OnRevoke(why)
+				m.OnRevoke(ctx, why)
 			}
 		}
 	}

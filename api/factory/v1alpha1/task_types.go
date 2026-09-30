@@ -19,8 +19,8 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 //   - 2048: a URL, the de-facto limit browsers and proxies accept.
 //   - 65536: the text snapshot (R6 caps it far lower at admission).
 //   - Lists: narrated and handled grow with every comment over a task's life, so they hold 512
-//     and the reconciler trims the oldest (1.9); runs holds 256, far above review rounds, fix
-//     runs and retries combined; shadow holds 16 classifiers.
+//     and their writers trim the oldest (narrate, for narrated); runs holds 256, far above
+//     review rounds, fix runs and retries combined; shadow holds 16 classifiers.
 
 // Task is one unit of factory work (SP3 §4). The factory creates it at runtime and never
 // commits it to Git. Its name derives from the idempotency key, so AlreadyExists is the dedup.
@@ -149,12 +149,20 @@ type TaskStatus struct {
 	// +kubebuilder:validation:MaxLength=32
 	// +optional
 	Verdict string `json:"verdict,omitempty"`
-	// Idempotency keys of the comments already posted (R22). The reconciler trims the oldest.
+	// Idempotency keys of the comments already posted (R22), and of the room messages
+	// (room/<seq>/<key>). narrate trims the oldest: a display list, not a ledger (ruling SK).
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=512
 	// +kubebuilder:validation:items:MaxLength=512
 	// +optional
 	Narrated []string `json:"narrated,omitempty"`
+	// The last clientSeq the task took for a task_state message in its room (ruling SK). The
+	// broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
+	// narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="roomSeq never goes down: the broker would drop a reused clientSeq"
+	// +optional
+	RoomSeq int64 `json:"roomSeq,omitempty"`
 	// GitHub review and comment ids already acted on (Δ5, commands). The reconciler trims the oldest.
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=512
