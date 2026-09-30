@@ -52,6 +52,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	s.DriverChanges.Add(ctx, 1)
 	s.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "not_permitted")))
 	s.Dropped.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "slow")))
+	s.VerdictPosts.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "posted")))
 	if err := s.WatchJWKS(map[string]func() time.Time{"https://issuer": func() time.Time { return now }}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +77,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 		`rooms_redactions_total{rule="jwt"} 1`,
 		`rooms_rejected_actions_total{reason="not_permitted"} 1`,
 		`rooms_connections_dropped_total{reason="slow"} 1`,
+		`rooms_verdict_posts_total{result="posted"} 1`,
 		`rooms_last_event_timestamp_seconds{room="3kq7x2ma"} 1.69999994e+09`,
 		`rooms_authn_jwks_last_refresh_timestamp_seconds{issuer="https://issuer"} 1.7e+09`,
 		`rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`,

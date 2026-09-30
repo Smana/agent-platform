@@ -98,6 +98,8 @@ type Set struct {
 	Rejected metric.Int64Counter
 	// Dropped is rooms_connections_dropped_total{reason} (phase 2).
 	Dropped metric.Int64Counter
+	// VerdictPosts is rooms_verdict_posts_total{result}: posted, not_posted or error (phase 3).
+	VerdictPosts metric.Int64Counter
 
 	meter         metric.Meter
 	appended      metric.Int64Counter
@@ -153,6 +155,8 @@ func New(meter metric.Meter) (*Set, error) {
 	s.Rejected, err = meter.Int64Counter("rooms_rejected_actions_total", metric.WithDescription("Actions refused, by reason."))
 	check(err)
 	s.Dropped, err = meter.Int64Counter("rooms_connections_dropped_total", metric.WithDescription("Connections the broker closed, by reason."))
+	check(err)
+	s.VerdictPosts, err = meter.Int64Counter("rooms_verdict_posts_total", metric.WithDescription("Verdict comments, by result."))
 	check(err)
 	// Ruling AP: counted by the broker from the events bridges append, since
 	// nothing dials into a sandbox to scrape a bridge.
