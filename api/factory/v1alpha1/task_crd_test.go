@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
 )
 
 // The generated CRD carries the rules §4 relies on. Tasks are runtime objects, so this CRD
@@ -35,6 +37,51 @@ func TestTaskCRDCarriesTheDesignRules(t *testing.T) {
 	} {
 		if !strings.Contains(crd, want) {
 			t.Errorf("CRD lacks %q", want)
+		}
+	}
+}
+
+// Review I3: etcd stores the object and CEL costs every rule against the declared bounds, so
+// every free-form string in spec and status has a maxLength and every list a maxItems.
+func TestTaskCRDBoundsEveryStringAndList(t *testing.T) {
+	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.UnmarshalStrict(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	for _, top := range []string{"spec", "status"} {
+		s := root.Properties[top]
+		bounded(t, top, &s)
+	}
+	status := root.Properties["status"].Properties
+	for list, want := range map[string]int64{"narrated": 512, "handled": 512} {
+		if got := status[list].MaxItems; got == nil || *got != want {
+			t.Errorf("status.%s maxItems = %v, want %d", list, got, want)
+		}
+	}
+}
+
+// bounded fails for a string without maxLength, other than an enum or a timestamp, and for a
+// list without maxItems, anywhere under s.
+func bounded(t *testing.T, path string, s *apiextensionsv1.JSONSchemaProps) {
+	t.Helper()
+	switch s.Type {
+	case "string":
+		if len(s.Enum) == 0 && s.Format != "date-time" && s.MaxLength == nil {
+			t.Errorf("%s: a string without maxLength", path)
+		}
+	case "array":
+		if s.MaxItems == nil {
+			t.Errorf("%s: a list without maxItems", path)
+		}
+		bounded(t, path+"[]", s.Items.Schema)
+	case "object":
+		for name, p := range s.Properties {
+			bounded(t, path+"."+name, &p)
 		}
 	}
 }

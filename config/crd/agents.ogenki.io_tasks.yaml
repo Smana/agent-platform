@@ -64,6 +64,7 @@ spec:
                 description: Budget is the task's tier and caps, resolved at triage.
                 properties:
                   model:
+                    maxLength: 64
                     type: string
                   runMinutes:
                     format: int64
@@ -100,8 +101,10 @@ spec:
               predictedClass:
                 description: 'Intent, not authority: it picks team and budget; only
                   policy-bot merges (§2).'
+                maxLength: 64
                 type: string
               repository:
+                maxLength: 140
                 pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
                 type: string
               source:
@@ -109,6 +112,7 @@ spec:
                   is trusted.
                 properties:
                   contentSHA256:
+                    maxLength: 64
                     pattern: ^[a-f0-9]{64}$
                     type: string
                   key:
@@ -123,9 +127,11 @@ spec:
                   ref:
                     description: Smana/cloud-native-ref#2112, runlore:<alert>/<resource>,
                       or the schedule name.
+                    maxLength: 512
                     type: string
                   requestedBy:
                     description: github:<login>, system:runlore or system:scheduler.
+                    maxLength: 128
                     type: string
                   trust:
                     description: untrusted text is fenced as data for the harness
@@ -169,9 +175,11 @@ spec:
                 description: The C7 answer, recorded as-is (§2).
                 properties:
                   classifier:
+                    maxLength: 128
                     type: string
                   confidence:
                     description: '0.0–1.0, as a string: CRDs avoid floats.'
+                    maxLength: 16
                     type: string
                   control:
                     description: 'OD-14: forced to tier-frontier whatever the classifier
@@ -185,6 +193,7 @@ spec:
                     type: string
                   fit:
                     description: 'Scored when the task ends (§7): under, over or fit.'
+                    maxLength: 16
                     type: string
                   shadow:
                     items:
@@ -192,15 +201,19 @@ spec:
                         recorded, never acted on.'
                       properties:
                         classifier:
+                          maxLength: 128
                           type: string
                         confidence:
+                          maxLength: 16
                           type: string
                         tier:
+                          maxLength: 16
                           type: string
                       required:
                       - classifier
                       - tier
                       type: object
+                    maxItems: 16
                     type: array
                   tier:
                     enum:
@@ -216,15 +229,18 @@ spec:
               configHash:
                 description: 'The config that triaged the task: the circuit breaker
                   resets with a new one (§6.4).'
+                maxLength: 64
                 type: string
               fixRuns:
                 format: int32
                 type: integer
               handled:
                 description: GitHub review and comment ids already acted on (Δ5, commands).
+                  The reconciler trims the oldest.
                 items:
                   format: int64
                   type: integer
+                maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
               lastActivity:
@@ -234,8 +250,11 @@ spec:
                 type: string
               narrated:
                 description: Idempotency keys of the comments already posted (R22).
+                  The reconciler trims the oldest.
                 items:
+                  maxLength: 512
                   type: string
+                maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
               phase:
@@ -271,27 +290,33 @@ spec:
                   autoMerged:
                     type: boolean
                   headSHA:
+                    maxLength: 64
                     type: string
                   mergeCommitSHA:
+                    maxLength: 64
                     type: string
                   mergedAt:
                     format: date-time
                     type: string
                   mergedBy:
+                    maxLength: 64
                     type: string
                   nodeID:
+                    maxLength: 128
                     type: string
                   number:
                     type: integer
                   revertNumber:
                     type: integer
                   url:
+                    maxLength: 2048
                     type: string
                 required:
                 - number
                 - url
                 type: object
               reason:
+                maxLength: 1024
                 type: string
               retries:
                 format: int32
@@ -300,6 +325,7 @@ spec:
                 format: int32
                 type: integer
               roomRef:
+                maxLength: 253
                 type: string
               runs:
                 items:
@@ -309,12 +335,15 @@ spec:
                       format: date-time
                       type: string
                     id:
+                      maxLength: 8
                       pattern: ^[a-z2-7]{8}$
                       type: string
                     phase:
+                      maxLength: 64
                       type: string
                     reason:
                       description: The room's end reason (SP2 P15), else the AgentRun's.
+                      maxLength: 1024
                       type: string
                     role:
                       enum:
@@ -347,12 +376,14 @@ spec:
                       - retry
                       type: string
                     verdict:
+                      maxLength: 32
                       type: string
                   required:
                   - id
                   - role
                   - trigger
                   type: object
+                maxItems: 256
                 type: array
               usage:
                 description: Usage is the task's token spend.
@@ -365,6 +396,7 @@ spec:
               verdict:
                 description: 'The effective verdict of the last review: approve, changes
                   or none.'
+                maxLength: 32
                 type: string
             type: object
         required:
