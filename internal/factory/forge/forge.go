@@ -83,10 +83,15 @@ type PR struct {
 	Comments       []Comment
 }
 
-// Trailer is a git trailer of the head commit, "" when absent; the last occurrence wins. Only the
-// message's last paragraph holds trailers, as git reads them, and never its subject: SC-14 trusts
-// Agent-Run, which the harness's commit-msg hook appends, so a line an agent writes in the body
-// must not pass for it.
+// Trailer is what the head commit claims for a git trailer, "" when the exact key is absent; the
+// last occurrence wins. Only the message's last paragraph holds trailers, as git reads them, and
+// never its subject.
+//
+// It is a claim, never authentication (review B1). The harness's commit-msg hook runs
+// `git interpret-trailers --if-exists doNothing`, and git matches keys case-insensitively, so an
+// agent that writes its own Agent-Run (or agent-run) keeps the real one out; an agent with a shell
+// can skip the hook altogether. Tasks 7.2/7.3 must fail closed on an absent, foreign, duplicated
+// or case-variant Agent-Run, and a matching one proves only that the commit claims to be the run's.
 func (p PR) Trailer(key string) string {
 	msg := strings.TrimRight(strings.ReplaceAll(p.HeadMessage, "\r\n", "\n"), " \t\n")
 	i := strings.LastIndex(msg, "\n\n")

@@ -422,3 +422,40 @@ func TestSpansCarryMetadataOnly(t *testing.T) {
 		}
 	}
 }
+
+// The reason comes from the peer's reply body: on a span it is bounded to the broker's own
+// vocabulary, anything else read as other (review minor).
+func TestASpanReasonIsBounded(t *testing.T) {
+	for _, c := range []struct{ reason, want string }{
+		{wire.ReasonBadRoom, wire.ReasonBadRoom},
+		{wire.ReasonBadMessage, wire.ReasonBadMessage},
+		{wire.ReasonUnauthenticated, wire.ReasonUnauthenticated},
+		{wire.ReasonNotPermitted, wire.ReasonNotPermitted},
+		{wire.ReasonNoRoom, wire.ReasonNoRoom},
+		{wire.ReasonSealed, wire.ReasonSealed},
+		{wire.ReasonRateLimited, wire.ReasonRateLimited},
+		{wire.ReasonLogUnavailable, wire.ReasonLogUnavailable},
+		{wire.ReasonTimedOut, wire.ReasonTimedOut},
+		{wire.ReasonBadBatch, "other"}, // a bridge-API reason: never the system API's
+		{"secret: ghp_0123456789", "other"},
+		{"", "other"},
+	} {
+		r := newRig(t, 1)
+		r.b.fail["/v1/rooms/3buqdlot/messages"], r.b.reason = http.StatusBadRequest, c.reason
+		err := r.c.TaskState(t.Context(), "3buqdlot", "x", 1)
+		var api *APIError
+		if !errors.As(err, &api) || api.Reason != c.reason {
+			t.Fatalf("callers still get the reply's reason: %v", err)
+		}
+		s := r.spans.Ended()[0]
+		var got string
+		for _, kv := range s.Attributes() {
+			if kv.Key == "error.type" {
+				got = kv.Value.AsString()
+			}
+		}
+		if got != c.want || s.Status().Description != c.want {
+			t.Errorf("reason %q: error.type %q, status %q, want %q", c.reason, got, s.Status().Description, c.want)
+		}
+	}
+}

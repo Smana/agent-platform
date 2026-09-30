@@ -195,6 +195,17 @@ func (c *Client) TaskState(ctx context.Context, room, text string, clientSeq int
 	return c.do(ctx, http.MethodPost, messagesRoute, room, "", in, maxReplyOverhead, &out)
 }
 
+// spanReason bounds a refusal's reason, which the peer's reply body sets, to the system API's
+// vocabulary: anything else is "other" on a span.
+func spanReason(r string) string {
+	switch r {
+	case wire.ReasonBadRoom, wire.ReasonBadMessage, wire.ReasonUnauthenticated, wire.ReasonNotPermitted,
+		wire.ReasonNoRoom, wire.ReasonSealed, wire.ReasonRateLimited, wire.ReasonLogUnavailable, wire.ReasonTimedOut:
+		return r
+	}
+	return "other"
+}
+
 // do is one call. Its span carries metadata only (O-1 M3): the room id, the method, the route
 // template, the status and the broker's reason, never a body, the query or the token.
 func (c *Client) do(ctx context.Context, method, route, room, query string, in any, maxReply int64, out any) (err error) {
@@ -209,7 +220,7 @@ func (c *Client) do(ctx context.Context, method, route, room, query string, in a
 		why := "transport" // an error's text can quote a URL: only its class goes on the span
 		var api *APIError
 		if errors.As(err, &api) {
-			why = api.Reason
+			why = spanReason(api.Reason)
 		}
 		span.SetAttributes(attribute.String("error.type", why))
 		span.SetStatus(codes.Error, why)
