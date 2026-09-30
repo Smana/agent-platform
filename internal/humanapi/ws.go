@@ -4,6 +4,7 @@ package humanapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -49,6 +50,7 @@ var (
 	errSlowConsumer = errors.New(dropSlowConsumer)
 	errWriteTimeout = errors.New(dropWriteTimeout)
 	errPingTimeout  = errors.New(dropPingTimeout)
+	errProtocol     = errors.New(dropProtocol)
 	errClientGone   = errors.New(dropClientGone)
 	errShutdown     = errors.New(dropShutdown)
 	errLog          = errors.New(dropLogUnavailable)
@@ -183,7 +185,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 
 	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id}
 	reason := v.serve()
-	if reason != "" && reason != dropClientGone {
+	if reason != dropClientGone {
 		s.dropped(base, reason)
 	}
 	switch reason {
@@ -254,19 +256,23 @@ func (v *viewer) write(f wire.ServerFrame) error {
 	return err
 }
 
-// serve runs the connection and returns why it ended: a drop reason, or ""
-// when it already closed on a bad first frame.
+// serve runs the connection and returns why it ended, a drop reason. For
+// protocol, the socket is already closed.
 func (v *viewer) serve() string {
 	hctx, hcancel := context.WithTimeout(v.life, or(v.s.HelloWait, defaultHelloWait))
 	var hello wire.ClientFrame
 	err := wsjson.Read(hctx, v.c, &hello)
 	hcancel()
 	if err != nil {
+		// No hello within HelloWait tore the socket down: the broker's drop, not the peer's.
+		if refused(err) || errors.Is(hctx.Err(), context.DeadlineExceeded) && v.life.Err() == nil {
+			return dropProtocol
+		}
 		return v.ended()
 	}
 	if hello.Type != wire.FrameHello || hello.RoomID != v.id {
 		_ = v.c.Close(websocket.StatusPolicyViolation, "hello first")
-		return ""
+		return dropProtocol
 	}
 	feed, err := v.s.Hub.Subscribe(v.life, v.id)
 	if err != nil {
@@ -358,7 +364,7 @@ func (v *viewer) ended() string {
 	if errors.Is(cause, context.DeadlineExceeded) {
 		return dropReauth
 	}
-	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer} {
+	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol} {
 		if errors.Is(cause, e) {
 			return e.Error()
 		}
@@ -371,7 +377,11 @@ func (v *viewer) read(frames chan<- wire.ClientFrame) {
 	for {
 		var f wire.ClientFrame
 		if err := wsjson.Read(v.base, v.c, &f); err != nil {
-			v.cancel(errClientGone)
+			if refused(err) {
+				v.cancel(errProtocol)
+			} else {
+				v.cancel(errClientGone)
+			}
 			return
 		}
 		select {
@@ -380,6 +390,14 @@ func (v *viewer) read(frames chan<- wire.ClientFrame) {
 			return
 		}
 	}
+}
+
+// refused reports a client frame coder/websocket closed the socket over: past the
+// read limit (1009) or not JSON a client frame decodes from (1007).
+func refused(err error) bool {
+	var syntax *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	return errors.Is(err, websocket.ErrMessageTooBig) || errors.As(err, &syntax) || errors.As(err, &typ)
 }
 
 // ping checks the peer every PingEvery; no pong within PongWait ends the connection.

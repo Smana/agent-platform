@@ -236,6 +236,7 @@ const (
 	dropPingTimeout    = "ping_timeout"
 	dropShutdown       = "shutdown"
 	dropLogUnavailable = "log_unavailable"
+	dropProtocol       = "protocol" // a frame the client must not send (1007, 1008 hello first, 1009), or no hello
 	// dropClientGone is the peer leaving: not a drop, so never counted.
 	dropClientGone = "client_gone"
 )

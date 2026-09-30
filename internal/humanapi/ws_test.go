@@ -509,6 +509,7 @@ func TestHelloFirst(t *testing.T) {
 			if code, reason := closed(t, c); code != websocket.StatusPolicyViolation || reason != "hello first" {
 				t.Fatalf("closed %d %q", code, reason)
 			}
+			protocolDrop(t, e)
 		})
 	}
 	t.Run("no hello at all", func(t *testing.T) {
@@ -522,6 +523,7 @@ func TestHelloFirst(t *testing.T) {
 		if d := time.Since(start); d > 2*time.Second {
 			t.Fatalf("a silent client held its slot for %s", d)
 		}
+		protocolDrop(t, e)
 	})
 }
 
@@ -583,6 +585,81 @@ func TestOversizeFrame(t *testing.T) {
 	send(t, c, wire.ClientFrame{Type: wire.FrameAct, Action: json.RawMessage(`"` + strings.Repeat("a", maxClientFrame) + `"`)})
 	if code, _ := closed(t, c); code != websocket.StatusMessageTooBig {
 		t.Fatalf("closed %d", code)
+	}
+	protocolDrop(t, e)
+}
+
+// A frame that is not a client frame closes the connection 1007, as the broker's drop.
+func TestMalformedFrame(t *testing.T) {
+	for name, tc := range map[string]struct {
+		first bool
+		frame string
+	}{
+		"not JSON, as the hello": {true, "{"},
+		"not JSON, after it":     {false, "{"},
+		"a mistyped field":       {false, `{"type":1}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t)
+			c, _, err := connect(t, e, header("dev"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.first {
+				send(t, c, hello(nil, 0))
+				read(t, c)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if err := c.Write(ctx, websocket.MessageText, []byte(tc.frame)); err != nil {
+				t.Fatal(err)
+			}
+			if code, _ := closed(t, c); code != websocket.StatusInvalidFramePayloadData {
+				t.Fatalf("closed %d", code)
+			}
+			protocolDrop(t, e)
+		})
+	}
+}
+
+// protocolDrop waits for the one close counted as the client breaking protocol (review R2).
+func protocolDrop(t *testing.T, e env) {
+	t.Helper()
+	eventually(t, "the protocol drop is counted", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="protocol"} 1`)
+	})
+}
+
+// failed keeps the broker's own cause: a timed-out write is write_timeout while the
+// connection lives or when the reader saw the socket it tore down go, the log is
+// log_unavailable while alive, and any other cause wins over both (review R1).
+func TestFailedNamesTheBrokersCause(t *testing.T) {
+	timedOut := errors.Join(errWriteTimeout, context.DeadlineExceeded)
+	logDown := errors.Join(errLog, errors.New("conn refused"))
+	for name, tc := range map[string]struct {
+		err   error
+		cause error
+		want  string
+	}{
+		"a write timeout, alive":                    {timedOut, nil, dropWriteTimeout},
+		"a write timeout the reader saw as the end": {timedOut, errClientGone, dropWriteTimeout},
+		"a write timeout during shutdown":           {timedOut, errShutdown, dropShutdown},
+		"a write timeout after a ping timeout":      {timedOut, errPingTimeout, dropPingTimeout},
+		"the log, alive":                            {logDown, nil, dropLogUnavailable},
+		"the log, once the peer left":               {logDown, errClientGone, dropClientGone},
+		"another write error, the peer gone":        {errors.New("broken pipe"), errClientGone, dropClientGone},
+	} {
+		t.Run(name, func(t *testing.T) {
+			life, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			if tc.cause != nil {
+				cancel(tc.cause)
+			}
+			v := &viewer{s: &Server{}, life: life}
+			if got := v.failed(tc.err); got != tc.want {
+				t.Fatalf("failed = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -263,12 +263,13 @@ live `seq` triggers a range read.
 | `1008` | `slow_consumer` | Reconnect with `afterSeq`: over 2 MiB was pending |
 | `1008` | `hello first` | Send `hello` first, within 10 s |
 | `1009` | — | Keep a frame under 32 KiB |
+| `1007` | `failed to unmarshal JSON` | Send each frame as one JSON object |
 | `1001` | `shutdown` | Reconnect: the replica is stopping |
 | `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
 
 The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
 close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with
-`afterSeq`.
+`afterSeq`. So is a client that sends no `hello` within 10 s.
 
 ### Actions (planned, phases 4–6)
 
