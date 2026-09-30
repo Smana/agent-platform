@@ -28,7 +28,7 @@ The design's threats, with the controls this repository implements and where eac
 
 ## Identities
 
-Runs and system callers: phase 1 / AP-1 task 1.6 (planned). Humans: phase 2 / AP-2.
+Runs and system callers: phase 1 / AP-1. Humans: phase 2 / AP-2.
 
 | Principal | Credential | Validated by the broker | Canonical id |
 |---|---|---|---|
@@ -82,8 +82,8 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
 ## TLS on :8443
 
 The bridge-to-broker hop serves TLS **on both clouds** (GP-18). gcp-0's Cilium has no WireGuard to
-encrypt pod traffic, and one configuration for both clouds is simpler than two. Planned in AP-1
-(tasks 1.9, 1.11), CC-S2 and S1.
+encrypt pod traffic, and one configuration for both clouds is simpler than two. The broker and bridge
+sides are AP-1; the manifests are CC-S2 and S1 (planned).
 
 | Piece | Setting |
 |---|---|
@@ -99,8 +99,10 @@ encrypt pod traffic, and one configuration for both clouds is simpler than two. 
 
 ## Redaction
 
-Every payload is redacted **in the broker, before it is appended**: every string value of the JSON
-document, at any depth (keys are only stripped of NUL characters). It uses gitleaks' `detect` package with its
+Every payload is redacted **in the broker, before it is appended**: every string of the JSON
+document, at any depth, object keys included: an env dump puts secrets in keys. NUL characters
+are stripped first, since `jsonb` refuses them. Two keys that are one once redacted cannot keep
+both values, so that item is stored as a `key_collision` stub. It uses gitleaks' `detect` package with its
 default rule set. A match becomes `[REDACTED:<rule>]`, the rule id is listed in the event's
 `redactions`, and `rooms_redactions_total{rule}` counts it. Broker logs carry envelope metadata only,
 never payloads. Status: AP-1 (`internal/redact`).
@@ -122,6 +124,8 @@ A unit test pins the four rules the design names:
 | Only known shapes | A secret gitleaks has no rule for is stored as written (T8's residual) |
 | After the fact for the harness | The harness saw the secret; redaction protects the log and its readers, not the run |
 | An oversize payload | Replaced by a stub, so its content never reaches the log at all |
+| Broker-origin text from a claim | The one free text, a revocation annotation used as an end reason, is redacted like a payload, then cut to 64 bytes |
+| gitleaks' `gitleaks:allow` marker | Ignored: a line carrying it is redacted like any other, because the marker is harness content too |
 
 Later phases apply the same redactor to queued text (phase 4, review M7) and to the action on an
 approval card (phase 5). The harness also redacts GitHub tokens from its own step log before
@@ -133,7 +137,7 @@ printing (cloud-native-ref H-1, review M4).
 |---|---|---|
 | `rooms_owner` | Own and migrate the schema | Create roles |
 | `rooms_broker` | Append and read events; insert room rows; update only the `rooms` columns it must move (Ruling Y) | Update or delete events; unseal, re-date or re-time a room; move `last_seq` by anything but +1 |
-| `rooms_retention` | Delete events and rows of sealed (Ruling Y) rooms closed past their retention | See or delete anything else (row-level security) |
+| `rooms_retention` | Find sealed (Ruling Y) rooms closed past their retention, then delete their events and rows | Read any event column but `room_id`, or any `rooms` column but the four that decide expiry (column grants); see or delete a room that is not expired, or its events (row-level security, Ruling AX) |
 
 Details and the tests that prove them: [room log](room-log.md#the-guarantees).
 

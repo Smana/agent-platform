@@ -182,3 +182,28 @@ func TestGitleaksNeverLogsASecret(t *testing.T) {
 		t.Fatalf("gitleaks wrote %d bytes of log", out.Len())
 	}
 }
+
+// gitleaks drops every finding on a line carrying its allow marker unless told
+// not to. The marker is content like any other: a harness echoes it from a file
+// or a prompt, so it must never exempt a secret, on either entry point.
+func TestTheAllowMarkerExemptsNothing(t *testing.T) {
+	r, _ := New()
+	pat := secrets(t)["github-pat"]
+	line := "token=" + pat + " # gitleaks:allow"
+	t.Run("String", func(t *testing.T) {
+		out, rules := r.String(line)
+		if strings.Contains(out, pat) || !strings.Contains(out, "[REDACTED:github-pat]") || !slices.Contains(rules, "github-pat") {
+			t.Fatalf("%q %v", out, rules)
+		}
+	})
+	t.Run("Payload", func(t *testing.T) {
+		raw, _ := json.Marshal(map[string]any{"output": line, line: 1})
+		out, rules, err := r.Payload(t.Context(), raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), pat) || !slices.Contains(rules, "github-pat") {
+			t.Fatalf("%s %v", out, rules)
+		}
+	})
+}

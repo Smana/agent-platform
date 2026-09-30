@@ -10,11 +10,11 @@ sandbox**; every connection from the `agents` namespace is one the pod opens (C4
 
 | Component | Runs | Does | Status |
 |---|---|---|---|
-| `room-broker` | Deployment `room-broker` in `agent-system`, from an `App` claim. 1 replica in phase 1, 2 with a PDB from phase 2 | The log of record, the Room controller, the `:8443`, `:8080`, `:8090` and `:9090` listeners, the retention job (`room-broker retention`) | AP-1 (planned, tasks 1.6–1.12) |
-| `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream | AP-1 (planned, tasks 1.10–1.11) |
-| Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log | AP-1 (planned, task 1.8) |
-| `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons | AP-1 (planned, task 1.7) |
-| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1 (schema and store written; the claim planned, S1) |
+| `room-broker` | Deployment `room-broker` in `agent-system`, from an `App` claim. 1 replica in phase 1, 2 with a PDB from phase 2 | The log of record, the Room controller, the `:8443`, `:8080`, `:8090` and `:9090` listeners, the retention job (`room-broker retention`) | AP-1 |
+| `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream | AP-1 |
+| Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log | AP-1 |
+| `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons | AP-1 |
+| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1; the claim S1 (planned) |
 | `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#the-room-crd)) | AP-1 |
 | Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) | Planned, phase 2 / AP-2 |
 | Web UI | Embedded in the broker, TypeScript, behind oauth2-proxy | Watch, then post, steer, approve and fork | Planned, phases 2–6 |
@@ -93,6 +93,7 @@ sequenceDiagram
     BR->>PG: append, one transaction per item, gapless seq
     BR-->>B: ack {afterHarnessSeq, afterStatusSeq}
   end
+  Note over B,BR: nothing pushed for 30 s: an empty batch renews the lease
   H->>R: room_handoff(reviewer, summary, commit) (phase 3)
   R->>BR: MCP on :8090
   BR->>PG: handoff{fromRole, toRole, summary, commit, branch}

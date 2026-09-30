@@ -33,7 +33,7 @@ go test -race -run TestBrokerRoleIsAppendOnly -v ./internal/store/
 CONTRIBUTING.md has the steps to add one. Two checks it does not spell out:
 
 - **Validate the directory** after re-hashing, so a stale or reordered `atlas.sum` fails locally
-  rather than in the Atlas operator:
+  rather than in the Atlas operator. `task check` runs it as its `migrations` step:
 
   ```bash
   atlas migrate validate --dir file://internal/store/migrations

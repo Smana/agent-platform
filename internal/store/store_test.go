@@ -202,19 +202,32 @@ func TestAppendRacesCloseRoom(t *testing.T) {
 	}
 }
 
-func TestEnsureRoomRefusesNonPositiveRetention(t *testing.T) {
+// Review N2: a retention the schema would refuse is refused first, as
+// ErrInvalidRetention, not as the database's raw check violation.
+func TestEnsureRoomRefusesAShortRetention(t *testing.T) {
 	s, _, _, _ := open(t)
-	for _, retention := range []time.Duration{0, -time.Hour} {
-		t.Run(retention.String(), func(t *testing.T) {
-			created, err := s.EnsureRoom(context.Background(), NewRoom{ID: "zzzzzzzz", Driver: "system:factory", Retention: retention})
-			if created || !errors.Is(err, ErrInvalidRetention) {
-				t.Fatalf("created=%v err=%v, want ErrInvalidRetention", created, err)
+	for _, c := range []struct {
+		retention time.Duration
+		refused   bool
+	}{
+		{0, true}, {-time.Hour, true}, {time.Second, true}, {time.Hour, true},
+		{24*time.Hour - time.Nanosecond, true}, {24 * time.Hour, false}, {90 * 24 * time.Hour, false},
+	} {
+		t.Run(c.retention.String(), func(t *testing.T) {
+			created, err := s.EnsureRoom(t.Context(), NewRoom{ID: "zzzzzzzz", Driver: "system:factory", Retention: c.retention})
+			var pg *pgconn.PgError
+			switch {
+			case c.refused && (created || !errors.Is(err, ErrInvalidRetention) || errors.As(err, &pg)):
+				t.Fatalf("created=%v err=%v, want ErrInvalidRetention before the database", created, err)
+			case !c.refused && err != nil:
+				t.Fatal(err)
 			}
 		})
 	}
 }
 
 // Ruling AE: the schema refuses a retention under a day, whoever writes the row.
+// The row is inserted directly: EnsureRoom refuses these before the database.
 func TestRetentionHasAFloor(t *testing.T) {
 	s, _, _, _ := open(t)
 	for _, c := range []struct {
@@ -228,7 +241,8 @@ func TestRetentionHasAFloor(t *testing.T) {
 		{"a second is refused", "secondcc", time.Second, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := s.EnsureRoom(t.Context(), NewRoom{ID: c.id, Driver: "system:factory", Retention: c.retention})
+			_, err := s.pool.Exec(t.Context(), `INSERT INTO rooms (room_id, driver, fallback_driver, retention)
+				VALUES ($1, 'system:factory', 'system:factory', make_interval(secs => $2))`, c.id, c.retention.Seconds())
 			var pg *pgconn.PgError
 			switch {
 			case c.refused && (!errors.As(err, &pg) || pg.Code != "23514"):

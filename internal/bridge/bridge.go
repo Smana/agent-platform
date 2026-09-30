@@ -43,6 +43,11 @@ const (
 	maxBatchBytes = 2 << 20
 	// maxRetryWait caps a Retry-After, so a broker's answer cannot park the bridge.
 	maxRetryWait = 30 * time.Second
+	// heartbeatEvery is the longest the bridge goes without renewing its room's
+	// lease: an empty batch when nothing else was accepted. The broker frees a
+	// lease not renewed for 2 min, and a quiet run (a long LLM call, a pending
+	// confirmation) pushes no items (review I2).
+	heartbeatEvery = 30 * time.Second
 
 	defaultInterval   = time.Second
 	defaultMinBackoff = 250 * time.Millisecond
@@ -279,6 +284,7 @@ type Bridge struct {
 	pollRetry  backoff
 	sendRetry  backoff
 	leaseLost  bool
+	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
 
 	sealed   atomic.Bool
 	lastSeen atomic.Int64
@@ -400,6 +406,7 @@ func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
 	case err == nil && rep.Code == http.StatusOK:
 		b.sendRetry.reset()
 		b.sendAt = time.Time{}
+		b.renewedAt = b.now()
 		return r, true
 	case err == nil && rep.Code == http.StatusGone:
 		b.seal()
@@ -569,13 +576,18 @@ func (b *Bridge) send(ctx context.Context) {
 	b.flush(ctx)
 }
 
-// flush pushes the buffer in batches until it is empty or the broker refuses.
-// No batch is ever dropped: a 413 or 400 halves the batch, down to a lone item
-// that is then stubbed in its slot; a 409 keeps the buffer until hello takes the
-// lease back; anything else is retried after a backoff or Retry-After.
+// heartbeatDue reports that the lease needs renewing although nothing is buffered.
+func (b *Bridge) heartbeatDue() bool { return !b.now().Before(b.renewedAt.Add(heartbeatEvery)) }
+
+// flush pushes the buffer in batches until it is empty or the broker refuses,
+// and an empty batch when the lease is due a renewal: the broker renews it on
+// every batch, fenced like an append. No batch is ever dropped: a 413 or 400
+// halves the batch, down to a lone item that is then stubbed in its slot; a 409
+// keeps the buffer until hello takes the lease back; anything else is retried
+// after a backoff or Retry-After.
 func (b *Bridge) flush(ctx context.Context) {
 	limit := batchItems
-	for len(b.buf) > 0 && !b.sealed.Load() {
+	for (len(b.buf) > 0 || b.heartbeatDue()) && !b.sealed.Load() {
 		n := nextBatch(b.buf, maxBatchBytes, limit)
 		rep, err := b.Broker.Send(ctx, encoded(b.buf[:n]))
 		switch {
@@ -587,12 +599,13 @@ func (b *Bridge) flush(ctx context.Context) {
 			return
 		case rep.Code == http.StatusOK:
 			b.sendRetry.reset()
+			b.renewedAt = b.now()
 			limit = min(2*limit, batchItems) // grow back after a halving
 			for _, p := range b.buf[:n] {
 				b.bufBytes -= len(p.enc)
 			}
 			b.buf = b.buf[n:]
-		case rep.Code == http.StatusRequestEntityTooLarge || rep.Code == http.StatusBadRequest:
+		case n > 0 && (rep.Code == http.StatusRequestEntityTooLarge || rep.Code == http.StatusBadRequest):
 			if n > 1 {
 				limit = n / 2
 				continue

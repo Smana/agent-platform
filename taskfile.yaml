@@ -10,6 +10,7 @@ tasks:
       - task: vuln
       - task: test
       - task: crd:check
+      - task: migrations
       - task: ui:test
       - task: ui:check
 
@@ -38,6 +39,11 @@ tasks:
   test:
     cmds:
       - go test -race -count=1 ./...
+
+  migrations:
+    desc: atlas.sum matches the migration directory, as the Atlas operator checks it. Offline.
+    cmds:
+      - atlas migrate validate --dir file://internal/store/migrations
 
   crd:gen:
     cmds:
