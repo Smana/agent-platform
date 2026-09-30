@@ -8,7 +8,10 @@ package runs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -63,10 +66,45 @@ type Spec struct {
 	EgressProfiles                                                                                                                      []string
 }
 
+var (
+	// githubURL is the one shape GitHub writes as an issue's or a PR's html_url. It is matched on
+	// the raw string, so nothing url.Parse would decode or tolerate gets through: a control
+	// character, a percent-escape, userinfo, a port, a query or a fragment.
+	githubURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/[1-9][0-9]*$`)
+	// traceparent is W3C Trace Context version 00 in lower-case hex. Any flags byte: level 2
+	// adds the random-trace-id bit (0x02), and refusing it would fail every CREATE.
+	traceparent = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+)
+
+// Validate refuses what the claim cannot carry safely. The task URL ends in the harness footer
+// as `Agent-Task: <URL>` (SF), so a newline in it would forge a trailer, Agent-Run included
+// (review I4); it must be an issue or a PR of the run's own repository.
+func (s Spec) Validate() error {
+	var errs []error
+	if !envelope.ValidID(s.RunID) {
+		errs = append(errs, fmt.Errorf("run id %q is not a C2 id", s.RunID))
+	}
+	for _, u := range []struct{ field, value string }{{"source URL", s.SourceURL}, {"task URL", s.TaskURL}} {
+		if u.value == "" {
+			continue
+		}
+		if m := githubURL.FindStringSubmatch(u.value); m == nil || !strings.EqualFold(m[1], s.Repository) {
+			errs = append(errs, fmt.Errorf("%s %q is not an issue or a pull request of %s on https://github.com", u.field, u.value, s.Repository))
+		}
+	}
+	if s.Traceparent != "" && !traceparent.MatchString(s.Traceparent) {
+		errs = append(errs, fmt.Errorf("traceparent %q is not W3C version 00", s.Traceparent))
+	}
+	if s.Tier != "" && !slices.Contains([]string{"light", "standard", "frontier"}, s.Tier) {
+		errs = append(errs, fmt.Errorf("tier %q is not light, standard or frontier", s.Tier))
+	}
+	return errors.Join(errs...)
+}
+
 // Name is the claim's name for a run id.
 func Name(runID string) string { return namePrefix + runID }
 
-// Build is the claim for s.
+// Build is the claim for s. It does not validate: Create does, before the claim exists.
 func Build(s Spec) *unstructured.Unstructured {
 	task := map[string]any{"text": s.TaskText}
 	if s.TaskURL != "" {
@@ -167,10 +205,10 @@ func named(id string) *unstructured.Unstructured {
 	return u
 }
 
-// Create creates the claim for s.
+// Create validates s, then creates its claim: the CREATE-only values are checked once, here.
 func (c Client) Create(ctx context.Context, s Spec) error {
-	if err := validID("create", s.RunID); err != nil {
-		return err
+	if err := s.Validate(); err != nil {
+		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
 	if err := c.C.Create(ctx, Build(s)); err != nil {
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
@@ -220,10 +258,16 @@ func (c Client) List(ctx context.Context) ([]Run, error) {
 }
 
 // Annotate merge-patches annotations only: the Kyverno patch-limit rule (phase 5) refuses
-// anything else from the factory's ServiceAccount.
+// anything else from the factory's ServiceAccount. It refuses the CREATE-only keys itself, so
+// that rule is never their only guard.
 func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) error {
 	if err := validID("annotate", id); err != nil {
 		return err
+	}
+	for _, k := range []string{AnnTaskURL, AnnTraceparent} {
+		if _, ok := kv[k]; ok {
+			return fmt.Errorf("annotate run %s: %s is set at CREATE only", id, k)
+		}
 	}
 	body, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": kv}})
 	if err != nil {

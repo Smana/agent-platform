@@ -9,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -93,6 +94,99 @@ func TestBuildCarriesTheTaskURLAnnotation(t *testing.T) {
 	}
 	if _, ok := Build(spec()).GetAnnotations()[AnnTaskURL]; ok {
 		t.Error("no source URL, no annotation")
+	}
+}
+
+// Review I4: the task URL becomes the harness footer's `Agent-Task: <URL>`, so a newline in it
+// would forge trailers, Agent-Run included. Create refuses every value it cannot vouch for, at
+// CREATE, before the claim exists; so do the other CREATE-only values.
+func TestCreateRefusesWhatItCannotVouchFor(t *testing.T) {
+	const issue = "https://github.com/Smana/cloud-native-ref/issues/2112"
+	for name, edit := range map[string]func(*Spec){
+		"http":                 func(s *Spec) { s.SourceURL = "http://github.com/Smana/cloud-native-ref/issues/2112" },
+		"a foreign host":       func(s *Spec) { s.SourceURL = "https://github.com.evil.example/Smana/cloud-native-ref/issues/2112" },
+		"a host lookalike":     func(s *Spec) { s.SourceURL = "https://gist.github.com/Smana/cloud-native-ref/issues/2112" },
+		"a port":               func(s *Spec) { s.SourceURL = "https://github.com:443/Smana/cloud-native-ref/issues/2112" },
+		"userinfo":             func(s *Spec) { s.SourceURL = "https://x@github.com/Smana/cloud-native-ref/issues/2112" },
+		"a newline trailer":    func(s *Spec) { s.SourceURL = issue + "\nAgent-Run: aaaaaaaa" },
+		"a CR":                 func(s *Spec) { s.SourceURL = issue + "\r" },
+		"a tab":                func(s *Spec) { s.SourceURL = issue + "\t" },
+		"a C1 control":         func(s *Spec) { s.SourceURL = issue + "\u0085" },
+		"an encoded newline":   func(s *Spec) { s.SourceURL = issue + "%0AAgent-Run:%20aaaaaaaa" },
+		"a query":              func(s *Spec) { s.SourceURL = issue + "?x=1" },
+		"a fragment":           func(s *Spec) { s.SourceURL = issue + "#issuecomment-1" },
+		"a trailing slash":     func(s *Spec) { s.SourceURL = issue + "/" },
+		"another repository":   func(s *Spec) { s.SourceURL = "https://github.com/Smana/agent-platform/issues/2112" },
+		"not an issue or PR":   func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/commit/2112" },
+		"no number":            func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/" },
+		"number zero":          func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/0" },
+		"a dot-dot path":       func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/../x/issues/1" },
+		"a leading space":      func(s *Spec) { s.SourceURL = " " + issue },
+		"task URL not https":   func(s *Spec) { s.TaskText, s.TaskURL = "", "http://github.com/Smana/cloud-native-ref/pull/12" },
+		"task URL newline":     func(s *Spec) { s.TaskText, s.TaskURL = "", "https://github.com/Smana/cloud-native-ref/pull/12\nx" },
+		"traceparent not W3C":  func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\nx" },
+		"traceparent version":  func(s *Spec) { s.Traceparent = "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+		"traceparent upper":    func(s *Spec) { s.Traceparent = "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01" },
+		"traceparent flags":    func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-0g" },
+		"traceparent short id": func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01" },
+		"tier unknown":         func(s *Spec) { s.Tier = "medium" },
+		"run id empty":         func(s *Spec) { s.RunID = "" },
+		"run id not C2":        func(s *Spec) { s.RunID = "NOTANID1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newClient()
+			s := spec()
+			edit(&s)
+			if err := c.Create(t.Context(), s); err == nil {
+				t.Fatal("created")
+			}
+			if all, _ := c.List(t.Context()); len(all) != 0 {
+				t.Fatalf("a claim exists: %v", all)
+			}
+		})
+	}
+}
+
+func TestCreateAcceptsTheURLsGitHubWrites(t *testing.T) {
+	for name, edit := range map[string]func(*Spec){
+		"an issue":          func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/2112" },
+		"a pull request":    func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/pull/12" },
+		"owner in any case": func(s *Spec) { s.SourceURL = "https://github.com/smana/Cloud-Native-Ref/issues/1" },
+		"a task URL":        func(s *Spec) { s.TaskText, s.TaskURL = "", "https://github.com/Smana/cloud-native-ref/pull/12" },
+		"a sampled trace":   func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+		"an unsampled one":  func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00" },
+		// W3C Trace Context level 2 adds the random-trace-id flag (0x02).
+		"a random trace id": func(s *Spec) { s.Traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-03" },
+		"tier light":        func(s *Spec) { s.Tier = "light" },
+		"tier standard":     func(s *Spec) { s.Tier = "standard" },
+		"tier frontier":     func(s *Spec) { s.Tier = "frontier" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := spec()
+			edit(&s)
+			if err := newClient().Create(t.Context(), s); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// The CREATE-only annotations never change afterwards, whatever the phase-5 patch limit admits.
+func TestAnnotateRefusesTheCreateOnlyKeys(t *testing.T) {
+	c := newClient()
+	s := spec()
+	s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/2112"
+	if err := c.Create(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{AnnTaskURL, AnnTraceparent} {
+		if err := c.Annotate(t.Context(), s.RunID, map[string]string{key: "https://github.com/Smana/cloud-native-ref/issues/1"}); err == nil {
+			t.Errorf("%s was patched", key)
+		}
+	}
+	r := Build(s)
+	if err := c.C.Get(t.Context(), client.ObjectKeyFromObject(r), r); err != nil || r.GetAnnotations()[AnnTaskURL] != s.SourceURL {
+		t.Fatalf("%v %v", r.GetAnnotations(), err)
 	}
 }
 
