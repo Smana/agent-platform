@@ -70,6 +70,13 @@ jobs:
           cache: false
           install_args: helm
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      # cosign reads Docker's credentials, not helm's registry config: without this the signature
+      # upload is refused after the chart is pushed.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Package, push and sign
         env:
           GH_ACTOR: ${{ github.actor }}
