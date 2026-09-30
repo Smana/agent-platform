@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/Smana/agent-platform/internal/policy"
@@ -66,7 +68,7 @@ var (
 func testServer(runs Runs, c *clock) (*Server, *[]string) {
 	var mu sync.Mutex
 	rejected := &[]string{}
-	return &Server{Key: func() string { return "k" }, Runs: runs, SubPattern: subPattern, Now: c.now,
+	return &Server{Key: func() string { return "k" }, Runs: runs, SubPatterns: []*regexp.Regexp{subPattern}, Now: c.now,
 		OnReject: func(_ context.Context, reason string) { mu.Lock(); *rejected = append(*rejected, reason); mu.Unlock() },
 		Tools: []Tool{
 			{Name: "room_read", Action: policy.Read, Roles: []string{"implementer", "reviewer", "tester", "triager"}, InputSchema: objSchema,
@@ -140,7 +142,7 @@ func TestOnlyTheRouterWithTheKeyAndAVerifiedRun(t *testing.T) {
 	unset, _ := testServer(w, c)
 	unset.Key = func() string { return "" }
 	loose, _ := testServer(w, c)
-	loose.SubPattern = regexp.MustCompile(`xplane-run-([a-z2-7]{8})`) // unanchored: must still match the whole subject
+	loose.SubPatterns = []*regexp.Regexp{regexp.MustCompile(`xplane-run-([a-z2-7]{8})`)} // unanchored: must still match the whole subject
 
 	for _, tc := range []struct {
 		name     string
@@ -184,7 +186,7 @@ func (anyRun) Live(id string) (runwatch.Run, bool) {
 
 func TestTheSubjectMustNameAC2Id(t *testing.T) {
 	s, _ := testServer(anyRun{}, newClock())
-	s.SubPattern = regexp.MustCompile(`^system:serviceaccount:agents:xplane-run-(.+)$`)
+	s.SubPatterns = []*regexp.Regexp{regexp.MustCompile(`^system:serviceaccount:agents:xplane-run-(.+)$`)}
 	if got := rpc(t, s, "k", "system:serviceaccount:agents:xplane-run-NOT-AN-ID", "tools/list", nil); got.status != http.StatusForbidden {
 		t.Fatalf("status = %d", got.status)
 	}
@@ -419,5 +421,106 @@ func TestTheCallerIsTheVerifiedRun(t *testing.T) {
 		"arguments": map[string]any{"room": "aaaaaaaa", "role": "implementer"}})
 	if got.Run.ID != "7f3cq2xz" || got.Run.Room != "3kq7x2ma" || got.Run.Role != "reviewer" {
 		t.Fatalf("caller = %+v", got.Run)
+	}
+}
+
+// M1: one X-Ar-Agent, as the gateway sets it. A second value, forged before or
+// after the verified one, is refused rather than guessed between.
+func TestExactlyOneIdentity(t *testing.T) {
+	s, rejected := testServer(watcher(t, "reviewer"), newClock())
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	for name, vals := range map[string][]string{
+		"a forged value first": {"system:serviceaccount:agents:xplane-run-otherrun", sub},
+		"a forged value after": {sub, "system:serviceaccount:agents:xplane-run-otherrun"},
+		"the same value twice": {sub, sub},
+	} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", bytes.NewReader(body))
+		r.Header.Set(KeyHeader, "k")
+		r.Header[IdentityHeader] = vals
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d", name, rec.Code)
+		}
+	}
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", bytes.NewReader(body))
+	r.Header[KeyHeader] = []string{"k", "k"}
+	r.Header.Set(IdentityHeader, sub)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("two keys: %d", rec.Code)
+	}
+	if strings.Join(*rejected, ",") != "mcp_identity,mcp_identity,mcp_identity,mcp_key" {
+		t.Fatalf("rejected = %v", *rejected)
+	}
+}
+
+// M2: every run issuer's subject pattern is tried; none matching is a 403.
+func TestEveryIssuersPattern(t *testing.T) {
+	w := watcher(t, "reviewer")
+	s, _ := testServer(w, newClock())
+	s.SubPatterns = []*regexp.Regexp{subPattern, regexp.MustCompile(`^spiffe://agents/run/([a-z2-7]{8})$`)}
+	if got := rpc(t, s, "k", "spiffe://agents/run/7f3cq2xz", "tools/list", nil); got.status != http.StatusOK {
+		t.Fatalf("a subject of the second issuer: %d", got.status)
+	}
+	if got := rpc(t, s, "k", "spiffe://elsewhere/7f3cq2xz", "tools/list", nil); got.status != http.StatusForbidden {
+		t.Fatalf("a subject of no issuer: %d", got.status)
+	}
+	s.SubPatterns = nil
+	if got := rpc(t, s, "k", sub, "tools/list", nil); got.status != http.StatusForbidden {
+		t.Fatalf("no pattern at all: %d", got.status)
+	}
+}
+
+// A sweep drops only entries over a second old: a run that called within the
+// second is still refused after it, and a full map of this second's callers
+// refuses a new run rather than grow or forget one of them.
+func TestTheSweepKeepsThisSecondsCallers(t *testing.T) {
+	c := newClock()
+	s := &Server{Now: c.now}
+	s.allow("old00000")
+	c.add(2 * time.Second)
+	for i := range maxLimited - 1 {
+		s.allow(fmt.Sprintf("run%05d", i))
+	}
+	c.add(500 * time.Millisecond)
+	if !s.allow("fresh000") { // sweeps "old00000" and keeps every other
+		t.Fatal("a sweep freed no room")
+	}
+	if s.allow("run00000") {
+		t.Fatal("the sweep evicted a run that called within the second")
+	}
+	if _, kept := s.lastCall["old00000"]; kept {
+		t.Fatal("the sweep kept an entry over a second old")
+	}
+	if s.allow("newcomer") {
+		t.Fatal("a full map of this second's callers must refuse a new run")
+	}
+	if len(s.lastCall) > maxLimited {
+		t.Fatalf("%d entries, cap %d", len(s.lastCall), maxLimited)
+	}
+}
+
+// A database error reaches the log as ids and its SQLSTATE: its message can
+// quote the value it refused.
+func TestTheLogCarriesIdsAndSQLStateOnly(t *testing.T) {
+	var buf bytes.Buffer
+	s := server(t, "reviewer")
+	s.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	s.Tools[3].Call = func(context.Context, Caller, json.RawMessage) (any, error) {
+		return nil, fmt.Errorf("store: append: %w", &pgconn.PgError{Code: "22P05", Message: "unsupported value ghp_leakedsecret"})
+	}
+	if _, text := call(t, s, sub, "room_broken"); text != "log_unavailable: try again later" {
+		t.Fatalf("text = %q", text)
+	}
+	got := buf.String()
+	for _, want := range []string{`"tool":"room_broken"`, `"room":"3kq7x2ma"`, `"run":"7f3cq2xz"`, `"sqlstate":"22P05"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log lacks %s: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "ghp_") || strings.Contains(got, "unsupported") {
+		t.Fatalf("the log quotes the database: %s", got)
 	}
 }

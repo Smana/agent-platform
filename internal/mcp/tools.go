@@ -32,8 +32,13 @@ type Redactor interface {
 const (
 	maxSummary = 8 << 10
 	maxRead    = 100
-	// readScan bounds the events one room_read scans for messages and handoffs.
-	readScan = 500
+	// readScan bounds the events one room_read scans for messages and handoffs,
+	// readPage the events it holds at once, and readBudget the payload bytes it
+	// returns: a room of 64 KiB events is read a page at a time, never whole
+	// (review I1).
+	readScan   = 500
+	readPage   = 50
+	readBudget = 1 << 20
 )
 
 var (
@@ -88,19 +93,9 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				if a.Limit <= 0 || a.Limit > maxRead {
 					a.Limit = maxRead
 				}
-				evs, err := log.Range(ctx, c.Run.Room, a.SinceSeq, readScan)
+				out, last, err := readRoom(ctx, log, c.Run.Room, a.SinceSeq, a.Limit)
 				if err != nil {
 					return nil, err
-				}
-				out, last := []envelope.Event{}, a.SinceSeq
-				for _, e := range evs {
-					if e.Type == envelope.Message || e.Type == envelope.Handoff {
-						if len(out) == a.Limit {
-							break // lastSeq stays before it, so the next page starts here
-						}
-						out = append(out, e)
-					}
-					last = e.Seq
 				}
 				return map[string]any{"events": out, "lastSeq": last}, nil
 			}},
@@ -149,6 +144,35 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					PullRequest: pullRequestOf(c.Run)})
 			}},
 	}
+}
+
+// readRoom returns the room's messages and handoffs after since: at most limit,
+// and readBudget payload bytes past the first, scanning at most readScan events.
+// last is the last event scanned before the reply filled, where the next read
+// resumes, so nothing is skipped.
+func readRoom(ctx context.Context, log Log, room string, since int64, limit int) ([]envelope.Event, int64, error) {
+	out, last, size := []envelope.Event{}, since, 0
+	for scanned := 0; scanned < readScan; {
+		n := min(readPage, readScan-scanned)
+		evs, err := log.Range(ctx, room, last, n)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, e := range evs {
+			if e.Type == envelope.Message || e.Type == envelope.Handoff {
+				if len(out) == limit || (len(out) > 0 && size+len(e.Payload) > readBudget) {
+					return out, last, nil
+				}
+				out, size = append(out, e), size+len(e.Payload)
+			}
+			last = e.Seq
+		}
+		scanned += len(evs)
+		if len(evs) < n {
+			break // the end of the log
+		}
+	}
+	return out, last, nil
 }
 
 // pullRequestOf is the pull request a verdict is about: the run's task URL, when

@@ -19,6 +19,7 @@ import (
 type memLog struct {
 	drafts []envelope.Draft
 	ranged []string // the room of every Range
+	limits []int    // the limit of every Range
 }
 
 func (m *memLog) Append(_ context.Context, d envelope.Draft) (envelope.Event, bool, error) {
@@ -28,6 +29,7 @@ func (m *memLog) Append(_ context.Context, d envelope.Draft) (envelope.Event, bo
 
 func (m *memLog) Range(_ context.Context, room string, after int64, limit int) ([]envelope.Event, error) {
 	m.ranged = append(m.ranged, room)
+	m.limits = append(m.limits, limit)
 	var out []envelope.Event
 	for i, d := range m.drafts {
 		if int64(i+1) > after && len(out) < limit {
@@ -442,5 +444,55 @@ func TestAChatNamesNoPullRequest(t *testing.T) {
 	}
 	if strings.Contains(string(log.drafts[0].Payload), "pullRequest") {
 		t.Fatalf("%s", log.drafts[0].Payload)
+	}
+}
+
+// I1: a room of large events is read in pages and answered within a byte
+// budget, so a read holds a few MiB at most, never 500 full payloads; the
+// reader still sees every message once by following lastSeq.
+func TestReadIsBoundedForLargeEvents(t *testing.T) {
+	log := &memLog{}
+	big := strings.Repeat("x", 60<<10)
+	for i := range 300 {
+		typ := envelope.Message
+		if i%3 == 2 {
+			typ = envelope.ToolCall
+		}
+		log.drafts = append(log.drafts, envelope.Draft{Type: typ, Payload: envelope.Must(map[string]any{"n": i + 1, "text": big})})
+	}
+	var seen []int64
+	since, reads := int64(0), 0
+	for since < 300 {
+		log.ranged, log.limits = nil, nil
+		r := read(t, log, fmt.Sprintf(`{"sinceSeq":%d}`, since))
+		reads++
+		size := 0
+		for _, e := range r.Events {
+			size += len(e.Payload)
+			seen = append(seen, e.Seq)
+		}
+		if size > readBudget {
+			t.Fatalf("a reply of %d payload bytes, budget %d", size, readBudget)
+		}
+		for _, l := range log.limits {
+			if l > readPage {
+				t.Fatalf("a Range of %d events, page %d", l, readPage)
+			}
+		}
+		if r.Last <= since {
+			t.Fatalf("no progress past %d", since)
+		}
+		since = r.Last
+		if reads > 100 {
+			t.Fatal("paging does not end")
+		}
+	}
+	if len(seen) != 200 {
+		t.Fatalf("saw %d messages, want every one of the 200 once", len(seen))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] <= seen[i-1] {
+			t.Fatalf("out of order or twice: %v", seen)
+		}
 	}
 }

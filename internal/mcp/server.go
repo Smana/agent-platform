@@ -74,16 +74,17 @@ type Runs interface {
 	Live(id string) (runwatch.Run, bool)
 }
 
-// Server is the :8090 handler. Key, Runs and SubPattern (one capture group: the
-// run id) are required. OnReject counts a refusal by a bounded reason.
+// Server is the :8090 handler. Key, Runs and SubPatterns (every run issuer's,
+// each with one capture group: the run id) are required. OnReject counts a
+// refusal by a bounded reason.
 type Server struct {
-	Key        func() string
-	Runs       Runs
-	SubPattern *regexp.Regexp
-	Tools      []Tool
-	OnReject   func(ctx context.Context, reason string)
-	Logger     *slog.Logger
-	Now        func() time.Time
+	Key         func() string
+	Runs        Runs
+	SubPatterns []*regexp.Regexp
+	Tools       []Tool
+	OnReject    func(ctx context.Context, reason string)
+	Logger      *slog.Logger
+	Now         func() time.Time
 
 	mu       sync.Mutex
 	lastCall map[string]time.Time
@@ -153,29 +154,44 @@ func (s *Server) allow(runID string) bool {
 
 // caller maps the router's headers to a live run, or answers the refusal.
 func (s *Server) caller(w http.ResponseWriter, r *http.Request) (runwatch.Run, bool) {
-	key := s.Key()
+	key, keys := s.Key(), r.Header.Values(KeyHeader)
 	// An unset key must not admit a request that sends none.
-	if key == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(KeyHeader)), []byte(key)) != 1 {
+	if key == "" || len(keys) != 1 || subtle.ConstantTimeCompare([]byte(keys[0]), []byte(key)) != 1 {
 		s.reject(r.Context(), "mcp_key")
 		w.WriteHeader(http.StatusUnauthorized)
 		return runwatch.Run{}, false
 	}
-	// m[0] == the subject: a pattern missing its anchors must not accept a
-	// subject that merely contains a run's name (as authn.Runs).
-	subject := r.Header.Get(IdentityHeader)
-	m := s.SubPattern.FindStringSubmatch(subject)
-	if len(m) != 2 || m[0] != subject || !envelope.ValidID(m[1]) {
+	// Exactly one subject: a second value, forged beside the gateway's, is
+	// refused rather than guessed between (review M1).
+	subjects := r.Header.Values(IdentityHeader)
+	id := ""
+	if len(subjects) == 1 {
+		id = s.runID(subjects[0])
+	}
+	if id == "" {
 		s.reject(r.Context(), "mcp_identity")
 		w.WriteHeader(http.StatusForbidden)
 		return runwatch.Run{}, false
 	}
-	run, ok := s.Runs.Live(m[1])
+	run, ok := s.Runs.Live(id)
 	if !ok || !envelope.ValidID(run.Room) {
 		s.reject(r.Context(), "run_not_live")
 		w.WriteHeader(http.StatusForbidden)
 		return runwatch.Run{}, false
 	}
 	return run, true
+}
+
+// runID is the run the subject names under the first issuer pattern that
+// matches it whole, or "". m[0] == the subject: a pattern missing its anchors
+// must not accept a subject that merely contains a run's name (as authn.Runs).
+func (s *Server) runID(subject string) string {
+	for _, p := range s.SubPatterns {
+		if m := p.FindStringSubmatch(subject); len(m) == 2 && m[0] == subject && envelope.ValidID(m[1]) {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // ServeHTTP answers one JSON-RPC request: initialize, ping, tools/list and

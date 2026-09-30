@@ -301,16 +301,16 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 
 An MCP server on `POST /mcp`, reached only through an `agent-router` `MCPRoute`, which authenticates
 the run first and injects a generated key in `X-Room-Mcp-Key` (ruling P13, `ROOMS_MCP_KEY`). The
-broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against the
-first run issuer's `subPattern`, and reads the run's room and role from its `AgentRun`, never from a
+broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against each
+run issuer's `subPattern` in turn, and reads the run's room and role from its `AgentRun`, never from a
 header or an argument. It exposes `initialize`, `ping`, `tools/list` and `tools/call` only: no
 `resources` or `prompts`, which the gateway would not authorize by role. It answers `POST` only and
 never opens a stream or sends a request of its own (agent-router#2715).
 
 | HTTP | When |
 |---|---|
-| `401` | `X-Room-Mcp-Key` wrong or missing, or `ROOMS_MCP_KEY` unset: every call is refused |
-| `403` | `X-Ar-Agent` names no run, or the run is not live or in no room |
+| `401` | `X-Room-Mcp-Key` wrong, missing or sent twice, or `ROOMS_MCP_KEY` unset: every call is refused |
+| `403` | `X-Ar-Agent` missing, sent twice or naming no run, or the run is not live or in no room |
 | `405` | Anything but `POST` |
 | `413` | A body over 128 KiB |
 | `503` | A call over 15 s |
@@ -323,7 +323,7 @@ appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 
 | Tool | Roles | Arguments | Result | Appends |
 |---|---|---|---|---|
-| `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted. Pass `lastSeq` as the next `sinceSeq` | nothing |
+| `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted, at most 1 MiB of payload a reply and 500 events scanned. Pass `lastSeq` as the next `sinceSeq` | nothing |
 | `room_post` | all | `text`, 1–16 384 bytes | `{seq}` | `message{kind: chat}`, delivered to nobody |
 | `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (lowercase hex, 7–40) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch}`; `fromRole` and `branch` from the `AgentRun` |
 | `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |

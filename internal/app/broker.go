@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -178,8 +177,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if key == "" {
 		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
 	}
-	// agent-router verifies the run's token from the cluster issuer, the first run issuer.
-	tools := roomMCP(key, regexp.MustCompile(cfg.RunIssuers[0].SubPattern), logStore, red, rw.watch, m, log)
+	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig
@@ -218,7 +216,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	g.Go(func() error { return api.ListenAndServeTLS(gctx, bridgeAddr, tlsCfg, bridgeDrain) })
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return humans.Serve(gctx, humanLn, humanDrain) })
-	g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, log), mcpLn, mcpDrain) })
+	g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
 	g.Go(func() error { return refreshJWKS(gctx, refreshers, nil) })
 	g.Go(func() error {
 		if err := mgr.Start(gctx); err != nil {

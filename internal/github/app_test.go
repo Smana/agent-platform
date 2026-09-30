@@ -52,13 +52,14 @@ type fakeGitHub struct {
 	pages    []string
 	claims   jwt.RegisteredClaims // the last App JWT's
 	scope    map[string]any
-	missing  bool          // the App is not installed on the repository
-	expires  time.Duration // an installation token's life; an hour by default
-	postCode int           // the comment POST's status; 201 by default
-	postHdr  http.Header   // headers sent with postCode
-	stale    string        // an installation token GitHub now refuses with 401
-	refuse   bool          // GitHub refuses every installation token with 401
-	current  string        // the last token minted
+	missing  bool              // the App is not installed on the repository
+	expires  time.Duration     // an installation token's life; an hour by default
+	postCode int               // the comment POST's status; 201 by default
+	postHdr  http.Header       // headers sent with postCode
+	stale    string            // an installation token GitHub now refuses with 401
+	refuse   bool              // GitHub refuses every installation token with 401
+	current  string            // the last token minted
+	repoOf   map[string]string // the repository each token was minted for
 }
 
 // locked runs fn under the fake's lock: the handler runs on the server's goroutines.
@@ -80,7 +81,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/app" && appJWT():
 		f.apps++
 		_, _ = w.Write([]byte(`{"slug":"ogenki-agent-factory"}`))
-	case r.Method == http.MethodGet && r.URL.Path == "/repos/Smana/cloud-native-ref/installation" && appJWT():
+	case r.Method == http.MethodGet && (r.URL.Path == "/repos/Smana/cloud-native-ref/installation" || r.URL.Path == "/repos/Smana/other/installation") && appJWT():
 		if f.missing {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
@@ -90,15 +91,26 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.tokens++
 		f.current = fmt.Sprintf("ghs_installation-%d", f.tokens)
 		_ = json.NewDecoder(r.Body).Decode(&f.scope)
+		if f.repoOf == nil {
+			f.repoOf = map[string]string{}
+		}
+		if repos, _ := f.scope["repositories"].([]any); len(repos) == 1 {
+			f.repoOf[f.current], _ = repos[0].(string)
+		}
 		life := f.expires
 		if life == 0 {
 			life = time.Hour
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": f.current, "expires_at": time.Now().Add(life)})
+	case strings.HasPrefix(r.URL.Path, "/repos/Smana/") && strings.HasSuffix(r.URL.Path, "/issues/12/comments") &&
+		strings.HasPrefix(auth, "ghs_installation-") && r.URL.Path != "/repos/Smana/"+f.repoOf[auth]+"/issues/12/comments":
+		// A token scoped to one repository sees no other: GitHub answers 404.
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && strings.HasPrefix(auth, "ghs_installation-") && (auth == f.stale || f.refuse):
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-	case r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" && strings.HasPrefix(auth, "ghs_installation-"):
+	case (r.URL.Path == "/repos/Smana/cloud-native-ref/issues/12/comments" || r.URL.Path == "/repos/Smana/other/issues/12/comments") &&
+		strings.HasPrefix(auth, "ghs_installation-"):
 		if r.Method == http.MethodGet {
 			f.pages = append(f.pages, r.URL.RawQuery)
 			per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
@@ -650,4 +662,21 @@ func TestNeutralise(t *testing.T) {
 			}
 		})
 	}
+}
+
+// m2: a token is scoped to one repository, so it is cached per owner/repo: a
+// second repository of the same owner gets its own, and the first keeps its.
+func TestTokensArePerRepository(t *testing.T) {
+	a, f, _ := app(t)
+	other := "https://github.com/Smana/other/pull/12"
+	for _, u := range []string{pr, other, pr, other} {
+		if _, err := a.Comment(t.Context(), u, "<!-- agent-room:3kq7x2ma:"+strconv.Itoa(len(u))+" -->", "x"); err != nil {
+			t.Fatalf("%s: %v", u, err)
+		}
+	}
+	f.locked(func() {
+		if f.tokens != 2 || f.repoOf["ghs_installation-1"] != "cloud-native-ref" || f.repoOf["ghs_installation-2"] != "other" {
+			t.Fatalf("%d mints, %v", f.tokens, f.repoOf)
+		}
+	})
 }
