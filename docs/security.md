@@ -122,6 +122,7 @@ A unit test pins the four rules the design names:
 | Only known shapes | A secret gitleaks has no rule for is stored as written (T8's residual) |
 | After the fact for the harness | The harness saw the secret; redaction protects the log and its readers, not the run |
 | An oversize payload | Replaced by a stub, so its content never reaches the log at all |
+| gitleaks' `gitleaks:allow` marker | Ignored: a line carrying it is redacted like any other, because the marker is harness content too |
 
 Later phases apply the same redactor to queued text (phase 4, review M7) and to the action on an
 approval card (phase 5). The harness also redacts GitHub tokens from its own step log before
