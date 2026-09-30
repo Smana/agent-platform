@@ -3,22 +3,30 @@
 // The page keeps the newest maxRows rows; older ones leave the page, never the log.
 export const maxRows = 5000;
 
-// A room's rows by seq. A resume the broker clamped can resend a seq: its row is
-// replaced in place, never doubled.
+// A room's rows by seq, in seq order on the page. A resume the broker clamped can
+// resend a seq: its row is replaced in place, never doubled, and one no longer held
+// goes back in order.
 export class RoomLog {
   private rows = new Map<number, HTMLElement>();
+  private seqs: number[] = []; // the held seqs, ascending
   constructor(private el: HTMLElement, private cap = maxRows) {}
 
   put(seq: number, row: HTMLElement) {
     const old = this.rows.get(seq);
-    const oldest = this.rows.keys().next().value;
-    // A resent seq already dropped off the top stays off: appended, it would sit last.
-    if (!old && this.rows.size >= this.cap && oldest !== undefined && seq < oldest) return;
-    if (old) old.replaceWith(row); else this.el.append(row);
-    this.rows.set(seq, row); // a replaced key keeps its place: the map stays oldest first
-    for (const [s, r] of this.rows) {
-      if (this.rows.size <= this.cap) break;
-      r.remove();
+    if (old) {
+      old.replaceWith(row);
+      this.rows.set(seq, row);
+      return;
+    }
+    let i = this.seqs.length;
+    while (i > 0 && this.seqs[i - 1] > seq) i--; // from the end: live events land there
+    const next = i < this.seqs.length ? this.rows.get(this.seqs[i]) : undefined;
+    if (next) next.before(row); else this.el.append(row);
+    this.seqs.splice(i, 0, seq);
+    this.rows.set(seq, row);
+    while (this.seqs.length > this.cap) {
+      const s = this.seqs.shift()!;
+      this.rows.get(s)?.remove();
       this.rows.delete(s);
     }
   }

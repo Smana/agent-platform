@@ -12,6 +12,15 @@ describe("RoomLog", () => {
     log.put(1, row("a2"));
     expect([...el.children].map((c) => c.textContent)).toEqual(["a2", "b"]);
   });
+  it("inserts a resent seq it no longer holds in order, never at the end", () => {
+    const el = document.createElement("main");
+    const log = new RoomLog(el, 10);
+    for (const s of [1, 3, 5]) log.put(s, row(String(s)));
+    log.put(4, row("4"));
+    log.put(2, row("2"));
+    log.put(6, row("6"));
+    expect([...el.children].map((c) => c.textContent)).toEqual(["1", "2", "3", "4", "5", "6"]);
+  });
   it("keeps the newest rows up to its cap (review M2)", () => {
     const el = document.createElement("main");
     const log = new RoomLog(el, 3);

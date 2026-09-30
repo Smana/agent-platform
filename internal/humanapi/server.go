@@ -173,6 +173,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, drain time.Duration
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	// Past the drain the process exits under them: those viewers see 1006, not 1001.
+	if n := s.open(); n > 0 {
+		shut = errors.Join(shut, fmt.Errorf("%d WebSocket connection(s) outlasted the %s drain", n, drain))
+	}
 	if shut != nil {
 		return fmt.Errorf("humanapi: shut down %s: %w", ln.Addr(), shut)
 	}

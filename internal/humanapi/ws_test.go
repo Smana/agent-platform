@@ -527,6 +527,23 @@ func TestHelloFirst(t *testing.T) {
 	})
 }
 
+// A token that expires before any hello is the token's end, not the client's
+// fault: reauth, never protocol (review G1).
+func TestATokenExpiringBeforeTheHelloIsReauth(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.HelloWait = 5 * time.Second })
+	c, _, err := connect(t, e, header("dev", "X-Test-TTL", "200ms"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed(t, c)
+	eventually(t, "the drop is counted as reauth", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="reauth"} 1`)
+	})
+	if body := scrape(t, e); strings.Contains(body, `reason="protocol"`) {
+		t.Fatal("counted as a protocol drop")
+	}
+}
+
 // The connection lives min(token exp, 1 h), then closes 4001 for re-authentication.
 func TestReauth(t *testing.T) {
 	e := setup(t)
@@ -725,6 +742,33 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 	eventually(t, "the connection is uncounted", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
 	})
+}
+
+// Handlers that outlast the drain are named, not dropped silently: their viewers
+// see 1006, not 1001 (review G7). A peer that never reads never answers the close
+// handshake, which holds its handler past a short drain.
+func TestServeNamesConnectionsCutByTheDrain(t *testing.T) {
+	e := setup(t)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- e.srv.Serve(ctx, ln, 200*time.Millisecond) }()
+	c, _, err := connectTo(t, "ws://"+ln.Addr().String()+"/v1/ws?room="+roomID, header("dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.CloseNow() }()
+	send(t, c, hello(nil, 0))
+	eventually(t, "the connection is counted", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 1`)
+	})
+	cancel()
+	if err := <-served; err == nil || !strings.Contains(err.Error(), "1 WebSocket connection") {
+		t.Fatalf("serve = %v, want the cut connection named", err)
+	}
 }
 
 // A connection that races the shutdown is closed 1001 rather than kept.
