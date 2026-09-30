@@ -144,7 +144,7 @@ func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, 
 	cur := current(t)
 	evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, cur.StartSeq)
 	if err != nil {
-		r.Log.Warn("room log unreadable", "task", t.Name, "err", err)
+		r.log().Warn("room log unreadable", "task", t.Name, "err", err)
 		return "", false
 	}
 	_, reason, ok := rooms.LastRunEnd(evs, cur.ID)
@@ -229,7 +229,8 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 	if err := r.Forge.AddLabels(ctx, pr.Number, "factory/class:"+t.Spec.PredictedClass); err != nil {
 		return err
 	}
-	r.Metrics.TimeToPR(ctx, r.Now().Sub(t.CreationTimestamp.Time), t.Spec.Source.Kind, t.Spec.Budget.Tier, t.Spec.Template)
+	d, source, tier, tmpl := r.Now().Sub(t.CreationTimestamp.Time), t.Spec.Source.Kind, t.Spec.Budget.Tier, t.Spec.Template
+	record(ctx, func(ctx context.Context) { r.Metrics.TimeToPR(ctx, d, source, tier, tmpl) })
 	return r.narrator().Post(ctx, t, target(t), narrate.PROpened(t, pr.Number, pr.URL, run.ID))
 }
 
@@ -241,10 +242,12 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	switch pr.State {
 	case "MERGED":
 		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
-		r.Metrics.PROutcome(ctx, t.Spec.PredictedClass, "human_merged")
+		class := t.Spec.PredictedClass
+		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 		return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 	case "CLOSED":
-		r.Metrics.PROutcome(ctx, t.Spec.PredictedClass, "closed")
+		class := t.Spec.PredictedClass
+		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	}
 	return nil

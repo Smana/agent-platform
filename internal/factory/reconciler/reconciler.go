@@ -107,10 +107,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if t.Status.Phase == "" {
 		r.to(&t, v1alpha1.PhaseReceived, "")
 	}
-	err := r.step(ctx, &t)
+	fx := &effects{}
+	err := r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
 			return ctrl.Result{}, errors.Join(err, uerr)
+		}
+		for _, f := range fx.after {
+			f(ctx)
 		}
 	}
 	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
@@ -140,6 +144,28 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.awaitingHuman(ctx, t)
 	}
 	return nil
+}
+
+// effects are what a step records outside the Task: metrics, run once the status that caused them
+// is written. A conflicting write replays the step, which would otherwise count it twice.
+type effects struct{ after []func(context.Context) }
+
+type effectsKey struct{}
+
+// record defers f until the step's status is written; outside Reconcile it runs at once.
+func record(ctx context.Context, f func(context.Context)) {
+	if fx, ok := ctx.Value(effectsKey{}).(*effects); ok {
+		fx.after = append(fx.after, f)
+		return
+	}
+	f(ctx)
+}
+
+func (r *Reconciler) log() *slog.Logger {
+	if r.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.Log
 }
 
 func (r *Reconciler) to(t *v1alpha1.Task, phase, reason string) {
@@ -176,26 +202,28 @@ func (r *Reconciler) stopRequested(ctx context.Context, t *v1alpha1.Task) (bool,
 }
 
 // stop: every live run of the task is annotated revoked=manual, then every run deleted (§6.1).
+// The runs are the cluster's, not status's (ruling SN): a run whose record was lost to a
+// conflicting status write is still the task's, and still stopped.
 func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) error {
-	for _, rec := range t.Status.Runs {
-		run, found, err := r.Runs.Get(ctx, rec.ID)
-		if err != nil {
-			return err
-		}
-		if !found {
+	all, err := r.Runs.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range all {
+		if run.TaskID != t.Name {
 			continue
 		}
 		if !runs.Terminal(run.Phase) {
-			if err := r.Runs.Annotate(ctx, rec.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil {
+			if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil {
 				return err
 			}
 		}
-		if err := r.Runs.Delete(ctx, rec.ID); err != nil {
+		if err := r.Runs.Delete(ctx, run.ID); err != nil {
 			return err
 		}
 	}
 	if why != "kill_switch" {
-		r.Metrics.Intervention(ctx, "stop")
+		record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "stop") })
 	}
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
@@ -215,7 +243,8 @@ func target(t *v1alpha1.Task) int {
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
 	r.to(t, phase, reason)
 	if v1alpha1.TerminalPhase(phase) {
-		r.Metrics.TaskTokens(ctx, t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass)
+		tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
+		record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
 	}
 	return r.narrator().Post(ctx, t, target(t), narrate.Ended(t, phase, reason))
 }

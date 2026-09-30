@@ -12,8 +12,10 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -446,12 +448,16 @@ func TestStopAnnotation(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
 			tk := g.reconcile(t, "3buqdlot", 3)
 			g.runs.set("7f3cq2xz", "Succeeded")
+			_ = g.runs.Create(t.Context(), runs.Spec{RunID: "aaaaaaa9", TaskID: "4buqdlot", Principal: runs.PrincipalFactory})
 			tk.Annotations = map[string]string{v1alpha1.AnnotationStop: why}
 			if err := g.c.Update(t.Context(), tk); err != nil {
 				t.Fatal(err)
 			}
 			tk = g.reconcile(t, "3buqdlot", 1)
-			if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Reason != want || len(g.runs.runs) != 0 ||
+			if _, other := g.runs.runs["aaaaaaa9"]; !other {
+				t.Fatal("a stop leaves another task's run alone")
+			}
+			if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Reason != want || len(g.runs.runs) != 1 ||
 				g.runs.patches["7f3cq2xz"][runs.AnnRevoked] != "" {
 				t.Fatalf("%s %s %v", tk.Status.Phase, tk.Status.Reason, g.runs.patches)
 			}
@@ -545,4 +551,54 @@ func TestAKillSwitchReadErrorStopsNothing(t *testing.T) {
 	if tk.Status.Phase != v1alpha1.PhaseImplementing || len(g.runs.patches) != 0 {
 		t.Fatalf("%s %v", tk.Status.Phase, g.runs.patches)
 	}
+}
+
+// Review M1: a stop whose status write conflicts is replayed, and still counted once: a metric is
+// recorded only with the status that caused it.
+func TestAStopIsCountedOnceThroughAConflict(t *testing.T) {
+	conflict := false
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
+		WithObjects(issueTask("3buqdlot", 7, "x")).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if conflict {
+				conflict = false
+				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
+			}
+			return cl.SubResource(sub).Update(ctx, o, opts...)
+		}}).Build()
+	g := newRig(t)
+	g.c, g.r.Client = c, c
+	tk := g.reconcile(t, "3buqdlot", 3)
+	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "true"}
+	if err := c.Update(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	conflict = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the conflict is returned")
+	}
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseStopped {
+		t.Fatal(tk.Status.Phase)
+	}
+	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens standard solo review" {
+		t.Fatalf("%q", g.metrics.recorded)
+	}
+}
+
+// Review M2: a reconciler built without a logger logs nowhere, and never panics.
+func TestANilLoggerIsQuiet(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Log = nil
+	g.r.Rooms = failingLog{}
+	g.reconcile(t, "3buqdlot", 3)
+	g.runs.set("7f3cq2xz", "Failed")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
+		t.Fatal(tk.Status.Phase)
+	}
+}
+
+type failingLog struct{}
+
+func (failingLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
+	return nil, 0, errors.New("no_room")
 }
