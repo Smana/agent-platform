@@ -5,11 +5,13 @@ go 1.27.1
 require (
 	github.com/go-logr/logr v1.4.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/go-github/v92 v92.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/otlptranslator v1.0.0
 	github.com/rs/zerolog v1.33.0
+	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
 	go.opentelemetry.io/otel v1.46.0
@@ -80,6 +82,7 @@ require (
 	github.com/go-openapi/swag/yamlutils v0.27.1 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/h2non/filetype v1.1.3 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
@@ -135,6 +138,7 @@ require (
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/shurcooL/graphql v0.0.0-20240915155400-7ee5256398cf // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/sorairolake/lzip-go v0.3.5 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
