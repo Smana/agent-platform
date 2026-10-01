@@ -182,6 +182,8 @@ func TestRunGate(t *testing.T) {
 		{"pending, then admitted, waits and lets it start", []int{http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusOK}, ""},
 		{"refused fails the pod with the reason", []int{http.StatusServiceUnavailable, http.StatusConflict}, wire.ReasonRoomBusy},
 		{"never decided fails when the pod ends", []int{http.StatusServiceUnavailable}, context.DeadlineExceeded.Error()},
+		{"a bridge without /admission holds the gate", []int{http.StatusNotFound}, context.DeadlineExceeded.Error()},
+		{"a bridge error holds the gate", []int{http.StatusInternalServerError}, context.DeadlineExceeded.Error()},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -215,6 +217,19 @@ func TestRunGate(t *testing.T) {
 				t.Fatalf("the gate asked %d times, want at least %d", asked, len(c.answers))
 			}
 		})
+	}
+}
+
+// F15: a bridge that is not listening (not started yet, or restarted after a
+// liveness kill or an OOM) holds the harness; the gate never fails open.
+func TestRunGateFailsClosedWhileTheBridgeIsUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL + "/admission"
+	srv.Close() // connection refused from here on
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if err := gate(ctx, slog.New(slog.DiscardHandler), url, 5*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("gate = %v, want it held until the pod ends", err)
 	}
 }
 

@@ -44,14 +44,16 @@ const (
 	// maxRetryWait caps a Retry-After, so a broker's answer cannot park the bridge.
 	maxRetryWait = 30 * time.Second
 	// heartbeatEvery is the longest the bridge goes without renewing its room's
-	// lease: an empty batch when nothing else was accepted. The broker frees a
-	// lease not renewed for 2 min, and a quiet run (a long LLM call, a pending
-	// confirmation) pushes no items (review I2).
+	// lease: an empty batch when nothing else was accepted. A quiet run (a long LLM
+	// call, a pending confirmation) pushes no items (review I2), and the heartbeat
+	// is fenced like an append, so a displaced bridge learns it within 30 s. Time
+	// alone never frees a lease (ruling SBB).
 	heartbeatEvery = 30 * time.Second
 	// busyPatience is how long the first hello may hear room_busy before the run
-	// is refused for good (F15). It outlasts the broker's 2 min lease window plus
-	// a heartbeat, so a holder that died without ending its run is outwaited,
-	// while a live one, renewing every 30 s, is not.
+	// is refused for good (F15): how long a second run waits for the holder's run
+	// to end. The broker frees a lease only once its run ends (ruling SBB), and the
+	// factory starts the next run only after that, so this covers the broker's
+	// watch catching up, never a holder at work.
 	busyPatience = 3 * time.Minute
 
 	defaultInterval   = time.Second

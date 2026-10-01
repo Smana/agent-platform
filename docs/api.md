@@ -66,7 +66,7 @@ and is empty before.
 | `403` | `run_not_live` | The run is terminal, revoked, deleted, or not yet in the watch |
 | `403` | `run_has_no_room` | The run has no `roomRef` |
 | `429` | `rate_limited` | Over the run's limits, shared with its batches |
-| `409` | `room_busy` | Another run holds the room's lease: it is live and was seen within 2 minutes (ruling P17). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
+| `409` | `room_busy` | Another run holds the room's lease, and its run is live (rulings P17, SBB). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
 | `503` | `no_room` | The room's row does not exist yet: its `Room` has not been reconciled |
 | `503` | `log_unavailable` | The database is unreachable |
 
@@ -246,7 +246,7 @@ It also serves `GET /admission`, read by `room-bridge gate` on loopback (F15):
 
 | Status | Body | When |
 |---|---|---|
-| `503` | `pending` | No hello has been decided yet: the broker is unreachable, or the room has been busy for less than 3 minutes |
+| `503` | `pending` | No hello has been decided yet: the broker is unreachable, or another run's live run has held the room for less than 3 minutes |
 | `200` | `admitted` | The bridge holds the room's lease. The gate exits 0 and the harness starts |
 | `409` | `room_busy` or `sealed` | The run will never hold the room. The gate exits 1, which fails the pod before the harness runs |
 
