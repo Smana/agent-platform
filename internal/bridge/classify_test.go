@@ -174,7 +174,22 @@ func TestClassifyEdges(t *testing.T) {
 		{"terminal", "git push -d origin agent/3kq7x2ma", "LOW", ForgeOther},
 		{"terminal", "git push -fd origin agent/3kq7x2ma", "LOW", ForgeOther},
 		{"terminal", "git push origin :agent/3kq7x2ma", "LOW", ForgeOther},
-		{"terminal", "git push -f origin +agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push -f origin +agent/3kq7x2ma", "LOW", ForgeOther}, // SAP: -f is not in the safe shape
+		{"terminal", "git push --force-with-lease origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push --force-with-lease=agent/3kq7x2ma:abc origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push --set-upstream -q -v --quiet --verbose origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push --push-option=ci.skip origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push --no-verify origin agent/3kq7x2ma", "LOW", ForgeOther}, // the spec does not allow skipping hooks
+		{"terminal", "git push --set-up origin agent/3kq7x2ma", "LOW", ForgeOther},    // a unique prefix is still not the flag
+		{"terminal", "git push -o", "LOW", ForgeOther},                                // -o without its value
+		{"terminal", "git push -o $X origin agent/3kq7x2ma", "LOW", ForgeOther},
+		{"terminal", "git push origin", "LOW", ForgePush},
+		{"terminal", "git push agent/3kq7x2ma", "LOW", ForgeOther}, // a remote named like the branch
+		{"terminal", "git push origin agent/3kq7x2ma agent/3kq7x2ma", "LOW", ForgeOther},
+		{"terminal", "git push origin main:agent/3kq7x2ma", "LOW", ForgeOther}, // only HEAD:<own>
+		{"terminal", "git push origin $B", "LOW", ForgeOther},
+		{"terminal", "git push origin agent/{3kq7x2ma,other}", "LOW", ForgeOther},
+		{"terminal", "git push origin 'agent/3kq7x2ma'", "LOW", ForgePush},
 
 		// I3: gh api's other spellings.
 		{"terminal", "gh api -XPOST repos/x/y/issues", "LOW", ForgeOther},
@@ -204,9 +219,9 @@ func TestClassifyEdges(t *testing.T) {
 		{"terminal", "git push -oci.skip origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "git push -odeploy origin agent/3kq7x2ma", "LOW", ForgePush}, // -o's value is not a -d cluster
 		{"terminal", "git push --push-option ci.skip origin agent/3kq7x2ma", "LOW", ForgePush},
-		{"terminal", "git push --repo origin agent/3kq7x2ma", "LOW", ForgePush},
-		{"terminal", "git push --receive-pack x origin agent/3kq7x2ma", "LOW", ForgePush},
-		{"terminal", "git push --exec x origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "git push --repo origin agent/3kq7x2ma", "LOW", ForgeOther}, // SAP: off the allowlist
+		{"terminal", "git push --receive-pack x origin agent/3kq7x2ma", "LOW", ForgeOther},
+		{"terminal", "git push --exec x origin agent/3kq7x2ma", "LOW", ForgeOther},
 		{"terminal", "git push origin refs/heads/agent/3kq7x2ma", "LOW", ForgePush},
 
 		// M3: only real fetches are egress.new.
