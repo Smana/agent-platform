@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -159,10 +160,139 @@ func (r *Reconciler) queueReviews(ctx context.Context, t *v1alpha1.Task, pr forg
 		}
 	}
 	for _, rv := range rvs {
-		t.Status.Handled = append(t.Status.Handled, rv.ID)
+		markHandled(t, rv.ID)
 	}
+	return nil
+}
+
+// markHandled records a review or comment id as acted on, keeping the newest maxHandled.
+func markHandled(t *v1alpha1.Task, id int64) {
+	t.Status.Handled = append(t.Status.Handled, id)
 	if over := len(t.Status.Handled) - maxHandled; over > 0 {
 		t.Status.Handled = slices.Delete(t.Status.Handled, 0, over)
 	}
+}
+
+// cmdRetry asks for a fresh run of an escalated task (§6.3).
+const cmdRetry = "/factory retry"
+
+// command is the newest maintainer comment carrying verb alone on a line, on the task's issue or
+// on pr (the zero PR when the task has none), posted since the task entered its phase and not yet
+// acted on. Anyone else's command is dropped without an answer (T1), so it cannot make the
+// factory talk. An edited comment never counts: its text may not be its author's.
+func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR, verb string) (forge.Comment, bool, error) {
+	all := slices.Clone(pr.Comments)
+	if t.Spec.Issue > 0 {
+		cs, err := r.Forge.RecentComments(ctx, t.Spec.Issue)
+		if err != nil {
+			return forge.Comment{}, false, err
+		}
+		all = append(all, cs...)
+	}
+	var found forge.Comment
+	ok := false
+	for _, c := range all {
+		if c.Edited || !r.Cfg.IsMaintainer(c.Author) || slices.Contains(t.Status.Handled, c.ID) || !commandLine(c.Body, verb) ||
+			(t.Status.PhaseSince != nil && !c.At.After(t.Status.PhaseSince.Time)) {
+			continue
+		}
+		if !ok || c.At.After(found.At) {
+			found, ok = c, true
+		}
+	}
+	return found, ok, nil
+}
+
+// commandLine: some line of body is exactly verb, from its first character; trailing blanks
+// aside. A quote ("> /factory retry") or a longer word ("/factory retrying") is not the command.
+func commandLine(body, verb string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimRight(line, " \t\r") == verb {
+			return true
+		}
+	}
+	return false
+}
+
+// escalated waits for a maintainer (§6.3): a pull request merged or closed meanwhile ends the
+// task; a /factory retry sends it back for a fresh run, through Queued and its caps. The command
+// is marked handled in the same status write as the move, and no run is created here, so a replay
+// after a lost write repeats the move, and queued's adopt never starts a second run.
+func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
+	var pr forge.PR
+	if t.Status.PullRequest != nil {
+		var err error
+		if pr, err = r.Forge.PullRequest(ctx, t.Status.PullRequest.Number); err != nil {
+			return err
+		}
+		if r.prEnded(ctx, t, pr) {
+			return nil
+		}
+	}
+	c, ok, err := r.command(ctx, t, pr, cmdRetry)
+	if err != nil || !ok {
+		return err
+	}
+	markHandled(t, c.ID)
+	t.Status.Retries++
+	t.Status.NextTrigger = "retry"
+	record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "retry") })
+	next := v1alpha1.PhaseQueued
+	if t.Status.RoomRef == "" { // escalated before it had a room (foreign_room): check the room again
+		next = v1alpha1.PhaseTriaged
+	}
+	r.to(t, next, "")
+	narrateLater(t, narrate.Retrying(t, c.Author))
 	return nil
+}
+
+// labelStale marks a pull request the factory closed for want of a review (§6.3).
+const labelStale = "factory/stale"
+
+// quietSince is when a maintainer last touched the pull request: the task's entry into
+// AwaitingHuman, or a later review or comment of theirs on it.
+func (r *Reconciler) quietSince(t *v1alpha1.Task, pr forge.PR) time.Time {
+	since := t.Status.PhaseSince.Time
+	for _, rv := range pr.Reviews {
+		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since) {
+			since = rv.At
+		}
+	}
+	for _, c := range pr.Comments {
+		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since) {
+			since = c.At
+		}
+	}
+	return since
+}
+
+// remind nudges the maintainers once a pull request has waited RemindAfter for them, and closes
+// it with factory/stale after StaleAfter (§6.3). Only maintainers' silence counts: a review or a
+// comment of theirs starts the wait again. The close comes only after that spell's reminder was
+// posted, and only on the task's own branch. The reminder goes through the outbox, written before
+// it is posted, so a replay posts it once. The label goes on before the close, so a replay after
+// a lost status write still reads the closed pull request as stale (prEnded).
+func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) error {
+	if t.Status.PhaseSince == nil || pr.HeadRef != "agent/"+t.Name {
+		return nil
+	}
+	since := r.quietSince(t, pr)
+	waited := r.Now().Sub(since)
+	if waited < RemindAfter {
+		return nil
+	}
+	reminder := narrate.Reminder(t, r.Cfg.Maintainers, since)
+	if waited < StaleAfter || !slices.Contains(t.Status.Narrated, reminder.Key) {
+		narrateLater(t, reminder)
+		return nil
+	}
+	if err := r.Forge.AddLabels(ctx, pr.Number, labelStale); err != nil {
+		return err
+	}
+	if err := r.Forge.ClosePR(ctx, pr.Number); err != nil {
+		return err
+	}
+	class := t.Spec.PredictedClass
+	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
+	return r.end(ctx, t, v1alpha1.PhaseClosed, "stale")
 }

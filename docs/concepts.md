@@ -117,4 +117,12 @@ just before that run starts, so a review submitted while the task waits joins it
 already dismissed is skipped. A review dismissed after it was queued still drives that run, since
 the system API cannot remove a queued message.
 
+The factory's other human inputs (§6.3):
+
+| Input | Effect |
+|---|---|
+| A maintainer's comment with `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run, through `Queued` and its caps. Edited comments, and anyone else's, are ignored without an answer |
+| No maintainer review or comment on an `AwaitingHuman` pull request for 48 h | One reminder mentioning the maintainers, for each quiet spell |
+| The same for 14 days, once that reminder is posted | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`) |
+
 The full permission matrix is in [Security](security.md#authorization).

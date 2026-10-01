@@ -25,6 +25,7 @@ type Fake struct {
 	added    map[int][]string
 	removed  map[int][]string
 	cut      map[int]bool
+	closed   map[int]bool
 	nextID   int64
 }
 
@@ -32,7 +33,7 @@ type Fake struct {
 func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
-		removed: map[int][]string{}, cut: map[int]bool{}}
+		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -178,6 +179,32 @@ func (f *Fake) PullRequestForBranch(_ context.Context, branch string) (int, erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.branches[branch], nil
+}
+
+// ClosePR implements the forge's ClosePR. The stored pull request, if any, reads CLOSED after it.
+func (f *Fake) ClosePR(_ context.Context, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed[n] = true
+	if p, ok := f.prs[n]; ok {
+		p.State = "CLOSED"
+		f.prs[n] = p
+	}
+	return nil
+}
+
+// Closed is whether ClosePR closed n.
+func (f *Fake) Closed(n int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed[n]
+}
+
+// SetComments replaces a thread's comments, for commands written by other users.
+func (f *Fake) SetComments(n int, cs ...Comment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments[n] = slices.Clone(cs)
 }
 
 // PullRequest implements the forge's PullRequest.

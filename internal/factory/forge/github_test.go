@@ -34,7 +34,8 @@ const prJSON = `{"data":{"repository":{"pullRequest":{
  "labels":{"nodes":[{"name":"factory/class:docs-links"}]},
  "reviews":{"nodes":[{"databaseId":901,"state":"CHANGES_REQUESTED","body":"Use the relative link.","submittedAt":"2026-09-27T10:00:00Z",
    "author":{"__typename":"User","login":"Smana"},"comments":{"nodes":[{"path":"docs/a.md","line":3,"body":"here"}]}}]},
- "comments":{"nodes":[{"databaseId":55,"body":"/factory retry","createdAt":"2026-09-27T10:05:00Z","author":{"__typename":"User","login":"Smana"}}]},
+ "comments":{"nodes":[{"databaseId":55,"body":"/factory retry","createdAt":"2026-09-27T10:05:00Z","lastEditedAt":null,"author":{"__typename":"User","login":"Smana"}},
+   {"databaseId":56,"body":"/factory retry","createdAt":"2026-09-27T10:06:00Z","lastEditedAt":"2026-09-27T10:07:00Z","author":{"__typename":"User","login":"Smana"}}]},
  "commits":{"nodes":[{"commit":{"message":"docs: fix a link\n\nAgent-Run: 7f3cq2xz"}}]}}}}}`
 
 const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://github.com/Smana/demo/issues/7",
@@ -152,9 +153,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		_, _ = io.WriteString(w, `{"id":1}`)
 	}))
 	// An issue's comments as GitHub serves them: ascending id, paged, sort and direction ignored
-	// (review R1). Issue 7 has one comment; 9, 10 and 11 have 130, 180 and 60.
+	// (review R1). Issue 7 has one comment; 9, 10 and 11 have 130, 180 and 60; 13 has two, the
+	// second edited after it was posted.
 	mux.HandleFunc("GET /repos/Smana/demo/issues/{n}/comments", g.authed(func(w http.ResponseWriter, r *http.Request) {
-		total := map[string]int{"7": 1, "9": 130, "10": 180, "11": 60}[r.PathValue("n")]
+		total := map[string]int{"7": 1, "9": 130, "10": 180, "11": 60, "13": 2}[r.PathValue("n")]
 		q := r.URL.Query()
 		per, _ := strconv.Atoi(q.Get("per_page"))
 		page, _ := strconv.Atoi(q.Get("page"))
@@ -178,9 +180,26 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		var cs []string
 		for id := (page-1)*per + 1; id <= min(page*per, total); id++ {
-			cs = append(cs, fmt.Sprintf(`{"id":%d,"body":"c%d","user":{"login":"Smana"},"created_at":"2026-09-27T10:00:00Z"}`, id, id))
+			updated := "2026-09-27T10:00:00Z"
+			if r.PathValue("n") == "13" && id == 2 {
+				updated = "2026-09-27T11:00:00Z"
+			}
+			cs = append(cs, fmt.Sprintf(`{"id":%d,"body":"c%d","user":{"login":"Smana"},"created_at":"2026-09-27T10:00:00Z","updated_at":%q}`,
+				id, id, updated))
 		}
 		_, _ = io.WriteString(w, "["+strings.Join(cs, ",")+"]")
+	}))
+	mux.HandleFunc("PATCH /repos/Smana/demo/pulls/{n}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if len(in) != 1 || in["state"] != "closed" {
+			t.Errorf("a close changes the state only: %v", in)
+		}
+		if r.PathValue("n") != "12" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"number":12,"state":"closed"}`)
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
@@ -296,8 +315,8 @@ func TestPullRequestSnapshot(t *testing.T) {
 		pr.Reviews[0].Comments[0].Line != 3 || pr.Reviews[0].At.IsZero() {
 		t.Fatalf("reviews %+v", pr.Reviews)
 	}
-	if len(pr.Comments) != 1 || pr.Comments[0].ID != 55 || pr.Comments[0].Author != "Smana" {
-		t.Fatalf("comments %+v", pr.Comments)
+	if len(pr.Comments) != 2 || pr.Comments[0].ID != 55 || pr.Comments[0].Author != "Smana" || pr.Comments[0].Edited || !pr.Comments[1].Edited {
+		t.Fatalf("comments, and which were edited: %+v", pr.Comments)
 	}
 }
 
@@ -379,8 +398,17 @@ func TestIssueAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs, err := r.g.RecentComments(ctx, 7)
-	if err != nil || len(cs) != 1 || cs[0].ID != 1 || cs[0].Author != "Smana" || cs[0].Body != "c1" {
+	if err != nil || len(cs) != 1 || cs[0].ID != 1 || cs[0].Author != "Smana" || cs[0].Body != "c1" || cs[0].Edited {
 		t.Fatalf("%+v %v", cs, err)
+	}
+	if cs, err = r.g.RecentComments(ctx, 13); err != nil || len(cs) != 2 || !cs[0].Edited || cs[1].Edited {
+		t.Fatalf("an edit shows: %+v %v", cs, err)
+	}
+	if err := r.g.ClosePR(ctx, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.g.ClosePR(ctx, 13); err == nil {
+		t.Fatal("a refused close is an error")
 	}
 	if err := r.g.AddLabels(ctx, 7, "factory/class:docs-links"); err != nil {
 		t.Fatal(err)

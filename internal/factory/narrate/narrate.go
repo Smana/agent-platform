@@ -188,6 +188,7 @@ func reasons() map[string]string {
 		"unsanitisable":         "the issue text could not be made safe for an agent to read; simplify its markup",
 		"unauthorised_stopper":  "only a maintainer's factory/stop stops a task",
 		"foreign_room":          "a room of the task's name exists and is not the factory's",
+		"stale":                 "nobody reviewed the pull request for 14 days",
 	}
 }
 
@@ -218,6 +219,26 @@ func Revising(t *v1alpha1.Task, reviewer string) Event {
 			"with the review in its brief.", t.Name, reviewer)}
 }
 
+// Reminder mentions the maintainers when the task's pull request has waited 48 h for one of them
+// (§6.3), once per quiet spell: quietSince is the spell's start, so a spell a maintainer broke
+// and that began again earns its own reminder before any stale close.
+func Reminder(t *v1alpha1.Task, maintainers []string, quietSince time.Time) Event {
+	at := make([]string, 0, len(maintainers))
+	for _, m := range maintainers {
+		at = append(at, "@"+m)
+	}
+	return Event{Key: fmt.Sprintf("remind-%d-%d", len(t.Status.Runs), quietSince.Unix()),
+		Body: fmt.Sprintf("%s: the pull request of agent factory task `%s` has waited 48 hours for a review. It closes itself after 14 days.",
+			strings.Join(at, " "), t.Name)}
+}
+
+// Retrying says a maintainer's /factory retry sent an escalated task back for a fresh run, once
+// per retry.
+func Retrying(t *v1alpha1.Task, by string) Event {
+	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries),
+		Body: fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)}
+}
+
 // PROpened announces the task's pull request.
 func PROpened(t *v1alpha1.Task, number int, url, runID string) Event {
 	return Event{Key: "pr-opened", Body: fmt.Sprintf("Run `%s` of task `%s` opened #%d: %s", runID, t.Name, number, url)}
@@ -231,10 +252,9 @@ func headlines() map[string]string {
 	}
 }
 
-// hints: phase 2 replaces the Escalated one with /factory retry.
 func hints() map[string]string {
 	return map[string]string{
-		v1alpha1.PhaseEscalated: "Re-apply `factory/ready` to start a new task, or push to the branch yourself.",
+		v1alpha1.PhaseEscalated: "Comment `/factory retry` on this issue to run it again (a maintainer only), or push to the branch yourself.",
 		v1alpha1.PhaseNoOp:      "If there is work to do, add detail to the issue and re-apply `factory/ready`.",
 		v1alpha1.PhaseRejected:  "Fix what is described above and re-apply `factory/ready`.",
 	}

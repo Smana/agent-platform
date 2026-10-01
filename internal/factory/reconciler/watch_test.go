@@ -405,3 +405,283 @@ func TestReadsStartAtTheRunsStart(t *testing.T) {
 		t.Fatalf("%s: the run's end read %d events", tk.Status.Phase, g.log.read)
 	}
 }
+
+// escalatedTask is awaiting()'s task, escalated ten minutes ago, with or without its PR.
+func escalatedTask(withPR bool) *v1alpha1.Task {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-10 * time.Minute))
+	tk.Status.Phase, tk.Status.Reason, tk.Status.PhaseSince = v1alpha1.PhaseEscalated, "agent_stuck", &since
+	if !withPR {
+		tk.Status.PullRequest = nil
+	}
+	return tk
+}
+
+func retryBy(id int64, author string, ago time.Duration) forge.Comment {
+	return forge.Comment{ID: id, Author: author, Body: "/factory retry", At: now.Add(-ago)}
+}
+
+// §6.3: a maintainer's /factory retry sends an escalated task back for a fresh run, through
+// Queued; the factory's own comment is not a maintainer's.
+func TestRetryRevivesAnEscalatedTask(t *testing.T) {
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	g.ids("aaaaaaaa")
+	_ = g.f.Comment(context.Background(), 7, "/factory retry") // by the fake's bot login: ignored
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatal("only a maintainer's command counts")
+	}
+	g.f.SetComments(7, retryBy(77, "smana", time.Minute)) // logins fold case
+	tk = g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Retries != 1 || tk.Status.NextTrigger != "retry" ||
+		!slices.Equal(tk.Status.Handled, []int64{77}) || tk.Status.Reason != "" {
+		t.Fatalf("%s %q %d %q %v", tk.Status.Phase, tk.Status.Reason, tk.Status.Retries, tk.Status.NextTrigger, tk.Status.Handled)
+	}
+	if c := g.f.Comments(7); len(c) != 2 || !strings.Contains(c[1], "Agent factory task `3buqdlot` is retrying, as @smana asked.") {
+		t.Fatalf("%q", c)
+	}
+	if !slices.Contains(g.metrics.recorded, "intervention retry") {
+		t.Fatalf("%q", g.metrics.recorded)
+	}
+	tk = g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Retries != 1 || tk.Status.Runs[1].Trigger != "retry" ||
+		!strings.Contains(g.runs.specs["aaaaaaaa"].TaskText, "TASK-DATA-") {
+		t.Fatalf("%s %d %+v", tk.Status.Phase, tk.Status.Retries, tk.Status.Runs)
+	}
+}
+
+// A command counts only as a maintainer's own line, unedited, posted since the escalation and not
+// acted on yet. Anything else is dropped without an answer (T1).
+func TestOnlyAMaintainersFreshCommandRetries(t *testing.T) {
+	edited := retryBy(81, "Smana", time.Minute)
+	edited.Edited = true
+	at := now.Add(-time.Minute)
+	for name, c := range map[string]forge.Comment{
+		"someone else's":        retryBy(80, "someone", time.Minute),
+		"edited":                edited,
+		"quoted":                {ID: 82, Author: "Smana", Body: "> /factory retry", At: at},
+		"a longer word":         {ID: 83, Author: "Smana", Body: "/factory retrying", At: at},
+		"mid-line":              {ID: 84, Author: "Smana", Body: "please /factory retry", At: at},
+		"indented":              {ID: 85, Author: "Smana", Body: "    /factory retry", At: at},
+		"before the escalation": retryBy(86, "Smana", time.Hour),
+		"already handled":       retryBy(87, "Smana", time.Minute),
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := escalatedTask(false)
+			tk.Status.Handled = []int64{87}
+			g := newRig(t, tk, roomOf("3buqdlot"))
+			g.f.SetComments(7, c)
+			got := g.reconcile(t, "3buqdlot", 2)
+			if got.Status.Phase != v1alpha1.PhaseEscalated || got.Status.Retries != 0 || len(g.f.Comments(7)) != 1 {
+				t.Fatalf("%s %d %q", got.Status.Phase, got.Status.Retries, g.f.Comments(7))
+			}
+		})
+	}
+}
+
+// A command on the pull request counts too, on its own line among others; the newest maintainer's
+// is the one narrated, and every new one is acted on once.
+func TestTheNewestRetryOnTheIssueOrThePR(t *testing.T) {
+	g := newRig(t, escalatedTask(true), roomOf("3buqdlot"))
+	g.r.Cfg.Maintainers = append(g.r.Cfg.Maintainers, "alice")
+	pr := pr12()
+	pr.Comments = []forge.Comment{{ID: 90, Author: "alice", Body: "Looked at it.\r\n/factory retry \r\nThanks", At: now.Add(-time.Minute)}}
+	g.f.SetPR(pr)
+	g.f.SetComments(7, retryBy(91, "Smana", 5*time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || !slices.Equal(tk.Status.Handled, []int64{90}) {
+		t.Fatalf("%s %v", tk.Status.Phase, tk.Status.Handled)
+	}
+	if c := g.f.Comments(7); !strings.Contains(c[len(c)-1], "as @alice asked") {
+		t.Fatalf("%q", c)
+	}
+}
+
+// A webhook retry or a replay never starts two runs: a lost status write repeats the move, and a
+// command stamped ahead of the factory's clock is not acted on again after the next escalation.
+func TestARetryIsActedOnOnce(t *testing.T) {
+	lose := false
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
+		WithObjects(escalatedTask(false), roomOf("3buqdlot")).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if lose {
+				lose = false
+				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
+			}
+			return cl.SubResource(sub).Update(ctx, o, opts...)
+		}}).Build()
+	g := newRig(t)
+	g.c, g.r.Client = c, c
+	g.ids("aaaaaaaa", "bbbbbbbb")
+	g.f.SetComments(7, retryBy(77, "Smana", -time.Hour)) // GitHub's clock an hour ahead
+	lose = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the lost write is returned")
+	}
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Retries != 1 {
+		t.Fatalf("%s %d", tk.Status.Phase, tk.Status.Retries)
+	}
+	g.runs.set("aaaaaaaa", "Failed")
+	g.log.end("aaaaaaaa", "Failed", "agent_stuck")
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Retries != 1 || len(g.runs.specs) != 1 {
+		t.Fatalf("%s %d runs %d", tk.Status.Phase, tk.Status.Retries, len(g.runs.specs))
+	}
+	n := 0
+	for _, s := range g.metrics.recorded {
+		if s == "intervention retry" {
+			n++
+		}
+	}
+	retrying := 0
+	for _, b := range g.f.Comments(7) {
+		if strings.Contains(b, "is retrying") {
+			retrying++
+		}
+	}
+	if n != 1 || retrying != 1 {
+		t.Fatalf("counted %d, narrated %d", n, retrying)
+	}
+}
+
+// A task escalated before it had a room (foreign_room) goes back to Triaged, which checks the room
+// again; its first run is the retry's.
+func TestRetryOfAForeignRoomChecksTheRoomAgain(t *testing.T) {
+	foreign := &roomv1.Room{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Spec: roomv1.RoomSpec{Owner: "human:someone", Driver: "human:someone", DataClass: "public", Repository: "Smana/cloud-native-ref"}}
+	g := newRig(t, foreign, issueTask("3buqdlot", 7, "x"))
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Reason != "foreign_room" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	if err := g.c.Delete(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	g.f.SetComments(7, retryBy(77, "Smana", -time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseTriaged || tk.Status.NextTrigger != "retry" {
+		t.Fatalf("%s %q", tk.Status.Phase, tk.Status.NextTrigger)
+	}
+	tk = g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.RoomRef != "3buqdlot" || tk.Status.Runs[0].Trigger != "retry" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+}
+
+// An escalated task's pull request merged or closed by a human ends it, whatever command waits;
+// an open one leaves the command to act.
+func TestAnEscalatedTasksPullRequestEndsIt(t *testing.T) {
+	for state, want := range map[string]string{"MERGED": v1alpha1.PhaseDone, "CLOSED": v1alpha1.PhaseClosed, "OPEN": v1alpha1.PhaseQueued} {
+		g := newRig(t, escalatedTask(true), roomOf("3buqdlot"))
+		pr := pr12()
+		pr.State, pr.MergedBy = state, "Smana"
+		g.f.SetPR(pr)
+		g.f.SetComments(7, retryBy(77, "Smana", time.Minute))
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != want || (state != "OPEN") != (tk.Status.Retries == 0) {
+			t.Fatalf("%s: %s, %d retries", state, tk.Status.Phase, tk.Status.Retries)
+		}
+	}
+}
+
+// §6.3: a PR no maintainer touched gets one reminder at 48 h and is closed with factory/stale at
+// 14 days.
+func TestRemindThenCloseStale(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-49 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	g.f.SetPR(pr12())
+	g.reconcile(t, "3buqdlot", 2)
+	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "@Smana") || !strings.Contains(c[0], "waited 48 hours") {
+		t.Fatalf("one reminder: %q", c)
+	}
+	if g.f.Closed(12) {
+		t.Fatal("closed at 49 h")
+	}
+	g.r.Now = func() time.Time { return now.Add(14 * 24 * time.Hour) }
+	tk = g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseClosed || tk.Status.Reason != "stale" || !g.f.Closed(12) ||
+		!slices.Contains(g.f.Added(12), "factory/stale") || !slices.Contains(g.metrics.recorded, "pr review closed") {
+		t.Fatalf("%s %s %q", tk.Status.Phase, tk.Status.Reason, g.metrics.recorded)
+	}
+}
+
+// A reminder already posted writes no status on the polls after it.
+func TestAPostedReminderWritesNothingMore(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-49 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	g.f.SetPR(pr12())
+	before := g.reconcile(t, "3buqdlot", 1).ResourceVersion
+	if after := g.reconcile(t, "3buqdlot", 3); after.ResourceVersion != before || len(after.Status.Outbox) != 0 {
+		t.Fatalf("rewritten: %s → %s, outbox %v", before, after.ResourceVersion, after.Status.Outbox)
+	}
+}
+
+// Only maintainers' silence counts: their review or comment starts the wait again, and that new
+// spell has its own reminder before any close. Anyone else's comment changes nothing.
+func TestAMaintainerRestartsTheWait(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-15 * 24 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	g.r.Cfg.Maintainers = append(g.r.Cfg.Maintainers, "alice")
+	pr := pr12(forge.Review{ID: 1, Author: "Smana", State: "COMMENTED", At: now.Add(-time.Hour)})
+	pr.Comments = []forge.Comment{{ID: 2, Author: "someone", At: now.Add(-time.Minute)}}
+	g.f.SetPR(pr)
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.f.Comments(7)) != 0 {
+		t.Fatalf("a maintainer's review an hour ago: %s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+	pr.Comments = append(pr.Comments, forge.Comment{ID: 3, Author: "ALICE", At: now.Add(-13 * 24 * time.Hour)})
+	pr.Reviews = nil
+	g.f.SetPR(pr)
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.f.Comments(7)) != 1 || g.f.Closed(12) {
+		t.Fatalf("13 days after alice's comment: one reminder, no close: %s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+	g.r.Now = func() time.Time { return now.Add(24*time.Hour + time.Minute) }
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 2 {
+		t.Fatalf("14 days after it: closed, once reminded: %s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+}
+
+// A close is never unannounced: a task first seen 14 days quiet (the factory was down) is
+// reminded, and closed only on a later poll.
+func TestNoStaleCloseBeforeItsReminder(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-15 * 24 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	g.f.SetPR(pr12())
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) || len(g.f.Comments(7)) != 1 {
+		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || !g.f.Closed(12) {
+		t.Fatalf("%s", tk.Status.Phase)
+	}
+}
+
+// A pull request that is not the task's branch is never the factory's to nudge or close.
+func TestNoStaleCloseOnAnotherBranch(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-15 * 24 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	pr := pr12()
+	pr.HeadRef = "someone/else"
+	g.f.SetPR(pr)
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) || len(g.f.Comments(7)) != 0 {
+		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+}
+
+// The close happened but its status write was lost: the replay finds the pull request closed with
+// factory/stale and still ends the task as stale.
+func TestAStaleCloseReplayedStaysStale(t *testing.T) {
+	g := newRig(t, awaiting())
+	pr := pr12()
+	pr.State, pr.Labels = "CLOSED", []string{"factory/class:review", "factory/stale"}
+	g.f.SetPR(pr)
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || tk.Status.Reason != "stale" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}

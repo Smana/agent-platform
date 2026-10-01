@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -269,19 +271,33 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	if err != nil {
 		return err
 	}
-	switch pr.State {
-	case "MERGED":
-		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
-		class := t.Spec.PredictedClass
-		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
-		return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
-	case "CLOSED":
-		class := t.Spec.PredictedClass
-		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
-		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
+	if r.prEnded(ctx, t, pr) {
+		return nil
 	}
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}
-	return nil
+	return r.remind(ctx, t, pr)
+}
+
+// prEnded ends the task when its pull request was merged or closed. A closed one carrying
+// factory/stale was the stale close's (remind): its replay after a lost status write still says so.
+func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR) bool {
+	class := t.Spec.PredictedClass
+	switch pr.State {
+	case "MERGED":
+		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
+		_ = r.end(ctx, t, v1alpha1.PhaseDone, "merged")
+		return true
+	case "CLOSED":
+		reason := "pr_closed"
+		if slices.Contains(pr.Labels, labelStale) {
+			reason = "stale"
+		}
+		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
+		_ = r.end(ctx, t, v1alpha1.PhaseClosed, reason)
+		return true
+	}
+	return false
 }

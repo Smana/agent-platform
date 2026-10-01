@@ -28,12 +28,14 @@ type LabelEvent struct {
 	At    time.Time
 }
 
-// Comment is an issue or pull request comment.
+// Comment is an issue or pull request comment. Edited: its body changed after it was posted,
+// perhaps by someone other than its author, so a command in it is never acted on.
 type Comment struct {
 	ID     int64
 	Author string
 	Body   string
 	At     time.Time
+	Edited bool
 }
 
 // Issue is the snapshot's source (§1, R5).

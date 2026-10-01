@@ -49,8 +49,11 @@ func TestEndedExplainsTheReason(t *testing.T) {
 	tk.Status.Usage.Tokens = 1_600_000
 	e := Ended(tk, v1alpha1.PhaseEscalated, "budget-run")
 	if !strings.Contains(e.Body, "needs a maintainer: the run spent its token budget.") || !strings.Contains(e.Body, "1.6 M") ||
-		!strings.Contains(e.Body, "Re-apply `factory/ready`") {
+		!strings.Contains(e.Body, "Comment `/factory retry` on this issue to run it again (a maintainer only)") {
 		t.Fatal(e.Body)
+	}
+	if s := Ended(tk, v1alpha1.PhaseClosed, "stale"); !strings.Contains(s.Body, "was closed: nobody reviewed the pull request for 14 days.") {
+		t.Fatal(s.Body)
 	}
 	if Ended(tk, v1alpha1.PhaseEscalated, "pod_lost").Key == Ended(tk, v1alpha1.PhaseDone, "merged").Key {
 		t.Fatal("each ending has its own key")
@@ -61,6 +64,34 @@ func TestEndedExplainsTheReason(t *testing.T) {
 	}
 	if r := Ended(tk, v1alpha1.PhaseReverted, "main_red"); strings.Contains(r.Body, "Merged by") {
 		t.Fatalf("only a done task credits its merger: %s", r.Body)
+	}
+}
+
+// The reminder mentions every maintainer, once per quiet spell of each AwaitingHuman stay; a
+// retry is narrated once per retry.
+func TestReminderAndRetrying(t *testing.T) {
+	tk := task()
+	spell := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	e := Reminder(tk, []string{"Smana", "alice"}, spell)
+	if !strings.HasPrefix(e.Body, "@Smana @alice: the pull request of agent factory task `3buqdlot` has waited 48 hours for a review.") ||
+		!strings.Contains(e.Body, "closes itself after 14 days") {
+		t.Fatal(e.Body)
+	}
+	if e.Key == Reminder(tk, nil, spell.Add(time.Hour)).Key {
+		t.Fatal("a new quiet spell has its own reminder")
+	}
+	tk.Status.Runs = append(tk.Status.Runs, v1alpha1.RunRecord{ID: "aaaaaaaa"})
+	if e.Key == Reminder(tk, nil, spell).Key {
+		t.Fatal("a new AwaitingHuman stay has its own reminder")
+	}
+	tk.Status.Retries = 1
+	r := Retrying(tk, "Smana")
+	if r.Body != "Agent factory task `3buqdlot` is retrying, as @Smana asked." {
+		t.Fatal(r.Body)
+	}
+	tk.Status.Retries = 2
+	if r.Key == Retrying(tk, "Smana").Key {
+		t.Fatal("each retry is narrated")
 	}
 }
 

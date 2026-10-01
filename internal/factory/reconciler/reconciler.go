@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -57,6 +58,7 @@ type taskForge interface {
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	PullRequestForBranch(ctx context.Context, branch string) (int, error)
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
+	ClosePR(ctx context.Context, number int) error
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -74,6 +76,13 @@ type metrics interface {
 const (
 	spanRetry  = 15 * time.Minute
 	spanGiveUp = 24 * time.Hour
+)
+
+// A pull request no maintainer has touched for RemindAfter gets a reminder, and is closed with
+// factory/stale after StaleAfter (§6.3).
+const (
+	RemindAfter = 48 * time.Hour
+	StaleAfter  = 14 * 24 * time.Hour
 )
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
@@ -182,6 +191,8 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.implementing(ctx, t)
 	case v1alpha1.PhaseAwaitingHuman:
 		return r.awaitingHuman(ctx, t)
+	case v1alpha1.PhaseEscalated:
+		return r.escalated(ctx, t)
 	}
 	return nil
 }
@@ -269,11 +280,13 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 }
 
 // narrateLater queues e in the task's outbox (ruling SO), written with the transition that caused it,
-// so an outage never loses it: drain posts it, now or on a later reconcile. A key queued twice is
-// posted once: Post skips a key already in status.narrated.
+// so an outage never loses it: drain posts it, now or on a later reconcile. A key already queued
+// or posted is not queued again, so a timer that re-fires every poll (the reminder) writes no
+// status; Post would skip it anyway.
 func narrateLater(t *v1alpha1.Task, e narrate.Event) {
 	n := target(t)
-	if n == 0 {
+	if n == 0 || slices.Contains(t.Status.Narrated, e.Key) ||
+		slices.ContainsFunc(t.Status.Outbox, func(o v1alpha1.Narration) bool { return o.Key == e.Key }) {
 		return
 	}
 	t.Status.Outbox = append(t.Status.Outbox, v1alpha1.Narration{Key: e.Key, Number: n, Body: e.Body})
