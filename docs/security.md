@@ -76,6 +76,10 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
   interrupt or move the driver token (ruling P18), because a local agent could run it.
 - **Four-eyes** (OD-16, off by default, per room): the humans in the triggering turn's `causedBy`
   chain cannot decide it.
+- **An invite is two writes**: the Room CR, then the `participant` event. If the append fails after
+  the update, the membership briefly has no record; retrying the act with the same `clientSeq`
+  heals it (the update is then a no-op, and the append writes or replays the record). The CR
+  change is also in the Kubernetes audit log. A sealed room refuses the invite before the update.
 - **The broker never creates `AgentRun`s**: its RBAC is `get`, `list`, `watch`, `delete` on
   `agentruns` in `agents` (C3); CRUD on `rooms` in `agent-system`; leases; no cluster-admin.
 

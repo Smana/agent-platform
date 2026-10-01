@@ -6,15 +6,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
@@ -36,12 +42,20 @@ type actLog struct {
 	reasons []string // ChangeDriver's reasons
 	seen    map[string]int
 	closed  string
+	// onRoom moves the room after Room has taken its snapshot, as another
+	// replica would between an act's read and its write.
+	onRoom    func(*store.RoomState)
+	appendErr error
 }
 
 func (l *actLog) Room(context.Context, string) (store.RoomState, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.st, nil
+	snapshot := l.st
+	if l.onRoom != nil {
+		l.onRoom(&l.st)
+	}
+	return snapshot, nil
 }
 
 func (l *actLog) appendLocked(d envelope.Draft) envelope.Event {
@@ -52,6 +66,9 @@ func (l *actLog) appendLocked(d envelope.Draft) envelope.Event {
 func (l *actLog) Append(_ context.Context, d envelope.Draft) (envelope.Event, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.appendErr != nil {
+		return envelope.Event{}, false, l.appendErr
+	}
 	return l.appendLocked(d), false, nil
 }
 
@@ -430,5 +447,141 @@ func TestInviteAndClose(t *testing.T) {
 	}
 	if f := act(a, room, "human:own", 4, nil, Action{Kind: "close"}); f.Rejected != "" || log.closed != "closed by human:own" {
 		t.Fatalf("%+v %q", f, log.closed)
+	}
+}
+
+// Review 4.2 I1, §2: the token moved on another replica between the act's read and
+// its write. The store's fence, not the snapshot, decides.
+func TestTheStoreFencesARacedToken(t *testing.T) {
+	a, log, room := fixture("human:own")
+	log.onRoom = func(st *store.RoomState) { st.Driver, st.DriverEpoch = "human:col", 8 }
+	e7 := int64(7)
+	for i, action := range []Action{{Kind: "message", Text: "x", Delivery: "steering"}, {Kind: "interrupt"}} {
+		log.st.Driver, log.st.DriverEpoch = "human:own", 7
+		if f := act(a, room, "human:own", int64(i+1), &e7, action); f.Rejected != "stale_epoch" {
+			t.Fatalf("%s after the token moved: %+v", action.Kind, f)
+		}
+	}
+	if len(log.drafts) != 0 {
+		t.Fatalf("a fenced action was appended: %+v", log.drafts)
+	}
+}
+
+// §2: a give carries the epoch it was decided on.
+func TestDriverGiveIsFenced(t *testing.T) {
+	a, log, room := fixture("human:own")
+	e6 := int64(6)
+	for _, epoch := range []*int64{&e6, nil} {
+		if f := act(a, room, "human:own", 1, epoch, Action{Kind: "driver_give", To: "human:col"}); f.Rejected != "stale_epoch" {
+			t.Fatalf("epoch %v: %+v", epoch, f)
+		}
+	}
+	if log.st.Driver != "human:own" || log.st.DriverEpoch != 7 {
+		t.Fatalf("%+v", log.st)
+	}
+}
+
+// Review 4.2 M4: the store's ErrKeyConflict, a clientSeq reused for another action.
+func TestAReusedClientSeqIsABadAction(t *testing.T) {
+	a, log, room := fixture("human:own")
+	log.appendErr = fmt.Errorf("store: append to room 3kq7x2ma: %w", store.ErrKeyConflict)
+	if f := act(a, room, "human:col", 1, nil, Action{Kind: "message", Text: "x", Delivery: "none"}); f.Rejected != "bad_action" {
+		t.Fatalf("%+v", f)
+	}
+}
+
+// rooms serves room from a fake API server and returns it as read back, with its
+// resourceVersion, as the WebSocket reads it before each act.
+func rooms(t *testing.T, a *Actor, room *v1alpha1.Room, funcs *interceptor.Funcs) *v1alpha1.Room {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	b := fake.NewClientBuilder().WithScheme(s).WithObjects(room)
+	if funcs != nil {
+		b = b.WithInterceptorFuncs(*funcs)
+	}
+	a.Rooms = b.Build()
+	read := &v1alpha1.Room{}
+	if err := a.Rooms.Get(context.Background(), client.ObjectKeyFromObject(room), read); err != nil {
+		t.Fatal(err)
+	}
+	return read
+}
+
+func members(t *testing.T, a *Actor, room *v1alpha1.Room) []v1alpha1.Member {
+	t.Helper()
+	fresh := &v1alpha1.Room{}
+	if err := a.Rooms.Get(context.Background(), client.ObjectKeyFromObject(room), fresh); err != nil {
+		t.Fatal(err)
+	}
+	return fresh.Spec.Members
+}
+
+// Review 4.2 M2: nothing is written to a sealed room, the Room CR included.
+func TestASealedRoomTakesNoAction(t *testing.T) {
+	a, log, room := fixture("human:own")
+	read := rooms(t, a, room, nil)
+	log.st.Sealed = true
+	if f := act(a, read, "human:own", 1, nil, Action{Kind: "invite", Principal: "human:new", MemberRole: "watcher"}); f.Rejected != "sealed" {
+		t.Fatalf("invite: %+v", f)
+	}
+	if m := members(t, a, room); len(m) != 2 {
+		t.Fatalf("the Room changed: %+v", m)
+	}
+	if f := act(a, read, "human:col", 1, nil, Action{Kind: "message", Text: "x", Delivery: "none"}); f.Rejected != "sealed" || len(log.drafts) != 0 {
+		t.Fatalf("chat: %+v", f)
+	}
+}
+
+// Review 4.2 M3: only a conflict asks for a retry.
+func TestInviteUpdateErrors(t *testing.T) {
+	gk := schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{apierrors.NewConflict(schema.GroupResource{Group: gk.Group, Resource: "rooms"}, "3kq7x2ma", errors.New("changed")), "conflict"},
+		{apierrors.NewInvalid(gk, "3kq7x2ma", field.ErrorList{field.TooMany(field.NewPath("spec", "members"), 21, 20)}), "bad_action"},
+		{apierrors.NewForbidden(schema.GroupResource{Group: gk.Group, Resource: "rooms"}, "3kq7x2ma", errors.New("rbac")), "log_unavailable"},
+	} {
+		a, _, room := fixture("human:own")
+		read := rooms(t, a, room, &interceptor.Funcs{Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			return c.err
+		}})
+		if f := act(a, read, "human:own", 1, nil, Action{Kind: "invite", Principal: "human:new", MemberRole: "watcher"}); f.Rejected != c.want {
+			t.Fatalf("%v: %+v", c.err, f)
+		}
+	}
+}
+
+// Review 4.2 M5: the CRD's 20 members; a member's role still changes at the cap.
+func TestInviteCapsMembers(t *testing.T) {
+	a, _, room := fixture("human:own")
+	for i := range 18 {
+		room.Spec.Members = append(room.Spec.Members, v1alpha1.Member{Principal: fmt.Sprintf("human:m%02d", i), Role: "watcher"})
+	}
+	read := rooms(t, a, room, nil)
+	if f := act(a, read, "human:own", 1, nil, Action{Kind: "invite", Principal: "human:new", MemberRole: "watcher"}); f.Rejected != "bad_action" {
+		t.Fatalf("a 21st member: %+v", f)
+	}
+	if f := act(a, read, "human:own", 2, nil, Action{Kind: "invite", Principal: "human:m00", MemberRole: "collaborator"}); f.Rejected != "" {
+		t.Fatalf("a role change at the cap: %+v", f)
+	}
+	if m := members(t, a, room); len(m) != 20 || m[19] != (v1alpha1.Member{Principal: "human:m00", Role: "collaborator"}) {
+		t.Fatalf("%+v", m)
+	}
+}
+
+// Review 4.2 M6: the token stays with a collaborator or better.
+func TestInviteNeverDemotesTheDriver(t *testing.T) {
+	a, _, room := fixture("human:col")
+	read := rooms(t, a, room, nil)
+	if f := act(a, read, "human:own", 1, nil, Action{Kind: "invite", Principal: "human:col", MemberRole: "watcher"}); f.Rejected != "bad_action" {
+		t.Fatalf("the holder demoted: %+v", f)
+	}
+	if f := act(a, read, "human:own", 2, nil, Action{Kind: "invite", Principal: "human:two", MemberRole: "watcher"}); f.Rejected != "" {
+		t.Fatalf("another member demoted: %+v", f)
 	}
 }

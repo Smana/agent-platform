@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/time/rate"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
@@ -153,6 +154,9 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	if !policy.Allowed(sub, pa) {
 		return reject(rejectNotPermitted)
 	}
+	if st.Sealed { // every action writes; and an invite must not change the Room first (review 4.2 M2)
+		return reject(rejectSealed)
+	}
 	if fenced[fenceKey] && (f.DriverEpoch == nil || *f.DriverEpoch != st.DriverEpoch) {
 		return reject(rejectStaleEpoch)
 	}
@@ -271,7 +275,7 @@ func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.
 		d.Redactions = rules
 		return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "taken: "+why, d))
 	case "invite":
-		return a.invite(ctx, room, act, d)
+		return a.invite(ctx, room, st, act, d)
 	case "close":
 		return envelope.Event{}, reason(a.Log.CloseRoom(ctx, room.Name, "closed by "+p.ID))
 	}
@@ -322,7 +326,7 @@ func (a *Actor) receives(room *v1alpha1.Room, st store.RoomState, to string) boo
 }
 
 // invite adds or changes a member on the Room CR and records it (§1: owner only).
-func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, string) {
+func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, string) {
 	if !memberPrincipal.MatchString(act.Principal) || policy.ParseRole(act.MemberRole) == policy.None {
 		return envelope.Event{}, rejectBadAction
 	}
@@ -341,9 +345,21 @@ func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, act Action, d e
 	}
 	members = append(members, v1alpha1.Member{Principal: act.Principal, Role: act.MemberRole, Approver: act.Approver})
 	updated.Spec.Members = members
+	// The token stays with a collaborator or better: the holder hands it over before
+	// being demoted (review 4.2 M6).
+	if act.Principal == st.Driver &&
+		a.Groups.Resolve(updated, authn.Principal{Kind: envelope.ActorHuman, ID: st.Driver}, "", true).Role < policy.Collaborator {
+		return envelope.Event{}, rejectBadAction
+	}
 	// Update, not a patch: the room's resourceVersion makes a concurrent change a conflict.
 	if err := a.Rooms.Update(ctx, updated); err != nil {
-		return envelope.Event{}, rejectConflict
+		switch {
+		case apierrors.IsConflict(err):
+			return envelope.Event{}, rejectConflict
+		case apierrors.IsInvalid(err):
+			return envelope.Event{}, rejectBadAction
+		}
+		return envelope.Event{}, rejectLogUnavailable
 	}
 	d.Type = envelope.Participant
 	d.Payload = envelope.Must(envelope.ParticipantPayload{Principal: act.Principal, Change: "role_changed",

@@ -59,17 +59,26 @@ func (s *Store) enqueue(ctx context.Context, d envelope.Draft, author, text stri
 	if err != nil {
 		return envelope.Event{}, err
 	}
-	if dup {
-		// Only a queued message has its row: a plain message's key is not an enqueue.
-		var queued bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM queue WHERE room_id = $1 AND ref = $2)`,
-			d.RoomID, ev.Seq).Scan(&queued); err != nil {
+	var queued, sealed bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM queue WHERE room_id = $1 AND ref = $2),
+		(SELECT sealed FROM rooms WHERE room_id = $1)`, d.RoomID, ev.Seq).Scan(&queued, &sealed); err != nil {
+		return envelope.Event{}, err
+	}
+	switch {
+	case dup && queued:
+		return ev, nil
+	case dup && sealed: // the retry of an enqueue that met the limit
+		return envelope.Event{}, ErrSealed
+	case dup: // only a queued message has its row: a plain message's key is not an enqueue
+		return envelope.Event{}, ErrKeyConflict
+	case sealed:
+		// This append reached the room's limit and sealed it (§4). The seal is kept:
+		// rolling it back would leave the room one event short of it, for every retry.
+		// The message stays in the log, unqueued, as a closed room delivers nothing.
+		if err := tx.Commit(ctx); err != nil {
 			return envelope.Event{}, err
 		}
-		if !queued {
-			return envelope.Event{}, ErrKeyConflict
-		}
-		return ev, nil
+		return envelope.Event{}, ErrSealed
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO queue (room_id, ref, author, text, state) VALUES ($1, $2, $3, $4, 'queued')`,
 		d.RoomID, ev.Seq, author, text); err != nil {

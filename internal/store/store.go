@@ -109,9 +109,10 @@ func scan(row pgx.Row, roomID string) (envelope.Event, error) {
 }
 
 // Append adds d to its room's log, for writers that hold no bridge lease (humans,
-// the broker, system callers). dup is true for a replayed idempotency key.
+// the broker, system callers). dup is true for a replayed idempotency key; a key
+// stored for another event type is ErrKeyConflict.
 func (s *Store) Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
-	return s.append(ctx, d, fence{})
+	return sameType(d)(s.append(ctx, d, fence{}))
 }
 
 // AppendAsBridge appends for the bridge of bridgeRun, and refuses with ErrLeaseLost
@@ -130,7 +131,19 @@ func (s *Store) AppendAsDriver(ctx context.Context, driver string, epoch int64, 
 	if driver == "" { // "" is append's "no fence": refuse it rather than append unfenced
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrStaleEpoch)
 	}
-	return s.append(ctx, d, fence{driver: driver, epoch: epoch})
+	return sameType(d)(s.append(ctx, d, fence{driver: driver, epoch: epoch}))
+}
+
+// sameType refuses a replay whose stored event is not of d's type: the key was
+// used for another action, and its event would be reported as this one. Bridge
+// appends are left out: their keys are derived per item, never reused across types.
+func sameType(d envelope.Draft) func(envelope.Event, bool, error) (envelope.Event, bool, error) {
+	return func(ev envelope.Event, dup bool, err error) (envelope.Event, bool, error) {
+		if err == nil && dup && ev.Type != d.Type {
+			return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrKeyConflict)
+		}
+		return ev, dup, err
+	}
 }
 
 // fence is what an append requires of the room under its row lock: the bridge

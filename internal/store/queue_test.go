@@ -186,3 +186,52 @@ func TestRemoveQueued(t *testing.T) {
 }
 
 func itoa(n int64) string { return string(envelope.Must(n)) }
+
+// Review 4.2 M1: the enqueue that reaches the room's limit seals it, and the seal
+// stays: the human is told sealed, now and on every retry.
+func TestEnqueueAtTheLimit(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	s.MaxEvents = 3
+	if _, _, err := s.Append(ctx, draft("agent:x", 1)); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := s.Enqueue(ctx, queuedDraft(1, "too late"), "human:alice", "too late"); !errors.Is(err, ErrSealed) {
+			t.Fatalf("at the limit: %v", err)
+		}
+	}
+	if st, err := s.Room(ctx, room); err != nil || !st.Sealed || st.LastSeq != 3 {
+		t.Fatalf("the seal did not survive: %+v, %v", st, err)
+	}
+	if got, err := s.Queue(ctx, room); err != nil || len(got) != 0 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
+// Review 4.2 M4: a key replayed for another event type is a conflict, not the
+// first event reported as this one.
+func TestAppendRefusesAnotherTypesKey(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	chat := queuedDraft(1, "hi")
+	chat.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "hi", Delivery: envelope.DeliveryNone})
+	first, _, err := s.Append(ctx, chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, dup, err := s.Append(ctx, chat); err != nil || !dup || again.Seq != first.Seq {
+		t.Fatalf("a same-type replay: %+v %v %v", again, dup, err)
+	}
+	other := chat
+	other.Type, other.Payload = envelope.StateChanged, envelope.StatePayload("interrupt", map[string]any{"runId": "7f3cq2xz"})
+	if _, _, err := s.Append(ctx, other); !errors.Is(err, ErrKeyConflict) {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AppendAsDriver(ctx, "human:alice", 1, other); !errors.Is(err, ErrKeyConflict) {
+		t.Fatalf("AppendAsDriver: %v", err)
+	}
+}
