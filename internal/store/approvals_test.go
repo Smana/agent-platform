@@ -29,7 +29,7 @@ func approvalDraft() envelope.Draft {
 // requests are fenced on it.
 func holdBridge(t *testing.T, s *Store, roomID, run string) {
 	t.Helper()
-	if _, took, err := s.ClaimBridge(t.Context(), roomID, run, time.Minute, func(context.Context, string) bool { return false }); err != nil || !took {
+	if _, took, err := s.ClaimBridge(t.Context(), roomID, run, func(context.Context, string) bool { return false }); err != nil || !took {
 		t.Fatalf("claim the bridge: %v %v", took, err)
 	}
 }

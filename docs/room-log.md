@@ -193,11 +193,11 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 
 | Step | Rule |
 |---|---|
-| `hello` | `ClaimBridge` locks the row. Another run keeps the lease while it is still live in the `AgentRun` watch **and** was seen within 2 minutes; otherwise the caller takes it |
+| `hello` | `ClaimBridge` locks the row. Another run keeps the lease for as long as it is live in the `AgentRun` watch, however long since its bridge was seen (ruling SBB): a quiet or cut-off bridge may still have a harness at work. Otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a quiet run (a long LLM call, a pending confirmation) keeps its room |
+| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
 | A run that ended | Frees the lease at once |
-| A holder that died without ending its run | Blocks the room for at most 2 minutes |
+| A holder whose pod died | Blocks the room until its run ends: a lost pod ends the run `PodLost` (F12), and a hung one ends at its deadline |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |
 
 The broker cannot refuse to *create* a second run (it creates none), but no second run joins the

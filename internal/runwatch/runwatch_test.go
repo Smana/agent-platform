@@ -211,7 +211,7 @@ func TestEndReason(t *testing.T) {
 		{"an exhausted budget without an annotation is the run's budget", run("BudgetExhausted", "", early), "running", "budget-run", false},
 		{"a revoked run was revoked", run("Revoked", "manual", early), "running", "revoked", false},
 		{"a deleted claim was deleted", deleted, "running", "deleted", false},
-		{"a refused run that never ran was refused, whatever its phase", run("Succeeded", "", early), "", "room_busy", true},
+		{"a refused run, admitted later, that succeeded finished", run("Succeeded", "", early), "", "agent_finished", true},
 		{"a refused run that failed was refused", run("Failed", "", early), "", "room_busy", true},
 		{"a run refused, then admitted, ends on what it did", run("Failed", "", early), "running", "pod_lost", true},
 		{"a refused run that the owner revoked was revoked", run("Revoked", "manual", early), "", "revoked", true},

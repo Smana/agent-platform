@@ -101,9 +101,10 @@ func readyTransition(u *unstructured.Unstructured) time.Time {
 
 // EndReason says why a run ended (ruling P15). The AgentRun only ever says
 // Failed/PodFailed; the room knows whether the agent itself ended its conversation.
-// refused is that the broker answered the run's bridge room_busy (F15): with no
-// harness status mirrored, the run never held the room, so whatever its phase
-// says, it ended room_busy. It is pure: a run with no end time (no finishedAt,
+// refused is that the broker answered the run's bridge room_busy (F15): a run that
+// failed with no harness status mirrored never held the room, so it ended
+// room_busy. A refused run cannot succeed, since its harness never starts: one
+// that did was admitted later, and ends on what it did. It is pure: a run with no end time (no finishedAt,
 // no Ready transition) is never judged past its deadline.
 func EndReason(r Run, harnessStatus string, refused bool) string {
 	if r.Deleted {
@@ -118,7 +119,7 @@ func EndReason(r Run, harnessStatus string, refused bool) string {
 	case "Revoked":
 		return "revoked"
 	}
-	if refused && harnessStatus == "" {
+	if refused && harnessStatus == "" && r.Phase == "Failed" {
 		return RoomBusy
 	}
 	switch harnessStatus {

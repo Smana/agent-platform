@@ -190,7 +190,7 @@ func (m *memLog) Deliveries(_ context.Context, roomID, runID string, after, thro
 	return out, nil
 }
 
-func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, _ time.Duration, live func(context.Context, string) bool) (string, bool, error) {
+func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, live func(context.Context, string) bool) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.events[roomID]; !ok {
