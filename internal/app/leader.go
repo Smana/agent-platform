@@ -51,9 +51,43 @@ func (l *leader) Start(ctx context.Context) error {
 // NeedLeaderElection makes the manager run it on the leader only.
 func (*leader) NeedLeaderElection() bool { return true }
 
-func (l *leader) tick(d time.Duration) (<-chan time.Time, func()) {
-	if l.ticker != nil {
-		return l.ticker(d)
+func (l *leader) tick(d time.Duration) (<-chan time.Time, func()) { return newTicker(l.ticker, d) }
+
+// leaderLoop is a periodic job only the elected replica runs; phase 4's lease
+// sweeper and phase 5's expiry sweeper reuse it. active is true while it runs,
+// so a job can check the lease before each side effect (ruling SY).
+type leaderLoop struct {
+	every  time.Duration
+	run    func(ctx context.Context)
+	active *atomic.Bool
+	// ticker paces the job; nil means a time.Ticker.
+	ticker func(d time.Duration) (c <-chan time.Time, stop func())
+}
+
+// Start runs the job on every tick until ctx ends, which is when this replica
+// stops leading.
+func (l *leaderLoop) Start(ctx context.Context) error {
+	l.active.Store(true)
+	defer l.active.Store(false)
+	tick, stop := newTicker(l.ticker, l.every)
+	defer stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick:
+			l.run(ctx)
+		}
+	}
+}
+
+// NeedLeaderElection makes the manager run it on the leader only.
+func (*leaderLoop) NeedLeaderElection() bool { return true }
+
+// newTicker is ticker's, or a time.Ticker's.
+func newTicker(ticker func(time.Duration) (<-chan time.Time, func()), d time.Duration) (<-chan time.Time, func()) {
+	if ticker != nil {
+		return ticker(d)
 	}
 	t := time.NewTicker(d)
 	return t.C, t.Stop

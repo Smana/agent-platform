@@ -109,6 +109,8 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 	}
 	b := &bridge.Bridge{Harness: bridge.NewHarness(cfg.harnessURL, cfg.conversationID), Broker: broker,
 		RunID: cfg.runID, Logger: log, FlushGrace: cfg.flushGrace}
+	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push}
+	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.healthAddr)

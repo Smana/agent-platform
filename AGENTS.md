@@ -22,6 +22,8 @@ task check      # exit 0, or it is not done
 | `crd:check` | `crd:gen`, then `git diff --exit-code -- config/crd api charts` | a committed CRD, deepcopy or the chart's CRD copy that differs from what the types generate |
 | `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 | `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
+| `ui:test` | `npm ci`, `tsc --noEmit`, `vitest run` in `web/` | a type error or a failing UI test |
+| `ui:check` | `web/`'s build into `internal/humanapi/ui/dist/` | a committed bundle that differs from what `web/` builds, or a built file not committed |
 
 CI's `check` job runs the same `task check`; `analyze` (CodeQL) is the other required check.
 Store tests use testcontainers, so from phase 1 `task test` needs a running Docker daemon.
@@ -165,7 +167,7 @@ flowchart LR
 | API | `internal/mcp` | `:8090` MCP server, the `room_*` tools | 3 |
 | API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments | 3 |
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
-| Viewers | `internal/fanout` | Valkey hint hub with a Postgres poll fallback | 2 |
+| Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
@@ -201,11 +203,13 @@ Packages that do touch the platform name their seam:
 |---|---|
 | `internal/authn` | issuers, subject patterns and the system allowlist are config; the audiences `room-broker` and `rooms-system` are constants in `internal/authn/jwt.go` |
 | `internal/runwatch` | the `AgentRun` GVK, its `agents` namespace, the `xplane-run-` claim-name prefix and the `agents.ogenki.io/revoked` annotation; a `RunSource` interface would replace them in a spin-out |
+| `internal/runrequest` | the rendered claim reuses runwatch's seam plus the claim's spec fields; the factory is SP3's `POST /v1/runs`, at the configured `factoryURL` |
 | `internal/roomctrl` | the `Room` CRD group |
 | `internal/bridgeapi` | principal allowlists come from config |
 | `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
 | `internal/factory/runs` | the `AgentRun` claim SP1's XRD accepts: its GVK, namespace and claim prefix (runwatch's), the `agents.ogenki.io/*` labels and annotations, the principal `system:factory` and the Kueue queues `factory` and `interactive`; the reconciler reaches it through its `RunClient` interface only |
 | `internal/factory/config` | every deployment fact is config: repository, maintainers, the App logins, the rooms UI and broker URLs, the broker CA and token paths, the meter's URL and query, tiers and the trace collector. The vocabularies it checks against are constants: SP1's roles, C5's logical model names, the tiers and the Task CRD's template enum |
+| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository) is a constant |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,

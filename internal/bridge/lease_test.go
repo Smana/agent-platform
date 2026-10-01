@@ -78,6 +78,10 @@ func (l *leaseLog) Range(context.Context, string, int64, int) ([]envelope.Event,
 
 func (l *leaseLog) Cursor(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (l *leaseLog) Deliveries(context.Context, string, string, int64, int64, int) ([]envelope.Event, error) {
+	return nil, nil
+}
+
 func (l *leaseLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id}, nil
 }

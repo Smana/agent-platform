@@ -20,6 +20,15 @@ systemIssuer:
   jwksURL: https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys
 systemPrincipals:
   system:serviceaccount:agent-system:agent-factory: system:factory
+human:
+  issuer: https://auth.example.test
+  jwksURL: https://auth.example.test/oauth/v2/keys
+  clientIDFile: /etc/room-broker/oidc/client-id
+  projectIDFile: /etc/room-broker/oidc/project-id
+  origin: https://rooms.example.test
+  groups:
+    admin: agents-admin
+    member: agents-member
 `
 
 func write(t *testing.T, body string) string {
@@ -42,6 +51,10 @@ func TestLoad(t *testing.T) {
 	if c.TLS.CertFile != DefaultCertFile || c.TLS.KeyFile != DefaultKeyFile {
 		t.Fatalf("the :8443 pair defaults to the GP-18 mount, got %+v", c.TLS)
 	}
+	if c.Human.ProjectIDFile != "/etc/room-broker/oidc/project-id" ||
+		c.Human.Groups != (GroupsConfig{Admin: "agents-admin", Member: "agents-member"}) {
+		t.Fatalf("human: %+v", c.Human)
+	}
 }
 
 func TestLoadRefuses(t *testing.T) {
@@ -62,6 +75,17 @@ func TestLoadRefuses(t *testing.T) {
 		{"no system issuer", replace("systemIssuer:\n  issuer: https://oidc.eks.eu-west-3.amazonaws.com/id/X\n", "systemIssuer:\n"), "systemIssuer"},
 		{"a system principal that is not system:*", replace(": system:factory", ": human:alice"), "system:"},
 		{"not YAML", "runIssuers: [", "config"},
+		// Ruling AS-a: ZITADEL mints the ids, so they are files read at use, never literals.
+		{"a literal project id", replace("  projectIDFile:", "  projectID: p\n  projectIDFile:"), "unknown field"},
+		{"no human issuer", replace("  issuer: https://auth.example.test\n", ""), "human: issuer"},
+		{"a human JWKS URL that is not https", replace("jwksURL: https://auth.example.test", "jwksURL: http://auth.example.test"), "human: jwksURL"},
+		{"no client id file", replace("  clientIDFile: /etc/room-broker/oidc/client-id\n", ""), "human.clientIDFile"},
+		{"no project id file", replace("  projectIDFile: /etc/room-broker/oidc/project-id\n", ""), "human.projectIDFile"},
+		{"no origin", replace("  origin: https://rooms.example.test\n", ""), "human.origin"},
+		{"an origin with a path", replace("origin: https://rooms.example.test", "origin: https://rooms.example.test/r"), "human.origin"},
+		{"no admin group", replace("    admin: agents-admin\n", ""), "human.groups.admin"},
+		{"no member group", replace("    member: agents-member\n", ""), "human.groups.member"},
+		{"one group for both", replace("member: agents-member", "member: agents-admin"), "human.groups"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := Load(write(t, c.body))

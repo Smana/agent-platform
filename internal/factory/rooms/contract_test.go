@@ -66,6 +66,10 @@ func (l *memLog) Range(_ context.Context, room string, after int64, limit int) (
 	return out, nil
 }
 
+func (l *memLog) Deliveries(context.Context, string, string, int64, int64, int) ([]envelope.Event, error) {
+	return nil, errors.New("unused")
+}
+
 func (l *memLog) Cursor(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (l *memLog) Room(_ context.Context, id string) (store.RoomState, error) {

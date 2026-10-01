@@ -266,6 +266,26 @@ func (s *Set) BridgeStubbed(ctx context.Context, reason string) {
 	s.bridgeStubs.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
+// WatchFanout exposes rooms_fanout_listener_up from up (fanout.Hub.Healthy): 1
+// while the hub LISTENs. It never gates readiness: while it is 0 the hub polls
+// every second, so viewers are still served (review M3).
+func (s *Set) WatchFanout(up func() bool) error {
+	_, err := s.meter.Int64ObservableGauge("rooms_fanout_listener_up",
+		metric.WithDescription("1 while the fan-out hub LISTENs; 0 while it polls every second instead."),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			var v int64
+			if up() {
+				v = 1
+			}
+			o.Observe(v)
+			return nil
+		}))
+	if err != nil {
+		return fmt.Errorf("metrics: rooms_fanout_listener_up: %w", err)
+	}
+	return nil
+}
+
 // WatchJWKS exposes rooms_authn_jwks_last_refresh_timestamp_seconds{issuer}: when
 // each issuer's keys were last fetched. Held keys stop verifying 24 h after it
 // (Ruling AF), so an alert well before that catches an unreachable issuer. An
