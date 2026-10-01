@@ -19,6 +19,8 @@ var (
 	// ErrNotAQueuedMessage is an Enqueue whose draft is not the queued message it
 	// records: not a message, not delivery queued, another text or another author.
 	ErrNotAQueuedMessage = errors.New("the draft is not this queued message by its actor")
+	// ErrBadMove is a queue move the state machine has no edge for.
+	ErrBadMove = errors.New("a queued message moves once, out of queued; promoted and consumed name their run")
 	// ErrNotAuthor is a removal by neither the message's author nor the driver (§2).
 	ErrNotAuthor = errors.New("only the author or the driver removes a queued message")
 )
@@ -106,9 +108,14 @@ func (s *Store) Queue(ctx context.Context, roomID string) ([]Queued, error) {
 }
 
 // SetQueued moves a queued message from one state to another: ErrNotQueued when
-// it is no longer in from, ErrSealed once its room is sealed. A non-empty runID
-// records the run whose brief took it.
+// it is no longer in from, ErrSealed once its room is sealed. A row moves once,
+// out of queued; promoted and consumed name the run (the steered one, or the one
+// whose brief took it), removed names none: any other move is ErrBadMove.
 func (s *Store) SetQueued(ctx context.Context, roomID string, ref int64, from, to, runID string) error {
+	if from != "queued" || (to != "removed" && to != "promoted" && to != "consumed") ||
+		(to == "removed") != (runID == "") || (runID != "" && !envelope.ValidID(runID)) {
+		return fmt.Errorf("store: move queued %d of room %s from %s to %s: %w", ref, roomID, from, to, ErrBadMove)
+	}
 	var run any
 	if runID != "" {
 		run = runID

@@ -84,6 +84,16 @@ BEGIN
     RAISE EXCEPTION 'room log: queue row % of room % is not its queued message', NEW.ref, NEW.room_id
       USING ERRCODE = 'check_violation';
   END IF;
+  -- A row moves once, out of queued: removed by its author or the driver, promoted
+  -- to steering for a run, or consumed by a run's brief. The last two name the run.
+  IF TG_OP = 'UPDATE' AND (OLD.state <> 'queued' OR NEW.state = 'queued') THEN
+    RAISE EXCEPTION 'room log: queue row % of room % moves once, out of queued (% to %)', OLD.ref, OLD.room_id,
+      OLD.state, NEW.state USING ERRCODE = 'check_violation';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (NEW.state = 'removed') <> (NEW.run_id IS NULL) THEN
+    RAISE EXCEPTION 'room log: queue row % of room % names a run exactly when promoted or consumed', OLD.ref, OLD.room_id
+      USING ERRCODE = 'check_violation';
+  END IF;
   RETURN NEW;
 END $$;
 

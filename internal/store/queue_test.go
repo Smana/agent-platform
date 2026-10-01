@@ -66,7 +66,7 @@ func TestSetQueuedInASealedRoom(t *testing.T) {
 	if err := s.SetQueued(ctx, room, ev.Seq, "queued", "consumed", "7f3cq2xz"); !errors.Is(err, ErrSealed) {
 		t.Fatalf("%v", err)
 	}
-	if err := s.SetQueued(ctx, room, ev.Seq+100, "queued", "consumed", ""); !errors.Is(err, ErrSealed) {
+	if err := s.SetQueued(ctx, room, ev.Seq+100, "queued", "consumed", "7f3cq2xz"); !errors.Is(err, ErrSealed) {
 		t.Fatalf("a sealed room answers sealed first: %v", err)
 	}
 }
@@ -233,5 +233,32 @@ func TestAppendRefusesAnotherTypesKey(t *testing.T) {
 	}
 	if _, _, err := s.AppendAsDriver(ctx, "human:alice", 1, other); !errors.Is(err, ErrKeyConflict) {
 		t.Fatalf("AppendAsDriver: %v", err)
+	}
+}
+
+// Task 4.3: a queued message moves once, out of queued; promoted and consumed
+// name their run, removed names none.
+func TestQueueStateMachine(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	ev, err := s.Enqueue(ctx, queuedDraft(1, "once"), "human:alice", "once")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ from, to, run string }{
+		{"removed", "consumed", "7f3cq2xz"}, {"promoted", "consumed", "7f3cq2xz"}, // out of a final state
+		{"queued", "queued", ""}, {"queued", "delivered", "7f3cq2xz"}, // no such edge
+		{"queued", "consumed", ""}, {"queued", "promoted", ""}, // the run unnamed
+		{"queued", "removed", "7f3cq2xz"}, {"queued", "consumed", "NOT A RUN"},
+	} {
+		if err := s.SetQueued(ctx, room, ev.Seq, c.from, c.to, c.run); !errors.Is(err, ErrBadMove) {
+			t.Fatalf("%s -> %s (%q): %v", c.from, c.to, c.run, err)
+		}
+	}
+	if err := s.SetQueued(ctx, room, ev.Seq, "queued", "consumed", "7f3cq2xz"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetQueued(ctx, room, ev.Seq, "queued", "removed", ""); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("a consumed message moves again: %v", err)
 	}
 }

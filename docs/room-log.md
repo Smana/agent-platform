@@ -96,7 +96,8 @@ one.
 | Retention deletes only sealed rooms closed longer ago than their retention | Row-level security on `rooms_retention`: `closed_at < now() - retention`; Ruling Y adds `sealed` | `TestRetentionDeletesOnlyExpiredSealedRooms`, `TestPurgeExpired` | RLS AP-1; `sealed` AP-1, Ruling Y |
 | Retention never reads a transcript | Grant: `rooms_retention` may `SELECT` only `events.room_id` and the expiry columns of `rooms` (`room_id`, `sealed`, `closed_at`, `retention`); its `SELECT` policies show only expired rooms (Ruling AX) | `TestRetentionRoleCannotReadTranscripts` (`42501`, and a live room's rows invisible) | AP-1, Ruling AX |
 | The driver token moves only with its epoch, and on the record | Phase 4's column grant on the driver columns; trigger `rooms_driver_fenced`: `driver_epoch` steps by one, `driver` and `fallback_driver` change only with it, never in a sealed room, and the fallback is the previous system holder; deferred `rooms_epoch_has_event`: each new epoch has its `driver` event, appended after the move and naming its `from` and `to`, by commit. The store fences a change on the expected epoch under the row lock (`ErrStaleEpoch`), and refuses a change to no principal or to the holder (`ErrInvalidDriver`) and a key stored for another event type (`ErrKeyConflict`) | `TestDriverChangeIsFenced`, `TestDriverChangeRefusesBadTargetsAndForeignKeys`; `TestBrokerRoleIsAppendOnly` (the `move the driver …` and `move the fallback …` cases) | AP-4 |
-| A queued message is an event, and its text and author never change | Foreign key `(room_id, ref)` to `events (room_id, seq)`; `run_id` is a C2 id; the broker may `UPDATE` only `queue.state` and `queue.run_id` | `TestBrokerRoleIsAppendOnly` (`queue a message with no event`: `23503`; `consume by a run that is no run id`; `rewrite a queued message`, `re-attribute a queued message`: `42501`) | AP-4 |
+| A queued message is an event, and its text and author never change | Trigger `queue_is_its_event`: a row enters only with its queued message, by that event's actor and with its text, never in a sealed room; foreign key `(room_id, ref)` to `events (room_id, seq)`; `run_id` is a C2 id; the broker may `UPDATE` only `queue.state` and `queue.run_id` | `TestBrokerRoleIsAppendOnly` (`queue a message with no event`, `queue someone's message as another's`, `queue into a sealed room`; `rewrite a queued message`, `re-attribute a queued message`: `42501`) | AP-4 |
+| A queued message moves once | The same trigger, and `SetQueued` (`ErrBadMove`): out of `queued` only, to `removed` (no run), `promoted` or `consumed` (naming the run); the diagram below | `TestQueueStateMachine`; `TestBrokerRoleIsAppendOnly` (`re-queue a queued message`, `consume without naming the run`, `move a removed message again`) | AP-4 |
 | A full room seals itself | The store: at 100 000 events or 256 MiB the append also writes the seal | `TestLimitSealsTheRoom` | AP-1 |
 | An oversize payload keeps its slot | The store replaces a payload over 64 KiB with a stub | `TestOversizePayloadIsStubbed` | AP-1 |
 | A value Postgres refuses keeps its slot | `IsDataError` spots SQLSTATE class 22; the API stores a stub instead | `TestNULIsADataError`, `TestARefusedPayloadBecomesAStub` | AP-1 |
@@ -105,6 +106,19 @@ one.
 
 The exact column list of the `UPDATE` grant and the trigger's error messages are fixed by the AP-1
 migration; this page describes their contract.
+
+A queued message's row (phase 4):
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued: Enqueue, with its message event
+  queued --> removed: its author or the driver
+  queued --> promoted: the driver, as steering for the running run
+  queued --> consumed: the next run's brief
+  removed --> [*]
+  promoted --> [*]
+  consumed --> [*]
+```
 
 ## Append
 
