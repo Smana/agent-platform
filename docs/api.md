@@ -123,6 +123,14 @@ Response `200`, `Content-Type: text/event-stream`. The broker writes a comment l
 30 s. The stream ends at the token's expiry, and the bridge re-dials with a fresh token. A stream
 carries only the events addressed to its own run.
 
+Deliveries are derived from the log, never held in a replica's memory. On every connect the broker
+subscribes to the room, reads the run's last acknowledgement (the highest `ref` of its `delivered`
+and `interrupted` acks), and sends every deliverable event after it before anything else, in the
+stream's first flush; then it follows the room live. A stream whose acknowledgement it cannot read is
+refused `503`, rather than replay every delivery from the start. The bridge injects each `ref` once;
+one it fails to inject ends the stream, so the replay hands it over again before any later `ref`.
+An event's `data` lines are bounded to 256 KiB together.
+
 | SSE `event` | `data` | Meaning | Phase / PR |
 |---|---|---|---|
 | `deliver` | `{"ref": 1846, "text": "…"}` | A steering message; the bridge injects it into the harness and acknowledges it as `state_changed{delivered, ref}` | 4 / AP-4 |
@@ -294,7 +302,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `room_busy` | A run is already running |
 | `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
 | `not_queued` | The queued message was already delivered or removed |
-| `sealed` | The room's log is sealed |
+| `sealed` | The room's log is sealed. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
 | `conflict` | The Room changed under an `invite`: retry |
 | `log_unavailable` | The log or the Room could not be read or written: retry |
 | `already_decided` | Another approver decided first (phase 5) |

@@ -267,10 +267,17 @@ type Bridge struct {
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
-	OnDeliver   func(ctx context.Context, d wire.Deliver)   // phase 4
-	OnInterrupt func(ctx context.Context, i wire.Interrupt) // phase 4
-	OnDecision  func(ctx context.Context, d wire.Decision)  // phase 5
-	OnResume    func(ctx context.Context, r wire.Resume)    // phase 5
+	// The stream's hooks. An error ends the stream, which is re-dialled and
+	// replays from the log's last acknowledgement.
+	OnDeliver   func(ctx context.Context, d wire.Deliver) error   // phase 4
+	OnInterrupt func(ctx context.Context, i wire.Interrupt) error // phase 4
+	OnDecision  func(ctx context.Context, d wire.Decision) error  // phase 5
+	OnResume    func(ctx context.Context, r wire.Resume)          // phase 5
+
+	// inbox holds what Push hands over from other goroutines, until the loop,
+	// the only one to touch buf and status, takes it.
+	inMu  sync.Mutex
+	inbox []wire.Item
 
 	buf        []pending
 	bufBytes   int
@@ -436,11 +443,36 @@ func (b *Bridge) seal() {
 	b.buf, b.bufBytes = nil, 0
 }
 
+// Push adds an item from any goroutine, such as the stream's acknowledgements.
+// A status item with no seq gets the status stream's next one when the loop
+// takes it, so the stream stays numbered in one place.
+func (b *Bridge) Push(it wire.Item) {
+	b.inMu.Lock()
+	defer b.inMu.Unlock()
+	b.inbox = append(b.inbox, it)
+}
+
+// takeInbox buffers what Push handed over.
+func (b *Bridge) takeInbox(ctx context.Context) {
+	b.inMu.Lock()
+	in := b.inbox
+	b.inbox = nil
+	b.inMu.Unlock()
+	for _, it := range in {
+		if it.Stream == wire.StreamStatus && it.Seq == 0 {
+			b.pushStatus(ctx, b.status.Emit(Mapped{it.Type, it.Payload}))
+			continue
+		}
+		b.push(ctx, it)
+	}
+}
+
 // step is one poll and one flush, each when its backoff allows.
 func (b *Bridge) step(ctx context.Context) {
 	if b.sealed.Load() {
 		return
 	}
+	b.takeInbox(ctx)
 	now := b.now()
 	if !now.Before(b.pollAt) {
 		b.pollEvents(ctx)
@@ -658,6 +690,7 @@ func (b *Bridge) shutdown() {
 	}
 	b.sendAt = time.Time{}
 	b.sendRetry.reset()
+	b.takeInbox(ctx)
 	b.drain(ctx)
 	if ctx.Err() == nil && !b.sealed.Load() {
 		if b.positioned {
@@ -687,7 +720,7 @@ func (b *Bridge) drain(ctx context.Context) {
 func (b *Bridge) consume(ctx context.Context) {
 	var retry backoff
 	for {
-		err := b.Broker.Stream(ctx, func(event string, data []byte) { b.dispatch(ctx, event, data) })
+		err := b.Broker.Stream(ctx, func(event string, data []byte) error { return b.dispatch(ctx, event, data) })
 		if ctx.Err() != nil {
 			return
 		}
@@ -701,22 +734,23 @@ func (b *Bridge) consume(ctx context.Context) {
 	}
 }
 
-func (b *Bridge) dispatch(ctx context.Context, event string, data []byte) {
+func (b *Bridge) dispatch(ctx context.Context, event string, data []byte) error {
 	switch event {
 	case wire.EventDeliver:
 		var d wire.Deliver
 		if json.Unmarshal(data, &d) == nil && b.OnDeliver != nil {
-			b.OnDeliver(ctx, d)
+			return b.OnDeliver(ctx, d)
 		}
 	case wire.EventInterrupt:
 		var i wire.Interrupt
 		if json.Unmarshal(data, &i) == nil && b.OnInterrupt != nil {
-			b.OnInterrupt(ctx, i)
+			return b.OnInterrupt(ctx, i)
 		}
 	case wire.EventDecision:
 		var d wire.Decision
 		if json.Unmarshal(data, &d) == nil && b.OnDecision != nil {
-			b.OnDecision(ctx, d)
+			return b.OnDecision(ctx, d)
 		}
 	}
+	return nil
 }

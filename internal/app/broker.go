@@ -172,6 +172,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	api.Hub, api.LastAck = hub, st.LastAck // the stream's deliveries (phase 4)
 	humans := humanServer(cfg.Human, a.humans, mgr.GetClient(), ns, st, hub, rw.watch, m, log)
 	key := mcpKey(getenv)
 	if key == "" {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
@@ -49,6 +50,8 @@ const (
 	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
 	// reading cannot pin a handler until its token expires.
 	defaultStreamWriteWait = 10 * time.Second
+	// replayPage is how many events a stream's replay reads at once.
+	replayPage = 500
 
 	brokerActor = "system:room-broker"
 )
@@ -78,6 +81,12 @@ type Redactor interface {
 	Payload(ctx context.Context, raw json.RawMessage) (json.RawMessage, []string, error)
 }
 
+// Hub is the fan-out hub's subscription side; *fanout.Hub implements it.
+type Hub interface {
+	Subscribe(ctx context.Context, roomID string) (*fanout.Sub, error)
+	Unsubscribe(*fanout.Sub)
+}
+
 // Liveness answers whether a run is live; *runwatch.Watcher implements it.
 type Liveness interface {
 	Live(runID string) (runwatch.Run, bool)
@@ -99,6 +108,10 @@ type Server struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// StreamWriteWait bounds each write to a stream; 0 means 10 s.
 	StreamWriteWait time.Duration
+	// Hub feeds each stream its room's live events, and LastAck is where a run's
+	// deliveries resume (phase 4). The stream refuses to start without them.
+	Hub     Hub
+	LastAck func(ctx context.Context, room, run string) (int64, error)
 	// Limits bound each principal on the events endpoint and the system API.
 	Limits Limits
 	// Now is the limits' clock; nil means time.Now. Deadlines handed to the
@@ -457,10 +470,16 @@ func refusedStub(t envelope.Type, why string) json.RawMessage {
 }
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).
-// Phase 1 sends only pings; phases 4 and 5 add deliver, interrupt and decision.
+// It replays what the run has not acknowledged, from the log, then follows the
+// room's hub: a delivery is derived from the log, so it survives a broker
+// restart, a replica change and a bridge restart alike (§2 Steering).
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	p, run, ok := s.bridgeAuth(w, r)
 	if !ok {
+		return
+	}
+	if s.Hub == nil || s.LastAck == nil {
+		fail(w, http.StatusInternalServerError, wire.ReasonStreamingFailed)
 		return
 	}
 	rc := http.NewResponseController(w)
@@ -480,6 +499,25 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		ctx, stopAtExpiry = context.WithDeadline(ctx, p.Expiry)
 		defer stopAtExpiry()
 	}
+	sub, err := s.Hub.Subscribe(ctx, run.Room)
+	if err != nil {
+		s.logFailure(w, err, "subscribe a stream to its room", "room", run.Room, "run", run.ID)
+		return
+	}
+	defer s.Hub.Unsubscribe(sub)
+	// The mark is read after subscribing, as for viewers (§4 Replay): every event
+	// past it arrives through the hub. A failed read refuses the stream rather
+	// than replay from 0, which would hand the harness every delivery again.
+	after, err := s.LastAck(ctx, run.Room, run.ID)
+	if err != nil {
+		s.logFailure(w, err, "read a run's last acknowledgement", "room", run.Room, "run", run.ID)
+		return
+	}
+	st, err := s.Log.Room(ctx, run.Room)
+	if err != nil {
+		s.logFailure(w, err, "read a stream's mark", "room", run.Room, "run", run.ID)
+		return
+	}
 	every := s.PingEvery
 	if every <= 0 {
 		every = defaultPing
@@ -489,9 +527,39 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	for {
+	write := func(frame string) bool {
 		_ = rc.SetWriteDeadline(time.Now().Add(s.streamWriteWait()))
-		if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+		_, err := io.WriteString(w, frame)
+		return err == nil
+	}
+	send := func(ev envelope.Event) bool {
+		after = ev.Seq
+		if name, data, ok := Deliverable(ev, run.ID); ok {
+			return write("event: " + name + "\ndata: " + string(data) + "\n\n")
+		}
+		return true
+	}
+	// What the run has not acknowledged goes out first, in the stream's first
+	// flush: a bridge that connects or resumes gets its pending deliveries before
+	// anything else (review M15).
+	for after < st.LastSeq {
+		evs, err := s.Log.Range(ctx, run.Room, after, replayPage)
+		if err != nil {
+			s.log().Warn("replay a stream", "room", run.Room, "run", run.ID, errAttr(err))
+			return // the bridge re-dials and resumes from its last ack
+		}
+		if len(evs) == 0 {
+			break
+		}
+		for _, ev := range evs {
+			if !send(ev) {
+				return
+			}
+		}
+	}
+	ping := true // the first flush carries the replay, and a ping
+	for {
+		if ping && !write(": ping\n\n") {
 			return
 		}
 		if err := rc.Flush(); err != nil {
@@ -500,7 +568,16 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-sub.Dropped:
+			return // the bridge re-dials and resumes from its last ack
+		case ev := <-sub.C:
+			sub.Sent(ev)
+			ping = false
+			if ev.Seq > after && !send(ev) { // at or below the mark, the replay sent it
+				return
+			}
 		case <-tick:
+			ping = true
 		}
 	}
 }
