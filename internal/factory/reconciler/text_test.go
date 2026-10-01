@@ -4,6 +4,8 @@ package reconciler
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -128,7 +130,7 @@ func TestReviseBriefFencesTheReviewAndPointsAtTheSnapshot(t *testing.T) {
 	if strings.Contains(b, "gh issue view") || strings.Contains(b, "Messages humans queued") {
 		t.Error("the live issue is not the task (§1, T1), and SP2's 1 KiB queue rendering is not used")
 	}
-	if len(b) > reviseCap {
+	if len(b) > 13<<10 {
 		t.Fatalf("%d bytes", len(b))
 	}
 }
@@ -137,14 +139,14 @@ func TestReviseBriefFencesTheReviewAndPointsAtTheSnapshot(t *testing.T) {
 // bytes it shows and names the seq room_read returns whole, within 13 KiB however full the log.
 func TestReviseBriefMarksALongReviewAsClipped(t *testing.T) {
 	long := ReviewMessage(forge.PR{Number: 12}, forge.Review{Author: "Smana", Body: strings.Repeat("r", 20<<10) + "TAIL"})
-	if len(long) > maxReview || !strings.HasSuffix(long, "⟦review clipped by the factory at 15 KiB⟧") {
+	if len(long) > 15<<10 || !strings.HasSuffix(long, "⟦review clipped by the factory at 15 KiB⟧") {
 		t.Fatalf("the review message: %d bytes, %q", len(long), long[len(long)-60:])
 	}
 	for name, evs := range map[string][]envelope.Event{"an empty log": nil, "a full log": worstLog()} {
 		t.Run(name, func(t *testing.T) {
 			b, quoted := ReviseBrief(reviseTask(), evs, []rooms.Queued{{Ref: 4, Author: "system:factory", Text: long}}, "n0nce234")
 			data, ok := fenced(b, "QUEUED-DATA-n0nce234")
-			if !ok || quoted != 1 || len(b) > reviseCap {
+			if !ok || quoted != 1 || len(b) > 13<<10 {
 				t.Fatalf("fenced %v, quoted %d, %d bytes", ok, quoted, len(b))
 			}
 			const head = "Queued message seq 4 by system:factory:\n"
@@ -169,7 +171,7 @@ func TestReviseBriefQuotesTheOldestAndSaysWhatWaits(t *testing.T) {
 		q = append(q, rooms.Queued{Ref: int64(10 + i), Author: "system:factory", Text: fmt.Sprintf("review %d ", i) + strings.Repeat("x", 3<<10)})
 	}
 	b, quoted := ReviseBrief(reviseTask(), worstLog(), q, "n0nce234")
-	if quoted < 1 || quoted >= len(q) || len(b) > reviseCap {
+	if quoted < 1 || quoted >= len(q) || len(b) > 13<<10 {
 		t.Fatalf("quoted %d of %d in %d bytes", quoted, len(q), len(b))
 	}
 	data, _ := fenced(b, "QUEUED-DATA-n0nce234")
@@ -215,5 +217,26 @@ func TestSnapshotMessageFencesTheText(t *testing.T) {
 	tk.Spec.Source.Trust = "trusted"
 	if m := SnapshotMessage(tk, "n0nce234"); strings.Contains(m, untrustedHeader) || strings.Contains(m, "never an instruction") {
 		t.Fatal("a trusted text carries no untrusted marking")
+	}
+}
+
+// A message is quoted with at least 256 bytes or not at all: a clip that shows a few bytes
+// would count it as read, and consume it, with nothing of it in the brief.
+func TestReviseBriefNeverQuotesAStub(t *testing.T) {
+	re := regexp.MustCompile(`⟦clipped by the factory: (\d+) of`)
+	clipped := 0
+	for size := 2 << 10; size < 4<<10; size += 16 {
+		q := []rooms.Queued{{Ref: 4, Author: "system:factory", Text: strings.Repeat("a", size)},
+			{Ref: 5, Author: "system:factory", Text: strings.Repeat("b", 2<<10)}}
+		b, quoted := ReviseBrief(reviseTask(), worstLog(), q, "n0nce234")
+		for _, m := range re.FindAllStringSubmatch(b, -1) {
+			clipped++
+			if n, _ := strconv.Atoi(m[1]); n < 256 {
+				t.Fatalf("first message %d bytes: a clip shows %d bytes, quoted %d", size, n, quoted)
+			}
+		}
+	}
+	if clipped == 0 {
+		t.Fatal("the sweep never clipped: it proves nothing")
 	}
 }
