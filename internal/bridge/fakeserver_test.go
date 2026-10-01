@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -39,6 +40,16 @@ type fakeAgentServer struct {
 	// the next status read, unless a message arrived during it.
 	parkAfterRead bool
 	messaged      bool // a message arrived during the current step
+	down          bool // every request is cut, as when agent-server is not listening
+	cut           int  // event searches cut while down
+	// failSearch, when set, runs under mu before an event search; true answers 500.
+	failSearch func() bool
+}
+
+func (f *fakeAgentServer) setDown(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
 }
 
 // runStep is run() (local_conversation.py:2191-2197, agent.py:652-661): on a
@@ -146,6 +157,10 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			return
 		}
 		defer f.mu.Unlock()
+		if f.failSearch != nil && f.failSearch() {
+			http.Error(w, "busy", http.StatusInternalServerError)
+			return
+		}
 		start := 0
 		if id := r.URL.Query().Get("page_id"); id != "" {
 			for i, e := range f.events {
@@ -250,7 +265,21 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		down := f.down
+		if down && strings.HasSuffix(r.URL.Path, "/events/search") {
+			f.cut++
+		}
+		f.mu.Unlock()
+		if down {
+			if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+				_ = c.Close()
+			}
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
