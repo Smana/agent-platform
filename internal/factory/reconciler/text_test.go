@@ -369,3 +369,21 @@ func FuzzReviseBrief(f *testing.F) {
 		}
 	})
 }
+
+// fitQuoted is exact: its prefix's quoted form fits keep, and one more rune would not.
+func TestFitQuotedIsTheLongestPrefixThatFits(t *testing.T) {
+	for _, s := range []string{"abc", "a\nb\nc", "\n\n\n\n", "日本\n語", strings.Repeat("ab\n", 300)} {
+		for keep := -1; keep <= len(quote(s))+1; keep++ {
+			p := fitQuoted(s, keep)
+			if !strings.HasPrefix(s, p) || !utf8.ValidString(p) || (p != "" && len(quote(p)) > keep) {
+				t.Fatalf("%q in %d: %q does not fit", s, keep, p)
+			}
+			if len(p) < len(s) {
+				_, size := utf8.DecodeRuneInString(s[len(p):])
+				if len(quote(s[:len(p)+size])) <= keep {
+					t.Fatalf("%q in %d: %q is not the longest", s, keep, p)
+				}
+			}
+		}
+	}
+}
