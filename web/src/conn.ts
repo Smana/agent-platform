@@ -20,6 +20,8 @@ export interface Handlers {
   onState(s: Snapshot): void;
   onStatus(s: string): void;
   onAck?(f: Frame): void;
+  // A socket that closed before it opened: a refused upgrade, an expired session among them.
+  onRefused?(): void;
   // After every sync and event frame, delivered or not, so the footer is never stale.
   onCounters?(c: Counters): void;
 }
@@ -59,6 +61,7 @@ export class RoomConnection {
   private ws?: SocketLike;
   private wait = firstWait;
   private openedAt = 0;
+  private open = false;
   private pinger?: ReturnType<typeof setInterval>;
   private readonly socket: (url: string) => SocketLike;
   private readonly random: () => number;
@@ -76,6 +79,7 @@ export class RoomConnection {
     this.openedAt = 0;
     ws.onopen = () => {
       this.openedAt = Date.now();
+      this.open = true;
       const hello: Record<string, unknown> = { type: "hello", roomId: this.roomId };
       if (this.tracker.last > 0) hello.afterSeq = this.tracker.last; else hello.tail = tail;
       ws.send(JSON.stringify(hello));
@@ -89,6 +93,8 @@ export class RoomConnection {
     };
     ws.onclose = (e) => {
       clearInterval(this.pinger);
+      this.open = false;
+      if (this.openedAt === 0) this.h.onRefused?.();
       if (this.openedAt > 0 && Date.now() - this.openedAt >= settled) this.wait = firstWait;
       // Jitter spreads a replica's viewers when it shuts down (1001) and they all re-dial.
       const delay = Math.min(this.wait + Math.floor(this.wait * 0.25 * this.random()), maxWait);
@@ -98,7 +104,12 @@ export class RoomConnection {
     };
   }
 
-  send(frame: Record<string, unknown>) { this.ws?.send(JSON.stringify(frame)); }
+  // send reports whether the frame went out: an act sent while reconnecting is not queued.
+  send(frame: Record<string, unknown>): boolean {
+    if (!this.open || !this.ws) return false;
+    this.ws.send(JSON.stringify(frame));
+    return true;
+  }
 
   counters(): Counters { return { last: this.tracker.last, gaps: this.tracker.gaps, duplicates: this.tracker.duplicates }; }
 
