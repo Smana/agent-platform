@@ -466,6 +466,137 @@ func TestTheSIGTERMDrainAlwaysSends(t *testing.T) {
 	}
 }
 
+// F11: agent-server's cold start under gVisor outlasted MaxBackoff, so a short
+// conversation ran and ended between two polls. Until the harness first
+// answers, a failed read waits at most firstContactPolls intervals. The status
+// never changes here, so only that cap can catch the conversation.
+func TestTheLogIsPolledOftenUntilTheHarnessFirstAnswers(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100, down: true}
+	for i := range 3 {
+		f.add(chatEvent(fmt.Sprint("hi ", i)))
+	}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.Interval, r.b.MaxBackoff = 20*time.Millisecond, time.Hour
+	_, stop := r.run(t)
+	// On a 20 ms loop the polls land near 360 then 620 ms uncapped, and 360 then
+	// 560 ms under the answeredPolls cap: the conversation runs between them.
+	time.Sleep(400 * time.Millisecond)
+	f.setDown(false)
+	time.Sleep(120 * time.Millisecond)
+	f.setDown(true) // the harness exits before SIGTERM
+	stop()
+	if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0)}) {
+		t.Fatalf("mirrored %v of a conversation that ran for 120 ms", got)
+	}
+}
+
+// Once the harness has answered, a failing read backs off past the
+// first-contact cap, up to answeredPolls intervals.
+func TestAnAnsweredLogBacksOffFurther(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100}
+	f.add(chatEvent("one"))
+	served := false
+	f.failSearch = func() bool {
+		defer func() { served = true }()
+		return served
+	}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBackoff = time.Hour
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the log answered", func() bool { return len(fb.stored(wire.StreamEvents)) == 1 })
+	time.Sleep(300 * time.Millisecond) // the backoff reaches its cap
+	before := f.searched()
+	time.Sleep(300 * time.Millisecond)
+	n := f.searched() - before
+	stop()
+	// 300 ms is 6 polls at answeredPolls × 5 ms, 30 at firstContactPolls × 5 ms.
+	if n < 1 || n > 12 {
+		t.Fatalf("%d reads of a failing log in 300 ms, want about 6", n)
+	}
+}
+
+// F11: agent-run stops agent-server soon after the conversation ends. A status
+// change reads the log to its end at once, whatever the poll's backoff.
+func TestAStatusChangeReadsTheLogToItsEnd(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	f.add(chatEvent("first"))
+	served, failed := false, 0
+	f.failSearch = func() bool { // under f.mu
+		if !served {
+			served = true
+			return false
+		}
+		if f.status == "finished" {
+			return false
+		}
+		if failed++; failed == 10 {
+			// The conversation ends right after a failed read, whose retry is a
+			// whole backoff (10 × 50 ms) away, past the harness's exit.
+			for i := range 4 {
+				f.events = append(f.events, chatEvent(fmt.Sprint("last ", i)))
+				f.events[len(f.events)-1]["id"] = fmt.Sprint("e", len(f.events))
+			}
+			f.status = "finished"
+			time.AfterFunc(250*time.Millisecond, func() { f.setDown(true) })
+		}
+		return true
+	}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.Interval, r.b.MaxBackoff = 50*time.Millisecond, time.Hour
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the harness exited", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.down
+	})
+	stop()
+	want := []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0), SeqFor(4, 0), SeqFor(5, 0)}
+	if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, want) {
+		t.Fatalf("mirrored %v, want %v", got, want)
+	}
+}
+
+// F11: the SIGTERM drain reads what the log has left to its end, not one poll's
+// worth, and positions a cursor the loop never could.
+func TestTheSIGTERMDrainReadsTheLogToItsEnd(t *testing.T) {
+	all := []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0), SeqFor(4, 0), SeqFor(5, 0), SeqFor(6, 0), SeqFor(7, 0)}
+	cases := []struct {
+		name   string
+		resume int64
+		want   []int64
+	}{
+		{"more than one poll's worth", 0, all},
+		{"a bridge that never positioned", SeqFor(2, 0), all[1:]},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := &fakeAgentServer{pageSize: 2, status: "running"}
+			for i := range 7 {
+				f.add(chatEvent(fmt.Sprint("hi ", i)))
+			}
+			failing := true
+			f.failSearch = func() bool { return failing }
+			fb := &fakeBroker{resume: wire.Resume{RoomID: "3kq7x2ma", AfterHarnessSeq: c.resume}}
+			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+			r.b.MaxBackoff = time.Hour
+			ctx, _ := r.run(t)
+			eventually(ctx, t, "a read failed", func() bool { return f.searched() > 1 })
+			f.mu.Lock()
+			failing = false
+			f.mu.Unlock()
+			r.cancel()
+			<-r.done
+			if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, c.want) {
+				t.Fatalf("mirrored %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // Review I3: a full buffer stops reading the harness; once the broker drains
 // it, reading resumes and every event lands once.
 func TestBackPressureStopsPollingUntilTheBufferDrains(t *testing.T) {

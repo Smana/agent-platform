@@ -52,6 +52,13 @@ const (
 	defaultInterval   = time.Second
 	defaultMinBackoff = 250 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
+	// The harness is on loopback, so MaxBackoff, sized for the broker, is too
+	// slow for it (F11): agent-server's cold start under gVisor (~85 s) grew the
+	// wait past a whole conversation, which ended unread. Until the harness first
+	// answers, a failed read of its log waits at most firstContactPolls
+	// intervals; after, at most answeredPolls.
+	firstContactPolls = 2
+	answeredPolls     = 10
 	// MemoryLimit is the soft heap limit room-bridge sets (GOMEMLIMIT) inside
 	// the sidecar's 64 Mi limit, leaving the rest to the runtime and stacks.
 	MemoryLimit = 48 << 20
@@ -325,6 +332,16 @@ func (b *Bridge) backoffs() (lo, hi time.Duration) {
 	return lo, max(lo, hi)
 }
 
+// pollBackoffs bound the retry of a failed read of the harness log.
+func (b *Bridge) pollBackoffs() (lo, hi time.Duration) {
+	lo, hi = b.backoffs()
+	polls := time.Duration(firstContactPolls)
+	if b.lastSeen.Load() != 0 {
+		polls = answeredPolls
+	}
+	return lo, max(lo, min(hi, polls*b.Interval))
+}
+
 func (b *Bridge) sawHarness(t time.Time) { b.lastSeen.Store(t.UnixNano()) }
 
 // Healthy backs /healthz (ruling P6): a native sidecar must not fail before the
@@ -484,14 +501,15 @@ func (b *Bridge) step(ctx context.Context) {
 }
 
 // pollEvents reads and maps the harness events after the cursor, unless the
-// buffer is full: the harness keeps its own store meanwhile.
-func (b *Bridge) pollEvents(ctx context.Context) {
+// buffer is full: the harness keeps its own store meanwhile. It reports whether
+// the log may hold more: it moved, and the buffer has room.
+func (b *Bridge) pollEvents(ctx context.Context) bool {
 	if b.bufBytes >= b.MaxBuffer {
-		return
+		return false
 	}
 	if !b.positioned {
 		b.position(ctx)
-		return
+		return b.positioned
 	}
 	evs, next, err := b.Harness.Next(ctx, b.cursor)
 	start := b.cursor.Count
@@ -502,6 +520,15 @@ func (b *Bridge) pollEvents(ctx context.Context) {
 	}
 	b.cursor = next // Next advances over exactly the events it returned, error or not
 	b.harnessRead(ctx, err)
+	return err == nil && len(evs) > 0
+}
+
+// readLog reads the harness log to its end, whatever the poll's backoff, until
+// a read fails, the buffer is full or ctx ends (F11).
+func (b *Bridge) readLog(ctx context.Context) {
+	for more := true; more && ctx.Err() == nil; {
+		more = b.pollEvents(ctx)
+	}
 }
 
 // position rebuilds the cursor after a restart: the log holds events up to
@@ -556,7 +583,7 @@ func (b *Bridge) harnessRead(ctx context.Context, err error) {
 			b.log().Warn("read the harness events", "err", err)
 		}
 	}
-	b.pollAt = now.Add(b.pollRetry.next(b.backoffs()))
+	b.pollAt = now.Add(b.pollRetry.next(b.pollBackoffs()))
 }
 
 func (b *Bridge) pollStatus(ctx context.Context) {
@@ -568,8 +595,14 @@ func (b *Bridge) pollStatus(ctx context.Context) {
 	if b.bufBytes >= statusCap(b.MaxBuffer) {
 		return // a later poll records the status the harness settles on
 	}
-	for _, it := range b.status.Observe(status, b.RunID) {
+	changed := b.status.Observe(status, b.RunID)
+	for _, it := range changed {
 		b.pushStatus(ctx, it)
+	}
+	if len(changed) > 0 {
+		// The events behind a change are in the log by now, and agent-run stops
+		// agent-server soon after the conversation ends: read them at once (F11).
+		b.readLog(ctx)
 	}
 }
 
@@ -677,8 +710,9 @@ func (b *Bridge) flush(ctx context.Context) {
 	}
 }
 
-// shutdown drains the buffer within FlushGrace, then takes what the harness
-// has left, since agent-run may stop it first, and drains that too (review I1).
+// shutdown drains the buffer within FlushGrace, then reads what the harness
+// log has left to its end, if agent-run has not stopped it yet, and drains that
+// too (review I1, F11).
 // The loop's backoff does not carry over: the buffer is sent first and at once,
 // before a poll that a hung harness could hold for its whole timeout, and each
 // wait after a refusal is capped at drainWait.
@@ -693,9 +727,7 @@ func (b *Bridge) shutdown() {
 	b.takeInbox(ctx)
 	b.drain(ctx)
 	if ctx.Err() == nil && !b.sealed.Load() {
-		if b.positioned {
-			b.pollEvents(ctx)
-		}
+		b.readLog(ctx) // it positions the cursor first if the loop never could
 		b.pollStatus(ctx)
 		b.drain(ctx)
 	}

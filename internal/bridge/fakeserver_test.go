@@ -26,6 +26,15 @@ type fakeAgentServer struct {
 	searches  int  // event searches asked
 	hang      bool // event searches never answer while set
 	flap      bool // each status read flips running and paused
+	down      bool // every request is cut, as when agent-server is not listening
+	// failSearch, when set, runs under mu before an event search; true answers 500.
+	failSearch func() bool
+}
+
+func (f *fakeAgentServer) setDown(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
 }
 
 // searched is how many event searches were asked so far.
@@ -84,6 +93,10 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			return
 		}
 		defer f.mu.Unlock()
+		if f.failSearch != nil && f.failSearch() {
+			http.Error(w, "busy", http.StatusInternalServerError)
+			return
+		}
 		start := 0
 		if id := r.URL.Query().Get("page_id"); id != "" {
 			for i, e := range f.events {
@@ -141,7 +154,18 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		down := f.down
+		f.mu.Unlock()
+		if down {
+			if c, _, err := http.NewResponseController(w).Hijack(); err == nil {
+				_ = c.Close()
+			}
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
