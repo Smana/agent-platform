@@ -66,6 +66,15 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rooms cannot be created here", http.StatusServiceUnavailable)
 		return
 	}
+	// Each room is a Room CR and a database row: the same per-human budget as
+	// acts (§4, review 4.4 M4).
+	if s.Actor.limited(p.ID) {
+		if s.Actor.OnReject != nil {
+			s.Actor.OnReject(r.Context(), rejectRateLimited)
+		}
+		http.Error(w, rejectRateLimited, http.StatusTooManyRequests)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
 	// No retention: the CRD's default applies (OD-17).

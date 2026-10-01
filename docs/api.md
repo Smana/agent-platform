@@ -253,7 +253,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log | 2 / AP-2 |
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
-| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository or an unknown field, `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
+| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
 | `GET /api/roomctl` | `{url, issuer, clientID}` for the UI's CLI setup page | 6 / AP-6 |
 
 ### `GET /v1/ws`
@@ -304,7 +304,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `remove_queued`, `promote_queued` | `ref` | The author or the driver; promote: driver | 4 |
 | `interrupt` | — | Driver | 4 |
 | `driver_request`, `driver_give`, `driver_take` | `to?`, `reason?` | Request: collaborator; give: driver, to a collaborator or better (from the Room's members; an `agents-admin` who is not a member takes instead) or the room's system holder; take: owner or `agents-admin`, with a reason of at most 256 bytes | 4 |
-| `start_run` | `role` (`implementer`, `reviewer`, `tester`, `triager`), `prUrl?` (reviewer only, a pull request of the room's repository), `egressProfiles?` (at most 8 names) | Driver, owner. A reviewer's task is its PR, else the log's latest one (ruling P24); any other role's is the fenced brief, which consumes the queued messages it quotes. Recorded as `state_changed{run_requested}`. Before SP3 the ack's `result` is the rendered `AgentRun` for the owner to apply (ruling P14); a replayed `clientSeq` acks the record without it and asks for no second run | 4 |
+| `start_run` | `role` (`implementer`, `reviewer`, `tester`, `triager`), `prUrl?` (reviewer only, a pull request of the room's repository), `egressProfiles?` (at most 8 names) | Driver, owner. A reviewer's task is its PR, else the one the latest agent handoff or review verdict names (ruling P24); any other role's is the fenced brief of the latest agent handoff and verdict, which consumes the queued messages it quotes. Recorded as `state_changed{run_requested}`, with the reviewer's `taskUrl`. Before SP3 the ack's `result` is the rendered `AgentRun` for the owner to apply (ruling P14). A replayed `clientSeq` acks the record without it; one retried after a failed record (`log_unavailable`) asks for the same run under the same idempotency key, so it never creates a second one ([integration](integration.md)) | 4 |
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason` | Approver, owner | 5 |
@@ -316,8 +316,8 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
 | `rate_limited` | Over 10 actions per second (burst 20), per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
-| `room_busy` | A run is already running |
-| `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl` and no pull request of the room's repository in the log |
+| `room_busy` | A run is already running; or a run was requested in the last 10 minutes and has not joined yet, and the broker does not know it ended (a claim not applied, or a factory run not seen yet). Two replicas answering a `start_run` in the same instant can both pass this check until SP3's factory refuses a second pending run per room |
+| `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
 | `over_budget` | The factory refused the run: over the caller's budget |
 | `factory_unavailable` | The run could not be requested: no requester, or the factory failed or answered no run id. Retry |
 | `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |

@@ -78,6 +78,8 @@ func TestCreateRoom(t *testing.T) {
 		{"a malformed repository", "alice", `{"dataClass":"public","repository":"../etc"}`, nil, http.StatusBadRequest},
 		{"an unknown field", "alice", `{"dataClass":"public","driver":"human:mallory"}`, nil, http.StatusBadRequest},
 		{"not JSON", "alice", `dataClass=public`, nil, http.StatusBadRequest},
+		// Review 4.4 M4: the fake client runs no CRD pattern, so the handler's own check is what refuses it.
+		{"a principal the CRD would refuse", "a b", `{"dataClass":"public"}`, nil, http.StatusBadRequest},
 		{"too large", "alice", `{"dataClass":"public","repository":"` + strings.Repeat("a", 5<<10) + `"}`, nil, http.StatusBadRequest},
 		{"refused as invalid", "alice", `{"dataClass":"public"}`,
 			apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}, "x", field.ErrorList{}), http.StatusBadRequest},
@@ -89,6 +91,17 @@ func TestCreateRoom(t *testing.T) {
 		}
 	}
 	createErr = nil
+	// Review 4.4 M4: room creation spends the human's action budget (burst 20).
+	var codes []int
+	for range 21 {
+		codes = append(codes, post("bursty", `{"dataClass":"public"}`).Code)
+	}
+	if codes[19] != http.StatusCreated || codes[20] != http.StatusTooManyRequests {
+		t.Fatalf("burst: %v", codes)
+	}
+	if rec := post("calm", `{"dataClass":"public"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("the budget is per human: %d", rec.Code)
+	}
 	srv.Actor = nil
 	if rec := post("alice", `{"dataClass":"public"}`); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no actor: %d", rec.Code)

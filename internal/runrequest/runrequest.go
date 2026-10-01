@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,8 @@ var (
 	ErrBudget = errors.New("over_budget")
 	// ErrForbidden is the factory refusing the principal (403), or no token to present.
 	ErrForbidden = errors.New("forbidden")
+	// ErrNoKey is a factory request with no idempotency key, refused before the call.
+	ErrNoKey = errors.New("runrequest: a factory request needs an idempotency key")
 )
 
 // factoryTimeout bounds one POST /v1/runs; maxResponse its answer.
@@ -34,9 +38,11 @@ const (
 )
 
 // Request is one run to start: the claim's fields, the principal asking, and
-// that principal's own access token for the factory (C4).
+// that principal's own access token for the factory (C4). IdempotencyKey names
+// the act that asks (review 4.4 I1): the same key always means the same run.
 type Request struct {
 	Role, Repository, BaseRef, Branch, TaskText, TaskURL, DataClass, RoomRef, Principal, AccessToken string
+	IdempotencyKey                                                                                   string
 	EgressProfiles                                                                                   []string
 }
 
@@ -56,6 +62,16 @@ type Requester interface {
 // NewID is a fresh C2 id: 8 characters of [a-z2-7], 40 random bits.
 func NewID() string { return strings.ToLower(rand.Text()[:8]) }
 
+// idFor is the run id of an idempotency key: a retried act renders the same
+// claim name, so applying both claims creates one run. No key, a fresh id.
+func idFor(key string) string {
+	if key == "" {
+		return NewID()
+	}
+	sum := sha256.Sum256([]byte(key))
+	return strings.ToLower(base32.StdEncoding.EncodeToString(sum[:5]))
+}
+
 func task(r Request) map[string]string {
 	if r.TaskURL != "" {
 		return map[string]string{"url": r.TaskURL}
@@ -67,9 +83,9 @@ func task(r Request) map[string]string {
 // runwatch's seam: its GVK and namespace, and the xplane-run- prefix it parses.
 type Manifest struct{}
 
-// Request renders r as a claim under a fresh run id.
+// Request renders r as a claim, its run id derived from r's idempotency key.
 func (Manifest) Request(_ context.Context, r Request) (Result, error) {
-	id := NewID()
+	id := idFor(r.IdempotencyKey)
 	spec := map[string]any{"role": r.Role, "repository": r.Repository, "baseRef": r.BaseRef, "branch": r.Branch,
 		"principal": r.Principal, "dataClass": r.DataClass, "roomRef": r.RoomRef, "task": task(r)}
 	if len(r.EgressProfiles) > 0 {
@@ -95,6 +111,9 @@ func (f Factory) Request(ctx context.Context, r Request) (Result, error) {
 	if r.AccessToken == "" { // never an unauthenticated or asserted request (C4)
 		return Result{}, ErrForbidden
 	}
+	if r.IdempotencyKey == "" { // a retry without one would create a second run
+		return Result{}, ErrNoKey
+	}
 	body, err := json.Marshal(map[string]any{"role": r.Role, "repository": r.Repository, "baseRef": r.BaseRef,
 		"task": task(r), "dataClass": r.DataClass, "roomRef": r.RoomRef, "egressProfiles": r.EgressProfiles})
 	if err != nil {
@@ -106,6 +125,9 @@ func (f Factory) Request(ctx context.Context, r Request) (Result, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+r.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
+	// SP3's contract: the same key answers the same runId, so a retried act
+	// never creates a second run (docs/integration.md).
+	req.Header.Set("Idempotency-Key", r.IdempotencyKey)
 	hc := f.HC
 	if hc == nil {
 		hc = httpx.New(factoryTimeout, nil)

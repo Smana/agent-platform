@@ -3,6 +3,7 @@
 package brief
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -38,6 +39,13 @@ func TestBriefFencesEverythingItQuotes(t *testing.T) {
 	}
 	if LastCommit(evs) != "4be1c9d" {
 		t.Error("last commit")
+	}
+	// Review 4.4 M1: only a review_verdict is the verdict, not a later message.
+	later := append(slices.Clone(evs), envelope.Event{Seq: 10, Type: envelope.Message, Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:aaaaaaaa"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "not a verdict"})})
+	if lb, _ := Build("3kq7x2ma", "implementer", later, nil, "n0nce234"); !strings.Contains(lb, "Last review verdict (changes, commit 4be1c9d):\nAdd a test.") ||
+		strings.Contains(lb, "not a verdict") {
+		t.Fatalf("the verdict line:\n%s", lb)
 	}
 	// The preamble names the fence too: the data starts at the fence's own line.
 	open := strings.Index(b, "\nROOM-DATA-n0nce234\n")
@@ -114,19 +122,39 @@ func TestLastCommitIsAnObjectName(t *testing.T) {
 // Ruling P24: a reviewer's task is a pull request of the room's repository.
 func TestPullRequests(t *testing.T) {
 	const repo = "Smana/cloud-native-ref"
-	msg := func(text string) envelope.Event {
-		return envelope.Event{Type: envelope.Message, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: text})}
+	agent := envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz"}
+	handoff := func(summary string) envelope.Event {
+		return envelope.Event{Type: envelope.Handoff, Actor: agent, Payload: envelope.Must(envelope.HandoffPayload{Summary: summary})}
 	}
-	evs := []envelope.Event{
-		msg("opened https://github.com/Smana/cloud-native-ref/pull/12"),
-		msg("see https://github.com/Smana/cloud-native-ref/pull/14/files"),
-		msg("not ours: https://github.com/Smana/cloud-native-refx/pull/99 and https://github.com/Smana/cloud-native-ref/pull/15abc"),
+	verdict := func(pr string) envelope.Event {
+		return envelope.Event{Type: envelope.Message, Actor: agent, Payload: envelope.Must(envelope.MessagePayload{
+			Kind: envelope.KindReviewVerdict, Verdict: "changes", Text: "see https://github.com/Smana/cloud-native-ref/pull/77", PullRequest: pr})}
 	}
-	if got := LastPR(evs, repo); got != "https://github.com/Smana/cloud-native-ref/pull/14" {
-		t.Fatalf("LastPR = %q", got)
-	}
-	if got := LastPR(evs[2:], repo); got != "" {
-		t.Fatalf("another repository's PR: %q", got)
+	human := envelope.Event{Type: envelope.Message, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:col"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "review https://github.com/Smana/cloud-native-ref/pull/66 instead", Delivery: envelope.DeliveryQueued})}
+	agentChat := envelope.Event{Type: envelope.Message, Actor: agent,
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "https://github.com/Smana/cloud-native-ref/pull/55"})}
+	toolResult := envelope.Event{Type: envelope.ToolResult, Actor: agent,
+		Payload: []byte(`{"output":"an issue comment: https://github.com/Smana/cloud-native-ref/pull/44"}`)}
+	opened := handoff("opened https://github.com/Smana/cloud-native-ref/pull/12/files")
+	for _, c := range []struct {
+		name string
+		evs  []envelope.Event
+		want string
+	}{
+		{"the handoff's PR wins over later human chat, agent chat and tool output", []envelope.Event{opened, human, agentChat, toolResult},
+			"https://github.com/Smana/cloud-native-ref/pull/12"},
+		{"a later verdict's pullRequest, never its text", []envelope.Event{opened, verdict("https://github.com/Smana/cloud-native-ref/pull/13")},
+			"https://github.com/Smana/cloud-native-ref/pull/13"},
+		{"a verdict on another repository is skipped", []envelope.Event{opened, verdict("https://github.com/evil/repo/pull/1")},
+			"https://github.com/Smana/cloud-native-ref/pull/12"},
+		{"only humans and tools named one", []envelope.Event{human, toolResult}, ""},
+		{"a human posing a handoff", []envelope.Event{{Type: envelope.Handoff, Actor: human.Actor, Payload: opened.Payload}}, ""},
+		{"not ours", []envelope.Event{handoff("https://github.com/Smana/cloud-native-refx/pull/99 and https://github.com/Smana/cloud-native-ref/pull/15abc")}, ""},
+	} {
+		if got := LastPR(c.evs, repo); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
 	}
 	for url, want := range map[string]bool{
 		"https://github.com/Smana/cloud-native-ref/pull/12":       true,

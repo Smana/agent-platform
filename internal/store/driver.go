@@ -30,43 +30,43 @@ var principalKinds = []string{"human:", "system:", "agent:"}
 // ChangeDriver moves the token only if the room's epoch is still expect, the
 // fence that makes a give, a take and a lease expiry safe across replicas (§2).
 // d carries the actor, origin and idempotency key; the store fills the type and
-// the DriverPayload. A replayed key returns the stored event and moves nothing.
-func (s *Store) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
-	ev, err := s.changeDriver(ctx, roomID, expect, to, reason, d, false)
+// the DriverPayload. A replayed key returns the stored event, dup true, and moves nothing.
+func (s *Store) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, bool, error) {
+	ev, dup, err := s.changeDriver(ctx, roomID, expect, to, reason, d, false)
 	if err != nil {
-		return envelope.Event{}, fmt.Errorf("store: change driver of room %s: %w", roomID, err)
+		return envelope.Event{}, false, fmt.Errorf("store: change driver of room %s: %w", roomID, err)
 	}
-	return ev, nil
+	return ev, dup, nil
 }
 
 // ExpireDriver is the lease sweeper's ChangeDriver to the room's fallback, with
 // the reason lease_expired. It moves the token only if a human still holds it at
 // expect and is still lapsed under the row lock (ErrNotLapsed otherwise): one who
 // came back between the sweep's read and this write keeps it.
-func (s *Store) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error) {
-	ev, err := s.changeDriver(ctx, roomID, expect, to, "lease_expired", d, true)
+func (s *Store) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, bool, error) {
+	ev, dup, err := s.changeDriver(ctx, roomID, expect, to, "lease_expired", d, true)
 	if err != nil {
-		return envelope.Event{}, fmt.Errorf("store: expire the driver of room %s: %w", roomID, err)
+		return envelope.Event{}, false, fmt.Errorf("store: expire the driver of room %s: %w", roomID, err)
 	}
-	return ev, nil
+	return ev, dup, nil
 }
 
 // lapsedSQL is a human holder's lapse (§2): disconnected over 2 min or idle over 15.
 const lapsedSQL = `(driver_seen_at < now() - interval '2 minutes' OR driver_acted_at < now() - interval '15 minutes')`
 
-func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft, expire bool) (envelope.Event, error) {
+func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft, expire bool) (envelope.Event, bool, error) {
 	if !slices.ContainsFunc(principalKinds, func(p string) bool { return strings.HasPrefix(to, p) && len(to) > len(p) }) {
-		return envelope.Event{}, ErrInvalidDriver
+		return envelope.Event{}, false, ErrInvalidDriver
 	}
 	// The payload the change stores, but for its from, known only under the row lock.
 	payload := envelope.DriverPayload{To: to, Epoch: expect + 1, Reason: reason}
 	d.RoomID, d.Type, d.Payload = roomID, envelope.Driver, envelope.Must(payload)
 	if err := d.Validate(); err != nil {
-		return envelope.Event{}, err
+		return envelope.Event{}, false, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return envelope.Event{}, err
+		return envelope.Event{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var from, fallback string
@@ -75,44 +75,44 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	err = tx.QueryRow(ctx, `SELECT driver, driver_epoch, fallback_driver, sealed, `+lapsedSQL+` FROM rooms WHERE room_id = $1 FOR UPDATE`,
 		roomID).Scan(&from, &epoch, &fallback, &sealed, &lapsed)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return envelope.Event{}, ErrNoRoom
+		return envelope.Event{}, false, ErrNoRoom
 	}
 	if err != nil {
-		return envelope.Event{}, err
+		return envelope.Event{}, false, err
 	}
 	// Before the epoch check: the retry of a change that won sees the epoch it moved.
 	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
 		if err == nil && existing.Type != envelope.Driver {
-			return envelope.Event{}, ErrKeyConflict
+			return envelope.Event{}, false, ErrKeyConflict
 		}
-		return existing, err
+		return existing, err == nil, err
 	}
 	if sealed {
-		return envelope.Event{}, ErrSealed
+		return envelope.Event{}, false, ErrSealed
 	}
 	if epoch != expect {
-		return envelope.Event{}, ErrStaleEpoch
+		return envelope.Event{}, false, ErrStaleEpoch
 	}
 	if to == from {
-		return envelope.Event{}, ErrInvalidDriver
+		return envelope.Event{}, false, ErrInvalidDriver
 	}
 	if expire && (!lapsed || !strings.HasPrefix(from, "human:") || to != fallback) {
-		return envelope.Event{}, ErrNotLapsed
+		return envelope.Event{}, false, ErrNotLapsed
 	}
 	if strings.HasPrefix(from, "system:") {
 		fallback = from
 	}
 	if _, err := tx.Exec(ctx, `UPDATE rooms SET driver = $2, driver_epoch = driver_epoch + 1, fallback_driver = $3,
 		driver_seen_at = now(), driver_acted_at = now() WHERE room_id = $1`, roomID, to, fallback); err != nil {
-		return envelope.Event{}, err
+		return envelope.Event{}, false, err
 	}
 	payload.From = from
 	d.Payload = envelope.Must(payload)
 	ev, _, err := s.appendTx(ctx, tx, d, fence{})
 	if err != nil {
-		return envelope.Event{}, err
+		return envelope.Event{}, false, err
 	}
-	return ev, tx.Commit(ctx)
+	return ev, false, tx.Commit(ctx)
 }
 
 // DriverSeen is the holder's heartbeat (every ping) and, with acted, its last action.

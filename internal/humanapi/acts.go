@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/time/rate"
@@ -34,11 +36,13 @@ type ActLog interface {
 	Enqueue(ctx context.Context, d envelope.Draft, author, text string) (envelope.Event, error)
 	PromoteQueued(ctx context.Context, roomID string, ref int64, driver string, epoch int64, runID string, d envelope.Draft) (envelope.Event, error)
 	RemoveQueued(ctx context.Context, roomID string, ref int64, d envelope.Draft) (envelope.Event, error)
-	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error)
+	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, bool, error)
 	DriverSeen(ctx context.Context, roomID, principal string, acted bool) error
 	CloseRoom(ctx context.Context, roomID, reason string) error
-	// start_run reads the brief's sources, then records the run with what it consumed.
-	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
+	// start_run checks for a pending run, reads the brief's sources, then records
+	// the run with what it consumed.
+	PendingRuns(ctx context.Context, roomID string, within time.Duration) ([]string, error)
+	BriefSources(ctx context.Context, roomID string) ([]envelope.Event, error)
 	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
 	Stored(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	RecordRunRequest(ctx context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error)
@@ -178,7 +182,7 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	var ev envelope.Event
 	var why string
 	if act.Kind == "start_run" {
-		ev, ack.Result, why = a.startRun(ctx, p, room, st, act, d)
+		ev, ack.Result, why = a.startRun(ctx, p, room, act, d)
 	} else {
 		ev, why = a.dispatch(ctx, p, room, st, act, d)
 	}
@@ -268,14 +272,14 @@ func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.
 		return done3(a.Log.AppendAsDriver(ctx, p.ID, st.DriverEpoch, state("interrupt", map[string]any{"runId": run.ID})))
 	case "driver_request":
 		if strings.HasPrefix(st.Driver, "system:") { // a system holder yields at once (§2)
-			return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "requested", d))
+			return done3(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "requested", d))
 		}
 		return done3(a.Log.Append(ctx, state("driver_request", map[string]any{"by": p.ID, "holder": st.Driver})))
 	case "driver_give":
 		if !a.receives(room, st, act.To) {
 			return envelope.Event{}, rejectBadAction
 		}
-		return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, act.To, "given", d))
+		return done3(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, act.To, "given", d))
 	case "driver_take":
 		why := strings.TrimSpace(act.Reason)
 		if why == "" || len(why) > maxReason || !utf8.ValidString(why) {
@@ -286,7 +290,7 @@ func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.
 			return envelope.Event{}, rejectLogUnavailable
 		}
 		d.Redactions = rules
-		return done(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "taken: "+why, d))
+		return done3(a.Log.ChangeDriver(ctx, room.Name, st.DriverEpoch, p.ID, "taken: "+why, d))
 	case "invite":
 		return a.invite(ctx, room, st, act, d)
 	case "close":
@@ -388,8 +392,33 @@ var (
 
 const (
 	maxEgressProfiles = 8
-	briefWindow       = 2000 // the newest events a brief reads
+	// pendingRunTTL is how long a requested run that has not joined holds the
+	// room: long enough for the owner to apply a rendered claim by hand.
+	pendingRunTTL = 10 * time.Minute
 )
+
+// busy reports whether the room has a run: a Running one, or one requested
+// within pendingRunTTL that has not joined and that the watch does not know
+// (review 4.4 I2). A run the watch knows is judged by its phase instead.
+func (a *Actor) busy(ctx context.Context, room string) (bool, error) {
+	if _, running := a.running(room); running {
+		return true, nil // one Running run per room (D7)
+	}
+	pending, err := a.Log.PendingRuns(ctx, room, pendingRunTTL)
+	if err != nil {
+		return false, err
+	}
+	known := map[string]bool{}
+	for _, r := range a.Runs.InRoom(room) {
+		known[r.ID] = true
+	}
+	for _, id := range pending {
+		if !known[id] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // isRunRequest reports whether ev is a start_run's record.
 func isRunRequest(ev envelope.Event) bool {
@@ -418,7 +447,7 @@ func validRun(room *v1alpha1.Room, act Action) bool {
 // it, with the queued messages its brief quoted, as state_changed{run_requested}.
 // The ack's result is the rendered claim before SP3. A replayed clientSeq acks
 // the record without asking again, and without the result.
-func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
+func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
 	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
 	if !validRun(room, act) {
 		return fail(rejectBadAction)
@@ -435,10 +464,13 @@ func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.
 	case dup:
 		return prev, nil, ""
 	}
-	if _, busy := a.running(room.Name); busy {
-		return fail(rejectRoomBusy) // one Running run per room (D7)
+	switch busy, err := a.busy(ctx, room.Name); {
+	case err != nil:
+		return fail(rejectLogUnavailable)
+	case busy:
+		return fail(rejectRoomBusy)
 	}
-	evs, err := a.Log.Range(ctx, room.Name, max(st.LastSeq-briefWindow, 0), briefWindow)
+	evs, err := a.Log.BriefSources(ctx, room.Name) // the latest agent handoff and verdict only (review 4.4 M3, I3)
 	if err != nil {
 		return fail(rejectLogUnavailable)
 	}
@@ -448,7 +480,10 @@ func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.
 	}
 	req := runrequest.Request{Role: act.Role, Repository: room.Spec.Repository, BaseRef: brief.LastCommit(evs),
 		Branch: "agent/" + room.Name, DataClass: room.Spec.DataClass, RoomRef: room.Name, Principal: p.ID,
-		AccessToken: p.AccessToken, EgressProfiles: act.EgressProfiles}
+		AccessToken: p.AccessToken, EgressProfiles: act.EgressProfiles,
+		// The act's own key (review 4.4 I1): a retry after a failed record asks
+		// for the same run, which the factory answers with the same runId.
+		IdempotencyKey: d.RoomID + ":" + d.OriginClient + ":" + strconv.FormatInt(d.OriginSeq, 10)}
 	if req.BaseRef == "" {
 		req.BaseRef = "main"
 	}
@@ -476,8 +511,11 @@ func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.
 	case err != nil || !envelope.ValidID(res.RunID):
 		return fail(rejectNoFactory)
 	}
-	ev, err := a.Log.RecordRunRequest(ctx, d, res.RunID, refs,
-		map[string]any{"role": act.Role, "via": res.Via, "baseRef": req.BaseRef})
+	fields := map[string]any{"role": act.Role, "via": res.Via, "baseRef": req.BaseRef}
+	if req.TaskURL != "" {
+		fields["taskUrl"] = req.TaskURL // which PR the reviewer got (review 4.4 I3), checked by IsPR
+	}
+	ev, err := a.Log.RecordRunRequest(ctx, d, res.RunID, refs, fields)
 	if err != nil {
 		return fail(reason(err))
 	}

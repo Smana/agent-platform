@@ -16,11 +16,13 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -51,6 +53,52 @@ func (l *fakeActLog) Append(_ context.Context, d envelope.Draft) (envelope.Event
 
 func (*fakeActLog) DriverSeen(context.Context, string, string, bool) error { return nil }
 
+// The rest of humanLog: the room list's reads and the lease sweep's.
+func (*fakeActLog) Range(context.Context, string, int64, int) ([]envelope.Event, error) {
+	return nil, nil
+}
+
+func (*fakeActLog) LapsedDrivers(context.Context) ([]store.RoomState, error) { return nil, nil }
+
+func (*fakeActLog) ExpireDriver(context.Context, string, int64, string, envelope.Draft) (envelope.Event, bool, error) {
+	return envelope.Event{}, false, nil
+}
+
+// serveBroker's whole human side in one call (review 4.4 M2): the server gets
+// the actor with the broker's redactor, the leader gets the lease sweep, and a
+// missing part or a refused Runnable stops start-up.
+func TestHumanSide(t *testing.T) {
+	red, err := redact.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, m := newMetrics(t)
+	log := slog.New(slog.DiscardHandler)
+	cfg := config.Config{Human: config.HumanConfig{Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
+	humans := authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), "https://rooms.example.test")
+	rooms := fake.NewClientBuilder().Build()
+	hub := fanout.New(fakeRoomLog{}, nil, log)
+	var added []manager.Runnable
+	add := func(r manager.Runnable) error { added = append(added, r); return nil }
+	s, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, add, m, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Actor == nil || s.Actor.Redactor != red || s.Actor.Requester != (runrequest.Manifest{}) || s.Namespace != "agent-system" {
+		t.Fatalf("server %+v, actor %+v", s, s.Actor)
+	}
+	if l, ok := added[0].(*leaderLoop); len(added) != 1 || !ok || l.every != leaseEvery {
+		t.Fatalf("the lease sweep is not on the leader: %v", added)
+	}
+	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, nil, hub, fakeRuns{}, add, m, log); err == nil {
+		t.Fatal("no redactor must stop start-up")
+	}
+	refuse := func(manager.Runnable) error { return errors.New("manager started") }
+	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, refuse, m, log); err == nil {
+		t.Fatal("a lease sweep the manager refused must stop start-up")
+	}
+}
+
 func newMetrics(t *testing.T) (*metrics.Exporter, *metrics.Set) {
 	t.Helper()
 	exp, err := metrics.NewExporter("test")
@@ -76,7 +124,10 @@ func TestHumanActorIsWired(t *testing.T) {
 	roomLog := &fakeActLog{}
 	h := config.HumanConfig{Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}
 	rooms := fake.NewClientBuilder().Build()
-	actor := humanActor(h, roomLog, red, fakeRuns{}, rooms, runrequest.Manifest{}, m)
+	actor, err := humanActor(h, roomLog, red, fakeRuns{}, rooms, runrequest.Manifest{}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if actor.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || actor.Rooms != rooms ||
 		actor.Requester != (runrequest.Manifest{}) {
 		t.Fatalf("%+v", actor)
@@ -107,6 +158,40 @@ func TestHumanActorIsWired(t *testing.T) {
 	}
 }
 
+// Review 4.4 M2: a part the broker failed to pass stops start-up, rather than
+// answering every act log_unavailable or not_permitted.
+func TestHumanActorRefusesMissingParts(t *testing.T) {
+	red, err := redact.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, m := newMetrics(t)
+	h := config.HumanConfig{}
+	rooms := fake.NewClientBuilder().Build()
+	for name, build := range map[string]func() (*humanapi.Actor, error){
+		"log": func() (*humanapi.Actor, error) {
+			return humanActor(h, nil, red, fakeRuns{}, rooms, runrequest.Manifest{}, m)
+		},
+		"redactor": func() (*humanapi.Actor, error) {
+			return humanActor(h, &fakeActLog{}, nil, fakeRuns{}, rooms, runrequest.Manifest{}, m)
+		},
+		"runs": func() (*humanapi.Actor, error) {
+			return humanActor(h, &fakeActLog{}, red, nil, rooms, runrequest.Manifest{}, m)
+		},
+		"rooms": func() (*humanapi.Actor, error) {
+			return humanActor(h, &fakeActLog{}, red, fakeRuns{}, nil, runrequest.Manifest{}, m)
+		},
+		"requester": func() (*humanapi.Actor, error) { return humanActor(h, &fakeActLog{}, red, fakeRuns{}, rooms, nil, m) },
+		"metrics": func() (*humanapi.Actor, error) {
+			return humanActor(h, &fakeActLog{}, red, fakeRuns{}, rooms, runrequest.Manifest{}, nil)
+		},
+	} {
+		if a, err := build(); a != nil || err == nil || !strings.Contains(err.Error(), name+" is required") {
+			t.Errorf("no %s: %v, %v", name, a, err)
+		}
+	}
+}
+
 func TestRunRequester(t *testing.T) {
 	if _, ok := runRequester("").(runrequest.Manifest); !ok {
 		t.Fatal("before SP3 the claim is rendered")
@@ -117,26 +202,34 @@ func TestRunRequester(t *testing.T) {
 	}
 }
 
-// fakeDrivers answers every driver move with err.
-type fakeDrivers struct{ err error }
-
-func (f fakeDrivers) ChangeDriver(context.Context, string, int64, string, string, envelope.Draft) (envelope.Event, error) {
-	return envelope.Event{}, f.err
+// fakeDrivers answers every driver move with dup and err.
+type fakeDrivers struct {
+	dup bool
+	err error
 }
 
-func (f fakeDrivers) ExpireDriver(context.Context, string, int64, string, envelope.Draft) (envelope.Event, error) {
-	return envelope.Event{}, f.err
+func (f fakeDrivers) ChangeDriver(context.Context, string, int64, string, string, envelope.Draft) (envelope.Event, bool, error) {
+	return envelope.Event{}, f.dup, f.err
 }
 
-// Every token move counts, a human's or the sweeper's; a refused one does not.
+func (f fakeDrivers) ExpireDriver(context.Context, string, int64, string, envelope.Draft) (envelope.Event, bool, error) {
+	return envelope.Event{}, f.dup, f.err
+}
+
+// Every token move counts, a human's or the sweeper's; a refused one does not,
+// nor a replay (review 4.4 M5: two overlapping leaders build the same lease key).
 func TestMeteredDriverChanges(t *testing.T) {
 	exp, m := newMetrics(t)
 	l := &meteredLog{drivers: fakeDrivers{}, m: m, now: time.Now}
-	_, _ = l.ChangeDriver(t.Context(), "3kq7x2ma", 0, "human:a", "given", envelope.Draft{})
-	_, _ = l.ExpireDriver(t.Context(), "3kq7x2ma", 1, "system:factory", envelope.Draft{})
+	both := func() {
+		_, _, _ = l.ChangeDriver(t.Context(), "3kq7x2ma", 0, "human:a", "given", envelope.Draft{})
+		_, _, _ = l.ExpireDriver(t.Context(), "3kq7x2ma", 1, "system:factory", envelope.Draft{})
+	}
+	both()
 	l.drivers = fakeDrivers{err: store.ErrStaleEpoch}
-	_, _ = l.ChangeDriver(t.Context(), "3kq7x2ma", 0, "human:a", "given", envelope.Draft{})
-	_, _ = l.ExpireDriver(t.Context(), "3kq7x2ma", 1, "system:factory", envelope.Draft{})
+	both()
+	l.drivers = fakeDrivers{dup: true}
+	both()
 	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_driver_changes_total 2\n") {
 		t.Fatalf("want 2 changes:\n%s", body)
 	}
@@ -155,11 +248,11 @@ func (f *fakeLeaseLog) LapsedDrivers(context.Context) ([]store.RoomState, error)
 	return f.lapsed, f.listErr
 }
 
-func (f *fakeLeaseLog) ExpireDriver(_ context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error) {
+func (f *fakeLeaseLog) ExpireDriver(_ context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.expired = append(f.expired, fmt.Sprintf("%s %d %s: %s %s %s:%d", roomID, expect, to, d.Actor.ID, d.Origin, d.OriginClient, d.OriginSeq))
-	return envelope.Event{}, f.errs[roomID]
+	return envelope.Event{}, false, f.errs[roomID]
 }
 
 func (f *fakeLeaseLog) got() []string {

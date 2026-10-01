@@ -134,32 +134,33 @@ func leaseDraft(epoch int64) envelope.Draft {
 func TestExpireDriver(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, super := open(t)
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1)); !errors.Is(err, ErrNotLapsed) {
+	if _, _, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1)); !errors.Is(err, ErrNotLapsed) {
 		t.Fatalf("a present holder lapsed: %v", err)
 	}
 	exec(t, super, `UPDATE rooms SET driver_seen_at = now() - interval '3 minutes'`)
-	if _, err := s.ExpireDriver(ctx, room, 1, "system:other", leaseDraft(1)); !errors.Is(err, ErrNotLapsed) {
+	if _, _, err := s.ExpireDriver(ctx, room, 1, "system:other", leaseDraft(1)); !errors.Is(err, ErrNotLapsed) {
 		t.Fatalf("a lapse goes to the fallback only: %v", err)
 	}
-	ev, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1))
-	if err != nil || string(ev.Payload) != `{"from":"human:alice","to":"system:factory","epoch":2,"reason":"lease_expired"}` {
-		t.Fatalf("%s, %v", ev.Payload, err)
+	ev, dup, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1))
+	if err != nil || dup || string(ev.Payload) != `{"from":"human:alice","to":"system:factory","epoch":2,"reason":"lease_expired"}` {
+		t.Fatalf("%s, %v, %v", ev.Payload, dup, err)
 	}
-	if again, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1)); err != nil || again.Seq != ev.Seq {
-		t.Fatalf("a replay returns the change: %+v, %v", again, err)
+	// Two overlapping leaders build the same key: the second is a replay (review 4.4 M5).
+	if again, dup, err := s.ExpireDriver(ctx, room, 1, "system:factory", leaseDraft(1)); err != nil || !dup || again.Seq != ev.Seq {
+		t.Fatalf("a replay returns the change: %+v, %v, %v", again, dup, err)
 	}
 	if st, _ := s.Room(ctx, room); st.Driver != "system:factory" || st.DriverEpoch != 2 {
 		t.Fatalf("%+v", st)
 	}
 	// A system holder's lease never expires, however stale its heartbeat.
-	if _, err := s.ChangeDriver(ctx, room, 2, "system:reviewer", "given", humanDraft("human:alice", 2)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 2, "system:reviewer", "given", humanDraft("human:alice", 2)); err != nil {
 		t.Fatal(err)
 	}
 	exec(t, super, `UPDATE rooms SET driver_seen_at = now() - interval '1 hour', driver_acted_at = now() - interval '1 hour'`)
-	if _, err := s.ExpireDriver(ctx, room, 3, "system:factory", leaseDraft(3)); !errors.Is(err, ErrNotLapsed) {
+	if _, _, err := s.ExpireDriver(ctx, room, 3, "system:factory", leaseDraft(3)); !errors.Is(err, ErrNotLapsed) {
 		t.Fatalf("a system holder lapsed: %v", err)
 	}
 }

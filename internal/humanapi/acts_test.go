@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,9 +46,11 @@ type actLog struct {
 	closed  string
 	// onRoom moves the room after Room has taken its snapshot, as another
 	// replica would between an act's read and its write.
-	onRoom    func(*store.RoomState)
-	appendErr error
-	queueErr  error
+	onRoom     func(*store.RoomState)
+	appendErr  error
+	queueErr   error
+	pendingErr error
+	recordErrs int // how many RecordRunRequest calls fail first
 }
 
 func (l *actLog) Room(context.Context, string) (store.RoomState, error) {
@@ -131,20 +135,20 @@ func (l *actLog) RemoveQueued(_ context.Context, _ string, ref int64, d envelope
 	return l.appendLocked(d), nil
 }
 
-func (l *actLog) ChangeDriver(_ context.Context, _ string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
+func (l *actLog) ChangeDriver(_ context.Context, _ string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if expect != l.st.DriverEpoch {
-		return envelope.Event{}, store.ErrStaleEpoch
+		return envelope.Event{}, false, store.ErrStaleEpoch
 	}
 	if to == l.st.Driver {
-		return envelope.Event{}, store.ErrInvalidDriver
+		return envelope.Event{}, false, store.ErrInvalidDriver
 	}
 	l.st.Driver, l.st.DriverEpoch = to, expect+1
 	l.reasons = append(l.reasons, reason)
 	d.Type = envelope.Driver
 	d.Payload = envelope.Must(envelope.DriverPayload{To: to, Epoch: expect + 1, Reason: reason})
-	return l.appendLocked(d), nil
+	return l.appendLocked(d), false, nil
 }
 
 func (l *actLog) DriverSeen(_ context.Context, _, principal string, acted bool) error {
@@ -167,16 +171,61 @@ func (l *actLog) CloseRoom(_ context.Context, _, reason string) error {
 	return nil
 }
 
-func (l *actLog) Range(_ context.Context, _ string, after int64, limit int) ([]envelope.Event, error) {
+// event is draft i as stored, seq i+1.
+func event(i int, d envelope.Draft) envelope.Event {
+	return envelope.Event{Seq: int64(i + 1), RoomID: d.RoomID, Actor: d.Actor, Type: d.Type, Payload: d.Payload}
+}
+
+// BriefSources is the store's: the latest agent handoff and the latest agent
+// review_verdict, in seq order.
+func (l *actLog) BriefSources(context.Context, string) ([]envelope.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var out []envelope.Event
+	var handoff, verdict *envelope.Event
 	for i, d := range l.drafts {
-		if seq := int64(i + 1); seq > after && len(out) < limit {
-			out = append(out, envelope.Event{Seq: seq, RoomID: d.RoomID, Actor: d.Actor, Type: d.Type, Payload: d.Payload})
+		if d.Actor.Kind != envelope.ActorAgent {
+			continue
+		}
+		ev := event(i, d)
+		var m envelope.MessagePayload
+		switch {
+		case d.Type == envelope.Handoff:
+			handoff = &ev
+		case d.Type == envelope.Message && json.Unmarshal(d.Payload, &m) == nil && m.Kind == envelope.KindReviewVerdict:
+			verdict = &ev
 		}
 	}
+	var out []envelope.Event
+	for _, ev := range []*envelope.Event{handoff, verdict} {
+		if ev != nil {
+			out = append(out, *ev)
+		}
+	}
+	slices.SortFunc(out, func(a, b envelope.Event) int { return int(a.Seq - b.Seq) })
 	return out, nil
+}
+
+// PendingRuns is the store's, without the TTL: run_requested records whose run
+// no later participant event names.
+func (l *actLog) PendingRuns(context.Context, string, time.Duration) ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for i, d := range l.drafts {
+		var r struct{ Kind, RunID string }
+		if d.Type != envelope.StateChanged || json.Unmarshal(d.Payload, &r) != nil || r.Kind != "run_requested" {
+			continue
+		}
+		joined := false
+		for _, later := range l.drafts[i+1:] {
+			var p envelope.ParticipantPayload
+			joined = joined || (later.Type == envelope.Participant && json.Unmarshal(later.Payload, &p) == nil && p.Principal == "agent:"+r.RunID)
+		}
+		if !joined {
+			out = append(out, r.RunID)
+		}
+	}
+	return out, l.pendingErr
 }
 
 func (l *actLog) Queue(context.Context, string) ([]store.Queued, error) {
@@ -205,6 +254,10 @@ func (l *actLog) Stored(_ context.Context, d envelope.Draft) (envelope.Event, bo
 func (l *actLog) RecordRunRequest(_ context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.recordErrs > 0 {
+		l.recordErrs--
+		return envelope.Event{}, errors.New("conn reset")
+	}
 	consumed := []int64{}
 	for _, ref := range refs {
 		if q := l.item(ref); q != nil {

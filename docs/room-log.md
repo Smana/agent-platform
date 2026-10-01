@@ -221,6 +221,7 @@ and applies only if `UPDATE rooms … WHERE driver_epoch = $epoch` matches.
 | `20260927120000_rooms.sql` | `rooms`, `events`, the grants and row-level security; Ruling Y's trigger, check and column grant | 1 / AP-1 |
 | `20261001120000_driver_queue.sql` | `rooms.driver_acted_at`, the broker's `UPDATE` grant on the driver columns, the epoch triggers, the `queue` table | 4 / AP-4 |
 | `20261001130000_delivery_indexes.sql` | The partial indexes `events_deliveries` and `events_acks` a bridge stream reads; `CONCURRENTLY`, outside a transaction (`atlas:txmode none`) | 4 / AP-4 |
+| `20261001140000_brief_index.sql` | The partial index `events_brief`: agent handoffs and review verdicts, run requests and participants, which `start_run` reads; `CONCURRENTLY`, outside a transaction | 4 / AP-4 |
 | `20261005120000_approvals.sql` | The `approvals` table | 5 / AP-5 |
 
 **`atlas.sum` must match the directory.** It is a checksum of every migration file and of their

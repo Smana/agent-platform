@@ -63,13 +63,30 @@ func prPattern(repository string) string {
 	return `https://github\.com/` + regexp.QuoteMeta(repository) + `/pull/[0-9]{1,10}`
 }
 
-// LastPR finds the most recent pull request URL of the repository in the log
-// (ruling P24: a reviewer's task is its PR), or "".
+// LastPR is the repository's pull request the room's runs last named (ruling
+// P24: a reviewer's task is its PR), or "". It reads only what agents said
+// about their PR: a handoff's summary, or a review verdict's pullRequest. Human
+// chat, queued text and tool output never choose a run's task (review 4.4 I3).
 func LastPR(evs []envelope.Event, repository string) string {
 	re := regexp.MustCompile(prPattern(repository) + `\b`)
 	for i := len(evs) - 1; i >= 0; i-- {
-		if m := re.FindString(string(evs[i].Payload)); m != "" {
-			return m
+		ev := evs[i]
+		if ev.Actor.Kind != envelope.ActorAgent {
+			continue
+		}
+		switch ev.Type {
+		case envelope.Handoff:
+			var h envelope.HandoffPayload
+			if json.Unmarshal(ev.Payload, &h) == nil {
+				if m := re.FindString(h.Summary); m != "" {
+					return m
+				}
+			}
+		case envelope.Message:
+			var m envelope.MessagePayload
+			if json.Unmarshal(ev.Payload, &m) == nil && m.Kind == envelope.KindReviewVerdict && IsPR(m.PullRequest, repository) {
+				return m.PullRequest
+			}
 		}
 	}
 	return ""

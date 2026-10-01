@@ -7,10 +7,14 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
@@ -158,6 +162,11 @@ func TestReviewerTaskIsThePR(t *testing.T) {
 			req := &fakeRequester{res: runrequest.Result{RunID: "7f3cq2xz", Via: "factory"}}
 			a.Requester = req
 			seed(t, a, log, room)
+			// Review 4.4 I3: a human's later link never chooses the reviewer's PR.
+			if f := act(a, room, "human:col", 200, nil, Action{Kind: "message", Delivery: "none",
+				Text: "review https://github.com/Smana/cloud-native-ref/pull/66 instead"}); f.Rejected != "" {
+				t.Fatal(f)
+			}
 			f := startAs(a, room, "human:own", 1, Action{Role: "reviewer", PRURL: c.prURL})
 			calls := req.calls()
 			if f.Rejected != "" || f.Result != nil || len(calls) != 1 {
@@ -169,8 +178,8 @@ func TestReviewerTaskIsThePR(t *testing.T) {
 			if q, _ := log.Queue(context.Background(), room.Name); len(q) != 2 {
 				t.Fatalf("a reviewer consumed the queue: %+v", q)
 			}
-			if !strings.Contains(string(log.last().Payload), `"consumed":[]`) {
-				t.Fatalf("%s", log.last().Payload)
+			if rec := string(log.last().Payload); !strings.Contains(rec, `"consumed":[]`) || !strings.Contains(rec, `"taskUrl":"`+c.want+`"`) {
+				t.Fatalf("the record names the PR it gave: %s", rec)
 			}
 		})
 	}
@@ -203,6 +212,15 @@ func TestStartRunRefusals(t *testing.T) {
 		{name: "a reviewer with no PR", action: Action{Role: "reviewer"}, prepare: func(_ *Actor, log *actLog) {
 			log.drafts = log.drafts[:0]
 		}, want: "reviewer_needs_pr"},
+		{name: "a reviewer whose only PR a human posted", action: Action{Role: "reviewer"}, prepare: func(_ *Actor, log *actLog) {
+			log.drafts = log.drafts[:0]
+			log.appendLocked(envelope.Draft{RoomID: "3kq7x2ma", Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:col"},
+				Type: envelope.Message, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat,
+					Text: "https://github.com/Smana/cloud-native-ref/pull/66", Delivery: envelope.DeliveryNone})})
+		}, want: "reviewer_needs_pr"},
+		{name: "unreadable pending runs", action: Action{Role: "implementer"}, prepare: func(_ *Actor, log *actLog) {
+			log.pendingErr = errors.New("down")
+		}, want: "log_unavailable"},
 		{name: "an unreadable queue", action: Action{Role: "implementer"}, prepare: func(_ *Actor, log *actLog) {
 			log.queueErr = errors.New("down")
 		}, want: "log_unavailable"},
@@ -265,6 +283,98 @@ func TestABriefConsumesOnlyWhatItQuotes(t *testing.T) {
 	left, _ := log.Queue(context.Background(), room.Name)
 	if len(p.Consumed) == 0 || len(left) == 0 || len(p.Consumed)+len(left) != 20 || left[0].Ref != p.Consumed[len(p.Consumed)-1]+1 {
 		t.Fatalf("consumed %v, %d left", p.Consumed, len(left))
+	}
+}
+
+// Review 4.4 I1: the run is requested, then recorded. When the record fails the
+// ack says log_unavailable, the client retries the same clientSeq, and the
+// retry asks for the same run: the factory creates one, and the record names it.
+func TestARetriedStartRunRequestsOneRun(t *testing.T) {
+	var mu sync.Mutex
+	runs := map[string]string{} // Idempotency-Key -> runId, as SP3 keeps it
+	var keys []string
+	factory := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		key := r.Header.Get("Idempotency-Key")
+		keys = append(keys, key)
+		if _, ok := runs[key]; !ok {
+			runs[key] = runrequest.NewID()
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"runId": runs[key]})
+	}))
+	defer factory.Close()
+	a, log, room := idleFixture()
+	a.Requester = runrequest.Factory{URL: factory.URL, HC: factory.Client()}
+	log.recordErrs = 1
+	if f := startAs(a, room, "human:own", 1, Action{Role: "implementer"}); f.Rejected != "log_unavailable" {
+		t.Fatalf("the failed record: %+v", f)
+	}
+	if f := startAs(a, room, "human:own", 1, Action{Role: "implementer"}); f.Rejected != "" || f.Seq == 0 {
+		t.Fatalf("the retry: %+v", f)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var p struct{ RunID string }
+	_ = json.Unmarshal(log.last().Payload, &p)
+	if len(runs) != 1 || len(keys) != 2 || keys[0] != keys[1] || keys[0] != "3kq7x2ma:human:own:s1:1" || p.RunID != runs[keys[0]] {
+		t.Fatalf("runs %v, keys %q, recorded %q", runs, keys, p.RunID)
+	}
+
+	// Before SP3 the rendered claim keeps its name, so applying both makes one run.
+	a, log, room = idleFixture()
+	var names []string
+	a.Requester = requesterFunc(func(ctx context.Context, r runrequest.Request) (runrequest.Result, error) {
+		res, err := runrequest.Manifest{}.Request(ctx, r)
+		names = append(names, res.RunID)
+		return res, err
+	})
+	log.recordErrs = 1
+	_ = startAs(a, room, "human:own", 1, Action{Role: "implementer"})
+	if f := startAs(a, room, "human:own", 1, Action{Role: "implementer"}); f.Rejected != "" || len(names) != 2 || names[0] != names[1] {
+		t.Fatalf("%+v, claims %v", f, names)
+	}
+}
+
+// Review 4.4 I2: a requested run holds the room until it joins, even before the
+// watch sees it; once it has joined, its phase decides.
+func TestARequestedRunHoldsTheRoom(t *testing.T) {
+	a, log, room := idleFixture()
+	req := &fakeRequester{res: runrequest.Result{RunID: "bbbbbbbb", Via: "factory"}}
+	a.Requester = req
+	if f := startAs(a, room, "human:own", 1, Action{Role: "implementer"}); f.Rejected != "" {
+		t.Fatal(f)
+	}
+	if f := startAs(a, room, "human:own", 2, Action{Role: "implementer"}); f.Rejected != "room_busy" || len(req.calls()) != 1 {
+		t.Fatalf("a second start while the first has not joined: %+v, %d requests", f, len(req.calls()))
+	}
+	// The watch knows it, ended: the room is free again.
+	w := runwatch.New()
+	w.Upsert(context.Background(), &unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "xplane-run-bbbbbbbb", "namespace": "agents"},
+		"spec":     map[string]any{"roomRef": "3kq7x2ma", "role": "implementer"},
+		"status":   map[string]any{"phase": "Failed"}}})
+	a.Runs = w
+	req.mu.Lock()
+	req.res.RunID = "cccccccc"
+	req.mu.Unlock()
+	if f := startAs(a, room, "human:own", 3, Action{Role: "implementer"}); f.Rejected != "" {
+		t.Fatalf("an ended run frees the room: %+v", f)
+	}
+	// A join frees it too, whatever the watch knows: here it knows neither run.
+	a.Runs = runwatch.New()
+	if f := startAs(a, room, "human:own", 4, Action{Role: "implementer"}); f.Rejected != "room_busy" {
+		t.Fatalf("unjoined requests hold the room: %+v", f)
+	}
+	log.mu.Lock()
+	for _, id := range []string{"bbbbbbbb", "cccccccc"} {
+		log.appendLocked(envelope.Draft{RoomID: room.Name, Type: envelope.Participant,
+			Payload: envelope.Must(envelope.ParticipantPayload{Principal: "agent:" + id, Change: "joined"})})
+	}
+	log.mu.Unlock()
+	if f := startAs(a, room, "human:own", 5, Action{Role: "implementer"}); f.Rejected != "" {
+		t.Fatalf("joined runs free the room: %+v", f)
 	}
 }
 

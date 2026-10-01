@@ -1,5 +1,6 @@
-h1:0oO+BizLm0IArviuaSNb1UeBcp3NVPZbgf81yTKKGaM=
+h1:w5kKOcBcWbCWIZy0dKodZBTolvtGimHjAlWINrSzH+k=
 20260927120000_rooms.sql h1:2iHh9ofAjF9QEjy2L4Nk4qPz6GPfyTyceOP/Lg2nitE=
 20260929120000_verdicts.sql h1:aat8qDZyfEMLP7P/FyvK90fwdXTcVbUIJte49wiEWNg=
 20261001120000_driver_queue.sql h1:nT+Seb7xn/lYr9A+WtDkWtuGeuR/5Qw7YvrF5ueKQ+k=
 20261001130000_delivery_indexes.sql h1:MtIHMwMJb0LCP8wNKBI0J7fGEt5TMuWus9AtgVtpvv8=
+20261001140000_brief_index.sql h1:urCOO2Ske+cvKP/YUYxwUFJDB/gsez1QSkzigqO1NQs=

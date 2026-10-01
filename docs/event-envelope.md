@@ -133,7 +133,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements AP-4 (Task 4.3) |
 | `undeliverable` | `ref`, `runId`, `code`: the harness refused the delivery for good, with that HTTP status; the stream goes on past it | Bridge | AP-4 (Task 4.3) |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
-| `run_requested` | `role`, `runId`, `via: manifest \| factory`, `baseRef`, `consumed`: the refs of the queued messages its brief quoted, moved to `consumed` in the same transaction | Broker, on a human's `start_run` | AP-4 (Task 4.4) |
+| `run_requested` | `role`, `runId`, `via: manifest \| factory`, `baseRef`, `taskUrl` (a reviewer's PR), `consumed`: the refs of the queued messages its brief quoted, moved to `consumed` in the same transaction | Broker, on a human's `start_run` | AP-4 (Task 4.4) |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
 | `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
 | `commit` | — | — | Listed in Appendix A; no plan task writes it yet |

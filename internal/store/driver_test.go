@@ -19,11 +19,11 @@ func humanDraft(who string, n int64) envelope.Draft {
 // SC-3 offline: fencing. Two replicas racing the same give: one wins, one is stale.
 func TestDriverChangeIsFenced(t *testing.T) {
 	s, _, _, _ := open(t)
-	ev, err := s.ChangeDriver(context.Background(), room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
+	ev, _, err := s.ChangeDriver(context.Background(), room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
 	if err != nil || ev.Type != envelope.Driver {
 		t.Fatal(ev, err)
 	}
-	if _, err := s.ChangeDriver(context.Background(), room, 0, "human:bob", "requested", humanDraft("human:bob", 1)); !errors.Is(err, ErrStaleEpoch) {
+	if _, _, err := s.ChangeDriver(context.Background(), room, 0, "human:bob", "requested", humanDraft("human:bob", 1)); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("a stale epoch must lose: %v", err)
 	}
 	st, _ := s.Room(context.Background(), room)
@@ -39,13 +39,14 @@ func TestDriverChangeIsFenced(t *testing.T) {
 func TestDriverChangeReplayIsIdempotent(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
-	first, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
-	if err != nil {
-		t.Fatal(err)
+	first, dup, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
+	if err != nil || dup {
+		t.Fatal(dup, err)
 	}
-	again, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
-	if err != nil || again.Seq != first.Seq || again.ID != first.ID {
-		t.Fatalf("replay = %+v, %v; want the stored event %+v", again, err, first)
+	// Review 4.4 M5: the replay says so, and only a move that moved is counted.
+	again, dup, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
+	if err != nil || !dup || again.Seq != first.Seq || again.ID != first.ID {
+		t.Fatalf("replay = %+v, %v, %v; want the stored event %+v", again, dup, err, first)
 	}
 	if st, _ := s.Room(ctx, room); st.DriverEpoch != 1 || st.LastSeq != 1 {
 		t.Fatalf("a replay moved the token or appended: %+v", st)
@@ -55,18 +56,18 @@ func TestDriverChangeReplayIsIdempotent(t *testing.T) {
 func TestDriverChangeRefusals(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
-	if _, err := s.ChangeDriver(ctx, "nosuchrm", 0, "human:alice", "requested", humanDraft("human:alice", 1)); !errors.Is(err, ErrNoRoom) {
+	if _, _, err := s.ChangeDriver(ctx, "nosuchrm", 0, "human:alice", "requested", humanDraft("human:alice", 1)); !errors.Is(err, ErrNoRoom) {
 		t.Fatalf("no room: %v", err)
 	}
 	if err := s.CloseRoom(ctx, room, "done"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); !errors.Is(err, ErrSealed) {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); !errors.Is(err, ErrSealed) {
 		t.Fatalf("a sealed room's token stays: %v", err)
 	}
 	bad := humanDraft("human:alice", 2)
 	bad.OriginClient = ""
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", bad); err == nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", bad); err == nil {
 		t.Fatal("an invalid draft must be refused")
 	}
 }
@@ -77,14 +78,14 @@ func TestDriverChangeRefusesBadTargetsAndForeignKeys(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
 	for _, to := range []string{"", "alice", "human:", "robot:x", "system:factory"} {
-		if _, err := s.ChangeDriver(ctx, room, 0, to, "given", humanDraft("human:alice", 1)); !errors.Is(err, ErrInvalidDriver) {
+		if _, _, err := s.ChangeDriver(ctx, room, 0, to, "given", humanDraft("human:alice", 1)); !errors.Is(err, ErrInvalidDriver) {
 			t.Fatalf("to %q: %v", to, err)
 		}
 	}
 	if _, _, err := s.Append(ctx, draftIn(room, "human:zed:s1", 1)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:zed", "requested", humanDraft("human:zed", 1)); !errors.Is(err, ErrKeyConflict) {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:zed", "requested", humanDraft("human:zed", 1)); !errors.Is(err, ErrKeyConflict) {
 		t.Fatalf("a message's key replayed as a driver change: %v", err)
 	}
 	if st, _ := s.Room(ctx, room); st.DriverEpoch != 0 || st.LastSeq != 1 {
@@ -93,7 +94,7 @@ func TestDriverChangeRefusesBadTargetsAndForeignKeys(t *testing.T) {
 	// Callers need not pass a payload: the store writes it.
 	d := humanDraft("human:alice", 1)
 	d.Payload = nil
-	if ev, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", d); err != nil || ev.Type != envelope.Driver {
+	if ev, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", d); err != nil || ev.Type != envelope.Driver {
 		t.Fatalf("%+v, %v", ev, err)
 	}
 }
@@ -129,7 +130,7 @@ func TestQueueKeepsFIFOOrder(t *testing.T) {
 func TestEnqueueRefusesAForeignKey(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Enqueue(ctx, queuedDraft(1, "late"), "human:alice", "late"); !errors.Is(err, ErrKeyConflict) {
@@ -145,7 +146,7 @@ func TestFallbackIsTheLastSystemHolder(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
 	for i, to := range []string{"human:alice", "human:bob", "system:reviewer", "human:carol"} {
-		if _, err := s.ChangeDriver(ctx, room, int64(i), to, "given", humanDraft("human:alice", int64(i+1))); err != nil {
+		if _, _, err := s.ChangeDriver(ctx, room, int64(i), to, "given", humanDraft("human:alice", int64(i+1))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -156,7 +157,7 @@ func TestFallbackIsTheLastSystemHolder(t *testing.T) {
 
 func TestLapsedHumanDriverIsListed(t *testing.T) {
 	s, _, _, super := open(t)
-	_, _ = s.ChangeDriver(context.Background(), room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
+	_, _, _ = s.ChangeDriver(context.Background(), room, 0, "human:alice", "requested", humanDraft("human:alice", 1))
 	if l, _ := s.LapsedDrivers(context.Background()); len(l) != 0 {
 		t.Fatal("a fresh holder is not lapsed")
 	}
@@ -171,7 +172,7 @@ func TestLapsedHumanDriverIsListed(t *testing.T) {
 func TestDriverSeen(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, super := open(t)
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
 		t.Fatal(err)
 	}
 	lapsed := func() bool {

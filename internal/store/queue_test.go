@@ -76,7 +76,7 @@ func TestSetQueuedInASealedRoom(t *testing.T) {
 func TestAppendAsDriverIsFenced(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 1)); err != nil {
 		t.Fatal(err)
 	}
 	steer := func(n int64) envelope.Draft {
@@ -110,7 +110,7 @@ func TestPromoteQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:own", "given", driverDraft(1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:own", "given", driverDraft(1)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PromoteQueued(ctx, room, q.Seq, "human:own", 0, "7f3cq2xz", driverDraft(2)); !errors.Is(err, ErrStaleEpoch) {
@@ -152,7 +152,7 @@ func TestRemoveQueued(t *testing.T) {
 	s, _, _, _ := open(t)
 	a, _ := s.Enqueue(ctx, queuedDraft(1, "one"), "human:alice", "one")
 	b, _ := s.Enqueue(ctx, queuedDraft(2, "two"), "human:alice", "two")
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:own", "given", driverDraft(1)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:own", "given", driverDraft(1)); err != nil {
 		t.Fatal(err)
 	}
 	bob := envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:bob"},
@@ -228,7 +228,7 @@ func TestAppendRefusesAnotherTypesKey(t *testing.T) {
 	if _, _, err := s.Append(ctx, other); !errors.Is(err, ErrKeyConflict) {
 		t.Fatalf("Append: %v", err)
 	}
-	if _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 2)); err != nil {
+	if _, _, err := s.ChangeDriver(ctx, room, 0, "human:alice", "requested", humanDraft("human:alice", 2)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.AppendAsDriver(ctx, "human:alice", 1, other); !errors.Is(err, ErrKeyConflict) {

@@ -23,8 +23,8 @@ type appends interface {
 
 // drivers are the store's two moves of the driver token.
 type drivers interface {
-	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error)
-	ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error)
+	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, bool, error)
+	ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, bool, error)
 }
 
 // meteredLog is the store every writer shares, its appends counted: the bridge
@@ -41,23 +41,23 @@ type meteredLog struct {
 }
 
 // ChangeDriver is the store's, counted.
-func (l *meteredLog) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
+func (l *meteredLog) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, bool, error) {
 	return l.driverChanged(ctx)(l.drivers.ChangeDriver(ctx, roomID, expect, to, reason, d))
 }
 
 // ExpireDriver is the store's, counted.
-func (l *meteredLog) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error) {
+func (l *meteredLog) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, bool, error) {
 	return l.driverChanged(ctx)(l.drivers.ExpireDriver(ctx, roomID, expect, to, d))
 }
 
-// driverChanged counts a move that succeeded. A replayed key, which moves
-// nothing, counts again: the store does not tell it apart.
-func (l *meteredLog) driverChanged(ctx context.Context) func(envelope.Event, error) (envelope.Event, error) {
-	return func(ev envelope.Event, err error) (envelope.Event, error) {
-		if err == nil {
+// driverChanged counts a move that moved the token: not a refusal, and not a
+// replayed key, such as two overlapping leaders' lease expiry (review 4.4 M5).
+func (l *meteredLog) driverChanged(ctx context.Context) func(envelope.Event, bool, error) (envelope.Event, bool, error) {
+	return func(ev envelope.Event, dup bool, err error) (envelope.Event, bool, error) {
+		if err == nil && !dup {
 			l.m.DriverChanges.Add(ctx, 1)
 		}
-		return ev, err
+		return ev, dup, err
 	}
 }
 
