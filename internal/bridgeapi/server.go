@@ -118,6 +118,8 @@ type Server struct {
 	LastAck func(ctx context.Context, room, run string) (int64, error)
 	// Limits bound each principal on the events endpoint and the system API.
 	Limits Limits
+	// Queue serves the system queue routes (SP3 R9); nil answers them 501.
+	Queue QueueStore
 	// Now is the limits' clock; nil means time.Now. Deadlines handed to the
 	// runtime (a context's, a connection's) stay on its own clock: a fake one
 	// there would expire a request before it starts, or never.
@@ -137,6 +139,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/bridge/stream", s.stream)
 	mux.HandleFunc("GET /v1/rooms/{id}/events", s.bounded(0, s.roomEvents))
 	mux.HandleFunc("POST /v1/rooms/{id}/messages", s.bounded(maxMessageBytes, s.roomMessage))
+	mux.HandleFunc("POST /v1/rooms/{id}/queue", s.bounded(maxMessageBytes, s.queueRoute(s.enqueue)))
+	mux.HandleFunc("GET /v1/rooms/{id}/queue", s.bounded(0, s.queueRoute(s.listQueue)))
+	mux.HandleFunc("POST /v1/rooms/{id}/queue/consume", s.bounded(maxConsumeBytes, s.queueRoute(s.consume)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response, the mux's own 404 and 405 included, has a write deadline;
 		// the stream replaces it with one per write.
