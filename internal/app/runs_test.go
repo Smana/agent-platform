@@ -49,6 +49,8 @@ func (f *fakeRunLog) LastHarnessStatus(context.Context, string, string) (string,
 	return "", nil
 }
 
+func (f *fakeRunLog) Cursor(context.Context, string, string) (int64, error) { return 0, nil }
+
 func (f *fakeRunLog) snapshot() map[string]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

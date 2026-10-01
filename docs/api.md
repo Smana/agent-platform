@@ -242,6 +242,14 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
+It also serves `GET /admission`, read by `room-bridge gate` on loopback (F15):
+
+| Status | Body | When |
+|---|---|---|
+| `503` | `pending` | No hello has been decided yet: the broker is unreachable, or the room has been busy for less than 3 minutes |
+| `200` | `admitted` | The bridge holds the room's lease. The gate exits 0 and the harness starts |
+| `409` | `room_busy` or `sealed` | The run will never hold the room. The gate exits 1, which fails the pod before the harness runs |
+
 ## `:8080` — human API (phase 2 / AP-2)
 
 Reached only through oauth2-proxy on `rooms.<private domain>`. Every request carries the human's

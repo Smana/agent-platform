@@ -49,6 +49,7 @@ type fakeBroker struct {
 	events  []reply
 	maxBody int
 	hold    bool     // answer 503 to every events POST while set
+	busy    bool     // answer 409 room_busy to every hello while set
 	poison  string   // a batch holding an item whose payload contains it is 400 bad_item
 	sse     []string // frames the stream sends before idling
 	// approvals are the approval requests received; each opens "ap-<callId>".
@@ -78,6 +79,11 @@ func (b *fakeBroker) start(t *testing.T) (srv *httptest.Server, caFile string) {
 	mux.HandleFunc("POST /v1/bridge/hello", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		if b.busy {
+			b.record(r, "hello", http.StatusConflict)
+			refuse(w, reply{code: http.StatusConflict, reason: wire.ReasonRoomBusy})
+			return
+		}
 		if len(b.hellos) > 0 {
 			rp := b.hellos[0]
 			b.hellos = b.hellos[1:]
