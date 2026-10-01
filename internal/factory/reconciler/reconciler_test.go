@@ -92,6 +92,7 @@ type fakeLog struct {
 	states   map[int64]string
 	noRoom   bool // the broker has no log for the room yet
 	noPermit bool // the broker does not allow system:factory yet (FR-1)
+	read     int  // events EventsSince returned, all calls
 }
 
 func (l *fakeLog) TaskState(_ context.Context, _, text string, clientSeq int64) error {
@@ -175,6 +176,7 @@ func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envel
 			cursor = e.Seq
 		}
 	}
+	l.read += len(out)
 	return out, cursor, nil
 }
 

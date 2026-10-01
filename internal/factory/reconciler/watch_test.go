@@ -113,7 +113,7 @@ func TestEveryNewMaintainerReviewIsQueued(t *testing.T) {
 	g.f.SetPR(pr12(
 		changes(950, "Smana", "rename the file", 20*time.Minute),
 		changes(905, "ALICE", "created first, submitted second", 10*time.Minute), // logins fold case
-		changes(940, "bob", "superseded by bob's approval", 8*time.Minute),
+		changes(940, "Bob", "superseded by BOB's approval", 8*time.Minute),
 		forge.Review{ID: 945, Author: "Smana", State: "COMMENTED", Body: "a thought", At: now.Add(-7 * time.Minute)},
 		forge.Review{ID: 946, Author: "Smana", State: "DISMISSED", Body: "withdrawn", At: now.Add(-6 * time.Minute)},
 		approved))
@@ -354,14 +354,16 @@ func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
 		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
 	}
-	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"))
+	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"), envelope.Event{Seq: 12_002, Type: envelope.Message,
+		Actor: envelope.Actor{Kind: envelope.ActorAgent}, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
+			Verdict: "changes", Commit: "abc1234", Text: "NEWEST verdict"})})
 	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
 	tk := g.reconcile(t, "3buqdlot", 2)
 	s := g.runs.specs["aaaaaaaa"]
-	if !strings.Contains(s.TaskText, "NEWEST handoff") || strings.Contains(s.TaskText, "OLD handoff") {
+	if !strings.Contains(s.TaskText, "NEWEST handoff") || !strings.Contains(s.TaskText, "NEWEST verdict") || strings.Contains(s.TaskText, "OLD handoff") {
 		t.Fatalf("the brief quotes a stale handoff:\n%.600s", s.TaskText)
 	}
-	if tk.Status.Runs[1].StartSeq != 12_001 {
+	if tk.Status.Runs[1].StartSeq != 12_002 {
 		t.Fatalf("startSeq %d", tk.Status.Runs[1].StartSeq)
 	}
 }
@@ -377,5 +379,29 @@ func TestTheFirstRunWaitsForBrokerPermission(t *testing.T) {
 	}
 	if tk := g.reconcile(t, "3buqdlot", 0); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_broker_permission" || len(g.runs.specs) != 0 {
 		t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+	}
+}
+
+// I2: a revision reads the room from the finished run's start, and a run's end from its own: a
+// long room is never read from its first event.
+func TestReadsStartAtTheRunsStart(t *testing.T) {
+	tk := awaiting()
+	tk.Status.Runs[0].StartSeq = 11_990
+	g := newRig(t, tk, roomOf("3buqdlot"))
+	g.ids("aaaaaaaa")
+	for i := int64(1); i <= 12_000; i++ {
+		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
+			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
+	}
+	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
+	g.reconcile(t, "3buqdlot", 2)
+	if g.log.read > 50 {
+		t.Fatalf("the revision read %d events", g.log.read)
+	}
+	g.log.read = 0
+	g.runs.set("aaaaaaaa", "Succeeded")
+	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.log.read > 50 {
+		t.Fatalf("%s: the run's end read %d events", tk.Status.Phase, g.log.read)
 	}
 }
