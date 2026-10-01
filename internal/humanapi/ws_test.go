@@ -57,6 +57,15 @@ type memLog struct {
 	driverFrom  int
 	driver      string
 	roomReads   int
+	queue       []store.Queued
+	queueErr    error
+	sealed      bool
+}
+
+func (m *memLog) Queue(context.Context, string) ([]store.Queued, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.queue, m.queueErr
 }
 
 func (m *memLog) add(n int) int64 {
@@ -92,7 +101,7 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 		return store.RoomState{}, m.roomErr
 	}
 	m.roomReads++
-	st := store.RoomState{ID: id, LastSeq: int64(len(m.evs)), Driver: "system:factory", DriverEpoch: 3}
+	st := store.RoomState{ID: id, LastSeq: int64(len(m.evs)), Driver: "system:factory", DriverEpoch: 3, Sealed: m.sealed}
 	if m.driverFrom > 0 && m.roomReads >= m.driverFrom {
 		st.Driver = m.driver
 	}
@@ -1042,6 +1051,45 @@ func TestSnapshotRuns(t *testing.T) {
 	b, _ := json.Marshal(f.Snapshot.Runs)
 	if want := `[{"id":"2abcdefg","role":"reviewer","phase":"Running"},{"id":"7f3cq2xz","role":"implementer","phase":"Running"}]`; string(b) != want {
 		t.Fatalf("runs %s", b)
+	}
+}
+
+// The state frame carries the queue, so a message queued before the page's tail
+// still shows (review 4.5 I1); a failed read is the log's failure.
+func TestSnapshotQueue(t *testing.T) {
+	e := setup(t)
+	e.log.add(600) // the queued message at ref 2 is far behind the default tail of 500
+	e.log.mu.Lock()
+	e.log.queue = []store.Queued{{Ref: 2, Author: "human:a", Text: "after this run", State: "queued"}}
+	e.log.mu.Unlock()
+	c := dial(t, e, "dev", hello(nil, 0))
+	f := read(t, c)
+	b, _ := json.Marshal(f.Snapshot.Queue)
+	if want := `[{"ref":2,"author":"human:a","text":"after this run"}]`; string(b) != want {
+		t.Fatalf("queue %s", b)
+	}
+	if f := read(t, c); f.Type != wire.FrameSync || f.FromSeq != 111 {
+		t.Fatalf("sync = %+v: the tail does not reach ref 2", f)
+	}
+
+	if f.Snapshot.Sealed {
+		t.Fatal("an open room is sealed")
+	}
+
+	e.log.mu.Lock()
+	e.log.queue, e.log.sealed = nil, true
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if s := read(t, c).Snapshot; !s.Sealed || s.Queue == nil || len(s.Queue) != 0 {
+		t.Fatalf("sealed %v, queue %#v", s.Sealed, s.Queue)
+	}
+
+	e.log.mu.Lock()
+	e.log.queueErr = errors.New("conn refused")
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if code, reason := closed(t, c); code != websocket.StatusTryAgainLater || reason != dropLogUnavailable {
+		t.Fatalf("closed %v %q", code, reason)
 	}
 }
 

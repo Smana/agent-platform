@@ -291,7 +291,11 @@ func (v *viewer) serve() string {
 		return v.failed(errors.Join(errLog, err))
 	}
 	_, you := v.s.you(v.room, v.p, st.Driver)
-	if err := v.write(wire.ServerFrame{Type: wire.FrameState, ThroughSeq: st.LastSeq, Snapshot: v.snapshot(you, st)}); err != nil {
+	snap, err := v.snapshot(you, st)
+	if err != nil {
+		return v.failed(errors.Join(errLog, err))
+	}
+	if err := v.write(wire.ServerFrame{Type: wire.FrameState, ThroughSeq: st.LastSeq, Snapshot: snap}); err != nil {
 		return v.failed(err)
 	}
 	after := max(st.LastSeq-defaultTail, 0)
@@ -475,12 +479,19 @@ func (v *viewer) sendRange(after, through int64) error {
 	return nil
 }
 
-func (v *viewer) snapshot(you wire.You, st store.RoomState) *wire.Snapshot {
+func (v *viewer) snapshot(you wire.You, st store.RoomState) (*wire.Snapshot, error) {
+	queued, err := v.s.Log.Queue(v.life, v.id)
+	if err != nil {
+		return nil, err
+	}
 	snap := &wire.Snapshot{RoomID: v.id, Phase: v.room.Status.Phase, Driver: st.Driver, DriverEpoch: st.DriverEpoch,
-		DataClass: v.room.Spec.DataClass, You: you, Runs: []wire.RunView{}}
+		DataClass: v.room.Spec.DataClass, You: you, Runs: []wire.RunView{}, Queue: []wire.QueuedView{}, Sealed: st.Sealed}
+	for _, q := range queued {
+		snap.Queue = append(snap.Queue, wire.QueuedView{Ref: q.Ref, Author: q.Author, Text: q.Text})
+	}
 	for _, run := range v.s.Runs.InRoom(v.id) {
 		snap.Runs = append(snap.Runs, wire.RunView{ID: run.ID, Role: run.Role, Phase: run.Phase})
 	}
 	slices.SortFunc(snap.Runs, func(a, b wire.RunView) int { return strings.Compare(a.ID, b.ID) })
-	return snap
+	return snap, nil
 }

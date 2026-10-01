@@ -11,13 +11,15 @@ export interface Snapshot {
   roomId: string; phase: string; driver: string; driverEpoch: number; dataClass: string;
   you: { principal: string; role: string; approver: boolean; driver: boolean; webUI: boolean };
   runs?: { id: string; role: string; phase: string }[];
+  queue?: { ref: number; author: string; text: string }[];
+  sealed?: boolean;
 }
 export interface Frame { type: string; throughSeq?: number; fromSeq?: number; snapshot?: Snapshot; event?: RoomEvent;
   clientSeq?: number; seq?: number; rejected?: string; result?: unknown }
 
 export interface Handlers {
   onEvent(e: RoomEvent): void;
-  onState(s: Snapshot): void;
+  onState(s: Snapshot, throughSeq: number): void;
   onStatus(s: string): void;
   onAck?(f: Frame): void;
   // A socket that closed before it opened: a refused upgrade, an expired session among them.
@@ -116,7 +118,7 @@ export class RoomConnection {
   private frame(f: Frame) {
     switch (f.type) {
       case "state":
-        if (f.snapshot) this.h.onState(f.snapshot);
+        if (f.snapshot) this.h.onState(f.snapshot, f.throughSeq ?? 0);
         break;
       case "sync": // before any event, and before a live gap's range: the broker's baseline
         if (typeof f.fromSeq !== "number") break;

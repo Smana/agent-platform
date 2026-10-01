@@ -446,6 +446,8 @@ func (fakeRoomLog) Room(context.Context, string) (store.RoomState, error) {
 	return store.RoomState{}, nil
 }
 
+func (fakeRoomLog) Queue(context.Context, string) ([]store.Queued, error) { return nil, nil }
+
 type fakeRuns struct{}
 
 func (fakeRuns) InRoom(string) []runwatch.Run { return nil }
