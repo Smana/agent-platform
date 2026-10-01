@@ -12,7 +12,7 @@ get `:8090` in phase 3. Every body is JSON.
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` | 3 / AP-3 |
 | `:8085` (bridge) | kubelet | None | AP-1 (task 1.11) |
 
-`room-broker serve` serves `:8443` and `:9090` (AP-1). The rest is **planned**.
+`room-broker serve` serves `:8443`, `:9090` (AP-1), `:8080` (AP-2) and `:8090` (AP-3).
 
 ## `:8443` — bridge and system API
 
@@ -47,6 +47,9 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
 | `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 |
 | `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 |
+| `POST /v1/rooms/{id}/queue` | System | Queues a chat message for the room's next run | SP3 (R9) |
+| `GET /v1/rooms/{id}/queue` | System | Lists the messages still queued | SP3 (R9) |
+| `POST /v1/rooms/{id}/queue/consume` | System | Marks queued messages consumed by a run | SP3 (R9) |
 
 ### `POST /v1/bridge/hello`
 
@@ -123,6 +126,31 @@ Response `200`, `Content-Type: text/event-stream`. The broker writes a comment l
 30 s. The stream ends at the token's expiry, and the bridge re-dials with a fresh token. A stream
 carries only the events addressed to its own run.
 
+Deliveries are derived from the log, never held in a replica's memory. On every connect the broker
+subscribes to the room, reads the run's last acknowledgement (the highest `ref` of its `delivered`,
+`interrupted` and `undeliverable` acks that is a delivery of that run), and sends the run's
+deliveries after it before anything else, in the stream's first flush; then it follows the room live.
+Both reads go through partial indexes, never the room's whole log. A stream whose acknowledgement it
+cannot read is refused `503`, rather than replay every delivery from the start. An event's `data`
+lines are bounded to 256 KiB together.
+
+| Outcome of an injection | The bridge |
+|---|---|
+| Accepted by the harness | Acknowledges `delivered` or `interrupted` |
+| Refused for good: steering with a 4xx other than 404, 408, 409, 425, 429; an interrupt with any 4xx | Acknowledges `undeliverable` with the harness's `code`, and goes on: one refusal must not block every later `ref`. An interrupt of an idle conversation is moot, and a late one would land on a turn the driver never meant (ruling SAK) |
+| Failed for now (no answer, 5xx, or steering refused with one of those 4xx) | Ends the stream; the replay hands the same `ref` over again before any later one |
+
+**Delivery is at least once** (design, Risks: bridge crash re-delivery). A bridge injects each `ref`
+once per process, but one that restarts, or shuts down while a `deliver` is in flight, after
+injecting a `ref` and before its acknowledgement reaches the log, injects it again: the transcript
+shows a second user message. A replayed `interrupt` lands on whatever turn is current then, which can
+be a later turn than the one the driver meant.
+
+Acknowledgements are the bridge's own claims (design T4, T6): the broker cannot see inside the
+sandbox. A `ref` counts only if it is a delivery of that run, so a forged one past every delivery
+skips nothing; a compromised sandbox can still hide steering from its own run, as it could by ignoring
+the harness. The log may then show `delivered` for a message never injected.
+
 | SSE `event` | `data` | Meaning | Phase / PR |
 |---|---|---|---|
 | `deliver` | `{"ref": 1846, "text": "…"}` | A steering message; the bridge injects it into the harness and acknowledges it as `state_changed{delivered, ref}` | 4 / AP-4 |
@@ -189,6 +217,42 @@ never reuses a `clientSeq` for another message.
 | `429` | `rate_limited` | Over the principal's limits |
 | `503` | `log_unavailable`, `timed_out` | The database refused it, or the request ran out of time |
 
+### The queue routes
+
+For system callers (SP3 ruling R9): the factory turns a maintainer's GitHub review into a queued
+message, and consumes it once a run's brief quotes it. Every route answers `501 no_queue` on a broker
+built without a queue store, and otherwise refuses as the routes above do: `400 bad_room`,
+`401`, `403`, `404 no_room`, `410 sealed`, `429`, `503 log_unavailable`.
+
+`POST /v1/rooms/{id}/queue`, at most 32 KiB:
+
+```json
+{"text": "GitHub review by @Smana: use the relative link", "clientSeq": 901, "stream": "review"}
+```
+
+The text is redacted and stored as `message{kind: chat, delivery: queued}`, the caller its actor and
+`<principal>:queue:<stream>` its origin. `stream` is `[a-z]{1,16}`, default `default`: each source
+keeps its own `clientSeq` space, apart from the caller's `task_state` messages. Response `201`:
+`{"seq": 1844}`. Replaying the stream's highest `clientSeq` answers `200 {"duplicate": true}`.
+A lower `clientSeq` need not be a replay, since GitHub review ids follow creation order, not
+submission order. It is stored as a new message, unless its exact key is already stored: then the
+answer is `201` with the stored `seq`. Two identical requests racing can both answer `201` with
+the same `seq`. Either way, nothing is stored twice.
+
+`GET /v1/rooms/{id}/queue` answers `200 {"queued": [{"ref": 1844, "author": "system:factory",
+"text": "…"}]}`, oldest first; `ref` is the queued message's `seq`.
+
+`POST /v1/rooms/{id}/queue/consume` `{"refs": [1844], "runId": "7f3cq2xz"}` moves each ref still
+queued to `consumed` by that run and answers `200 {"consumed": n}`, the refs this call moved. A ref
+already consumed, promoted, removed or never queued is skipped, so a retry is safe.
+
+| Status | `error` | When |
+|---|---|---|
+| `400` | `bad_message` | No text, text over 16 KiB, `clientSeq` ≤ 0, or a malformed body |
+| `400` | `bad_stream` | A `stream` that is not `[a-z]{1,16}` |
+| `400` | `bad_consume` | A `runId` that is not a C2 id, more than 100 refs, or a malformed body |
+| `501` | `no_queue` | No queue store wired |
+
 ## `:9090` — probes and metrics
 
 | Path | Answers `200` when | Used as |
@@ -203,7 +267,7 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
-## `:8080` — human API (planned, phase 2 / AP-2)
+## `:8080` — human API (phase 2 / AP-2)
 
 Reached only through oauth2-proxy on `rooms.<private domain>`. Every request carries the human's
 ZITADEL **ID token** in `Authorization` and their **JWT access token** in `X-Forwarded-Access-Token`,
@@ -225,17 +289,18 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 
 | Method and path | Does | Phase / PR |
 |---|---|---|
-| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy | 2 / AP-2 |
+| `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log. A `401` from the API, or one behind a refused WebSocket upgrade, sends the page to `/oauth2/start?rd=<the page>` | 2 / AP-2 |
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
-| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller | 4 / AP-4 |
+| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
 | `GET /api/roomctl` | `{url, issuer, clientID}` for the UI's CLI setup page | 6 / AP-6 |
 
 ### `GET /v1/ws`
 
 | Status before upgrade | When |
 |---|---|
-| `401` / `403` | Not authenticated; not in an agents group; not allowed to read this room (`not_permitted`) |
+| `401` | Not authenticated, or the token is already past its expiry |
+| `403` | A foreign `Origin` (T9); not in an agents group; not allowed to read this room (`not_permitted`) |
 | `404` | No such room |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica, ruling P22) |
 | `503` | The log is unavailable |
@@ -244,23 +309,31 @@ One JSON object per text frame (Appendix B).
 
 | Direction | Frame | Fields |
 |---|---|---|
-| client → broker | `hello` | `roomId`, `afterSeq?` or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
-| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards) |
+| client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
+| client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
-| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs}` |
+| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it) |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
 
-Replay is lossless: the broker subscribes to the room's hints, reads the high-water mark, pages the
-log up to it, then streams live events, dropping any at or below the mark. A gap in live `seq`
-triggers a range read.
+Replay is lossless: the broker subscribes to the room's fan-out (the hub), reads the high-water
+mark, pages the log up to it, then streams live events, dropping any at or below the mark. A gap in
+live `seq` triggers a range read.
 
 | Close code | Reason | Client should |
 |---|---|---|
 | `4001` | `reauth` | Reconnect: the connection reached `min(token expiry, 1 h)` |
 | `1008` | `slow_consumer` | Reconnect with `afterSeq`: over 2 MiB was pending |
-| `1008` | `hello first` | Send `hello` first |
+| `1008` | `hello first` | Send `hello` first, within 10 s |
+| `1009` | — | Keep a frame under 32 KiB |
+| `1007` | `failed to unmarshal JSON` | Send each frame as one JSON object |
+| `1001` | `shutdown` | Reconnect: the replica is stopping |
+| `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
+
+The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
+close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with
+`afterSeq`. So is a client that sends no `hello` within 10 s.
 
 ### Actions (planned, phases 4–6)
 
@@ -269,39 +342,73 @@ triggers a range read.
 | `message` | `text`, `delivery: none \| queued \| steering`, `to?` | Collaborator and up; `steering` driver only | 4 |
 | `remove_queued`, `promote_queued` | `ref` | The author or the driver; promote: driver | 4 |
 | `interrupt` | — | Driver | 4 |
-| `driver_request`, `driver_give`, `driver_take` | `to?`, `reason?` | Request: collaborator; give: driver; take: owner or `agents-admin`, with a reason | 4 |
-| `start_run` | `role`, `prUrl?`, `egressProfiles?` | Driver, owner. Before SP3 it returns the rendered `AgentRun` for the owner to apply (ruling P14) | 4 |
-| `invite` | `principal`, `memberRole`, `approver` | Owner | 4 |
+| `driver_request`, `driver_give`, `driver_take` | `to?`, `reason?` | Request: collaborator; give: driver, to a collaborator or better (from the Room's members; an `agents-admin` who is not a member takes instead) or the room's system holder; take: owner or `agents-admin`, with a reason of at most 256 bytes | 4 |
+| `start_run` | `role` (`implementer`, `reviewer`, `tester`, `triager`), `prUrl?` (reviewer only, a pull request of the room's repository), `egressProfiles?` (at most 8 names) | Driver, owner. A reviewer's task is its PR, else the one the latest agent handoff or review verdict names (ruling P24); any other role's is the fenced brief of the latest agent handoff and verdict, which consumes the queued messages it quotes. Recorded as `state_changed{run_requested}`, with the reviewer's `taskUrl`. Before SP3 the ack's `result` is the rendered `AgentRun` for the owner to apply (ruling P14). A replayed `clientSeq` acks the record without it; one retried after a failed record (`log_unavailable`) asks for the same run under the same idempotency key, so it never creates a second one ([integration](integration.md)) | 4 |
+| `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason` | Approver, owner | 5 |
 | `fork` | `seq`, `note`, `role?`, `prUrl?`, `egressProfiles?` | Watcher and up; also from `roomctl` | 6 |
 
 | `rejected` | Meaning |
 |---|---|
-| `not_permitted` | The caller's room role, flag or client does not allow it |
+| `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run |
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
 | `rate_limited` | Over 10 actions per second (burst 20), per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
-| `room_busy` | A run is already running |
-| `bad_action` | Malformed, or about another room |
+| `room_busy` | A run is already running; or a run was requested in the last 10 minutes and has not joined yet, and the broker does not know it ended (a claim not applied, or a factory run not seen yet). Two replicas answering a `start_run` in the same instant can both pass this check until SP3's factory refuses a second pending run per room |
+| `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
+| `over_budget` | The factory refused the run: over the caller's budget |
+| `factory_unavailable` | The run could not be requested: no requester, or the factory failed or answered no run id. Retry |
+| `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
 | `not_queued` | The queued message was already delivered or removed |
+| `sealed` | The room's log is sealed. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
+| `conflict` | The Room changed under an `invite`: retry |
+| `log_unavailable` | The log or the Room could not be read or written: retry |
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 
-## `:8090` — room tools (planned, phase 3 / AP-3)
+## `:8090` — room tools (phase 3 / AP-3)
 
 An MCP server on `POST /mcp`, reached only through an `agent-router` `MCPRoute`, which authenticates
-the run first and injects a generated key in `X-Room-Mcp-Key` (ruling P13). The broker derives the
-run from `X-Ar-Agent`, the gateway's verified `sub`, and reads the run's role from its `AgentRun`,
-never from a header. It exposes `tools/list` and `tools/call` only: no `resources` or `prompts`,
-which the gateway would not authorize by role. One call per second per run.
+the run first and injects a generated key in `X-Room-Mcp-Key` (ruling P13, `ROOMS_MCP_KEY`). The
+broker derives the run from `X-Ar-Agent`, the gateway's verified `sub`, matched whole against each
+run issuer's `subPattern` in turn, and reads the run's room and role from its `AgentRun`, never from a
+header or an argument. It exposes `initialize`, `ping`, `tools/list` and `tools/call` only: no
+`resources` or `prompts`, which the gateway would not authorize by role. It answers `POST` only and
+never opens a stream or sends a request of its own (agent-router#2715).
+
+| HTTP | When |
+|---|---|
+| `401` | `X-Room-Mcp-Key` wrong, missing or sent twice, or `ROOMS_MCP_KEY` unset: every call is refused |
+| `403` | `X-Ar-Agent` missing, sent twice or naming no run, or the run is not live or in no room |
+| `405` | Anything but `POST` |
+| `413` | A body over 128 KiB |
+| `503` | A call over 15 s |
+
+`tools/list` lists the tools of the run's role. A call needs the role and the §1 matrix's action
+(`read` for `room_read`, `chat` for the three writes), then spends the run's one call per second.
+The limit is per broker replica: with the two replicas of phase 2, a run whose calls the gateway
+spreads across both can make two a second (review M4). Arguments are strict: an unknown field is refused, and text holds
+no control character but tab, newline and carriage return. Every write is redacted before it is
+appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 
 | Tool | Roles | Arguments | Result | Appends |
 |---|---|---|---|---|
-| `room_read` | all | `sinceSeq`, `limit` ≤ 100 | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted | nothing |
-| `room_post` | all | `text` | `{seq}` | `message{kind: chat}`, delivered to nobody |
-| `room_handoff` | implementer, tester, triager | `toRole`, `summary`, `commit` | `{seq}` | `handoff` |
-| `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, pullRequest}`; the leader then posts it on the PR |
+| `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted, at most 1 MiB of payload a reply and 500 events scanned. Pass `lastSeq` as the next `sinceSeq` | nothing |
+| `room_post` | all | `text`, 1–16 384 bytes | `{seq}` | `message{kind: chat}`, delivered to nobody |
+| `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (lowercase hex, 7–40) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch}`; `fromRole` and `branch` from the `AgentRun` |
+| `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |
+
+A refused call is a tool result with `isError: true`, whose text starts with its reason:
+
+| Reason | Meaning |
+|---|---|
+| `not_permitted` | The tool is unknown, or not one of the run's role |
+| `rate_limited` | A second call within the second |
+| `invalid_arguments` | The arguments break the tool's schema; the text says how |
+| `room_sealed` | The room takes no more events |
+| `no_room` | The run's room has no log |
+| `log_unavailable` | The log failed; try again later |
 
 Tool calls carry no idempotency key (MCP request ids are per session), so a retried call can append
 twice; both copies are attributed and visible (ruling P26).

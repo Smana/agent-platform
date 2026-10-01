@@ -28,12 +28,14 @@ type LabelEvent struct {
 	At    time.Time
 }
 
-// Comment is an issue or pull request comment.
+// Comment is an issue or pull request comment. Edited: its body changed after it was posted,
+// perhaps by someone other than its author, so a command in it is never acted on.
 type Comment struct {
 	ID     int64
 	Author string
 	Body   string
 	At     time.Time
+	Edited bool
 }
 
 // Issue is the snapshot's source (§1, R5).
@@ -70,21 +72,23 @@ type Review struct {
 // PR is one GraphQL snapshot of a pull request. Checks and statuses are a separate query in
 // phase 7: reading them needs checks and statuses read, which only the merger App holds (R16).
 type PR struct {
-	Number         int
-	NodeID         string
-	URL            string
-	Title          string
-	State          string // OPEN | CLOSED | MERGED
-	Author         string
-	HeadRef        string
-	HeadSHA        string
-	HeadMessage    string
-	MergedBy       string
-	MergeCommitSHA string
-	AutoMerge      bool
-	Labels         []string
-	Reviews        []Review
-	Comments       []Comment
+	Number      int
+	NodeID      string
+	URL         string
+	Title       string
+	State       string // OPEN | CLOSED | MERGED
+	Author      string
+	HeadRef     string
+	HeadSHA     string
+	HeadMessage string
+	// The head commit's committer date: set by whoever committed, so a claim like Trailer's.
+	HeadCommittedAt time.Time
+	MergedBy        string
+	MergeCommitSHA  string
+	AutoMerge       bool
+	Labels          []string
+	Reviews         []Review
+	Comments        []Comment
 }
 
 // Trailer is what the head commit claims for a git trailer, "" when the exact key is absent; the

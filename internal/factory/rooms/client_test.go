@@ -43,6 +43,9 @@ type broker struct {
 	reason string
 	limits []string
 	lie    func(evs []envelope.Event) []envelope.Event
+	// The queue routes: what the broker lists, and every consume's refs.
+	queued   []Queued
+	consumes [][]int64
 }
 
 func newBroker(t *testing.T, n int) (*broker, *httptest.Server) {
@@ -98,6 +101,39 @@ func newBroker(t *testing.T, n int) (*broker, *httptest.Server) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"seq":9}`)
+	})
+	mux.HandleFunc("POST /v1/rooms/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		b.mu.Lock()
+		b.bodies = append(b.bodies, string(raw))
+		b.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"seq":4}`)
+	})
+	mux.HandleFunc("GET /v1/rooms/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"queued": b.queued})
+	})
+	mux.HandleFunc("POST /v1/rooms/{id}/queue/consume", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		var in struct {
+			Refs  []int64 `json:"refs"`
+			RunID string  `json:"runId"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		b.mu.Lock()
+		b.consumes = append(b.consumes, in.Refs)
+		b.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]int{"consumed": len(in.Refs)})
 	})
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
@@ -457,5 +493,76 @@ func TestASpanReasonIsBounded(t *testing.T) {
 		if got != c.want || s.Status().Description != c.want {
 			t.Errorf("reason %q: error.type %q, status %q, want %q", c.reason, got, s.Status().Description, c.want)
 		}
+	}
+}
+
+// SP3 R9: the factory queues a review on its own stream, lists the queue and consumes only what
+// it is given, in batches the broker accepts.
+func TestQueueCalls(t *testing.T) {
+	r := newRig(t, 0)
+	ctx := t.Context()
+	if err := r.c.Enqueue(ctx, "3buqdlot", "review", "use the relative link", 901); err != nil {
+		t.Fatal(err)
+	}
+	if body := r.b.bodies[0]; body != `{"text":"use the relative link","clientSeq":901,"stream":"review"}` {
+		t.Fatalf("the body the broker decodes strictly: %s", body)
+	}
+	r.b.queued = []Queued{{Ref: 4, Author: "system:factory", Text: "use the relative link"}, {Ref: 9, Author: "system:factory", Text: "b"}}
+	q, err := r.c.Queue(ctx, "3buqdlot")
+	if err != nil || len(q) != 2 || q[0] != r.b.queued[0] {
+		t.Fatalf("%v %v", q, err)
+	}
+	if err := r.c.Consume(ctx, "3buqdlot", nil, "aaaaaaaa"); err != nil || len(r.b.consumes) != 0 {
+		t.Fatalf("consuming nothing calls nothing: %v %v", r.b.consumes, err)
+	}
+	refs := make([]int64, 2*maxConsume+1)
+	for i := range refs {
+		refs[i] = int64(i + 1)
+	}
+	if err := r.c.Consume(ctx, "3buqdlot", refs, "aaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.b.consumes) != 3 || len(r.b.consumes[0]) != maxConsume || len(r.b.consumes[2]) != 1 || r.b.consumes[2][0] != refs[2*maxConsume] {
+		t.Fatalf("batches of %d: %v", maxConsume, len(r.b.consumes))
+	}
+	// A listing out of order would make a caller quote, then consume, the wrong messages.
+	for name, l := range map[string][]Queued{"out of order": {{Ref: 9}, {Ref: 4}}, "a repeated ref": {{Ref: 4}, {Ref: 4}},
+		"a zero ref": {{Ref: 0}}} {
+		r.b.queued = l
+		if _, err := r.c.Queue(ctx, "3buqdlot"); err == nil {
+			t.Fatalf("a listing with %s", name)
+		}
+	}
+	r.b.fail["/v1/rooms/3buqdlot/queue"], r.b.reason = http.StatusNotImplemented, wire.ReasonNoQueue
+	var api *APIError
+	if err := r.c.Enqueue(ctx, "3buqdlot", "review", "x", 902); !errors.As(err, &api) || api.Reason != wire.ReasonNoQueue {
+		t.Fatalf("a broker without queue routes: %v", err)
+	}
+}
+
+func TestQueueCallsRefuseWhatTheBrokerWould(t *testing.T) {
+	r := newRig(t, 0)
+	ctx := t.Context()
+	for name, call := range map[string]func() error{
+		"a bad room":            func() error { return r.c.Enqueue(ctx, "3BUQDLOT", "review", "x", 1) },
+		"a stream with a colon": func() error { return r.c.Enqueue(ctx, "3buqdlot", "a:b", "x", 1) },
+		"an empty stream":       func() error { return r.c.Enqueue(ctx, "3buqdlot", "", "x", 1) },
+		"a zero clientSeq":      func() error { return r.c.Enqueue(ctx, "3buqdlot", "review", "x", 0) },
+		"a blank text":          func() error { return r.c.Enqueue(ctx, "3buqdlot", "review", " \n", 1) },
+		"a text over 16 KiB": func() error {
+			return r.c.Enqueue(ctx, "3buqdlot", "review", strings.Repeat("x", envelope.MaxHumanMessage+1), 1)
+		},
+		"a list of a bad room":  func() error { _, err := r.c.Queue(ctx, "../x"); return err },
+		"a consume in bad room": func() error { return r.c.Consume(ctx, "../x", []int64{1}, "aaaaaaaa") },
+		"a bad run id":          func() error { return r.c.Consume(ctx, "3buqdlot", []int64{1}, "NOPE") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); err == nil {
+				t.Fatal("sent")
+			}
+		})
+	}
+	if len(r.b.auth) != 0 {
+		t.Fatalf("%d requests reached the broker", len(r.b.auth))
 	}
 }

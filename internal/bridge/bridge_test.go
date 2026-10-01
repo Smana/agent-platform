@@ -595,9 +595,15 @@ func TestStreamFramesReachTheHooks(t *testing.T) {
 		"event: interrupt\ndata: {\"ref\":8}\n\n", "event: decision\ndata: {\"approvalId\":\"a1\",\"allow\":true}\n\n"}}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	got := make(chan string, 3)
-	r.b.OnDeliver = func(_ context.Context, d wire.Deliver) { got <- fmt.Sprint("deliver ", d.Ref, " ", d.Text) }
-	r.b.OnInterrupt = func(_ context.Context, i wire.Interrupt) { got <- fmt.Sprint("interrupt ", i.Ref) }
-	r.b.OnDecision = func(_ context.Context, d wire.Decision) { got <- fmt.Sprint("decision ", d.ApprovalID, " ", d.Allow) }
+	r.b.OnDeliver = func(_ context.Context, d wire.Deliver) error {
+		got <- fmt.Sprint("deliver ", d.Ref, " ", d.Text)
+		return nil
+	}
+	r.b.OnInterrupt = func(_ context.Context, i wire.Interrupt) error { got <- fmt.Sprint("interrupt ", i.Ref); return nil }
+	r.b.OnDecision = func(_ context.Context, d wire.Decision) error {
+		got <- fmt.Sprint("decision ", d.ApprovalID, " ", d.Allow)
+		return nil
+	}
 	ctx, stop := r.run(t)
 	var seen []string
 	for len(seen) < 3 {

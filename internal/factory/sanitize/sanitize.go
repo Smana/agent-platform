@@ -26,7 +26,7 @@ type Report struct {
 	Control   int  // C0 and C1 controls other than \n and \t; U+2028 and U+2029, made \n
 	Images    int  // markdown and HTML images, reduced to their alt text or defused
 	Markup    int  // other raw HTML tags, reference definitions and the input's ⟦ ⟧, defused
-	Fences    int  // look-alikes of the brief's TASK-DATA fence, replaced (Batch A I1)
+	Fences    int  // look-alikes of the briefs' TASK-, ROOM- and QUEUED-DATA fences, replaced (Batch A I1)
 	Withheld  bool // the markup step did not settle: the whole text was replaced by Withheld
 }
 
@@ -57,7 +57,7 @@ const (
 	// which the second pass replaces; the third confirms. The cap leaves room for one more.
 	maxPasses = 4
 	// maxGrowth bounds the markup step's output against its input: its largest replacement
-	// ratio is "TASKDATA" (8 bytes) to FenceLookalike (21), 2.625.
+	// ratio is "TASKDATA" or "ROOMDATA" (8 bytes) to FenceLookalike (21), 2.625.
 	maxGrowth = 3
 )
 
@@ -69,11 +69,14 @@ var (
 	// CommonMark raw HTML opens with "<" and a letter, "/", "!" or "?": tags, comments,
 	// declarations and processing instructions. "<" before a space or a digit stays.
 	htmlOpen = regexp.MustCompile(`<[A-Za-z/!?]`)
-	// TASK and DATA in any case, with up to three separators that are neither letters, digits nor
-	// a line break between them: the brief's fence is TASK-DATA-<nonce>, and a model does not
-	// compare nonces character by character. Each letter also admits its common Cyrillic and Greek
-	// homoglyphs, which NFKC does not fold (a full UTS #39 skeleton would; this covers the fence).
-	fenceLike = regexp.MustCompile(`(?i)[tтτ][aаα][sѕ][kкκ][^\p{L}\p{N}\n]{0,3}[dԁ][aаα][tтτ][aаα]`)
+	// TASK, ROOM or QUEUED, then DATA, in any case, with up to three separators that are neither
+	// letters, digits nor a line break between them: the briefs' fences are TASK-DATA-<nonce>
+	// (FirstBrief, the snapshot), ROOM-DATA-<nonce> (SP2's brief) and QUEUED-DATA-<nonce> (the
+	// revise brief), and a model does not compare nonces character by character. Each letter also
+	// admits its common Cyrillic and Greek homoglyphs, which NFKC does not fold (a full UTS #39
+	// skeleton would; this covers the fences).
+	fenceLike = regexp.MustCompile(`(?i)(?:[tтτ][aаα][sѕ][kкκ]|[rг][oоο][oоο][mмμ]|[qԛ][uυ][eеε][uυ][eеε][dԁ])` +
+		`[^\p{L}\p{N}\n]{0,3}[dԁ][aаα][tтτ][aаα]`)
 )
 
 // invisible is a character that renders as nothing yet reaches the model: every default-ignorable
@@ -147,15 +150,24 @@ func text(s string, markup func(string, *Report) string) (string, Report) {
 	return Withheld, Report{Withheld: true}
 }
 
+// Fences replaces every look-alike of the briefs' fences with FenceLookalike, and counts them. It
+// is Text's fence step alone, for text that is quoted without the rest: a message queued in a room.
+func Fences(s string) (string, int) {
+	n := 0
+	s = fenceLike.ReplaceAllStringFunc(s, func(string) string {
+		n++
+		return FenceLookalike
+	})
+	return s, n
+}
+
 // defuse is one pass of the markup step. Its tokens open with "⟦", which no markdown syntax
 // joins; its escapes leave the text readable ("!\[", "]\:", "&lt;"). An entity, not a
 // backslash, escapes "<": a backslash already before it would escape ours instead.
 func defuse(s string, rep *Report) string {
 	// First, while the separators are still the input's: the escapes below only lengthen them.
-	s = fenceLike.ReplaceAllStringFunc(s, func(string) string {
-		rep.Fences++
-		return FenceLookalike
-	})
+	s, n := Fences(s)
+	rep.Fences += n
 	s = mdImage.ReplaceAllStringFunc(s, func(m string) string {
 		rep.Images++
 		return "⟦image: " + mdImage.FindStringSubmatch(m)[1] + "⟧"

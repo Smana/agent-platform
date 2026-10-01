@@ -188,6 +188,7 @@ func reasons() map[string]string {
 		"unsanitisable":         "the issue text could not be made safe for an agent to read; simplify its markup",
 		"unauthorised_stopper":  "only a maintainer's factory/stop stops a task",
 		"foreign_room":          "a room of the task's name exists and is not the factory's",
+		"stale":                 "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
 	}
 }
 
@@ -211,6 +212,65 @@ func Started(t *v1alpha1.Task, s runs.Spec, roomsURL string) Event {
 	return Event{Key: "run-" + s.RunID + "-started", Body: body}
 }
 
+// Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
+func Revising(t *v1alpha1.Task, reviewer string) Event {
+	return Event{Key: fmt.Sprintf("revise-%d", len(t.Status.Runs)),
+		Body: fmt.Sprintf("Agent factory task `%s` is revising after @%s's review: the next run starts on the same branch, "+
+			"with the review in its brief.", t.Name, reviewer)}
+}
+
+// remindPrefix starts a reminder's key: remind-<runs>-<quiet spell start, unix seconds>.
+const remindPrefix = "remind-"
+
+// Reminder mentions the maintainers when the task's pull request has had no maintainer activity
+// for 48 h (§6.3), once per quiet spell: quietSince is the spell's start, so a spell a maintainer
+// broke and that began again earns its own reminder before any stale close. An approved pull
+// request waits for a merge and is never closed, so its reminder says so.
+func Reminder(t *v1alpha1.Task, maintainers []string, quietSince time.Time, approved bool) Event {
+	at := make([]string, 0, len(maintainers))
+	for _, m := range maintainers {
+		at = append(at, "@"+m)
+	}
+	body := fmt.Sprintf("%s: the pull request of agent factory task `%s` has had no maintainer activity for 48 hours. "+
+		"It closes itself after 14 days without any: a review, a comment here or on the pull request, or a push to its branch keeps it open.",
+		strings.Join(at, " "), t.Name)
+	if approved {
+		body = fmt.Sprintf("%s: the pull request of agent factory task `%s` is approved and has waited 48 hours for a merge. "+
+			"The factory never closes an approved pull request.", strings.Join(at, " "), t.Name)
+	}
+	return Event{Key: fmt.Sprintf("%s%d-%d", remindPrefix, len(t.Status.Runs), quietSince.Unix()), Body: body}
+}
+
+// RemindedSince is the latest quiet-spell start a reminder of the task's current stay was keyed
+// on, posted or still in the outbox. The reconciler never lets a spell start before it: a
+// maintainer comment that later leaves GitHub's read window must not restart an older spell.
+func RemindedSince(t *v1alpha1.Task) (time.Time, bool) {
+	prefix := fmt.Sprintf("%s%d-", remindPrefix, len(t.Status.Runs))
+	keys := slices.Clone(t.Status.Narrated)
+	for _, o := range t.Status.Outbox {
+		keys = append(keys, o.Key)
+	}
+	var latest int64
+	found := false
+	for _, k := range keys {
+		rest, ok := strings.CutPrefix(k, prefix)
+		if !ok {
+			continue
+		}
+		if u, err := strconv.ParseInt(rest, 10, 64); err == nil && (!found || u > latest) {
+			latest, found = u, true
+		}
+	}
+	return time.Unix(latest, 0), found
+}
+
+// Retrying says a maintainer's /factory retry sent an escalated task back for a fresh run, once
+// per retry.
+func Retrying(t *v1alpha1.Task, by string) Event {
+	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries),
+		Body: fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)}
+}
+
 // PROpened announces the task's pull request.
 func PROpened(t *v1alpha1.Task, number int, url, runID string) Event {
 	return Event{Key: "pr-opened", Body: fmt.Sprintf("Run `%s` of task `%s` opened #%d: %s", runID, t.Name, number, url)}
@@ -224,10 +284,9 @@ func headlines() map[string]string {
 	}
 }
 
-// hints: phase 2 replaces the Escalated one with /factory retry.
 func hints() map[string]string {
 	return map[string]string{
-		v1alpha1.PhaseEscalated: "Re-apply `factory/ready` to start a new task, or push to the branch yourself.",
+		v1alpha1.PhaseEscalated: "Comment `/factory retry` on this issue to run it again (a maintainer only), or push to the branch yourself.",
 		v1alpha1.PhaseNoOp:      "If there is work to do, add detail to the issue and re-apply `factory/ready`.",
 		v1alpha1.PhaseRejected:  "Fix what is described above and re-apply `factory/ready`.",
 	}

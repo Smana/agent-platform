@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -41,7 +43,21 @@ const (
 
 	eventsRoute   = "/v1/rooms/{id}/events"
 	messagesRoute = "/v1/rooms/{id}/messages"
+	queueRoute    = "/v1/rooms/{id}/queue"
+	consumeRoute  = "/v1/rooms/{id}/queue/consume"
+
+	// maxConsume is the broker's cap on one consume's refs (bridgeapi maxConsume): Consume
+	// sends more in batches.
+	maxConsume = 100
+	// maxQueueReply bounds a queue listing, which the broker does not page: 16 MiB, so about 170
+	// messages at the 16 KiB cap in the worst case, since the broker's encoder escapes <, > and &
+	// six-fold (\u003c); 500 if they double. A longer queue fails Queue until a broker ?limit=
+	// lands (FA-2 follow-up); a brief quotes 13 KiB at most.
+	maxQueueReply = 500*2*envelope.MaxHumanMessage + maxReplyOverhead
 )
+
+// streamRE is the broker's queue stream: lowercase letters, no colon (it ends the origin).
+var streamRE = regexp.MustCompile(`^[a-z]{1,16}$`)
 
 // APIError is the broker's refusal: its status and wire reason (wire.Reason*), which callers
 // branch on (no_room, sealed, rate_limited).
@@ -195,12 +211,92 @@ func (c *Client) TaskState(ctx context.Context, room, text string, clientSeq int
 	return c.do(ctx, http.MethodPost, messagesRoute, room, "", in, maxReplyOverhead, &out)
 }
 
+// Queued is one live message of the room's FIFO queue (SP2 §2); Ref is its seq in the room.
+type Queued struct {
+	Ref    int64  `json:"ref"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
+}
+
+// Enqueue queues text for the room's next run, as system:factory on stream (review, ci). The
+// broker redacts it, and dedupes on (room, stream, clientSeq): a seen clientSeq is never stored
+// twice, whatever its order, so each distinct message needs its own clientSeq in its stream.
+func (c *Client) Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error {
+	switch {
+	case !envelope.ValidID(room):
+		return fmt.Errorf("rooms: %q is not a C2 room id", room)
+	case !streamRE.MatchString(stream):
+		return fmt.Errorf("rooms: stream %q is not [a-z]{1,16}", stream)
+	case clientSeq < 1:
+		return fmt.Errorf("rooms: clientSeq %d is not positive", clientSeq)
+	case strings.TrimSpace(text) == "" || len(text) > envelope.MaxHumanMessage:
+		return fmt.Errorf("rooms: a queued text is 1 to %d bytes", envelope.MaxHumanMessage)
+	}
+	in := struct {
+		Text      string `json:"text"`
+		ClientSeq int64  `json:"clientSeq"`
+		Stream    string `json:"stream"`
+	}{text, clientSeq, stream}
+	var out struct {
+		Seq       int64 `json:"seq"`
+		Duplicate bool  `json:"duplicate"`
+	}
+	return c.do(ctx, http.MethodPost, queueRoute, room, "", in, maxReplyOverhead, &out)
+}
+
+// Queue lists the room's messages still queued, oldest first.
+func (c *Client) Queue(ctx context.Context, room string) ([]Queued, error) {
+	if !envelope.ValidID(room) {
+		return nil, fmt.Errorf("rooms: %q is not a C2 room id", room)
+	}
+	var out struct {
+		Queued []Queued `json:"queued"`
+	}
+	if err := c.do(ctx, http.MethodGet, queueRoute, room, "", nil, maxQueueReply, &out); err != nil {
+		return nil, err
+	}
+	prev := int64(0)
+	for _, q := range out.Queued {
+		if q.Ref <= prev {
+			return nil, fmt.Errorf("rooms: the broker listed ref %d after %d", q.Ref, prev)
+		}
+		prev = q.Ref
+	}
+	return out.Queued, nil
+}
+
+// Consume marks refs consumed by runID: pass only the refs the run's brief returned
+// (reconciler.ReviseBrief's refs), never the rest of a listing, or an unread message is lost. A ref
+// no longer queued is skipped by the broker, so a retry is safe. No refs, no call.
+func (c *Client) Consume(ctx context.Context, room string, refs []int64, runID string) error {
+	switch {
+	case !envelope.ValidID(room):
+		return fmt.Errorf("rooms: %q is not a C2 room id", room)
+	case !envelope.ValidID(runID):
+		return fmt.Errorf("rooms: %q is not a C2 run id", runID)
+	}
+	for batch := range slices.Chunk(refs, maxConsume) {
+		in := struct {
+			Refs  []int64 `json:"refs"`
+			RunID string  `json:"runId"`
+		}{batch, runID}
+		var out struct {
+			Consumed int `json:"consumed"`
+		}
+		if err := c.do(ctx, http.MethodPost, consumeRoute, room, "", in, maxReplyOverhead, &out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // spanReason bounds a refusal's reason, which the peer's reply body sets, to the system API's
 // vocabulary: anything else is "other" on a span.
 func spanReason(r string) string {
 	switch r {
 	case wire.ReasonBadRoom, wire.ReasonBadMessage, wire.ReasonUnauthenticated, wire.ReasonNotPermitted,
-		wire.ReasonNoRoom, wire.ReasonSealed, wire.ReasonRateLimited, wire.ReasonLogUnavailable, wire.ReasonTimedOut:
+		wire.ReasonNoRoom, wire.ReasonSealed, wire.ReasonRateLimited, wire.ReasonLogUnavailable, wire.ReasonTimedOut,
+		wire.ReasonBadStream, wire.ReasonBadConsume, wire.ReasonNoQueue:
 		return r
 	}
 	return "other"

@@ -35,6 +35,9 @@ type MessagePayload struct {
 	Delivery Delivery    `json:"delivery"`
 	Verdict  string      `json:"verdict,omitempty"` // approve | changes (review_verdict only)
 	Commit   string      `json:"commit,omitempty"`
+	// PullRequest is the pull request a review_verdict is about (SP2 design §3).
+	// Additive: C4 v1's envelope is unchanged, and SP3 reads it (ruling P29).
+	PullRequest string `json:"pullRequest,omitempty"`
 }
 
 // TurnPayload is a turn event's payload.

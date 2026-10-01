@@ -42,7 +42,7 @@ flowchart LR
 | PR | Phase | Carries |
 |---|---|---|
 | S1 | 1 | ADR-0044 (session protocol); the vendored `Room` CRD and its schema in the validation catalog; `SQLInstance xplane-rooms` with generated credentials and its CNPG network policy; the broker's `App` claim, config, RBAC and CNP; the `Certificate room-broker-tls` and `ExternalSecret room-broker-ca` (GP-18); the retention CronJob; the `VMServiceScrape`; the phase-1 `VMRule`; `task agent:run -- --room`; the umbrella child `room-broker` |
-| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; `KVStore xplane-rooms`; two broker replicas; the log's recovery seed |
+| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; two broker replicas; the log's recovery seed |
 | S3 | 3 | The `room-broker` backend on both MCPRoutes with its key and CNP; the factory App's key; egress to `api.github.com`; `RoomVerdictsNotReachingGitHub` |
 | S4 | 4 | Pins |
 | S5 | 5 | `RoomApprovalPendingTooLong`; pins |
@@ -88,7 +88,9 @@ Rules that keep pins honest:
 
 One file, `ROOMS_CONFIG` (a ConfigMap, Flux-substituted). Parsing is strict: an unknown key or a
 `subPattern` without exactly one capture group fails the rollout, not the first request. The broker
-reads it once at start, so restart it after a change.
+reads it once at start, so restart it after a change. A machine issuer whose JWKS the broker cannot
+fetch at start fails the rollout too; the `human` issuer does not: until it answers, humans get
+`401` and agents are unaffected.
 
 | Key | Meaning | Phase |
 |---|---|---|
@@ -96,7 +98,7 @@ reads it once at start, so restart it after a change.
 | `runIssuers[]` | `{issuer, jwksURL, subPattern}`. The cluster's OIDC issuer today; its JWKS URI is per cloud (`<issuer>/keys` on EKS, `<issuer>/jwks` on GKE) | 1 |
 | `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens | 1 |
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
-| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, origin}` | 2, 6 |
+| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build (Ruling AS-a); the group names are literals | 2, 6 |
 | `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 
@@ -106,7 +108,8 @@ reads it once at start, so restart it after a change.
 | `ROOMS_DATABASE_URL` | The `uri` of `xplane-rooms-cnpg-role-rooms-broker` (the retention job: `…-rooms-retention`) | 1 |
 | `POD_NAMESPACE` | Where Rooms and the leader lease live | 1 |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally | 1 |
-| `ROOMS_MCP_KEY` | The key the MCPRoute injects | 3 |
+| `ROOMS_MCP_KEY` | The key the MCPRoute injects. Unset: `:8090` refuses every call | 3 |
+| `ROOMS_GITHUB_APP_DIR` | The factory App's key volume (`app_id`, `private_key`; P31: optional, `defaultMode: 0440` with the pod's `fsGroup`). Unset: no verdict is posted. Set but empty: verdicts wait, up to 24 h, for the key | 3 |
 
 ### The bridge's environment
 
@@ -144,9 +147,10 @@ annotation `agents.ogenki.io/revoked`, and `metadata.uid`. The run's CNP already
 | Create a room | Create a `Room` CR with `spec.owner` and `spec.driver: system:factory` and the required `spec.dataClass` ([fields](concepts.md#the-room-crd)) |
 | Read a room | `GET /v1/rooms/{id}/events` on `:8443`, audience `rooms-system` ([API](api.md#get-v1roomsidevents)) |
 | Report task state | `POST /v1/rooms/{id}/messages`, `kind: task_state` |
+| Queue a message for the next run | `POST /v1/rooms/{id}/queue`, listed by `GET` and consumed by `POST …/queue/consume` ([API](api.md#the-queue-routes)) |
 | Verdicts and handoffs | `message{kind: review_verdict}` and `handoff` in the log (phase 3); the verdict comment is the broker's, SP3 never posts it again |
 | Who drives | `Room.status.driver` and `driverEpoch`: the factory never advances a room while a `human:` holds the token |
-| Run requests to SP3 | From phase 4, `POST {factoryURL}/v1/runs` with `{role, repository, baseRef, task, dataClass, roomRef, egressProfiles?}` and the human's access token as `Authorization: Bearer` |
+| Run requests to SP3 | From phase 4, `POST {factoryURL}/v1/runs` with `{role, repository, baseRef, task, dataClass, roomRef, egressProfiles?}`, the human's access token as `Authorization: Bearer`, and `Idempotency-Key: <roomId>:<originClient>:<originSeq>`, the act's own key. **The factory must answer a key it has seen with the same `runId` and create nothing** (review 4.4 I1): the broker requests the run, then records it, and a client retrying a failed record sends the same key. A request without a key is refused before the call. Until SP3 the rendered claim's run id is derived from the same key, so applying both claims makes one run. SP3 should also refuse a second pending run per `roomRef`, which closes the cross-replica race the broker's `room_busy` cannot see. The `Idempotency-Key` alone decides: a replay gets the first request's `runId` whatever its body |
 
 ### Starting a run in a room before SP3
 

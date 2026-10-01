@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -43,9 +45,54 @@ func testDB(t *testing.T) (owner, broker, retention, super string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec(t, owner, string(sql))
+		if !strings.HasPrefix(string(sql), "-- atlas:txmode none") {
+			exec(t, owner, string(sql))
+			continue
+		}
+		// Atlas runs such a file a statement at a time, outside a transaction: a
+		// multi-statement Exec would wrap CREATE INDEX CONCURRENTLY in one.
+		for _, stmt := range statements(string(sql)) {
+			exec(t, owner, stmt)
+		}
 	}
 	return owner, broker, retention, super
+}
+
+// statements splits a txmode-none migration into its statements, every one of
+// them: a GRANT or a COMMENT skipped here would pass the tests and still run on
+// the cluster. These files hold no function body, so once the comment lines are
+// gone a semicolon ends each statement.
+func statements(sql string) []string {
+	var code strings.Builder
+	for line := range strings.Lines(sql) {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			code.WriteString(line)
+		}
+	}
+	var out []string
+	for stmt := range strings.SplitSeq(code.String(), ";") {
+		if stmt = strings.TrimSpace(stmt); stmt != "" {
+			out = append(out, stmt)
+		}
+	}
+	return out
+}
+
+// Every statement of a txmode-none file runs, whatever its verb (review 4.3).
+func TestTxModeNoneStatements(t *testing.T) {
+	got := statements(`-- atlas:txmode none
+
+-- a comment; with a semicolon
+CREATE INDEX CONCURRENTLY a ON events (room_id);
+GRANT SELECT ON events TO rooms_broker;
+  COMMENT ON INDEX a IS 'x';
+REINDEX INDEX CONCURRENTLY a;
+`)
+	want := []string{"CREATE INDEX CONCURRENTLY a ON events (room_id)", "GRANT SELECT ON events TO rooms_broker",
+		"COMMENT ON INDEX a IS 'x'", "REINDEX INDEX CONCURRENTLY a"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("statements = %q, want %q", got, want)
+	}
 }
 
 func as(dsn, user, pass string) string {

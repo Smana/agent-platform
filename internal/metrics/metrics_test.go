@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +95,29 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	}
 	if t.Failed() {
 		t.Log(body)
+	}
+}
+
+// The fan-out listener's state, read at each scrape: 1 while LISTEN is in place.
+func TestFanoutListenerUp(t *testing.T) {
+	exp, err := NewExporter(BrokerBuildInfo, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exp.Shutdown(t.Context()) }()
+	s, err := New(exp.Meter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up atomic.Bool
+	if err := s.WatchFanout(up.Load); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rooms_fanout_listener_up 0\n", "rooms_fanout_listener_up 1\n"} {
+		if body := scrape(t, exp.Handler()); !strings.Contains(body, want) {
+			t.Fatalf("missing %q in\n%s", want, body)
+		}
+		up.Store(true)
 	}
 }
 

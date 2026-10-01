@@ -428,3 +428,14 @@ func TestHandlerUnwrapsATombstone(t *testing.T) {
 		t.Fatalf("the tombstone's run is still watched: %v", w.All())
 	}
 }
+
+func TestReadsTheTaskURL(t *testing.T) {
+	r, ok := FromUnstructured(&unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "xplane-run-7f3cq2xz", "namespace": "agents"},
+		"spec": map[string]any{"role": "reviewer", "repository": "Smana/cloud-native-ref",
+			"task": map[string]any{"url": "https://github.com/Smana/cloud-native-ref/pull/12"}},
+	}})
+	if !ok || r.TaskURL != "https://github.com/Smana/cloud-native-ref/pull/12" || r.Repository != "Smana/cloud-native-ref" {
+		t.Fatalf("%+v", r)
+	}
+}
