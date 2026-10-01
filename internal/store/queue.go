@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -134,6 +136,73 @@ func (s *Store) SetQueued(ctx context.Context, roomID string, ref int64, to, run
 		return ErrSealed
 	}
 	return ErrNotQueued
+}
+
+// RecordRunRequest records the request of runID in d's room as
+// state_changed{run_requested}, and moves the queued messages its brief quoted
+// (refs) to consumed by runID, in one transaction: a brief's messages are consumed
+// exactly when its run is on the record. The store fills d's type and payload:
+// fields, plus runId and consumed, the refs it moved (one removed meanwhile stays
+// removed). A replayed key returns the stored record and moves nothing; a key
+// stored for anything else is ErrKeyConflict.
+func (s *Store) RecordRunRequest(ctx context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error) {
+	ev, err := s.recordRunRequest(ctx, d, runID, refs, fields)
+	if err != nil {
+		return envelope.Event{}, fmt.Errorf("store: record run %s in room %s: %w", runID, d.RoomID, err)
+	}
+	return ev, nil
+}
+
+func (s *Store) recordRunRequest(ctx context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error) {
+	if !envelope.ValidID(runID) {
+		return envelope.Event{}, ErrBadMove
+	}
+	d.Type = envelope.StateChanged
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sealed, _, err := lockRoom(ctx, tx, d.RoomID)
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
+		var p struct {
+			Kind string `json:"kind"`
+		}
+		if err == nil && (existing.Type != envelope.StateChanged || json.Unmarshal(existing.Payload, &p) != nil || p.Kind != "run_requested") {
+			return envelope.Event{}, ErrKeyConflict
+		}
+		return existing, err
+	}
+	if sealed {
+		return envelope.Event{}, ErrSealed
+	}
+	rows, err := tx.Query(ctx, `UPDATE queue SET state = 'consumed', run_id = $3
+		WHERE room_id = $1 AND ref = ANY($2) AND state = 'queued' RETURNING ref`, d.RoomID, refs, runID)
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	consumed, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	slices.Sort(consumed)
+	f := maps.Clone(fields)
+	if f == nil {
+		f = map[string]any{}
+	}
+	f["runId"], f["consumed"] = runID, append([]int64{}, consumed...)
+	d.Payload = envelope.StatePayload("run_requested", f)
+	if err := d.Validate(); err != nil {
+		return envelope.Event{}, err
+	}
+	ev, _, err := s.appendTx(ctx, tx, d, fence{})
+	if err != nil {
+		return envelope.Event{}, err
+	}
+	return ev, tx.Commit(ctx)
 }
 
 // lockRoom takes the room's row lock and reads what a queue move decides on.

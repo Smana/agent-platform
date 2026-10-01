@@ -233,9 +233,25 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fen
 	return ev, false, nil
 }
 
+// Stored returns the event already stored under d's idempotency key, if any. An
+// act whose side effect lies outside the log, such as a run request, checks it
+// first, so a replayed key never repeats that effect.
+func (s *Store) Stored(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
+	ev, dup, err := stored(ctx, s.pool, d)
+	if err != nil {
+		return envelope.Event{}, false, fmt.Errorf("store: key in room %s: %w", d.RoomID, err)
+	}
+	return ev, dup, nil
+}
+
+// rowQuerier is a pool or a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // stored returns the event already stored under d's idempotency key, if any.
-func stored(ctx context.Context, tx pgx.Tx, d envelope.Draft) (envelope.Event, bool, error) {
-	existing, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM events
+func stored(ctx context.Context, q rowQuerier, d envelope.Draft) (envelope.Event, bool, error) {
+	existing, err := scan(q.QueryRow(ctx, `SELECT `+cols+` FROM events
 		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return envelope.Event{}, false, nil

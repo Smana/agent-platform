@@ -19,6 +19,9 @@ var (
 	ErrStaleEpoch = errors.New("stale_epoch")
 	// ErrInvalidDriver is a change to no principal, or to the current holder.
 	ErrInvalidDriver = errors.New("the next driver is a principal other than the holder")
+	// ErrNotLapsed is a lease expiry of a holder who is not a lapsed human, or to
+	// another principal than the room's fallback.
+	ErrNotLapsed = errors.New("the holder is no lapsed human")
 )
 
 // principalKinds are the prefixes a driver can carry.
@@ -29,14 +32,29 @@ var principalKinds = []string{"human:", "system:", "agent:"}
 // d carries the actor, origin and idempotency key; the store fills the type and
 // the DriverPayload. A replayed key returns the stored event and moves nothing.
 func (s *Store) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
-	ev, err := s.changeDriver(ctx, roomID, expect, to, reason, d)
+	ev, err := s.changeDriver(ctx, roomID, expect, to, reason, d, false)
 	if err != nil {
 		return envelope.Event{}, fmt.Errorf("store: change driver of room %s: %w", roomID, err)
 	}
 	return ev, nil
 }
 
-func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
+// ExpireDriver is the lease sweeper's ChangeDriver to the room's fallback, with
+// the reason lease_expired. It moves the token only if a human still holds it at
+// expect and is still lapsed under the row lock (ErrNotLapsed otherwise): one who
+// came back between the sweep's read and this write keeps it.
+func (s *Store) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error) {
+	ev, err := s.changeDriver(ctx, roomID, expect, to, "lease_expired", d, true)
+	if err != nil {
+		return envelope.Event{}, fmt.Errorf("store: expire the driver of room %s: %w", roomID, err)
+	}
+	return ev, nil
+}
+
+// lapsedSQL is a human holder's lapse (§2): disconnected over 2 min or idle over 15.
+const lapsedSQL = `(driver_seen_at < now() - interval '2 minutes' OR driver_acted_at < now() - interval '15 minutes')`
+
+func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft, expire bool) (envelope.Event, error) {
 	if !slices.ContainsFunc(principalKinds, func(p string) bool { return strings.HasPrefix(to, p) && len(to) > len(p) }) {
 		return envelope.Event{}, ErrInvalidDriver
 	}
@@ -53,9 +71,9 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	defer func() { _ = tx.Rollback(ctx) }()
 	var from, fallback string
 	var epoch int64
-	var sealed bool
-	err = tx.QueryRow(ctx, `SELECT driver, driver_epoch, fallback_driver, sealed FROM rooms WHERE room_id = $1 FOR UPDATE`,
-		roomID).Scan(&from, &epoch, &fallback, &sealed)
+	var sealed, lapsed bool
+	err = tx.QueryRow(ctx, `SELECT driver, driver_epoch, fallback_driver, sealed, `+lapsedSQL+` FROM rooms WHERE room_id = $1 FOR UPDATE`,
+		roomID).Scan(&from, &epoch, &fallback, &sealed, &lapsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return envelope.Event{}, ErrNoRoom
 	}
@@ -77,6 +95,9 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	}
 	if to == from {
 		return envelope.Event{}, ErrInvalidDriver
+	}
+	if expire && (!lapsed || !strings.HasPrefix(from, "human:") || to != fallback) {
+		return envelope.Event{}, ErrNotLapsed
 	}
 	if strings.HasPrefix(from, "system:") {
 		fallback = from
@@ -111,8 +132,7 @@ func (s *Store) DriverSeen(ctx context.Context, roomID, principal string, acted 
 // in open rooms that have a system holder to fall back to.
 func (s *Store) LapsedDrivers(ctx context.Context) ([]RoomState, error) {
 	rows, err := s.pool.Query(ctx, `SELECT room_id, driver, driver_epoch, fallback_driver FROM rooms
-		WHERE NOT sealed AND driver LIKE 'human:%' AND fallback_driver <> ''
-		AND (driver_seen_at < now() - interval '2 minutes' OR driver_acted_at < now() - interval '15 minutes')`)
+		WHERE NOT sealed AND driver LIKE 'human:%' AND fallback_driver <> '' AND `+lapsedSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: lapsed drivers: %w", err)
 	}
