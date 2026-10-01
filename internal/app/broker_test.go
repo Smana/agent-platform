@@ -25,6 +25,7 @@ import (
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/runwatch"
@@ -445,6 +446,8 @@ func (fakeRoomLog) Room(context.Context, string) (store.RoomState, error) {
 	return store.RoomState{}, nil
 }
 
+func (fakeRoomLog) Queue(context.Context, string) ([]store.Queued, error) { return nil, nil }
+
 type fakeRuns struct{}
 
 func (fakeRuns) InRoom(string) []runwatch.Run { return nil }
@@ -461,10 +464,12 @@ func TestHumanServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	actor := &humanapi.Actor{}
 	s := humanServer(h, humans, fake.NewClientBuilder().Build(), "agent-system", fakeRoomLog{},
-		fanout.New(fakeRoomLog{}, nil, log), fakeRuns{}, m, log)
-	if s.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || s.Namespace != "agent-system" || s.Metrics != m {
-		t.Fatalf("groups %+v, namespace %q, metrics %p", s.Groups, s.Namespace, s.Metrics)
+		fanout.New(fakeRoomLog{}, nil, log), fakeRuns{}, actor, m, log)
+	if s.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || s.Namespace != "agent-system" || s.Metrics != m ||
+		s.Actor != actor {
+		t.Fatalf("groups %+v, namespace %q, metrics %p, actor %p", s.Groups, s.Namespace, s.Metrics, s.Actor)
 	}
 	writeID(t, clientFile, "web-2")
 	if got := s.WebClient(); got != "web-2" {

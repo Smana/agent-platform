@@ -21,6 +21,13 @@ const (
 
 	defaultMaxMinutes  = 120
 	deadlineToleration = 30 * time.Second
+
+	// RoomBusy is the end reason of a run the room never admitted (F15), the
+	// same string as the bridge API's refusal.
+	RoomBusy = "room_busy"
+	// BusyScope prefixes the idempotency scope of a run's refusal,
+	// broker:busy:<runId>, which the bridge API appends at its first room_busy.
+	BusyScope = "broker:busy:"
 )
 
 // Run is the part of an AgentRun claim (C3) that SP2 relies on.
@@ -94,9 +101,12 @@ func readyTransition(u *unstructured.Unstructured) time.Time {
 
 // EndReason says why a run ended (ruling P15). The AgentRun only ever says
 // Failed/PodFailed; the room knows whether the agent itself ended its conversation.
-// It is pure: a run with no end time (no finishedAt, no Ready transition) is
-// never judged past its deadline.
-func EndReason(r Run, harnessStatus string) string {
+// refused is that the broker answered the run's bridge room_busy (F15): a run that
+// failed with no harness status mirrored never held the room, so it ended
+// room_busy. A refused run cannot succeed, since its harness never starts: one
+// that did was admitted later, and ends on what it did. It is pure: a run with no end time (no finishedAt,
+// no Ready transition) is never judged past its deadline.
+func EndReason(r Run, harnessStatus string, refused bool) string {
 	if r.Deleted {
 		return "deleted"
 	}
@@ -108,6 +118,9 @@ func EndReason(r Run, harnessStatus string) string {
 		return r.Revoked
 	case "Revoked":
 		return "revoked"
+	}
+	if refused && harnessStatus == "" && r.Phase == "Failed" {
+		return RoomBusy
 	}
 	switch harnessStatus {
 	case "finished":

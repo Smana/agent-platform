@@ -313,7 +313,12 @@ func TestReconnectBackoff(t *testing.T) {
 		if d == h.PollEvery {
 			return nil
 		}
-		waits <- d
+		// Never block the hub: past the waits the test reads, it keeps
+		// reconnecting, and a blocked send would hang Run past the test's end.
+		select {
+		case waits <- d:
+		default:
+		}
 		c := make(chan time.Time, 1)
 		c <- time.Now()
 		return c

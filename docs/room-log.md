@@ -12,6 +12,7 @@ with AP-1; the rest of this page's schema is on the AP-1 branch today.
 ```mermaid
 erDiagram
   rooms ||--o{ events : "holds"
+  rooms ||--o{ queue : "queues"
   rooms {
     text room_id PK "C2 id, checked by regex"
     bigint last_seq "the sequencer"
@@ -19,7 +20,8 @@ erDiagram
     text driver
     bigint driver_epoch
     text fallback_driver "system holder a lapsed human falls back to"
-    timestamptz driver_seen_at
+    timestamptz driver_seen_at "holder's connection heartbeat"
+    timestamptz driver_acted_at "holder's last action (phase 4)"
     timestamptz last_event_at
     text bridge_run "bridge lease holder, a run id"
     timestamptz bridge_seen_at
@@ -45,6 +47,14 @@ erDiagram
     text_array redactions
     jsonb payload
   }
+  queue {
+    text room_id PK, FK
+    bigint ref PK "the queued message's seq"
+    text author
+    text text
+    text state "queued, removed, promoted or consumed"
+    text run_id "the run whose brief consumed it"
+  }
 ```
 
 `events` has primary key `(room_id, seq)` and a unique key `(room_id, origin_client, origin_seq)`.
@@ -55,8 +65,8 @@ Later phases add columns and tables (see [migrations](#migrations-with-atlas)).
 | Role | Created by | Can | Used by |
 |---|---|---|---|
 | `rooms_owner` | CNPG, from the `SQLInstance` claim; owns the database | Owns the schema. No `CREATEROLE` | The Atlas migration |
-| `rooms_broker` | CNPG managed role, owning no database | `SELECT`, `INSERT` on `events`; `SELECT`, `INSERT` and (Ruling Y) a column-level `UPDATE` on `rooms` | The broker |
-| `rooms_retention` | CNPG managed role, owning no database | `DELETE` on `events` and `rooms`; `SELECT` on `events.room_id` and on the expiry columns of `rooms` only; both narrowed by row-level security to expired rooms | The retention job |
+| `rooms_broker` | CNPG managed role, owning no database | `SELECT`, `INSERT` on `events`; `SELECT`, `INSERT` and (Ruling Y) a column-level `UPDATE` on `rooms`; `SELECT`, `INSERT` and an `UPDATE` of `state` and `run_id` only on `queue` (phase 4) | The broker |
+| `rooms_retention` | CNPG managed role, owning no database | `DELETE` on `events`, `queue` and `rooms`; `SELECT` on `events.room_id`, `queue.room_id` and on the expiry columns of `rooms` only; both narrowed by row-level security to expired rooms | The retention job |
 
 Each role's password is generated in the cluster by an External Secrets `Password` generator, never
 seeded by hand, through the `SQLInstance`'s `credentials.source: generated` (CC-S1, ruling P7). The
@@ -85,6 +95,11 @@ one.
 | The broker updates only what it must move on `rooms` | Grant: a column-level `UPDATE` instead of the table-wide one, and no `FOR ALL` policy | `TestBrokerRoleIsAppendOnly` (`shorten retention`, `create a sealed room`, `delete a room`) | AP-1, Ruling Y |
 | Retention deletes only sealed rooms closed longer ago than their retention | Row-level security on `rooms_retention`: `closed_at < now() - retention`; Ruling Y adds `sealed` | `TestRetentionDeletesOnlyExpiredSealedRooms`, `TestPurgeExpired` | RLS AP-1; `sealed` AP-1, Ruling Y |
 | Retention never reads a transcript | Grant: `rooms_retention` may `SELECT` only `events.room_id` and the expiry columns of `rooms` (`room_id`, `sealed`, `closed_at`, `retention`); its `SELECT` policies show only expired rooms (Ruling AX) | `TestRetentionRoleCannotReadTranscripts` (`42501`, and a live room's rows invisible) | AP-1, Ruling AX |
+| The driver token moves only with its epoch, and on the record | Phase 4's column grant on the driver columns; trigger `rooms_driver_fenced`: `driver_epoch` steps by one, `driver` and `fallback_driver` change only with it, never in a sealed room, and the fallback is the previous system holder; deferred `rooms_epoch_has_event`: each new epoch has its `driver` event, appended after the move and naming its `from` and `to`, by commit. The store fences a change on the expected epoch under the row lock (`ErrStaleEpoch`), and refuses a change to no principal or to the holder (`ErrInvalidDriver`) and a key stored for another event type (`ErrKeyConflict`) | `TestDriverChangeIsFenced`, `TestDriverChangeRefusesBadTargetsAndForeignKeys`; `TestBrokerRoleIsAppendOnly` (the `move the driver …` and `move the fallback …` cases) | AP-4 |
+| A queued message is an event, and its text and author never change | Trigger `queue_is_its_event`: a row enters only with its queued message, by that event's actor and with its text, never in a sealed room; foreign key `(room_id, ref)` to `events (room_id, seq)`; `run_id` is a C2 id; the broker may `UPDATE` only `queue.state` and `queue.run_id` | `TestBrokerRoleIsAppendOnly` (`queue a message with no event`, `queue someone's message as another's`, `queue into a sealed room`; `rewrite a queued message`, `re-attribute a queued message`: `42501`) | AP-4 |
+| A queued message moves once | The same trigger, and `SetQueued` (`ErrBadMove`): a row enters `queued`, naming no run, and moves out of it once, to `removed` (no run), `promoted` or `consumed` (naming the run); the diagram below | `TestQueueStateMachine`; `TestBrokerRoleIsAppendOnly` (`re-queue a queued message`, `consume without naming the run`, `move a removed message again`, `enter the queue as consumed`, `enter the queue naming a run`) | AP-4 |
+| A brief's messages are consumed exactly when its run is on the record | `RecordRunRequest`: one transaction moves the quoted messages still queued to `consumed` and appends `state_changed{run_requested}` naming them; a replayed key moves nothing | `TestRecordRunRequest`, `TestRecordRunRequestRefusals` | AP-4 |
+| A lease expires only from a lapsed human | `ExpireDriver` re-checks, under the row lock, that a human holds the token at the expected epoch, still disconnected over 2 min or idle over 15 min, and that the target is the fallback (`ErrNotLapsed`) | `TestExpireDriver` | AP-4 |
 | A full room seals itself | The store: at 100 000 events or 256 MiB the append also writes the seal | `TestLimitSealsTheRoom` | AP-1 |
 | An oversize payload keeps its slot | The store replaces a payload over 64 KiB with a stub | `TestOversizePayloadIsStubbed` | AP-1 |
 | A value Postgres refuses keeps its slot | `IsDataError` spots SQLSTATE class 22; the API stores a stub instead | `TestNULIsADataError`, `TestARefusedPayloadBecomesAStub` | AP-1 |
@@ -93,6 +108,19 @@ one.
 
 The exact column list of the `UPDATE` grant and the trigger's error messages are fixed by the AP-1
 migration; this page describes their contract.
+
+A queued message's row (phase 4):
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued: Enqueue, with its message event
+  queued --> removed: its author or the driver
+  queued --> promoted: the driver, as steering for the running run
+  queued --> consumed: the next run's brief
+  removed --> [*]
+  promoted --> [*]
+  consumed --> [*]
+```
 
 ## Append
 
@@ -155,7 +183,7 @@ enforces: the role cannot see, let alone delete, anything else.
 | `Room.spec.retention` | `<n>d`, 1 to 9999 days; default `90d` (OD-17). Copied into `rooms.retention` when the row is created and never changed afterwards (Ruling Y) |
 | Clock | Starts at `closed_at`, the seal |
 | Sizing | About 4 MB per run; 20 runs a day for 90 days is about 7 GB on a 20 Gi volume. `RoomLogDiskFilling` fires at 80 % |
-| Later tables | Phase 4's `queue` and phase 5's `approvals` add their own `DELETE` before the `rooms` one, and a matching policy |
+| Later tables | Phase 4's `queue` references `events`, so it is deleted first, before the events and the `rooms` row; readable by retention only as `room_id` of an expired room (Ruling AX); phase 5's `approvals` does the same |
 
 A forked room copies its source's events (phase 6), so a fork survives its source's purge.
 
@@ -165,11 +193,11 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 
 | Step | Rule |
 |---|---|
-| `hello` | `ClaimBridge` locks the row. Another run keeps the lease while it is still live in the `AgentRun` watch **and** was seen within 2 minutes; otherwise the caller takes it |
+| `hello` | `ClaimBridge` locks the row. Another run keeps the lease for as long as it is live in the `AgentRun` watch, however long since its bridge was seen (ruling SBB): a quiet or cut-off bridge may still have a harness at work. Otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a quiet run (a long LLM call, a pending confirmation) keeps its room |
+| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
 | A run that ended | Frees the lease at once |
-| A holder that died without ending its run | Blocks the room for at most 2 minutes |
+| A holder whose pod died | Blocks the room until its run ends: a lost pod ends the run `PodLost` (F12), and a hung one ends at its deadline |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |
 
 The broker cannot refuse to *create* a second run (it creates none), but no second run joins the
@@ -191,7 +219,9 @@ and applies only if `UPDATE rooms … WHERE driver_epoch = $epoch` matches.
 | Migration | Adds | Phase |
 |---|---|---|
 | `20260927120000_rooms.sql` | `rooms`, `events`, the grants and row-level security; Ruling Y's trigger, check and column grant | 1 / AP-1 |
-| `20261001120000_driver_queue.sql` | `rooms.driver_acted_at`, the `queue` table | 4 / AP-4 |
+| `20261001120000_driver_queue.sql` | `rooms.driver_acted_at`, the broker's `UPDATE` grant on the driver columns, the epoch triggers, the `queue` table | 4 / AP-4 |
+| `20261001130000_delivery_indexes.sql` | The partial indexes `events_deliveries` and `events_acks` a bridge stream reads; `CONCURRENTLY`, outside a transaction (`atlas:txmode none`) | 4 / AP-4 |
+| `20261001140000_brief_index.sql` | The partial index `events_brief`: agent handoffs and review verdicts, run requests and participants, which `start_run` reads; `CONCURRENTLY`, outside a transaction | 4 / AP-4 |
 | `20261005120000_approvals.sql` | The `approvals` table | 5 / AP-5 |
 
 **`atlas.sum` must match the directory.** It is a checksum of every migration file and of their

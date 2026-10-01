@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The broker's read-only room view, embedded from internal/humanapi/ui/dist",
+  "description": "The broker's room UI, embedded from internal/humanapi/ui/dist",
   "license": "Apache-2.0",
   "scripts": {
     "build": "esbuild src/main.ts --bundle --minify --format=esm --target=es2022 --outfile=../internal/humanapi/ui/dist/app.js && cp src/index.html src/app.css ../internal/humanapi/ui/dist/",

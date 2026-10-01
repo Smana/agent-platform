@@ -97,7 +97,7 @@ func (k *keyPair) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 // httpServer is the :8443 listener with its bounds. WriteTimeout is the one
 // exception, 0: the SSE stream is a response that never ends, so each
 // response gets a write deadline in Routes, which the stream replaces with one per
-// write (streamWriteWait).
+// write (streamWriteWait), disarmed while the stream is idle.
 func (s *Server) httpServer(addr string, cfg *tls.Config) *http.Server {
 	srv := &http.Server{Addr: addr, Handler: s.Routes(), TLSConfig: cfg,
 		ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: readTimeout, WriteTimeout: 0,
