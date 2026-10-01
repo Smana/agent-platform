@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -27,6 +28,13 @@ func TestDeliverable(t *testing.T) {
 	queued.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "later", Delivery: envelope.DeliveryQueued})
 	if _, _, ok := Deliverable(queued, "7f3cq2xz"); ok {
 		t.Fatal("a queued message waits for the next brief")
+	}
+	for _, d := range []envelope.Delivery{envelope.DeliveryQueued, envelope.DeliveryNone} { // addressed, yet not steering
+		addressed := steer
+		addressed.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "x", To: []string{"agent:7f3cq2xz"}, Delivery: d})
+		if _, _, ok := Deliverable(addressed, "7f3cq2xz"); ok {
+			t.Fatalf("a %s message addressed to the run", d)
+		}
 	}
 	intr := envelope.Event{Seq: 13, Type: envelope.StateChanged, Payload: envelope.StatePayload("interrupt", map[string]any{"runId": "7f3cq2xz"})}
 	if ev, _, ok := Deliverable(intr, "7f3cq2xz"); !ok || ev != "interrupt" {
@@ -86,6 +94,7 @@ func TestStreamReplaysWhatTheRunHasNotAcknowledged(t *testing.T) {
 	defer srv.Close()
 	sc, stop := openStream(t, srv, runA)
 	defer stop()
+	defer time.AfterFunc(5*time.Second, stop).Stop()
 	expectFrame(t, sc, wire.EventDeliver, `{"ref":5,"text":"use v2"}`)
 	expectFrame(t, sc, wire.EventInterrupt, `{"ref":6}`)
 	expectPing(t, sc)
@@ -100,6 +109,7 @@ func TestStreamFollowsTheRoom(t *testing.T) {
 	defer srv.Close()
 	sc, stop := openStream(t, srv, runA)
 	defer stop()
+	defer time.AfterFunc(5*time.Second, stop).Stop()
 	expectPing(t, sc)
 	human(t, log, 1, envelope.Message, steering("now", runA))
 	expectFrame(t, sc, wire.EventDeliver, `{"ref":1,"text":"now"}`)
@@ -111,7 +121,13 @@ func TestStreamRefusesWithoutItsMark(t *testing.T) {
 	s, _, w := newServer(t)
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
 	s.LastAck = func(context.Context, string, string) (int64, error) { return 0, errors.New("down") }
-	if rec := call(t, s.Routes(), http.MethodGet, "/v1/bridge/stream", "run:"+runA, nil); rec.Code != http.StatusServiceUnavailable {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second) // a stream that opens anyway ends here
+	defer cancel()
+	r := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/bridge/stream", nil)
+	r.Header.Set("Authorization", "Bearer run:"+runA)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, r)
+	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("an unreadable ack: %d", rec.Code)
 	}
 	s.LastAck, s.Hub = nil, nil

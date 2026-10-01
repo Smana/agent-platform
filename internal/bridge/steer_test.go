@@ -141,7 +141,9 @@ func TestStreamBoundsAnEventsData(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls := 0
-			err = br.Stream(t.Context(), func(string, []byte) error { calls++; return c.hook })
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second) // a stream that reads on ends here, without error
+			defer cancel()
+			err = br.Stream(ctx, func(string, []byte) error { calls++; return c.hook })
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("Stream = %v", err)
 			}
