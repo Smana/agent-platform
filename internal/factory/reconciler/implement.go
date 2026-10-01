@@ -79,7 +79,7 @@ func (r *Reconciler) adopt(ctx context.Context, t *v1alpha1.Task) (bool, error) 
 		}
 		now := metav1.NewTime(r.Now())
 		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: nextTrigger(t), Started: &now})
-		t.Status.NextTrigger = ""
+		t.Status.NextTrigger, t.Status.NextRole = "", ""
 		r.to(t, phaseFor(x.Role), "adopted")
 		return true, nil
 	}
@@ -250,7 +250,8 @@ func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {
-		return r.startVerifier(ctx, t, next)
+		r.requestVerifier(t, next)
+		return nil
 	}
 	return r.ready(ctx, t)
 }

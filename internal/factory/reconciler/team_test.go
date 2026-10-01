@@ -19,6 +19,7 @@ import (
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
 
@@ -42,7 +43,7 @@ func pr12At(head string) forge.PR {
 }
 
 // teamRig runs a task of template to its implementer's success with PR 12 open at head1: the
-// reviewer rrrrrrrr is started. Tests name the runs after it with g.ids.
+// template's first verifier, rrrrrrrr, is started. Tests name the runs after it with g.ids.
 func teamRig(t *testing.T, template string, c client.Client) *rig {
 	t.Helper()
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
@@ -56,7 +57,7 @@ func teamRig(t *testing.T, template string, c client.Client) *rig {
 	g.f.SetPR(pr12At(head1))
 	g.runs.set("iiiiiiii", "Succeeded")
 	g.log.end("iiiiiiii", "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 1)
+	g.reconcile(t, "3buqdlot", 2) // → Queued for the verifier → started
 	return g
 }
 
@@ -70,7 +71,7 @@ func (g *rig) finish(id, phase, reason string) {
 
 func TestPairStartsAReviewerOnTheBranch(t *testing.T) {
 	g := pairRig(t)
-	tk := g.reconcile(t, "3buqdlot", 1)
+	tk := g.reconcile(t, "3buqdlot", 2)
 	s := g.runs.specs["rrrrrrrr"]
 	if tk.Status.Phase != v1alpha1.PhaseReviewing || s.Role != "reviewer" || s.TaskURL != "https://github.com/Smana/cloud-native-ref/pull/12" ||
 		s.BaseRef != "agent/3buqdlot" || s.TaskText != "" || s.Branch != "agent/3buqdlot" {
@@ -104,7 +105,7 @@ func TestChangesThenApprove(t *testing.T) {
 	}
 	g.log.verdict("ssssssss", "approve", head2[:7], "Looks right.")
 	g.finish("ssssssss", "Succeeded", "agent_finished")
-	tk = g.reconcile(t, "3buqdlot", 1)
+	tk = g.reconcile(t, "3buqdlot", 2)
 	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" || tk.Status.Runs[3].Verdict != "approve" ||
 		tk.Status.ReviewRounds != 1 || len(g.runs.specs) != 4 {
 		t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Verdict, tk.Status.Runs)
@@ -150,7 +151,7 @@ func TestNoVerdictRetriesThenEscalates(t *testing.T) {
 	g := pairRig(t)
 	g.ids("ssssssss", "tttttttt")
 	g.finish("rrrrrrrr", "Failed", "agent_error")
-	tk := g.reconcile(t, "3buqdlot", 1)
+	tk := g.reconcile(t, "3buqdlot", 2)
 	if tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "none" || tk.Status.Runs[1].Verdict != "none" ||
 		tk.Status.ReviewRounds != 1 || g.runs.specs["ssssssss"].Role != "reviewer" || tk.Status.Runs[2].HeadSHA != head1 {
 		t.Fatalf("%s %s %d %+v", tk.Status.Phase, tk.Status.Verdict, tk.Status.ReviewRounds, tk.Status.Runs)
@@ -159,11 +160,11 @@ func TestNoVerdictRetriesThenEscalates(t *testing.T) {
 		t.Fatalf("%s", issue)
 	}
 	g.finish("ssssssss", "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.ReviewRounds != 2 || g.runs.specs["tttttttt"].Role != "reviewer" {
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.ReviewRounds != 2 || g.runs.specs["tttttttt"].Role != "reviewer" {
 		t.Fatalf("%d %+v", tk.Status.ReviewRounds, tk.Status.Runs)
 	}
 	g.finish("tttttttt", "Succeeded", "agent_finished")
-	tk = g.reconcile(t, "3buqdlot", 1)
+	tk = g.reconcile(t, "3buqdlot", 2)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "no_verdict" || tk.Status.Verdict != "none" || len(g.runs.specs) != 4 {
 		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
 	}
@@ -187,7 +188,7 @@ func TestAnApproveOfAnotherHeadIsNoVerdict(t *testing.T) {
 			g.f.SetPR(pr12At(c.headNow))
 			g.log.verdict("rrrrrrrr", "approve", c.commit, "LGTM")
 			g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-			tk := g.reconcile(t, "3buqdlot", 1)
+			tk := g.reconcile(t, "3buqdlot", 2)
 			if tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "none" || tk.Status.ReviewRounds != 1 ||
 				g.runs.specs["ssssssss"].Role != "reviewer" {
 				t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Verdict, tk.Status.Runs)
@@ -197,7 +198,7 @@ func TestAnApproveOfAnotherHeadIsNoVerdict(t *testing.T) {
 	g := pairRig(t)
 	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
 		t.Fatalf("the full sha of the head it was given: %s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 }
@@ -220,7 +221,7 @@ func TestAVerdictAfterTheRunsEndIsIgnored(t *testing.T) {
 	g.ids("ssssssss")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
 	g.log.verdict("rrrrrrrr", "approve", head1, "late")
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "none" {
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "none" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 }
@@ -244,7 +245,7 @@ func TestACappedRoomReadIsNoVerdict(t *testing.T) {
 	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
 	g.r.Rooms = endlessLog{g.log}
-	tk := g.reconcile(t, "3buqdlot", 1)
+	tk := g.reconcile(t, "3buqdlot", 2)
 	if tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "none" || tk.Status.Runs[1].Reason != "agent_finished" {
 		t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Verdict, tk.Status.Runs)
 	}
@@ -274,20 +275,21 @@ func TestAReviewerIsStartedOnceThroughALostWrite(t *testing.T) {
 	g.f.SetBranch("agent/3buqdlot", 12)
 	g.f.SetPR(pr12At(head1))
 	g.runs.set("iiiiiiii", "Running")
-	g.reconcile(t, "3buqdlot", 1) // the PR is found
+	g.reconcile(t, "3buqdlot", 2) // the PR is found
 	g.finish("iiiiiiii", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
 	lose = true
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the lost write is returned")
 	}
 	tk := g.reconcile(t, "3buqdlot", 2)
 	if len(g.runs.specs) != 2 || len(tk.Status.Runs) != 2 || tk.Status.Runs[1].ID != "rrrrrrrr" || tk.Status.Runs[1].HeadSHA != "" ||
-		tk.Status.Phase != v1alpha1.PhaseReviewing {
+		tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.NextRole != "" {
 		t.Fatalf("runs %d: %+v", len(g.runs.specs), tk.Status.Runs)
 	}
 	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Verdict != "none" || g.runs.specs["ssssssss"].Role != "reviewer" {
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Verdict != "none" || g.runs.specs["ssssssss"].Role != "reviewer" {
 		t.Fatalf("an adopted run's approve is no verdict: %s %+v", tk.Status.Verdict, tk.Status.Runs)
 	}
 }
@@ -298,7 +300,7 @@ func TestAHumanRevisionSkipsTheReviewer(t *testing.T) {
 	g.ids("jjjjjjjj")
 	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 1) // AwaitingHuman
+	g.reconcile(t, "3buqdlot", 2) // AwaitingHuman
 	pr := pr12At(head1)
 	pr.Reviews = []forge.Review{changes(901, "Smana", "rename it", -time.Minute)}
 	g.f.SetPR(pr)
@@ -306,44 +308,219 @@ func TestAHumanRevisionSkipsTheReviewer(t *testing.T) {
 		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
 	}
 	g.finish("jjjjjjjj", "Succeeded", "agent_finished")
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 3 {
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 3 {
 		t.Fatalf("%s %d runs", tk.Status.Phase, len(g.runs.specs))
 	}
 }
 
-// trio: the reviewer's approve starts the tester, on the same head; the tester's approve is ready.
-func TestTrioRunsTheTesterAfterTheReviewer(t *testing.T) {
+// trio is [implementer, tester, reviewer] (§3): the tester's approve queues the reviewer, on the
+// same head; the reviewer's approve is ready.
+func TestTrioRunsTheReviewerAfterTheTester(t *testing.T) {
 	g := teamRig(t, "trio", nil)
 	g.ids("eeeeeeee")
-	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
+	if s := g.runs.specs["rrrrrrrr"]; s.Role != "tester" || s.BaseRef != "agent/3buqdlot" {
+		t.Fatalf("the first verifier: %+v", s)
+	}
+	g.log.verdict("rrrrrrrr", "approve", head1, "Tests pass.")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-	tk := g.reconcile(t, "3buqdlot", 1)
+	tk := g.reconcile(t, "3buqdlot", 2)
 	s := g.runs.specs["eeeeeeee"]
-	if tk.Status.Phase != v1alpha1.PhaseReviewing || s.Role != "tester" || s.BaseRef != "agent/3buqdlot" || tk.Status.Runs[2].HeadSHA != head1 {
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || s.Role != "reviewer" || tk.Status.Runs[2].HeadSHA != head1 || tk.Status.NextRole != "" {
 		t.Fatalf("%s %+v", tk.Status.Phase, s)
 	}
-	g.log.verdict("eeeeeeee", "approve", head1, "Tests pass.")
+	g.log.verdict("eeeeeeee", "approve", head1, "LGTM")
 	g.finish("eeeeeeee", "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
-	// A tester without a verdict is run again, as a tester, within trio's one round; then it escalates.
+	// A reviewer without a verdict is run again, as a reviewer, on the head the tester approved.
 	g = teamRig(t, "trio", nil)
 	g.ids("eeeeeeee", "ffffffff")
-	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
+	g.log.verdict("rrrrrrrr", "approve", head1, "Tests pass.")
 	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 1)
+	g.reconcile(t, "3buqdlot", 2)
 	g.finish("eeeeeeee", "Failed", "agent_error")
-	if tk = g.reconcile(t, "3buqdlot", 1); g.runs.specs["ffffffff"].Role != "tester" || tk.Status.ReviewRounds != 1 {
+	if tk = g.reconcile(t, "3buqdlot", 2); g.runs.specs["ffffffff"].Role != "reviewer" || tk.Status.ReviewRounds != 1 {
 		t.Fatalf("%d %+v", tk.Status.ReviewRounds, g.runs.specs["ffffffff"])
-	}
-	g.finish("ffffffff", "Failed", "agent_error")
-	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "no_verdict" {
-		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	if got := g.r.nextVerifier(tk, "triager"); got != "" {
 		t.Fatalf("a role outside the template has no next verifier: %q", got)
 	}
+}
+
+// I2: the verifiers of one chain approve one head. A push during the second verifier makes its
+// approve stale, and the chain starts again from the first verifier on the new head: a ready task
+// never holds an approve of a head another verifier did not see.
+func TestTrioApproveIsNotCarriedToAMovedHead(t *testing.T) {
+	g := teamRig(t, "trio", nil) // tester rrrrrrrr on head1
+	g.ids("eeeeeeee", "ffffffff", "gggggggg")
+	g.log.verdict("rrrrrrrr", "approve", head1, "Tests pass.")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2) // reviewer eeeeeeee on head1
+	g.f.SetPR(pr12At(head2))      // a push during the reviewer
+	g.log.verdict("eeeeeeee", "approve", head1, "LGTM")
+	g.finish("eeeeeeee", "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs["ffffffff"]; s.Role != "tester" || tk.Status.Runs[3].HeadSHA != head2 || tk.Status.Phase != v1alpha1.PhaseReviewing {
+		t.Fatalf("the chain starts again from the tester on head2: %+v %+v", s, tk.Status.Runs)
+	}
+	g.log.verdict("ffffffff", "approve", head2, "Tests pass.")
+	g.finish("ffffffff", "Succeeded", "agent_finished")
+	tk = g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs["gggggggg"]; s.Role != "reviewer" || tk.Status.Phase != v1alpha1.PhaseReviewing {
+		t.Fatalf("then the reviewer, on head2: %+v %s", s, tk.Status.Phase)
+	}
+	// The head moves between the tester's approve and the reviewer's start: the tester again.
+	g = teamRig(t, "trio", nil)
+	g.ids("eeeeeeee")
+	g.log.verdict("rrrrrrrr", "approve", head1, "Tests pass.")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+	g.f.SetPR(pr12At(head2))
+	tk = g.reconcile(t, "3buqdlot", 1)
+	if s := g.runs.specs["eeeeeeee"]; s.Role != "tester" || tk.Status.Runs[2].HeadSHA != head2 {
+		t.Fatalf("a verifier never starts on a head the one before did not approve: %+v", s)
+	}
+}
+
+// I1, C4: no run starts while a human holds the room's driver token, a verifier included. The
+// reviewer waits in Queued and starts once the driver is back with the factory.
+func TestAHumanDriverHoldsTheReviewer(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Triage = staticWith("pair")
+	g.ids("iiiiiiii", "rrrrrrrr")
+	g.reconcile(t, "3buqdlot", 3)
+	g.f.SetBranch("agent/3buqdlot", 12)
+	g.f.SetPR(pr12At(head1))
+	drive := func(driver string) {
+		var room roomv1.Room
+		if err := g.c.Get(t.Context(), keyFor("3buqdlot"), &room); err != nil {
+			t.Fatal(err)
+		}
+		room.Status.Driver = driver
+		if err := g.c.Status().Update(t.Context(), &room); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive("human:smana")
+	g.finish("iiiiiiii", "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if _, started := g.runs.specs["rrrrrrrr"]; started || tk.Status.Phase != v1alpha1.PhaseQueued ||
+		tk.Status.Reason != "waiting_human_driver" || tk.Status.NextRole != "reviewer" {
+		t.Fatalf("a reviewer started while a human drives: %s %s %+v", tk.Status.Phase, tk.Status.Reason, tk.Status.Runs)
+	}
+	drive("system:factory")
+	if tk = g.reconcile(t, "3buqdlot", 1); g.runs.specs["rrrrrrrr"].Role != "reviewer" || tk.Status.Phase != v1alpha1.PhaseReviewing {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+}
+
+// A maintainer's "Request changes" submitted while a verifier was queued wins: the revision runs
+// instead, and the review is never marked handled behind a verifier that cannot act on it.
+func TestAMaintainersReviewWinsOverAQueuedVerifier(t *testing.T) {
+	g := pairRig(t)
+	g.ids("jjjjjjjj")
+	g.log.verdict("rrrrrrrr", "changes", head1, "Add a test.")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2) // implementer jjjjjjjj
+	g.finish("jjjjjjjj", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+	pr := pr12At(head1)
+	pr.Reviews = []forge.Review{changes(902, "Smana", "rename it", -time.Minute)}
+	g.f.SetPR(pr)
+	g.ids("kkkkkkkk")
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if s := g.runs.specs["kkkkkkkk"]; s.Role != "implementer" || tk.Status.Runs[3].Trigger != "human" || tk.Status.NextRole != "" ||
+		g.log.ref(902) == 0 {
+		t.Fatalf("%+v %+v", s, tk.Status.Runs)
+	}
+}
+
+// M2: a lost review run escalates, with SP2's reason when the room has it.
+func TestALostReviewerEscalates(t *testing.T) {
+	g := pairRig(t)
+	_ = g.runs.Delete(t.Context(), "rrrrrrrr")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "run_lost" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g = pairRig(t)
+	_ = g.runs.Delete(t.Context(), "rrrrrrrr")
+	g.log.end("rrrrrrrr", "Revoked", "deleted")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "deleted" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// M3: a finished review run waits for the room's end event before its verdict is read: F3's bound
+// is that event.
+func TestAFinishedReviewerWaitsForTheRoomsEnd(t *testing.T) {
+	g := pairRig(t)
+	g.runs.set("rrrrrrrr", "Succeeded")
+	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Verdict != "" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
+	}
+	g.log.end("rrrrrrrr", "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
+	}
+}
+
+// M6: the run's words stop at its first end; a second end (a claim collected later) reopens nothing.
+func TestAVerdictBetweenTwoEndsIsIgnored(t *testing.T) {
+	g := pairRig(t)
+	g.ids("ssssssss")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.log.verdict("rrrrrrrr", "approve", head1, "late")
+	g.log.end("rrrrrrrr", "Revoked", "deleted")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Verdict != "none" || tk.Status.NextRole != "reviewer" {
+		t.Fatalf("%s %s", tk.Status.Verdict, tk.Status.NextRole)
+	}
+}
+
+// M1: an unreadable room says so while it is retried; a room the broker has no log for escalates at
+// once, any other failure after roomLogPatience past the run's end. Never an approve.
+func TestAnUnreadableRoomEscalatesInTime(t *testing.T) {
+	g := pairRig(t)
+	g.log.verdict("rrrrrrrr", "approve", head1, "LGTM")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.r.Rooms = brokenLog{fakeLog: g.log, err: errors.New("connection refused")}
+	at := func(d time.Duration) (*v1alpha1.Task, error) {
+		g.r.Now = func() time.Time { return now.Add(d) }
+		_, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
+		return g.reconcile(t, "3buqdlot", 0), err
+	}
+	if tk, _ := at(0); tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Runs[1].Finished == nil {
+		t.Fatal("the run's end is waited for, from when it was seen")
+	}
+	tk, err := at(2 * time.Minute) // past runEndGrace: the end is the AgentRun's; the verdict read fails
+	if err == nil || tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Reason != "waiting_room_log" {
+		t.Fatalf("%v %s %s", err, tk.Status.Phase, tk.Status.Reason)
+	}
+	if tk, _ = at(roomLogPatience - time.Second); tk.Status.Phase != v1alpha1.PhaseReviewing {
+		t.Fatal("within the patience")
+	}
+	if tk, _ = at(roomLogPatience); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "room_log_unreadable" ||
+		tk.Status.Verdict == "approve" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g = pairRig(t)
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.r.Rooms = brokenLog{fakeLog: g.log, err: &rooms.APIError{Status: 404, Reason: "no_room"}}
+	_, _ = at(0)
+	if tk, _ = at(2 * time.Minute); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "room_log_unreadable" {
+		t.Fatalf("no log for the room escalates at once: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// brokenLog cannot read the room's log.
+type brokenLog struct {
+	*fakeLog
+	err error
+}
+
+func (l brokenLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
+	return nil, 0, l.err
 }
 
 // A pull request merged or closed while it was reviewed ends the task, whatever the verdict.
@@ -356,7 +533,7 @@ func TestAPullRequestMergedDuringTheReview(t *testing.T) {
 			}
 			g.finish("rrrrrrrr", "Succeeded", "agent_finished")
 			g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", HeadSHA: head1})
-			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseDone || len(g.runs.specs) != 2 {
+			if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseDone || len(g.runs.specs) != 2 || tk.Status.NextRole != "" {
 				t.Fatalf("%s %d runs", tk.Status.Phase, len(g.runs.specs))
 			}
 		})
@@ -412,5 +589,36 @@ func TestCleanLogSanitisesHandoffs(t *testing.T) {
 		Commit: "abc1234", Summary: "done ![x](https://evil.example/p.png) n0nce234"})}, {Type: envelope.Message, Payload: []byte(`"x"`)}}, "n0nce234")
 	if len(evs) != 1 || !strings.Contains(string(evs[0].Payload), `done ⟦image: x⟧ ⟦nonce⟧`) {
 		t.Fatalf("%d %s", len(evs), evs[0].Payload)
+	}
+}
+
+// M5: a retry after the rounds ran out keeps them spent, says so, and the next changes escalates.
+func TestARetryAfterTheRoundsKeepsThemSpent(t *testing.T) {
+	g := pairRig(t)
+	g.ids("jjjjjjjj", "ssssssss", "kkkkkkkk", "tttttttt", "llllllll", "uuuuuuuu")
+	for _, ids := range [][2]string{{"rrrrrrrr", "jjjjjjjj"}, {"ssssssss", "kkkkkkkk"}} {
+		g.log.verdict(ids[0], "changes", head1, "Still wrong.")
+		g.finish(ids[0], "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2)
+		g.finish(ids[1], "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2)
+	}
+	g.log.verdict("tttttttt", "changes", head1, "Still wrong.")
+	g.finish("tttttttt", "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Reason != "review_rounds_exhausted" {
+		t.Fatal(tk.Status.Reason)
+	}
+	g.f.SetComments(7, retryBy(77, "Smana", -time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 2) // → Queued → implementer llllllll
+	if tk.Status.ReviewRounds != 2 || g.runs.specs["llllllll"].Role != "implementer" ||
+		!strings.Contains(strings.Join(g.f.Comments(7), "\n"), "review rounds stay spent") {
+		t.Fatalf("%d %q", tk.Status.ReviewRounds, g.f.Comments(7))
+	}
+	g.finish("llllllll", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2) // reviewer uuuuuuuu
+	g.log.verdict("uuuuuuuu", "changes", head1, "Still wrong.")
+	g.finish("uuuuuuuu", "Succeeded", "agent_finished")
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "review_rounds_exhausted" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }

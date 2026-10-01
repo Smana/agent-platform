@@ -97,22 +97,29 @@ func briefEvent(e envelope.Event) bool {
 	return e.Type == envelope.Message && json.Unmarshal(e.Payload, &p) == nil && p.Kind == envelope.KindReviewVerdict
 }
 
-// lateReviews re-reads the pull request just before a revision starts. A maintainer's review
-// submitted while the task waited in Queued joins this run: after it, the run's start would put
-// the review before "since" for good. A dismissed review is skipped like any non-CHANGES_REQUESTED
-// one. A pull request merged or closed meanwhile is not revised: the task goes back to
-// AwaitingHuman, which ends it (done is true).
-func (r *Reconciler) lateReviews(ctx context.Context, t *v1alpha1.Task) (bool, error) {
+// lateReviews re-reads the pull request just before a run starts. A maintainer's review submitted
+// while the task waited in Queued joins this run: after it, the run's start would put the review
+// before "since" for good. A dismissed review is skipped like any non-CHANGES_REQUESTED one. Such a
+// review wins over a queued verifier: the revision runs instead, and goes back to the maintainer
+// (Δ5), so the review is never marked handled behind a verifier that cannot act on it. A pull
+// request merged or closed meanwhile is not run on: the task goes back to AwaitingHuman, which
+// ends it (done is true). pr is the pull request as read, for the run to start on.
+func (r *Reconciler) lateReviews(ctx context.Context, t *v1alpha1.Task) (forge.PR, bool, error) {
 	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
 	if err != nil {
-		return false, err
+		return pr, false, err
 	}
 	if pr.State != "OPEN" {
-		t.Status.NextTrigger = ""
+		t.Status.NextTrigger, t.Status.NextRole = "", ""
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
-		return true, nil
+		return pr, true, nil
 	}
-	return false, r.queueReviews(ctx, t, pr, r.changesRequested(t, pr))
+	rvs := r.changesRequested(t, pr)
+	if len(rvs) > 0 && t.Status.NextRole != "" {
+		t.Status.NextRole = ""
+		return pr, false, r.revise(ctx, t, pr, rvs)
+	}
+	return pr, false, r.queueReviews(ctx, t, pr, rvs)
 }
 
 // changesRequested are the maintainers' "Request changes" reviews on the task's own pull request
@@ -247,6 +254,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	markHandled(t, c.ID)
+	after := t.Status.Reason
 	t.Status.Retries++
 	t.Status.NextTrigger = "retry"
 	record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "retry") })
@@ -255,7 +263,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		next = v1alpha1.PhaseTriaged
 	}
 	r.to(t, next, "")
-	narrateLater(t, narrate.Retrying(t, c.Author))
+	narrateLater(t, narrate.Retrying(t, c.Author, after))
 	return nil
 }
 

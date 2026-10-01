@@ -75,15 +75,33 @@ type RunEnd struct {
 // where the AgentRun only says Failed. Only the broker's own run_phase counts.
 func LastRunEnd(evs []envelope.Event, runID string) (RunEnd, bool) {
 	for i := len(evs) - 1; i >= 0; i-- {
-		e := evs[i]
-		// The broker stamps the actor from the credential, so its id alone names the writer.
-		if e.Type != envelope.StateChanged || e.RunID != runID || e.Origin != envelope.OriginBroker || e.Actor.ID != brokerActor {
-			continue
+		if end, ok := runEnd(evs[i], runID); ok {
+			return end, true
 		}
-		var p struct{ Kind, Phase, Reason string }
-		if json.Unmarshal(e.Payload, &p) == nil && p.Kind == "run_phase" && p.Reason != "" {
-			return RunEnd{Phase: p.Phase, Reason: p.Reason, Seq: e.Seq}, true
+	}
+	return RunEnd{}, false
+}
+
+// FirstRunEnd is the run's first end event in evs: where its own words stop. A later end, such as a
+// Revoked written when the claim is collected, never reopens the run.
+func FirstRunEnd(evs []envelope.Event, runID string) (RunEnd, bool) {
+	for _, e := range evs {
+		if end, ok := runEnd(e, runID); ok {
+			return end, true
 		}
+	}
+	return RunEnd{}, false
+}
+
+// runEnd is e as the broker's end event of run runID.
+func runEnd(e envelope.Event, runID string) (RunEnd, bool) {
+	// The broker stamps the actor from the credential, so its id alone names the writer.
+	if e.Type != envelope.StateChanged || e.RunID != runID || e.Origin != envelope.OriginBroker || e.Actor.ID != brokerActor {
+		return RunEnd{}, false
+	}
+	var p struct{ Kind, Phase, Reason string }
+	if json.Unmarshal(e.Payload, &p) == nil && p.Kind == "run_phase" && p.Reason != "" {
+		return RunEnd{Phase: p.Phase, Reason: p.Reason, Seq: e.Seq}, true
 	}
 	return RunEnd{}, false
 }

@@ -258,6 +258,14 @@ spec:
                 maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
+              nextRole:
+                description: |-
+                  The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
+                  there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
+                enum:
+                - reviewer
+                - tester
+                type: string
               nextTrigger:
                 description: |-
                   The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and

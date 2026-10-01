@@ -484,8 +484,12 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	if t.Status.PullRequest != nil && len(t.Status.Runs) > 0 {
-		if done, err := r.lateReviews(ctx, t); err != nil || done {
+		pr, done, err := r.lateReviews(ctx, t)
+		if err != nil || done {
 			return err
+		}
+		if t.Status.NextRole != "" {
+			return r.startVerifier(ctx, t, pr)
 		}
 	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)

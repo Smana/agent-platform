@@ -197,6 +197,7 @@ func reasons() map[string]string {
 		"verdict_missing":         "it recorded no verdict",
 		"verdict_stale":           "its approval was not for the pull request's current head",
 		"room_log_too_long":       "the room's log was too long to read to its end",
+		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
 	}
 }
 
@@ -273,10 +274,15 @@ func RemindedSince(t *v1alpha1.Task) (time.Time, bool) {
 }
 
 // Retrying says a maintainer's /factory retry sent an escalated task back for a fresh run, once
-// per retry.
-func Retrying(t *v1alpha1.Task, by string) Event {
-	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries),
-		Body: fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)}
+// per retry. after is the reason it had escalated: a retry never gives review rounds back (T5),
+// so after the rounds ran out it says what the retry buys.
+func Retrying(t *v1alpha1.Task, by, after string) Event {
+	body := fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)
+	if after == "review_rounds_exhausted" || after == "no_verdict" {
+		body += " Its review rounds stay spent: the retry buys one more revision and one more review, and a further " +
+			"`changes` verdict, or a review without a verdict, escalates it again."
+	}
+	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries), Body: body}
 }
 
 // PROpened announces the task's pull request.

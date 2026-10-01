@@ -113,6 +113,12 @@ func TestLastRunEndReadsTheBrokersEndOnly(t *testing.T) {
 	if e, _ := LastRunEnd(evs, "7f3cq2xz"); e != (RunEnd{Phase: "Revoked", Reason: "deleted", Seq: 9}) {
 		t.Fatalf("the last end wins: %+v", e)
 	}
+	if e, ok := FirstRunEnd(evs, "7f3cq2xz"); !ok || e != (RunEnd{Phase: "Failed", Reason: "pod_lost", Seq: 2}) {
+		t.Fatalf("the first end is where the run's words stop: %+v", e)
+	}
+	if _, ok := FirstRunEnd(evs[:1], "7f3cq2xz"); ok {
+		t.Fatal("Running is not an end")
+	}
 }
 
 func verdict(seq int64, kind envelope.ActorKind, by, runID, v, text string) envelope.Event {

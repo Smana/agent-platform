@@ -174,6 +174,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:Enum=initial;review;human;ci;retry
 	// +optional
 	NextTrigger string `json:"nextTrigger,omitempty"`
+	// The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
+	// there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
+	// +kubebuilder:validation:Enum=reviewer;tester
+	// +optional
+	NextRole string `json:"nextRole,omitempty"`
 	// GitHub review and comment ids already acted on (Δ5, commands). The reconciler trims the oldest.
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=512

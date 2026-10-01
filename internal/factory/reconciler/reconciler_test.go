@@ -239,7 +239,7 @@ func cfg() *config.Config {
 		Tiers:        map[string]config.Tier{"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45}},
 		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}},
 			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
-			"trio": {Roles: []string{"implementer", "reviewer", "tester"}, MaxReviewRounds: 1}},
+			"trio": {Roles: []string{"implementer", "tester", "reviewer"}, MaxReviewRounds: 2}},
 		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336},
 		Hash: strings.Repeat("a", 64)}
 }

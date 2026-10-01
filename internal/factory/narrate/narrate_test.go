@@ -104,12 +104,12 @@ func TestReminderAndRetrying(t *testing.T) {
 		t.Fatal("another stay's reminder")
 	}
 	tk.Status.Retries = 1
-	r := Retrying(tk, "Smana")
+	r := Retrying(tk, "Smana", "")
 	if r.Body != "Agent factory task `3buqdlot` is retrying, as @Smana asked." {
 		t.Fatal(r.Body)
 	}
 	tk.Status.Retries = 2
-	if r.Key == Retrying(tk, "Smana").Key {
+	if r.Key == Retrying(tk, "Smana", "").Key {
 		t.Fatal("each retry is narrated")
 	}
 }
@@ -439,5 +439,17 @@ func TestRoundsExhaustedQuotesTheVerdictInert(t *testing.T) {
 	v.Text = "secret"
 	if e := RoundsExhausted(tk, v); strings.Contains(e.Body, "secret") || !strings.Contains(e.Body, "stays in the room") {
 		t.Fatalf("an internal task's summary stays in the room: %s", e.Body)
+	}
+}
+
+// M5: a retry never gives review rounds back, and after they ran out it says what it buys.
+func TestRetryingAfterTheRoundsSaysWhatItBuys(t *testing.T) {
+	for _, after := range []string{"review_rounds_exhausted", "no_verdict"} {
+		if e := Retrying(task(), "Smana", after); !strings.Contains(e.Body, "review rounds stay spent") || !strings.Contains(e.Body, "escalates it again") {
+			t.Fatalf("%s: %s", after, e.Body)
+		}
+	}
+	if e := Retrying(task(), "Smana", "agent_error"); strings.Contains(e.Body, "rounds") {
+		t.Fatalf("%s", e.Body)
 	}
 }
