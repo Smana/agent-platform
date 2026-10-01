@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -79,4 +80,38 @@ func LastRunEnd(evs []envelope.Event, runID string) (phase, reason string, ok bo
 		}
 	}
 	return "", "", false
+}
+
+// commitRE is room_verdict's own commit rule.
+var commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// Verdict is a reviewer or tester run's verdict. Text is the agent's, untrusted: a brief quotes it
+// sanitised and fenced.
+type Verdict struct {
+	Verdict, Text, Commit, RunID string
+	Seq                          int64
+}
+
+// LastVerdict is what the factory acts on after a reviewer or tester run (§3): that run's own
+// newest verdict, recorded by the agent with room_verdict. Humans steer through GitHub reviews,
+// never through a verdict in the room (owner, 2026-09-27, R36). The run is bound by what the broker
+// stamps from the run's credential, never by the payload (ruling TB). A malformed newest verdict
+// is no verdict: it never falls back to the one it replaced.
+func LastVerdict(evs []envelope.Event, runID string) (Verdict, bool) {
+	for i := len(evs) - 1; i >= 0; i-- {
+		e := evs[i]
+		if e.Type != envelope.Message || e.RunID != runID || e.Origin != envelope.OriginClient ||
+			e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+runID {
+			continue
+		}
+		var p envelope.MessagePayload
+		if json.Unmarshal(e.Payload, &p) != nil || p.Kind != envelope.KindReviewVerdict {
+			continue
+		}
+		if (p.Verdict != "approve" && p.Verdict != "changes") || !commitRE.MatchString(p.Commit) {
+			return Verdict{}, false
+		}
+		return Verdict{Verdict: p.Verdict, Text: p.Text, Commit: p.Commit, RunID: e.RunID, Seq: e.Seq}, true
+	}
+	return Verdict{}, false
 }
