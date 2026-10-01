@@ -17,12 +17,14 @@ import (
 )
 
 // memQueue is the store's queue in memory: Enqueue checks what the store checks,
-// SetQueued moves a row once, out of queued, and err fails every call.
+// SetQueued moves a row once, out of queued, and err fails every call;
+// cursorErr fails Cursor alone.
 type memQueue struct {
-	drafts []envelope.Draft
-	rows   []store.Queued
-	runs   map[int64]string
-	err    error
+	drafts    []envelope.Draft
+	rows      []store.Queued
+	runs      map[int64]string
+	err       error
+	cursorErr error
 }
 
 func (q *memQueue) Enqueue(_ context.Context, d envelope.Draft, author, text string) (envelope.Event, error) {
@@ -73,7 +75,7 @@ func (q *memQueue) Cursor(_ context.Context, _ string, origin string) (int64, er
 			hi = d.OriginSeq
 		}
 	}
-	return hi, q.err
+	return hi, errors.Join(q.err, q.cursorErr)
 }
 
 func queueServer(t *testing.T) (http.Handler, *memQueue) {
@@ -205,6 +207,11 @@ func TestQueueStoreFailures(t *testing.T) {
 				t.Fatalf("%s %s on %v: %d %s", r.method, r.path, c.err, rec.Code, rec.Body)
 			}
 		}
+	}
+	// An unread cursor cannot tell a replay from a new message: nothing is queued.
+	q.err, q.cursorErr = nil, errors.New("down")
+	if rec := call(t, h, "POST", "/v1/rooms/3buqdlot/queue", factory, msg); rec.Code != http.StatusServiceUnavailable || len(q.drafts) != 0 {
+		t.Fatalf("no cursor: %d %s, %d queued", rec.Code, rec.Body, len(q.drafts))
 	}
 }
 
