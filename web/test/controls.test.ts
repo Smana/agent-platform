@@ -174,6 +174,66 @@ describe("mountControls", () => {
   });
 });
 
+describe("approval cards", () => {
+  const pending = (id: string, seq: number, action: unknown = { command: "gh pr create" }) => ({ approvalId: id, runId: "7f3cq2xz",
+    callId: "call_" + seq, class: "forge.pr", action, expiresAt: "2026-10-01T10:30:00Z", seq });
+  const withApprovals = (who: You, ...approvals: ReturnType<typeof pending>[]) => {
+    const c = setup(who);
+    c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+    c.controls.refresh();
+    return c;
+  };
+
+  it("shows the raw action as text, never markup (T3)", () => {
+    const hostile = { command: '<img src=x onerror="alert(1)">', body: "**not** markdown" };
+    const c = withApprovals({ ...you("human:apr", "collaborator"), approver: true }, pending("ap1", 3, hostile));
+    const card = c.root.querySelector("ul.approvals li")!;
+    expect(c.root.querySelector("img")).toBeNull();
+    expect(card.querySelector("strong")).toBeNull();
+    expect(card.querySelector("pre")!.textContent).toBe(JSON.stringify(hostile, null, 2));
+    expect(card.querySelector(".approval-head")!.textContent).toMatch(/^approval: forge\.pr · run 7f3cq2xz · call call_3 · expires /);
+  });
+
+  it("lets approvers and owners approve or deny, with a reason", () => {
+    const c = withApprovals({ ...you("human:apr", "collaborator"), approver: true }, pending("ap1", 3), pending("ap2", 5));
+    const cards = [...c.root.querySelectorAll("ul.approvals li")];
+    expect(cards).toHaveLength(2);
+    cards[0].querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
+    cards[1].querySelector<HTMLInputElement>('[name="decisionReason"]')!.value = "  wrong branch ";
+    c.controls.refresh(); // a typed reason survives a re-render
+    c.root.querySelectorAll("ul.approvals li")[1].querySelector<HTMLButtonElement>('[data-act="deny"]')!.click();
+    expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" },
+      { kind: "decide", approvalId: "ap2", decision: "denied", reason: "wrong branch" }]);
+
+    const o = withApprovals(you("human:own", "owner"), pending("ap1", 3));
+    expect(o.btn("approve")).not.toBeNull();
+  });
+
+  it("offers no decision to others, nor in a sealed room", () => {
+    const c = withApprovals(you("human:col", "collaborator"), pending("ap1", 3));
+    expect(c.root.querySelector("ul.approvals li pre")).not.toBeNull();
+    expect(c.btn("approve")).toBeNull();
+    expect(c.btn("deny")).toBeNull();
+    const s = setup(you("human:own", "owner"));
+    s.state.reset({ driver: "human:a", driverEpoch: 4, approvals: [pending("ap1", 3)], sealed: true }, 10);
+    s.controls.refresh();
+    expect(s.root.querySelector("ul.approvals li pre")).not.toBeNull();
+    expect(s.btn("approve")).toBeNull();
+  });
+
+  it("drops a card once decided", () => {
+    const c = withApprovals(you("human:own", "owner"), pending("ap1", 3));
+    c.state.apply({ ...queued(11, "human:own", ""), type: "approval_decided", payload: { approvalId: "ap1", decision: "approved" } });
+    c.controls.refresh();
+    expect(c.root.querySelectorAll("ul.approvals li")).toHaveLength(0);
+  });
+
+  it("explains a refused decision", () => {
+    expect(rejection("already_decided")).toBe("Another approver decided first.");
+    expect(rejection("four_eyes")).toBe("This room needs an approver who did not prompt the turn.");
+  });
+});
+
 describe("rejection", () => {
   // Every reason docs/api.md lists for an ack gets its own copy, not the fallback.
   it("has human copy for every rejection the actor can return", () => {

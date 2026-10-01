@@ -79,6 +79,8 @@ const (
 	ReasonBadPayload      = "bad_payload"       // 400: a payload that is not a JSON object
 	ReasonBadRoom         = "bad_room"          // 400: not a C2 room id
 	ReasonBadMessage      = "bad_message"       // 400: not a task_state message
+	ReasonBadApproval     = "bad_approval"      // 400: not an approval request: no eventId or callId, or an unknown class
+	ReasonBadAction       = "bad_action"        // 400: an approval's action that is not a JSON object, or over the cap
 	ReasonNoRoom          = "no_room"           // 404 (system API) or 503 (hello, before the Room's first reconcile)
 	ReasonRateLimited     = "rate_limited"      // 429: over the principal's request rate or requests in flight; retry after Retry-After
 	ReasonLogUnavailable  = "log_unavailable"   // 503: the log could not be read or written; retry

@@ -57,6 +57,8 @@ type Log interface {
 	// Queue is the room's still-queued messages, for the state frame: a page's tail
 	// of events rarely reaches back to them (review 4.5 I1).
 	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
+	// OpenApprovals is the room's pending approvals, for the state frame, likewise.
+	OpenApprovals(ctx context.Context, roomID string) ([]store.Approval, error)
 }
 
 // Hub is the fan-out hub's subscription side; *fanout.Hub implements it.

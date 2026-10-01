@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,9 @@ type ActLog interface {
 	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
 	Stored(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	RecordRunRequest(ctx context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error)
+	// decide reads the approval, then records the first valid decision (phase 5).
+	Approval(ctx context.Context, id string) (store.Approval, error)
+	Decide(ctx context.Context, approvalID, decision, by, reason string, d envelope.Draft) (envelope.Event, store.Approval, error)
 }
 
 // Redactor removes secrets from a JSON payload before it is appended (§4);
@@ -68,6 +72,8 @@ type Action struct {
 	Principal      string   `json:"principal,omitempty"`  // invite
 	MemberRole     string   `json:"memberRole,omitempty"` // invite
 	Approver       bool     `json:"approver,omitempty"`   // invite
+	ApprovalID     string   `json:"approvalId,omitempty"` // decide
+	Decision       string   `json:"decision,omitempty"`   // decide: approved | denied
 }
 
 // Actor serves humans' act frames: every write a human makes to a room. Log,
@@ -81,6 +87,9 @@ type Actor struct {
 	Rooms     client.Client
 	Requester runrequest.Requester
 	OnReject  func(ctx context.Context, reason string)
+	// OnDecided observes a human decision's wait since its request
+	// (rooms_approval_decision_seconds).
+	OnDecided func(time.Duration)
 
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
@@ -101,10 +110,16 @@ const (
 	rejectOverBudget     = "over_budget"
 	rejectNeedsPR        = "reviewer_needs_pr"
 	rejectNoFactory      = "factory_unavailable"
+	rejectDecided        = "already_decided" // another approver decided first, or it expired or was superseded
+	rejectFourEyes       = "four_eyes"       // OD-16: the decider prompted the run
 )
 
 // maxReason bounds a take's reason, which the driver event carries.
 const maxReason = 256
+
+// maxDecisionReason bounds an approver's reason, which the bridge shows the agent
+// cut to the same 1 KiB.
+const maxDecisionReason = 1 << 10
 
 // memberPrincipal is the Room CRD's pattern for a member.
 var memberPrincipal = regexp.MustCompile(`^human:[A-Za-z0-9@._-]{1,255}$`)
@@ -125,7 +140,8 @@ func (a *Actor) limited(principal string) bool {
 
 var kinds = map[string]policy.Action{"remove_queued": policy.RemoveQueued, "promote_queued": policy.PromoteQueued,
 	"interrupt": policy.Interrupt, "driver_request": policy.DriverRequest, "driver_give": policy.DriverGive,
-	"driver_take": policy.DriverTake, "start_run": policy.StartRun, "invite": policy.Invite, "close": policy.Close}
+	"driver_take": policy.DriverTake, "start_run": policy.StartRun, "invite": policy.Invite, "close": policy.Close,
+	"decide": policy.Decide}
 
 var deliveries = map[string]policy.Action{"none": policy.Chat, "queued": policy.Queue, "steering": policy.Steer}
 
@@ -218,7 +234,10 @@ func reason(err error) string {
 		return rejectNotPermitted
 	case errors.Is(err, store.ErrSealed):
 		return rejectSealed
-	case errors.Is(err, store.ErrInvalidDriver), errors.Is(err, store.ErrKeyConflict), store.IsDataError(err):
+	case errors.Is(err, store.ErrAlreadyDecided):
+		return rejectDecided
+	case errors.Is(err, store.ErrInvalidDriver), errors.Is(err, store.ErrKeyConflict), errors.Is(err, store.ErrNoApproval),
+		errors.Is(err, store.ErrBadDecision), store.IsDataError(err):
 		return rejectBadAction
 	}
 	return rejectLogUnavailable
@@ -295,6 +314,8 @@ func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.
 		return a.invite(ctx, room, st, act, d)
 	case "close":
 		return envelope.Event{}, reason(a.Log.CloseRoom(ctx, room.Name, "closed by "+p.ID))
+	case "decide":
+		return a.decide(ctx, p, room, act, d)
 	}
 	return envelope.Event{}, rejectBadAction
 }
@@ -330,6 +351,40 @@ func (a *Actor) message(ctx context.Context, room *v1alpha1.Room, st store.RoomS
 		return done3(a.Log.AppendAsDriver(ctx, d.Actor.ID, st.DriverEpoch, d))
 	}
 	return done3(a.Log.Append(ctx, d))
+}
+
+// decide records an approver's decision on one of the room's approvals (§6).
+// The store's UPDATE … WHERE pending, under the room's row lock, is the fence:
+// the first valid decision wins and a later one gets already_decided. With
+// four-eyes on, nobody who prompted the run decides (OD-16).
+func (a *Actor) decide(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, string) {
+	why := strings.TrimSpace(act.Reason)
+	if (act.Decision != store.ApprovalApproved && act.Decision != store.ApprovalDenied) || act.ApprovalID == "" ||
+		len(why) > maxDecisionReason { // encoding/json already made it valid UTF-8
+		return envelope.Event{}, rejectBadAction
+	}
+	ap, err := a.Log.Approval(ctx, act.ApprovalID)
+	switch {
+	case errors.Is(err, store.ErrNoApproval):
+		return envelope.Event{}, rejectBadAction
+	case err != nil:
+		return envelope.Event{}, rejectLogUnavailable
+	case ap.RoomID != room.Name: // another room's approval is no approval here
+		return envelope.Event{}, rejectBadAction
+	}
+	if room.Spec.Approvals.FourEyes && slices.Contains(ap.Prompters, p.ID) {
+		return envelope.Event{}, rejectFourEyes
+	}
+	if why != "" { // the agent reads it: redacted like every human payload (§4)
+		if why, d.Redactions, err = a.redactText(ctx, why); err != nil {
+			return envelope.Event{}, rejectLogUnavailable
+		}
+	}
+	ev, _, err := a.Log.Decide(ctx, ap.ID, act.Decision, p.ID, why, d)
+	if err == nil && ap.State == store.ApprovalPending && a.OnDecided != nil { // a replay was observed once already
+		a.OnDecided(time.Since(ap.RequestedAt))
+	}
+	return done(ev, err)
 }
 
 // receives reports whether to may take the token from a give: a collaborator or

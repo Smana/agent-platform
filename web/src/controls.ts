@@ -55,6 +55,19 @@ export function act(conn: Sender, state: RoomState, action: Record<string, unkno
   return conn.send({ type: "act", clientSeq: seq, driverEpoch: state.driverEpoch, action }) ? seq : 0;
 }
 
+// approvalCard shows one approval, read-only: the class, the run, the deadline,
+// and the raw action as text (T3). render.ts shows an approval_requested event with it.
+export function approvalCard(a: { class: string; runId?: string; callId: string; action: unknown; expiresAt: string },
+  tag: "li" | "div" = "div"): HTMLElement {
+  const li = el(tag, { className: "approval" });
+  const due = new Date(a.expiresAt);
+  li.append(
+    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${isNaN(due.getTime()) ? "?" : due.toLocaleTimeString()}` }),
+    el("pre", { className: "approval-action", textContent: JSON.stringify(a.action ?? null, null, 2) }),
+  );
+  return li;
+}
+
 // mountControls renders what a collaborator and up can do: the composer, the queue,
 // the driver token, interrupt, and hand to role. Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
@@ -82,6 +95,30 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       if (state.sealed) return li; // every action answers sealed
       if (q.author === you.principal || isDriver()) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
       if (isDriver()) li.append(button("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
+      return li;
+    }));
+  };
+
+  // One card per pending approval (§6): its class, the raw action as text, never
+  // agent prose (T3), and its deadline. Approvers and owners decide; the broker
+  // still checks four-eyes and who decided first. A typed reason survives re-renders.
+  const approvals = el("ul", { className: "approvals" });
+  const reasons = new Map<string, HTMLInputElement>();
+  const canDecide = () => you.approver || isOwner();
+  const renderApprovals = () => {
+    const cards = state.approvals();
+    for (const id of reasons.keys()) if (!cards.some((a) => a.approvalId === id)) reasons.delete(id);
+    approvals.replaceChildren(...cards.map((a) => {
+      const li = approvalCard(a, "li");
+      if (state.sealed || !canDecide()) return li; // the broker answers sealed or not_permitted
+      let reason = reasons.get(a.approvalId);
+      if (!reason) reasons.set(a.approvalId, (reason = el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" })));
+      const decide = (decision: string) => () => {
+        const action: Record<string, unknown> = { kind: "decide", approvalId: a.approvalId, decision };
+        if (reason.value.trim()) action.reason = reason.value.trim();
+        send(action);
+      };
+      li.append(reason, button("approve", "approve", decide("approved")), button("deny", "deny", decide("denied")));
       return li;
     }));
   };
@@ -125,7 +162,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const claim = el("pre");
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
-  root.replaceChildren(driver, composer, queue, hand, manifest);
+  root.replaceChildren(approvals, driver, composer, queue, hand, manifest);
   const showResult = (result: unknown) => {
     if (!result) return;
     // JSON escapes every newline in a string, so no line of it can be a bare EOF.
@@ -139,6 +176,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       hand.hidden = !(isDriver() || isOwner());
       renderDriver();
       renderQueue();
+      renderApprovals();
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,

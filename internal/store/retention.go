@@ -17,8 +17,8 @@ const expired = `sealed AND closed_at IS NOT NULL AND closed_at < now() - retent
 // PurgeExpired deletes every expired room's log, then its row, one room per
 // transaction, so each stays bounded by the room limits (100 000 events) under
 // the session's statement_timeout. It runs as rooms_retention; the broker's role
-// holds no DELETE and fails. Every table referencing rooms (queue; approvals in
-// phase 5) is deleted before the room's row.
+// holds no DELETE and fails. Every table referencing rooms (queue, approvals) is
+// deleted before the room's row.
 func (s *Store) PurgeExpired(ctx context.Context) (rooms, events int64, err error) {
 	ids, err := s.expiredRooms(ctx)
 	if err != nil {
@@ -48,8 +48,12 @@ func (s *Store) purge(ctx context.Context, roomID string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	// queue references events, so it goes first.
+	// queue and approvals reference events, so they go first.
 	if _, err := tx.Exec(ctx, `DELETE FROM queue WHERE room_id = $1
+		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM approvals WHERE room_id = $1
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
 		return 0, err
 	}

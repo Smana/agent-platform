@@ -82,7 +82,8 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 |
 | `human:<sub>` | The browser's `clientSeq` | Human actions | Planned, phase 4 |
 | `agent:<runId>:tools` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | AP-3 |
-| `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, callId)` | The bridge's approval requests | Planned, phase 5 |
+| `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, eventId)` | The bridge's approval requests | AP-5 |
+| `broker:approval:<approvalId>` | `1` | The broker's close of an approval: expired or superseded | AP-5 |
 | `broker:verdicts` | The verdict's `seq` | The verdict poster's outcome | AP-3 |
 
 ## Limits
@@ -110,8 +111,8 @@ From the design's Appendix A, with the plan's additive fields.
 | `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 |
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 |
-| `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
-| `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
+| `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | AP-5 |
+| `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede | AP-5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker | Store AP-4 (Task 4.1); written by human actions from Task 4.2 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |

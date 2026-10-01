@@ -104,8 +104,11 @@ type Server struct {
 	Runs     Authenticator
 	Systems  Authenticator
 	Watch    Liveness
-	// RoomPolicy, when set, is the room's approval policy handed out at hello (phase 5).
+	// RoomPolicy, when set, is the room's approval policy handed out at hello and
+	// read for each approval's deadline (phase 5); unset means attended.
 	RoomPolicy func(roomID string) wire.ApprovalPolicy
+	// Approvals records approval requests (phase 5); unset answers 503.
+	Approvals Approvals
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
@@ -135,6 +138,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/bridge/hello", s.bounded(0, s.hello))
 	mux.HandleFunc("POST /v1/bridge/events", s.bounded(maxBatchBytes, s.events))
 	mux.HandleFunc("GET /v1/bridge/stream", s.stream)
+	mux.HandleFunc("POST /v1/bridge/approvals", s.bounded(maxApprovalBytes, s.approval))
 	mux.HandleFunc("GET /v1/rooms/{id}/events", s.bounded(0, s.roomEvents))
 	mux.HandleFunc("POST /v1/rooms/{id}/messages", s.bounded(maxMessageBytes, s.roomMessage))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

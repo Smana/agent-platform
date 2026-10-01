@@ -83,6 +83,18 @@ describe("renderEvent (T10)", () => {
     expect(el.querySelector("img")).toBeNull();
     expect(el.querySelector("header")?.textContent).toContain("<img src=x onerror=alert(1)>");
   });
+  it("shows an approval request as its card, read-only, and a decision with its reason", () => {
+    const el = renderEvent({ ...ev("approval_requested", { approvalId: "ap1", callId: "call_97", class: "forge.pr",
+      action: { command: "<img src=x onerror=alert(1)>" }, expiresAt: "2026-10-01T10:30:00Z" }), runId: "7f3cq2xz" });
+    inert(el);
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("button")).toBeNull();
+    expect(el.querySelector(".approval-head")?.textContent).toMatch(/^approval: forge\.pr · run 7f3cq2xz · call call_97 · expires /);
+    expect(el.querySelector("pre")?.textContent).toBe(JSON.stringify({ command: "<img src=x onerror=alert(1)>" }, null, 2));
+    const d = renderEvent(ev("approval_decided", { approvalId: "ap1", decision: "denied", reason: "<b>not</b> this branch" }, "human:apr"));
+    expect(d.querySelector(".decision-denied")?.textContent).toBe("denied · <b>not</b> this branch");
+    expect(d.querySelector("b")).toBeNull();
+  });
   it("keeps markdown's structure", () => {
     const el = chat("# T\n\n- a\n- `b`\n\n```\n<i>c</i>\n```\n\n> q");
     inert(el);

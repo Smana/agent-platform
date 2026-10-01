@@ -2,6 +2,7 @@
 
 import MarkdownIt, { type Token } from "markdown-it";
 import type { RoomEvent } from "./conn";
+import { approvalCard } from "./controls";
 
 // T10: room text is untrusted. It is parsed once, HTML off, and its tokens become DOM
 // nodes whose text is set as text: no HTML string is built from it, so nothing is
@@ -127,6 +128,13 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
       row.append(d);
       break;
     }
+    case "approval_requested": // the card, read-only: deciding is the controls' (§6)
+      row.append(approvalCard({ class: String(p.class ?? ""), runId: ev.runId, callId: String(p.callId ?? ""), action: p.action,
+        expiresAt: String(p.expiresAt ?? "") }));
+      break;
+    case "approval_decided":
+      row.append(el("div", `decision decision-${cls(p.decision)}`, [p.decision, p.reason ?? ""].filter(Boolean).join(" · ")));
+      break;
     case "state_changed":
       row.append(el("div", "state", [p.kind, p.phase ?? p.status ?? "", p.reason ?? ""].filter(Boolean).join(" · ")));
       break;
