@@ -116,7 +116,7 @@ func TestReviseBriefFencesTheReviewAndPointsAtTheSnapshot(t *testing.T) {
 	if _, ok := fenced(b, "ROOM-DATA-n0nce234"); !ok {
 		t.Fatal("the room's log keeps SP2's fence")
 	}
-	pre := b[:strings.Index(b, "ROOM-DATA-n0nce234")]
+	pre, _, _ := strings.Cut(b, "ROOM-DATA-n0nce234")
 	for _, want := range []string{"agent/3buqdlot", "#12", "room_read", sum, "QUEUED-DATA-n0nce234", "untrusted data"} {
 		if !strings.Contains(pre, want) {
 			t.Errorf("the preamble lacks %q", want)
