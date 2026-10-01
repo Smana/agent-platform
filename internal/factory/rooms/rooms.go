@@ -65,9 +65,15 @@ func Ensure(ctx context.Context, c client.Client, ns, id, dataClass, repo string
 // room (C4).
 func HumanDriver(r *v1alpha1.Room) bool { return strings.HasPrefix(r.Status.Driver, "human:") }
 
+// RunEnd is the broker's end event for a run: its phase, its reason, and its seq in the room.
+type RunEnd struct {
+	Phase, Reason string
+	Seq           int64
+}
+
 // LastRunEnd finds the broker's end event for a run (SP2 P15): the reason the run really ended,
 // where the AgentRun only says Failed. Only the broker's own run_phase counts.
-func LastRunEnd(evs []envelope.Event, runID string) (phase, reason string, ok bool) {
+func LastRunEnd(evs []envelope.Event, runID string) (RunEnd, bool) {
 	for i := len(evs) - 1; i >= 0; i-- {
 		e := evs[i]
 		// The broker stamps the actor from the credential, so its id alone names the writer.
@@ -76,11 +82,14 @@ func LastRunEnd(evs []envelope.Event, runID string) (phase, reason string, ok bo
 		}
 		var p struct{ Kind, Phase, Reason string }
 		if json.Unmarshal(e.Payload, &p) == nil && p.Kind == "run_phase" && p.Reason != "" {
-			return p.Phase, p.Reason, true
+			return RunEnd{Phase: p.Phase, Reason: p.Reason, Seq: e.Seq}, true
 		}
 	}
-	return "", "", false
+	return RunEnd{}, false
 }
+
+// verifier is a role room_verdict serves: only a reviewer's or a tester's verdict counts.
+func verifier(role string) bool { return role == "reviewer" || role == "tester" }
 
 // commitRE is room_verdict's own commit rule.
 var commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
@@ -101,7 +110,7 @@ func LastVerdict(evs []envelope.Event, runID string) (Verdict, bool) {
 	for i := len(evs) - 1; i >= 0; i-- {
 		e := evs[i]
 		if e.Type != envelope.Message || e.RunID != runID || e.Origin != envelope.OriginClient ||
-			e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+runID {
+			e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+runID || !verifier(e.Actor.Role) {
 			continue
 		}
 		var p envelope.MessagePayload

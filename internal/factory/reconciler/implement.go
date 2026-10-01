@@ -178,8 +178,8 @@ func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, 
 		r.log().Warn("room log unreadable", "task", t.Name, "err", err)
 		return "", false
 	}
-	_, reason, ok := rooms.LastRunEnd(evs, cur.ID)
-	return reason, ok
+	end, ok := rooms.LastRunEnd(evs, cur.ID)
+	return end.Reason, ok
 }
 
 // finished returns the run's end reason once the room has recorded it, or after runEndGrace

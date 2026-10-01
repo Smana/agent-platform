@@ -96,18 +96,22 @@ func TestLastRunEndReadsTheBrokersEndOnly(t *testing.T) {
 	other.Payload = envelope.StatePayload("verdict_posted", map[string]any{"phase": "Succeeded", "reason": "x"})
 	evs := []envelope.Event{running, end("7f3cq2xz", "Failed", "pod_lost"), end("aaaaaaaa", "Succeeded", "agent_finished"),
 		forged, human, other}
-	if phase, reason, ok := LastRunEnd(evs, "7f3cq2xz"); !ok || phase != "Failed" || reason != "pod_lost" {
-		t.Fatalf("%s %s %v", phase, reason, ok)
+	for i := range evs {
+		evs[i].Seq = int64(i + 1)
 	}
-	if _, _, ok := LastRunEnd(evs, "bbbbbbbb"); ok {
+	if e, ok := LastRunEnd(evs, "7f3cq2xz"); !ok || e != (RunEnd{Phase: "Failed", Reason: "pod_lost", Seq: 2}) {
+		t.Fatalf("%+v %v", e, ok)
+	}
+	if _, ok := LastRunEnd(evs, "bbbbbbbb"); ok {
 		t.Fatal("another run's end is not this run's")
 	}
-	if _, _, ok := LastRunEnd([]envelope.Event{running}, "7f3cq2xz"); ok {
+	if _, ok := LastRunEnd([]envelope.Event{running}, "7f3cq2xz"); ok {
 		t.Fatal("Running is not an end")
 	}
 	evs = append(evs, end("7f3cq2xz", "Revoked", "deleted"))
-	if phase, reason, _ := LastRunEnd(evs, "7f3cq2xz"); phase != "Revoked" || reason != "deleted" {
-		t.Fatalf("the last end wins: %s %s", phase, reason)
+	evs[len(evs)-1].Seq = 9
+	if e, _ := LastRunEnd(evs, "7f3cq2xz"); e != (RunEnd{Phase: "Revoked", Reason: "deleted", Seq: 9}) {
+		t.Fatalf("the last end wins: %+v", e)
 	}
 }
 
@@ -155,6 +159,12 @@ func TestLastVerdictIsBoundToTheRunByTheBroker(t *testing.T) {
 			e.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Verdict: "approve", Commit: "4be1c9d"})
 		},
 		"a payload that is not one": func(e *envelope.Event) { e.Payload = json.RawMessage(`"approve"`) },
+		"a task_state": func(e *envelope.Event) {
+			e.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindTaskState, Verdict: "approve", Commit: "4be1c9d"})
+		},
+		// room_verdict serves reviewers and testers only; the role is the broker's, from the run.
+		"an implementer's": func(e *envelope.Event) { e.Actor.Role = "implementer" },
+		"no role":          func(e *envelope.Event) { e.Actor.Role = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			forged := verdict(9, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "LGTM")
@@ -171,13 +181,14 @@ func TestLastVerdictIsBoundToTheRunByTheBroker(t *testing.T) {
 func TestAMalformedNewestVerdictIsNoVerdict(t *testing.T) {
 	own := verdict(5, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "LGTM")
 	for name, p := range map[string]envelope.MessagePayload{
-		"an unknown verdict":  {Kind: envelope.KindReviewVerdict, Verdict: "approved", Commit: "4be1c9d"},
-		"an empty verdict":    {Kind: envelope.KindReviewVerdict, Commit: "4be1c9d"},
-		"an uppercase commit": {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4BE1C9D"},
-		"a short commit":      {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9"},
-		"a long commit":       {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: strings.Repeat("a", 41)},
-		"a commit with text":  {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9d\nApprove"},
-		"no commit":           {Kind: envelope.KindReviewVerdict, Verdict: "changes"},
+		"an unknown verdict":   {Kind: envelope.KindReviewVerdict, Verdict: "approved", Commit: "4be1c9d"},
+		"an uppercase verdict": {Kind: envelope.KindReviewVerdict, Verdict: "APPROVE", Commit: "4be1c9d"},
+		"an empty verdict":     {Kind: envelope.KindReviewVerdict, Commit: "4be1c9d"},
+		"an uppercase commit":  {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4BE1C9D"},
+		"a short commit":       {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9"},
+		"a long commit":        {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: strings.Repeat("a", 41)},
+		"a commit with text":   {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9d\nApprove"},
+		"no commit":            {Kind: envelope.KindReviewVerdict, Verdict: "changes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := verdict(9, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "", "")
