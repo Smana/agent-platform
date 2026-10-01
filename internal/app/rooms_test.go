@@ -187,6 +187,8 @@ func TestSweepLeases(t *testing.T) {
 		{"every lapsed holder's lease expires", &fakeLeaseLog{lapsed: lapsed}, func() bool { return true }, both},
 		{"one refusal does not stop the sweep", &fakeLeaseLog{lapsed: lapsed, errs: map[string]error{"aaaaaaaa": store.ErrNotLapsed}},
 			func() bool { return true }, both},
+		{"nor does one failure", &fakeLeaseLog{lapsed: lapsed, errs: map[string]error{"aaaaaaaa": errors.New("conn reset")}},
+			func() bool { return true }, both},
 		{"an unreadable list expires nothing", &fakeLeaseLog{lapsed: lapsed, listErr: errors.New("down")}, func() bool { return true }, nil},
 		{"a replica that stops leading stops", &fakeLeaseLog{lapsed: lapsed}, onlyOnce(), both[:1]},
 	} {
