@@ -95,7 +95,8 @@ func TestClassifyEdges(t *testing.T) {
 		{"terminal", "git --no-pager push origin main", "LOW", ForgeOther},
 		{"terminal", "git --git-dir=.git --work-tree=. push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "env X=1 git push origin main", "LOW", ForgeOther},
-		{"terminal", "env -i X=1 git push origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "env -i X=1 git push origin agent/3kq7x2ma", "LOW", ForgeOther}, // SAR: X is off git's env allowlist
+		{"terminal", "env -i LANG=C git push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "GIT_TRACE=1 git push origin main", "LOW", ForgeOther},
 		{"terminal", "sudo gh pr merge 1", "LOW", ForgeOther},
 		{"terminal", "command gh pr merge 1", "LOW", ForgeOther},
@@ -136,7 +137,8 @@ func TestClassifyEdges(t *testing.T) {
 		{"terminal", "cd x; git push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "true | git push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "(git push origin agent/3kq7x2ma)", "LOW", ForgePush},
-		{"terminal", "GIT_TRACE=1 git push origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "GIT_TRACE=1 git push origin agent/3kq7x2ma", "LOW", ForgeOther}, // SAR: any GIT_* is forge.other
+		{"terminal", "LC_ALL=C git push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "/usr/bin/git push origin agent/3kq7x2ma", "LOW", ForgePush},
 		{"terminal", "ssh host /usr/bin/git push origin main", "LOW", ForgeOther},
 		{"terminal", `gh search prs "gh pr merge"`, "LOW", Plain},       // a read gh command is never scanned

@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Classification is best-effort oversight (T6), never a boundary. It recognises
-// the safe shapes positively (ruling SAP): forge.push only for the exact push of
-// the run's own branch, Plain only for a command it read and found no forge
-// write in. Everything it cannot read is forge.other (ruling SAN): a command
-// substitution, an unterminated quote, an expansion in a command position, a
-// shell nested twice, a git or gh write mentioned where no command starts.
+// the safe shapes positively (rulings SAP, SAR): forge.push only for the exact
+// push of the run's own branch, Plain only for a command it read and found no
+// forge write in. Every list it decides by is an allowlist: git global options
+// and -c keys, git config writes, gh verbs per group, the environment of git and
+// gh. Everything it cannot read is forge.other (ruling SAN): a command
+// substitution, an unterminated quote, an expansion in a command position (a
+// runner's included), a shell nested twice, a git or gh write mentioned where no
+// command starts.
 //
-// What it cannot see, and leaves Plain: script files (bash x.sh, source x.sh,
-// . x.sh, a Makefile, an interpreter given a file), git aliases already in a
-// config file, HTTP clients other than gh (curl with $GH_TOKEN), and which
-// branch a bare `git push` or `git push origin HEAD` resolves to. `git remote
-// set-url` followed by a push is bounded by the repo-scoped octo-sts token.
-// Gateway and forge logs are the ground truth; octo-sts, the ruleset, the
-// Gateway and CNP are the limits.
+// What it cannot see, and leaves Plain (S9): script files (bash x.sh, source
+// x.sh, . x.sh, a Makefile, an interpreter given a file, a git hook), config
+// written by file edit (.git/config or ~/.gitconfig through file_editor), git
+// aliases already in such a file, HTTP clients other than gh (curl with
+// $GH_TOKEN), a runner option missing from its table (it shifts the command
+// position), and which branch a bare `git push` or `git push origin HEAD`
+// resolves to. `git remote set-url` followed by a push is bounded by the
+// repo-scoped octo-sts token. Gateway and forge logs are the ground truth;
+// octo-sts, the ruleset, the Gateway and CNP are the limits.
 
 package bridge
 
@@ -115,48 +120,82 @@ var (
 	pushFlags  = set("-u", "--set-upstream", "--force-with-lease", "-q", "-v", "--quiet", "--verbose")
 	pushValued = set("-o", "--push-option")
 
-	// git subcommands that run no user command and write nothing remote: read, never scanned.
-	// Any other (rebase -x, submodule foreach, bisect run, config, an extension) is scanned.
+	// git's global options (SAR R1). Any other (--exec-path, an unknown one) is forge.other.
+	gitGlobal = set("--no-pager", "-P", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs",
+		"--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks", "--no-advice", "--no-lazy-fetch")
+	gitGlobalValued = set("-C", "--git-dir", "--work-tree", "--namespace")
+
+	// Config keys that hold no command, URL, refspec or path git would act on
+	// (SAR R1, R2): the only ones -c, --config-env and `git config` may set.
+	safeConfig       = set("user.name", "user.email", "core.quotepath", "init.defaultbranch", "safe.directory", "commit.gpgsign", "pull.rebase", "pull.ff")
+	safeConfigPrefix = []string{"color.", "advice."}
+	configReads      = set("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--list", "-l")
+	configValued     = set("-f", "--file", "--blob", "--type", "--default", "--comment", "--value")
+
+	// git subcommands that run no user command and write nothing remote: read,
+	// never scanned, once commandFlags, -c and the environment are clear. config,
+	// remote, push and the runners have their own readers; any other subcommand
+	// (an extension) is scanned.
 	gitSafe = set("status", "diff", "log", "add", "commit", "checkout", "switch", "branch", "fetch", "pull", "merge",
-		"reset", "restore", "stash", "show", "rev-parse", "remote", "tag", "clone", "init", "cherry-pick", "revert",
+		"reset", "restore", "stash", "show", "rev-parse", "tag", "clone", "init", "cherry-pick", "revert",
 		"blame", "grep", "ls-files", "ls-remote", "describe", "clean", "mv", "rm", "apply", "am", "format-patch",
 		"reflog", "shortlog", "notes", "archive", "cat-file", "rev-list", "show-ref", "symbolic-ref", "for-each-ref",
 		"merge-base", "name-rev", "diff-tree", "diff-index", "hash-object", "count-objects", "version", "help",
 		"range-diff", "check-ignore", "worktree", "sparse-checkout", "gc", "fsck")
-	gitValued = set("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env")
-
-	// gh's command groups. Any other word is an extension or an alias, which gh runs as a command.
-	ghGroups = set("agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "co", "codespace", "completion",
-		"config", "copilot", "extension", "gist", "gpg-key", "help", "issue", "label", "org", "pr", "preview", "project",
-		"release", "repo", "ruleset", "run", "search", "secret", "ssh-key", "status", "variable", "version", "workflow")
-	ghNoVerb = set("api", "browse", "completion", "help", "status", "version")
-	prWrites = []string{"create", "edit", "ready"}
-	ghWrites = map[string][]string{
-		"pr":         {"merge", "close", "comment", "review", "reopen", "lock", "unlock", "update-branch", "revert"},
-		"issue":      {"create", "edit", "close", "comment", "delete", "reopen", "transfer", "pin", "unpin", "lock", "unlock", "develop"},
-		"release":    {"create", "delete", "upload", "edit", "delete-asset"},
-		"repo":       {"create", "delete", "edit", "fork", "rename", "sync", "archive", "unarchive", "deploy-key", "autolink"},
-		"label":      {"create", "delete", "edit", "clone"},
-		"workflow":   {"run", "enable", "disable"},
-		"run":        {"cancel", "rerun", "delete"},
-		"secret":     {"set", "delete"},
-		"variable":   {"set", "delete"},
-		"alias":      {"set", "import", "delete"},
-		"extension":  {"install", "upgrade", "exec"},
-		"gist":       {"create", "edit", "delete", "rename"},
-		"cache":      {"delete"},
-		"gpg-key":    {"add", "delete"},
-		"ssh-key":    {"add", "delete"},
-		"codespace":  {"create", "delete", "edit", "ssh", "cp", "rebuild"},
-		"agent-task": {"create"},
-		"project": {"create", "delete", "edit", "close", "copy", "link", "unlink", "mark-template", "item-add",
-			"item-create", "item-edit", "item-delete", "item-archive", "field-create", "field-delete"},
+	// Options whose value git runs as a command (SAR R1), for any subcommand ("") or one.
+	commandFlags = map[string][]string{
+		"":        {"--upload-pack", "--receive-pack", "--ext-diff"},
+		"archive": {"--exec"},
+		"clone":   {"-u", "-c", "--config", "--template"},
+		"init":    {"--template"},
+		"grep":    {"-O", "--open-files-in-pager"},
+	}
+	// The git runners and the options whose value is a shell command (SAR R4).
+	gitRunnerOpts = map[string]map[string]bool{
+		"rebase":        set("-x", "--exec"),
+		"difftool":      set("-x", "--extcmd"),
+		"filter-branch": set("--setup", "--env-filter", "--tree-filter", "--index-filter", "--parent-filter", "--msg-filter", "--commit-filter", "--tag-name-filter"),
 	}
 
-	// Words that run the rest of the segment as a command. Their flags are skipped;
-	// a flag's value is not, so `sudo -u x git push` falls to the forge scan.
-	wrappers = set("env", "sudo", "command", "exec", "nohup", "time", "nice",
-		"!", "{", "if", "then", "else", "elif", "do", "while", "until")
+	// gh's read verbs per group (SAR R3). Any other verb, an alias cobra resolves
+	// (pr new, secret remove) included, is forge.other; pr's writes are forge.pr.
+	ghReads = map[string][]string{
+		"agent-task":  {"list", "view"},
+		"alias":       {"list"},
+		"attestation": {"verify", "download", "trusted-root"},
+		"auth":        {"status", "token"},
+		"cache":       {"list"},
+		"codespace":   {"list", "view"},
+		"config":      {"get", "list"},
+		"extension":   {"list", "search", "browse"},
+		"gist":        {"list", "view", "clone"},
+		"gpg-key":     {"list"},
+		"issue":       {"list", "view", "status"},
+		"label":       {"list"},
+		"org":         {"list"},
+		"pr":          {"list", "view", "status", "diff", "checks", "checkout", "co"},
+		"project":     {"list", "view", "field-list", "item-list"},
+		"release":     {"list", "view", "download", "verify", "verify-asset"},
+		"repo":        {"list", "view", "clone", "set-default"},
+		"ruleset":     {"list", "view", "check"},
+		"run":         {"list", "view", "watch", "download"},
+		"search":      {"repos", "issues", "prs", "commits", "code"},
+		"secret":      {"list"},
+		"ssh-key":     {"list"},
+		"variable":    {"list", "get"},
+		"workflow":    {"list", "view"},
+	}
+	// gh groups without verbs. copilot is absent: it runs a command-running agent.
+	ghNoVerb = set("api", "browse", "co", "completion", "help", "status", "version")
+	prWrites = []string{"create", "new", "edit", "ready"}
+
+	// The environment git and gh may be given (SAR R1); anything else is forge.other for them.
+	safeEnv = set("LANG", "TZ", "CI", "NO_COLOR", "TERM", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "COLUMNS", "LINES")
+	// Variables any program may run as a command or load code from: forge.other on every command.
+	commandEnvs      = set("PAGER", "MANPAGER", "EDITOR", "VISUAL", "BROWSER", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "BASH_ENV", "ENV", "PROMPT_COMMAND", "LESSOPEN", "LESSCLOSE")
+	commandEnvPrefix = []string{"GIT_", "GH_", "SSH_"}
+	declares         = set("export", "declare", "typeset", "readonly", "local")
+
 	shells     = set("sh", "bash", "zsh", "dash")
 	assignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	redirect   = `([0-9]*(>>|>\||<<<|<>|>|<)|&>>|&>)`
@@ -165,6 +204,46 @@ var (
 	glob       = regexp.MustCompile(`[*?]|\[[^\]]*\]`)
 	brace      = regexp.MustCompile(`\{[^{}\s]*(,|\.\.)[^{}\s]*\}`)
 )
+
+// A runner runs a command it is given (SAR R4). Its table names the command
+// position: after its options, after skip positional words, or the value of a
+// script option.
+type runner struct {
+	valued  map[string]bool // options that take the next word as their value
+	scripts map[string]bool // options whose value is a shell script: flock -c, env -S, script -c
+	skip    int             // positional words before the command: timeout's duration, ssh's host, flock's lock
+	shell   bool            // the command words are joined and run by a shell: watch, ssh
+	appends bool            // the runner appends arguments the parser cannot see: xargs
+	remote  bool            // the command runs elsewhere, with credentials the hard limits do not bound: ssh
+}
+
+var keyword = runner{}
+
+var runners = map[string]runner{
+	"!": keyword, "{": keyword, "if": keyword, "then": keyword, "else": keyword, "elif": keyword,
+	"do": keyword, "while": keyword, "until": keyword,
+	"command": {},
+	"nohup":   {},
+	"setsid":  {},
+	"exec":    {valued: set("-a")},
+	"env":     {valued: set("-u", "--unset", "-C", "--chdir"), scripts: set("-S", "--split-string")},
+	"sudo": {valued: set("-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir", "-h", "--host",
+		"-p", "--prompt", "-r", "--role", "-t", "--type", "-U", "--other-user", "-T", "--command-timeout")},
+	"time":   {valued: set("-f", "--format", "-o", "--output")},
+	"nice":   {valued: set("-n", "--adjustment")},
+	"stdbuf": {valued: set("-i", "-o", "-e", "--input", "--output", "--error")},
+	// skip is the duration. An option missing from valued shifts the command
+	// position by one word, which the file header lists as a residual.
+	"timeout": {valued: set("-s", "--signal", "-k", "--kill-after"), skip: 1},
+	"flock":   {valued: set("-w", "--timeout", "-E", "--conflict-exit-code"), scripts: set("-c", "--command"), skip: 1},
+	"script": {valued: set("-E", "--echo", "-I", "--log-in", "-O", "--log-out", "-B", "--log-io", "-T", "--log-timing",
+		"-m", "--logging-format"), scripts: set("-c", "--command"), skip: 1},
+	"xargs": {valued: set("-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "--replace", "-L", "--max-lines",
+		"-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars", "--process-slot-var"), appends: true},
+	"watch": {valued: set("-n", "--interval", "-q", "--equexit"), shell: true},
+	"ssh": {valued: set("-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p",
+		"-Q", "-R", "-S", "-W", "-w"), skip: 1, shell: true, remote: true},
+}
 
 // Classifier knows the run's own branch and the egress profiles it was given.
 type Classifier struct {
@@ -211,30 +290,55 @@ func (c Classifier) line(cmd string, depth int) Class {
 }
 
 func (c Classifier) segment(s segment, depth int) Class {
-	w := unwrap(dropRedirects(s.words))
+	u := unwrap(dropRedirects(s.words))
 	cl, scan := Plain, true
-	if len(w) > 0 {
+	for _, sc := range u.scripts {
+		if sc.expanded {
+			return ForgeOther // watch "$CMD", flock -c "$CMD" (R4)
+		}
+		cl = worse(cl, c.nested([]string{sc.text}, depth))
+	}
+	if len(u.cmd) == 0 {
+		if slices.ContainsFunc(u.env, commandEnv) {
+			return ForgeOther // PAGER=…, then any later command (R1)
+		}
+	} else {
+		w := u.cmd
 		if w[0].expanded {
-			return ForgeOther // $CMD: the command is whatever the variable holds (N1)
+			return ForgeOther // $CMD, xargs $CMD: the command is whatever the variable holds (N1, R4)
 		}
 		head, args := path.Base(w[0].text), w[1:]
+		if envUnsafe(u.env, head) {
+			return ForgeOther // GIT_PAGER=… git log (R1)
+		}
+		var hc Class
 		switch {
 		case shells[head]:
-			cl = c.shell(args, s.bodies, depth)
+			hc = c.shell(args, s.bodies, depth)
 		case head == "eval":
-			cl = c.eval(args, depth)
+			hc = c.eval(args, depth)
 		case head == "git":
-			cl, scan = c.git(args)
+			hc, scan = c.git(args, u.appended, depth)
 		case head == "gh":
-			cl, scan = c.gh(args), false
+			hc, scan = c.gh(args, u.appended), false
+		case head == "find":
+			hc = c.find(args, depth)
+		case head == "parallel":
+			hc = parallel(args)
+		case declares[head]:
+			hc = exports(args)
 		case interpreter(head) && mentionsForge(s.bodies):
-			cl = ForgeOther // python3 <<'EOF' … os.system('git push …') (N6)
+			hc = ForgeOther // python3 <<'EOF' … os.system('git push …') (N6)
 		default:
-			cl = c.fetch(head, wordTexts(args))
+			hc = c.fetch(head, wordTexts(args))
 		}
+		cl = worse(cl, hc)
+	}
+	if u.remote && (cl == ForgePush || cl == ForgePR) {
+		cl = ForgeOther
 	}
 	if cl == Plain && scan && mentionsForge(wordTexts(s.words)) {
-		return ForgeOther // a git or gh write the parser could not reach: xargs, ssh, timeout, an alias
+		return ForgeOther // a git or gh write the parser could not reach: an alias, an unknown runner
 	}
 	return cl
 }
@@ -292,26 +396,97 @@ func (c Classifier) nested(scripts []string, depth int) Class {
 	return worst
 }
 
+// find classes each -exec, -execdir, -ok and -okdir command as its own segment (R4).
+func (c Classifier) find(args []word, depth int) Class {
+	worst := Plain
+	for i := 0; i < len(args); i++ {
+		switch args[i].text {
+		case "-exec", "-execdir", "-ok", "-okdir":
+			j := i + 1
+			for j < len(args) && args[j].text != ";" && args[j].text != "+" {
+				j++
+			}
+			worst = worse(worst, c.segment(segment{words: args[i+1 : j]}, depth))
+			i = j
+		}
+	}
+	return worst
+}
+
+// parallel runs the words before ::: through a shell; an expanded one is unreadable
+// (R4). Literal ones are left to the forge scan.
+func parallel(args []word) Class {
+	for _, a := range args {
+		if strings.HasPrefix(a.text, ":::") {
+			break
+		}
+		if a.expanded {
+			return ForgeOther
+		}
+	}
+	return Plain
+}
+
+// exports reads `export NAME=…`: a command-valued name is forge.other for every
+// later command (R1).
+func exports(args []word) Class {
+	for _, a := range args {
+		name, _, _ := strings.Cut(a.text, "=")
+		if commandEnv(name) {
+			return ForgeOther
+		}
+	}
+	return Plain
+}
+
+func commandEnv(name string) bool {
+	return commandEnvs[name] || slices.ContainsFunc(commandEnvPrefix, func(p string) bool { return strings.HasPrefix(name, p) })
+}
+
+// envUnsafe reports an assignment a command could run: a command-valued name
+// for any command, and for git and gh anything off safeEnv.
+func envUnsafe(names []string, head string) bool {
+	for _, n := range names {
+		if commandEnv(n) || ((head == "git" || head == "gh") && !safeEnv[n] && !strings.HasPrefix(n, "LC_")) {
+			return true
+		}
+	}
+	return false
+}
+
 // git classes a git command, and reports whether its words still need the forge scan.
-func (c Classifier) git(args []word) (Class, bool) {
-	g, aliased := gitArgs(args)
-	if aliased {
-		return ForgeOther, false // git -c alias.p=push p (N7)
+func (c Classifier) git(args []word, appended bool, depth int) (Class, bool) {
+	g, unsafe := gitArgs(args)
+	if unsafe {
+		return ForgeOther, false // a global option or -c key off the allowlist (R1, R2, N7)
 	}
 	if len(g) == 0 {
+		if appended {
+			return ForgeOther, false // xargs git: the subcommand comes from stdin
+		}
 		return Plain, false
 	}
 	if g[0].expanded {
 		return ForgeOther, false // git $P (N1)
 	}
-	rest := wordTexts(g[1:])
-	switch sub := g[0].text; {
+	sub, rest := g[0].text, g[1:]
+	if commandFlag(sub, wordTexts(rest)) {
+		return ForgeOther, false // git ls-remote --upload-pack=… (R1)
+	}
+	switch {
 	case sub == "push":
-		return c.push(g[1:]), false
+		if appended {
+			return ForgeOther, false // xargs git push: the refspecs come from stdin
+		}
+		return c.push(rest), false
 	case sub == "send-pack" || sub == "http-push":
 		return ForgeOther, false // other push paths (N8); `subtree push` is not safe-listed, so the scan finds it
-	case sub == "config" && slices.ContainsFunc(rest, func(a string) bool { return strings.HasPrefix(a, "alias.") }):
-		return ForgeOther, false // an alias definition (N7)
+	case sub == "config":
+		return gitConfig(wordTexts(rest)), false
+	case sub == "remote":
+		return gitRemote(wordTexts(rest)), false
+	case sub == "rebase" || sub == "difftool" || sub == "filter-branch" || sub == "submodule" || sub == "bisect":
+		return c.gitRunner(sub, rest, depth), false
 	case gitSafe[sub]:
 		return Plain, false
 	}
@@ -319,23 +494,144 @@ func (c Classifier) git(args []word) (Class, bool) {
 }
 
 // gitArgs drops git's global options, leaving the subcommand first, and reports
-// an alias defined by -c or --config-env.
+// one off the allowlist: an unknown option, or a -c/--config-env key off safeConfig.
 func gitArgs(a []word) ([]word, bool) {
 	for len(a) > 0 && strings.HasPrefix(a[0].text, "-") {
-		opt := a[0].text
-		if strings.HasPrefix(opt, "--config-env=alias.") {
-			return nil, true
-		}
-		if gitValued[opt] && len(a) > 1 {
-			if (opt == "-c" || opt == "--config-env") && strings.HasPrefix(a[1].text, "alias.") {
+		name, val, attached := strings.Cut(a[0].text, "=")
+		switch {
+		case name == "-c" || name == "--config-env":
+			if name == "-c" || !attached {
+				if len(a) < 2 {
+					return nil, true
+				}
+				a, val = a[1:], a[1].text
+			}
+			if key, _, _ := strings.Cut(val, "="); !safeKey(key) {
 				return nil, true
 			}
-			a = a[2:]
-		} else {
-			a = a[1:]
+		case gitGlobalValued[name]:
+			if !attached && len(a) > 1 {
+				a = a[1:]
+			}
+		case !gitGlobal[name] || attached:
+			return nil, true // --exec-path and any option not listed
 		}
+		a = a[1:]
 	}
 	return a, false
+}
+
+func safeKey(key string) bool {
+	k := strings.ToLower(key)
+	return safeConfig[k] || slices.ContainsFunc(safeConfigPrefix, func(p string) bool { return strings.HasPrefix(k, p) })
+}
+
+// commandFlag reports an option whose value git runs as a command (R1).
+func commandFlag(sub string, args []string) bool {
+	flags := append(slices.Clone(commandFlags[""]), commandFlags[sub]...)
+	for _, a := range args {
+		for _, f := range flags {
+			if a == f || strings.HasPrefix(a, f+"=") || (len(f) == 2 && strings.HasPrefix(a, f)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gitConfig is Plain for a read, or a write of a key on safeConfig; any other
+// write, remote.*, push.*, branch.* and alias.* included, is forge.other (R2).
+func gitConfig(args []string) Class {
+	var pos []string
+	read := false
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case configReads[a]:
+			read = true
+		case a == "-e" || a == "--edit":
+			return ForgeOther // an editor, and any key
+		case configValued[a]:
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) > 0 {
+		switch pos[0] {
+		case "get", "list":
+			return Plain
+		case "edit":
+			return ForgeOther
+		case "set", "unset", "rename-section", "remove-section":
+			pos = pos[1:]
+		}
+	}
+	if read || len(pos) <= 1 || safeKey(pos[0]) {
+		return Plain
+	}
+	return ForgeOther
+}
+
+// gitRemote: a mirror remote, or a remote renamed to origin, widens the push
+// SAP calls forge.push (R2). set-url is the documented residual.
+func gitRemote(args []string) Class {
+	var pos []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--mirror") {
+			return ForgeOther
+		}
+		if !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) == 3 && pos[0] == "rename" && pos[2] == "origin" {
+		return ForgeOther
+	}
+	return Plain
+}
+
+// gitRunner classes the commands git runs: rebase -x, difftool -x, filter-branch's
+// filters, submodule foreach and bisect run (R4).
+func (c Classifier) gitRunner(sub string, args []word, depth int) Class {
+	var scripts []word
+	switch sub {
+	case "submodule", "bisect":
+		verb := map[string]string{"submodule": "foreach", "bisect": "run"}[sub]
+		i := slices.IndexFunc(args, func(w word) bool { return w.text == verb })
+		if i < 0 {
+			return Plain
+		}
+		rest := args[i+1:]
+		for len(rest) > 0 && strings.HasPrefix(rest[0].text, "-") {
+			rest = rest[1:]
+		}
+		if len(rest) > 0 {
+			scripts = append(scripts, joined(rest)) // foreach hands its words to sh; bisect run's are read the same way
+		}
+	default:
+		opts := gitRunnerOpts[sub]
+		for i := 0; i < len(args); i++ {
+			name, val, attached := splitOpt(args[i].text)
+			if !opts[name] {
+				continue
+			}
+			if attached {
+				scripts = append(scripts, word{text: val, expanded: args[i].expanded})
+			} else if i+1 < len(args) {
+				i++
+				scripts = append(scripts, args[i])
+			}
+		}
+	}
+	worst := Plain
+	for _, s := range scripts {
+		if s.expanded {
+			return ForgeOther // git rebase -x "$CMD" (R4)
+		}
+		worst = worse(worst, c.nested([]string{s.text}, depth))
+	}
+	return worst
 }
 
 // push is forge.push only for the exact safe shape (ruling SAP): `git push`, then
@@ -386,7 +682,10 @@ func (c Classifier) own(ref string) bool {
 
 // gh classes a gh command from its group and verb. Only -R/--repo may stand
 // between them (N3): cobra resolves the verb past any flag.
-func (c Classifier) gh(args []word) Class {
+func (c Classifier) gh(args []word, appended bool) Class {
+	if appended {
+		return ForgeOther // xargs gh: the verb or its arguments come from stdin
+	}
 	if len(args) == 0 {
 		return Plain
 	}
@@ -397,8 +696,6 @@ func (c Classifier) gh(args []word) Class {
 			return Plain // gh --version
 		}
 		return ForgeOther
-	case !ghGroups[group]:
-		return ForgeOther // an extension, an alias (N7), or an expanded word ($G)
 	case group == "api":
 		if ghAPIWrites(wordTexts(args[1:])) {
 			return ForgeOther
@@ -406,6 +703,8 @@ func (c Classifier) gh(args []word) Class {
 		return Plain
 	case ghNoVerb[group]:
 		return Plain
+	case ghReads[group] == nil:
+		return ForgeOther // an extension, an alias (N7), copilot, or an expanded word ($G)
 	}
 	rest := args[1:]
 	for len(rest) > 0 && strings.HasPrefix(rest[0].text, "-") {
@@ -421,14 +720,19 @@ func (c Classifier) gh(args []word) Class {
 	if len(rest) == 0 {
 		return Plain
 	}
-	if rest[0].expanded {
-		return ForgeOther
-	}
-	switch verb := rest[0].text; {
+	return ghVerb(group, rest[0].text, wordTexts(rest[1:]))
+}
+
+// ghVerb is forge.pr for pr's writes, Plain for a read verb, and forge.other for
+// anything else (R3).
+func ghVerb(group, verb string, rest []string) Class {
+	switch {
 	case group == "pr" && slices.Contains(prWrites, verb):
 		return ForgePR
-	case slices.Contains(ghWrites[group], verb):
+	case !slices.Contains(ghReads[group], verb):
 		return ForgeOther
+	case group == "repo" && verb == "clone" && slices.Contains(rest, "--"):
+		return ForgeOther // git options after -- (R1)
 	}
 	return Plain
 }
@@ -478,31 +782,103 @@ func (c Classifier) fetch(head string, args []string) Class {
 	return Plain
 }
 
-// unwrap strips env assignments, wrapper words and `timeout <duration>`.
-func unwrap(w []word) []word {
-	wrapped := false
+// unwrapped is a segment with its assignments and runners taken off.
+type unwrapped struct {
+	cmd      []word   // the command, head first
+	env      []string // the names assigned before it
+	scripts  []word   // shell scripts a runner was given: flock -c, watch's and ssh's command
+	appended bool     // a runner appends arguments the parser cannot see: xargs
+	remote   bool     // the command runs on another host: ssh
+}
+
+// unwrap strips env assignments and runners (R4), down to the command they run.
+func unwrap(w []word) unwrapped {
+	var u unwrapped
 	for len(w) > 0 {
-		t := path.Base(w[0].text)
-		switch {
-		case assignment.MatchString(w[0].bare):
+		if assignment.MatchString(w[0].bare) {
+			name, _, _ := strings.Cut(w[0].text, "=")
+			u.env = append(u.env, name)
 			w = w[1:]
-		case wrapped && strings.HasPrefix(t, "-"):
+			continue
+		}
+		r, ok := runners[path.Base(w[0].text)]
+		if !ok || w[0].expanded {
+			break
+		}
+		var done bool
+		w, done = r.options(w[1:], &u)
+		for i := 0; !done && i < r.skip && len(w) > 0; i++ {
 			w = w[1:]
-		case wrappers[t]:
-			w, wrapped = w[1:], true
-		case t == "timeout":
-			w = w[1:]
-			for len(w) > 0 && strings.HasPrefix(w[0].text, "-") {
-				w = w[1:]
+		}
+		if !done && r.skip > 0 {
+			w, done = r.options(w, &u) // flock <lock> -c <script>
+		}
+		u.appended = u.appended || r.appends
+		u.remote = u.remote || r.remote
+		if done || r.shell {
+			if !done && len(w) > 0 {
+				u.scripts = append(u.scripts, joined(w))
 			}
-			if len(w) > 0 {
-				w = w[1:]
-			}
-		default:
-			return w
+			w = nil
 		}
 	}
-	return w
+	u.cmd = w
+	return u
+}
+
+// options consumes a runner's leading options. done reports a script option:
+// its value is the command, and nothing after it is.
+func (r runner) options(w []word, u *unwrapped) ([]word, bool) {
+	for len(w) > 0 && len(w[0].text) > 1 && w[0].text[0] == '-' {
+		opt := w[0]
+		w = w[1:]
+		if opt.text == "--" {
+			break
+		}
+		name, val, attached := r.cluster(opt.text)
+		switch {
+		case r.scripts[name]:
+			if attached {
+				u.scripts = append(u.scripts, word{text: val, expanded: opt.expanded})
+			} else if len(w) > 0 {
+				u.scripts = append(u.scripts, w[0])
+			}
+			return nil, true
+		case r.valued[name] && !attached && len(w) > 0:
+			w = w[1:]
+		}
+	}
+	return w, false
+}
+
+// cluster reads a short-option cluster the way getopt does: the first letter
+// that takes a value ends it, with the rest as its value, or the next word when
+// it is last (script -qc <script>, sudo -iu <user>).
+func (r runner) cluster(o string) (name, val string, attached bool) {
+	if strings.HasPrefix(o, "--") || len(o) <= 2 {
+		return splitOpt(o)
+	}
+	for k := 1; k < len(o); k++ {
+		if f := "-" + o[k:k+1]; r.scripts[f] || r.valued[f] {
+			return f, o[k+1:], k+1 < len(o)
+		}
+	}
+	return o, "", false
+}
+
+// splitOpt splits --name=value and -Xvalue.
+func splitOpt(o string) (name, val string, attached bool) {
+	if strings.HasPrefix(o, "--") {
+		return strings.Cut(o, "=")
+	}
+	if len(o) > 2 {
+		return o[:2], o[2:], true
+	}
+	return o, "", false
+}
+
+func joined(w []word) word {
+	return word{text: strings.Join(wordTexts(w), " "), expanded: slices.ContainsFunc(w, func(x word) bool { return x.expanded })}
 }
 
 // dropRedirects removes unquoted redirections: 2>&1, >/dev/null, and a lone
@@ -542,8 +918,7 @@ func mentionsForge(text []string) bool {
 			}
 		case "gh":
 			for j := i + 1; j+1 < len(t); j++ {
-				if (t[j] == "pr" && slices.Contains(prWrites, t[j+1])) || slices.Contains(ghWrites[t[j]], t[j+1]) ||
-					(t[j] == "api" && ghAPIWrites(t[j+1:])) {
+				if (ghReads[t[j]] != nil && ghVerb(t[j], t[j+1], nil) != Plain) || (t[j] == "api" && ghAPIWrites(t[j+1:])) {
 					return true
 				}
 			}
