@@ -25,17 +25,17 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err != nil {
 			t.Fatal(err)
 		}
-		if w := f.written(); !slices.Equal(w, []string{"respond false", "send"}) || f.answers()[0] != textSuperseded {
-			t.Fatalf("writes %v, answers %v: the message itself resumes the run", w, f.answers())
+		if w := f.written(); !slices.Equal(w, []string{"send", "respond false", "run"}) || f.answers()[0] != textSuperseded {
+			t.Fatalf("writes %v, answers %v: in without running, rejected, then run", w, f.answers())
 		}
 		_ = c.Decision(t.Context(), wire.Decision{ApprovalID: "ap-c1", Allow: true, Ref: 9})
 		c.Observe(action("c2", "ls"))
 		c.OnStatus(t.Context(), waiting) // stale: read before the rejection
-		if w := f.written(); len(w) != 2 {
+		if w := f.written(); len(w) != 3 {
 			t.Fatalf("a late decision, or a status read before the rejection, answers nothing: %v", w)
 		}
 		c.OnStatus(t.Context(), waiting)
-		if w := f.written(); !slices.Equal(w, []string{"respond false", "send", "respond true"}) {
+		if w := f.written(); !slices.Equal(w, []string{"send", "respond false", "run", "respond true"}) {
 			t.Fatalf("the next step is answered on its own: %v", w)
 		}
 	})
@@ -46,7 +46,7 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		c.OnStatus(t.Context(), waiting)
 		_ = steer.Interrupt(t.Context(), wire.Interrupt{Ref: 4})
 		_ = steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "go on"})
-		if w := f.written(); !slices.Equal(w, []string{"interrupt", "respond false", "send"}) {
+		if w := f.written(); !slices.Equal(w, []string{"interrupt", "send", "respond false", "run"}) {
 			t.Fatalf("writes %v", w)
 		}
 	})
@@ -56,7 +56,7 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		c.Observe(action("c2", "gh issue close 4"))
 		c.OnStatus(t.Context(), waiting)
 		_ = c.Decision(t.Context(), wire.Decision{ApprovalID: "ap-c1", Allow: true, Ref: 7})
-		if err := c.Gate(t.Context(), func() error { return nil }); err != nil {
+		if err := c.Gate(t.Context(), func(bool) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		if k := kinds(*items); !slices.Equal(k, []string{"decision_applied 7 " + runID}) {
@@ -69,11 +69,11 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		c.Observe(action("c1", "ls"))
 		c.OnStatus(t.Context(), waiting)
 		_ = steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "thanks"})
-		if w := f.written(); !slices.Equal(w, []string{"respond true", "send"}) {
+		if w := f.written(); !slices.Equal(w, []string{"respond true", "send", "run"}) { // 409: running
 			t.Fatalf("writes %v", w)
 		}
 	})
-	t.Run("a rejection the harness refuses sends nothing", func(t *testing.T) {
+	t.Run("a rejection the harness refuses skips the run, and leaves the step to the loop", func(t *testing.T) {
 		c, f, _, _ := setup(t, "attended")
 		steer := &Steering{Harness: c.Harness, RunID: runID, Push: c.Push, Gate: c.Gate}
 		c.Observe(action("c1", "gh pr create --fill"))
@@ -81,10 +81,10 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		f.mu.Lock()
 		f.refuse = http.StatusServiceUnavailable
 		f.mu.Unlock()
-		if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err == nil {
-			t.Fatal("the stream must replay the delivery")
+		if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err != nil {
+			t.Fatalf("the message is in; replaying it would repeat it: %v", err)
 		}
-		if w := f.written(); len(w) != 0 {
+		if w := f.written(); !slices.Equal(w, []string{"send"}) {
 			t.Fatalf("writes %v", w)
 		}
 	})

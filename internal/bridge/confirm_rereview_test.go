@@ -17,11 +17,11 @@ func TestSteeringAsksTheHarnessNotTheBridgesView(t *testing.T) {
 		status string
 		want   []string
 	}{
-		{waiting, []string{"respond false", "send"}},
-		{"paused", []string{"respond false", "send"}},
-		{"running", []string{"send"}}, // the live step turns a message into a rejection itself
-		{"idle", []string{"send"}},
-		{"finished", []string{"send"}},
+		{waiting, []string{"send", "respond false", "run"}},
+		{"paused", []string{"send", "respond false", "run"}},
+		{"running", []string{"send", "run"}}, // 409; the live step turns the message into a rejection itself
+		{"idle", []string{"send", "run"}},
+		{"finished", []string{"send", "run"}},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			c, f, _, _ := setup(t, "attended")
@@ -36,17 +36,57 @@ func TestSteeringAsksTheHarnessNotTheBridgesView(t *testing.T) {
 			}
 		})
 	}
-	t.Run("an unreadable status sends nothing", func(t *testing.T) {
+	t.Run("an unreadable status skips the run", func(t *testing.T) {
 		c, f, _, _ := setup(t, "attended")
 		f.statusCode = http.StatusServiceUnavailable
 		steer := &Steering{Harness: c.Harness, RunID: runID, Push: c.Push, Gate: c.Gate}
-		if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err == nil {
-			t.Fatal("the stream must replay the delivery")
+		if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err != nil {
+			t.Fatalf("the message is in; replaying it would repeat it: %v", err)
+		}
+		if w := f.written(); !slices.Equal(w, []string{"send"}) {
+			t.Fatalf("writes %v", w)
+		}
+	})
+	t.Run("a refused send is replayed", func(t *testing.T) {
+		c, f, _, _ := setup(t, "attended")
+		if err := c.Gate(t.Context(), func(bool) error { return http.ErrHandlerTimeout }); err == nil {
+			t.Fatal("nothing is in: the delivery must be replayed")
 		}
 		if w := f.written(); len(w) != 0 {
 			t.Fatalf("writes %v", w)
 		}
 	})
+}
+
+// Ruling SAW: the step parks on a confirmation right after the gate read the
+// status as running. A message sent before the read turns that park into a
+// rejection, so nothing is accepted, and the message still reaches the run.
+func TestTheGateClosesTheParkRace(t *testing.T) {
+	c, f, _, _ := setup(t, "attended")
+	f.status, f.parkAfterRead = "running", true
+	steer := &Steering{Harness: c.Harness, RunID: runID, Push: c.Push, Gate: c.Gate}
+	if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "hold on"}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.written()
+	if slices.Contains(w, "implicit accept") || !slices.Equal(w, []string{"send", "rejected by the message", "run"}) {
+		t.Fatalf("writes %v: a step parked after the read must never be accepted", w)
+	}
+	if sent, _, _ := f.snapshot(); !slices.Equal(sent, []string{"hold on"}) {
+		t.Fatalf("the message reaches the conversation: %v", sent)
+	}
+}
+
+// Without a confirmation loop (phase 4), steering runs the message itself.
+func TestUngatedSteeringRunsTheMessage(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100, status: "idle"}
+	steer := &Steering{Harness: NewHarness(f.start(t, conv).URL, conv), RunID: runID, Push: func(wire.Item) {}}
+	if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 1, Text: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.written(); !slices.Equal(w, []string{"send run"}) {
+		t.Fatalf("writes %v", w)
+	}
 }
 
 // Re-review I1, probe P2: a failed resume is never retried over a step that
@@ -64,7 +104,7 @@ func TestAResumeRetryNeverConfirmsANewStep(t *testing.T) {
 	f.status, f.runCode = waiting, 0 // the agent's next step waits
 	f.mu.Unlock()
 	c.OnStatus(t.Context(), waiting)
-	if w := f.written(); !slices.Equal(w, []string{"respond false", "run", "send"}) {
+	if w := f.written(); !slices.Equal(w, []string{"respond false", "run", "send", "run"}) {
 		t.Fatalf("writes %v: a /run now would confirm the new step", w)
 	}
 }
@@ -119,17 +159,17 @@ func TestTheResumeRetryWaitsForAnIdleStatus(t *testing.T) {
 	})
 	t.Run("a steering send ends the retry", func(t *testing.T) {
 		c, f := retrying(t)
-		if err := c.Gate(t.Context(), func() error { return nil }); err != nil {
+		if err := c.Gate(t.Context(), func(bool) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 		c.OnStatus(t.Context(), "idle")
-		if w := f.written(); slices.Contains(w[2:], "run") {
-			t.Fatalf("writes %v", w)
+		if w := f.written(); !slices.Equal(w, []string{"respond false", "run", "run"}) {
+			t.Fatalf("only the gate's own run: %v", w)
 		}
 	})
 	t.Run("a failed send keeps it", func(t *testing.T) {
 		c, f := retrying(t)
-		_ = c.Gate(t.Context(), func() error { return http.ErrHandlerTimeout })
+		_ = c.Gate(t.Context(), func(bool) error { return http.ErrHandlerTimeout })
 		c.OnStatus(t.Context(), "idle")
 		if w := f.written(); !slices.Equal(w, []string{"respond false", "run", "run"}) {
 			t.Fatalf("writes %v", w)
@@ -146,7 +186,7 @@ func TestADecisionWithoutAnApprovalIDIsDropped(t *testing.T) {
 		t.Fatalf("held %v", c.decided)
 	}
 	c.Observe(action("c1", "ls"))
-	if err := c.Gate(t.Context(), func() error { return nil }); err != nil {
+	if err := c.Gate(t.Context(), func(bool) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kinds(*items) {

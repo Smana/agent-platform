@@ -329,34 +329,42 @@ func (c *Confirmer) Decision(ctx context.Context, d wire.Decision) error {
 	return nil
 }
 
-// Gate runs send, a message to the harness with run:true, once no step waits:
-// such a message would confirm every pending action (review C1). It asks the
-// harness, not the bridge's own view, which lags it by a poll, a backoff, a
-// full buffer or a restart (re-review C1). A conversation waiting for a
-// confirmation, or paused with actions unmatched, is rejected first: that
-// rejects every pending action, read by the bridge or not. Nothing is sent if
-// the status cannot be read or the rejection is refused; the delivery is
-// replayed. The message itself resumes the conversation.
-func (c *Confirmer) Gate(ctx context.Context, send func() error) error {
+// Gate delivers a steering message without ever confirming a step (review C1,
+// re-reviews C1 and SAW). A message sent with run:true, or a /run, on a
+// conversation waiting for a confirmation confirms every pending action; and
+// the bridge's own view lags the harness. So the message goes in with run
+// false first, then the harness is asked:
+//
+//   - waiting or paused: reject every pending action, read by the bridge or
+//     not, then /run;
+//   - anything else: /run alone. A step running when the message arrived turns
+//     its park into a rejection itself, so no step parks between the status
+//     read and the /run.
+//
+// A send that fails returns its error and the delivery is replayed. Once the
+// message is in, a failed status read or rejection only skips the /run: the
+// loop answers the step as usual, and the resume retry runs the conversation
+// from idle.
+func (c *Confirmer) Gate(ctx context.Context, send func(run bool) error) error {
 	c.settling.Lock()
 	defer c.settling.Unlock()
+	if err := send(false); err != nil {
+		return err
+	}
 	status, err := c.Harness.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("read the harness status before steering: %w", err)
+		c.log().Warn("a steering message is in, but the harness status is unreadable; the loop runs it", "err", err)
+		return nil
 	}
 	if status == statusWaiting || status == statusPaused {
 		step, _ := c.step()
 		_, refs := c.decisions(step)
 		if err := c.respond(ctx, step, false, textSuperseded, refs, true); err != nil {
-			return fmt.Errorf("reject the waiting step before steering: %w", err)
+			c.log().Warn("a steering message is in, but the waiting step was not rejected; the loop answers it", "err", err)
+			return nil
 		}
 	}
-	if err := send(); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	c.resume = false // the message resumed the run
-	c.mu.Unlock()
+	c.resumeRun(ctx)
 	return nil
 }
 

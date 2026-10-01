@@ -27,9 +27,9 @@ type Steering struct {
 	Harness *Harness
 	RunID   string
 	Push    func(wire.Item)
-	// Gate runs each steering send (Confirmer.Gate): a message with run:true
+	// Gate runs each steering send (Confirmer.Gate), deciding its run flag: a message with run:true
 	// would confirm a waiting step implicitly, so the step is rejected first.
-	Gate func(ctx context.Context, send func() error) error
+	Gate func(ctx context.Context, send func(run bool) error) error
 
 	mu      sync.Mutex
 	handled map[int64]bool
@@ -100,12 +100,12 @@ func (s *Steering) Deliver(ctx context.Context, d wire.Deliver) error {
 	if !s.once(d.Ref) {
 		return nil
 	}
-	send := func() error { return s.Harness.Send(ctx, d.Text) }
+	send := func(run bool) error { return s.Harness.Message(ctx, d.Text, run) }
 	var err error
 	if s.Gate != nil {
 		err = s.Gate(ctx, send)
 	} else {
-		err = send()
+		err = send(true) // phase 4, with no confirmation loop
 	}
 	if err != nil {
 		return s.failed(d.Ref, err, permanent)

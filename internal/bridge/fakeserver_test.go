@@ -33,6 +33,23 @@ type fakeAgentServer struct {
 	writes     []string
 	runCode    int // while set, POST /run is answered with this status
 	statusCode int // while set, the conversation read is answered with this status
+	// parkAfterRead makes the running step park on a confirmation right after
+	// the next status read, unless a message arrived during it.
+	parkAfterRead bool
+	messaged      bool // a message arrived during the current step
+}
+
+// runStep is run() (local_conversation.py:2191-2197, agent.py:652-661): on a
+// conversation waiting for a confirmation, or paused with actions unmatched,
+// it runs every pending action, an implicit confirmation. Under f.mu.
+func (f *fakeAgentServer) runStep() {
+	if f.status == "waiting_for_confirmation" || f.status == "paused" {
+		f.writes = append(f.writes, "implicit accept")
+	}
+	if f.status != "running" {
+		f.messaged = false // a new step
+	}
+	f.status = "running"
 }
 
 // written copies the writes received so far, in order.
@@ -106,6 +123,16 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			f.status = map[string]string{"running": "paused", "paused": "running"}[f.status]
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": conv, "execution_status": f.status})
+		if f.parkAfterRead && f.status == "running" {
+			// The running step ends right after this read and asks to park.
+			f.parkAfterRead = false
+			if f.messaged {
+				f.writes = append(f.writes, "rejected by the message")
+				f.status = "idle" // local_conversation.py:2292-2308
+			} else {
+				f.status = "waiting_for_confirmation"
+			}
+		}
 	})
 	mux.HandleFunc("GET "+base+"/events/search", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -142,13 +169,19 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			Content []struct{ Text string } `json:"content"`
 			Run     bool                    `json:"run"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Content) != 1 || in.Role != "user" || !in.Run {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Content) != 1 || in.Role != "user" {
 			http.Error(w, "bad message", http.StatusUnprocessableEntity)
 			return
 		}
 		f.mu.Lock()
 		f.sent = append(f.sent, in.Content[0].Text)
-		f.writes = append(f.writes, "send")
+		f.messaged = true
+		if in.Run {
+			f.writes = append(f.writes, "send run")
+			f.runStep()
+		} else {
+			f.writes = append(f.writes, "send")
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
@@ -200,7 +233,7 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			http.Error(w, "already running", http.StatusConflict)
 			return
 		}
-		f.status = "running"
+		f.runStep()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
 	mux.HandleFunc("POST "+base+"/interrupt", func(w http.ResponseWriter, _ *http.Request) {

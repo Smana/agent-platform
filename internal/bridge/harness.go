@@ -319,9 +319,14 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 }
 
 // Send injects a message the agent consumes at its next step (steering, §2).
-func (h *Harness) Send(ctx context.Context, text string) error {
+func (h *Harness) Send(ctx context.Context, text string) error { return h.Message(ctx, text, true) }
+
+// Message appends a user message, and with run starts the conversation. A run
+// on a conversation waiting for a confirmation confirms every pending action,
+// so the confirmation loop sends with run false (Confirmer.Gate).
+func (h *Harness) Message(ctx context.Context, text string, run bool) error {
 	return h.do(ctx, http.MethodPost, "/events", map[string]any{"role": "user",
-		"content": []map[string]string{{"type": "text", "text": text}}, "run": true}, nil)
+		"content": []map[string]string{{"type": "text", "text": text}}, "run": run}, nil)
 }
 
 // Respond answers the action the conversation is waiting to have confirmed.
