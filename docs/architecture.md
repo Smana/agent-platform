@@ -109,8 +109,30 @@ sequenceDiagram
 ```
 
 A second run whose bridge says hello while the first is live gets `409 room_busy`, and the broker
-appends `state_changed{kind: limit, reason: concurrent_run}` (ruling P17). Before SP3 ships, the
-owner starts each run with `task agent:run -- --room <id>`; the broker never creates one.
+appends `state_changed{kind: limit, reason: concurrent_run}` (ruling P17). The lease holds the work,
+not only the log (F15): `room-bridge gate`, an init container between the bridge and the harness,
+starts the harness only once the bridge holds the lease. A room still busy after 3 minutes fails the
+pod before the harness runs, and the run ends `room_busy`. Before SP3 ships, the owner starts each
+run with `task agent:run -- --room <id>`; the broker never creates one.
+
+```mermaid
+sequenceDiagram
+  participant BR as room-bridge (sidecar)
+  participant G as room-bridge gate (init)
+  participant H as harness
+  participant B as room-broker
+  BR->>B: POST /v1/bridge/hello
+  alt the lease is free
+    B-->>BR: 200 resume
+    G->>BR: GET /admission → 200
+    G-->>H: exit 0: the harness starts
+  else another live run holds it for 3 min
+    B-->>BR: 409 room_busy (retried)
+    G->>BR: GET /admission → 409 room_busy
+    G-->>H: exit 1: the pod fails, the harness never starts
+    B->>B: run_phase Failed, reason room_busy
+  end
+```
 
 ## Replicas and the leader
 

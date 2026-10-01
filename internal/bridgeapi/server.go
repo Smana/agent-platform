@@ -305,7 +305,7 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	if !took {
 		_, _, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
 			Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: brokerActor}, Type: envelope.StateChanged,
-			Origin: envelope.OriginBroker, OriginClient: "broker:busy:" + run.ID, OriginSeq: 1,
+			Origin: envelope.OriginBroker, OriginClient: runwatch.BusyScope + run.ID, OriginSeq: 1,
 			Payload: envelope.StatePayload("limit", map[string]any{"reason": "concurrent_run", "running": holder})})
 		if err != nil {
 			s.log().Warn("record a concurrent run", "room", run.Room, "run", run.ID, errAttr(err))
