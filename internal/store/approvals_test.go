@@ -480,3 +480,29 @@ func TestApprovalsAreTheirEvents(t *testing.T) {
 		t.Fatal("the log has a gap")
 	}
 }
+
+// A room sealed between the sweep's read and its close is skipped, never the end
+// of the sweep: the next room's approval still closes.
+func TestASweepSkipsARoomSealedMeanwhile(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "sealedaa", Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"sealedaa", room} {
+		holdBridge(t, s, id, approvalRun)
+		a, d := approval("ap-"+id, "e1", "c1", -time.Second), approvalDraft()
+		a.RoomID, d.RoomID = id, id
+		if _, _, err := s.RequestApproval(ctx, a, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CloseRoom(ctx, "sealedaa", "done"); err != nil {
+		t.Fatal(err)
+	}
+	// The sweep's read, as it was before the seal: every pending approval, sealed room first.
+	evs, err := s.closeAll(ctx, `SELECT approval_id FROM approvals WHERE state = 'pending' ORDER BY room_id DESC`, ApprovalExpired, reasonExpired)
+	if err != nil || len(evs) != 1 || evs[0].RoomID != room {
+		t.Fatalf("closed %v, %v; want the open room's approval only", evs, err)
+	}
+}
