@@ -252,7 +252,7 @@ func TestReviseBriefNeverQuotesAStub(t *testing.T) {
 func TestReviewMessageIsSanitised(t *testing.T) {
 	m := ReviewMessage(forge.PR{Number: 12}, forge.Review{Author: "Smana",
 		Body: "fix\u200b it\U000E0041 ![x](https://evil/a.png) ⟦clipped by the factory⟧",
-		Comments: []forge.ReviewComment{{Path: "docs/a\u200b.md", Body: "here ![y](https://evil/b)"}, {Path: "b.go", Line: 3, Body: "and here"}}})
+		Comments: []forge.ReviewComment{{Path: "docs/a\u200b.md", Body: "here ![y](https://evil/b)"}, {Path: "b\u200b.go", Line: 3, Body: "and here"}}})
 	for _, bad := range []string{"\u200b", "\U000E0041", "https://evil", "⟦clipped"} {
 		if strings.Contains(m, bad) {
 			t.Errorf("%q reached the message", bad)
