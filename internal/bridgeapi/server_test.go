@@ -1003,6 +1003,41 @@ func TestStreamOutlivesTheReadTimeout(t *testing.T) {
 	expectPing(t, sc)
 }
 
+// F10: Go's HTTP/2 server enforces a write deadline as a per-stream timer that
+// resets the stream when it fires, write pending or not. A stream idle past
+// StreamWriteWait, between two pings, must stay open.
+func TestAnIdleHTTP2StreamOutlivesTheWriteWait(t *testing.T) {
+	s, _, w := newServer(t)
+	tick := make(manualTicker, 1)
+	s.Ticker = tick.new
+	s.StreamWriteWait = 50 * time.Millisecond
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	srv := httptest.NewUnstartedServer(s.Routes())
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/bridge/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer run:"+runA)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 || resp.StatusCode != http.StatusOK {
+		t.Fatalf("want an HTTP/2 stream, got %s %d", resp.Proto, resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	expectPing(t, sc)
+	for range 2 {
+		<-time.After(6 * s.StreamWriteWait)
+		tick <- time.Now()
+		expectPing(t, sc)
+	}
+}
+
 // The stream ends with the bridge's token (§4): the bridge re-dials with a fresh one.
 func TestStreamEndsWithTheToken(t *testing.T) {
 	s, _, w := newServer(t)

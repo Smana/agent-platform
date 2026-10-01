@@ -48,7 +48,8 @@ const (
 	defaultPing   = 30 * time.Second
 	maxStreamLife = time.Hour
 	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
-	// reading cannot pin a handler until its token expires.
+	// reading cannot pin a handler until its token expires. It is armed only
+	// while a write and its flush are under way.
 	defaultStreamWriteWait = 10 * time.Second
 
 	brokerActor = "system:room-broker"
@@ -569,6 +570,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		if err := rc.Flush(); err != nil {
 			return
 		}
+		// Disarmed between writes (F10): Go's HTTP/2 server runs the deadline as a
+		// per-stream timer and resets the stream when it fires, even with no write
+		// pending, so an armed deadline would end every stream idle past it.
+		_ = rc.SetWriteDeadline(time.Time{})
 		select {
 		case <-ctx.Done():
 			return
