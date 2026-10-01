@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Snapshot } from "./conn";
+import type { Frame, Snapshot } from "./conn";
 import type { RoomState } from "./room-state";
 
 // Human copy for an ack's rejected reason (docs/api.md, Actions).
@@ -49,9 +49,10 @@ function select(name: string, options: [string, string][]): HTMLSelectElement {
 }
 
 // Every act carries the epoch it was decided on; the broker fences driver-only
-// actions on it (§2). Returns false when the socket is not open.
-export function act(conn: Sender, state: RoomState, action: Record<string, unknown>): boolean {
-  return conn.send({ type: "act", clientSeq: ++clientSeq, driverEpoch: state.driverEpoch, action });
+// actions on it (§2). Returns its clientSeq, or 0 when the socket is not open.
+export function act(conn: Sender, state: RoomState, action: Record<string, unknown>): number {
+  const seq = ++clientSeq;
+  return conn.send({ type: "act", clientSeq: seq, driverEpoch: state.driverEpoch, action }) ? seq : 0;
 }
 
 // mountControls renders what a collaborator and up can do: the composer, the queue,
@@ -66,9 +67,11 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const delivery = select("delivery", [["none", "chat"], ["queued", "queue for the next run"], ["steering", "steer the run now"]]);
   const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
   const composer = el("div", { className: "composer" });
+  // The text stays until its own ack accepts it: a rejected message is not lost.
+  let sent = { seq: 0, text: "" };
   composer.append(text, delivery, button("send", "message", () => {
     if (!text.value.trim()) return;
-    if (send({ kind: "message", text: text.value, delivery: delivery.value })) text.value = "";
+    sent = { seq: send({ kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
   }));
 
   const queue = el("ul", { className: "queue" });
@@ -76,6 +79,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     queue.replaceChildren(...state.queue().map((q) => {
       const li = el("li");
       li.append(el("span", { textContent: `#${q.ref} ${q.author}: ${q.text}` }));
+      if (state.sealed) return li; // every action answers sealed
       if (q.author === you.principal || isDriver()) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
       if (isDriver()) li.append(button("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
       return li;
@@ -122,6 +126,12 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
   root.replaceChildren(driver, composer, queue, hand, manifest);
+  const showResult = (result: unknown) => {
+    if (!result) return;
+    // JSON escapes every newline in a string, so no line of it can be a bare EOF.
+    claim.textContent = `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
+    manifest.hidden = false;
+  };
   return {
     refresh() {
       steering.disabled = !isDriver();
@@ -131,11 +141,13 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       renderQueue();
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
-    showResult(result: unknown) {
-      if (!result) return;
-      // JSON escapes every newline in a string, so no line of it can be a bare EOF.
-      claim.textContent = `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
-      manifest.hidden = false;
+    showResult,
+    // onAck takes every ack: an accepted one clears the composer it came from, if
+    // unedited since, and shows a claim it carries.
+    onAck(f: Frame) {
+      if (f.rejected) return;
+      if (f.clientSeq && f.clientSeq === sent.seq && text.value === sent.text) text.value = "";
+      showResult(f.result);
     },
   };
 }

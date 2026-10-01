@@ -47,6 +47,13 @@ type You struct {
 	WebUI     bool   `json:"webUI"`
 }
 
+// QueuedView is one message still queued for the next run.
+type QueuedView struct {
+	Ref    int64  `json:"ref"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
+}
+
 // Snapshot is the room's state at the high-water mark of a state frame.
 type Snapshot struct {
 	RoomID      string    `json:"roomId"`
@@ -56,6 +63,11 @@ type Snapshot struct {
 	DataClass   string    `json:"dataClass"`
 	You         You       `json:"you"`
 	Runs        []RunView `json:"runs"`
+	// Queue is read after the mark: the client applies events past ThroughSeq over
+	// it, so a row queued or moved in between is idempotent either way.
+	Queue []QueuedView `json:"queue"`
+	// Sealed is the log's own seal at the mark; Phase follows the Room CR and lags it.
+	Sealed bool `json:"sealed"`
 }
 
 // ServerFrame is a frame from the broker: state, sync, event, ack or transient.

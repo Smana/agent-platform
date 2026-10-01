@@ -54,6 +54,9 @@ type Authenticator interface {
 type Log interface {
 	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
 	Room(ctx context.Context, id string) (store.RoomState, error)
+	// Queue is the room's still-queued messages, for the state frame: a page's tail
+	// of events rarely reaches back to them (review 4.5 I1).
+	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
 }
 
 // Hub is the fan-out hub's subscription side; *fanout.Hub implements it.

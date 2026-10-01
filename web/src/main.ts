@@ -3,6 +3,7 @@
 import { api } from "./api";
 import { RoomConnection, type Snapshot } from "./conn";
 import { mountControls, rejection } from "./controls";
+import { PendingActs } from "./pending";
 import { renderEvent } from "./render";
 import { RoomState } from "./room-state";
 import { listRooms, RoomLog } from "./view";
@@ -33,10 +34,9 @@ function room(id: string) {
   };
   const conn = new RoomConnection(id, {
     // A state frame comes on every (re)connect: an invite may have changed the role.
-    onState: (s: Snapshot) => {
+    onState: (s: Snapshot, throughSeq: number) => {
       snap = s;
-      state.driver = s.driver;
-      state.driverEpoch = s.driverEpoch;
+      state.reset(s, throughSeq);
       renderHeader();
       if (s.you.role === "watcher") {
         controls = you = undefined;
@@ -54,8 +54,9 @@ function room(id: string) {
       controls?.refresh();
     },
     onAck: (f) => {
+      pending.ack(f);
       say(f.rejected ? rejection(f.rejected) : "");
-      if (!f.rejected) controls?.showResult(f.result);
+      controls?.onAck(f);
     },
     onRefused: () => void api("/api/rooms").catch(() => {}), // a 401 there signs in again
     onCounters: (c) => {
@@ -64,11 +65,13 @@ function room(id: string) {
     onStatus: (s) => {
       footer.dataset.status = s;
       status.textContent = s;
+      pending.status(s);
     },
   });
+  const pending = new PendingActs(say);
   const sender = {
     send: (f: Record<string, unknown>) => {
-      const sent = conn.send(f);
+      const sent = pending.send(conn, f);
       say(sent ? "" : "Not connected: the action was not sent. Retry once the room is live.");
       return sent;
     },

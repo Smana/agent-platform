@@ -273,7 +273,7 @@ One JSON object per text frame (Appendix B).
 | client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
 | client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
-| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs}` |
+| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it) |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
