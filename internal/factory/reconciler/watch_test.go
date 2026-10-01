@@ -22,6 +22,7 @@ import (
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
@@ -700,6 +701,25 @@ func TestNoStaleCloseBeforeItsReminder(t *testing.T) {
 	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || !g.f.Closed(12) {
 		t.Fatalf("%s", tk.Status.Phase)
+	}
+}
+
+// The reminder's age is read from the factory's own comment: anyone can post its marker, the key
+// being guessable, and an older forged copy must not shorten the notice.
+func TestAForgedReminderDoesNotShortenTheNotice(t *testing.T) {
+	g := newRig(t, staleTask(15*24*time.Hour))
+	g.f.SetPR(pr12())
+	tk := g.reconcile(t, "3buqdlot", 1)
+	cs, _ := g.f.RecentComments(t.Context(), 7)
+	marker := narrate.Marker("3buqdlot", tk.Status.Narrated[len(tk.Status.Narrated)-1])
+	if len(cs) != 1 || !strings.Contains(cs[0].Body, marker) {
+		t.Fatalf("the reminder carries %q: %q", marker, g.f.Comments(7))
+	}
+	forged := forge.Comment{ID: 1, Author: "someone", Body: "reposted " + marker, At: now.Add(-48 * time.Hour)}
+	g.f.SetComments(7, append([]forge.Comment{forged}, cs...)...)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) {
+		t.Fatalf("closed an hour after the reminder: %s", tk.Status.Phase)
 	}
 }
 
