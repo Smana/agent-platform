@@ -227,8 +227,8 @@ func TestTheLoopFailsClosed(t *testing.T) {
 	})
 	t.Run("a panic past the classifier rejects the step", func(t *testing.T) {
 		c, f, _, _ := setup(t, "attended")
-		c.Push = func(wire.Item) { panic("push") }
-		c.Observe(action("c1", "git push origin agent/3kq7x2ma"))
+		c.Broker = approvalsFunc(func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error) { panic("broker") })
+		c.Observe(action("c1", "gh pr create --fill"))
 		c.OnStatus(t.Context(), waiting)
 		if r := f.responded(); len(r) != 1 || r[0] || f.answers()[0] != textInternal {
 			t.Fatalf("%v %v", r, f.answers())
@@ -253,11 +253,11 @@ func TestTheLoopFailsClosed(t *testing.T) {
 			}
 		})
 	}
-	for name, answer := range map[string]func(wire.ApprovalRequest) (wire.ApprovalAck, int, error){
-		"an ack the bridge could not read rejects the step": func(wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+	for name, answer := range map[string]func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error){
+		"an ack the bridge could not read rejects the step": func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
 			return wire.ApprovalAck{ApprovalID: "ap-c1"}, 200, errors.New("broker POST: unexpected EOF")
 		},
-		"a refusal naming an approval still rejects the step": func(wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+		"a refusal naming an approval still rejects the step": func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
 			return wire.ApprovalAck{ApprovalID: "ap-c1"}, http.StatusConflict, nil
 		},
 	} {
@@ -273,7 +273,9 @@ func TestTheLoopFailsClosed(t *testing.T) {
 	}
 	t.Run("an ack without an approval id rejects the step", func(t *testing.T) {
 		c, f, _, _ := setup(t, "attended")
-		c.Broker = approvalsFunc(func(wire.ApprovalRequest) (wire.ApprovalAck, int, error) { return wire.ApprovalAck{}, 200, nil })
+		c.Broker = approvalsFunc(func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+			return wire.ApprovalAck{}, 200, nil
+		})
 		c.Observe(action("c1", "gh pr create --fill"))
 		c.OnStatus(t.Context(), waiting)
 		if r := f.responded(); len(r) != 1 || r[0] {
@@ -307,7 +309,7 @@ func TestTheLoopFailsClosed(t *testing.T) {
 		c.Now = func() time.Time { return now }
 		c.Observe(action("c1", "gh pr create --fill"))
 		c.OnStatus(t.Context(), waiting)
-		now = now.Add(defaultApprovalWait + decisionGrace - time.Second)
+		now = now.Add(attendedWait + decisionGrace - time.Second)
 		c.OnStatus(t.Context(), waiting)
 		if len(f.responded()) != 0 {
 			t.Fatal("rejected before the default wait")
@@ -316,6 +318,29 @@ func TestTheLoopFailsClosed(t *testing.T) {
 		c.OnStatus(t.Context(), waiting)
 		if r := f.responded(); len(r) != 1 || r[0] {
 			t.Fatalf("%v", r)
+		}
+	})
+	t.Run("an unattended ack without an expiry waits the room's ttl", func(t *testing.T) {
+		for _, tc := range []struct {
+			ttl  string
+			wait time.Duration
+		}{{"2h", 2 * time.Hour}, {"", defaultTTL}, {"soon", defaultTTL}, {"-1h", defaultTTL}} {
+			c, f, _, _ := setup(t, "unattended")
+			c.SetPolicy(wire.ApprovalPolicy{Profile: "unattended", TTL: tc.ttl, Overrides: map[string]string{"forge.pr": "human"}})
+			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+			c.Now = func() time.Time { return now }
+			c.Observe(action("c1", "gh pr create --fill"))
+			c.OnStatus(t.Context(), waiting)
+			now = now.Add(tc.wait + decisionGrace - time.Second)
+			c.OnStatus(t.Context(), waiting)
+			if len(f.responded()) != 0 {
+				t.Fatalf("ttl %q: rejected before %s", tc.ttl, tc.wait)
+			}
+			now = now.Add(time.Second)
+			c.OnStatus(t.Context(), waiting)
+			if r := f.responded(); len(r) != 1 || r[0] {
+				t.Fatalf("ttl %q: %v", tc.ttl, r)
+			}
 		}
 	})
 	t.Run("an unknown override asks a human", func(t *testing.T) {
@@ -327,25 +352,26 @@ func TestTheLoopFailsClosed(t *testing.T) {
 			t.Fatalf("%v %v", r, f.responded())
 		}
 	})
-	t.Run("an action it cannot read is forge.other", func(t *testing.T) {
+	t.Run("an action it cannot read is denied", func(t *testing.T) {
 		c, f, _, items := setup(t, "unattended")
 		var e RawEvent
 		_ = json.Unmarshal([]byte(`{"id":"e9","kind":"ActionEvent","source":"agent","tool_call_id":7,"tool_name":"terminal"}`), &e)
 		c.Observe(e)
 		c.OnStatus(t.Context(), waiting)
-		if r := f.responded(); len(r) != 1 || r[0] {
-			t.Fatalf("%v", r)
+		if r := f.responded(); len(r) != 1 || r[0] || f.answers()[0] != textUnreadable {
+			t.Fatalf("%v %v", r, f.answers())
 		}
 		if k := kinds(*items); !slices.Equal(k, []string{"policy_decision event:e9 forge.other deny"}) {
 			t.Fatalf("logged %v", k)
 		}
 	})
-	t.Run("an approver sees an unreadable action as an empty document", func(t *testing.T) {
-		c, _, ap, _ := setup(t, "attended")
+	t.Run("an unreadable action is denied locally, never escalated blind (M2)", func(t *testing.T) {
+		c, f, ap, _ := setup(t, "attended")
+		c.Observe(action("c1", "gh pr create --fill"))
 		c.Observe(RawEvent{ID: "e3", Kind: "ActionEvent", Raw: json.RawMessage(`{"id":"e3","tool_call_id":[]}`)})
 		c.OnStatus(t.Context(), waiting)
-		if r := ap.requests(); len(r) != 1 || r[0].CallID != "event:e3" || r[0].Class != "forge.other" || string(r[0].Action) != "{}" {
-			t.Fatalf("%v", r)
+		if r := f.responded(); len(r) != 1 || r[0] || f.answers()[0] != textUnreadable || len(ap.requests()) != 0 {
+			t.Fatalf("%v %v %v", r, f.answers(), ap.requests())
 		}
 	})
 	t.Run("an action with no call id is still answered", func(t *testing.T) {
@@ -373,10 +399,10 @@ func TestTheLoopFailsClosed(t *testing.T) {
 	})
 }
 
-type approvalsFunc func(wire.ApprovalRequest) (wire.ApprovalAck, int, error)
+type approvalsFunc func(context.Context, wire.ApprovalRequest) (wire.ApprovalAck, int, error)
 
-func (f approvalsFunc) RequestApproval(_ context.Context, r wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
-	return f(r)
+func (f approvalsFunc) RequestApproval(ctx context.Context, r wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+	return f(ctx, r)
 }
 
 func TestHumanDecisions(t *testing.T) {
@@ -416,7 +442,7 @@ func TestHumanDecisions(t *testing.T) {
 		if r := f.responded(); len(r) != 1 || !r[0] || f.answers()[0] != "" {
 			t.Fatalf("%v %v", r, f.answers())
 		}
-		want := []string{"policy_decision c1 forge.push allow", "decision_applied 50 7f3cq2xz", "decision_applied 52 7f3cq2xz"}
+		want := []string{"decision_applied 50 7f3cq2xz", "decision_applied 52 7f3cq2xz", "policy_decision c1 forge.push allow"}
 		if k := kinds(*items); !slices.Equal(k, want) {
 			t.Fatalf("logged %v", k)
 		}
@@ -673,6 +699,9 @@ func TestTheBridgeConfirmsThroughItsHooks(t *testing.T) {
 	stop()
 	if r := f.responded(); len(r) != 1 || r[0] {
 		t.Fatalf("answered %v", r)
+	}
+	if w := f.written(); !slices.Equal(w, []string{"respond false", "run"}) {
+		t.Fatalf("the rejected conversation is resumed once: %v", w)
 	}
 	if p, n := f.policySet(); p != "AlwaysConfirm" || n != 1 {
 		t.Fatalf("policy %q set %d times", p, n)

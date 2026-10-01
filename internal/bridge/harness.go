@@ -330,6 +330,12 @@ func (h *Harness) Respond(ctx context.Context, accept bool, reason string) error
 		map[string]any{"accept": accept, "reason": reason}, nil)
 }
 
+// Run resumes the conversation: after a rejected confirmation OpenHands sets
+// it idle and does not run on its own. A 409 means a run is in progress.
+func (h *Harness) Run(ctx context.Context) error {
+	return h.do(ctx, http.MethodPost, "/run", nil, nil)
+}
+
 // Interrupt stops the agent's current step.
 func (h *Harness) Interrupt(ctx context.Context) error {
 	return h.do(ctx, http.MethodPost, "/interrupt", nil, nil)

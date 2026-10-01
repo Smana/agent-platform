@@ -98,6 +98,22 @@ func healthHandler(healthy func(time.Time) bool, now func() time.Time) http.Hand
 	return mux
 }
 
+// wireBridge sets the bridge's hooks: steering (phase 4) and the confirmation
+// loop (phase 5). A hook left unset fails open or wedges every run, so the
+// wiring is tested on its own (review M7).
+func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridgeConfig,
+	log *slog.Logger,
+) (*bridge.Confirmer, *bridge.Steering) {
+	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
+	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
+	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
+	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }
+	b.OnReady, b.OnRaw, b.OnStatus, b.OnDecision = confirm.Ready, confirm.Observe, confirm.OnStatus, confirm.Decision
+	b.Classify = confirm.ClassOf
+	return confirm, steer
+}
+
 // RunBridge runs room-bridge, the native sidecar of an AgentRun sandbox with a
 // roomRef, until ctx ends, then flushes what it holds. getenv reads its
 // environment (docs/integration.md). It fails before starting on a missing
@@ -120,13 +136,7 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 	}
 	b := &bridge.Bridge{Harness: bridge.NewHarness(cfg.harnessURL, cfg.conversationID), Broker: broker,
 		RunID: cfg.runID, Logger: log, FlushGrace: cfg.flushGrace}
-	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push}
-	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
-	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: broker, RunID: b.RunID, Push: b.Push, Logger: log,
-		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
-	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }
-	b.OnReady, b.OnRaw, b.OnStatus, b.OnDecision = confirm.Ready, confirm.Observe, confirm.OnStatus, confirm.Decision
-	b.Classify = confirm.ClassOf
+	_, _ = wireBridge(b, broker, cfg, log)
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.healthAddr)

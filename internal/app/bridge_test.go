@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"log/slog"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/bridge"
 )
 
 func writeCA(t *testing.T, dir string) string {
@@ -102,6 +105,28 @@ func TestHealthz(t *testing.T) {
 				t.Fatalf("GET /healthz = %d, want %d", rec.Code, want)
 			}
 		})
+	}
+}
+
+// Review M7: a hook left unset fails open (OnReady, the steering gate) or
+// wedges every run (OnStatus).
+func TestWireBridgeSetsEveryHook(t *testing.T) {
+	b := &bridge.Bridge{Harness: bridge.NewHarness("http://127.0.0.1:1", "c1"), RunID: "7f3cq2xz"}
+	cfg := bridgeConfig{branch: "agent/3kq7x2ma", egress: map[string]bool{"npm": true}}
+	confirm, steer := wireBridge(b, nil, cfg, slog.New(slog.DiscardHandler))
+	hooks := map[string]bool{"OnDeliver": b.OnDeliver != nil, "OnInterrupt": b.OnInterrupt != nil,
+		"OnResume": b.OnResume != nil, "OnReady": b.OnReady != nil, "OnRaw": b.OnRaw != nil,
+		"OnStatus": b.OnStatus != nil, "OnDecision": b.OnDecision != nil, "Classify": b.Classify != nil,
+		"steering gate": steer.Gate != nil, "confirmer": confirm != nil}
+	for name, set := range hooks {
+		if !set {
+			t.Errorf("%s is not wired", name)
+		}
+	}
+	for cmd, want := range map[string]string{"git push origin agent/3kq7x2ma": "forge.push", "npm install x": ""} {
+		if got := b.Classify("terminal", json.RawMessage(`{"command":"`+cmd+`"}`), "LOW"); got != want {
+			t.Errorf("%s classifies as %q, want %q: the branch and egress reach the classifier", cmd, got, want)
+		}
 	}
 }
 

@@ -109,11 +109,14 @@ type Decision struct {
 }
 
 // ApprovalRequest is the body of POST /v1/bridge/approvals: a pending action
-// whose class the room's policy sends to its approvers (phase 5).
+// whose class the room's policy sends to its approvers (phase 5). EventID, the
+// harness event's id, keys the request's idempotency: a model provider may
+// reuse a tool call id (review I2).
 type ApprovalRequest struct {
-	CallID string          `json:"callId"`
-	Class  string          `json:"class"`
-	Action json.RawMessage `json:"action"`
+	EventID string          `json:"eventId"`
+	CallID  string          `json:"callId"`
+	Class   string          `json:"class"`
+	Action  json.RawMessage `json:"action"`
 }
 
 // ApprovalAck answers an ApprovalRequest: the approval's id, which a later

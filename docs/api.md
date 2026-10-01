@@ -158,11 +158,17 @@ Errors before the stream opens are those of `hello`.
 
 ### `POST /v1/bridge/approvals` (planned, phase 5 / AP-5)
 
-Request, at most 64 KiB: `{"callId": "call_97", "class": "forge.pr", "action": {…}}`. `class` is one
-of `forge.push`, `forge.pr`, `forge.other`, `mcp.write`, `shell.high`. The action is redacted and
-stored as the approval card shows it (T3). Response `200`: `{"approvalId": "…", "expiresAt": "…"}`.
-The expiry is 30 minutes for an `attended` room, the room's `approvals.ttl` (default `4h`) for an
-`unattended` one. The request is idempotent per `(room, run, callId)`.
+Request, at most 64 KiB: `{"eventId": "e42", "callId": "call_97", "class": "forge.pr", "action": {…}}`.
+`eventId` is the harness ActionEvent's id. `class` is one of `forge.push`, `forge.pr`, `forge.other`,
+`mcp.write`, `shell.high`. The action is redacted and stored as the approval card shows it (T3).
+Response `200`: `{"approvalId": "…", "expiresAt": "…"}`, with `expiresAt` always set: 30 minutes for
+an `attended` room, the room's `approvals.ttl` (default `4h`) for an `unattended` one. The request is
+idempotent per `(room, run, eventId)`, never per `callId`: a model provider may reuse a tool call id,
+and the bridge rejects a step whose ack names an approval it already spent.
+
+An approval whose `callId` already has a `tool_result` in the log (the harness ran or rejected the
+call) is closed as `superseded`, never left for an approver. An expiry is decided `allow: false`
+with `reason: "expired"`.
 
 | Status | `error` | When |
 |---|---|---|

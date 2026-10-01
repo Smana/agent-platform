@@ -29,6 +29,16 @@ type fakeAgentServer struct {
 	searches   int  // event searches asked
 	hang       bool // event searches never answer while set
 	flap       bool // each status read flips running and paused
+	// writes logs each write in order: "respond true|false", "send", "run", "interrupt".
+	writes  []string
+	runCode int // while set, POST /run is answered with this status
+}
+
+// written copies the writes received so far, in order.
+func (f *fakeAgentServer) written() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.writes...)
 }
 
 // searched is how many event searches were asked so far.
@@ -133,6 +143,7 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		}
 		f.mu.Lock()
 		f.sent = append(f.sent, in.Content[0].Text)
+		f.writes = append(f.writes, "send")
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
@@ -143,13 +154,17 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
-		if f.refuse != 0 {
+		if code := f.refuse; code != 0 {
 			f.mu.Unlock()
-			http.Error(w, "refused", f.refuse)
+			http.Error(w, "refused", code)
 			return
 		}
 		f.responses = append(f.responses, in.Accept)
 		f.reasons = append(f.reasons, in.Reason)
+		f.writes = append(f.writes, "respond "+strconv.FormatBool(in.Accept))
+		if !in.Accept {
+			f.status = "idle" // OpenHands rejects, goes idle, and does not run
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
@@ -157,9 +172,9 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		var in struct{ Policy struct{ Kind string } }
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
-		if f.refuse != 0 {
+		if code := f.refuse; code != 0 {
 			f.mu.Unlock()
-			http.Error(w, "refused", f.refuse)
+			http.Error(w, "refused", code)
 			return
 		}
 		f.policy = in.Policy.Kind
@@ -167,8 +182,24 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
+	mux.HandleFunc("POST "+base+"/run", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.writes = append(f.writes, "run")
+		switch {
+		case f.runCode != 0:
+			http.Error(w, "refused", f.runCode)
+			return
+		case f.status == "running":
+			http.Error(w, "already running", http.StatusConflict)
+			return
+		}
+		f.status = "running"
+		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	})
 	mux.HandleFunc("POST "+base+"/interrupt", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
+		f.writes = append(f.writes, "interrupt")
 		f.status = "paused"
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})

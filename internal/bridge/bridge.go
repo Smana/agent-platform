@@ -274,10 +274,10 @@ type Bridge struct {
 	OnDecision  func(ctx context.Context, d wire.Decision) error  // phase 5
 	OnResume    func(ctx context.Context, r wire.Resume)          // phase 5
 
-	// The confirmation loop's hooks (phase 5), called on the loop.
+	// The confirmation loop's hooks (phase 5), called on the loop except OnReady.
 	//
-	// OnReady runs once the conversation answers, and again each poll until it
-	// succeeds. OnRaw sees every harness event read, those a restart skips
+	// OnReady runs from the start, before the broker's hello and whatever it
+	// answers, until it succeeds (review C2). OnRaw sees every harness event read, those a restart skips
 	// included, before it is mapped. OnStatus gets a status only after an
 	// events poll that started after that status was read and reached the
 	// log's end, so every action the harness wrote before it was passed to
@@ -305,7 +305,6 @@ type Bridge struct {
 	sendRetry  backoff
 	leaseLost  bool
 	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
-	ready      bool      // OnReady succeeded
 	lastStatus string    // the status the previous step read, "" if it failed
 
 	sealed   atomic.Bool
@@ -382,6 +381,11 @@ func (b *Bridge) Run(ctx context.Context) error {
 	if err := b.init(); err != nil {
 		return err
 	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	// Confirmation mode never waits for the broker: an outage or a lease held
+	// by another run must not leave the harness on NeverConfirm (review C2).
+	wg.Go(func() { b.confirmMode(ctx) })
 	resume, ok := b.connect(ctx)
 	if !ok {
 		<-ctx.Done() // a sealed room: stay up, idle, until the pod ends
@@ -392,14 +396,37 @@ func (b *Bridge) Run(ctx context.Context) error {
 	if b.OnResume != nil {
 		b.OnResume(ctx, resume)
 	}
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	wg.Go(func() { b.consume(ctx) })
 	for {
 		b.step(ctx)
 		if pause(ctx, b.Interval) != nil {
 			b.shutdown()
 			return nil
+		}
+	}
+}
+
+// confirmMode calls OnReady until it succeeds or ctx ends, talking only to the
+// harness. A conversation agent-run has not created yet answers 404. It
+// retries at the minimum backoff (250 ms), never doubling: every retry while
+// the conversation exists is time its actions run unconfirmed (ruling P5).
+func (b *Bridge) confirmMode(ctx context.Context) {
+	if b.OnReady == nil {
+		return
+	}
+	every, _ := b.backoffs()
+	for {
+		err := b.OnReady(ctx)
+		if err == nil {
+			return
+		}
+		if se, ok := errors.AsType[*StatusError](err); ok && se.Code == http.StatusNotFound {
+			b.log().Debug("no conversation to set AlwaysConfirm on yet")
+		} else if ctx.Err() == nil {
+			b.log().Warn("the harness did not take AlwaysConfirm; retrying", "err", err)
+		}
+		if pause(ctx, every) != nil {
+			return
 		}
 	}
 }
@@ -500,13 +527,6 @@ func (b *Bridge) step(ctx context.Context) {
 		b.OnStatus(ctx, b.lastStatus)
 	}
 	b.lastStatus = b.pollStatus(ctx)
-	if b.lastStatus != "" && !b.ready && b.OnReady != nil {
-		if err := b.OnReady(ctx); err != nil {
-			b.log().Warn("the harness did not take AlwaysConfirm; retrying", "err", err)
-		} else {
-			b.ready = true
-		}
-	}
 	if !now.Before(b.sendAt) {
 		b.send(ctx)
 	}
