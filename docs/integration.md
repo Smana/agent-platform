@@ -133,6 +133,13 @@ Set by the `AgentRun` composition (CC-S2).
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities
 dropped.
 
+**The gate (F15).** The composition adds `room-bridge gate`, the same image with the argument
+`gate`, as a plain init container after the bridge and before the harness. It reads the bridge's
+`/admission` on `127.0.0.1` at `HEALTH_ADDR`'s port, exits 0 once the bridge holds the room, and
+exits 1 once the room refuses the run. The pod's `restartPolicy: Never` then fails the run before
+the harness starts. Without the gate the lease only holds the log: a refused run still executes,
+unrecorded, on the room's shared branch.
+
 ### What the broker reads from `AgentRun` (SP1)
 
 `spec.roomRef` (immutable), `spec.role`, `spec.principal`, `spec.branch`, `spec.budget.maxMinutes`,

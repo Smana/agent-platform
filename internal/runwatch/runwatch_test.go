@@ -117,7 +117,7 @@ func TestALateSyncedTransitionIsNotTheEnd(t *testing.T) {
 	if !ok || !r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 20, 0, 0, time.UTC)) {
 		t.Fatalf("finished at %s, want Ready's 10:20", r.FinishedAt)
 	}
-	if got := EndReason(r, ""); got != "pod_lost" {
+	if got := EndReason(r, "", false); got != "pod_lost" {
 		t.Fatalf("end reason %s, want pod_lost", got)
 	}
 }
@@ -191,28 +191,34 @@ func TestEndReason(t *testing.T) {
 	deleted := run("Revoked", "", early)
 	deleted.Deleted = true
 	for _, c := range []struct {
-		name   string
-		r      Run
-		status string
-		want   string
+		name    string
+		r       Run
+		status  string
+		want    string
+		refused bool // the broker refused the run's bridge (F15)
 	}{
-		{"the agent finished", run("Succeeded", "", early), "finished", "agent_finished"},
-		{"the agent reported an error", run("Failed", "", early), "error", "agent_error"},
-		{"the agent got stuck", run("Failed", "", early), "stuck", "agent_stuck"},
-		{"a still-running agent past its budget hit the deadline", run("Failed", "", late), "running", "deadline"},
-		{"within the toleration of the deadline is the deadline", run("Failed", "", late.Add(-deadlineToleration)), "running", "deadline"},
-		{"a still-running agent before its deadline lost its pod", run("Failed", "", early), "running", "pod_lost"},
-		{"no harness status at all is a lost pod", run("Failed", "", early), "", "pod_lost"},
-		{"a run with no finish time is not past its deadline", run("Failed", "", time.Time{}), "", "pod_lost"},
-		{"a succeeded run without a harness status finished", run("Succeeded", "", early), "", "agent_finished"},
-		{"an exhausted budget names the budget", run("BudgetExhausted", "budget-run", early), "running", "budget-run"},
-		{"an exhausted budget takes its reason from the annotation", run("BudgetExhausted", "budget-principal", early), "running", "budget-principal"},
-		{"an exhausted budget without an annotation is the run's budget", run("BudgetExhausted", "", early), "running", "budget-run"},
-		{"a revoked run was revoked", run("Revoked", "manual", early), "running", "revoked"},
-		{"a deleted claim was deleted", deleted, "running", "deleted"},
+		{"the agent finished", run("Succeeded", "", early), "finished", "agent_finished", false},
+		{"the agent reported an error", run("Failed", "", early), "error", "agent_error", false},
+		{"the agent got stuck", run("Failed", "", early), "stuck", "agent_stuck", false},
+		{"a still-running agent past its budget hit the deadline", run("Failed", "", late), "running", "deadline", false},
+		{"within the toleration of the deadline is the deadline", run("Failed", "", late.Add(-deadlineToleration)), "running", "deadline", false},
+		{"a still-running agent before its deadline lost its pod", run("Failed", "", early), "running", "pod_lost", false},
+		{"no harness status at all is a lost pod", run("Failed", "", early), "", "pod_lost", false},
+		{"a run with no finish time is not past its deadline", run("Failed", "", time.Time{}), "", "pod_lost", false},
+		{"a succeeded run without a harness status finished", run("Succeeded", "", early), "", "agent_finished", false},
+		{"an exhausted budget names the budget", run("BudgetExhausted", "budget-run", early), "running", "budget-run", false},
+		{"an exhausted budget takes its reason from the annotation", run("BudgetExhausted", "budget-principal", early), "running", "budget-principal", false},
+		{"an exhausted budget without an annotation is the run's budget", run("BudgetExhausted", "", early), "running", "budget-run", false},
+		{"a revoked run was revoked", run("Revoked", "manual", early), "running", "revoked", false},
+		{"a deleted claim was deleted", deleted, "running", "deleted", false},
+		{"a refused run that never ran was refused, whatever its phase", run("Succeeded", "", early), "", "room_busy", true},
+		{"a refused run that failed was refused", run("Failed", "", early), "", "room_busy", true},
+		{"a run refused, then admitted, ends on what it did", run("Failed", "", early), "running", "pod_lost", true},
+		{"a refused run that the owner revoked was revoked", run("Revoked", "manual", early), "", "revoked", true},
+		{"a refused run whose claim was deleted was deleted", deleted, "", "deleted", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := EndReason(c.r, c.status); got != c.want {
+			if got := EndReason(c.r, c.status, c.refused); got != c.want {
 				t.Fatalf("got %s want %s", got, c.want)
 			}
 		})
@@ -225,6 +231,8 @@ type fakeStore struct {
 	keys      map[string]bool
 	appendErr error
 	statusErr error
+	busy      map[string]bool // origin clients that hold an event
+	cursorErr error
 }
 
 func (f *fakeStore) Append(_ context.Context, d envelope.Draft) (envelope.Event, bool, error) {
@@ -245,6 +253,13 @@ func (f *fakeStore) Append(_ context.Context, d envelope.Draft) (envelope.Event,
 
 func (f *fakeStore) LastHarnessStatus(context.Context, string, string) (string, error) {
 	return f.status, f.statusErr
+}
+
+func (f *fakeStore) Cursor(_ context.Context, _, originClient string) (int64, error) {
+	if f.busy[originClient] {
+		return 1, f.cursorErr
+	}
+	return 0, f.cursorErr
 }
 
 func payloads(ds []envelope.Draft) []string {
@@ -304,6 +319,8 @@ func TestObserve(t *testing.T) {
 		r         Run
 		appendErr error
 		statusErr error
+		busy      bool // the broker refused the run's bridge (F15)
+		cursorErr error
 		wantN     int
 		wantErr   error
 		wantLast  string
@@ -323,9 +340,15 @@ func TestObserve(t *testing.T) {
 			name: "a run that ended within its budget lost its pod, however late it is observed", r: failedAt("2026-09-27T10:01:00Z"), wantN: 4,
 			wantLast: `{"kind":"run_phase","phase":"Failed","reason":"pod_lost"}`,
 		},
+		{
+			name: "a run the room refused ended room_busy", r: failedAt("2026-09-27T10:01:00Z"), busy: true, wantN: 4,
+			wantLast: `{"kind":"run_phase","phase":"Failed","reason":"room_busy"}`,
+		},
+		{name: "a refusal lookup failure is returned wrapped", r: failedAt("2026-09-27T10:01:00Z"), cursorErr: boom, wantErr: boom, wantN: 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fs := &fakeStore{keys: map[string]bool{}, appendErr: c.appendErr, statusErr: c.statusErr}
+			fs := &fakeStore{keys: map[string]bool{}, appendErr: c.appendErr, statusErr: c.statusErr,
+				busy: map[string]bool{"broker:busy:7f3cq2xz": c.busy}, cursorErr: c.cursorErr}
 			e := &Events{Store: fs}
 			err := e.Observe(t.Context(), c.r)
 			if c.wantErr == nil && err != nil || c.wantErr != nil && !errors.Is(err, c.wantErr) {

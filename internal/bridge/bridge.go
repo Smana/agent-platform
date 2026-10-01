@@ -48,6 +48,11 @@ const (
 	// lease not renewed for 2 min, and a quiet run (a long LLM call, a pending
 	// confirmation) pushes no items (review I2).
 	heartbeatEvery = 30 * time.Second
+	// busyPatience is how long the first hello may hear room_busy before the run
+	// is refused for good (F15). It outlasts the broker's 2 min lease window plus
+	// a heartbeat, so a holder that died without ending its run is outwaited,
+	// while a live one, renewing every 30 s, is not.
+	busyPatience = 3 * time.Minute
 
 	defaultInterval   = time.Second
 	defaultMinBackoff = 250 * time.Millisecond
@@ -314,8 +319,9 @@ type Bridge struct {
 	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
 	lastStatus string    // the status the previous step read, "" if it failed
 
-	sealed   atomic.Bool
-	lastSeen atomic.Int64
+	sealed    atomic.Bool
+	lastSeen  atomic.Int64
+	admission atomic.Pointer[Admission]
 
 	stalls  metric.Int64Counter
 	stubbed metric.Int64Counter
@@ -357,6 +363,22 @@ func (b *Bridge) pollBackoffs() (lo, hi time.Duration) {
 }
 
 func (b *Bridge) sawHarness(t time.Time) { b.lastSeen.Store(t.UnixNano()) }
+
+// Admission is what the bridge's first hellos decided (F15). The zero value is
+// pending. room-bridge gate holds the harness until it is decided, and fails
+// the pod on a refusal, so no run executes unless its bridge holds the room.
+type Admission struct {
+	Admitted bool   // the broker handed this run the room's bridge lease
+	Refused  string // why it never will: wire.ReasonRoomBusy or wire.ReasonSealed
+}
+
+// Admission is the decision so far; safe from any goroutine.
+func (b *Bridge) Admission() Admission {
+	if a := b.admission.Load(); a != nil {
+		return *a
+	}
+	return Admission{}
+}
 
 // Healthy backs /healthz (ruling P6): a native sidecar must not fail before the
 // harness starts, since its startup probe gates the harness container. A
@@ -405,7 +427,9 @@ func (b *Bridge) Run(ctx context.Context) error {
 	wg.Go(func() { b.confirmMode(ctx) })
 	resume, ok := b.connect(ctx)
 	if !ok {
-		<-ctx.Done() // a sealed room: stay up, idle, until the pod ends
+		// Sealed or refused: stay up, idle, until the pod ends. room-bridge gate
+		// fails the pod on a refusal before the harness starts.
+		<-ctx.Done()
 		return nil
 	}
 	b.resumeAt = resume.AfterHarnessSeq
@@ -448,14 +472,32 @@ func (b *Bridge) confirmMode(ctx context.Context) {
 	}
 }
 
-// connect says hello until the broker hands over the lease. It reports false
-// if ctx ended first or the room is sealed.
+// connect says hello until the broker hands over the lease, and records the
+// Admission. It reports false if ctx ended first, the room is sealed, or
+// another run kept the room for busyPatience.
 func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
+	var busySince time.Time
 	for {
-		if r, ok := b.hello(ctx); ok {
+		r, rep, ok := b.hello(ctx)
+		switch {
+		case ok:
+			b.admission.Store(&Admission{Admitted: true})
 			return r, true
+		case b.sealed.Load():
+			b.admission.Store(&Admission{Refused: wire.ReasonSealed})
+			return wire.Resume{}, false
+		case rep.Code == http.StatusConflict:
+			if busySince.IsZero() {
+				busySince = b.now()
+			}
+			if b.now().Sub(busySince) >= busyPatience {
+				b.log().Error("another run kept the room; this run is refused and its harness never starts",
+					"reason", wire.ReasonRoomBusy, "waited", busyPatience)
+				b.admission.Store(&Admission{Refused: wire.ReasonRoomBusy})
+				return wire.Resume{}, false
+			}
 		}
-		if b.sealed.Load() || pause(ctx, b.sendAt.Sub(b.now())) != nil {
+		if pause(ctx, b.sendAt.Sub(b.now())) != nil {
 			return wire.Resume{}, false
 		}
 	}
@@ -463,27 +505,27 @@ func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
 
 // hello makes one attempt at the room's bridge lease; on failure sendAt is when
 // to try again.
-func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
+func (b *Bridge) hello(ctx context.Context) (wire.Resume, Reply, bool) {
 	r, rep, err := b.Broker.Hello(ctx)
 	if err != nil && ctx.Err() != nil {
-		return r, false // cut short by SIGTERM: not the broker's failure
+		return r, rep, false // cut short by SIGTERM: not the broker's failure
 	}
 	switch {
 	case err == nil && rep.Code == http.StatusOK:
 		b.sendRetry.reset()
 		b.sendAt = time.Time{}
 		b.renewedAt = b.now()
-		return r, true
+		return r, rep, true
 	case err == nil && rep.Code == http.StatusGone:
 		b.seal()
-		return r, false
+		return r, rep, false
 	case err == nil && rep.Code == http.StatusConflict:
 		b.log().Info("another run holds the room's bridge lease; saying hello again later", "reason", rep.Reason)
 	default:
 		b.log().Warn("hello failed", "code", rep.Code, "reason", rep.Reason, "err", err)
 	}
 	b.sendAt = b.now().Add(b.retryIn(rep))
-	return r, false
+	return r, rep, false
 }
 
 // retryIn is the wait before the next call to the broker: its Retry-After on a
@@ -712,7 +754,7 @@ func (b *Bridge) stubOf(ctx context.Context, p pending, why string, code int, re
 // send re-acquires a lost lease first, then flushes.
 func (b *Bridge) send(ctx context.Context) {
 	if b.leaseLost {
-		if _, ok := b.hello(ctx); !ok {
+		if _, _, ok := b.hello(ctx); !ok {
 			return
 		}
 		b.leaseLost = false
