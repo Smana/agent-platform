@@ -19,7 +19,7 @@ func TestSteeringAsksTheHarnessNotTheBridgesView(t *testing.T) {
 	}{
 		{waiting, []string{"send", "respond false", "run"}},
 		{"paused", []string{"send", "respond false", "run"}},
-		{"running", []string{"send", "run"}}, // 409; the live step turns the message into a rejection itself
+		{"running", []string{"send"}}, // the live loop takes the message (re-review 2 M8)
 		{"idle", []string{"send", "run"}},
 		{"finished", []string{"send", "run"}},
 	} {
@@ -69,7 +69,7 @@ func TestTheGateClosesTheParkRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := f.written()
-	if slices.Contains(w, "implicit accept") || !slices.Equal(w, []string{"send", "rejected by the message", "run"}) {
+	if slices.Contains(w, "implicit accept") || !slices.Equal(w, []string{"send", "rejected by the message"}) {
 		t.Fatalf("writes %v: a step parked after the read must never be accepted", w)
 	}
 	if sent, _, _ := f.snapshot(); !slices.Equal(sent, []string{"hold on"}) {
@@ -86,6 +86,48 @@ func TestUngatedSteeringRunsTheMessage(t *testing.T) {
 	}
 	if w := f.written(); !slices.Equal(w, []string{"send run"}) {
 		t.Fatalf("writes %v", w)
+	}
+}
+
+// Re-review 2 I1, probe P3: the gate's /run is taken but its answer is lost,
+// and the agent parks within that window. The loop's status, read before the
+// gate wrote, must not drive a retry over the waiting step.
+func TestAGateRunLostOnTheWayBackIsNeverRetriedOverAPark(t *testing.T) {
+	c, f, _, _ := setup(t, "attended")
+	f.status, f.runTakenCode = "idle", http.StatusGatewayTimeout
+	steer := &Steering{Harness: c.Harness, RunID: runID, Push: c.Push, Gate: c.Gate}
+	if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "go on"}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.status, f.runTakenCode = waiting, 0 // the agent ran, then parked
+	f.mu.Unlock()
+	c.OnStatus(t.Context(), "idle") // read before the gate wrote
+	c.OnStatus(t.Context(), waiting)
+	if w := f.written(); slices.Contains(w, "implicit accept") || !slices.Equal(w, []string{"send", "run"}) {
+		t.Fatalf("writes %v", w)
+	}
+}
+
+// Re-review 2 M9: a status the gate could not read leaves the run to the
+// resume retry, from the next fresh idle status.
+func TestAnUnreadStatusLeavesTheRunToTheRetry(t *testing.T) {
+	c, f, _, _ := setup(t, "attended")
+	f.status, f.statusCode = "idle", http.StatusServiceUnavailable
+	steer := &Steering{Harness: c.Harness, RunID: runID, Push: c.Push, Gate: c.Gate}
+	if err := steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "go on"}); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.statusCode = 0
+	f.mu.Unlock()
+	c.OnStatus(t.Context(), "idle") // read before the gate wrote: skipped
+	if w := f.written(); !slices.Equal(w, []string{"send"}) {
+		t.Fatalf("writes %v", w)
+	}
+	c.OnStatus(t.Context(), "idle")
+	if w := f.written(); !slices.Equal(w, []string{"send", "run"}) {
+		t.Fatalf("the message is run from a fresh idle status: %v", w)
 	}
 }
 

@@ -69,7 +69,7 @@ func TestSteeringNeverConfirmsAWaitingStep(t *testing.T) {
 		c.Observe(action("c1", "ls"))
 		c.OnStatus(t.Context(), waiting)
 		_ = steer.Deliver(t.Context(), wire.Deliver{Ref: 5, Text: "thanks"})
-		if w := f.written(); !slices.Equal(w, []string{"respond true", "send", "run"}) { // 409: running
+		if w := f.written(); !slices.Equal(w, []string{"respond true", "send"}) { // running: the live loop takes it
 			t.Fatalf("writes %v", w)
 		}
 	})

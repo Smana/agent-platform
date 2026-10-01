@@ -30,9 +30,11 @@ type fakeAgentServer struct {
 	hang       bool // event searches never answer while set
 	flap       bool // each status read flips running and paused
 	// writes logs each write in order: "respond true|false", "send", "run", "interrupt".
-	writes     []string
-	runCode    int // while set, POST /run is answered with this status
-	statusCode int // while set, the conversation read is answered with this status
+	writes  []string
+	runCode int // while set, POST /run is answered with this status
+	// runTakenCode: POST /run runs the conversation, then answers this status.
+	runTakenCode int
+	statusCode   int // while set, the conversation read is answered with this status
 	// parkAfterRead makes the running step park on a confirmation right after
 	// the next status read, unless a message arrived during it.
 	parkAfterRead bool
@@ -127,8 +129,9 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			// The running step ends right after this read and asks to park.
 			f.parkAfterRead = false
 			if f.messaged {
+				// local_conversation.py:2289-2324: the live loop rejects the
+				// park and goes on with the message.
 				f.writes = append(f.writes, "rejected by the message")
-				f.status = "idle" // local_conversation.py:2292-2308
 			} else {
 				f.status = "waiting_for_confirmation"
 			}
@@ -228,6 +231,10 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		switch {
 		case f.runCode != 0:
 			http.Error(w, "refused", f.runCode)
+			return
+		case f.runTakenCode != 0:
+			f.runStep() // taken, but the answer is lost on the way back
+			http.Error(w, "gateway timeout", f.runTakenCode)
 			return
 		case f.status == "running":
 			http.Error(w, "already running", http.StatusConflict)

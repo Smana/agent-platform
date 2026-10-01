@@ -22,6 +22,7 @@ const (
 	statusWaiting = "waiting_for_confirmation"
 	statusPaused  = "paused"
 	statusIdle    = "idle"
+	statusRunning = "running"
 	// attendedWait bounds the wait for a decision when the broker named no
 	// expiry in an attended room (§6: 30 min); an unattended room waits its
 	// policy's ttl, defaultTTL when that is unreadable.
@@ -337,23 +338,30 @@ func (c *Confirmer) Decision(ctx context.Context, d wire.Decision) error {
 //
 //   - waiting or paused: reject every pending action, read by the bridge or
 //     not, then /run;
-//   - anything else: /run alone. A step running when the message arrived turns
-//     its park into a rejection itself, so no step parks between the status
-//     read and the /run.
+//   - running: nothing more. The live loop takes the message, and a step that
+//     parks later goes through the loop's classification (re-review 2 M8);
+//   - anything else (idle, finished, stuck, error): /run alone.
 //
 // A send that fails returns its error and the delivery is replayed. Once the
-// message is in, a failed status read or rejection only skips the /run: the
-// loop answers the step as usual, and the resume retry runs the conversation
-// from idle.
+// message is in, the loop's next status predates it and is skipped, so the
+// resume retry never acts on a status read before the gate wrote (re-review 2
+// I1). A failed status read leaves the run to that retry, from a fresh idle
+// status (M9); a failed rejection leaves the step to the loop.
 func (c *Confirmer) Gate(ctx context.Context, send func(run bool) error) error {
 	c.settling.Lock()
 	defer c.settling.Unlock()
 	if err := send(false); err != nil {
 		return err
 	}
+	c.mu.Lock()
+	c.stale = true
+	c.mu.Unlock()
 	status, err := c.Harness.Status(ctx)
 	if err != nil {
 		c.log().Warn("a steering message is in, but the harness status is unreadable; the loop runs it", "err", err)
+		c.mu.Lock()
+		c.resume = true
+		c.mu.Unlock()
 		return nil
 	}
 	if status == statusWaiting || status == statusPaused {
@@ -363,6 +371,9 @@ func (c *Confirmer) Gate(ctx context.Context, send func(run bool) error) error {
 			c.log().Warn("a steering message is in, but the waiting step was not rejected; the loop answers it", "err", err)
 			return nil
 		}
+	}
+	if status == statusRunning {
+		return nil
 	}
 	c.resumeRun(ctx)
 	return nil
