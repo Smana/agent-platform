@@ -203,11 +203,17 @@ func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR,
 	return found, ok, nil
 }
 
-// commandLine: some line of body is exactly verb, from its first character; trailing blanks
-// aside. A quote ("> /factory retry") or a longer word ("/factory retrying") is not the command.
+// commandLine: some line of body outside a code fence is exactly verb, from its first character;
+// trailing blanks aside. A quote ("> /factory retry"), a longer word ("/factory retrying") or a
+// fenced example of the command is not the command.
 func commandLine(body, verb string) bool {
+	fenced := false
 	for _, line := range strings.Split(body, "\n") {
-		if strings.TrimRight(line, " \t\r") == verb {
+		if l := strings.TrimSpace(line); strings.HasPrefix(l, "```") || strings.HasPrefix(l, "~~~") {
+			fenced = !fenced
+			continue
+		}
+		if !fenced && strings.TrimRight(line, " \t\r") == verb {
 			return true
 		}
 	}
@@ -249,40 +255,92 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 // labelStale marks a pull request the factory closed for want of a review (§6.3).
 const labelStale = "factory/stale"
 
-// quietSince is when a maintainer last touched the pull request: the task's entry into
-// AwaitingHuman, or a later review or comment of theirs on it.
-func (r *Reconciler) quietSince(t *v1alpha1.Task, pr forge.PR) time.Time {
+// quietSince is when maintainer activity on the pull request last happened: the task's entry into
+// AwaitingHuman; a later review or comment of a maintainer on the pull request, or in thread (the
+// comments where the task narrates, read only once the wait is long); a head commit without an
+// Agent-Run trailer, so not an agent's (a takeover). It never goes back before a spell a reminder
+// was already keyed on: a comment that leaves GitHub's read window must not restart an older one.
+func (r *Reconciler) quietSince(t *v1alpha1.Task, pr forge.PR, thread []forge.Comment) time.Time {
 	since := t.Status.PhaseSince.Time
+	if at, ok := narrate.RemindedSince(t); ok && at.After(since) {
+		since = at
+	}
 	for _, rv := range pr.Reviews {
 		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since) {
 			since = rv.At
 		}
 	}
-	for _, c := range pr.Comments {
+	for _, c := range slices.Concat(pr.Comments, thread) {
 		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since) {
 			since = c.At
 		}
 	}
+	if pr.Trailer("Agent-Run") == "" && pr.HeadCommittedAt.After(since) {
+		since = pr.HeadCommittedAt
+	}
 	return since
 }
 
-// remind nudges the maintainers once a pull request has waited RemindAfter for them, and closes
-// it with factory/stale after StaleAfter (§6.3). Only maintainers' silence counts: a review or a
-// comment of theirs starts the wait again. The close comes only after that spell's reminder was
-// posted, and only on the task's own branch. The reminder goes through the outbox, written before
-// it is posted, so a replay posts it once. The label goes on before the close, so a replay after
-// a lost status write still reads the closed pull request as stale (prEnded).
+// approved: the latest maintainer review that decides (approve, request changes or a dismissal)
+// approves. Such a pull request waits for a merge, which until the wave only a human makes.
+func (r *Reconciler) approved(pr forge.PR) bool {
+	last := ""
+	for _, rv := range pr.Reviews {
+		if r.Cfg.IsMaintainer(rv.Author) && rv.State != "COMMENTED" && rv.State != "PENDING" {
+			last = rv.State
+		}
+	}
+	return last == "APPROVED"
+}
+
+// thread is the comments where the task narrates: its issue's newest, else its pull request's.
+func (r *Reconciler) thread(ctx context.Context, t *v1alpha1.Task, pr forge.PR) ([]forge.Comment, error) {
+	if t.Spec.Issue > 0 {
+		return r.Forge.RecentComments(ctx, t.Spec.Issue)
+	}
+	return pr.Comments, nil
+}
+
+// postedAt is when the factory posted the comment carrying key's marker, if thread still has it.
+func (r *Reconciler) postedAt(t *v1alpha1.Task, thread []forge.Comment, key string) (time.Time, bool) {
+	marker := narrate.Marker(t.Name, key)
+	for _, c := range thread {
+		if strings.EqualFold(c.Author, r.Cfg.FactoryLogin) && strings.Contains(c.Body, marker) {
+			return c.At, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// remind nudges the maintainers once a pull request has had no maintainer activity for
+// RemindAfter, and closes it with factory/stale after StaleAfter (§6.3). Every close is:
+//   - on the task's own branch, and never of a pull request a maintainer approved;
+//   - after StaleAfter of maintainer silence (quietSince), the reply to a reminder included;
+//   - at least reminderNotice after that spell's reminder was posted, as found in the thread.
+//
+// The reminder goes through the outbox, written before it is posted, so a replay posts it once.
+// The label goes on before the close, so a replay after a lost status write still reads the
+// closed pull request as stale (prEnded); a refused close takes the label off again.
 func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) error {
 	if t.Status.PhaseSince == nil || pr.HeadRef != "agent/"+t.Name {
 		return nil
 	}
-	since := r.quietSince(t, pr)
+	if r.Now().Sub(r.quietSince(t, pr, nil)) < RemindAfter { // spares the thread read
+		return nil
+	}
+	thread, err := r.thread(ctx, t, pr)
+	if err != nil {
+		return err
+	}
+	since := r.quietSince(t, pr, thread)
 	waited := r.Now().Sub(since)
 	if waited < RemindAfter {
 		return nil
 	}
-	reminder := narrate.Reminder(t, r.Cfg.Maintainers, since)
-	if waited < StaleAfter || !slices.Contains(t.Status.Narrated, reminder.Key) {
+	approved := r.approved(pr)
+	reminder := narrate.Reminder(t, r.Cfg.Maintainers, since, approved)
+	posted, ok := r.postedAt(t, thread, reminder.Key)
+	if approved || waited < StaleAfter || !ok || r.Now().Sub(posted) < reminderNotice {
 		narrateLater(t, reminder)
 		return nil
 	}
@@ -290,6 +348,9 @@ func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) 
 		return err
 	}
 	if err := r.Forge.ClosePR(ctx, pr.Number); err != nil {
+		if rerr := r.Forge.RemoveLabel(ctx, pr.Number, labelStale); rerr != nil {
+			r.log().Warn("stale label left on an open pull request", "task", t.Name, "pr", pr.Number, "err", rerr)
+		}
 		return err
 	}
 	class := t.Spec.PredictedClass

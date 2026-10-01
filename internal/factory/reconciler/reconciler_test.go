@@ -258,6 +258,7 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, NewRunID: func() string { id := ids[next]; next++; return id },
 		Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
+	g.f.Now = func() time.Time { return g.r.Now() } // the factory's comments carry the rig's clock
 	return g
 }
 

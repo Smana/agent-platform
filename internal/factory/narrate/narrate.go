@@ -188,7 +188,7 @@ func reasons() map[string]string {
 		"unsanitisable":         "the issue text could not be made safe for an agent to read; simplify its markup",
 		"unauthorised_stopper":  "only a maintainer's factory/stop stops a task",
 		"foreign_room":          "a room of the task's name exists and is not the factory's",
-		"stale":                 "nobody reviewed the pull request for 14 days",
+		"stale":                 "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
 	}
 }
 
@@ -219,17 +219,49 @@ func Revising(t *v1alpha1.Task, reviewer string) Event {
 			"with the review in its brief.", t.Name, reviewer)}
 }
 
-// Reminder mentions the maintainers when the task's pull request has waited 48 h for one of them
-// (§6.3), once per quiet spell: quietSince is the spell's start, so a spell a maintainer broke
-// and that began again earns its own reminder before any stale close.
-func Reminder(t *v1alpha1.Task, maintainers []string, quietSince time.Time) Event {
+// remindPrefix starts a reminder's key: remind-<runs>-<quiet spell start, unix seconds>.
+const remindPrefix = "remind-"
+
+// Reminder mentions the maintainers when the task's pull request has had no maintainer activity
+// for 48 h (§6.3), once per quiet spell: quietSince is the spell's start, so a spell a maintainer
+// broke and that began again earns its own reminder before any stale close. An approved pull
+// request waits for a merge and is never closed, so its reminder says so.
+func Reminder(t *v1alpha1.Task, maintainers []string, quietSince time.Time, approved bool) Event {
 	at := make([]string, 0, len(maintainers))
 	for _, m := range maintainers {
 		at = append(at, "@"+m)
 	}
-	return Event{Key: fmt.Sprintf("remind-%d-%d", len(t.Status.Runs), quietSince.Unix()),
-		Body: fmt.Sprintf("%s: the pull request of agent factory task `%s` has waited 48 hours for a review. It closes itself after 14 days.",
-			strings.Join(at, " "), t.Name)}
+	body := fmt.Sprintf("%s: the pull request of agent factory task `%s` has had no maintainer activity for 48 hours. "+
+		"It closes itself after 14 days without any: a review, a comment here or on the pull request, or a push to its branch keeps it open.",
+		strings.Join(at, " "), t.Name)
+	if approved {
+		body = fmt.Sprintf("%s: the pull request of agent factory task `%s` is approved and has waited 48 hours for a merge. "+
+			"The factory never closes an approved pull request.", strings.Join(at, " "), t.Name)
+	}
+	return Event{Key: fmt.Sprintf("%s%d-%d", remindPrefix, len(t.Status.Runs), quietSince.Unix()), Body: body}
+}
+
+// RemindedSince is the latest quiet-spell start a reminder of the task's current stay was keyed
+// on, posted or still in the outbox. The reconciler never lets a spell start before it: a
+// maintainer comment that later leaves GitHub's read window must not restart an older spell.
+func RemindedSince(t *v1alpha1.Task) (time.Time, bool) {
+	prefix := fmt.Sprintf("%s%d-", remindPrefix, len(t.Status.Runs))
+	keys := slices.Clone(t.Status.Narrated)
+	for _, o := range t.Status.Outbox {
+		keys = append(keys, o.Key)
+	}
+	var latest int64
+	found := false
+	for _, k := range keys {
+		rest, ok := strings.CutPrefix(k, prefix)
+		if !ok {
+			continue
+		}
+		if u, err := strconv.ParseInt(rest, 10, 64); err == nil && (!found || u > latest) {
+			latest, found = u, true
+		}
+	}
+	return time.Unix(latest, 0), found
 }
 
 // Retrying says a maintainer's /factory retry sent an escalated task back for a fresh run, once

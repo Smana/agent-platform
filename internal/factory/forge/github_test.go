@@ -36,7 +36,7 @@ const prJSON = `{"data":{"repository":{"pullRequest":{
    "author":{"__typename":"User","login":"Smana"},"comments":{"nodes":[{"path":"docs/a.md","line":3,"body":"here"}]}}]},
  "comments":{"nodes":[{"databaseId":55,"body":"/factory retry","createdAt":"2026-09-27T10:05:00Z","lastEditedAt":null,"author":{"__typename":"User","login":"Smana"}},
    {"databaseId":56,"body":"/factory retry","createdAt":"2026-09-27T10:06:00Z","lastEditedAt":"2026-09-27T10:07:00Z","author":{"__typename":"User","login":"Smana"}}]},
- "commits":{"nodes":[{"commit":{"message":"docs: fix a link\n\nAgent-Run: 7f3cq2xz"}}]}}}}}`
+ "commits":{"nodes":[{"commit":{"message":"docs: fix a link\n\nAgent-Run: 7f3cq2xz","committedDate":"2026-09-27T09:58:00Z"}}]}}}}}`
 
 const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://github.com/Smana/demo/issues/7",
  "title":"Fix the link","body":"The link in docs/a.md is broken.","state":"OPEN","lastEditedAt":null,
@@ -308,8 +308,8 @@ func TestPullRequestSnapshot(t *testing.T) {
 		pr.State != "OPEN" || pr.AutoMerge || pr.MergedBy != "" || len(pr.Labels) != 1 {
 		t.Fatalf("identity: %+v", pr)
 	}
-	if pr.Trailer("Agent-Run") != "7f3cq2xz" {
-		t.Fatal("the head commit's Agent-Run trailer")
+	if pr.Trailer("Agent-Run") != "7f3cq2xz" || !pr.HeadCommittedAt.Equal(time.Date(2026, 9, 27, 9, 58, 0, 0, time.UTC)) {
+		t.Fatal("the head commit's Agent-Run trailer and date")
 	}
 	if len(pr.Reviews) != 1 || pr.Reviews[0].Author != "Smana" || pr.Reviews[0].ID != 901 || pr.Reviews[0].Comments[0].Path != "docs/a.md" ||
 		pr.Reviews[0].Comments[0].Line != 3 || pr.Reviews[0].At.IsZero() {

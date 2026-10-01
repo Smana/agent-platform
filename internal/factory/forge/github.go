@@ -370,7 +370,10 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				} `graphql:"comments(last: 30)"`
 				Commits struct {
 					Nodes []struct {
-						Commit struct{ Message string }
+						Commit struct {
+							Message       string
+							CommittedDate githubv4.DateTime
+						}
 					}
 				} `graphql:"commits(last: 1)"`
 			} `graphql:"pullRequest(number: $number)"`
@@ -413,7 +416,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 			Edited: c.LastEditedAt != nil})
 	}
 	if len(p.Commits.Nodes) == 1 {
-		out.HeadMessage = p.Commits.Nodes[0].Commit.Message
+		out.HeadMessage, out.HeadCommittedAt = p.Commits.Nodes[0].Commit.Message, p.Commits.Nodes[0].Commit.CommittedDate.Time
 	}
 	return out, nil
 }

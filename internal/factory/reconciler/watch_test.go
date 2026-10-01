@@ -605,7 +605,7 @@ func TestRemindThenCloseStale(t *testing.T) {
 	}
 	g.r.Now = func() time.Time { return now }
 	g.reconcile(t, "3buqdlot", 2)
-	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "@Smana") || !strings.Contains(c[0], "waited 48 hours") {
+	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "@Smana") || !strings.Contains(c[0], "no maintainer activity for 48 hours") {
 		t.Fatalf("one reminder: %q", c)
 	}
 	if g.f.Closed(12) {
@@ -683,7 +683,7 @@ func TestAMaintainerRestartsTheWait(t *testing.T) {
 }
 
 // A close is never unannounced: a task first seen 14 days quiet (the factory was down) is
-// reminded, and closed only on a later poll.
+// reminded, and closed no sooner than 24 h after that reminder (M2).
 func TestNoStaleCloseBeforeItsReminder(t *testing.T) {
 	tk := awaiting()
 	since := metav1.NewTime(now.Add(-15 * 24 * time.Hour))
@@ -693,8 +693,185 @@ func TestNoStaleCloseBeforeItsReminder(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) || len(g.f.Comments(7)) != 1 {
 		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
 	}
+	g.r.Now = func() time.Time { return now.Add(reminderNotice - time.Minute) }
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) {
+		t.Fatalf("closed %s after its reminder", reminderNotice-time.Minute)
+	}
+	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || !g.f.Closed(12) {
 		t.Fatalf("%s", tk.Status.Phase)
+	}
+}
+
+// staleTask is awaiting()'s task, in AwaitingHuman for d.
+func staleTask(d time.Duration) *v1alpha1.Task {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-d))
+	tk.Status.PhaseSince = &since
+	return tk
+}
+
+// remindedAndAged posts the task's reminder now, then moves the clock 14 days on: a close is due
+// unless something holds it.
+func (g *rig) remindedAndAged(t *testing.T) {
+	t.Helper()
+	g.reconcile(t, "3buqdlot", 1)
+	if len(g.f.Comments(7)) != 1 {
+		t.Fatalf("no reminder: %q", g.f.Comments(7))
+	}
+	g.r.Now = func() time.Time { return now.Add(StaleAfter) }
+}
+
+// I1: a maintainer's comment on the issue, where the reminder is posted, keeps the PR open
+// (review probe P1).
+func TestProbeReplyToReminderOnIssueIgnored(t *testing.T) {
+	g := newRig(t, staleTask(15*24*time.Hour))
+	g.f.SetPR(pr12())
+	g.reconcile(t, "3buqdlot", 1) // reminder posted on issue 7
+	cs, _ := g.f.RecentComments(t.Context(), 7)
+	g.f.SetComments(7, append(cs, forge.Comment{ID: 500, Author: "Smana", Body: "On it this week, keep it open.", At: now})...)
+	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
+	if got := g.reconcile(t, "3buqdlot", 2); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) {
+		t.Fatalf("maintainer replied to the reminder on the issue, PR closed anyway (%s %s)", got.Status.Phase, got.Status.Reason)
+	}
+	// Anyone else's reply does not.
+	g = newRig(t, staleTask(15*24*time.Hour))
+	g.f.SetPR(pr12())
+	g.reconcile(t, "3buqdlot", 1)
+	cs, _ = g.f.RecentComments(t.Context(), 7)
+	g.f.SetComments(7, append(cs, forge.Comment{ID: 501, Author: "someone", Body: "bump", At: now})...)
+	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseClosed {
+		t.Fatalf("%s", got.Status.Phase)
+	}
+}
+
+// I2: a maintainer comment that leaves the read window (deleted, or past comments(last: 30))
+// never moves the quiet spell back: no second reminder, no close (review probe P2).
+func TestProbeQuietSinceRegresses(t *testing.T) {
+	g := newRig(t, staleTask(20*24*time.Hour))
+	pr := pr12()
+	pr.Comments = []forge.Comment{{ID: 600, Author: "Smana", Body: "will review", At: now.Add(-5 * 24 * time.Hour)}}
+	g.f.SetPR(pr)
+	g.reconcile(t, "3buqdlot", 2)
+	first := len(g.f.Comments(7))
+	pr.Comments = nil
+	g.f.SetPR(pr)
+	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
+	got := g.reconcile(t, "3buqdlot", 2)
+	if first != 1 || len(g.f.Comments(7)) != 1 || got.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+		t.Fatalf("reminders before %d, after %d; phase %s %s", first, len(g.f.Comments(7)), got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// I1: an approved, unmerged PR is reminded that it waits for a merge, and never closed (review
+// probe P4). A later dismissal or request for changes by a maintainer lifts that; a comment does not.
+func TestProbeApprovedPRClosedStale(t *testing.T) {
+	approval := forge.Review{ID: 800, Author: "Smana", State: "APPROVED", At: now.Add(-14*24*time.Hour - time.Minute)}
+	g := newRig(t, staleTask(20*24*time.Hour))
+	g.f.SetPR(pr12(approval, forge.Review{ID: 801, Author: "Smana", State: "COMMENTED", At: now.Add(-14*24*time.Hour - time.Second)}))
+	g.reconcile(t, "3buqdlot", 1)
+	g.r.Now = func() time.Time { return now.Add(reminderNotice) }
+	got := g.reconcile(t, "3buqdlot", 2)
+	if c := g.f.Comments(7); got.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.f.Closed(12) || len(c) != 1 ||
+		!strings.Contains(c[0], "is approved and has waited 48 hours for a merge") {
+		t.Fatalf("approved PR closed as stale (%s %s): %q", got.Status.Phase, got.Status.Reason, c)
+	}
+	g = newRig(t, staleTask(20*24*time.Hour))
+	g.f.SetPR(pr12(approval, forge.Review{ID: 802, Author: "Smana", State: "DISMISSED", At: now.Add(-14*24*time.Hour - time.Second)}))
+	g.remindedAndAged(t)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseClosed {
+		t.Fatalf("a dismissed approval holds nothing: %s", got.Status.Phase)
+	}
+}
+
+// I1: a push to the branch with no Agent-Run trailer (a maintainer's takeover) restarts the wait;
+// an agent's commit does not.
+func TestAHumanPushRestartsTheWait(t *testing.T) {
+	for msg, reminded := range map[string]bool{"fix: by hand\n\nSigned-off-by: Smana": false, "docs: fix\n\nAgent-Run: 7f3cq2xz": true} {
+		g := newRig(t, staleTask(15*24*time.Hour))
+		pr := pr12()
+		pr.HeadMessage, pr.HeadCommittedAt = msg, now.Add(-time.Hour)
+		g.f.SetPR(pr)
+		if g.reconcile(t, "3buqdlot", 2); (len(g.f.Comments(7)) == 1) != reminded {
+			t.Fatalf("%q: %q", msg, g.f.Comments(7))
+		}
+	}
+}
+
+// Review mutant α: a maintainer review from before the stay (a handled request for changes) never
+// pulls the quiet spell back.
+func TestAnOlderReviewDoesNotShortenTheWait(t *testing.T) {
+	g := newRig(t, staleTask(47*time.Hour))
+	g.f.SetPR(pr12(forge.Review{ID: 900, Author: "Smana", State: "CHANGES_REQUESTED", At: now.Add(-71 * time.Hour)}))
+	tk := g.reconcile(t, "3buqdlot", 0)
+	tk.Status.Handled = []int64{900}
+	if err := g.c.Status().Update(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	if g.reconcile(t, "3buqdlot", 2); len(g.f.Comments(7)) != 0 {
+		t.Fatalf("reminded at 47 h: %q", g.f.Comments(7))
+	}
+}
+
+// Review mutant β: the label goes on before the close, so a replay reads a closed PR as stale.
+func TestTheStaleLabelPrecedesTheClose(t *testing.T) {
+	g := newRig(t, staleTask(15*24*time.Hour))
+	g.f.SetPR(pr12())
+	g.remindedAndAged(t)
+	g.reconcile(t, "3buqdlot", 1)
+	if c := g.f.Calls(); !slices.Equal(c, []string{"add-labels 12 factory/stale", "close 12"}) {
+		t.Fatalf("%q", c)
+	}
+}
+
+// refusingForge refuses every close, as GitHub does without pull_requests: write.
+type refusingForge struct{ *forge.Fake }
+
+func (refusingForge) ClosePR(context.Context, int) error {
+	return errors.New("403 Resource not accessible by integration")
+}
+
+// M4: a refused close takes the stale label off again, so the open PR does not carry it.
+func TestARefusedCloseTakesTheLabelOff(t *testing.T) {
+	g := newRig(t, staleTask(15*24*time.Hour))
+	g.f.SetPR(pr12())
+	g.remindedAndAged(t)
+	g.r.Forge = refusingForge{g.f}
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the refusal is returned")
+	}
+	if tk := g.reconcile(t, "3buqdlot", 0); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman ||
+		!slices.Equal(g.f.Calls(), []string{"add-labels 12 factory/stale", "remove-label 12 factory/stale"}) {
+		t.Fatalf("%s %q", tk.Status.Phase, g.f.Calls())
+	}
+}
+
+// I3: an escalated task is polled every escalatedPoll, any other live task every poll interval.
+func TestAnEscalatedTaskIsPolledSlowly(t *testing.T) {
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
+	if err != nil || res.RequeueAfter != escalatedPoll || escalatedPoll != 5*time.Minute {
+		t.Fatalf("%v %v", res, err)
+	}
+	g.f.SetComments(7, retryBy(77, "Smana", time.Minute))
+	if res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err != nil || res.RequeueAfter != 30*time.Second {
+		t.Fatalf("once retried, the task's poll: %v %v", res, err)
+	}
+}
+
+// M1: a fenced example of the command is not the command; one after the fence closes is (review
+// probe P3).
+func TestProbeFencedRetry(t *testing.T) {
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	g.f.SetComments(7, forge.Comment{ID: 700, Author: "Smana", Body: "To run it again, comment:\n```\n/factory retry\n```", At: now.Add(-time.Minute)},
+		forge.Comment{ID: 701, Author: "Smana", Body: "Or:\n~~~text\n/factory retry\n~~~", At: now.Add(-time.Minute)})
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatalf("fenced example acted on: %s", got.Status.Phase)
+	}
+	g.f.SetComments(7, forge.Comment{ID: 702, Author: "Smana", Body: "```\nlog\n```\n/factory retry", At: now.Add(-time.Minute)})
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseQueued {
+		t.Fatalf("after the fence: %s", got.Status.Phase)
 	}
 }
 

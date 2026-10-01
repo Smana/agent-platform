@@ -121,8 +121,8 @@ The factory's other human inputs (§6.3):
 
 | Input | Effect |
 |---|---|
-| A maintainer's comment with `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run, through `Queued` and its caps. Edited comments, and anyone else's, are ignored without an answer |
-| No maintainer review or comment on an `AwaitingHuman` pull request for 48 h | One reminder mentioning the maintainers, for each quiet spell |
-| The same for 14 days, once that reminder is posted | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`) |
+| A maintainer's comment with `/factory retry` alone on a line outside a code fence, on an escalated task's issue or pull request | A fresh run, through `Queued` and its caps, within 5 minutes (escalated tasks are polled every 5 minutes). Edited comments, and anyone else's, are ignored without an answer |
+| No maintainer activity on an `AwaitingHuman` pull request for 48 h: no review, no comment on it or on the issue, no push without an `Agent-Run` trailer | One reminder mentioning the maintainers, for each quiet spell. A spell never restarts earlier than one already reminded |
+| The same for 14 days, at least 24 h after that reminder, and the latest maintainer review is not an approval | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`). An approved pull request is never closed. A refused close takes the label off again |
 
 The full permission matrix is in [Security](security.md#authorization).

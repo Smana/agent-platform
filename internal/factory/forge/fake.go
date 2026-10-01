@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,6 +27,7 @@ type Fake struct {
 	removed  map[int][]string
 	cut      map[int]bool
 	closed   map[int]bool
+	calls    []string
 	nextID   int64
 }
 
@@ -162,6 +164,7 @@ func (f *Fake) AddLabels(_ context.Context, n int, labels ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.added[n] = append(f.added[n], labels...)
+	f.calls = append(f.calls, fmt.Sprintf("add-labels %d %s", n, strings.Join(labels, ",")))
 	return nil
 }
 
@@ -170,6 +173,7 @@ func (f *Fake) RemoveLabel(_ context.Context, n int, label string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed[n] = append(f.removed[n], label)
+	f.calls = append(f.calls, fmt.Sprintf("remove-label %d %s", n, label))
 	f.labeled[label] = slices.DeleteFunc(f.labeled[label], func(i Item) bool { return i.Number == n })
 	return nil
 }
@@ -186,11 +190,20 @@ func (f *Fake) ClosePR(_ context.Context, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed[n] = true
+	f.calls = append(f.calls, fmt.Sprintf("close %d", n))
 	if p, ok := f.prs[n]; ok {
 		p.State = "CLOSED"
 		f.prs[n] = p
 	}
 	return nil
+}
+
+// Calls are the label and close calls made, in order ("add-labels 12 a,b", "remove-label 12 a",
+// "close 12"), for tests of what must happen before what.
+func (f *Fake) Calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
 }
 
 // Closed is whether ClosePR closed n.

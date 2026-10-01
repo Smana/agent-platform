@@ -59,6 +59,7 @@ type taskForge interface {
 	PullRequestForBranch(ctx context.Context, branch string) (int, error)
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
 	ClosePR(ctx context.Context, number int) error
+	RemoveLabel(ctx context.Context, number int, label string) error
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -79,11 +80,17 @@ const (
 )
 
 // A pull request no maintainer has touched for RemindAfter gets a reminder, and is closed with
-// factory/stale after StaleAfter (§6.3).
+// factory/stale after StaleAfter (§6.3), never sooner than reminderNotice after that reminder.
 const (
-	RemindAfter = 48 * time.Hour
-	StaleAfter  = 14 * 24 * time.Hour
+	RemindAfter    = 48 * time.Hour
+	StaleAfter     = 14 * 24 * time.Hour
+	reminderNotice = 24 * time.Hour
 )
+
+// escalatedPoll is how often an escalated task is reconciled. It waits only for a maintainer's
+// /factory retry or the end of its pull request, which nothing bounds in number (§6.3 gives
+// Escalated no timeout), and each poll costs GitHub calls the whole factory shares.
+const escalatedPoll = 5 * time.Minute
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
 // every change of one of its AgentRuns; one worker, so the caps are counted without a race
@@ -168,6 +175,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
 		return ctrl.Result{}, err
+	}
+	if t.Status.Phase == v1alpha1.PhaseEscalated {
+		return ctrl.Result{RequeueAfter: escalatedPoll}, nil
 	}
 	return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
 }
