@@ -17,7 +17,9 @@
 // $GH_TOKEN), a runner option missing from its table (it shifts the command
 // position), and which branch a bare `git push` or `git push origin HEAD`
 // resolves to. `git remote set-url` followed by a push is bounded by the
-// repo-scoped octo-sts token. Gateway and forge logs are the ground truth;
+// repo-scoped octo-sts token. A push of the run's branch name after `git tag
+// <that name>` writes refs/tags/<name> (T1): the tag ruleset bounds it, not
+// this class. Gateway and forge logs are the ground truth;
 // octo-sts, the ruleset, the Gateway and CNP are the limits.
 
 package bridge
@@ -191,6 +193,8 @@ var (
 
 	// The environment git and gh may be given (SAR R1); anything else is forge.other for them.
 	safeEnv = set("LANG", "TZ", "CI", "NO_COLOR", "TERM", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "COLUMNS", "LINES")
+	// Exact assignments git and gh may take despite a command-valued name (ruling SAS): no pager, no prompt.
+	safeAssign = set("GIT_PAGER=cat", "PAGER=cat", "GH_PAGER=cat", "GIT_TERMINAL_PROMPT=0")
 	// Variables any program may run as a command or load code from: forge.other on every command.
 	commandEnvs      = set("PAGER", "MANPAGER", "EDITOR", "VISUAL", "BROWSER", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "BASH_ENV", "ENV", "PROMPT_COMMAND", "LESSOPEN", "LESSCLOSE")
 	commandEnvPrefix = []string{"GIT_", "GH_", "SSH_"}
@@ -299,7 +303,7 @@ func (c Classifier) segment(s segment, depth int) Class {
 		cl = worse(cl, c.nested([]string{sc.text}, depth))
 	}
 	if len(u.cmd) == 0 {
-		if slices.ContainsFunc(u.env, commandEnv) {
+		if slices.ContainsFunc(u.env, func(a string) bool { return commandEnv(assignName(a)) }) {
 			return ForgeOther // PAGER=…, then any later command (R1)
 		}
 	} else {
@@ -444,14 +448,23 @@ func commandEnv(name string) bool {
 }
 
 // envUnsafe reports an assignment a command could run: a command-valued name
-// for any command, and for git and gh anything off safeEnv.
-func envUnsafe(names []string, head string) bool {
-	for _, n := range names {
-		if commandEnv(n) || ((head == "git" || head == "gh") && !safeEnv[n] && !strings.HasPrefix(n, "LC_")) {
+// for any command, and for git and gh anything off safeEnv and safeAssign.
+func envUnsafe(assigns []string, head string) bool {
+	gitgh := head == "git" || head == "gh"
+	for _, a := range assigns {
+		if gitgh && safeAssign[a] {
+			continue
+		}
+		if n := assignName(a); commandEnv(n) || (gitgh && !safeEnv[n] && !strings.HasPrefix(n, "LC_")) {
 			return true
 		}
 	}
 	return false
+}
+
+func assignName(a string) string {
+	n, _, _ := strings.Cut(a, "=")
+	return n
 }
 
 // git classes a git command, and reports whether its words still need the forge scan.
@@ -785,7 +798,7 @@ func (c Classifier) fetch(head string, args []string) Class {
 // unwrapped is a segment with its assignments and runners taken off.
 type unwrapped struct {
 	cmd      []word   // the command, head first
-	env      []string // the names assigned before it
+	env      []string // the assignments before it, NAME=value with quotes removed
 	scripts  []word   // shell scripts a runner was given: flock -c, watch's and ssh's command
 	appended bool     // a runner appends arguments the parser cannot see: xargs
 	remote   bool     // the command runs on another host: ssh
@@ -796,8 +809,7 @@ func unwrap(w []word) unwrapped {
 	var u unwrapped
 	for len(w) > 0 {
 		if assignment.MatchString(w[0].bare) {
-			name, _, _ := strings.Cut(w[0].text, "=")
-			u.env = append(u.env, name)
+			u.env = append(u.env, w[0].text)
 			w = w[1:]
 			continue
 		}

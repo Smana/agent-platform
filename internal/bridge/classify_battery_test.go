@@ -433,6 +433,27 @@ func TestReviewBattery(t *testing.T) {
 		{"R4", "env -S 'git push origin agent/3kq7x2ma'", ForgePush},
 		{"R4", "flock /tmp/l -c 'git push origin agent/3kq7x2ma'", ForgePush},
 		{"R4", `git filter-branch --setup "$CMD" HEAD`, ForgeOther},
+
+		// SAS: T1 is the tag ruleset's, and the run's own push stays allowed.
+		{"T1", "git tag agent/3kq7x2ma; git push origin agent/3kq7x2ma", ForgePush}, // residual: the tag ruleset bounds refs/tags/agent/*
+		{"T1", "git push -u origin agent/3kq7x2ma", ForgePush},
+		// SAS: four exact assignments git and gh may take; any other value stays forge.other.
+		{"SAS", "GIT_PAGER=cat git log", Plain},
+		{"SAS", "PAGER=cat git log", Plain},
+		{"SAS", "GH_PAGER=cat gh pr view 1", Plain},
+		{"SAS", "GIT_TERMINAL_PROMPT=0 git push origin agent/3kq7x2ma", ForgePush},
+		{"SAS", `GIT_PAGER="cat" git log`, Plain}, // the same value, quoted
+		{"SAS", "GIT_PAGER=cat GIT_TERMINAL_PROMPT=0 LANG=C git log", Plain},
+		{"SAS", "GIT_PAGER=less git log", ForgeOther},
+		{"SAS", "PAGER=cat;x git log", ForgeOther},
+		{"SAS", "PAGER='cat;x' git log", ForgeOther},
+		{"SAS", "GIT_PAGER=cat\\ x git log", ForgeOther},
+		{"SAS", "GIT_PAGER=$P git log", ForgeOther},
+		{"SAS", "GIT_TERMINAL_PROMPT=1 git log", ForgeOther},
+		{"SAS", "GH_PAGER=cat git log", Plain},  // git ignores GH_PAGER; the value is still harmless
+		{"SAS", "PAGER=cat man ls", ForgeOther}, // only git and gh take the exceptions
+		{"SAS", "PAGER=cat", ForgeOther},
+		{"SAS", "GIT_PAGER=cat GIT_EDITOR=x git commit", ForgeOther},
 	} {
 		if got := c.Classify("terminal", shell(tc.cmd), "LOW"); got != tc.want {
 			t.Errorf("%s %q: got %q want %q", tc.finding, tc.cmd, got, tc.want)
