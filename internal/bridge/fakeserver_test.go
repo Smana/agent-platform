@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -27,6 +28,7 @@ type fakeAgentServer struct {
 	hang      bool // event searches never answer while set
 	flap      bool // each status read flips running and paused
 	down      bool // every request is cut, as when agent-server is not listening
+	cut       int  // event searches cut while down
 	// failSearch, when set, runs under mu before an event search; true answers 500.
 	failSearch func() bool
 }
@@ -157,6 +159,9 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		down := f.down
+		if down && strings.HasSuffix(r.URL.Path, "/events/search") {
+			f.cut++
+		}
 		f.mu.Unlock()
 		if down {
 			if c, _, err := http.NewResponseController(w).Hijack(); err == nil {

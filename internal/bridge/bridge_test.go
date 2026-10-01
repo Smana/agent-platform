@@ -478,10 +478,14 @@ func TestTheLogIsPolledOftenUntilTheHarnessFirstAnswers(t *testing.T) {
 	fb := &fakeBroker{}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	r.b.Interval, r.b.MaxBackoff = 20*time.Millisecond, time.Hour
-	_, stop := r.run(t)
-	// On a 20 ms loop the polls land near 360 then 620 ms uncapped, and 360 then
-	// 560 ms under the answeredPolls cap: the conversation runs between them.
-	time.Sleep(400 * time.Millisecond)
+	ctx, stop := r.run(t)
+	// After nine refusals from 1 ms, the next wait is 256 ms uncapped and 200 ms
+	// under the answeredPolls cap: longer than the conversation.
+	eventually(ctx, t, "nine reads were refused", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.cut >= 9
+	})
 	f.setDown(false)
 	time.Sleep(120 * time.Millisecond)
 	f.setDown(true) // the harness exits before SIGTERM
