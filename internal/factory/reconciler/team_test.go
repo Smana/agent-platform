@@ -622,3 +622,36 @@ func TestARetryAfterTheRoundsKeepsThemSpent(t *testing.T) {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }
+
+// N1: an adopted verifier's head is unknown, so the chain restarts from the first verifier after
+// it, never retrying the adopted role alone on whatever the head is by then.
+func TestAnAdoptedVerifierRestartsTheChain(t *testing.T) {
+	lose := false
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
+		WithObjects(issueTask("3buqdlot", 7, "x")).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+			if lose {
+				lose = false
+				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
+			}
+			return cl.SubResource(sub).Update(ctx, o, opts...)
+		}}).Build()
+	g := teamRig(t, "trio", c) // tester rrrrrrrr on head1
+	g.ids("eeeeeeee", "ffffffff")
+	g.log.verdict("rrrrrrrr", "approve", head1, "Tests pass.")
+	g.finish("rrrrrrrr", "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+	lose = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the lost write is returned")
+	}
+	tk := g.reconcile(t, "3buqdlot", 1) // the reviewer eeeeeeee is adopted, its head unknown
+	if tk.Status.Runs[2].ID != "eeeeeeee" || tk.Status.Runs[2].HeadSHA != "" || len(g.runs.specs) != 3 {
+		t.Fatalf("%+v", tk.Status.Runs)
+	}
+	g.finish("eeeeeeee", "Succeeded", "agent_finished") // no verdict
+	tk = g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs["ffffffff"]; s.Role != "tester" || tk.Status.Runs[3].HeadSHA != head1 {
+		t.Fatalf("the chain starts again from the tester: %+v %+v", s, tk.Status.Runs)
+	}
+}
