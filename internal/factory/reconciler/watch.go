@@ -67,7 +67,8 @@ func (r *Reconciler) changesRequested(t *v1alpha1.Task, pr forge.PR) []forge.Rev
 	var out []forge.Review
 	for i, rv := range pr.Reviews {
 		last, approved := approvedAt[strings.ToLower(rv.Author)]
-		if rv.State == "CHANGES_REQUESTED" && r.Cfg.IsMaintainer(rv.Author) && !(approved && last > i) &&
+		superseded := approved && last > i
+		if rv.State == "CHANGES_REQUESTED" && r.Cfg.IsMaintainer(rv.Author) && !superseded &&
 			!slices.Contains(t.Status.Handled, rv.ID) && (since == nil || rv.At.After(since.Time)) {
 			out = append(out, rv)
 		}
