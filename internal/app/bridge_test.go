@@ -104,3 +104,15 @@ func TestHealthz(t *testing.T) {
 		})
 	}
 }
+
+// The classifier's inputs (phase 5): both optional, since CC-S5 adds BRANCH.
+func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
+	env := map[string]string{"BRANCH": "agent/3kq7x2ma", "EGRESS_PROFILES": " golang, ,npm ,"}
+	c, _ := loadBridgeConfig(func(k string) string { return env[k] })
+	if c.branch != "agent/3kq7x2ma" || len(c.egress) != 2 || !c.egress["golang"] || !c.egress["npm"] {
+		t.Fatalf("branch %q egress %v", c.branch, c.egress)
+	}
+	if c, _ = loadBridgeConfig(func(string) string { return "" }); c.branch != "" || len(c.egress) != 0 {
+		t.Fatalf("unset: branch %q egress %v", c.branch, c.egress)
+	}
+}

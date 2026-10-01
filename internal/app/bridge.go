@@ -14,11 +14,13 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/bridge"
 	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // The bridge's defaults (docs/integration.md, "The bridge's environment").
@@ -40,6 +42,9 @@ type bridgeConfig struct {
 	harnessURL, healthAddr         string
 	flushGrace                     time.Duration // 0: the bridge's default
 	memLimitSet                    bool          // GOMEMLIMIT is in the environment
+	// branch is the run's branch (CC-S5). Unset, every push is forge.other.
+	branch string
+	egress map[string]bool // the run's egress profiles
 }
 
 func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
@@ -54,6 +59,12 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 		tokenFile: getenv("ROOM_TOKEN_FILE"), harnessURL: or("HARNESS_URL", defaultHarnessURL),
 		healthAddr: or("HEALTH_ADDR", defaultHealthAddr)}
 	c.memLimitSet = getenv("GOMEMLIMIT") != ""
+	c.branch, c.egress = getenv("BRANCH"), map[string]bool{}
+	for p := range strings.SplitSeq(getenv("EGRESS_PROFILES"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			c.egress[p] = true
+		}
+	}
 	var missing []error
 	if v := getenv("FLUSH_GRACE"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -111,6 +122,11 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 		RunID: cfg.runID, Logger: log, FlushGrace: cfg.flushGrace}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push}
 	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
+	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: broker, RunID: b.RunID, Push: b.Push, Logger: log,
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
+	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }
+	b.OnReady, b.OnRaw, b.OnStatus, b.OnDecision = confirm.Ready, confirm.Observe, confirm.OnStatus, confirm.Decision
+	b.Classify = confirm.ClassOf
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.healthAddr)

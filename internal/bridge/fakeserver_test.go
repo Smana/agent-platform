@@ -15,17 +15,20 @@ import (
 // event_router.py and event_service.py: page_id is inclusive, and next_page_id is
 // the id of the first event of the next page.
 type fakeAgentServer struct {
-	mu        sync.Mutex
-	events    []map[string]any
-	status    string
-	sent      []string
-	responses []bool
-	policy    string
-	pageSize  int
-	limits    []int
-	searches  int  // event searches asked
-	hang      bool // event searches never answer while set
-	flap      bool // each status read flips running and paused
+	mu         sync.Mutex
+	events     []map[string]any
+	status     string
+	sent       []string
+	responses  []bool
+	reasons    []string // the reason of each response
+	refuse     int      // while set, confirmations and the policy are answered with this status
+	policy     string
+	policySets int // confirmation policies taken
+	pageSize   int
+	limits     []int
+	searches   int  // event searches asked
+	hang       bool // event searches never answer while set
+	flap       bool // each status read flips running and paused
 }
 
 // searched is how many event searches were asked so far.
@@ -61,6 +64,20 @@ func (f *fakeAgentServer) snapshot() (sent []string, responses []bool, policy st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string{}, f.sent...), append([]bool{}, f.responses...), f.policy
+}
+
+// policySet is the confirmation policy taken last, and how many were taken.
+func (f *fakeAgentServer) policySet() (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.policy, f.policySets
+}
+
+// answers copies the reasons of the confirmations answered so far.
+func (f *fakeAgentServer) answers() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.reasons...)
 }
 
 func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
@@ -120,10 +137,19 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
 	mux.HandleFunc("POST "+base+"/events/respond_to_confirmation", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Accept bool }
+		var in struct {
+			Accept bool
+			Reason string
+		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
+		if f.refuse != 0 {
+			f.mu.Unlock()
+			http.Error(w, "refused", f.refuse)
+			return
+		}
 		f.responses = append(f.responses, in.Accept)
+		f.reasons = append(f.reasons, in.Reason)
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
@@ -131,7 +157,13 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		var in struct{ Policy struct{ Kind string } }
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
+		if f.refuse != 0 {
+			f.mu.Unlock()
+			http.Error(w, "refused", f.refuse)
+			return
+		}
 		f.policy = in.Policy.Kind
+		f.policySets++
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})

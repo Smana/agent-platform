@@ -6,6 +6,7 @@ package wire
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 )
@@ -98,11 +99,28 @@ type Deliver struct {
 	Text string `json:"text"`
 }
 
-// Decision answers an approval the harness is waiting on (phase 5).
+// Decision answers an approval the harness is waiting on (phase 5). Ref is the
+// approval_decided event's seq, which the bridge acknowledges as decision_applied.
 type Decision struct {
 	ApprovalID string `json:"approvalId"`
 	Allow      bool   `json:"allow"`
 	Reason     string `json:"reason,omitempty"`
+	Ref        int64  `json:"ref"`
+}
+
+// ApprovalRequest is the body of POST /v1/bridge/approvals: a pending action
+// whose class the room's policy sends to its approvers (phase 5).
+type ApprovalRequest struct {
+	CallID string          `json:"callId"`
+	Class  string          `json:"class"`
+	Action json.RawMessage `json:"action"`
+}
+
+// ApprovalAck answers an ApprovalRequest: the approval's id, which a later
+// decision names, and when the broker expires it.
+type ApprovalAck struct {
+	ApprovalID string    `json:"approvalId"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 // Interrupt stops the run's current turn (phase 4).

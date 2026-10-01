@@ -274,6 +274,19 @@ type Bridge struct {
 	OnDecision  func(ctx context.Context, d wire.Decision) error  // phase 5
 	OnResume    func(ctx context.Context, r wire.Resume)          // phase 5
 
+	// The confirmation loop's hooks (phase 5), called on the loop.
+	//
+	// OnReady runs once the conversation answers, and again each poll until it
+	// succeeds. OnRaw sees every harness event read, those a restart skips
+	// included, before it is mapped. OnStatus gets a status only after an
+	// events poll that started after that status was read and reached the
+	// log's end, so every action the harness wrote before it was passed to
+	// OnRaw. Classify sets each tool_call's class.
+	OnReady  func(ctx context.Context) error
+	OnRaw    func(e RawEvent)
+	OnStatus func(ctx context.Context, status string)
+	Classify func(tool string, action json.RawMessage, risk string) string
+
 	// inbox holds what Push hands over from other goroutines, until the loop,
 	// the only one to touch buf and status, takes it.
 	inMu  sync.Mutex
@@ -292,6 +305,8 @@ type Bridge struct {
 	sendRetry  backoff
 	leaseLost  bool
 	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
+	ready      bool      // OnReady succeeded
+	lastStatus string    // the status the previous step read, "" if it failed
 
 	sealed   atomic.Bool
 	lastSeen atomic.Int64
@@ -474,47 +489,88 @@ func (b *Bridge) step(ctx context.Context) {
 	}
 	b.takeInbox(ctx)
 	now := b.now()
+	caughtUp := false
 	if !now.Before(b.pollAt) {
-		b.pollEvents(ctx)
+		caughtUp = b.pollEvents(ctx)
 	}
-	b.pollStatus(ctx)
+	// The status the previous step read: the events poll above started after
+	// it, so it saw every action written before it (and any answer the hook
+	// gave came before the status read below).
+	if caughtUp && b.lastStatus != "" && b.OnStatus != nil {
+		b.OnStatus(ctx, b.lastStatus)
+	}
+	b.lastStatus = b.pollStatus(ctx)
+	if b.lastStatus != "" && !b.ready && b.OnReady != nil {
+		if err := b.OnReady(ctx); err != nil {
+			b.log().Warn("the harness did not take AlwaysConfirm; retrying", "err", err)
+		} else {
+			b.ready = true
+		}
+	}
 	if !now.Before(b.sendAt) {
 		b.send(ctx)
 	}
 }
 
 // pollEvents reads and maps the harness events after the cursor, unless the
-// buffer is full: the harness keeps its own store meanwhile.
-func (b *Bridge) pollEvents(ctx context.Context) {
+// buffer is full: the harness keeps its own store meanwhile. It reports that
+// the read reached the log's end.
+func (b *Bridge) pollEvents(ctx context.Context) bool {
 	if b.bufBytes >= b.MaxBuffer {
-		return
+		return false
 	}
 	if !b.positioned {
 		b.position(ctx)
-		return
+		return false
 	}
-	evs, next, err := b.Harness.Next(ctx, b.cursor)
+	evs, next, end, err := b.Harness.next(ctx, b.cursor)
 	start := b.cursor.Count
 	for i, e := range evs {
+		if b.OnRaw != nil {
+			b.OnRaw(e)
+		}
 		for k, m := range Map(e, b.RunID) {
+			m = b.classified(m)
 			b.push(ctx, wire.Item{Stream: wire.StreamEvents, Seq: SeqFor(start+int64(i)+1, k), Type: m.Type, Payload: m.Payload})
 		}
 	}
 	b.cursor = next // Next advances over exactly the events it returned, error or not
 	b.harnessRead(ctx, err)
+	return end && err == nil
+}
+
+// classified sets a tool_call's class. An oversize stub is left as it is.
+func (b *Bridge) classified(m Mapped) Mapped {
+	if m.Type != envelope.ToolCall || b.Classify == nil {
+		return m
+	}
+	var p envelope.ToolCallPayload
+	var stub struct {
+		Oversize bool `json:"oversize"`
+	}
+	if json.Unmarshal(m.Payload, &stub) != nil || stub.Oversize || json.Unmarshal(m.Payload, &p) != nil {
+		return m
+	}
+	p.Class = b.Classify(p.Tool, p.Args, p.Risk)
+	return fitted(envelope.ToolCall, envelope.Must(p))
 }
 
 // position rebuilds the cursor after a restart: the log holds events up to
 // resumeAt, and the last event it touched is mapped again, since only some of
 // its items may have landed (the store drops the rest). Skip rebuilds all three
 // fields of the cursor a bridge that never stopped would hold (Ruling AL c).
+// OnRaw still sees the skipped events, so the actions still pending are known.
 func (b *Bridge) position(ctx context.Context) {
 	n := b.resumeAt/ItemsPerEvent - 1
 	if n <= 0 {
 		b.positioned = true
 		return
 	}
-	c, err := b.Harness.Skip(ctx, n)
+	raw := b.OnRaw
+	if raw == nil {
+		raw = func(RawEvent) {}
+	}
+	c, err := b.Harness.skip(ctx, n, raw)
 	b.harnessRead(ctx, err)
 	if err == nil {
 		b.cursor, b.positioned = c, true
@@ -559,18 +615,21 @@ func (b *Bridge) harnessRead(ctx context.Context, err error) {
 	b.pollAt = now.Add(b.pollRetry.next(b.backoffs()))
 }
 
-func (b *Bridge) pollStatus(ctx context.Context) {
+// pollStatus records the conversation's status and returns it, "" when the
+// harness did not answer.
+func (b *Bridge) pollStatus(ctx context.Context) string {
 	status, err := b.Harness.Status(ctx)
 	if err != nil {
-		return
+		return ""
 	}
 	b.sawHarness(b.now())
 	if b.bufBytes >= statusCap(b.MaxBuffer) {
-		return // a later poll records the status the harness settles on
+		return status // a later poll records the status the harness settles on
 	}
 	for _, it := range b.status.Observe(status, b.RunID) {
 		b.pushStatus(ctx, it)
 	}
+	return status
 }
 
 func (b *Bridge) pushStatus(ctx context.Context, it StatusItem) {
