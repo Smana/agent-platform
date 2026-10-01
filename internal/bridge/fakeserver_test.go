@@ -30,8 +30,9 @@ type fakeAgentServer struct {
 	hang       bool // event searches never answer while set
 	flap       bool // each status read flips running and paused
 	// writes logs each write in order: "respond true|false", "send", "run", "interrupt".
-	writes  []string
-	runCode int // while set, POST /run is answered with this status
+	writes     []string
+	runCode    int // while set, POST /run is answered with this status
+	statusCode int // while set, the conversation read is answered with this status
 }
 
 // written copies the writes received so far, in order.
@@ -97,6 +98,10 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if code := f.statusCode; code != 0 {
+			http.Error(w, "refused", code)
+			return
+		}
 		if f.flap {
 			f.status = map[string]string{"running": "paused", "paused": "running"}[f.status]
 		}
@@ -162,6 +167,7 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		f.responses = append(f.responses, in.Accept)
 		f.reasons = append(f.reasons, in.Reason)
 		f.writes = append(f.writes, "respond "+strconv.FormatBool(in.Accept))
+		f.status = "running"
 		if !in.Accept {
 			f.status = "idle" // OpenHands rejects, goes idle, and does not run
 		}

@@ -20,6 +20,8 @@ import (
 
 const (
 	statusWaiting = "waiting_for_confirmation"
+	statusPaused  = "paused"
+	statusIdle    = "idle"
 	// attendedWait bounds the wait for a decision when the broker named no
 	// expiry in an attended room (§6: 30 min); an unattended room waits its
 	// policy's ttl, defaultTTL when that is unreadable.
@@ -280,11 +282,19 @@ func (c *Confirmer) OnStatus(ctx context.Context, status string) {
 	c.mu.Lock()
 	stale, resume := c.stale, c.resume
 	c.stale = false
+	if !stale && resume && status != statusIdle {
+		// Something else resumed the run, or a new step waits: a /run now
+		// would confirm that step (re-review I1).
+		c.resume, resume = false, false
+	}
 	c.mu.Unlock()
+	if stale {
+		return // read before the answer: neither waiting nor idle means anything yet
+	}
 	if resume {
 		c.resumeRun(ctx)
 	}
-	if stale || status != statusWaiting {
+	if status != statusWaiting {
 		return
 	}
 	c.settle(ctx, false)
@@ -296,6 +306,9 @@ func (c *Confirmer) OnStatus(ctx context.Context, status string) {
 // answered step is dropped. It never fails the stream: an answer the harness
 // refuses is retried at the next status.
 func (c *Confirmer) Decision(ctx context.Context, d wire.Decision) error {
+	if d.ApprovalID == "" {
+		return nil // names no approval: never held, never acknowledged
+	}
 	c.settling.Lock()
 	defer c.settling.Unlock()
 	c.mu.Lock()
@@ -304,7 +317,7 @@ func (c *Confirmer) Decision(ctx context.Context, d wire.Decision) error {
 	}
 	named := false
 	for _, p := range c.pending {
-		named = named || (!p.answered && d.ApprovalID != "" && p.approvalID == d.ApprovalID)
+		named = named || (!p.answered && p.approvalID == d.ApprovalID)
 	}
 	if !c.spent[d.ApprovalID] && (named || len(c.decided) < maxHeldDecisions) {
 		c.decided[d.ApprovalID] = d
@@ -316,21 +329,35 @@ func (c *Confirmer) Decision(ctx context.Context, d wire.Decision) error {
 	return nil
 }
 
-// Gate runs send, a message to the harness with run:true, once no step waits
-// unanswered: such a message would confirm every pending action (review C1).
-// A step still waiting is rejected first, and send runs only if the harness
-// took the rejection; the message itself resumes the conversation.
+// Gate runs send, a message to the harness with run:true, once no step waits:
+// such a message would confirm every pending action (review C1). It asks the
+// harness, not the bridge's own view, which lags it by a poll, a backoff, a
+// full buffer or a restart (re-review C1). A conversation waiting for a
+// confirmation, or paused with actions unmatched, is rejected first: that
+// rejects every pending action, read by the bridge or not. Nothing is sent if
+// the status cannot be read or the rejection is refused; the delivery is
+// replayed. The message itself resumes the conversation.
 func (c *Confirmer) Gate(ctx context.Context, send func() error) error {
 	c.settling.Lock()
 	defer c.settling.Unlock()
-	step, _ := c.step()
-	if len(step) > 0 {
+	status, err := c.Harness.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("read the harness status before steering: %w", err)
+	}
+	if status == statusWaiting || status == statusPaused {
+		step, _ := c.step()
 		_, refs := c.decisions(step)
 		if err := c.respond(ctx, step, false, textSuperseded, refs, true); err != nil {
 			return fmt.Errorf("reject the waiting step before steering: %w", err)
 		}
 	}
-	return send()
+	if err := send(); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.resume = false // the message resumed the run
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Confirmer) record(kind string, fields map[string]any) {
@@ -565,8 +592,9 @@ func (c *Confirmer) spend(id string) {
 }
 
 // resumeRun lets a rejected conversation take its next step, in which the model
-// reads the rejection. A run already in progress (409) is resumed already.
-// Under settling.
+// reads the rejection. A run already in progress (409) is resumed already. It
+// runs right after the harness took a rejection, or again only from a fresh
+// idle status: run() on a waiting conversation confirms its step. Under settling.
 func (c *Confirmer) resumeRun(ctx context.Context) {
 	err := c.Harness.Run(ctx)
 	if se, ok := errors.AsType[*StatusError](err); ok && se.Code == http.StatusConflict {
