@@ -385,6 +385,12 @@ spec:
                     finished:
                       format: date-time
                       type: string
+                    headSHA:
+                      description: |-
+                        The pull request's head a reviewer or tester run was given: its approve counts for that
+                        commit only, and only while the head has not moved.
+                      maxLength: 64
+                      type: string
                     id:
                       maxLength: 8
                       pattern: ^[a-z2-7]{8}$

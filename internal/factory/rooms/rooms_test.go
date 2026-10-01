@@ -135,6 +135,11 @@ func TestLastVerdict(t *testing.T) {
 	if _, ok := LastVerdict(nil, "rrrrrrrr"); ok {
 		t.Fatal("no verdict")
 	}
+	tester := verdict(9, envelope.ActorAgent, "agent:tttttttt", "tttttttt", "approve", "Tests pass.")
+	tester.Actor.Role = "tester"
+	if v, ok := LastVerdict([]envelope.Event{tester}, "tttttttt"); !ok || v.Verdict != "approve" {
+		t.Fatal("a tester's verdict counts")
+	}
 	again := verdict(8, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "Now it is tested.")
 	if v, _ := LastVerdict([]envelope.Event{agent, other, again}, "rrrrrrrr"); v.Verdict != "approve" || v.Seq != 8 {
 		t.Fatalf("the run's newest verdict wins: %+v", v)

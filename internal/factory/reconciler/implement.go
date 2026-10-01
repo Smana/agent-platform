@@ -130,7 +130,7 @@ func traceparent(t *v1alpha1.Task) string {
 func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec, trigger string) error {
 	// The room's lastSeq before the run: its handoff, verdict and end are read after it, never
 	// from the start of a long room (EventsSince stops at 10,000 events).
-	_, last, err := r.Rooms.Events(ctx, t.Status.RoomRef, 0, 1)
+	last, err := r.Rooms.LastSeq(ctx, t.Status.RoomRef)
 	if err != nil {
 		return err
 	}
@@ -171,7 +171,7 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 // roomReason is the broker's end reason for the task's current run, if the room has it.
 func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, bool) {
 	cur := current(t)
-	evs, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
 		return e.Type == envelope.StateChanged && e.RunID == cur.ID
 	})
 	if err != nil {
@@ -208,12 +208,7 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	if !found {
-		// SP2 records a deleted claim as Revoked, reason deleted (its P15); say so when it has.
-		reason := "run_lost"
-		if why, ok := r.roomReason(ctx, t); ok && why == "deleted" {
-			reason = why
-		}
-		return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, r.lostReason(ctx, t))
 	}
 	if t.Status.PullRequest == nil {
 		if err := r.detectPR(ctx, t, run); err != nil {
@@ -238,10 +233,26 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 }
 
-// afterWriter: phase 1 hands every PR to a human. Phase 3 routes to reviewers, phase 7 to CI.
-func (r *Reconciler) afterWriter(_ context.Context, t *v1alpha1.Task) error {
-	r.to(t, v1alpha1.PhaseAwaitingHuman, "")
-	return nil
+// lostReason is why a run of the task vanished: SP2 records a deleted claim as Revoked, reason
+// deleted (its P15); say so when it has.
+func (r *Reconciler) lostReason(ctx context.Context, t *v1alpha1.Task) string {
+	if why, ok := r.roomReason(ctx, t); ok && why == "deleted" {
+		return why
+	}
+	return "run_lost"
+}
+
+// afterWriter: a revision a maintainer asked for goes straight back to the maintainer; otherwise
+// the template's first verifier after the implementer runs, or the task is ready (solo).
+func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
+	if current(t).Trigger == "human" {
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
+		return nil
+	}
+	if next := r.nextVerifier(t, "implementer"); next != "" {
+		return r.startVerifier(ctx, t, next)
+	}
+	return r.ready(ctx, t)
 }
 
 func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Run) error {

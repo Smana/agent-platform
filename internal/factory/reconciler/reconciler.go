@@ -41,10 +41,10 @@ type RunClient interface {
 }
 
 // RoomLog is the broker's system API as the reconciler uses it (rooms.Client): the room's log
-// from afterSeq with its resume cursor, the room's queue, and task_state messages.
+// from afterSeq with its resume cursor, its current seq, the room's queue, and task_state messages.
 type RoomLog interface {
 	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
-	Events(ctx context.Context, room string, afterSeq int64, limit int) ([]envelope.Event, int64, error)
+	LastSeq(ctx context.Context, room string) (int64, error)
 	Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error
 	Queue(ctx context.Context, room string) ([]rooms.Queued, error)
 	Consume(ctx context.Context, room string, refs []int64, runID string) error
@@ -199,6 +199,8 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.queued(ctx, t)
 	case v1alpha1.PhaseImplementing:
 		return r.implementing(ctx, t)
+	case v1alpha1.PhaseReviewing:
+		return r.reviewing(ctx, t)
 	case v1alpha1.PhaseAwaitingHuman:
 		return r.awaitingHuman(ctx, t)
 	case v1alpha1.PhaseEscalated:
@@ -293,8 +295,10 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 // so an outage never loses it: drain posts it, now or on a later reconcile. A key already queued
 // or posted is not queued again, so a timer that re-fires every poll (the reminder) writes no
 // status; Post would skip it anyway.
-func narrateLater(t *v1alpha1.Task, e narrate.Event) {
-	n := target(t)
+func narrateLater(t *v1alpha1.Task, e narrate.Event) { narrateOn(t, target(t), e) }
+
+// narrateOn is narrateLater on issue or pull request n.
+func narrateOn(t *v1alpha1.Task, n int, e narrate.Event) {
 	if n == 0 || slices.Contains(t.Status.Narrated, e.Key) ||
 		slices.ContainsFunc(t.Status.Outbox, func(o v1alpha1.Narration) bool { return o.Key == e.Key }) {
 		return

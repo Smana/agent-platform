@@ -273,6 +273,11 @@ type RunRecord struct {
 	// The room's lastSeq when the run was created: verdicts are read after it.
 	// +optional
 	StartSeq int64 `json:"startSeq,omitempty"`
+	// The pull request's head a reviewer or tester run was given: its approve counts for that
+	// commit only, and only while the head has not moved.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	HeadSHA string `json:"headSHA,omitempty"`
 	// +optional
 	Started *metav1.Time `json:"started,omitempty"`
 	// +optional

@@ -190,6 +190,16 @@ func (l *fakeLog) Events(_ context.Context, _ string, after int64, limit int) ([
 	return out, int64(len(l.evs)), nil
 }
 
+func (l *fakeLog) LastSeq(context.Context, string) (int64, error) { return int64(len(l.evs)), nil }
+
+// verdict is a reviewer or tester run's room_verdict, as the broker stamps it: the only verdict the
+// factory reads (R36).
+func (l *fakeLog) verdict(runID, v, commit, text string) {
+	l.evs = append(l.evs, envelope.Event{Seq: int64(len(l.evs) + 1), RunID: runID, Type: envelope.Message, Origin: envelope.OriginClient,
+		Actor:   envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + runID, Role: "reviewer"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Verdict: v, Commit: commit, Text: text, Delivery: envelope.DeliveryNone})})
+}
+
 func (l *fakeLog) end(runID, phase, reason string) {
 	l.evs = append(l.evs, envelope.Event{Seq: int64(len(l.evs) + 1), RunID: runID, Type: envelope.StateChanged,
 		Origin: envelope.OriginBroker, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
@@ -227,9 +237,11 @@ func cfg() *config.Config {
 		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}},
 		Defaults:     config.Defaults{Template: "solo", Tier: "standard", DataClass: "public", PredictedClass: "review"},
 		Tiers:        map[string]config.Tier{"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45}},
-		Templates:    map[string]config.Template{"solo": {Roles: []string{"implementer"}}},
-		Caps:         config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336},
-		Hash:         strings.Repeat("a", 64)}
+		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}},
+			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
+			"trio": {Roles: []string{"implementer", "reviewer", "tester"}, MaxReviewRounds: 1}},
+		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336},
+		Hash: strings.Repeat("a", 64)}
 }
 
 type rig struct {

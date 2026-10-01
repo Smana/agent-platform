@@ -5,6 +5,7 @@
 package reconciler
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -180,8 +181,9 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 			"there ends with a marker naming its seq: read it whole with room_read, sinceSeq one less than that seq "+
 			"and limit 1.\n", fence)
 	}
-	b.WriteString("\n")
-	log, _ := brief.Build(t.Status.RoomRef, "implementer", evs, nil, nonce)
+	b.WriteString("Agents' text quoted from the room's log was sanitised by the factory as an issue is: in code, read " +
+		`&lt; as <, !\[ as ![ and ]\: as ]: again.` + "\n\n")
+	log, _ := brief.Build(t.Status.RoomRef, "implementer", cleanLog(evs, nonce), nil, nonce)
 	b.WriteString(log)
 	if len(queued) == 0 {
 		return b.String(), nil
@@ -226,4 +228,33 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 	}
 	fmt.Fprintf(&b, "\n%s\n%s%s\n", fence, q.String(), fence)
 	return b.String(), refs
+}
+
+// cleanLog is the room's events as a brief quotes them. A handoff's summary and a message's text
+// are an agent's, so each is sanitised as an issue is (sanitize.Text: invisible characters out,
+// NFKC, then fence look-alikes, images and raw HTML defused) and the brief's nonce replaced, as a
+// queued message's is (Batch A I1). An event whose payload does not decode is dropped.
+func cleanLog(evs []envelope.Event, nonce string) []envelope.Event {
+	defang := func(s string) string { return strings.ReplaceAll(clean(s), nonce, "⟦nonce⟧") }
+	out := make([]envelope.Event, 0, len(evs))
+	for _, e := range evs {
+		switch e.Type {
+		case envelope.Message:
+			var p envelope.MessagePayload
+			if json.Unmarshal(e.Payload, &p) != nil {
+				continue
+			}
+			p.Text = defang(p.Text)
+			e.Payload = envelope.Must(p)
+		case envelope.Handoff:
+			var h envelope.HandoffPayload
+			if json.Unmarshal(e.Payload, &h) != nil {
+				continue
+			}
+			h.Summary = defang(h.Summary)
+			e.Payload = envelope.Must(h)
+		}
+		out = append(out, e)
+	}
+	return out
 }

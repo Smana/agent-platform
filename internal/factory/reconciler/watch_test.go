@@ -346,8 +346,9 @@ func TestAPRClosedWhileQueuedIsNotRevised(t *testing.T) {
 func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
 	g.ids("aaaaaaaa")
+	agent := envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz"} // as room_handoff and room_verdict are stamped
 	handoff := func(seq int64, summary string) envelope.Event {
-		return envelope.Event{Seq: seq, Type: envelope.Handoff, Actor: envelope.Actor{Kind: envelope.ActorAgent},
+		return envelope.Event{Seq: seq, RunID: "7f3cq2xz", Type: envelope.Handoff, Origin: envelope.OriginClient, Actor: agent,
 			Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "reviewer", Commit: "abc1234", Summary: summary})}
 	}
 	g.log.evs = append(g.log.evs, handoff(1, "OLD handoff"))
@@ -355,8 +356,8 @@ func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
 		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
 	}
-	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"), envelope.Event{Seq: 12_002, Type: envelope.Message,
-		Actor: envelope.Actor{Kind: envelope.ActorAgent}, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
+	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"), envelope.Event{Seq: 12_002, RunID: "7f3cq2xz", Type: envelope.Message,
+		Origin: envelope.OriginClient, Actor: agent, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
 			Verdict: "changes", Commit: "abc1234", Text: "NEWEST verdict"})})
 	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
 	tk := g.reconcile(t, "3buqdlot", 2)

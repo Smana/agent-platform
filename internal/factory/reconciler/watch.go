@@ -41,7 +41,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		return r.implementerSpec(t, FirstBrief(t, r.Nonce())), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
-	evs, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
@@ -57,13 +57,15 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 const maxTailReads = 10
 
 // roomTail pages room's log after afterSeq to its end, keeping only the events keep selects. A
-// single EventsSince stops at 10,000 events, so it would miss the newest of a long room.
-func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, error) {
+// single EventsSince stops at 10,000 events, so it would miss the newest of a long room. complete
+// is false when it stopped at maxTailReads before reading the end: whatever it returns may not
+// hold the newest events.
+func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, bool, error) {
 	var out []envelope.Event
 	for range maxTailReads {
 		evs, cursor, err := r.Rooms.EventsSince(ctx, room, after)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, e := range evs {
 			if keep(e) {
@@ -71,16 +73,21 @@ func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, kee
 			}
 		}
 		if len(evs) == 0 || cursor <= after {
-			return out, nil
+			return out, true, nil
 		}
 		after = cursor
 	}
 	r.log().Warn("room log longer than the factory reads", "room", room, "after", after)
-	return out, nil
+	return out, false, nil
 }
 
-// briefEvent is what brief.Build quotes from a room's log: handoffs and review verdicts.
+// briefEvent is what brief.Build quotes from a room's log: handoffs and review verdicts that a run
+// recorded itself with its room tools, as the broker stamped them (ruling TB): the run's own
+// agent:<run> actor, by the client origin.
 func briefEvent(e envelope.Event) bool {
+	if e.Origin != envelope.OriginClient || e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+e.RunID {
+		return false
+	}
 	if e.Type == envelope.Handoff {
 		return true
 	}
