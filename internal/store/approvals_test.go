@@ -430,17 +430,19 @@ func TestDecisionsAreDeliveries(t *testing.T) {
 	}
 }
 
-// leave appends the broker's participant{left} for run, as runwatch.Events does
-// once the run is terminal.
-func leave(t *testing.T, s *Store, run string) {
+// participant appends the broker's participant{change} for run, as
+// runwatch.Events does: joined is step 1, left (once the run is terminal) step 4.
+func participant(t *testing.T, s *Store, run, change string, step int64) {
 	t.Helper()
 	if _, _, err := s.Append(t.Context(), envelope.Draft{RoomID: room, RunID: run,
 		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}, Type: envelope.Participant,
-		Origin: envelope.OriginBroker, OriginClient: "broker:run:" + run, OriginSeq: 4,
-		Payload: envelope.Must(envelope.ParticipantPayload{Principal: "agent:" + run, Change: "left", Role: "implementer"})}); err != nil {
+		Origin: envelope.OriginBroker, OriginClient: "broker:run:" + run, OriginSeq: step,
+		Payload: envelope.Must(envelope.ParticipantPayload{Principal: "agent:" + run, Change: change, Role: "implementer"})}); err != nil {
 		t.Fatal(err)
 	}
 }
+
+func leave(t *testing.T, s *Store, run string) { t.Helper(); participant(t, s, run, "left", 4) }
 
 // Review 5.3 I3 and M2: an ended run's approvals are superseded, so they stop
 // keeping the room AwaitingHuman (roomctrl.Phase reads PendingApprovals), and a
@@ -455,8 +457,9 @@ func TestAnEndedRunSupersedesItsApprovals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	toolResult(t, s, 1, "") // an id-less result names no event: approval
-	leave(t, s, "aaaaaaaa") // another run leaving ends nothing here
+	toolResult(t, s, 1, "")                     // an id-less result names no event: approval
+	participant(t, s, approvalRun, "joined", 1) // the run's own join ends nothing
+	leave(t, s, "aaaaaaaa")                     // nor does another run leaving
 	if evs, err := s.SupersedeAnswered(ctx); err != nil || len(evs) != 0 {
 		t.Fatalf("superseded %v, %v; want nothing yet", evs, err)
 	}
