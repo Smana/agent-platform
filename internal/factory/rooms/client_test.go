@@ -526,9 +526,12 @@ func TestQueueCalls(t *testing.T) {
 		t.Fatalf("batches of %d: %v", maxConsume, len(r.b.consumes))
 	}
 	// A listing out of order would make a caller quote, then consume, the wrong messages.
-	r.b.queued = []Queued{{Ref: 9}, {Ref: 4}}
-	if _, err := r.c.Queue(ctx, "3buqdlot"); err == nil {
-		t.Fatal("a listing out of order")
+	for name, l := range map[string][]Queued{"out of order": {{Ref: 9}, {Ref: 4}}, "a repeated ref": {{Ref: 4}, {Ref: 4}},
+		"a zero ref": {{Ref: 0}}} {
+		r.b.queued = l
+		if _, err := r.c.Queue(ctx, "3buqdlot"); err == nil {
+			t.Fatalf("a listing with %s", name)
+		}
 	}
 	r.b.fail["/v1/rooms/3buqdlot/queue"], r.b.reason = http.StatusNotImplemented, wire.ReasonNoQueue
 	var api *APIError

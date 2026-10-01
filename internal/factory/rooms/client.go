@@ -49,8 +49,10 @@ const (
 	// maxConsume is the broker's cap on one consume's refs (bridgeapi maxConsume): Consume
 	// sends more in batches.
 	maxConsume = 100
-	// maxQueueReply bounds a queue listing, which the broker does not page: 500 messages at the
-	// 16 KiB cap, JSON-escaped.
+	// maxQueueReply bounds a queue listing, which the broker does not page: 16 MiB, so about 170
+	// messages at the 16 KiB cap in the worst case, since the broker's encoder escapes <, > and &
+	// six-fold (\u003c); 500 if they double. A longer queue fails Queue until a broker ?limit=
+	// lands (FA-2 follow-up); a brief quotes 13 KiB at most.
 	maxQueueReply = 500*2*envelope.MaxHumanMessage + maxReplyOverhead
 )
 
@@ -263,8 +265,8 @@ func (c *Client) Queue(ctx context.Context, room string) ([]Queued, error) {
 	return out.Queued, nil
 }
 
-// Consume marks refs consumed by runID: pass only the refs the run's brief quoted
-// (reconciler.ReviseBrief's quoted), never the whole queue, or an unread message is lost. A ref
+// Consume marks refs consumed by runID: pass only the refs the run's brief returned
+// (reconciler.ReviseBrief's refs), never the rest of a listing, or an unread message is lost. A ref
 // no longer queued is skipped by the broker, so a retry is safe. No refs, no call.
 func (c *Client) Consume(ctx context.Context, room string, refs []int64, runID string) error {
 	switch {
