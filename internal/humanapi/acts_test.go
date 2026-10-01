@@ -46,6 +46,7 @@ type actLog struct {
 	// replica would between an act's read and its write.
 	onRoom    func(*store.RoomState)
 	appendErr error
+	queueErr  error
 }
 
 func (l *actLog) Room(context.Context, string) (store.RoomState, error) {
@@ -164,6 +165,59 @@ func (l *actLog) CloseRoom(_ context.Context, _, reason string) error {
 	defer l.mu.Unlock()
 	l.closed = reason
 	return nil
+}
+
+func (l *actLog) Range(_ context.Context, _ string, after int64, limit int) ([]envelope.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []envelope.Event
+	for i, d := range l.drafts {
+		if seq := int64(i + 1); seq > after && len(out) < limit {
+			out = append(out, envelope.Event{Seq: seq, RoomID: d.RoomID, Actor: d.Actor, Type: d.Type, Payload: d.Payload})
+		}
+	}
+	return out, nil
+}
+
+func (l *actLog) Queue(context.Context, string) ([]store.Queued, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []store.Queued
+	for _, q := range l.queue {
+		if q.State == "queued" {
+			out = append(out, q)
+		}
+	}
+	return out, l.queueErr
+}
+
+func (l *actLog) Stored(_ context.Context, d envelope.Draft) (envelope.Event, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i, s := range l.drafts {
+		if s.OriginClient == d.OriginClient && s.OriginSeq == d.OriginSeq {
+			return envelope.Event{Seq: int64(i + 1), RoomID: s.RoomID, Type: s.Type, Payload: s.Payload}, true, nil
+		}
+	}
+	return envelope.Event{}, false, nil
+}
+
+func (l *actLog) RecordRunRequest(_ context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	consumed := []int64{}
+	for _, ref := range refs {
+		if q := l.item(ref); q != nil {
+			q.State = "consumed"
+			consumed = append(consumed, ref)
+		}
+	}
+	f := map[string]any{"runId": runID, "consumed": consumed}
+	for k, v := range fields {
+		f[k] = v
+	}
+	d.Type, d.Payload = envelope.StateChanged, envelope.StatePayload("run_requested", f)
+	return l.appendLocked(d), nil
 }
 
 func (l *actLog) last() envelope.Draft {
@@ -374,7 +428,7 @@ func TestRemoveQueued(t *testing.T) {
 func TestMalformedActs(t *testing.T) {
 	a, _, room := fixture("human:own")
 	var got []string
-	a.OnReject = func(r string) { got = append(got, r) }
+	a.OnReject = func(_ context.Context, r string) { got = append(got, r) }
 	for _, c := range []struct {
 		name   string
 		seq    int64

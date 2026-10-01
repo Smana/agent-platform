@@ -118,6 +118,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /r/{id}", withCSP(index))
 	mux.Handle("GET /assets/{file}", withCSP(assets))
 	mux.HandleFunc("GET /api/rooms", s.listRooms)
+	mux.HandleFunc("POST /api/rooms", s.createRoom)
 	mux.HandleFunc("GET /v1/ws", s.ws)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response has a write deadline; a hijacked WebSocket's is cleared

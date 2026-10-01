@@ -21,15 +21,44 @@ type appends interface {
 	AppendAsBridge(ctx context.Context, bridgeRun string, d envelope.Draft) (envelope.Event, bool, error)
 }
 
+// drivers are the store's two moves of the driver token.
+type drivers interface {
+	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error)
+	ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error)
+}
+
 // meteredLog is the store every writer shares, its appends counted: the bridge
 // API, the Room controller and the run lifecycle alike, so
 // rooms_events_appended_total and rooms_redactions_total see every event, not
-// only the API's. Every other method is the embedded store's.
+// only the API's. Driver token moves, a human's or the lease sweeper's, count in
+// rooms_driver_changes_total. Every other method is the embedded store's.
 type meteredLog struct {
 	*store.Store
 	appends appends // the same store in production; a fake in tests
+	drivers drivers // likewise
 	m       *metrics.Set
 	now     func() time.Time
+}
+
+// ChangeDriver is the store's, counted.
+func (l *meteredLog) ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error) {
+	return l.driverChanged(ctx)(l.drivers.ChangeDriver(ctx, roomID, expect, to, reason, d))
+}
+
+// ExpireDriver is the store's, counted.
+func (l *meteredLog) ExpireDriver(ctx context.Context, roomID string, expect int64, to string, d envelope.Draft) (envelope.Event, error) {
+	return l.driverChanged(ctx)(l.drivers.ExpireDriver(ctx, roomID, expect, to, d))
+}
+
+// driverChanged counts a move that succeeded. A replayed key, which moves
+// nothing, counts again: the store does not tell it apart.
+func (l *meteredLog) driverChanged(ctx context.Context) func(envelope.Event, error) (envelope.Event, error) {
+	return func(ev envelope.Event, err error) (envelope.Event, error) {
+		if err == nil {
+			l.m.DriverChanges.Add(ctx, 1)
+		}
+		return ev, err
+	}
 }
 
 // Append is the store's, counted.

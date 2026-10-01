@@ -124,6 +124,7 @@ Any replica serves any room. The replicas elect one leader through a Kubernetes 
 | Append run lifecycle events (`participant`, `run_phase`) | The leader | Every step has a fixed idempotency key, so a new leader replays without writing twice |
 | Project `Room.status` | The leader, every 15 s and on phase changes (ruling P21) | One status write per event would load the API server |
 | Post verdicts to GitHub | The leader, sweeping every 15 s (phase 3) | One comment per verdict, marked so a new leader never posts twice |
+| Expire a lapsed human driver's lease, back to the room's system holder | The leader, sweeping every 30 s (phase 4) | Each change is keyed on its epoch and re-checks the lapse under the room's row lock, so a new leader never moves a token twice |
 | Deliver new events to viewers | Every replica, for its own viewers (phase 2) | Each `LISTEN`s once; notifications coalesce per room, so one read serves every viewer |
 
 ### Connection budget

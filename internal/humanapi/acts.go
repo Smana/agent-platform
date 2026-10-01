@@ -17,8 +17,10 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/brief"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/runrequest"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -35,6 +37,11 @@ type ActLog interface {
 	ChangeDriver(ctx context.Context, roomID string, expect int64, to, reason string, d envelope.Draft) (envelope.Event, error)
 	DriverSeen(ctx context.Context, roomID, principal string, acted bool) error
 	CloseRoom(ctx context.Context, roomID, reason string) error
+	// start_run reads the brief's sources, then records the run with what it consumed.
+	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
+	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
+	Stored(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
+	RecordRunRequest(ctx context.Context, d envelope.Draft, runID string, refs []int64, fields map[string]any) (envelope.Event, error)
 }
 
 // Redactor removes secrets from a JSON payload before it is appended (§4);
@@ -60,14 +67,16 @@ type Action struct {
 }
 
 // Actor serves humans' act frames: every write a human makes to a room. Log,
-// Groups, Runs and Redactor are required; Rooms is required for invite.
+// Groups, Runs and Redactor are required; Rooms is required for invite and new
+// rooms, Requester for start_run.
 type Actor struct {
-	Log      ActLog
-	Groups   policy.Groups
-	Runs     Runs
-	Redactor Redactor
-	Rooms    client.Client
-	OnReject func(reason string)
+	Log       ActLog
+	Groups    policy.Groups
+	Runs      Runs
+	Redactor  Redactor
+	Rooms     client.Client
+	Requester runrequest.Requester
+	OnReject  func(ctx context.Context, reason string)
 
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
@@ -84,6 +93,10 @@ const (
 	rejectSealed         = wire.ReasonSealed
 	rejectConflict       = "conflict" // the Room changed under an invite: retry
 	rejectLogUnavailable = wire.ReasonLogUnavailable
+	rejectRoomBusy       = wire.ReasonRoomBusy
+	rejectOverBudget     = "over_budget"
+	rejectNeedsPR        = "reviewer_needs_pr"
+	rejectNoFactory      = "factory_unavailable"
 )
 
 // maxReason bounds a take's reason, which the driver event carries.
@@ -122,7 +135,7 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq}
 	reject := func(reason string) wire.ServerFrame {
 		if a.OnReject != nil {
-			a.OnReject(reason)
+			a.OnReject(ctx, reason)
 		}
 		ack.Rejected = reason
 		return ack
@@ -165,7 +178,7 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	var ev envelope.Event
 	var why string
 	if act.Kind == "start_run" {
-		ev, ack.Result, why = a.startRun(ctx, p, room, act, d)
+		ev, ack.Result, why = a.startRun(ctx, p, room, st, act, d)
 	} else {
 		ev, why = a.dispatch(ctx, p, room, st, act, d)
 	}
@@ -367,7 +380,106 @@ func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, st store.RoomSt
 	return done3(a.Log.Append(ctx, d))
 }
 
-// startRun is Task 4.4's.
-func (a *Actor) startRun(context.Context, authn.Principal, *v1alpha1.Room, Action, envelope.Draft) (envelope.Event, json.RawMessage, string) {
-	return envelope.Event{}, nil, rejectBadAction
+// runRoles are the roles a human starts (§1); egressProfile a profile's name.
+var (
+	runRoles      = map[string]bool{"implementer": true, "reviewer": true, "tester": true, "triager": true}
+	egressProfile = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+)
+
+const (
+	maxEgressProfiles = 8
+	briefWindow       = 2000 // the newest events a brief reads
+)
+
+// isRunRequest reports whether ev is a start_run's record.
+func isRunRequest(ev envelope.Event) bool {
+	var p struct {
+		Kind string `json:"kind"`
+	}
+	return ev.Type == envelope.StateChanged && json.Unmarshal(ev.Payload, &p) == nil && p.Kind == "run_requested"
+}
+
+// validRun reports whether act names a role a human starts, egress profiles by
+// name, and a PR only for a reviewer and only of the room's repository.
+func validRun(room *v1alpha1.Room, act Action) bool {
+	if !runRoles[act.Role] || len(act.EgressProfiles) > maxEgressProfiles ||
+		(act.PRURL != "" && (act.Role != "reviewer" || !brief.IsPR(act.PRURL, room.Spec.Repository))) {
+		return false
+	}
+	for _, e := range act.EgressProfiles {
+		if !egressProfile.MatchString(e) {
+			return false
+		}
+	}
+	return true
+}
+
+// startRun requests the room's next run (§1 The brief, ruling P24) and records
+// it, with the queued messages its brief quoted, as state_changed{run_requested}.
+// The ack's result is the rendered claim before SP3. A replayed clientSeq acks
+// the record without asking again, and without the result.
+func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
+	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
+	if !validRun(room, act) {
+		return fail(rejectBadAction)
+	}
+	if a.Requester == nil {
+		return fail(rejectNoFactory)
+	}
+	// Before the request: a run lives outside the log, so a replay must never ask twice.
+	switch prev, dup, err := a.Log.Stored(ctx, d); {
+	case err != nil:
+		return fail(rejectLogUnavailable)
+	case dup && !isRunRequest(prev):
+		return fail(rejectBadAction)
+	case dup:
+		return prev, nil, ""
+	}
+	if _, busy := a.running(room.Name); busy {
+		return fail(rejectRoomBusy) // one Running run per room (D7)
+	}
+	evs, err := a.Log.Range(ctx, room.Name, max(st.LastSeq-briefWindow, 0), briefWindow)
+	if err != nil {
+		return fail(rejectLogUnavailable)
+	}
+	queued, err := a.Log.Queue(ctx, room.Name)
+	if err != nil {
+		return fail(rejectLogUnavailable)
+	}
+	req := runrequest.Request{Role: act.Role, Repository: room.Spec.Repository, BaseRef: brief.LastCommit(evs),
+		Branch: "agent/" + room.Name, DataClass: room.Spec.DataClass, RoomRef: room.Name, Principal: p.ID,
+		AccessToken: p.AccessToken, EgressProfiles: act.EgressProfiles}
+	if req.BaseRef == "" {
+		req.BaseRef = "main"
+	}
+	var refs []int64
+	if act.Role == "reviewer" { // ruling P24: its task is the PR, and the queue waits for a brief
+		if req.TaskURL = act.PRURL; req.TaskURL == "" {
+			req.TaskURL = brief.LastPR(evs, room.Spec.Repository)
+		}
+		if req.TaskURL == "" {
+			return fail(rejectNeedsPR)
+		}
+	} else {
+		var quoted int
+		req.TaskText, quoted = brief.Build(room.Name, act.Role, evs, queued, runrequest.NewID())
+		for _, q := range queued[:quoted] {
+			refs = append(refs, q.Ref)
+		}
+	}
+	res, err := a.Requester.Request(ctx, req)
+	switch {
+	case errors.Is(err, runrequest.ErrBudget):
+		return fail(rejectOverBudget)
+	case errors.Is(err, runrequest.ErrForbidden):
+		return fail(rejectNotPermitted)
+	case err != nil || !envelope.ValidID(res.RunID):
+		return fail(rejectNoFactory)
+	}
+	ev, err := a.Log.RecordRunRequest(ctx, d, res.RunID, refs,
+		map[string]any{"role": act.Role, "via": res.Via, "baseRef": req.BaseRef})
+	if err != nil {
+		return fail(reason(err))
+	}
+	return ev, res.Manifest, ""
 }

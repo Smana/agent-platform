@@ -52,7 +52,7 @@ events.
 | `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose | 2 |
 | `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) | 2 |
 | `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` | 3 |
-| `rooms_driver_changes_total` | counter | — | Driver token changes | 4 |
+| `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries | 4 |
 | `rooms_approvals_pending` | gauge | — | Undecided approvals: the sum of the Rooms' `status.pendingApprovals`, 0 until phase 5 | 5 |
 | `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval | 5 |
 | `rooms_approval_decision_seconds` | histogram | — | Request to decision | 5 |
