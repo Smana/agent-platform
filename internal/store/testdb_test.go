@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -43,7 +44,25 @@ func testDB(t *testing.T) (owner, broker, retention, super string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec(t, owner, string(sql))
+		if !strings.HasPrefix(string(sql), "-- atlas:txmode none") {
+			exec(t, owner, string(sql))
+			continue
+		}
+		// Atlas runs such a file a statement at a time, outside a transaction: a
+		// multi-statement Exec would wrap CREATE INDEX CONCURRENTLY in one. These
+		// files hold no function body, so once the comment lines are gone a
+		// semicolon ends each statement.
+		var code strings.Builder
+		for line := range strings.Lines(string(sql)) {
+			if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+				code.WriteString(line)
+			}
+		}
+		for stmt := range strings.SplitSeq(code.String(), ";") {
+			if strings.Contains(stmt, "CREATE") || strings.Contains(stmt, "ALTER") || strings.Contains(stmt, "DROP") {
+				exec(t, owner, stmt)
+			}
+		}
 	}
 	return owner, broker, retention, super
 }

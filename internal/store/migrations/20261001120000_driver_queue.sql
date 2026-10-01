@@ -116,14 +116,3 @@ CREATE POLICY retention_read_queue  ON queue FOR SELECT TO rooms_retention
   USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
 CREATE POLICY retention_purge_queue ON queue FOR DELETE TO rooms_retention
   USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
-
--- A bridge's stream replays its run's deliveries and resumes from its last
--- acknowledgement on every connect (review 4.3 I3): both read through these, never
--- the room's whole log. store.deliverableTo and lastAckSQL imply their predicates.
--- Not CONCURRENTLY: this migration runs in one transaction, and building them
--- blocks appends only for as long as the events table takes to scan once.
-CREATE INDEX events_deliveries ON events (room_id, seq)
-  WHERE (type = 'message' AND payload->>'delivery' = 'steering')
-     OR (type = 'state_changed' AND payload->>'kind' = 'interrupt');
-CREATE INDEX events_acks ON events (room_id, run_id)
-  WHERE type = 'state_changed' AND payload->>'kind' IN ('delivered', 'interrupted', 'undeliverable');
