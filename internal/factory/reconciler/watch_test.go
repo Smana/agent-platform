@@ -20,6 +20,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -67,20 +68,20 @@ func TestRequestChangesStartsARevision(t *testing.T) {
 	g.f.SetPR(pr12(changes(800, "Smana", "older than the run", 2*time.Hour),
 		changes(850, "someone", "not a maintainer", 10*time.Minute), latest))
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.NextTrigger != "human" || len(g.log.queue) != 1 ||
-		g.log.queue[0].Ref != 901 || !slices.Equal(tk.Status.Handled, []int64{901}) {
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.NextTrigger != "human" || !slices.Equal(g.log.reviews(), []int64{901}) ||
+		!slices.Equal(tk.Status.Handled, []int64{901}) {
 		t.Fatalf("%s %s %+v %v", tk.Status.Phase, tk.Status.NextTrigger, g.log.queue, tk.Status.Handled)
 	}
 	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "revising after @Smana's review") {
 		t.Fatalf("%q", c)
 	}
-	if !strings.Contains(g.log.queue[0].Text, untrustedHeader) || g.log.queue[0].Author != "system:factory:review" {
+	if !strings.Contains(g.log.queue[0].Text, untrustedHeader) || g.log.ref(901) == 0 {
 		t.Fatalf("the queued review is ReviewMessage's, on the review stream: %+v", g.log.queue[0])
 	}
 	tk = g.reconcile(t, "3buqdlot", 1)
 	s := g.runs.specs["aaaaaaaa"]
 	if tk.Status.Phase != v1alpha1.PhaseImplementing || s.Branch != "agent/3buqdlot" || !strings.Contains(s.TaskText, "docs/a.md:3") ||
-		!strings.Contains(s.TaskText, "#12") || tk.Status.Runs[1].Trigger != "human" || g.log.consumed[901] != "aaaaaaaa" ||
+		!strings.Contains(s.TaskText, "#12") || tk.Status.Runs[1].Trigger != "human" || g.log.consumed[g.log.ref(901)] != "aaaaaaaa" ||
 		tk.Status.NextTrigger != "" {
 		t.Fatalf("%s %+v %v %q", tk.Status.Phase, s, g.log.consumed, tk.Status.NextTrigger)
 	}
@@ -107,7 +108,7 @@ func TestRequestChangesStartsARevision(t *testing.T) {
 func TestEveryNewMaintainerReviewIsQueued(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
 	g.r.Cfg.Maintainers = append(g.r.Cfg.Maintainers, "alice")
-	approved := forge.Review{ID: 960, Author: "bob", State: "APPROVED", At: now.Add(-time.Minute)}
+	approved := forge.Review{ID: 960, Author: "BOB", State: "APPROVED", At: now.Add(-time.Minute)} // logins fold case
 	g.r.Cfg.Maintainers = append(g.r.Cfg.Maintainers, "bob")
 	g.f.SetPR(pr12(
 		changes(950, "Smana", "rename the file", 20*time.Minute),
@@ -117,10 +118,7 @@ func TestEveryNewMaintainerReviewIsQueued(t *testing.T) {
 		forge.Review{ID: 946, Author: "Smana", State: "DISMISSED", Body: "withdrawn", At: now.Add(-6 * time.Minute)},
 		approved))
 	tk := g.reconcile(t, "3buqdlot", 1)
-	var refs []int64
-	for _, q := range g.log.queue {
-		refs = append(refs, q.Ref)
-	}
+	refs := g.log.reviews()
 	if !slices.Equal(refs, []int64{905, 950}) || !slices.Equal(tk.Status.Handled, []int64{905, 950}) || tk.Status.Phase != v1alpha1.PhaseQueued {
 		t.Fatalf("queued %v, handled %v, %s", refs, tk.Status.Handled, tk.Status.Phase)
 	}
@@ -176,6 +174,9 @@ func TestARevisionConsumesOnlyWhatItQuoted(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 2)
 	if next := g.runs.specs["bbbbbbbb"]; !strings.Contains(next.TaskText, fmt.Sprintf("Queued message seq %d ", left[0])) || g.log.consumed[left[0]] != "bbbbbbbb" {
 		t.Fatalf("seq %d waited and is quoted next: %v", left[0], g.log.consumed)
+	}
+	if n := strings.Count(strings.Join(g.f.Comments(7), "\n"), "is revising after @Smana's review"); n != 2 {
+		t.Fatalf("each round is narrated: %d", n)
 	}
 }
 
@@ -290,5 +291,91 @@ func TestNextTrigger(t *testing.T) {
 	tk.Status.NextTrigger = "human"
 	if got := nextTrigger(tk); got != "human" {
 		t.Fatal(got)
+	}
+}
+
+// I1: a maintainer's review submitted while the task waits in Queued joins the revision. After
+// the run starts it would fall before "since" and be lost for good.
+func TestProbeReviewWhileQueuedIsLost(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	g.ids("aaaaaaaa")
+	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "hhhhhhhh", Role: "implementer", Principal: "human:alice", RoomRef: "3buqdlot"})
+	first := changes(901, "Smana", "Use the relative link.", 5*time.Minute)
+	g.f.SetPR(pr12(first))
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_room_busy" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	late := changes(902, "Smana", "Also fix the title.", -time.Minute) // submitted while Queued
+	g.f.SetPR(pr12(first, late))
+	g.r.Now = func() time.Time { return now.Add(2 * time.Minute) }
+	g.runs.set("hhhhhhhh", "Succeeded")
+	tk := g.reconcile(t, "3buqdlot", 1)
+	s := g.runs.specs["aaaaaaaa"]
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || !slices.Equal(g.log.reviews(), []int64{901, 902}) ||
+		!strings.Contains(s.TaskText, "Also fix the title.") || g.log.consumed[g.log.ref(902)] != "aaaaaaaa" ||
+		!slices.Contains(tk.Status.Handled, 902) {
+		t.Fatalf("review 902 (submitted while Queued): %s %v %v %v", tk.Status.Phase, g.log.reviews(), g.log.consumed, tk.Status.Handled)
+	}
+	g.runs.set("aaaaaaaa", "Succeeded")
+	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 2 {
+		t.Fatalf("handled once: %s %d", tk.Status.Phase, len(g.runs.specs))
+	}
+}
+
+// A pull request merged or closed while the task waits in Queued is not revised: the task goes
+// back to AwaitingHuman, which ends it.
+func TestAPRClosedWhileQueuedIsNotRevised(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "hhhhhhhh", Role: "implementer", Principal: "human:alice", RoomRef: "3buqdlot"})
+	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
+	g.reconcile(t, "3buqdlot", 2)
+	pr := pr12(changes(901, "Smana", "x", time.Minute))
+	pr.State = "CLOSED"
+	g.f.SetPR(pr)
+	g.runs.set("hhhhhhhh", "Succeeded")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseClosed || len(g.runs.specs) != 1 || tk.Status.NextTrigger != "" {
+		t.Fatalf("%s %d %q", tk.Status.Phase, len(g.runs.specs), tk.Status.NextTrigger)
+	}
+}
+
+// I2: a run records the room's lastSeq at its start, and the revision reads the room from there
+// to its end: past EventsSince's 10,000 events, the newest handoff is the one quoted.
+func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	g.ids("aaaaaaaa")
+	handoff := func(seq int64, summary string) envelope.Event {
+		return envelope.Event{Seq: seq, Type: envelope.Handoff, Actor: envelope.Actor{Kind: envelope.ActorAgent},
+			Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "reviewer", Commit: "abc1234", Summary: summary})}
+	}
+	g.log.evs = append(g.log.evs, handoff(1, "OLD handoff"))
+	for i := int64(2); i <= 12_000; i++ {
+		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
+			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
+	}
+	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"))
+	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
+	tk := g.reconcile(t, "3buqdlot", 2)
+	s := g.runs.specs["aaaaaaaa"]
+	if !strings.Contains(s.TaskText, "NEWEST handoff") || strings.Contains(s.TaskText, "OLD handoff") {
+		t.Fatalf("the brief quotes a stale handoff:\n%.600s", s.TaskText)
+	}
+	if tk.Status.Runs[1].StartSeq != 12_001 {
+		t.Fatalf("startSeq %d", tk.Status.Runs[1].StartSeq)
+	}
+}
+
+// M1: a broker that does not allow the factory yet (FR-1) leaves a visible reason, and the
+// reconcile still fails, so controller-runtime backs off.
+func TestTheFirstRunWaitsForBrokerPermission(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.log.noPermit = true
+	g.reconcile(t, "3buqdlot", 2) // Queued
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the refusal is returned")
+	}
+	if tk := g.reconcile(t, "3buqdlot", 0); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_broker_permission" || len(g.runs.specs) != 0 {
+		t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
 	}
 }

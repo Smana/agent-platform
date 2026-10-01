@@ -193,6 +193,14 @@ func (c *Config) Validate() error {
 	if len(c.Maintainers) == 0 {
 		bad("maintainers is empty: nobody could start a task")
 	}
+	// A maintainer starts tasks and revisions (Δ5): an App listed here could drive the factory
+	// with its own output. The merger App joins this list when it is configured (phase 7).
+	for _, m := range c.Maintainers {
+		if strings.HasSuffix(strings.ToLower(m), "[bot]") || strings.EqualFold(m, c.FactoryLogin) || strings.EqualFold(m, c.AgentsLogin) ||
+			strings.EqualFold(m+"[bot]", c.FactoryLogin) || strings.EqualFold(m+"[bot]", c.AgentsLogin) {
+			bad("maintainer %q is an App: a bot never starts or revises a task", m)
+		}
+	}
 	for _, f := range []struct{ key, value string }{
 		{"triggerLabel", c.TriggerLabel}, {"factoryLogin", c.FactoryLogin}, {"agentsLogin", c.AgentsLogin},
 		{"roomsURL", c.RoomsURL}, {"broker.url", c.Broker.URL}, {"broker.caFile", c.Broker.CAFile},

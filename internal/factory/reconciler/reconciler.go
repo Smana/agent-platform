@@ -43,6 +43,7 @@ type RunClient interface {
 // from afterSeq with its resume cursor, the room's queue, and task_state messages.
 type RoomLog interface {
 	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
+	Events(ctx context.Context, room string, afterSeq int64, limit int) ([]envelope.Event, int64, error)
 	Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error
 	Queue(ctx context.Context, room string) ([]rooms.Queued, error)
 	Consume(ctx context.Context, room string, refs []int64, runID string) error
@@ -444,11 +445,19 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		// the same seq, which the broker keeps once. A room the broker has no log for yet waits.
 		err := narrate.Room(ctx, r.Rooms, t, "snapshot", SnapshotMessage(t, r.Nonce()),
 			func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) })
-		if errors.Is(err, rooms.ErrNoRoom) {
+		switch {
+		case errors.Is(err, rooms.ErrNoRoom):
 			t.Status.Reason = "waiting_room_log"
 			return nil
+		case errors.Is(err, rooms.ErrNotPermitted): // FR-1 not enabled yet: visible, and retried with backoff
+			t.Status.Reason = "waiting_broker_permission"
+			return err
+		case err != nil:
+			return err
 		}
-		if err != nil {
+	}
+	if t.Status.PullRequest != nil && len(t.Status.Runs) > 0 {
+		if done, err := r.lateReviews(ctx, t); err != nil || done {
 			return err
 		}
 	}

@@ -13,6 +13,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -125,13 +126,19 @@ func traceparent(t *v1alpha1.Task) string {
 }
 
 func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec, trigger string) error {
+	// The room's lastSeq before the run: its handoff, verdict and end are read after it, never
+	// from the start of a long room (EventsSince stops at 10,000 events).
+	_, last, err := r.Rooms.Events(ctx, t.Status.RoomRef, 0, 1)
+	if err != nil {
+		return err
+	}
 	s.RunID = r.NewRunID()
 	if err := r.Runs.Create(ctx, s); err != nil {
 		return err
 	}
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
-		Round: t.Status.ReviewRounds, Started: &now})
+		Round: t.Status.ReviewRounds, StartSeq: last, Started: &now})
 	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
@@ -162,7 +169,9 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 // roomReason is the broker's end reason for the task's current run, if the room has it.
 func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, bool) {
 	cur := current(t)
-	evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, cur.StartSeq)
+	evs, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
+		return e.Type == envelope.StateChanged && e.RunID == cur.ID
+	})
 	if err != nil {
 		r.log().Warn("room log unreadable", "task", t.Name, "err", err)
 		return "", false

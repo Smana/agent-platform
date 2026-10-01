@@ -133,6 +133,9 @@ func TestBadConfigsFail(t *testing.T) {
 		"minutes below one":     {"runMinutes: 90", "runMinutes: 0", "tier frontier: runMinutes must be 1..480"},
 		"default template gone": {"template: solo", "template: duo", `defaults.template "duo" is not a template`},
 		"no maintainer":         {"maintainers: [Smana]", "maintainers: []", "maintainers is empty"},
+		"a bot maintainer":      {"maintainers: [Smana]", `maintainers: [Smana, "renovate[bot]"]`, `maintainer "renovate[bot]" is an App`},
+		"the factory App":       {"maintainers: [Smana]", `maintainers: ["Ogenki-Agent-Factory[BOT]"]`, `maintainer "Ogenki-Agent-Factory[BOT]" is an App`},
+		"the agents App, bare":  {"maintainers: [Smana]", "maintainers: [ogenki-agents]", `maintainer "ogenki-agents" is an App`},
 		"bad duration":          {"issues: 60s", "issues: 60", "a duration is a string"},
 		"unknown model":         {"model: agent-default, runTokens: 1500000", "model: gpt-5, runTokens: 1500000", `tier standard: model "gpt-5" is not a C5 logical name`},
 		// Ruling SI: the reconciler creates Tasks from these names, and the Task CRD's enum refuses others.

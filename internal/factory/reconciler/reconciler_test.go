@@ -5,8 +5,8 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -79,20 +79,27 @@ func (f *fakeRuns) Delete(_ context.Context, id string) error { delete(f.runs, i
 
 func (f *fakeRuns) set(id, phase string) { r := f.runs[id]; r.Phase = phase; f.runs[id] = r }
 
-// fakeLog is the room's log as the broker writes it: a run's end is the broker's run_phase. Its
-// queue dedupes on clientSeq as the broker does, and lists only what is still queued; task_state
-// messages are kept apart, one per clientSeq, so no seq moves.
+// fakeLog is the room's log as the broker serves it: a run's end is the broker's run_phase, and
+// EventsSince reads at most 10,000 events, returning the last seq it read. Its queue is the
+// broker's: a row's Ref is a room seq, a clientSeq is deduped per stream, and only rows still
+// queued are listed. task_state messages are kept apart, one per clientSeq, so no seq moves.
 type fakeLog struct {
 	evs      []envelope.Event
 	queue    []rooms.Queued
+	keys     map[string]int64 // stream/clientSeq → Ref
+	nextRef  int64
 	consumed map[int64]string
 	states   map[int64]string
 	noRoom   bool // the broker has no log for the room yet
+	noPermit bool // the broker does not allow system:factory yet (FR-1)
 }
 
 func (l *fakeLog) TaskState(_ context.Context, _, text string, clientSeq int64) error {
-	if l.noRoom {
+	switch {
+	case l.noRoom:
 		return &rooms.APIError{Status: 404, Reason: "no_room"}
+	case l.noPermit:
+		return &rooms.APIError{Status: 403, Reason: "not_permitted"}
 	}
 	if l.states == nil {
 		l.states = map[int64]string{}
@@ -104,14 +111,34 @@ func (l *fakeLog) TaskState(_ context.Context, _, text string, clientSeq int64) 
 }
 
 func (l *fakeLog) Enqueue(_ context.Context, _, stream, text string, clientSeq int64) error {
+	key := fmt.Sprintf("%s/%d", stream, clientSeq)
+	if _, ok := l.keys[key]; ok {
+		return nil
+	}
+	if l.keys == nil {
+		l.keys, l.nextRef = map[string]int64{}, 1000
+	}
+	l.nextRef++
+	l.keys[key] = l.nextRef
+	l.queue = append(l.queue, rooms.Queued{Ref: l.nextRef, Author: "system:factory", Text: text})
+	return nil
+}
+
+// ref is the queue row the broker made for a review's clientSeq on the review stream, or 0.
+func (l *fakeLog) ref(clientSeq int64) int64 { return l.keys[fmt.Sprintf("review/%d", clientSeq)] }
+
+// reviews are the review ids queued on the review stream, in queue order.
+func (l *fakeLog) reviews() []int64 {
+	var out []int64
 	for _, q := range l.queue {
-		if q.Ref == clientSeq {
-			return nil
+		for k, ref := range l.keys {
+			var id int64
+			if _, err := fmt.Sscanf(k, "review/%d", &id); err == nil && ref == q.Ref {
+				out = append(out, id)
+			}
 		}
 	}
-	l.queue = append(l.queue, rooms.Queued{Ref: clientSeq, Author: "system:factory:" + stream, Text: text})
-	slices.SortFunc(l.queue, func(a, b rooms.Queued) int { return int(a.Ref - b.Ref) })
-	return nil
+	return out
 }
 
 func (l *fakeLog) Queue(context.Context, string) ([]rooms.Queued, error) {
@@ -136,10 +163,25 @@ func (l *fakeLog) Consume(_ context.Context, _ string, refs []int64, runID strin
 	return nil
 }
 
+// eventsCap is rooms.Client.EventsSince's cap on one call: 100 pages of 100.
+const eventsCap = 10_000
+
 func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envelope.Event, int64, error) {
 	var out []envelope.Event
+	cursor := after
 	for _, e := range l.evs {
-		if e.Seq > after {
+		if e.Seq > after && len(out) < eventsCap {
+			out = append(out, e)
+			cursor = e.Seq
+		}
+	}
+	return out, cursor, nil
+}
+
+func (l *fakeLog) Events(_ context.Context, _ string, after int64, limit int) ([]envelope.Event, int64, error) {
+	var out []envelope.Event
+	for _, e := range l.evs {
+		if e.Seq > after && len(out) < limit {
 			out = append(out, e)
 		}
 	}

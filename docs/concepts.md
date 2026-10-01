@@ -112,4 +112,9 @@ log. The log keeps its own retention clock after the CR is gone.
 | A human | rooms from the UI (phase 4), forks (phase 6) | the web UI (phase 2), `roomctl` (phase 6) | messages, driver actions, decisions (phases 4–6) |
 | The broker | the `Room`s a human asks for, new or forked (phases 4, 6); **never** an `AgentRun` | everything | room and run lifecycle, seals, limits, verdict outcomes |
 
+A maintainer's review reaches the next run once queued: the factory re-reads the pull request
+just before that run starts, so a review submitted while the task waits joins it, and a review
+already dismissed is skipped. A review dismissed after it was queued still drives that run, since
+the system API cannot remove a queued message.
+
 The full permission matrix is in [Security](security.md#authorization).
