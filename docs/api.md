@@ -134,8 +134,8 @@ lines are bounded to 256 KiB together.
 | Outcome of an injection | The bridge |
 |---|---|
 | Accepted by the harness | Acknowledges `delivered` or `interrupted` |
-| Refused for good (a 4xx other than 404, 408, 409, 425, 429) | Acknowledges `undeliverable` with the harness's `code`, and goes on: one refusal must not block every later `ref`, interrupts included |
-| Failed for now (no answer, 5xx, or one of those 4xx) | Ends the stream; the replay hands the same `ref` over again before any later one |
+| Refused for good: steering with a 4xx other than 404, 408, 409, 425, 429; an interrupt with any 4xx | Acknowledges `undeliverable` with the harness's `code`, and goes on: one refusal must not block every later `ref`. An interrupt of an idle conversation is moot, and a late one would land on a turn the driver never meant (ruling SAK) |
+| Failed for now (no answer, 5xx, or steering refused with one of those 4xx) | Ends the stream; the replay hands the same `ref` over again before any later one |
 
 **Delivery is at least once** (design, Risks: bridge crash re-delivery). A bridge injects each `ref`
 once per process, but one that restarts, or shuts down while a `deliver` is in flight, after

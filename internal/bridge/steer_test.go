@@ -61,37 +61,58 @@ func TestAFailedInjectionIsRetried(t *testing.T) {
 	}
 }
 
-// Review 4.3 I2: a permanent refusal is acknowledged as undeliverable, so the
-// stream goes on and the next ref is delivered; a "not now" 4xx is retried.
+// Review 4.3 I2, ruling SAK: steering refused for good is acknowledged as
+// undeliverable, so the stream goes on; a "not now" 4xx is retried. An
+// interrupt refused with any 4xx is settled: retrying a moot interrupt would
+// starve the steering queued behind it.
 func TestAPermanentRefusalIsUndeliverable(t *testing.T) {
-	f := &fakeAgentServer{pageSize: 100, status: "running"}
-	up := NewHarness(f.start(t, conv).URL, conv)
-	code := http.StatusUnprocessableEntity
-	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
-	defer refusing.Close()
-	var acks []wire.Item
-	s := &Steering{Harness: NewHarness(refusing.URL, conv), RunID: "7f3cq2xz", Push: func(it wire.Item) { acks = append(acks, it) }}
-	if err := s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "refused"}); err != nil {
-		t.Fatalf("a permanent refusal must not end the stream: %v", err)
-	}
-	if err := s.Interrupt(t.Context(), wire.Interrupt{Ref: 13}); err != nil {
-		t.Fatalf("a permanent refusal must not end the stream: %v", err)
-	}
-	if len(acks) != 2 || string(acks[0].Payload) != `{"code":422,"kind":"undeliverable","ref":12,"runId":"7f3cq2xz"}` ||
-		!strings.Contains(string(acks[1].Payload), `"kind":"undeliverable","ref":13`) {
-		t.Fatalf("acks = %v", acks)
-	}
-	if s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "refused"}) != nil || len(acks) != 2 {
-		t.Fatal("an undeliverable ref is settled: a replay of it is skipped")
-	}
-	code = http.StatusNotFound // the conversation does not exist yet: not now
-	if err := s.Deliver(t.Context(), wire.Deliver{Ref: 14, Text: "early"}); err == nil || len(acks) != 2 {
-		t.Fatalf("a 404 is retried, not settled: %v %v", err, acks)
-	}
-	s.Harness = up
-	if s.Deliver(t.Context(), wire.Deliver{Ref: 14, Text: "early"}) != nil || len(acks) != 3 ||
-		!strings.Contains(string(acks[2].Payload), `"kind":"delivered","ref":14`) {
-		t.Fatalf("the next ref is delivered: %v", acks)
+	for _, c := range []struct {
+		code    int
+		retried bool // steering only: an interrupt is always settled
+	}{
+		{http.StatusNotFound, true}, {http.StatusRequestTimeout, true}, {http.StatusConflict, true},
+		{http.StatusTooEarly, true}, {http.StatusTooManyRequests, true},
+		{http.StatusBadRequest, false}, {http.StatusUnprocessableEntity, false},
+	} {
+		t.Run(fmt.Sprint(c.code), func(t *testing.T) {
+			f := &fakeAgentServer{pageSize: 100, status: "running"}
+			up := NewHarness(f.start(t, conv).URL, conv)
+			refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(c.code) }))
+			defer refusing.Close()
+			var acks []wire.Item
+			s := &Steering{Harness: NewHarness(refusing.URL, conv), RunID: "7f3cq2xz", Push: func(it wire.Item) { acks = append(acks, it) }}
+			undeliverable := func(ref int64) string {
+				return fmt.Sprintf(`{"code":%d,"kind":"undeliverable","ref":%d,"runId":"7f3cq2xz"}`, c.code, ref)
+			}
+
+			if err := s.Interrupt(t.Context(), wire.Interrupt{Ref: 11}); err != nil {
+				t.Fatalf("a refused interrupt must not end the stream: %v", err)
+			}
+			if len(acks) != 1 || string(acks[0].Payload) != undeliverable(11) {
+				t.Fatalf("acks = %v", acks)
+			}
+
+			err := s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "steer"})
+			if c.retried {
+				if err == nil || len(acks) != 1 {
+					t.Fatalf("a %d is retried, not settled: %v %v", c.code, err, acks)
+				}
+			} else if err != nil || len(acks) != 2 || string(acks[1].Payload) != undeliverable(12) {
+				t.Fatalf("a %d is settled and the stream goes on: %v %v", c.code, err, acks)
+			}
+
+			s.Harness = up // the replay
+			if s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "steer"}) != nil || s.Interrupt(t.Context(), wire.Interrupt{Ref: 11}) != nil {
+				t.Fatal("the replay must not end the stream")
+			}
+			sent, _, _ := f.snapshot()
+			if c.retried && (len(sent) != 1 || len(acks) != 2 || !strings.Contains(string(acks[1].Payload), `"kind":"delivered","ref":12`)) {
+				t.Fatalf("the retried ref is delivered: sent %v, acks %v", sent, acks)
+			}
+			if !c.retried && (len(sent) != 0 || len(acks) != 2) {
+				t.Fatalf("a settled ref is skipped on replay: sent %v, acks %v", sent, acks)
+			}
+		})
 	}
 }
 

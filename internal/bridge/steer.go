@@ -19,8 +19,8 @@ import (
 // re-dialled stream replays from the log's last acknowledgement, so the failed
 // ref is retried before any later one is handed over. Acknowledging a later ref
 // first would move LastAck past the failed one for good. A permanent refusal
-// (review 4.3 I2) is acknowledged as undeliverable instead, with the harness's
-// status code: retrying it would block every later ref, interrupts included.
+// (review 4.3 I2; for an interrupt, any 4xx) is acknowledged as undeliverable
+// instead, with the harness's status code: retrying it would block every later ref.
 // Delivery is at least once: a ref injected but not yet acknowledged in the log
 // when the bridge restarts is injected again.
 type Steering struct {
@@ -60,25 +60,31 @@ func (s *Steering) ack(kind string, ref int64, code int) {
 	s.Push(wire.Item{Stream: wire.StreamStatus, Type: envelope.StateChanged, Payload: envelope.StatePayload(kind, fields)})
 }
 
-// permanent reports the harness's status code for a refusal no retry can fix:
-// a 4xx other than those that mean "not now" (a conversation not created yet,
-// a timeout, a conflict, too early or too many).
-func permanent(err error) (int, bool) {
+// refused reports the harness's status code for a 4xx refusal.
+func refused(err error) (int, bool) {
 	se, ok := errors.AsType[*StatusError](err)
 	if !ok || se.Code < 400 || se.Code >= 500 {
-		return 0, false
-	}
-	switch se.Code {
-	case http.StatusNotFound, http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
 		return 0, false
 	}
 	return se.Code, true
 }
 
+// permanent reports the code of a steering refusal no retry can fix: a 4xx
+// other than those that mean "not now" (a conversation not created yet, a
+// timeout, a conflict, too early or too many).
+func permanent(err error) (int, bool) {
+	code, ok := refused(err)
+	switch code {
+	case http.StatusNotFound, http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
+		return 0, false
+	}
+	return code, ok
+}
+
 // failed settles a failed injection of ref: acknowledged as undeliverable when
-// permanent, else released for the replay, and its error ends the stream.
-func (s *Steering) failed(ref int64, err error) error {
-	if code, ok := permanent(err); ok {
+// settle says so, else released for the replay, and its error ends the stream.
+func (s *Steering) failed(ref int64, err error, settle func(error) (int, bool)) error {
+	if code, ok := settle(err); ok {
 		s.ack("undeliverable", ref, code)
 		return nil
 	}
@@ -92,19 +98,22 @@ func (s *Steering) Deliver(ctx context.Context, d wire.Deliver) error {
 		return nil
 	}
 	if err := s.Harness.Send(ctx, d.Text); err != nil {
-		return s.failed(d.Ref, err)
+		return s.failed(d.Ref, err, permanent)
 	}
 	s.ack("delivered", d.Ref, 0)
 	return nil
 }
 
-// Interrupt stops the run's current turn.
+// Interrupt stops the run's current turn. Any 4xx settles it as undeliverable
+// (ruling SAK): an interrupt of an idle conversation is moot, a late one lands
+// on a turn the driver never meant, and retrying it would starve the steering
+// queued behind it.
 func (s *Steering) Interrupt(ctx context.Context, i wire.Interrupt) error {
 	if !s.once(i.Ref) {
 		return nil
 	}
 	if err := s.Harness.Interrupt(ctx); err != nil {
-		return s.failed(i.Ref, err)
+		return s.failed(i.Ref, err, refused)
 	}
 	s.ack("interrupted", i.Ref, 0)
 	return nil
