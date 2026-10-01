@@ -16,15 +16,20 @@ import (
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
-// memQueue is the store's queue in memory: Enqueue checks what the store checks,
-// SetQueued moves a row once, out of queued, and err fails every call;
-// cursorErr fails Cursor alone.
+// memQueue is the store's queue in memory, per room: Enqueue checks what the
+// store checks and returns the stored event for a replayed key, SetQueued moves
+// a row once, out of queued; err fails every call, cursorErr Cursor alone.
 type memQueue struct {
-	drafts    []envelope.Draft
-	rows      []store.Queued
-	runs      map[int64]string
+	drafts    []envelope.Draft // every room's, in append order
+	seqs      []int64          // drafts[i]'s seq in its room
+	rows      map[string][]store.Queued
+	runs      map[string]map[int64]string // the run that consumed each ref, by room
 	err       error
 	cursorErr error
+}
+
+func newMemQueue() *memQueue {
+	return &memQueue{rows: map[string][]store.Queued{}, runs: map[string]map[int64]string{}}
 }
 
 func (q *memQueue) Enqueue(_ context.Context, d envelope.Draft, author, text string) (envelope.Event, error) {
@@ -36,15 +41,25 @@ func (q *memQueue) Enqueue(_ context.Context, d envelope.Draft, author, text str
 		p.Delivery != envelope.DeliveryQueued || author != d.Actor.ID {
 		return envelope.Event{}, store.ErrNotAQueuedMessage
 	}
-	q.drafts = append(q.drafts, d)
-	seq := int64(len(q.drafts))
-	q.rows = append(q.rows, store.Queued{Ref: seq, Author: author, Text: text, State: "queued"})
+	var seq int64
+	for i, x := range q.drafts {
+		if x.RoomID != d.RoomID {
+			continue
+		}
+		if x.OriginClient == d.OriginClient && x.OriginSeq == d.OriginSeq {
+			return envelope.Event{Seq: q.seqs[i], RoomID: d.RoomID}, nil
+		}
+		seq = q.seqs[i]
+	}
+	seq++
+	q.drafts, q.seqs = append(q.drafts, d), append(q.seqs, seq)
+	q.rows[d.RoomID] = append(q.rows[d.RoomID], store.Queued{Ref: seq, Author: author, Text: text, State: "queued"})
 	return envelope.Event{Seq: seq, RoomID: d.RoomID}, nil
 }
 
-func (q *memQueue) Queue(context.Context, string) ([]store.Queued, error) {
+func (q *memQueue) Queue(_ context.Context, room string) ([]store.Queued, error) {
 	var out []store.Queued
-	for _, r := range q.rows {
+	for _, r := range q.rows[room] {
 		if r.State == "queued" {
 			out = append(out, r)
 		}
@@ -52,26 +67,31 @@ func (q *memQueue) Queue(context.Context, string) ([]store.Queued, error) {
 	return out, q.err
 }
 
-func (q *memQueue) SetQueued(_ context.Context, _ string, ref int64, to, runID string) error {
+func (q *memQueue) SetQueued(_ context.Context, room string, ref int64, to, runID string) error {
 	if q.err != nil {
 		return q.err
 	}
 	if to != "consumed" || !envelope.ValidID(runID) {
 		return store.ErrBadMove
 	}
-	for i := range q.rows {
-		if q.rows[i].Ref == ref && q.rows[i].State == "queued" {
-			q.rows[i].State, q.runs[ref] = to, runID
+	rows := q.rows[room]
+	for i := range rows {
+		if rows[i].Ref == ref && rows[i].State == "queued" {
+			rows[i].State = to
+			if q.runs[room] == nil {
+				q.runs[room] = map[int64]string{}
+			}
+			q.runs[room][ref] = runID
 			return nil
 		}
 	}
 	return store.ErrNotQueued
 }
 
-func (q *memQueue) Cursor(_ context.Context, _ string, origin string) (int64, error) {
+func (q *memQueue) Cursor(_ context.Context, room, origin string) (int64, error) {
 	var hi int64
 	for _, d := range q.drafts {
-		if d.OriginClient == origin && d.OriginSeq > hi {
+		if d.RoomID == room && d.OriginClient == origin && d.OriginSeq > hi {
 			hi = d.OriginSeq
 		}
 	}
@@ -84,7 +104,7 @@ func queueServer(t *testing.T) (http.Handler, *memQueue) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := &memQueue{runs: map[int64]string{}}
+	q := newMemQueue()
 	return (&Server{Systems: tokenAuth{"sys:"}, Redactor: red, Queue: q}).Routes(), q
 }
 
@@ -93,16 +113,21 @@ func queueServer(t *testing.T) (http.Handler, *memQueue) {
 func TestQueueRoutes(t *testing.T) {
 	h, q := queueServer(t)
 	const factory = "sys:system:factory"
+	const roomA, roomB = "/v1/rooms/3buqdlot/queue", "/v1/rooms/4kq7x2ma/queue"
 	planted := "ghs_" + "Zq8mR2tXv9LkPw4NcYb7HsJ1fGdE6aUo3iTe" // pragma: allowlist secret (a repeated letter is too low-entropy to fire)
-	msg := map[string]any{"text": "GitHub review by @Smana: use the relative link. token " + planted, "clientSeq": 901, "stream": "review"}
-	if rec := call(t, h, "POST", "/v1/rooms/3buqdlot/queue", factory, msg); rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"seq":1`) {
+	review := func(seq int64, text string) map[string]any {
+		return map[string]any{"text": text, "clientSeq": seq, "stream": "review"}
+	}
+	msg := review(901, "GitHub review by @Smana: use the relative link. token "+planted)
+	if rec := call(t, h, "POST", roomA, factory, msg); rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"seq":1`) {
 		t.Fatalf("enqueue: %d %s", rec.Code, rec.Body)
 	}
-	if rec := call(t, h, "POST", "/v1/rooms/3buqdlot/queue", factory, msg); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
-		t.Fatalf("a replay is a no-op: %d %s", rec.Code, rec.Body)
+	if rec := call(t, h, "POST", roomA, factory, msg); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
+		t.Fatalf("a replay of the stream's latest is a no-op: %d %s", rec.Code, rec.Body)
 	}
-	if len(q.drafts) != 1 || strings.Contains(q.rows[0].Text, planted) || !strings.Contains(q.rows[0].Text, "[REDACTED:") {
-		t.Fatalf("one redacted, queued draft: %+v", q.rows)
+	rows := q.rows["3buqdlot"]
+	if len(q.drafts) != 1 || strings.Contains(rows[0].Text, planted) || !strings.Contains(rows[0].Text, "[REDACTED:") {
+		t.Fatalf("one redacted, queued draft: %+v", rows)
 	}
 	d := q.drafts[0]
 	if d.OriginClient != "system:factory:queue:review" || d.OriginSeq != 901 || d.Origin != envelope.OriginClient ||
@@ -114,32 +139,53 @@ func TestQueueRoutes(t *testing.T) {
 		t.Fatalf("payload %+v, %v", p, err)
 	}
 
+	// Review ids follow creation, not submission: a lower clientSeq is a new
+	// message, and its replay is the store's to recognise (201, the same seq).
+	for range 2 {
+		if rec := call(t, h, "POST", roomA, factory, review(900, "created first, submitted second")); rec.Code != http.StatusCreated ||
+			!strings.Contains(rec.Body.String(), `"seq":2`) || len(q.drafts) != 2 {
+			t.Fatalf("an out-of-order clientSeq: %d %s, %d drafts", rec.Code, rec.Body, len(q.drafts))
+		}
+	}
+
 	// Each stream keeps its own clientSeq: 1 on another stream is new.
 	other := map[string]any{"text": "CI failed on lint", "clientSeq": 1}
-	if rec := call(t, h, "POST", "/v1/rooms/3buqdlot/queue", factory, other); rec.Code != http.StatusCreated || q.drafts[1].OriginClient != "system:factory:queue:default" {
+	if rec := call(t, h, "POST", roomA, factory, other); rec.Code != http.StatusCreated || q.drafts[2].OriginClient != "system:factory:queue:default" {
 		t.Fatalf("the default stream: %d %s", rec.Code, rec.Body)
 	}
 
-	rec := call(t, h, "GET", "/v1/rooms/3buqdlot/queue", factory, nil)
+	rec := call(t, h, "GET", roomA, factory, nil)
 	var list struct {
 		Queued []struct {
 			Ref          int64
 			Author, Text string
 		}
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); rec.Code != http.StatusOK || err != nil || len(list.Queued) != 2 ||
-		list.Queued[0].Ref != 1 || list.Queued[0].Author != "system:factory" || list.Queued[0].Text != q.rows[0].Text {
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); rec.Code != http.StatusOK || err != nil || len(list.Queued) != 3 ||
+		list.Queued[0].Ref != 1 || list.Queued[0].Author != "system:factory" || list.Queued[0].Text != rows[0].Text {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body)
 	}
 
 	// A ref no longer queued, or never queued, is skipped, not an error.
 	consume := map[string]any{"refs": []int64{1, 1, 99}, "runId": "aaaaaaaa"}
-	if rec := call(t, h, "POST", "/v1/rooms/3buqdlot/queue/consume", factory, consume); rec.Code != http.StatusOK ||
-		strings.TrimSpace(rec.Body.String()) != `{"consumed":1}` || q.runs[1] != "aaaaaaaa" {
+	if rec := call(t, h, "POST", roomA+"/consume", factory, consume); rec.Code != http.StatusOK ||
+		strings.TrimSpace(rec.Body.String()) != `{"consumed":1}` || q.runs["3buqdlot"][1] != "aaaaaaaa" {
 		t.Fatalf("consume: %d %s %v", rec.Code, rec.Body, q.runs)
 	}
-	if rec := call(t, h, "GET", "/v1/rooms/3buqdlot/queue", factory, nil); strings.Contains(rec.Body.String(), `"ref":1,`) {
+	if rec := call(t, h, "GET", roomA, factory, nil); strings.Contains(rec.Body.String(), `"ref":1,`) {
 		t.Fatalf("a consumed message leaves the queue: %s", rec.Body)
+	}
+
+	// Another room shares nothing: not the queue, not its refs, not the cursor.
+	if rec := call(t, h, "GET", roomB, factory, nil); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"queued":[]}` {
+		t.Fatalf("another room's list: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(t, h, "POST", roomB+"/consume", factory, map[string]any{"refs": []int64{2, 3}, "runId": "aaaaaaaa"}); rec.Code != http.StatusOK ||
+		strings.TrimSpace(rec.Body.String()) != `{"consumed":0}` || len(q.runs["3buqdlot"]) != 1 {
+		t.Fatalf("refs queued in another room: %d %s %v", rec.Code, rec.Body, q.runs)
+	}
+	if rec := call(t, h, "POST", roomB, factory, msg); rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"seq":1`) {
+		t.Fatalf("the same clientSeq in another room: %d %s", rec.Code, rec.Body)
 	}
 }
 

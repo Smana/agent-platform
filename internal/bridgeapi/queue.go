@@ -32,7 +32,7 @@ const (
 )
 
 // A stream names one source of queued messages (GitHub reviews, CI failures),
-// each with its own monotonic clientSeq. No colon: it ends the origin.
+// each with its own clientSeq space. No colon: it ends the origin.
 var streamRE = regexp.MustCompile(`^[a-z]{1,16}$`)
 
 // queueRoute admits a system caller to a room's queue: authenticated first, then
@@ -62,8 +62,10 @@ func (s *Server) queueRoute(h func(w http.ResponseWriter, r *http.Request, princ
 }
 
 // enqueue: POST /v1/rooms/{id}/queue {text, clientSeq, stream}. The origin is
-// <principal>:queue:<stream>, apart from the principal's task_state messages. A
-// clientSeq at or below the stream's highest is a replay: 200, nothing stored.
+// <principal>:queue:<stream>, apart from the principal's task_state messages. The
+// stream's latest clientSeq replayed answers 200, nothing stored. A lower one goes
+// to the store, which dedupes on the exact key: GitHub review ids, Task 2.3's
+// clientSeq, follow creation order, not submission order.
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request, principal, room string) {
 	var in struct {
 		Text      string `json:"text"`
@@ -88,7 +90,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request, principal, room
 		s.logFailure(w, err, "read a queue stream's cursor", "room", room, "principal", principal)
 		return
 	}
-	if in.ClientSeq <= cur {
+	if in.ClientSeq == cur {
 		reply(w, http.StatusOK, map[string]bool{"duplicate": true})
 		return
 	}

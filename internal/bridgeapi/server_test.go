@@ -1060,7 +1060,7 @@ func TestEachPrincipalIsRateLimited(t *testing.T) {
 			now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 			s.Now = func() time.Time { return now }
 			s.Limits = Limits{Rate: 1, Burst: 2, InFlight: 4}
-			s.Queue = &memQueue{runs: map[int64]string{}}
+			s.Queue = newMemQueue()
 			w.Upsert(t.Context(), agentRun(runA, room, "Running"))
 			h := s.Routes()
 			hello(t, h, runA)

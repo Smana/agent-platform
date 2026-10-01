@@ -232,9 +232,12 @@ built without a queue store, and otherwise refuses as the routes above do: `400 
 
 The text is redacted and stored as `message{kind: chat, delivery: queued}`, the caller its actor and
 `<principal>:queue:<stream>` its origin. `stream` is `[a-z]{1,16}`, default `default`: each source
-keeps its own monotonic `clientSeq`, apart from the caller's `task_state` messages. Response `201`:
-`{"seq": 1844}`. A `clientSeq` at or below the stream's highest is a replay, answered
-`200 {"duplicate": true}` and not stored, **even when it was never sent**: send each stream in order.
+keeps its own `clientSeq` space, apart from the caller's `task_state` messages. Response `201`:
+`{"seq": 1844}`. Replaying the stream's highest `clientSeq` answers `200 {"duplicate": true}`.
+A lower `clientSeq` need not be a replay, since GitHub review ids follow creation order, not
+submission order. It is stored as a new message, unless its exact key is already stored: then the
+answer is `201` with the stored `seq`. Two identical requests racing can both answer `201` with
+the same `seq`. Either way, nothing is stored twice.
 
 `GET /v1/rooms/{id}/queue` answers `200 {"queued": [{"ref": 1844, "author": "system:factory",
 "text": "…"}]}`, oldest first; `ref` is the queued message's `seq`.
