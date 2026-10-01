@@ -4,14 +4,18 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -27,6 +31,28 @@ type approvalLog interface {
 	ExpireDue(ctx context.Context) ([]envelope.Event, error)
 	SupersedeAnswered(ctx context.Context) ([]envelope.Event, error)
 	OldestPending(ctx context.Context) (time.Duration, int, error)
+}
+
+// brokerAPILog is what :8443 and its approval sweep read and write; the metered
+// store has all of it.
+type brokerAPILog interface {
+	bridgeapi.Log
+	bridgeapi.Approvals
+	approvalLog
+}
+
+// bridgeAPI is :8443 over the broker's parts, with phase 5's approvals: each
+// room's policy read from its Room, requests recorded in the log, and the
+// approval sweep added to the leader through add (review 5.3 M3).
+func bridgeAPI(l brokerAPILog, red bridgeapi.Redactor, runs, systems bridgeapi.Authenticator, watch bridgeapi.Liveness,
+	rooms client.Reader, ns string, add func(manager.Runnable) error, m *metrics.Set, log *slog.Logger,
+) (*bridgeapi.Server, error) {
+	oldest := func(ctx context.Context, secs float64) { m.ApprovalsOldest.Record(ctx, secs) }
+	if err := add(approvalLoop(l, oldest, log, nil)); err != nil {
+		return nil, fmt.Errorf("approval sweep: %w", err)
+	}
+	return &bridgeapi.Server{Log: l, Redactor: red, Runs: runs, Systems: systems, Watch: watch, Logger: log,
+		RoomPolicy: roomPolicy(rooms, ns), Approvals: l}, nil
 }
 
 // approvalLoop closes, on the leader every approvalsEvery, the approvals whose

@@ -65,6 +65,8 @@ func TestDeliveriesAndLastAckUseTheirIndexes(t *testing.T) {
 		{"last ack", lastAckSQL, []string{"events_acks", "events_decision_acks"}, []any{room, "7f3cq2xz"}},
 		{"answered", `SELECT 1 FROM (SELECT '` + room + `'::text AS room_id, '7f3cq2xz'::text AS run_id, 'c1'::text AS call_id,
 			0::bigint AS requested_seq) a WHERE ` + answeredSQL, []string{"events_tool_results"}, nil},
+		{"ended", `SELECT 1 FROM (SELECT '` + room + `'::text AS room_id, '7f3cq2xz'::text AS run_id,
+			0::bigint AS requested_seq) a WHERE ` + endedSQL, []string{"events_broker_scopes"}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			text := plan(t, s, c.sql, c.args...)

@@ -362,34 +362,50 @@ func TestPrompters(t *testing.T) {
 	}
 }
 
-// 5.2 contracts 3 and 4: a decision of the run's own approval is a delivery, and
-// its decision_applied moves LastAck; a superseded one is never waited for.
+// 5.2 contracts 3 and 4: an approved, a denied and an expired decision of the
+// run's own approval are deliveries, each moving LastAck once acknowledged; a
+// superseded one is never waited for (review 5.3 I1: the SQL the stream reads).
 func TestDecisionsAreDeliveries(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
 	holdBridge(t, s, room, approvalRun)
-	for i, id := range []string{"ap1", "ap2", "ap3"} {
+	for i, id := range []string{"ap1", "ap2", "ap4"} {
 		if _, _, err := s.RequestApproval(ctx, approval(id, fmt.Sprint("e", i), fmt.Sprint("c", i), time.Hour), approvalDraft()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	decided, _, err := s.Decide(ctx, "ap1", "approved", "human:x", "", deciderDraft("human:x", 1))
+	if _, _, err := s.RequestApproval(ctx, approval("ap3", "e3", "c3", -time.Second), approvalDraft()); err != nil {
+		t.Fatal(err)
+	}
+	approved, _, err := s.Decide(ctx, "ap1", "approved", "human:x", "", deciderDraft("human:x", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolResult(t, s, 1, "c1")
+	denied, _, err := s.Decide(ctx, "ap2", "denied", "human:x", "no", deciderDraft("human:x", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := s.ExpireDue(ctx)
+	if err != nil || len(expired) != 1 {
+		t.Fatal(expired, err)
+	}
+	toolResult(t, s, 1, "c2") // ap4's call
 	superseded, err := s.SupersedeAnswered(ctx)
 	if err != nil || len(superseded) != 1 {
 		t.Fatal(superseded, err)
 	}
-	forgeExpiry := `UPDATE approvals SET expires_at = now() - interval '1 second' WHERE approval_id = 'ap3'`
+	forgeExpiry := `UPDATE approvals SET expires_at = now() - interval '1 second' WHERE approval_id = 'ap4'`
 	if _, err := s.pool.Exec(ctx, forgeExpiry); err == nil {
 		t.Fatal("the broker moved a deadline")
 	}
 	st, _ := s.Room(ctx, room)
 	got, err := s.Deliveries(ctx, room, approvalRun, 0, st.LastSeq, 10)
-	if err != nil || len(got) != 1 || got[0].Seq != decided.Seq {
-		t.Fatalf("deliveries = %v, %v; want the approved decision only", got, err)
+	var seqs []int64
+	for _, ev := range got {
+		seqs = append(seqs, ev.Seq)
+	}
+	if want := []int64{approved.Seq, denied.Seq, expired[0].Seq}; err != nil || !slices.Equal(seqs, want) {
+		t.Fatalf("deliveries = %v, %v; want approved, denied and expired %v, never superseded %d", seqs, err, want, superseded[0].Seq)
 	}
 	if other, err := s.Deliveries(ctx, room, "aaaaaaaa", 0, st.LastSeq, 10); err != nil || len(other) != 0 {
 		t.Fatalf("another run's deliveries: %v %v", other, err)
@@ -406,9 +422,112 @@ func TestDecisionsAreDeliveries(t *testing.T) {
 	if n, err := s.LastAck(ctx, room, approvalRun); err != nil || n != 0 {
 		t.Fatalf("an ack of a superseded decision: %d, %v", n, err)
 	}
-	ack(2, decided.Seq)
-	if n, err := s.LastAck(ctx, room, approvalRun); err != nil || n != decided.Seq {
-		t.Fatalf("last ack = %d, %v; want %d", n, err, decided.Seq)
+	for i, ev := range []envelope.Event{approved, denied, expired[0]} {
+		ack(int64(i+2), ev.Seq)
+		if n, err := s.LastAck(ctx, room, approvalRun); err != nil || n != ev.Seq {
+			t.Fatalf("last ack = %d, %v; want %d", n, err, ev.Seq)
+		}
+	}
+}
+
+// leave appends the broker's participant{left} for run, as runwatch.Events does
+// once the run is terminal.
+func leave(t *testing.T, s *Store, run string) {
+	t.Helper()
+	if _, _, err := s.Append(t.Context(), envelope.Draft{RoomID: room, RunID: run,
+		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}, Type: envelope.Participant,
+		Origin: envelope.OriginBroker, OriginClient: "broker:run:" + run, OriginSeq: 4,
+		Payload: envelope.Must(envelope.ParticipantPayload{Principal: "agent:" + run, Change: "left", Role: "implementer"})}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Review 5.3 I3 and M2: an ended run's approvals are superseded, so they stop
+// keeping the room AwaitingHuman (roomctrl.Phase reads PendingApprovals), and a
+// decision on one is too late. An event:<id> approval, which no tool_result
+// ever names, closes this way too.
+func TestAnEndedRunSupersedesItsApprovals(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	holdBridge(t, s, room, approvalRun)
+	for _, a := range []Approval{approval("ap1", "e1", "c1", time.Hour), approval("ap2", "e9", "event:e9", time.Hour)} {
+		if _, _, err := s.RequestApproval(ctx, a, approvalDraft()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toolResult(t, s, 1, "") // an id-less result names no event: approval
+	leave(t, s, "aaaaaaaa") // another run leaving ends nothing here
+	if evs, err := s.SupersedeAnswered(ctx); err != nil || len(evs) != 0 {
+		t.Fatalf("superseded %v, %v; want nothing yet", evs, err)
+	}
+	if n, err := s.PendingApprovals(ctx, room); err != nil || n != 2 {
+		t.Fatalf("pending %d, %v", n, err)
+	}
+	leave(t, s, approvalRun)
+	if _, _, err := s.Decide(ctx, "ap1", "approved", "human:x", "", deciderDraft("human:x", 1)); !errors.Is(err, ErrAlreadyDecided) {
+		t.Fatalf("a decision after the run ended: %v", err)
+	}
+	evs, err := s.SupersedeAnswered(ctx)
+	if err != nil || len(evs) != 1 || string(evs[0].Payload) != `{"approvalId":"ap2","decision":"superseded","reason":"the run ended"}` {
+		t.Fatalf("superseded %v, %v", evs, err)
+	}
+	var reasons []string
+	rows, _ := s.pool.Query(ctx, `SELECT state || ': ' || reason FROM approvals ORDER BY approval_id`)
+	for rows.Next() {
+		var r string
+		_ = rows.Scan(&r)
+		reasons = append(reasons, r)
+	}
+	rows.Close()
+	if want := []string{"superseded: the run ended", "superseded: the run ended"}; !slices.Equal(reasons, want) {
+		t.Fatalf("closes %v", reasons)
+	}
+	if n, err := s.PendingApprovals(ctx, room); err != nil || n != 0 {
+		t.Fatalf("an ended run's approvals still pending: %d, %v", n, err)
+	}
+	// A request that raced the run's end is just as dead.
+	if _, _, err := s.RequestApproval(ctx, approval("ap3", "e3", "c3", time.Hour), approvalDraft()); err != nil {
+		t.Fatal(err)
+	}
+	if evs, err := s.SupersedeAnswered(ctx); err != nil || len(evs) != 1 {
+		t.Fatalf("a request after the run left: %v, %v", evs, err)
+	}
+	if age, n, err := s.OldestPending(ctx); err != nil || n != 0 || age != 0 {
+		t.Fatalf("oldest %v of %d, %v", age, n, err)
+	}
+}
+
+// Review 5.3 M1: two replicas requesting the same event at once agree on one
+// approval and one request event: the room lock makes the second find the first.
+func TestConcurrentRequestsForOneEvent(t *testing.T) {
+	ctx := t.Context()
+	s, broker, _, _ := open(t)
+	other, err := Open(ctx, broker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	holdBridge(t, s, room, approvalRun)
+	for round := range 5 {
+		event := fmt.Sprint("e", round)
+		var wg sync.WaitGroup
+		ids, errs := make([]string, 2), make([]error, 2)
+		for i, st := range []*Store{s, other} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a, _, err := st.RequestApproval(ctx, approval(fmt.Sprintf("ap%d-%d", round, i), event, "c", time.Hour), approvalDraft())
+				ids[i], errs[i] = a.ID, err
+			}()
+		}
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil || ids[0] != ids[1] {
+			t.Fatalf("round %d: %v %v", round, ids, errs)
+		}
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type = 'approval_requested'`).Scan(&n); err != nil || n != 5 {
+		t.Fatalf("%d request events, %v; want one per event", n, err)
 	}
 }
 

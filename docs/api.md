@@ -170,8 +170,9 @@ the run's prompters for four-eyes: whoever requested the run (and its `spec.prin
 or wrote a queued message its brief consumed or that was promoted to it.
 
 An approval whose `callId` already has a `tool_result` in the log after its request (the harness ran
-or rejected the call) is closed as `superseded`, never left for an approver: by the leader's sweep
-every 30 s, or at once when an approver decides it. A superseded decision is never sent to the
+or rejected the call), or whose run has left the room since (the broker's `participant{left}`), is
+closed as `superseded`, never left for an approver: by the leader's sweep every 30 s, or at once when
+an approver decides it. A superseded decision is never sent to the
 bridge. An expiry is decided `allow: false` with `reason: "expired"`, within 30 s of `expiresAt`.
 
 | Status | `error` | When |

@@ -14,8 +14,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/humanapi"
@@ -170,4 +172,58 @@ func humanActorForMetrics(t *testing.T, m *metrics.Set) *humanapi.Actor {
 		t.Fatal(err)
 	}
 	return a
+}
+
+// fakeBrokerLog is the metered store as bridgeAPI sees it: only the sweep's
+// methods answer.
+type fakeBrokerLog struct {
+	bridgeapi.Log
+	bridgeapi.Approvals
+	*fakeApprovalLog
+}
+
+// Review 5.3 M3: :8443 gets the Room's approval policy and the approvals store,
+// and the leader gets the approval sweep; a refused Runnable stops start-up.
+func TestBridgeAPIIsWired(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	room := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: "3kq7x2ma", Namespace: "agent-system"},
+		Spec: v1alpha1.RoomSpec{Approvals: v1alpha1.Approvals{Profile: "unattended", TTL: "90m"}}}
+	rooms := fake.NewClientBuilder().WithScheme(scheme).WithObjects(room).Build()
+	_, m := newMetrics(t)
+	red, err := redact.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &fakeBrokerLog{fakeApprovalLog: &fakeApprovalLog{}}
+	var added []manager.Runnable
+	add := func(r manager.Runnable) error { added = append(added, r); return nil }
+	s, err := bridgeAPI(l, red, nil, nil, nil, rooms, "agent-system", add, m, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.RoomPolicy == nil {
+		t.Fatal("no RoomPolicy: hello says attended and unattended rooms would wait 30 min")
+	}
+	if p := s.RoomPolicy("3kq7x2ma"); p.Profile != "unattended" || p.TTL != "90m" {
+		t.Fatal("the Room's approval policy is not wired: unattended rooms would wait 30 min")
+	}
+	if s.Approvals != l || s.Log != l || s.Redactor != red {
+		t.Fatalf("server %+v", s)
+	}
+	loop, ok := added[0].(*leaderLoop)
+	if len(added) != 1 || !ok || loop.every != approvalsEvery {
+		t.Fatalf("the approval sweep is not on the leader: %v", added)
+	}
+	loop.active.Store(true)
+	loop.run(t.Context())
+	if got := l.got(); got != "supersede expire oldest" {
+		t.Fatalf("the leader runs %q, not the approval sweep", got)
+	}
+	refuse := func(manager.Runnable) error { return errors.New("manager started") }
+	if _, err := bridgeAPI(l, red, nil, nil, nil, rooms, "agent-system", refuse, m, slog.New(slog.DiscardHandler)); err == nil {
+		t.Fatal("a sweep the manager refused must stop start-up")
+	}
 }

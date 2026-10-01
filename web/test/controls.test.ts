@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
-import { mountControls, rejection } from "../src/controls";
+import { hasControls, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
 
 type You = Snapshot["you"];
@@ -219,6 +219,25 @@ describe("approval cards", () => {
     s.controls.refresh();
     expect(s.root.querySelector("ul.approvals li pre")).not.toBeNull();
     expect(s.btn("approve")).toBeNull();
+  });
+
+  // Review 5.3 I2: policy Decide is the approver flag, whatever the room role.
+  it("gives a watcher who approves the cards and their buttons, and nothing else", () => {
+    const c = withApprovals({ ...you("human:wat", "watcher"), approver: true }, pending("ap1", 3));
+    expect([...c.root.children].map((e) => e.className)).toEqual(["approvals"]);
+    expect(c.root.querySelector("textarea")).toBeNull();
+    expect(c.btn("driver_request")).toBeNull();
+    c.btn("approve")!.click();
+    expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" }]);
+    expect(hasControls({ ...you("human:wat", "watcher"), approver: true })).toBe(true);
+    expect(hasControls(you("human:wat", "watcher"))).toBe(false); // a plain watcher gets nothing
+    expect(hasControls(you("human:col", "collaborator"))).toBe(true);
+    // Promoted to collaborator by an invite: the state frame updates you in place.
+    const who = { ...you("human:wat", "watcher"), approver: true };
+    const p = withApprovals(who, pending("ap1", 3));
+    who.role = "collaborator";
+    p.controls.refresh();
+    expect(p.root.querySelector("textarea")).not.toBeNull();
   });
 
   it("drops a card once decided", () => {

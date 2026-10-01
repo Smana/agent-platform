@@ -166,11 +166,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 
-	api := &bridgeapi.Server{Log: logStore, Redactor: red, Runs: a.runs, Systems: a.systems, Watch: rw.watch, Logger: log,
-		RoomPolicy: roomPolicy(mgr.GetClient(), ns), Approvals: logStore}
-	oldest := func(ctx context.Context, secs float64) { m.ApprovalsOldest.Record(ctx, secs) }
-	if err := mgr.Add(approvalLoop(logStore, oldest, log, nil)); err != nil {
-		return fmt.Errorf("room-broker: approval sweep: %w", err)
+	api, err := bridgeAPI(logStore, red, a.runs, a.systems, rw.watch, mgr.GetClient(), ns, mgr.Add, m, log)
+	if err != nil {
+		return fmt.Errorf("room-broker: %w", err)
 	}
 	rw.watch.OnGone(api.Drop)
 	hub, err := fanoutHub(st, st, m, log)

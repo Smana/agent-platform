@@ -105,6 +105,18 @@ func TestApprovalRequests(t *testing.T) {
 		}
 	})
 
+	// 5.2 contract 6: an action with no readable tool call id is named event:<id>.
+	t.Run("an event: call id, and one of 256 bytes", func(t *testing.T) {
+		for _, id := range []string{"event:e9", strings.Repeat("c", 256)} {
+			if rec := post("run:"+runA, request("e44", id, "forge.other", map[string]any{})); rec.Code != http.StatusOK {
+				t.Fatalf("%.20s: %d %s", id, rec.Code, rec.Body)
+			}
+			if got := f.got[len(f.got)-1]; got.CallID != id || got.EventID != "e44" {
+				t.Fatalf("approval %+v", got)
+			}
+		}
+	})
+
 	t.Run("the room's profile sets the deadline", func(t *testing.T) {
 		for _, c := range []struct {
 			policy *wire.ApprovalPolicy

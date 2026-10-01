@@ -68,7 +68,13 @@ export function approvalCard(a: { class: string; runId?: string; callId: string;
   return li;
 }
 
-// mountControls renders what a collaborator and up can do: the composer, the queue,
+// hasControls: a collaborator and up acts; a watcher only reads, unless it is an
+// approver, which decides whatever its role (policy Decide).
+export function hasControls(you: Snapshot["you"]): boolean {
+  return you.role !== "watcher" || you.approver;
+}
+
+// mountControls renders what a collaborator and up, or an approver, can do: the composer, the queue,
 // the driver token, interrupt, and hand to role. Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
 export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"]) {
@@ -162,7 +168,9 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const claim = el("pre");
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
-  root.replaceChildren(approvals, driver, composer, queue, hand, manifest);
+  // A watcher who is an approver gets the approval cards only (policy Decide).
+  const sections = () => (you.role === "watcher" ? [approvals] : [approvals, driver, composer, queue, hand, manifest]);
+  root.replaceChildren(...sections());
   const showResult = (result: unknown) => {
     if (!result) return;
     // JSON escapes every newline in a string, so no line of it can be a bare EOF.
@@ -177,6 +185,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       renderDriver();
       renderQueue();
       renderApprovals();
+      root.replaceChildren(...sections()); // the same nodes: typed text stays
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,

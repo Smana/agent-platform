@@ -112,7 +112,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 |
 | `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | AP-5 |
-| `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede | AP-5 |
+| `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, or its run has ended, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede | AP-5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker | Store AP-4 (Task 4.1); written by human actions from Task 4.2 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |

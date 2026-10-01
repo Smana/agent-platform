@@ -40,6 +40,7 @@ const (
 const (
 	reasonExpired    = "no decision before the deadline"
 	reasonSuperseded = "the call already has a result"
+	reasonRunEnded   = "the run ended"
 )
 
 // Approval is one row of the approvals projection.
@@ -69,6 +70,14 @@ func scanApproval(row pgx.Row) (Approval, error) {
 // It reads through events_tool_results.
 const answeredSQL = `EXISTS (SELECT 1 FROM events e WHERE e.room_id = a.room_id AND e.run_id = a.run_id
 	AND e.type = 'tool_result' AND e.payload->>'callId' = a.call_id AND e.seq > a.requested_seq)`
+
+// endedSQL is an approval a whose run has left the room: the broker's own
+// participant{left} (runwatch.Events), appended once the run is terminal. Nothing
+// will apply a decision, so nobody is asked any more. Before or after the request
+// alike: a request that raced the run's end is just as dead. It reads through
+// events_broker_scopes.
+const endedSQL = `EXISTS (SELECT 1 FROM events e WHERE e.room_id = a.room_id AND e.origin = 'broker'
+	AND e.origin_client = 'broker:run:' || a.run_id AND e.type = 'participant' AND e.payload->>'change' = 'left')`
 
 // RequestApproval records a pending approval and appends approval_requested in
 // one transaction, fenced on the run's bridge lease like its other appends
@@ -190,13 +199,17 @@ func (s *Store) closeApproval(ctx context.Context, id, state, by, reason string,
 	}
 	human := state == ApprovalApproved || state == ApprovalDenied
 	if human {
-		var answered bool
-		if err := tx.QueryRow(ctx, `SELECT `+answeredSQL+` FROM approvals a WHERE a.approval_id = $1 AND a.state = 'pending'`,
-			id).Scan(&answered); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		var answered, ended bool
+		if err := tx.QueryRow(ctx, `SELECT `+answeredSQL+`, `+endedSQL+` FROM approvals a WHERE a.approval_id = $1 AND a.state = 'pending'`,
+			id).Scan(&answered, &ended); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return envelope.Event{}, Approval{}, err
 		}
-		if answered { // too late for anyone: close it for what it is, then refuse
-			if _, _, err := s.closeTx(ctx, tx, id, ApprovalSuperseded, brokerActor, reasonSuperseded, brokerClose(id)); err != nil {
+		if answered || ended { // too late for anyone: close it for what it is, then refuse
+			why := reasonSuperseded
+			if !answered {
+				why = reasonRunEnded
+			}
+			if _, _, err := s.closeTx(ctx, tx, id, ApprovalSuperseded, brokerActor, why, brokerClose(id)); err != nil {
 				return envelope.Event{}, Approval{}, err
 			}
 			if err := tx.Commit(ctx); err != nil {
@@ -255,13 +268,21 @@ func (s *Store) ExpireDue(ctx context.Context) ([]envelope.Event, error) {
 		ApprovalExpired, reasonExpired)
 }
 
-// SupersedeAnswered closes every pending approval whose call has a tool_result
-// as superseded (5.2 contract 5): the harness ran or rejected it, so it is never
-// left for approvers, nor counted as pending.
+// SupersedeAnswered closes as superseded every pending approval whose call has a
+// tool_result (5.2 contract 5: the harness ran or rejected it), then every one
+// whose run has ended: neither is left for approvers, nor counted as pending, nor
+// holds its room AwaitingHuman.
 func (s *Store) SupersedeAnswered(ctx context.Context) ([]envelope.Event, error) {
-	return s.closeAll(ctx, `SELECT a.approval_id FROM approvals a JOIN rooms r USING (room_id)
+	answered, err := s.closeAll(ctx, `SELECT a.approval_id FROM approvals a JOIN rooms r USING (room_id)
 		WHERE a.state = 'pending' AND NOT r.sealed AND `+answeredSQL+` ORDER BY a.requested_at`,
 		ApprovalSuperseded, reasonSuperseded)
+	if err != nil {
+		return answered, err
+	}
+	ended, err := s.closeAll(ctx, `SELECT a.approval_id FROM approvals a JOIN rooms r USING (room_id)
+		WHERE a.state = 'pending' AND NOT r.sealed AND `+endedSQL+` ORDER BY a.requested_at`,
+		ApprovalSuperseded, reasonRunEnded)
+	return append(answered, ended...), err
 }
 
 func (s *Store) closeAll(ctx context.Context, query, state, reason string) ([]envelope.Event, error) {
