@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/brief"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -32,6 +34,9 @@ const (
 func cut(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	if n <= 0 {
+		return ""
 	}
 	for n > 0 && !utf8.RuneStart(s[n]) {
 		n--
@@ -109,6 +114,22 @@ func clean(s string) string {
 	return out
 }
 
+// fitQuoted is the longest prefix of s, on a rune boundary, whose quoted form is at most keep
+// bytes. Quoting adds two bytes a line, so no fixed ratio maps one length to the other: a binary
+// search over the prefix length, on which the quoted length is monotonic.
+func fitQuoted(s string, keep int) string {
+	lo, hi := 0, min(len(s), keep)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if len(quote(cut(s, mid))) <= keep {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return cut(s, lo) // "" when not even an empty quote fits
+}
+
 // quote prefixes every line of s with "> ": a queued text cannot write a line that passes for
 // the factory's own, such as another message's header.
 func quote(s string) string { return "> " + strings.ReplaceAll(s, "\n", "\n> ") }
@@ -168,11 +189,12 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 	more := func(n int) string {
 		return fmt.Sprintf("⟦%d more queued messages are not quoted: they wait for a later run⟧\n", n)
 	}
-	// defang makes a queued string inert inside the block. The nonce was drawn after the text was
-	// written; replacing it makes that a guarantee, and look-alikes with another nonce or
-	// homoglyphs go as in an issue (Batch A I1).
+	// defang makes a queued string inert inside the block. It is folded first (NFKC), as an issue
+	// is, so a fullwidth look-alike is one. The nonce was drawn after the text was written;
+	// replacing it makes that a guarantee, and look-alikes with another nonce or homoglyphs go as
+	// in an issue (Batch A I1).
 	defang := func(s string) string {
-		s, _ = sanitize.Fences(strings.ReplaceAll(s, nonce, "⟦nonce⟧"))
+		s, _ = sanitize.Fences(strings.ReplaceAll(norm.NFKC.String(s), nonce, "⟦nonce⟧"))
 		return s
 	}
 	budget := reviseCap - b.Len() - 2*(len(fence)+2) - len(more(len(queued)))
@@ -188,11 +210,7 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 			mark := func(shown int) string {
 				return fmt.Sprintf("\n⟦clipped by the factory: %d of %d bytes shown; read seq %d whole with room_read⟧", shown, len(text), m.Ref)
 			}
-			keep := left - len(mark(len(text)))
-			shown := cut(text, max(keep, 0))
-			for over := len(quote(shown)) - keep; over > 0 && shown != ""; over = len(quote(shown)) - keep {
-				shown = cut(shown, len(shown)-over)
-			}
+			shown := fitQuoted(text, left-len(mark(len(text))))
 			if len(shown) < minQueued {
 				break // a prefix: every later message waits too, so refs never skip one
 			}
