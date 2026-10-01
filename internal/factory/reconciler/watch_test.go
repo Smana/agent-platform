@@ -261,3 +261,34 @@ func TestARevisionWaitsForAnotherRunInItsRoom(t *testing.T) {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }
+
+// A review handled once never triggers again, even when GitHub's clock runs ahead of the
+// factory's and its time falls after the revision's start.
+func TestAHandledReviewNeverTriggersAgain(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	g.ids("aaaaaaaa", "bbbbbbbb")
+	g.f.SetPR(pr12(changes(901, "Smana", "fix it", -time.Minute))) // stamped a minute in the factory's future
+	g.reconcile(t, "3buqdlot", 2)
+	g.runs.set("aaaaaaaa", "Succeeded")
+	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 1 {
+		t.Fatalf("%s, %d runs", tk.Status.Phase, len(g.runs.specs))
+	}
+}
+
+// A run's trigger: what sent the task back to Queued, else initial for the first run and retry
+// for any later one.
+func TestNextTrigger(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, "x")
+	if got := nextTrigger(tk); got != "initial" {
+		t.Fatal(got)
+	}
+	tk.Status.Runs = []v1alpha1.RunRecord{{ID: "7f3cq2xz"}}
+	if got := nextTrigger(tk); got != "retry" {
+		t.Fatal(got)
+	}
+	tk.Status.NextTrigger = "human"
+	if got := nextTrigger(tk); got != "human" {
+		t.Fatal(got)
+	}
+}
