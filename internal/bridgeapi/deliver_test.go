@@ -8,10 +8,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -134,5 +136,88 @@ func TestStreamRefusesWithoutItsMark(t *testing.T) {
 	if rec := call(t, s.Routes(), http.MethodGet, "/v1/bridge/stream", "run:"+runA, nil); rec.Code != http.StatusInternalServerError ||
 		reason(t, rec) != wire.ReasonStreamingFailed {
 		t.Fatalf("no hub: %d", rec.Code)
+	}
+}
+
+// Review 4.3 I1: an event appended between Subscribe and the mark is in the hub's
+// buffer and in the replay: it goes out once.
+func TestStreamSendsTheSeamOnce(t *testing.T) {
+	s, log, w := newServer(t)
+	s.Ticker = make(manualTicker).new
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	var once sync.Once
+	s.LastAck = func(ctx context.Context, r, run string) (int64, error) {
+		once.Do(func() { human(t, log, 1, envelope.Message, steering("seam", runA)) })
+		return log.LastAck(ctx, r, run)
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	sc, stop := openStream(t, srv, runA)
+	defer stop()
+	defer time.AfterFunc(5*time.Second, stop).Stop()
+	expectFrame(t, sc, wire.EventDeliver, `{"ref":1,"text":"seam"}`)
+	expectPing(t, sc)
+	time.Sleep(100 * time.Millisecond) // the hub offers seq 1 to the buffer
+	human(t, log, 2, envelope.Message, steering("next", runA))
+	expectFrame(t, sc, wire.EventDeliver, `{"ref":2,"text":"next"}`)
+}
+
+// roomHook appends once, right after the stream reads its mark; the hub reads
+// the memLog directly.
+type roomHook struct {
+	*memLog
+	once  sync.Once
+	after func()
+}
+
+func (h *roomHook) Room(ctx context.Context, id string) (store.RoomState, error) {
+	st, err := h.memLog.Room(ctx, id)
+	h.once.Do(h.after)
+	return st, err
+}
+
+// Review 4.3 I1: an event appended just after the mark is past the replay, so the
+// subscription must predate the mark.
+func TestStreamMissesNothingAfterTheMark(t *testing.T) {
+	s, log, w := newServer(t)
+	s.Ticker = make(manualTicker).new
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	s.Log = &roomHook{memLog: log, after: func() { human(t, log, 1, envelope.Message, steering("gap", runA)) }}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	sc, stop := openStream(t, srv, runA)
+	defer stop()
+	defer time.AfterFunc(3*time.Second, stop).Stop()
+	expectPing(t, sc)
+	expectFrame(t, sc, wire.EventDeliver, `{"ref":1,"text":"gap"}`)
+}
+
+// Review 4.3 I1, I3: the replay pages through the run's deliveries, all of them,
+// in as many reads as pages, never the room's whole log.
+func TestStreamReplayPages(t *testing.T) {
+	defer func(n int) { replayPage = n }(replayPage)
+	replayPage = 2
+	s, log, w := newServer(t)
+	s.Ticker = make(manualTicker).new
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	for i := range int64(5) {
+		human(t, log, 2*i+1, envelope.Message, steering("m", runA))
+		human(t, log, 2*i+2, envelope.Message, envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "chat",
+			Delivery: envelope.DeliveryNone}))
+	}
+	srv := httptest.NewServer(s.Routes())
+	defer srv.Close()
+	sc, stop := openStream(t, srv, runA)
+	defer stop()
+	defer time.AfterFunc(5*time.Second, stop).Stop()
+	for _, ref := range []string{"1", "3", "5", "7", "9"} {
+		expectFrame(t, sc, wire.EventDeliver, `{"ref":`+ref+`,"text":"m"}`)
+	}
+	expectPing(t, sc)
+	log.mu.Lock()
+	reads := log.deliveryReads
+	log.mu.Unlock()
+	if reads != 3 {
+		t.Fatalf("the replay read the log %d times, want 3 pages of 2", reads)
 	}
 }

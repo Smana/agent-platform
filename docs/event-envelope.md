@@ -131,13 +131,14 @@ From the design's Appendix A, with the plan's additive fields.
 | `verdict_posted`, `verdict_not_posted` | `verdictSeq`, and `url` or `reason`: `no_pull_request`, `github_refused` with `detail` `http_<status>` or `too_many_comments`, or `expired` with `detail: window_24h` | Broker (leader) | AP-3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
 | `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements AP-4 (Task 4.3) |
+| `undeliverable` | `ref`, `runId`, `code`: the harness refused the delivery for good, with that HTTP status; the stream goes on past it | Bridge | AP-4 (Task 4.3) |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
 | `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
 | `commit` | — | — | Listed in Appendix A; no plan task writes it yet |
 
 A bridge may push only `message{kind: chat, delivery: none}`, `turn`, `tool_call`, `tool_result`, and
-the `state_changed` kinds `harness_*`, `delivered`, `interrupted`, `policy_decision` and
+the `state_changed` kinds `harness_*`, `delivered`, `interrupted`, `undeliverable`, `policy_decision` and
 `decision_applied`. Anything else is `400 bad_item`, so a compromised sandbox cannot forge a verdict,
 a driver change or a decision (review M5).
 

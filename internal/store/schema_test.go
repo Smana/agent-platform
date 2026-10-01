@@ -111,6 +111,10 @@ func TestBrokerRoleIsAppendOnly(t *testing.T) {
 		{"queue a plain message", queueRow + `('3kq7x2ma', 1, 'agent:7f3cq2xz', 'm1', 'queued')`, "23514", "not its queued message"},
 		{"queue someone's message as another's", queueRow + `('3kq7x2ma', ` + queuedRef + `, 'human:mallory', 'queued', 'queued')`, "23514", "not its queued message"},
 		{"queue a message with other text", queueRow + `('3kq7x2ma', ` + queuedRef + `, 'human:alice', 'planted', 'queued')`, "23514", "not its queued message"},
+		{"enter the queue as consumed", `INSERT INTO queue (room_id, ref, author, text, state, run_id) VALUES ('3kq7x2ma', ` + queuedRef +
+			`, 'human:alice', 'queued', 'consumed', '7f3cq2xz')`, "23514", "enters queued"},
+		{"enter the queue naming a run", `INSERT INTO queue (room_id, ref, author, text, state, run_id) VALUES ('3kq7x2ma', ` + queuedRef +
+			`, 'human:alice', 'queued', 'queued', '7f3cq2xz')`, "23514", "enters queued"},
 		{"queue into a sealed room", queueRow + `('sealedaa', 1, 'human:alice', 'queued', 'queued')`, "23514", "queue stays"},
 		{"move a sealed room's queue", `UPDATE queue SET state = 'removed' WHERE room_id = 'sealedaa'`, "23514", "queue stays"},
 		{"consume by a run that is no run id", `UPDATE queue SET state = 'consumed', run_id = 'NOT A RUN' WHERE room_id = '3kq7x2ma'`, "23514", "run_id"},

@@ -124,12 +124,29 @@ Response `200`, `Content-Type: text/event-stream`. The broker writes a comment l
 carries only the events addressed to its own run.
 
 Deliveries are derived from the log, never held in a replica's memory. On every connect the broker
-subscribes to the room, reads the run's last acknowledgement (the highest `ref` of its `delivered`
-and `interrupted` acks), and sends every deliverable event after it before anything else, in the
-stream's first flush; then it follows the room live. A stream whose acknowledgement it cannot read is
-refused `503`, rather than replay every delivery from the start. The bridge injects each `ref` once;
-one it fails to inject ends the stream, so the replay hands it over again before any later `ref`.
-An event's `data` lines are bounded to 256 KiB together.
+subscribes to the room, reads the run's last acknowledgement (the highest `ref` of its `delivered`,
+`interrupted` and `undeliverable` acks that is a delivery of that run), and sends the run's
+deliveries after it before anything else, in the stream's first flush; then it follows the room live.
+Both reads go through partial indexes, never the room's whole log. A stream whose acknowledgement it
+cannot read is refused `503`, rather than replay every delivery from the start. An event's `data`
+lines are bounded to 256 KiB together.
+
+| Outcome of an injection | The bridge |
+|---|---|
+| Accepted by the harness | Acknowledges `delivered` or `interrupted` |
+| Refused for good (a 4xx other than 404, 408, 409, 425, 429) | Acknowledges `undeliverable` with the harness's `code`, and goes on: one refusal must not block every later `ref`, interrupts included |
+| Failed for now (no answer, 5xx, or one of those 4xx) | Ends the stream; the replay hands the same `ref` over again before any later one |
+
+**Delivery is at least once** (design, Risks: bridge crash re-delivery). A bridge injects each `ref`
+once per process, but one that restarts, or shuts down while a `deliver` is in flight, after
+injecting a `ref` and before its acknowledgement reaches the log, injects it again: the transcript
+shows a second user message. A replayed `interrupt` lands on whatever turn is current then, which can
+be a later turn than the one the driver meant.
+
+Acknowledgements are the bridge's own claims (design T4, T6): the broker cannot see inside the
+sandbox. A `ref` counts only if it is a delivery of that run, so a forged one past every delivery
+skips nothing; a compromised sandbox can still hide steering from its own run, as it could by ignoring
+the harness. The log may then show `delivered` for a message never injected.
 
 | SSE `event` | `data` | Meaning | Phase / PR |
 |---|---|---|---|

@@ -79,6 +79,10 @@ BEGIN
   IF (SELECT sealed FROM public.rooms WHERE room_id = NEW.room_id) THEN
     RAISE EXCEPTION 'room log: room % is sealed and its queue stays', NEW.room_id USING ERRCODE = 'check_violation';
   END IF;
+  IF TG_OP = 'INSERT' AND (NEW.state <> 'queued' OR NEW.run_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'room log: queue row % of room % enters queued, naming no run', NEW.ref, NEW.room_id
+      USING ERRCODE = 'check_violation';
+  END IF;
   IF TG_OP = 'INSERT' AND NOT EXISTS (SELECT 1 FROM public.events WHERE room_id = NEW.room_id AND seq = NEW.ref
       AND type = 'message' AND payload->>'delivery' = 'queued' AND actor_id = NEW.author AND payload->>'text' = NEW.text) THEN
     RAISE EXCEPTION 'room log: queue row % of room % is not its queued message', NEW.ref, NEW.room_id
@@ -112,3 +116,14 @@ CREATE POLICY retention_read_queue  ON queue FOR SELECT TO rooms_retention
   USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
 CREATE POLICY retention_purge_queue ON queue FOR DELETE TO rooms_retention
   USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
+
+-- A bridge's stream replays its run's deliveries and resumes from its last
+-- acknowledgement on every connect (review 4.3 I3): both read through these, never
+-- the room's whole log. store.deliverableTo and lastAckSQL imply their predicates.
+-- Not CONCURRENTLY: this migration runs in one transaction, and building them
+-- blocks appends only for as long as the events table takes to scan once.
+CREATE INDEX events_deliveries ON events (room_id, seq)
+  WHERE (type = 'message' AND payload->>'delivery' = 'steering')
+     OR (type = 'state_changed' AND payload->>'kind' = 'interrupt');
+CREATE INDEX events_acks ON events (room_id, run_id)
+  WHERE type = 'state_changed' AND payload->>'kind' IN ('delivered', 'interrupted', 'undeliverable');

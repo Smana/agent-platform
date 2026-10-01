@@ -76,6 +76,8 @@ type memLog struct {
 	refuse    func(envelope.Draft) error
 	touchHeld bool
 	touches   int // lease renewals
+	// deliveryReads counts the replay's reads of the log.
+	deliveryReads int
 }
 
 func newMemLog() *memLog {
@@ -152,22 +154,40 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id, LastSeq: int64(len(evs))}, nil
 }
 
-// LastAck is the store's: the highest ref the run acknowledged as delivered or interrupted.
+// LastAck is the store's: the highest ref the run acknowledged as delivered,
+// interrupted or undeliverable that is a delivery of that run.
 func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	evs := m.events[roomID]
 	var last int64
-	for _, e := range m.events[roomID] {
+	for _, e := range evs {
 		var p struct {
 			Kind string `json:"kind"`
 			Ref  int64  `json:"ref"`
 		}
 		if e.RunID == runID && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil &&
-			(p.Kind == "delivered" || p.Kind == "interrupted") {
-			last = max(last, p.Ref)
+			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
+			if _, _, ok := Deliverable(evs[p.Ref-1], runID); ok {
+				last = max(last, p.Ref)
+			}
 		}
 	}
 	return last, nil
+}
+
+// Deliveries is the store's: the run's deliverable events in (after, through].
+func (m *memLog) Deliveries(_ context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deliveryReads++
+	var out []envelope.Event
+	for _, e := range m.events[roomID] {
+		if _, _, ok := Deliverable(e, runID); ok && e.Seq > after && e.Seq <= through && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, _ time.Duration, live func(context.Context, string) bool) (string, bool, error) {
@@ -569,7 +589,7 @@ func TestABridgeCannotForgeVerdictsOrDecisions(t *testing.T) {
 func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	var items []wire.Item
 	for i, kind := range []string{"harness_status", "harness_error", "harness_paused", "harness_event",
-		"delivered", "interrupted", "policy_decision", "decision_applied"} {
+		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied"} {
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
 			Payload: envelope.StatePayload(kind, nil)})
 	}

@@ -50,11 +50,13 @@ const (
 	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
 	// reading cannot pin a handler until its token expires.
 	defaultStreamWriteWait = 10 * time.Second
-	// replayPage is how many events a stream's replay reads at once.
-	replayPage = 500
 
 	brokerActor = "system:room-broker"
 )
+
+// replayPage is how many deliveries a stream's replay reads at once; a variable
+// so a test can page a short log.
+var replayPage = 500
 
 // Authenticator maps a request's credential to a principal. *authn.Runs and
 // *authn.Systems implement it; authn.ErrForbidden means a valid credential for a
@@ -69,6 +71,8 @@ type Log interface {
 	Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	AppendAsBridge(ctx context.Context, bridgeRun string, d envelope.Draft) (envelope.Event, bool, error)
 	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
+	// Deliveries is the run's deliverable events in (after, through], paged (phase 4).
+	Deliveries(ctx context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error)
 	Cursor(ctx context.Context, roomID, originClient string) (int64, error)
 	Room(ctx context.Context, id string) (store.RoomState, error)
 	ClaimBridge(ctx context.Context, roomID, runID string, stale time.Duration, live func(ctx context.Context, runID string) bool) (string, bool, error)
@@ -543,18 +547,18 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	// flush: a bridge that connects or resumes gets its pending deliveries before
 	// anything else (review M15).
 	for after < st.LastSeq {
-		evs, err := s.Log.Range(ctx, run.Room, after, replayPage)
+		evs, err := s.Log.Deliveries(ctx, run.Room, run.ID, after, st.LastSeq, replayPage)
 		if err != nil {
 			s.log().Warn("replay a stream", "room", run.Room, "run", run.ID, errAttr(err))
 			return // the bridge re-dials and resumes from its last ack
-		}
-		if len(evs) == 0 {
-			break
 		}
 		for _, ev := range evs {
 			if !send(ev) {
 				return
 			}
+		}
+		if len(evs) < replayPage {
+			after = st.LastSeq // the replay covered up to the mark: the hub carries the rest
 		}
 	}
 	ping := true // the first flush carries the replay, and a ping

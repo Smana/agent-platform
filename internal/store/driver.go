@@ -128,14 +128,48 @@ func (s *Store) LapsedDrivers(ctx context.Context) ([]RoomState, error) {
 	return out, rows.Err()
 }
 
-// LastAck is where a restarted bridge's deliveries resume: the highest ref the
-// run's bridge acknowledged as delivered or interrupted, 0 if none. A ref that is
-// not a seq is skipped rather than cast, so one bad ack cannot fail every restart.
+// deliverableTo is the SQL form of bridgeapi.Deliverable for the run named by the
+// parameter %[1]s: a steering message addressed to it, or an interrupt of it. Its
+// shape must imply the events_deliveries index's predicate, or the index is unused.
+const deliverableTo = `((e.type = 'message' AND e.payload->>'delivery' = 'steering' AND e.payload->'to' ? ('agent:' || %[1]s))
+	OR (e.type = 'state_changed' AND e.payload->>'kind' = 'interrupt' AND e.payload->>'runId' = %[1]s))`
+
+// lastAckSQL reads the run's acknowledgements through events_acks, and counts a
+// ref only if it is a deliverable event of that run: an ack is the bridge's claim
+// (design T6), and a forged ref past every delivery skips nothing.
+var lastAckSQL = `SELECT coalesce(max(e.seq), 0) FROM events a JOIN events e
+	ON e.room_id = a.room_id AND e.seq = CASE WHEN a.payload->>'ref' ~ '^[0-9]{1,18}$' THEN (a.payload->>'ref')::bigint END
+	WHERE a.room_id = $1 AND a.run_id = $2 AND a.type = 'state_changed'
+	AND a.payload->>'kind' IN ('delivered', 'interrupted', 'undeliverable') AND ` + fmt.Sprintf(deliverableTo, "$2")
+
+// LastAck is where a bridge's deliveries resume: the highest ref the run's bridge
+// acknowledged as delivered, interrupted or undeliverable, 0 if none. A ref that
+// is not a seq, or not a delivery of this run, is skipped.
 func (s *Store) LastAck(ctx context.Context, roomID, runID string) (int64, error) {
 	var ref int64
-	err := s.pool.QueryRow(ctx, `SELECT coalesce(max(CASE WHEN payload->>'ref' ~ '^[0-9]{1,18}$'
-		THEN (payload->>'ref')::bigint END), 0) FROM events
-		WHERE room_id = $1 AND run_id = $2 AND type = 'state_changed' AND payload->>'kind' IN ('delivered', 'interrupted')`,
-		roomID, runID).Scan(&ref)
+	err := s.pool.QueryRow(ctx, lastAckSQL, roomID, runID).Scan(&ref)
 	return ref, err
+}
+
+var deliveriesSQL = `SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 AND e.seq > $2 AND e.seq <= $3 AND ` +
+	fmt.Sprintf(deliverableTo, "$4") + ` ORDER BY e.seq LIMIT $5`
+
+// Deliveries returns up to limit of the run's deliveries in (after, through], in
+// seq order, through events_deliveries: a stream's replay reads only what it may
+// send, never the room's whole log (review I3).
+func (s *Store) Deliveries(ctx context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error) {
+	rows, err := s.pool.Query(ctx, deliveriesSQL, roomID, after, through, runID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: deliveries of run %s: %w", runID, err)
+	}
+	defer rows.Close()
+	var out []envelope.Event
+	for rows.Next() {
+		ev, err := scan(rows, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("store: deliveries of run %s: %w", runID, err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
 }

@@ -107,22 +107,22 @@ func (s *Store) Queue(ctx context.Context, roomID string) ([]Queued, error) {
 	return out, rows.Err()
 }
 
-// SetQueued moves a queued message from one state to another: ErrNotQueued when
-// it is no longer in from, ErrSealed once its room is sealed. A row moves once,
-// out of queued; promoted and consumed name the run (the steered one, or the one
-// whose brief took it), removed names none: any other move is ErrBadMove.
-func (s *Store) SetQueued(ctx context.Context, roomID string, ref int64, from, to, runID string) error {
-	if from != "queued" || (to != "removed" && to != "promoted" && to != "consumed") ||
+// SetQueued moves a queued message out of queued: ErrNotQueued when it is no
+// longer queued, ErrSealed once its room is sealed. A row moves once; promoted and
+// consumed name the run (the steered one, or the one whose brief took it), removed
+// names none: any other move is ErrBadMove.
+func (s *Store) SetQueued(ctx context.Context, roomID string, ref int64, to, runID string) error {
+	if (to != "removed" && to != "promoted" && to != "consumed") ||
 		(to == "removed") != (runID == "") || (runID != "" && !envelope.ValidID(runID)) {
-		return fmt.Errorf("store: move queued %d of room %s from %s to %s: %w", ref, roomID, from, to, ErrBadMove)
+		return fmt.Errorf("store: move queued %d of room %s to %s: %w", ref, roomID, to, ErrBadMove)
 	}
 	var run any
 	if runID != "" {
 		run = runID
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE queue SET state = $4, run_id = coalesce($5::text, run_id)
-		WHERE room_id = $1 AND ref = $2 AND state = $3 AND room_id IN (SELECT room_id FROM rooms WHERE NOT sealed)`,
-		roomID, ref, from, to, run)
+	tag, err := s.pool.Exec(ctx, `UPDATE queue SET state = $3, run_id = $4::text
+		WHERE room_id = $1 AND ref = $2 AND state = 'queued' AND room_id IN (SELECT room_id FROM rooms WHERE NOT sealed)`,
+		roomID, ref, to, run)
 	if err != nil {
 		return fmt.Errorf("store: move queued %d of room %s: %w", ref, roomID, err)
 	}

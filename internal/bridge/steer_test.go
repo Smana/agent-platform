@@ -61,6 +61,40 @@ func TestAFailedInjectionIsRetried(t *testing.T) {
 	}
 }
 
+// Review 4.3 I2: a permanent refusal is acknowledged as undeliverable, so the
+// stream goes on and the next ref is delivered; a "not now" 4xx is retried.
+func TestAPermanentRefusalIsUndeliverable(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100, status: "running"}
+	up := NewHarness(f.start(t, conv).URL, conv)
+	code := http.StatusUnprocessableEntity
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+	defer refusing.Close()
+	var acks []wire.Item
+	s := &Steering{Harness: NewHarness(refusing.URL, conv), RunID: "7f3cq2xz", Push: func(it wire.Item) { acks = append(acks, it) }}
+	if err := s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "refused"}); err != nil {
+		t.Fatalf("a permanent refusal must not end the stream: %v", err)
+	}
+	if err := s.Interrupt(t.Context(), wire.Interrupt{Ref: 13}); err != nil {
+		t.Fatalf("a permanent refusal must not end the stream: %v", err)
+	}
+	if len(acks) != 2 || string(acks[0].Payload) != `{"code":422,"kind":"undeliverable","ref":12,"runId":"7f3cq2xz"}` ||
+		!strings.Contains(string(acks[1].Payload), `"kind":"undeliverable","ref":13`) {
+		t.Fatalf("acks = %v", acks)
+	}
+	if s.Deliver(t.Context(), wire.Deliver{Ref: 12, Text: "refused"}) != nil || len(acks) != 2 {
+		t.Fatal("an undeliverable ref is settled: a replay of it is skipped")
+	}
+	code = http.StatusNotFound // the conversation does not exist yet: not now
+	if err := s.Deliver(t.Context(), wire.Deliver{Ref: 14, Text: "early"}); err == nil || len(acks) != 2 {
+		t.Fatalf("a 404 is retried, not settled: %v %v", err, acks)
+	}
+	s.Harness = up
+	if s.Deliver(t.Context(), wire.Deliver{Ref: 14, Text: "early"}) != nil || len(acks) != 3 ||
+		!strings.Contains(string(acks[2].Payload), `"kind":"delivered","ref":14`) {
+		t.Fatalf("the next ref is delivered: %v", acks)
+	}
+}
+
 // Push is safe from any goroutine; the loop numbers status items once, after
 // the stream's cursor at hello.
 func TestPushIsGoroutineSafeAndNumberedOnce(t *testing.T) {

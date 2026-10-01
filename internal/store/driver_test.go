@@ -116,7 +116,7 @@ func TestQueueKeepsFIFOOrder(t *testing.T) {
 		}
 		refs = append(refs, ev.Seq)
 	}
-	if err := s.SetQueued(ctx, room, refs[1], "queued", "removed", ""); err != nil {
+	if err := s.SetQueued(ctx, room, refs[1], "removed", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Queue(ctx, room)
@@ -221,10 +221,10 @@ func TestQueueIsFIFOAndStateful(t *testing.T) {
 	}
 	a, _ := s.Enqueue(context.Background(), q(1, "first"), "human:alice", "first")
 	b, _ := s.Enqueue(context.Background(), q(2, "second"), "human:alice", "second")
-	if err := s.SetQueued(context.Background(), room, a.Seq, "queued", "removed", ""); err != nil {
+	if err := s.SetQueued(context.Background(), room, a.Seq, "removed", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetQueued(context.Background(), room, a.Seq, "queued", "consumed", "7f3cq2xz"); !errors.Is(err, ErrNotQueued) {
+	if err := s.SetQueued(context.Background(), room, a.Seq, "consumed", "7f3cq2xz"); !errors.Is(err, ErrNotQueued) {
 		t.Fatalf("a removed message is not consumable: %v", err)
 	}
 	got, _ := s.Queue(context.Background(), room)
@@ -252,7 +252,7 @@ func TestEnqueueReplayIsIdempotent(t *testing.T) {
 		t.Fatalf("%+v, %v", got, err)
 	}
 	// A consumed message records the run whose brief took it; a later move keeps it.
-	if err := s.SetQueued(ctx, room, first.Seq, "queued", "consumed", "7f3cq2xz"); err != nil {
+	if err := s.SetQueued(ctx, room, first.Seq, "consumed", "7f3cq2xz"); err != nil {
 		t.Fatal(err)
 	}
 	var run string
@@ -261,23 +261,53 @@ func TestEnqueueReplayIsIdempotent(t *testing.T) {
 	}
 }
 
-// LastAck is the highest ref the run's bridge acknowledged, delivered or
-// interrupted; another run's acks and other kinds do not count.
+// steerTo appends, as a human's act does, a steering message to run, or with
+// interrupt an interrupt of it, and returns its seq.
+func steerTo(t *testing.T, s *Store, n int64, run string, interrupt bool) int64 {
+	t.Helper()
+	d := envelope.Draft{RoomID: room, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:own"},
+		Origin: envelope.OriginClient, OriginClient: "human:own:s1", OriginSeq: n, Type: envelope.Message,
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "steer", To: []string{"agent:" + run},
+			Delivery: envelope.DeliverySteering})}
+	if interrupt {
+		d.Type, d.Payload = envelope.StateChanged, envelope.StatePayload("interrupt", map[string]any{"runId": run})
+	}
+	ev, _, err := s.Append(t.Context(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ev.Seq
+}
+
+// LastAck is the highest ref the run's bridge acknowledged, delivered,
+// interrupted or undeliverable, that is a delivery of that run. Another run's
+// acks, other kinds, refs that are not seqs, and forged refs (review 4.3 M2: an
+// ack is the bridge's claim) do not count.
 func TestLastAck(t *testing.T) {
 	ctx := t.Context()
 	s, _, _, _ := open(t)
 	if n, err := s.LastAck(ctx, room, "7f3cq2xz"); err != nil || n != 0 {
 		t.Fatalf("no ack yet: %d, %v", n, err)
 	}
+	steer, intr := steerTo(t, s, 1, "7f3cq2xz", false), steerTo(t, s, 2, "7f3cq2xz", true)
+	theirs := steerTo(t, s, 3, "aaaaaaaa", false)
+	stuck := steerTo(t, s, 4, "7f3cq2xz", false)
+	if _, _, err := s.Append(ctx, draft("agent:chat", 1)); err != nil { // a chat: no delivery
+		t.Fatal(err)
+	}
 	for i, c := range []struct {
 		run, kind string
 		ref       any
 	}{
-		{"7f3cq2xz", "delivered", 3},
-		{"7f3cq2xz", "interrupted", 5},
+		{"7f3cq2xz", "delivered", steer},
+		{"7f3cq2xz", "interrupted", intr},
+		{"7f3cq2xz", "undeliverable", stuck},
 		{"7f3cq2xz", "harness_status", 9},
-		{"aaaaaaaa", "delivered", 12},
-		{"7f3cq2xz", "delivered", "99x"}, // not a seq: skipped, not a failed cast
+		{"aaaaaaaa", "delivered", theirs},
+		{"7f3cq2xz", "delivered", theirs},    // another run's delivery
+		{"7f3cq2xz", "delivered", stuck + 1}, // the chat
+		{"7f3cq2xz", "delivered", 9999},      // past every delivery: forged
+		{"7f3cq2xz", "delivered", "99x"},     // not a seq: skipped, not a failed cast
 		{"7f3cq2xz", "delivered", 1e30},
 	} {
 		d := draftIn(room, "agent:ack", int64(i+1))
@@ -287,7 +317,31 @@ func TestLastAck(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n, err := s.LastAck(ctx, room, "7f3cq2xz"); err != nil || n != 5 {
-		t.Fatalf("last ack = %d, %v; want 5", n, err)
+	if n, err := s.LastAck(ctx, room, "7f3cq2xz"); err != nil || n != stuck {
+		t.Fatalf("last ack = %d, %v; want %d", n, err, stuck)
+	}
+	if n, err := s.LastAck(ctx, room, "aaaaaaaa"); err != nil || n != theirs {
+		t.Fatalf("the other run's last ack = %d, %v; want %d", n, err, theirs)
+	}
+}
+
+// Deliveries are the run's steering and interrupts in (after, through], paged.
+func TestDeliveries(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	var mine []int64
+	for i := range int64(6) {
+		mine = append(mine, steerTo(t, s, 2*i+1, "7f3cq2xz", i%2 == 1))
+		steerTo(t, s, 2*i+2, "aaaaaaaa", false)
+	}
+	if _, _, err := s.Append(ctx, draft("agent:chat", 1)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Deliveries(ctx, room, "7f3cq2xz", mine[0], mine[4], 3)
+	if err != nil || len(got) != 3 || got[0].Seq != mine[1] || got[2].Seq != mine[3] {
+		t.Fatalf("%+v, %v; want %v", got, err, mine[1:4])
+	}
+	if got, err := s.Deliveries(ctx, room, "7f3cq2xz", mine[3], mine[4], 10); err != nil || len(got) != 1 || got[0].Seq != mine[4] {
+		t.Fatalf("through is inclusive, and the bound: %+v, %v", got, err)
 	}
 }
