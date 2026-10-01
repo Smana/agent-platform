@@ -38,8 +38,16 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	}
 	live := 0
 	for _, x := range all {
-		if x.Principal == runs.PrincipalFactory && !runs.Terminal(x.Phase) {
+		if runs.Terminal(x.Phase) {
+			continue
+		}
+		if x.Principal == runs.PrincipalFactory {
 			live++
+		}
+		// One live run per room (C3: a room's runs share its branch). The task's own was adopted
+		// before; anyone else's, a run a human started in the room, is waited for.
+		if x.RoomRef == t.Status.RoomRef && x.TaskID != t.Name {
+			return false, "waiting_room_busy", nil
 		}
 	}
 	if live >= r.Cfg.Caps.ConcurrentRuns {
@@ -67,7 +75,8 @@ func (r *Reconciler) adopt(ctx context.Context, t *v1alpha1.Task) (bool, error) 
 			continue
 		}
 		now := metav1.NewTime(r.Now())
-		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: "initial", Started: &now})
+		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: nextTrigger(t), Started: &now})
+		t.Status.NextTrigger = ""
 		r.to(t, phaseFor(x.Role), "adopted")
 		return true, nil
 	}
@@ -123,6 +132,7 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
 		Round: t.Status.ReviewRounds, Started: &now})
+	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
 	return nil
@@ -260,6 +270,9 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 		class := t.Spec.PredictedClass
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
+	}
+	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
+		return r.revise(ctx, t, pr, rvs)
 	}
 	return nil
 }

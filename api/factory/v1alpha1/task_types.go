@@ -169,6 +169,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="roomSeq never goes down: the broker would drop a reused clientSeq"
 	// +optional
 	RoomSeq int64 `json:"roomSeq,omitempty"`
+	// The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and
+	// cleared once that run exists.
+	// +kubebuilder:validation:Enum=initial;review;human;ci;retry
+	// +optional
+	NextTrigger string `json:"nextTrigger,omitempty"`
 	// GitHub review and comment ids already acted on (Δ5, commands). The reconciler trims the oldest.
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=512

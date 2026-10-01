@@ -211,6 +211,13 @@ func Started(t *v1alpha1.Task, s runs.Spec, roomsURL string) Event {
 	return Event{Key: "run-" + s.RunID + "-started", Body: body}
 }
 
+// Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
+func Revising(t *v1alpha1.Task, reviewer string) Event {
+	return Event{Key: fmt.Sprintf("revise-%d", len(t.Status.Runs)),
+		Body: fmt.Sprintf("Agent factory task `%s` is revising after @%s's review: the next run starts on the same branch, "+
+			"with the review in its brief.", t.Name, reviewer)}
+}
+
 // PROpened announces the task's pull request.
 func PROpened(t *v1alpha1.Task, number int, url, runID string) Event {
 	return Event{Key: "pr-opened", Body: fmt.Sprintf("Run `%s` of task `%s` opened #%d: %s", runID, t.Name, number, url)}

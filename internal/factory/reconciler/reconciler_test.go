@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
@@ -46,7 +48,7 @@ func newRuns() *fakeRuns {
 
 func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
 	f.specs[s.RunID] = s
-	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, Phase: "Pending", MaxTokens: s.MaxTokens}
+	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef, Phase: "Pending", MaxTokens: s.MaxTokens}
 	return nil
 }
 
@@ -77,8 +79,62 @@ func (f *fakeRuns) Delete(_ context.Context, id string) error { delete(f.runs, i
 
 func (f *fakeRuns) set(id, phase string) { r := f.runs[id]; r.Phase = phase; f.runs[id] = r }
 
-// fakeLog is the room's log as the broker writes it: a run's end is the broker's run_phase.
-type fakeLog struct{ evs []envelope.Event }
+// fakeLog is the room's log as the broker writes it: a run's end is the broker's run_phase. Its
+// queue dedupes on clientSeq as the broker does, and lists only what is still queued; task_state
+// messages are kept apart, one per clientSeq, so no seq moves.
+type fakeLog struct {
+	evs      []envelope.Event
+	queue    []rooms.Queued
+	consumed map[int64]string
+	states   map[int64]string
+	noRoom   bool // the broker has no log for the room yet
+}
+
+func (l *fakeLog) TaskState(_ context.Context, _, text string, clientSeq int64) error {
+	if l.noRoom {
+		return &rooms.APIError{Status: 404, Reason: "no_room"}
+	}
+	if l.states == nil {
+		l.states = map[int64]string{}
+	}
+	if _, ok := l.states[clientSeq]; !ok {
+		l.states[clientSeq] = text
+	}
+	return nil
+}
+
+func (l *fakeLog) Enqueue(_ context.Context, _, stream, text string, clientSeq int64) error {
+	for _, q := range l.queue {
+		if q.Ref == clientSeq {
+			return nil
+		}
+	}
+	l.queue = append(l.queue, rooms.Queued{Ref: clientSeq, Author: "system:factory:" + stream, Text: text})
+	slices.SortFunc(l.queue, func(a, b rooms.Queued) int { return int(a.Ref - b.Ref) })
+	return nil
+}
+
+func (l *fakeLog) Queue(context.Context, string) ([]rooms.Queued, error) {
+	var out []rooms.Queued
+	for _, q := range l.queue {
+		if _, gone := l.consumed[q.Ref]; !gone {
+			out = append(out, q)
+		}
+	}
+	return out, nil
+}
+
+func (l *fakeLog) Consume(_ context.Context, _ string, refs []int64, runID string) error {
+	if l.consumed == nil {
+		l.consumed = map[int64]string{}
+	}
+	for _, r := range refs {
+		if _, gone := l.consumed[r]; !gone {
+			l.consumed[r] = runID
+		}
+	}
+	return nil
+}
 
 func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envelope.Event, int64, error) {
 	var out []envelope.Event
@@ -590,7 +646,7 @@ func TestAStopIsCountedOnceThroughAConflict(t *testing.T) {
 func TestANilLoggerIsQuiet(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.r.Log = nil
-	g.r.Rooms = failingLog{}
+	g.r.Rooms = &failingLog{}
 	g.reconcile(t, "3buqdlot", 3)
 	g.runs.set("7f3cq2xz", "Failed")
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
@@ -598,8 +654,9 @@ func TestANilLoggerIsQuiet(t *testing.T) {
 	}
 }
 
-type failingLog struct{}
+// failingLog cannot read the room's log; writes succeed.
+type failingLog struct{ fakeLog }
 
-func (failingLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
+func (*failingLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
 	return nil, 0, errors.New("no_room")
 }

@@ -39,9 +39,14 @@ type RunClient interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// RoomLog reads a room's log from afterSeq, returning the resume cursor (rooms.Client).
+// RoomLog is the broker's system API as the reconciler uses it (rooms.Client): the room's log
+// from afterSeq with its resume cursor, the room's queue, and task_state messages.
 type RoomLog interface {
 	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
+	Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error
+	Queue(ctx context.Context, room string) ([]rooms.Queued, error)
+	Consume(ctx context.Context, room string, refs []int64, runID string) error
+	TaskState(ctx context.Context, room, text string, clientSeq int64) error
 }
 
 // taskForge is the part of the forge the reconciler uses, as the factory App.
@@ -433,5 +438,31 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Reason = why
 		return nil
 	}
-	return r.startRun(ctx, t, r.implementerSpec(t, FirstBrief(t, r.Nonce())), "initial")
+	if len(t.Status.Runs) == 0 {
+		// The snapshot, once, in the room of record: later runs read it there, never the live
+		// issue (§1, T1). Its clientSeq is the task's room ledger (ruling SK), so a retry reposts
+		// the same seq, which the broker keeps once. A room the broker has no log for yet waits.
+		err := narrate.Room(ctx, r.Rooms, t, "snapshot", SnapshotMessage(t, r.Nonce()),
+			func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) })
+		if errors.Is(err, rooms.ErrNoRoom) {
+			t.Status.Reason = "waiting_room_log"
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	s, refs, trigger, err := r.nextImplementer(ctx, t)
+	if err != nil {
+		return err
+	}
+	if err := r.startRun(ctx, t, s, trigger); err != nil {
+		return err
+	}
+	// Consumed once the run exists, and only what its brief quoted (F-A). A failure only means
+	// the next brief repeats them.
+	if err := r.Rooms.Consume(ctx, t.Status.RoomRef, refs, current(t).ID); err != nil {
+		r.log().Warn("queue consume failed", "task", t.Name, "err", err)
+	}
+	return nil
 }

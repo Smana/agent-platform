@@ -26,7 +26,7 @@ func TestProbeStopAfterALostRunRecordLeavesTheRunAlive(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
 		WithObjects(issueTask("3buqdlot", 7, "x")).
 		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
-			if failNext {
+			if tk, ok := o.(*v1alpha1.Task); ok && failNext && len(tk.Status.Runs) > 0 { // the write recording the run
 				failNext = false
 				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
 			}

@@ -107,7 +107,7 @@ log. The log keeps its own retention clock after the CR is gone.
 | Actor | Creates | Reads | Writes into the log |
 |---|---|---|---|
 | Owner, before SP3 | `Room` CRs with `kubectl`; runs with `task agent:run -- --room` | SQL; the system API | nothing directly |
-| SP3's factory | `Room` CRs and every `AgentRun` (C3: the only creator) | `GET /v1/rooms/{id}/events` | `message{kind: task_state}` |
+| SP3's factory | `Room` CRs and every `AgentRun` (C3: the only creator) | `GET /v1/rooms/{id}/events`, `GET /v1/rooms/{id}/queue` | `message{kind: task_state}`, the task's snapshot first; a maintainer's review as a queued `chat` (`POST /v1/rooms/{id}/queue`, stream `review`), consumed by the run whose brief quoted it |
 | A run | nothing | `room_read` (phase 3) | its harness events through the bridge; `room_post`, `room_handoff`, `room_verdict` (phase 3) |
 | A human | rooms from the UI (phase 4), forks (phase 6) | the web UI (phase 2), `roomctl` (phase 6) | messages, driver actions, decisions (phases 4–6) |
 | The broker | the `Room`s a human asks for, new or forked (phases 4, 6); **never** an `AgentRun` | everything | room and run lifecycle, seals, limits, verdict outcomes |
