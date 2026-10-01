@@ -495,6 +495,15 @@ func TestTheNewestRetryOnTheIssueOrThePR(t *testing.T) {
 	if c := g.f.Comments(7); !strings.Contains(c[len(c)-1], "as @alice asked") {
 		t.Fatalf("%q", c)
 	}
+	// The newest wins wherever it sits: here the issue's, read after the pull request's.
+	g = newRig(t, escalatedTask(true), roomOf("3buqdlot"))
+	g.r.Cfg.Maintainers = append(g.r.Cfg.Maintainers, "alice")
+	pr.Comments = []forge.Comment{retryBy(92, "alice", 5*time.Minute)}
+	g.f.SetPR(pr)
+	g.f.SetComments(7, retryBy(93, "Smana", time.Minute))
+	if tk := g.reconcile(t, "3buqdlot", 1); !slices.Equal(tk.Status.Handled, []int64{93}) {
+		t.Fatalf("%v", tk.Status.Handled)
+	}
 }
 
 // A webhook retry or a replay never starts two runs: a lost status write repeats the move, and a
@@ -590,6 +599,11 @@ func TestRemindThenCloseStale(t *testing.T) {
 	tk.Status.PhaseSince = &since
 	g := newRig(t, tk)
 	g.f.SetPR(pr12())
+	g.r.Now = func() time.Time { return now.Add(-2 * time.Hour) }
+	if g.reconcile(t, "3buqdlot", 1); len(g.f.Comments(7)) != 0 {
+		t.Fatalf("reminded at 47 h: %q", g.f.Comments(7))
+	}
+	g.r.Now = func() time.Time { return now }
 	g.reconcile(t, "3buqdlot", 2)
 	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "@Smana") || !strings.Contains(c[0], "waited 48 hours") {
 		t.Fatalf("one reminder: %q", c)
@@ -618,6 +632,30 @@ func TestAPostedReminderWritesNothingMore(t *testing.T) {
 	}
 }
 
+// silentForge is a forge whose comments all fail, as in a GitHub outage.
+type silentForge struct{ *forge.Fake }
+
+func (silentForge) Comment(context.Context, int, string) error { return errors.New("github is down") }
+
+// Through an outage the reminder waits in the outbox once, however many polls re-fire its timer:
+// the outbox holds at most 16 narrations (CRD), so a key queued every poll would wedge the task.
+func TestAnUnpostedReminderIsQueuedOnce(t *testing.T) {
+	tk := awaiting()
+	since := metav1.NewTime(now.Add(-49 * time.Hour))
+	tk.Status.PhaseSince = &since
+	g := newRig(t, tk)
+	g.f.SetPR(pr12())
+	g.r.Forge = silentForge{g.f}
+	for range 3 {
+		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+			t.Fatal("the failed post is returned")
+		}
+	}
+	if got := g.reconcile(t, "3buqdlot", 0); len(got.Status.Outbox) != 1 {
+		t.Fatalf("outbox %+v", got.Status.Outbox)
+	}
+}
+
 // Only maintainers' silence counts: their review or comment starts the wait again, and that new
 // spell has its own reminder before any close. Anyone else's comment changes nothing.
 func TestAMaintainerRestartsTheWait(t *testing.T) {
@@ -633,7 +671,7 @@ func TestAMaintainerRestartsTheWait(t *testing.T) {
 		t.Fatalf("a maintainer's review an hour ago: %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 	pr.Comments = append(pr.Comments, forge.Comment{ID: 3, Author: "ALICE", At: now.Add(-13 * 24 * time.Hour)})
-	pr.Reviews = nil
+	pr.Reviews = []forge.Review{{ID: 4, Author: "someone", State: "COMMENTED", At: now.Add(-time.Minute)}}
 	g.f.SetPR(pr)
 	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.f.Comments(7)) != 1 || g.f.Closed(12) {
 		t.Fatalf("13 days after alice's comment: one reminder, no close: %s %q", tk.Status.Phase, g.f.Comments(7))
