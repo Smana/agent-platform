@@ -2,7 +2,7 @@
 
 import { api } from "./api";
 import { RoomConnection, type Snapshot } from "./conn";
-import { mountControls, rejection } from "./controls";
+import { hasControls, mountControls, rejection } from "./controls";
 import { PendingActs } from "./pending";
 import { renderEvent } from "./render";
 import { RoomState } from "./room-state";
@@ -38,7 +38,7 @@ function room(id: string) {
       snap = s;
       state.reset(s, throughSeq);
       renderHeader();
-      if (s.you.role === "watcher") {
+      if (!hasControls(s.you)) {
         controls = you = undefined;
         section.replaceChildren();
         return;

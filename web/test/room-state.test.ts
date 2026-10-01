@@ -70,4 +70,22 @@ describe("RoomState", () => {
     s.apply(ev(1, "driver", { from: "system:factory", to: "human:a", epoch: 8, reason: "requested" }));
     expect([s.driver, s.driverEpoch]).toEqual(["human:b", 9]);
   });
+  // §6: a card per pending approval, from the state frame, then the log past its mark.
+  it("keeps the pending approvals", () => {
+    const req = (seq: number, id: string) => ({ ...ev(seq, "approval_requested",
+      { approvalId: id, callId: "c" + seq, class: "forge.pr", action: { command: "gh pr create" }, expiresAt: "2026-10-01T10:30:00Z" }), runId: "7f3cq2xz" });
+    const s = new RoomState();
+    s.reset({ driver: "system:factory", driverEpoch: 0, approvals: [{ approvalId: "old", runId: "7f3cq2xz", callId: "c1",
+      class: "shell.high", action: {}, expiresAt: "2026-10-01T10:00:00Z", seq: 2 }] }, 600);
+    s.apply(req(2, "old")); // the replay resends what the snapshot holds
+    s.apply(req(500, "decided-before-the-mark")); // at or below the mark the snapshot decides
+    s.apply(req(601, "new"));
+    expect(s.approvals().map((a) => a.approvalId)).toEqual(["old", "new"]);
+    expect(s.approvals()[1]).toEqual({ approvalId: "new", runId: "7f3cq2xz", callId: "c601", class: "forge.pr",
+      action: { command: "gh pr create" }, expiresAt: "2026-10-01T10:30:00Z", seq: 601 });
+    s.apply(ev(602, "approval_decided", { approvalId: "old", decision: "expired" }));
+    expect(s.approvals().map((a) => a.approvalId)).toEqual(["new"]);
+    s.reset({ driver: "system:factory", driverEpoch: 0 }, 700);
+    expect(s.approvals()).toEqual([]);
+  });
 });

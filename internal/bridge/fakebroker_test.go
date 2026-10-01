@@ -52,6 +52,8 @@ type fakeBroker struct {
 	busy    bool     // answer 409 room_busy to every hello while set
 	poison  string   // a batch holding an item whose payload contains it is 400 bad_item
 	sse     []string // frames the stream sends before idling
+	// approvals are the approval requests received; each opens "ap-<callId>".
+	approvals []wire.ApprovalRequest
 	// conflicts are seqs pushed again with other content than the log holds.
 	conflicts []string
 }
@@ -144,6 +146,18 @@ func (b *fakeBroker) start(t *testing.T) (srv *httptest.Server, caFile string) {
 			}
 		}
 		_ = json.NewEncoder(w).Encode(wire.BatchAck{})
+	})
+	mux.HandleFunc("POST /v1/bridge/approvals", func(w http.ResponseWriter, r *http.Request) {
+		var req wire.ApprovalRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CallID == "" || !json.Valid(req.Action) {
+			refuse(w, reply{code: http.StatusBadRequest, reason: "bad_approval"})
+			return
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.record(r, "approvals", http.StatusOK)
+		b.approvals = append(b.approvals, req)
+		_ = json.NewEncoder(w).Encode(wire.ApprovalAck{ApprovalID: "ap-" + req.CallID, ExpiresAt: time.Now().Add(time.Hour)})
 	})
 	mux.HandleFunc("GET /v1/bridge/stream", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()

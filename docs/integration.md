@@ -123,12 +123,12 @@ Set by the `AgentRun` composition (CC-S2).
 | `BROKER_CA_FILE` | `/etc/room-broker-ca/ca.crt` |
 | `HARNESS_URL` | `http://127.0.0.1:8000` |
 | `ROOM_TOKEN_FILE` | `/var/run/secrets/agents/room/token` |
-| `EGRESS_PROFILES` | The run's egress profiles, comma-separated. Reserved: nothing reads it in phase 1 |
+| `EGRESS_PROFILES` | The run's egress profiles, comma-separated. The classifier reads them: a package install outside them is `egress.new` (phase 5) |
 | `HEALTH_ADDR` | `:8085` (default): `/healthz` for kubelet only. The bridge serves no metrics; the broker counts its stalls and stubs (Ruling AP) |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
 | `FLUSH_GRACE` | How long the SIGTERM drain may take; `25s` (default), at most `28s`. Set it lower when the harness uses much of the pod's 30 s grace: the kubelet signals the sidecar only after the harness exits |
 | `GOMEMLIMIT` | Unset: the binary sets `48MiB`, the soft heap limit its buffer budget is sized for inside the 64 Mi limit. A pod spec may set its own |
-| `BRANCH` | The run's branch (phase 5, CC-S5) |
+| `BRANCH` | The run's branch (phase 5, CC-S5): the one push that is `forge.push`. Unset, every push is `forge.other` |
 
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities
 dropped.

@@ -17,13 +17,17 @@ footer .notice { margin-left: 12px; color: #b91c1c; font-family: system-ui, sans
 .controls textarea { flex: 1 1 100%; box-sizing: border-box; font: inherit; }
 .controls input, .new-room input { flex: 1 1 12em; min-width: 0; }
 .queue { margin: 0; padding-left: 18px; } .queue li span { overflow-wrap: anywhere; margin-right: 6px; }
+.approvals { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.approval { border: 1px solid #d97706; border-radius: 4px; padding: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.approval-head { flex-basis: 100%; font-weight: 600; overflow-wrap: anywhere; }
+.approval-action { flex-basis: 100%; margin: 0; background: #f4f4f5; padding: 6px; overflow-x: auto; max-height: 16em; }
 .manifest pre { background: #f4f4f5; padding: 8px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: #b91c1c; }
 @media (prefers-color-scheme: dark) {
   body { background: #18181b; color: #e4e4e7; }
   header, footer { background: #27272a; }
   .ev, .controls { border-color: #3f3f46; }
-  .manifest pre { background: #27272a; }
+  .manifest pre, .approval-action { background: #27272a; }
   footer .notice, .new-room .notice { color: #f87171; }
   .ev-head, footer .status { color: #a1a1aa; }
 }
