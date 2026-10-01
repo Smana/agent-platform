@@ -31,11 +31,6 @@ import (
 )
 
 const (
-	// A bridge seen within this window holds its room's lease (ruling P17, kept in
-	// the store: review I7). It pushes at least every 30 s, an empty batch when its
-	// run is quiet, so two minutes of silence means gone.
-	connectedWindow = 2 * time.Minute
-
 	// Request bounds. A bridge sends at most 100 items per batch (Task 1.11).
 	maxBatchBytes   = 2 << 20
 	maxBatchItems   = 500
@@ -76,7 +71,7 @@ type Log interface {
 	Deliveries(ctx context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error)
 	Cursor(ctx context.Context, roomID, originClient string) (int64, error)
 	Room(ctx context.Context, id string) (store.RoomState, error)
-	ClaimBridge(ctx context.Context, roomID, runID string, stale time.Duration, live func(ctx context.Context, runID string) bool) (string, bool, error)
+	ClaimBridge(ctx context.Context, roomID, runID string, live func(ctx context.Context, runID string) bool) (string, bool, error)
 	TouchBridge(ctx context.Context, roomID, runID string) (held bool, err error)
 }
 
@@ -288,8 +283,8 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	ctx := r.Context()
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
-	// agrees (review I7). A holder still live and seen within connectedWindow keeps it.
-	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, connectedWindow, func(_ context.Context, id string) bool {
+	// agrees (review I7). A holder keeps it while its run is live (ruling SBB).
+	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, func(_ context.Context, id string) bool {
 		_, live := s.Watch.Live(id)
 		return live
 	})
