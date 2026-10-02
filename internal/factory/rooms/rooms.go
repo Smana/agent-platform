@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -64,19 +65,80 @@ func Ensure(ctx context.Context, c client.Client, ns, id, dataClass, repo string
 // room (C4).
 func HumanDriver(r *v1alpha1.Room) bool { return strings.HasPrefix(r.Status.Driver, "human:") }
 
+// RunEnd is the broker's end event for a run: its phase, its reason, and its seq in the room.
+type RunEnd struct {
+	Phase, Reason string
+	Seq           int64
+}
+
 // LastRunEnd finds the broker's end event for a run (SP2 P15): the reason the run really ended,
 // where the AgentRun only says Failed. Only the broker's own run_phase counts.
-func LastRunEnd(evs []envelope.Event, runID string) (phase, reason string, ok bool) {
+func LastRunEnd(evs []envelope.Event, runID string) (RunEnd, bool) {
 	for i := len(evs) - 1; i >= 0; i-- {
-		e := evs[i]
-		// The broker stamps the actor from the credential, so its id alone names the writer.
-		if e.Type != envelope.StateChanged || e.RunID != runID || e.Origin != envelope.OriginBroker || e.Actor.ID != brokerActor {
-			continue
-		}
-		var p struct{ Kind, Phase, Reason string }
-		if json.Unmarshal(e.Payload, &p) == nil && p.Kind == "run_phase" && p.Reason != "" {
-			return p.Phase, p.Reason, true
+		if end, ok := runEnd(evs[i], runID); ok {
+			return end, true
 		}
 	}
-	return "", "", false
+	return RunEnd{}, false
+}
+
+// FirstRunEnd is the run's first end event in evs: where its own words stop. A later end, such as a
+// Revoked written when the claim is collected, never reopens the run.
+func FirstRunEnd(evs []envelope.Event, runID string) (RunEnd, bool) {
+	for _, e := range evs {
+		if end, ok := runEnd(e, runID); ok {
+			return end, true
+		}
+	}
+	return RunEnd{}, false
+}
+
+// runEnd is e as the broker's end event of run runID.
+func runEnd(e envelope.Event, runID string) (RunEnd, bool) {
+	// The broker stamps the actor from the credential, so its id alone names the writer.
+	if e.Type != envelope.StateChanged || e.RunID != runID || e.Origin != envelope.OriginBroker || e.Actor.ID != brokerActor {
+		return RunEnd{}, false
+	}
+	var p struct{ Kind, Phase, Reason string }
+	if json.Unmarshal(e.Payload, &p) == nil && p.Kind == "run_phase" && p.Reason != "" {
+		return RunEnd{Phase: p.Phase, Reason: p.Reason, Seq: e.Seq}, true
+	}
+	return RunEnd{}, false
+}
+
+// verifier is a role room_verdict serves: only a reviewer's or a tester's verdict counts.
+func verifier(role string) bool { return role == "reviewer" || role == "tester" }
+
+// commitRE is room_verdict's own commit rule.
+var commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// Verdict is a reviewer or tester run's verdict. Text is the agent's, untrusted: a brief quotes it
+// sanitised and fenced.
+type Verdict struct {
+	Verdict, Text, Commit, RunID string
+	Seq                          int64
+}
+
+// LastVerdict is what the factory acts on after a reviewer or tester run (§3): that run's own
+// newest verdict, recorded by the agent with room_verdict. Humans steer through GitHub reviews,
+// never through a verdict in the room (owner, 2026-09-27, R36). The run is bound by what the broker
+// stamps from the run's credential, never by the payload (ruling TB). A malformed newest verdict
+// is no verdict: it never falls back to the one it replaced.
+func LastVerdict(evs []envelope.Event, runID string) (Verdict, bool) {
+	for i := len(evs) - 1; i >= 0; i-- {
+		e := evs[i]
+		if e.Type != envelope.Message || e.RunID != runID || e.Origin != envelope.OriginClient ||
+			e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+runID || !verifier(e.Actor.Role) {
+			continue
+		}
+		var p envelope.MessagePayload
+		if json.Unmarshal(e.Payload, &p) != nil || p.Kind != envelope.KindReviewVerdict {
+			continue
+		}
+		if (p.Verdict != "approve" && p.Verdict != "changes") || !commitRE.MatchString(p.Commit) {
+			return Verdict{}, false
+		}
+		return Verdict{Verdict: p.Verdict, Text: p.Text, Commit: p.Commit, RunID: e.RunID, Seq: e.Seq}, true
+	}
+	return Verdict{}, false
 }

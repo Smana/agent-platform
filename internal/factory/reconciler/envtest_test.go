@@ -55,7 +55,7 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	}
 	r := &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: forge.NewFake(), Runs: runs.Client{C: c},
 		Rooms: &fakeLog{}, Triage: triage.Static{Cfg: cfg()}, Metrics: &fakeMetrics{},
-		Now: time.Now, NewRunID: func() string { return "7f3cq2xz" }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler),
+		Now: time.Now, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler),
 		Trace: &fakeSink{}}
 	if err := r.SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	u.SetGroupVersionKind(runs.GVK())
 	var got v1alpha1.Task
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		if c.Get(ctx, types.NamespacedName{Namespace: runs.Namespace, Name: runs.Name("7f3cq2xz")}, u) != nil {
+		if c.Get(ctx, types.NamespacedName{Namespace: runs.Namespace, Name: runs.Name(runID("3buqdlot", 0))}, u) != nil {
 			continue
 		}
 		if c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && got.Status.Phase == v1alpha1.PhaseImplementing &&
@@ -99,6 +99,19 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	dropped.Status.Trace = nil
 	if err := c.Status().Update(ctx, dropped); err == nil || !strings.Contains(err.Error(), "a task's trace is never removed") {
 		t.Fatalf("a removed trace is refused: %v", err)
+	}
+
+	// R49: settled usage stays settled — the omitempty bool's has() guards hold on a real API
+	// server, where false is absent.
+	settled := got.DeepCopy()
+	settled.Status.UsageSettled = true
+	if err := c.Status().Update(ctx, settled); err != nil {
+		t.Fatal(err)
+	}
+	unsettled := settled.DeepCopy()
+	unsettled.Status.UsageSettled = false
+	if err := c.Status().Update(ctx, unsettled); err == nil || !strings.Contains(err.Error(), "settled usage stays settled") {
+		t.Fatalf("unsettling is refused: %v", err)
 	}
 
 	// A change of the run is a reconcile of its task: the AgentRun watch maps the label back.

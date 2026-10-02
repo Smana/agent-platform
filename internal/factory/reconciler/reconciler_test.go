@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,7 @@ type fakeRuns struct {
 	specs   map[string]runs.Spec
 	runs    map[string]runs.Run
 	patches map[string]map[string]string
+	now     func() time.Time // stamps a created claim; nil means time.Now
 }
 
 func newRuns() *fakeRuns {
@@ -47,8 +49,13 @@ func newRuns() *fakeRuns {
 }
 
 func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
+	created := time.Now()
+	if f.now != nil {
+		created = f.now()
+	}
 	f.specs[s.RunID] = s
-	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef, Phase: "Pending", MaxTokens: s.MaxTokens}
+	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef,
+		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created}
 	return nil
 }
 
@@ -190,6 +197,16 @@ func (l *fakeLog) Events(_ context.Context, _ string, after int64, limit int) ([
 	return out, int64(len(l.evs)), nil
 }
 
+func (l *fakeLog) LastSeq(context.Context, string) (int64, error) { return int64(len(l.evs)), nil }
+
+// verdict is a reviewer or tester run's room_verdict, as the broker stamps it: the only verdict the
+// factory reads (R36).
+func (l *fakeLog) verdict(runID, v, commit, text string) {
+	l.evs = append(l.evs, envelope.Event{Seq: int64(len(l.evs) + 1), RunID: runID, Type: envelope.Message, Origin: envelope.OriginClient,
+		Actor:   envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + runID, Role: "reviewer"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Verdict: v, Commit: commit, Text: text, Delivery: envelope.DeliveryNone})})
+}
+
 func (l *fakeLog) end(runID, phase, reason string) {
 	l.evs = append(l.evs, envelope.Event{Seq: int64(len(l.evs) + 1), RunID: runID, Type: envelope.StateChanged,
 		Origin: envelope.OriginBroker, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
@@ -213,8 +230,8 @@ func (m *fakeMetrics) TimeToPR(_ context.Context, _ time.Duration, source, tier,
 func (m *fakeMetrics) PROutcome(_ context.Context, class, outcome string) {
 	m.add("pr " + class + " " + outcome)
 }
-func (m *fakeMetrics) TaskTokens(_ context.Context, _ int64, tier, template, class string) {
-	m.add("task_tokens " + tier + " " + template + " " + class)
+func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template, class string) {
+	m.add("task_tokens " + strconv.FormatInt(tokens, 10) + " " + tier + " " + template + " " + class)
 }
 func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("intervention " + kind) }
 func (m *fakeMetrics) TraceExportAbandoned(context.Context)        { m.add("trace_export_abandoned") }
@@ -224,12 +241,14 @@ var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 func cfg() *config.Config {
 	return &config.Config{Repository: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, RoomsURL: "https://rooms.priv.aws.ogenki.io",
 		FactoryLogin: "ogenki-agent-factory[bot]",
-		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}},
+		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}, Meter: config.Duration{Duration: 30 * time.Second}},
 		Defaults:     config.Defaults{Template: "solo", Tier: "standard", DataClass: "public", PredictedClass: "review"},
 		Tiers:        map[string]config.Tier{"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45}},
-		Templates:    map[string]config.Template{"solo": {Roles: []string{"implementer"}}},
-		Caps:         config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336},
-		Hash:         strings.Repeat("a", 64)}
+		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}},
+			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
+			"trio": {Roles: []string{"implementer", "tester", "reviewer"}, MaxReviewRounds: 2}},
+		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30},
+		Hash: strings.Repeat("a", 64)}
 }
 
 type rig struct {
@@ -253,12 +272,11 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
-	ids, next := []string{"7f3cq2xz", "aaaaaaaa", "bbbbbbbb"}, 0
 	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
-		Now: func() time.Time { return now }, NewRunID: func() string { id := ids[next]; next++; return id },
-		Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
-	g.f.Now = func() time.Time { return g.r.Now() } // the factory's comments carry the rig's clock
+		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
+	g.runs.now = func() time.Time { return g.r.Now() } // the claims carry the rig's clock
+	g.f.Now = func() time.Time { return g.r.Now() }    // the factory's comments carry the rig's clock
 	return g
 }
 
@@ -268,6 +286,9 @@ func issueTask(name string, n int, text string) *v1alpha1.Task {
 			RequestedBy: "github:Smana", Trust: "untrusted", ContentSHA256: strings.Repeat("b", 64)},
 			Repository: "Smana/cloud-native-ref", Issue: n, Text: text, DataClass: "public"}}
 }
+
+// rid is the test task's nth run id, as the deterministic ids derive it (R48).
+func rid(n int) string { return runID("3buqdlot", n) }
 
 func (g *rig) reconcile(t *testing.T, name string, times int) *v1alpha1.Task {
 	t.Helper()
@@ -290,7 +311,7 @@ func TestLabelToNarratedRun(t *testing.T) {
 		tk.Status.ConfigHash != strings.Repeat("a", 64) || tk.Status.Classification == nil || tk.Spec.Budget.Tier != "standard" {
 		t.Fatalf("%s %+v %+v", tk.Status.Phase, tk.Spec, tk.Status)
 	}
-	s := g.runs.specs["7f3cq2xz"]
+	s := g.runs.specs[rid(0)]
 	if s.Role != "implementer" || s.Branch != "agent/3buqdlot" || s.BaseRef != "main" || s.Principal != "system:factory" ||
 		s.RoomRef != "3buqdlot" || s.MaxTokens != 1_500_000 || s.MaxMinutes != 45 || s.TaskID != "3buqdlot" ||
 		s.Model != "agent-default" || s.DataClass != "public" || s.SourceURL != "https://github.com/Smana/cloud-native-ref/issues/7" {
@@ -307,16 +328,16 @@ func TestLabelToNarratedRun(t *testing.T) {
 	if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &room); err != nil {
 		t.Fatal(err)
 	}
-	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], "7f3cq2xz") || !strings.Contains(c[0], "/r/3buqdlot") {
+	if c := g.f.Comments(7); len(c) != 1 || !strings.Contains(c[0], rid(0)) || !strings.Contains(c[0], "/r/3buqdlot") {
 		t.Fatalf("started: %q", c)
 	}
 
 	// The PR opens: narrated once, annotated on the run.
-	g.runs.set("7f3cq2xz", "Running")
+	g.runs.set(rid(0), "Running")
 	g.f.SetBranch("agent/3buqdlot", 12)
 	g.f.SetPR(forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN", NodeID: "PR_1", HeadSHA: "abc"})
 	tk = g.reconcile(t, "3buqdlot", 2)
-	if tk.Status.PullRequest == nil || tk.Status.PullRequest.Number != 12 || g.runs.patches["7f3cq2xz"][runs.AnnPullRequest] == "" {
+	if tk.Status.PullRequest == nil || tk.Status.PullRequest.Number != 12 || g.runs.patches[rid(0)][runs.AnnPullRequest] == "" {
 		t.Fatalf("%+v", tk.Status.PullRequest)
 	}
 	if c := g.f.Comments(7); len(c) != 2 || !strings.Contains(c[1], "#12") {
@@ -327,8 +348,8 @@ func TestLabelToNarratedRun(t *testing.T) {
 	}
 
 	// The run succeeds; the room says why; a human merges.
-	g.runs.set("7f3cq2xz", "Succeeded")
-	g.log.end("7f3cq2xz", "Succeeded", "agent_finished")
+	g.runs.set(rid(0), "Succeeded")
+	g.log.end(rid(0), "Succeeded", "agent_finished")
 	tk = g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Runs[0].Reason != "agent_finished" {
 		t.Fatal(tk.Status.Phase)
@@ -339,7 +360,12 @@ func TestLabelToNarratedRun(t *testing.T) {
 		tk.Status.PullRequest.MergeCommitSHA != "def" {
 		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
 	}
-	want := []string{"time_to_pr issue standard solo", "pr review human_merged", "task_tokens standard solo review"}
+	// The end does not record the tokens (R49); the settle does, once, past its window.
+	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
+		t.Fatalf("settled: %+v", tk.Status)
+	}
+	want := []string{"time_to_pr issue standard solo", "pr review human_merged", "task_tokens 0 standard solo review"}
 	if strings.Join(g.metrics.recorded, "|") != strings.Join(want, "|") {
 		t.Fatalf("%q", g.metrics.recorded)
 	}
@@ -356,13 +382,16 @@ func TestEndings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
 			g.reconcile(t, "3buqdlot", 3)
-			g.runs.set("7f3cq2xz", c.phase)
-			g.log.end("7f3cq2xz", c.phase, c.reason)
+			g.runs.set(rid(0), c.phase)
+			g.log.end(rid(0), c.phase, c.reason)
 			tk := g.reconcile(t, "3buqdlot", 1)
 			if tk.Status.Phase != c.want || !strings.Contains(strings.Join(g.f.Comments(7), "\n"), c.says) {
 				t.Errorf("%s %q", tk.Status.Phase, g.f.Comments(7))
 			}
-			// An escalated task may be retried: its tokens are recorded once it ends for good.
+			// An escalated task may be retried: its tokens are recorded once it ends for good,
+			// by the settle (R49), not by the end.
+			g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+			g.reconcile(t, "3buqdlot", 1)
 			if counted := len(g.metrics.recorded) == 1; counted != v1alpha1.TerminalPhase(c.want) {
 				t.Errorf("task tokens %q at %s", g.metrics.recorded, c.want)
 			}
@@ -374,9 +403,9 @@ func TestEndings(t *testing.T) {
 func TestAnAgentsEndEventIsNotTheReason(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Failed")
-	g.log.evs = append(g.log.evs, envelope.Event{Seq: 1, RunID: "7f3cq2xz", Type: envelope.StateChanged, Origin: envelope.OriginHarness,
-		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz"}, Payload: envelope.StatePayload("run_phase", map[string]any{"reason": "agent_finished"})})
+	g.runs.set(rid(0), "Failed")
+	g.log.evs = append(g.log.evs, envelope.Event{Seq: 1, RunID: rid(0), Type: envelope.StateChanged, Origin: envelope.OriginHarness,
+		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + rid(0)}, Payload: envelope.StatePayload("run_phase", map[string]any{"reason": "agent_finished"})})
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatal(tk.Status.Phase)
 	}
@@ -386,8 +415,8 @@ func TestAnAgentsEndEventIsNotTheReason(t *testing.T) {
 func TestDeletedRun(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	_ = g.runs.Delete(t.Context(), "7f3cq2xz")
-	g.log.end("7f3cq2xz", "Revoked", "deleted")
+	_ = g.runs.Delete(t.Context(), rid(0))
+	g.log.end(rid(0), "Revoked", "deleted")
 	tk := g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "deleted" ||
 		!strings.Contains(strings.Join(g.f.Comments(7), "\n"), "claim was deleted") {
@@ -395,7 +424,7 @@ func TestDeletedRun(t *testing.T) {
 	}
 	g = newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	_ = g.runs.Delete(t.Context(), "7f3cq2xz")
+	_ = g.runs.Delete(t.Context(), rid(0))
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "run_lost" {
 		t.Fatalf("no room reason: %s %s", tk.Status.Phase, tk.Status.Reason)
 	}
@@ -405,7 +434,7 @@ func TestDeletedRun(t *testing.T) {
 func TestWaitsForTheRoomsReason(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Failed")
+	g.runs.set(rid(0), "Failed")
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatal("waits for SP2's end event")
 	}
@@ -423,9 +452,9 @@ func TestWaitsForTheRoomsReason(t *testing.T) {
 func TestTheFallbackReadsTheRevocation(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	r := g.runs.runs["7f3cq2xz"]
+	r := g.runs.runs[rid(0)]
 	r.Phase, r.Revoked = "Failed", "budget-run"
-	g.runs.runs["7f3cq2xz"] = r
+	g.runs.runs[rid(0)] = r
 	g.reconcile(t, "3buqdlot", 1)
 	g.r.Now = func() time.Time { return now.Add(2 * time.Minute) }
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Runs[0].Reason != "budget-run" {
@@ -526,13 +555,13 @@ func TestAForeignRoomEscalates(t *testing.T) {
 func TestStopObjectStopsEverything(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Running")
+	g.runs.set(rid(0), "Running")
 	_ = g.c.Create(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system"}})
 	tk := g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Reason != "kill_switch" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
-	if g.runs.patches["7f3cq2xz"][runs.AnnRevoked] != "manual" || len(g.runs.runs) != 0 {
+	if g.runs.patches[rid(0)][runs.AnnRevoked] != "manual" || len(g.runs.runs) != 0 {
 		t.Fatal("runs are revoked manual, then deleted (§6.1)")
 	}
 	for _, m := range g.metrics.recorded {
@@ -549,7 +578,7 @@ func TestStopAnnotation(t *testing.T) {
 		t.Run(why, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
 			tk := g.reconcile(t, "3buqdlot", 3)
-			g.runs.set("7f3cq2xz", "Succeeded")
+			g.runs.set(rid(0), "Succeeded")
 			_ = g.runs.Create(t.Context(), runs.Spec{RunID: "aaaaaaa9", TaskID: "4buqdlot", Principal: runs.PrincipalFactory})
 			tk.Annotations = map[string]string{v1alpha1.AnnotationStop: why}
 			if err := g.c.Update(t.Context(), tk); err != nil {
@@ -560,26 +589,32 @@ func TestStopAnnotation(t *testing.T) {
 				t.Fatal("a stop leaves another task's run alone")
 			}
 			if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Reason != want || len(g.runs.runs) != 1 ||
-				g.runs.patches["7f3cq2xz"][runs.AnnRevoked] != "" {
+				g.runs.patches[rid(0)][runs.AnnRevoked] != "" {
 				t.Fatalf("%s %s %v", tk.Status.Phase, tk.Status.Reason, g.runs.patches)
 			}
-			if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens standard solo review" {
+			// The stop deleted the task's run, so nothing is left to settle from: the settle
+			// still records the total, once, past its window (R49).
+			g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+			g.reconcile(t, "3buqdlot", 1)
+			if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens 0 standard solo review" {
 				t.Fatalf("%q", g.metrics.recorded)
 			}
 		})
 	}
 }
 
-// A run created but never recorded (a lost status write) is adopted, never duplicated.
-func TestAdoptsAnUnrecordedRun(t *testing.T) {
+// A claim of the next run's deterministic id, created but never recorded (a lost status write),
+// is recorded from its own facts, never duplicated (R48).
+func TestAnUnrecordedRunIsRecordedNotDuplicated(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 2) // Queued
-	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "yyyyyyyy", TaskID: "3buqdlot", Role: "implementer", Principal: "system:factory"})
-	g.runs.set("yyyyyyyy", "Failed")
-	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "zzzzzzzz", TaskID: "3buqdlot", Role: "implementer", Principal: "system:factory"})
+	_ = g.runs.Create(t.Context(), runs.Spec{RunID: rid(0), TaskID: "3buqdlot", Role: "implementer", Principal: "system:factory"})
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if len(tk.Status.Runs) != 1 || tk.Status.Runs[0].ID != "zzzzzzzz" || len(g.runs.runs) != 2 || tk.Status.Phase != v1alpha1.PhaseImplementing {
+	if len(tk.Status.Runs) != 1 || tk.Status.Runs[0].ID != rid(0) || len(g.runs.runs) != 1 || tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("%+v", tk.Status.Runs)
+	}
+	if tk = g.reconcile(t, "3buqdlot", 1); len(tk.Status.Runs) != 1 || len(g.runs.runs) != 1 {
+		t.Fatalf("duplicated: %+v %v", tk.Status.Runs, g.runs.runs)
 	}
 }
 
@@ -587,14 +622,14 @@ func TestAdoptsAnUnrecordedRun(t *testing.T) {
 func TestUsageIsSummed(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	r := g.runs.runs["7f3cq2xz"]
+	r := g.runs.runs[rid(0)]
 	r.Phase, r.Tokens = "Running", 1200
-	g.runs.runs["7f3cq2xz"] = r
+	g.runs.runs[rid(0)] = r
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Usage.Tokens != 1200 || tk.Status.Runs[0].Tokens != 1200 {
 		t.Fatalf("%+v", tk.Status.Usage)
 	}
 	r.Tokens = 900 // a stale read
-	g.runs.runs["7f3cq2xz"] = r
+	g.runs.runs[rid(0)] = r
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Usage.Tokens != 1200 || tk.Status.Runs[0].Tokens != 1200 {
 		t.Fatalf("%+v %d", tk.Status.Usage, tk.Status.Runs[0].Tokens)
 	}
@@ -606,8 +641,8 @@ func TestAClosedPullRequest(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 3)
 	g.f.SetBranch("agent/3buqdlot", 12)
 	g.f.SetPR(forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN"})
-	g.runs.set("7f3cq2xz", "Succeeded")
-	g.log.end("7f3cq2xz", "Succeeded", "agent_finished")
+	g.runs.set(rid(0), "Succeeded")
+	g.log.end(rid(0), "Succeeded", "agent_finished")
 	g.reconcile(t, "3buqdlot", 1)
 	g.f.SetPR(forge.PR{Number: 12, State: "CLOSED"})
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || tk.Status.Reason != "pr_closed" {
@@ -682,7 +717,16 @@ func TestAStopIsCountedOnceThroughAConflict(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseStopped {
 		t.Fatal(tk.Status.Phase)
 	}
-	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens standard solo review" {
+	// A conflicting settle replays the recording with the mark, so the metric lands once (R49).
+	conflict = true
+	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the conflicting settle write is returned")
+	}
+	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
+		t.Fatalf("settled on the replay: %+v", tk.Status)
+	}
+	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens 0 standard solo review" {
 		t.Fatalf("%q", g.metrics.recorded)
 	}
 }
@@ -693,7 +737,7 @@ func TestANilLoggerIsQuiet(t *testing.T) {
 	g.r.Log = nil
 	g.r.Rooms = &failingLog{}
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Failed")
+	g.runs.set(rid(0), "Failed")
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatal(tk.Status.Phase)
 	}

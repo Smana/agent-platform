@@ -118,6 +118,7 @@ type Budget struct {
 // TaskStatus is the task's audit record: the whole §4 record, including the fields later
 // phases fill.
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.trace) || has(self.trace)",message="a task's trace is never removed: its runs are parented on it"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.usageSettled) || !oldSelf.usageSettled || (has(self.usageSettled) && self.usageSettled)",message="settled usage stays settled"
 type TaskStatus struct {
 	// +kubebuilder:validation:Enum=Received;Rejected;Triaged;Queued;Implementing;NoOp;Reviewing;AwaitingCI;AutoMerging;AwaitingHuman;Merged;Verifying;Done;Reverted;Escalated;Closed;Stopped
 	// +optional
@@ -140,6 +141,10 @@ type TaskStatus struct {
 	PullRequest *PullRequestRef `json:"pullRequest,omitempty"`
 	// +optional
 	Usage Usage `json:"usage,omitempty"`
+	// The task's usage has settled (R49): the meter's late readings have had their window, and
+	// the total is final. Written once, with the one TaskTokens the settle records.
+	// +optional
+	UsageSettled bool `json:"usageSettled,omitempty"`
 	// +optional
 	ReviewRounds int32 `json:"reviewRounds,omitempty"`
 	// +optional
@@ -174,6 +179,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:Enum=initial;review;human;ci;retry
 	// +optional
 	NextTrigger string `json:"nextTrigger,omitempty"`
+	// The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
+	// there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
+	// +kubebuilder:validation:Enum=reviewer;tester
+	// +optional
+	NextRole string `json:"nextRole,omitempty"`
 	// GitHub review and comment ids already acted on (Δ5, commands). The reconciler trims the oldest.
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=512
@@ -273,6 +283,11 @@ type RunRecord struct {
 	// The room's lastSeq when the run was created: verdicts are read after it.
 	// +optional
 	StartSeq int64 `json:"startSeq,omitempty"`
+	// The pull request's head a reviewer or tester run was given: its approve counts for that
+	// commit only, and only while the head has not moved.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	HeadSHA string `json:"headSHA,omitempty"`
 	// +optional
 	Started *metav1.Time `json:"started,omitempty"`
 	// +optional

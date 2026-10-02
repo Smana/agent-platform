@@ -41,13 +41,8 @@ func awaiting() *v1alpha1.Task {
 	tk.Spec.Budget = v1alpha1.Budget{Tier: "standard", Model: "agent-default", RunTokens: 1_500_000, RunMinutes: 45}
 	tk.Status = v1alpha1.TaskStatus{Phase: v1alpha1.PhaseAwaitingHuman, PhaseSince: &since, RoomRef: "3buqdlot",
 		PullRequest: &v1alpha1.PullRequestRef{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12"},
-		Runs:        []v1alpha1.RunRecord{{ID: "7f3cq2xz", Role: "implementer", Trigger: "initial", Phase: "Succeeded", Started: &started}}}
+		Runs:        []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial", Phase: "Succeeded", Started: &started}}}
 	return tk
-}
-
-// ids makes the rig's next run ids these, in order.
-func (g *rig) ids(ids ...string) {
-	g.r.NewRunID = func() string { id := ids[0]; ids = ids[1:]; return id }
 }
 
 // pr12 is the task's own pull request, from its branch, with reviews.
@@ -63,7 +58,6 @@ func changes(id int64, author, body string, ago time.Duration) forge.Review {
 // a revision on the same branch, with the review in its brief, once.
 func TestRequestChangesStartsARevision(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
 	latest := changes(901, "Smana", "Use the relative link.", 5*time.Minute)
 	latest.Comments = []forge.ReviewComment{{Path: "docs/a.md", Line: 3, Body: "here"}}
 	g.f.SetPR(pr12(changes(800, "Smana", "older than the run", 2*time.Hour),
@@ -80,9 +74,9 @@ func TestRequestChangesStartsARevision(t *testing.T) {
 		t.Fatalf("the queued review is ReviewMessage's, on the review stream: %+v", g.log.queue[0])
 	}
 	tk = g.reconcile(t, "3buqdlot", 1)
-	s := g.runs.specs["aaaaaaaa"]
+	s := g.runs.specs[rid(1)]
 	if tk.Status.Phase != v1alpha1.PhaseImplementing || s.Branch != "agent/3buqdlot" || !strings.Contains(s.TaskText, "docs/a.md:3") ||
-		!strings.Contains(s.TaskText, "#12") || tk.Status.Runs[1].Trigger != "human" || g.log.consumed[g.log.ref(901)] != "aaaaaaaa" ||
+		!strings.Contains(s.TaskText, "#12") || tk.Status.Runs[1].Trigger != "human" || g.log.consumed[g.log.ref(901)] != rid(1) ||
 		tk.Status.NextTrigger != "" {
 		t.Fatalf("%s %+v %v %q", tk.Status.Phase, s, g.log.consumed, tk.Status.NextTrigger)
 	}
@@ -96,8 +90,8 @@ func TestRequestChangesStartsARevision(t *testing.T) {
 		t.Fatalf("%q", g.metrics.recorded)
 	}
 	// The same review never triggers twice.
-	g.runs.set("aaaaaaaa", "Succeeded")
-	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	g.runs.set(rid(1), "Succeeded")
+	g.log.end(rid(1), "Succeeded", "agent_finished")
 	tk = g.reconcile(t, "3buqdlot", 2)
 	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 1 || len(g.log.queue) != 1 {
 		t.Fatalf("%s runs %d", tk.Status.Phase, len(g.runs.specs))
@@ -143,16 +137,15 @@ func TestAReviewOnAnotherBranchIsIgnored(t *testing.T) {
 // revision quotes it first.
 func TestARevisionConsumesOnlyWhatItQuoted(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa", "bbbbbbbb")
 	for i := range 5 { // humans queued long messages in the room
 		g.log.queue = append(g.log.queue, rooms.Queued{Ref: int64(10 + i), Author: "human:alice", Text: fmt.Sprintf("note %d ", i) + strings.Repeat("x", 3<<10)})
 	}
 	g.f.SetPR(pr12(changes(901, "Smana", "and the review", 5*time.Minute)))
 	g.reconcile(t, "3buqdlot", 2) // Queued, then the revision
-	s := g.runs.specs["aaaaaaaa"]
+	s := g.runs.specs[rid(1)]
 	var quoted, left []int64
 	for _, q := range append([]rooms.Queued(nil), g.log.queue...) {
-		if g.log.consumed[q.Ref] == "aaaaaaaa" {
+		if g.log.consumed[q.Ref] == rid(1) {
 			quoted = append(quoted, q.Ref)
 		} else {
 			left = append(left, q.Ref)
@@ -167,13 +160,13 @@ func TestARevisionConsumesOnlyWhatItQuoted(t *testing.T) {
 		}
 	}
 	// The next round quotes the first message the last one left.
-	g.runs.set("aaaaaaaa", "Succeeded")
-	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	g.runs.set(rid(1), "Succeeded")
+	g.log.end(rid(1), "Succeeded", "agent_finished")
 	g.reconcile(t, "3buqdlot", 1)
 	g.r.Now = func() time.Time { return now.Add(10 * time.Minute) }
 	g.f.SetPR(pr12(changes(901, "Smana", "and the review", 5*time.Minute), changes(990, "Smana", "again", -5*time.Minute)))
 	g.reconcile(t, "3buqdlot", 2)
-	if next := g.runs.specs["bbbbbbbb"]; !strings.Contains(next.TaskText, fmt.Sprintf("Queued message seq %d ", left[0])) || g.log.consumed[left[0]] != "bbbbbbbb" {
+	if next := g.runs.specs[rid(2)]; !strings.Contains(next.TaskText, fmt.Sprintf("Queued message seq %d ", left[0])) || g.log.consumed[left[0]] != rid(2) {
 		t.Fatalf("seq %d waited and is quoted next: %v", left[0], g.log.consumed)
 	}
 	if n := strings.Count(strings.Join(g.f.Comments(7), "\n"), "is revising after @Smana's review"); n != 2 {
@@ -182,7 +175,7 @@ func TestARevisionConsumesOnlyWhatItQuoted(t *testing.T) {
 }
 
 // A replayed reconcile never starts a second revision: a run whose status write was lost is
-// adopted with the revision's trigger.
+// recorded with the revision's trigger.
 func TestARevisionIsStartedOnceThroughALostWrite(t *testing.T) {
 	lose := false
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
@@ -196,7 +189,6 @@ func TestARevisionIsStartedOnceThroughALostWrite(t *testing.T) {
 		}}).Build()
 	g := newRig(t)
 	g.c, g.r.Client = c, c
-	g.ids("aaaaaaaa", "bbbbbbbb")
 	g.f.SetPR(pr12(changes(901, "Smana", "fix it", time.Minute)))
 	g.reconcile(t, "3buqdlot", 1) // Queued
 	lose = true
@@ -204,7 +196,7 @@ func TestARevisionIsStartedOnceThroughALostWrite(t *testing.T) {
 		t.Fatal("the lost write is returned")
 	}
 	tk := g.reconcile(t, "3buqdlot", 2)
-	if len(g.runs.specs) != 1 || len(tk.Status.Runs) != 2 || tk.Status.Runs[1].ID != "aaaaaaaa" ||
+	if len(g.runs.specs) != 1 || len(tk.Status.Runs) != 2 || tk.Status.Runs[1].ID != rid(1) ||
 		tk.Status.Runs[1].Trigger != "human" || tk.Status.NextTrigger != "" || tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("runs %d: %+v %q", len(g.runs.specs), tk.Status.Runs, tk.Status.NextTrigger)
 	}
@@ -252,7 +244,6 @@ func TestTheFirstRunWaitsForTheRoomsLog(t *testing.T) {
 // One live run per room: a revision waits for a run someone else started in the task's room.
 func TestARevisionWaitsForAnotherRunInItsRoom(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
 	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "hhhhhhhh", Role: "implementer", Principal: "human:alice", RoomRef: "3buqdlot"})
 	g.f.SetPR(pr12(changes(901, "Smana", "fix it", time.Minute)))
 	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_room_busy" || len(g.runs.specs) != 1 {
@@ -268,11 +259,10 @@ func TestARevisionWaitsForAnotherRunInItsRoom(t *testing.T) {
 // factory's and its time falls after the revision's start.
 func TestAHandledReviewNeverTriggersAgain(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa", "bbbbbbbb")
 	g.f.SetPR(pr12(changes(901, "Smana", "fix it", -time.Minute))) // stamped a minute in the factory's future
 	g.reconcile(t, "3buqdlot", 2)
-	g.runs.set("aaaaaaaa", "Succeeded")
-	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	g.runs.set(rid(1), "Succeeded")
+	g.log.end(rid(1), "Succeeded", "agent_finished")
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 1 {
 		t.Fatalf("%s, %d runs", tk.Status.Phase, len(g.runs.specs))
 	}
@@ -285,7 +275,7 @@ func TestNextTrigger(t *testing.T) {
 	if got := nextTrigger(tk); got != "initial" {
 		t.Fatal(got)
 	}
-	tk.Status.Runs = []v1alpha1.RunRecord{{ID: "7f3cq2xz"}}
+	tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0)}}
 	if got := nextTrigger(tk); got != "retry" {
 		t.Fatal(got)
 	}
@@ -299,7 +289,6 @@ func TestNextTrigger(t *testing.T) {
 // the run starts it would fall before "since" and be lost for good.
 func TestProbeReviewWhileQueuedIsLost(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
 	_ = g.runs.Create(t.Context(), runs.Spec{RunID: "hhhhhhhh", Role: "implementer", Principal: "human:alice", RoomRef: "3buqdlot"})
 	first := changes(901, "Smana", "Use the relative link.", 5*time.Minute)
 	g.f.SetPR(pr12(first))
@@ -311,14 +300,14 @@ func TestProbeReviewWhileQueuedIsLost(t *testing.T) {
 	g.r.Now = func() time.Time { return now.Add(2 * time.Minute) }
 	g.runs.set("hhhhhhhh", "Succeeded")
 	tk := g.reconcile(t, "3buqdlot", 1)
-	s := g.runs.specs["aaaaaaaa"]
+	s := g.runs.specs[rid(1)]
 	if tk.Status.Phase != v1alpha1.PhaseImplementing || !slices.Equal(g.log.reviews(), []int64{901, 902}) ||
-		!strings.Contains(s.TaskText, "Also fix the title.") || g.log.consumed[g.log.ref(902)] != "aaaaaaaa" ||
+		!strings.Contains(s.TaskText, "Also fix the title.") || g.log.consumed[g.log.ref(902)] != rid(1) ||
 		!slices.Contains(tk.Status.Handled, 902) {
 		t.Fatalf("review 902 (submitted while Queued): %s %v %v %v", tk.Status.Phase, g.log.reviews(), g.log.consumed, tk.Status.Handled)
 	}
-	g.runs.set("aaaaaaaa", "Succeeded")
-	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	g.runs.set(rid(1), "Succeeded")
+	g.log.end(rid(1), "Succeeded", "agent_finished")
 	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.runs.specs) != 2 {
 		t.Fatalf("handled once: %s %d", tk.Status.Phase, len(g.runs.specs))
 	}
@@ -345,9 +334,9 @@ func TestAPRClosedWhileQueuedIsNotRevised(t *testing.T) {
 // to its end: past EventsSince's 10,000 events, the newest handoff is the one quoted.
 func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
 	g := newRig(t, awaiting(), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
+	agent := envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + rid(0)} // as room_handoff and room_verdict are stamped
 	handoff := func(seq int64, summary string) envelope.Event {
-		return envelope.Event{Seq: seq, Type: envelope.Handoff, Actor: envelope.Actor{Kind: envelope.ActorAgent},
+		return envelope.Event{Seq: seq, RunID: rid(0), Type: envelope.Handoff, Origin: envelope.OriginClient, Actor: agent,
 			Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "reviewer", Commit: "abc1234", Summary: summary})}
 	}
 	g.log.evs = append(g.log.evs, handoff(1, "OLD handoff"))
@@ -355,12 +344,12 @@ func TestARevisionQuotesTheNewestHandoffOfALongRoom(t *testing.T) {
 		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
 	}
-	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"), envelope.Event{Seq: 12_002, Type: envelope.Message,
-		Actor: envelope.Actor{Kind: envelope.ActorAgent}, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
+	g.log.evs = append(g.log.evs, handoff(12_001, "NEWEST handoff"), envelope.Event{Seq: 12_002, RunID: rid(0), Type: envelope.Message,
+		Origin: envelope.OriginClient, Actor: agent, Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
 			Verdict: "changes", Commit: "abc1234", Text: "NEWEST verdict"})})
 	g.f.SetPR(pr12(changes(901, "Smana", "x", time.Minute)))
 	tk := g.reconcile(t, "3buqdlot", 2)
-	s := g.runs.specs["aaaaaaaa"]
+	s := g.runs.specs[rid(1)]
 	if !strings.Contains(s.TaskText, "NEWEST handoff") || !strings.Contains(s.TaskText, "NEWEST verdict") || strings.Contains(s.TaskText, "OLD handoff") {
 		t.Fatalf("the brief quotes a stale handoff:\n%.600s", s.TaskText)
 	}
@@ -389,7 +378,6 @@ func TestReadsStartAtTheRunsStart(t *testing.T) {
 	tk := awaiting()
 	tk.Status.Runs[0].StartSeq = 11_990
 	g := newRig(t, tk, roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
 	for i := int64(1); i <= 12_000; i++ {
 		g.log.evs = append(g.log.evs, envelope.Event{Seq: i, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "noise"})})
@@ -400,8 +388,8 @@ func TestReadsStartAtTheRunsStart(t *testing.T) {
 		t.Fatalf("the revision read %d events", g.log.read)
 	}
 	g.log.read = 0
-	g.runs.set("aaaaaaaa", "Succeeded")
-	g.log.end("aaaaaaaa", "Succeeded", "agent_finished")
+	g.runs.set(rid(1), "Succeeded")
+	g.log.end(rid(1), "Succeeded", "agent_finished")
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || g.log.read > 50 {
 		t.Fatalf("%s: the run's end read %d events", tk.Status.Phase, g.log.read)
 	}
@@ -426,7 +414,6 @@ func retryBy(id int64, author string, ago time.Duration) forge.Comment {
 // Queued; the factory's own comment is not a maintainer's.
 func TestRetryRevivesAnEscalatedTask(t *testing.T) {
 	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
-	g.ids("aaaaaaaa")
 	_ = g.f.Comment(context.Background(), 7, "/factory retry") // by the fake's bot login: ignored
 	tk := g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated {
@@ -446,7 +433,7 @@ func TestRetryRevivesAnEscalatedTask(t *testing.T) {
 	}
 	tk = g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Retries != 1 || tk.Status.Runs[1].Trigger != "retry" ||
-		!strings.Contains(g.runs.specs["aaaaaaaa"].TaskText, "TASK-DATA-") {
+		!strings.Contains(g.runs.specs[rid(1)].TaskText, "TASK-DATA-") {
 		t.Fatalf("%s %d %+v", tk.Status.Phase, tk.Status.Retries, tk.Status.Runs)
 	}
 }
@@ -522,7 +509,6 @@ func TestARetryIsActedOnOnce(t *testing.T) {
 		}}).Build()
 	g := newRig(t)
 	g.c, g.r.Client = c, c
-	g.ids("aaaaaaaa", "bbbbbbbb")
 	g.f.SetComments(7, retryBy(77, "Smana", -time.Hour)) // GitHub's clock an hour ahead
 	lose = true
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
@@ -531,8 +517,8 @@ func TestARetryIsActedOnOnce(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Retries != 1 {
 		t.Fatalf("%s %d", tk.Status.Phase, tk.Status.Retries)
 	}
-	g.runs.set("aaaaaaaa", "Failed")
-	g.log.end("aaaaaaaa", "Failed", "agent_stuck")
+	g.runs.set(rid(1), "Failed")
+	g.log.end(rid(1), "Failed", "agent_stuck")
 	tk := g.reconcile(t, "3buqdlot", 3)
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Retries != 1 || len(g.runs.specs) != 1 {
 		t.Fatalf("%s %d runs %d", tk.Status.Phase, tk.Status.Retries, len(g.runs.specs))

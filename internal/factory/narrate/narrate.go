@@ -17,7 +17,10 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/agent-platform/internal/github"
 )
 
 // MaxNarrated is status.narrated's maxItems in the Task CRD: Post trims the oldest keys past it.
@@ -161,34 +164,41 @@ func Tokens(n int64) string {
 // reasons reads the end, stop and refusal reasons of the factory, SP1 and SP2 (P15) as prose.
 func reasons() map[string]string {
 	return map[string]string{
-		"agent_finished":        "the agent finished its work",
-		"agent_error":           "the agent stopped on an error",
-		"agent_stuck":           "the agent reported that it was stuck",
-		"deadline":              "the run hit its wall-clock limit",
-		"pod_lost":              "the sandbox was lost (spot reclaim or eviction)",
-		"revoked":               "the run was stopped by hand",
-		"deleted":               "the run's claim was deleted",
-		"budget-run":            "the run spent its token budget",
-		"budget-principal":      "the factory's daily token budget is spent",
-		"budget-fleet":          "the agent fleet's daily token budget is spent",
-		"budget-task":           "the task spent its token budget",
-		"run_lost":              "the run disappeared",
-		"no_pr":                 "the agent opened no pull request",
-		"merged":                "the pull request was merged",
-		"pr_closed":             "the pull request was closed",
-		"text_too_long":         "the issue text is longer than the factory accepts (14 KiB)",
-		"daily_task_cap":        "the factory has reached its daily task cap",
-		"kill_switch":           "the factory's kill switch is engaged",
-		"stopped_by_label":      "a maintainer applied factory/stop",
-		"stopped_by_annotation": "an operator stopped it",
-		"superseded":            "a new factory/ready replaced it",
-		"unauthorised_labeller": "only a maintainer's factory/ready starts a task",
-		"edited_after_label":    "the issue was edited after it was labelled",
-		"task_active":           "a task for this issue is still running",
-		"unsanitisable":         "the issue text could not be made safe for an agent to read; simplify its markup",
-		"unauthorised_stopper":  "only a maintainer's factory/stop stops a task",
-		"foreign_room":          "a room of the task's name exists and is not the factory's",
-		"stale":                 "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
+		"agent_finished":          "the agent finished its work",
+		"agent_error":             "the agent stopped on an error",
+		"agent_stuck":             "the agent reported that it was stuck",
+		"deadline":                "the run hit its wall-clock limit",
+		"pod_lost":                "the sandbox was lost (spot reclaim or eviction)",
+		"revoked":                 "the run was stopped by hand",
+		"deleted":                 "the run's claim was deleted",
+		"budget-run":              "the run spent its token budget",
+		"budget-principal":        "the factory's daily token budget is spent",
+		"budget-fleet":            "the agent fleet's daily token budget is spent",
+		"budget-task":             "the task spent its token budget",
+		"run_lost":                "the run disappeared",
+		"no_pr":                   "the agent opened no pull request",
+		"merged":                  "the pull request was merged",
+		"pr_closed":               "the pull request was closed",
+		"text_too_long":           "the issue text is longer than the factory accepts (14 KiB)",
+		"daily_task_cap":          "the factory has reached its daily task cap",
+		"kill_switch":             "the factory's kill switch is engaged",
+		"stopped_by_label":        "a maintainer applied factory/stop",
+		"stopped_by_annotation":   "an operator stopped it",
+		"superseded":              "a new factory/ready replaced it",
+		"unauthorised_labeller":   "only a maintainer's factory/ready starts a task",
+		"edited_after_label":      "the issue was edited after it was labelled",
+		"task_active":             "a task for this issue is still running",
+		"unsanitisable":           "the issue text could not be made safe for an agent to read; simplify its markup",
+		"unauthorised_stopper":    "only a maintainer's factory/stop stops a task",
+		"foreign_room":            "a room of the task's name exists and is not the factory's",
+		"stale":                   "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
+		"review_rounds_exhausted": "the reviewer still asked for changes after the last review round",
+		"no_verdict":              "the last review ended without a verdict the factory can act on, with no review round left",
+		"verdict_missing":         "it recorded no verdict",
+		"verdict_stale":           "its approval was not for the pull request's current head",
+		"room_log_too_long":       "the room's log was too long to read to its end",
+		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
+		"run_unschedulable":       "the cluster never admitted the task's run within its bound",
 	}
 }
 
@@ -265,10 +275,15 @@ func RemindedSince(t *v1alpha1.Task) (time.Time, bool) {
 }
 
 // Retrying says a maintainer's /factory retry sent an escalated task back for a fresh run, once
-// per retry.
-func Retrying(t *v1alpha1.Task, by string) Event {
-	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries),
-		Body: fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)}
+// per retry. after is the reason it had escalated: a retry never gives review rounds back (T5),
+// so after the rounds ran out it says what the retry buys.
+func Retrying(t *v1alpha1.Task, by, after string) Event {
+	body := fmt.Sprintf("Agent factory task `%s` is retrying, as @%s asked.", t.Name, by)
+	if after == "review_rounds_exhausted" || after == "no_verdict" {
+		body += " Its review rounds stay spent: the retry buys one more revision and one more review, and a further " +
+			"`changes` verdict, or a review without a verdict, escalates it again."
+	}
+	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries), Body: body}
 }
 
 // PROpened announces the task's pull request.
@@ -322,4 +337,47 @@ func StopIgnored(number int, reason string, at time.Time) Event {
 func Refused(number int, reason string, at time.Time) Event {
 	return Event{Key: fmt.Sprintf("refused-%s-%d", reason, at.Unix()),
 		Body: fmt.Sprintf("The agent factory did not start a task for #%d: %s.", number, Reason(reason))}
+}
+
+// NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
+// a new review run starts (why is one of verdict_missing, verdict_stale, room_log_too_long). Once
+// per run.
+func NoVerdict(t *v1alpha1.Task, runID, why string) Event {
+	return Event{Key: "noverdict-" + runID, Body: fmt.Sprintf("The review run `%s` of agent factory task `%s` ended without a "+
+		"verdict the factory can act on: %s. A new review run starts; each one uses a review round.", runID, t.Name, Reason(why))}
+}
+
+// maxBody is the Task CRD's bound on an outbox narration's body.
+const maxBody = 4096
+
+// RoundsExhausted goes on the pull request itself (§6.3: "PR comment carrying the last verdict"),
+// once per escalation. The summary is an agent's text: sanitised (invisible characters, NFKC,
+// fence look-alikes, images and raw HTML, so no marker of ours or the broker's survives), its @
+// made fullwidth, and quoted as a code block it cannot close, where GitHub renders no mention,
+// link or HTML (ruling TE). Only a public task's summary leaves the room (C7). v's verdict, commit
+// and run id are rooms.LastVerdict's, already checked.
+func RoundsExhausted(t *v1alpha1.Task, v rooms.Verdict) Event {
+	head := fmt.Sprintf("Agent factory task `%s` used its %d review rounds. The last verdict of run `%s` was `%s` on `%s`:\n\n",
+		t.Name, t.Status.ReviewRounds, v.RunID, v.Verdict, v.Commit)
+	body := "_The summary stays in the room: the task's data class is not public._"
+	if t.Spec.DataClass == "public" {
+		body = summary(v.Text, maxBody-len(head))
+	}
+	return Event{Key: fmt.Sprintf("rounds-%d-%d", t.Status.ReviewRounds, len(t.Status.Runs)), Body: head + body}
+}
+
+// summary is an agent's text as an inert code block of at most budget bytes, clipped with a mark.
+func summary(text string, budget int) string {
+	s, _ := sanitize.Text(text)
+	s = strings.ReplaceAll(s, "@", "＠")
+	const mark = "\n⟦clipped by the factory; the whole summary is in the room⟧"
+	for n := len(s); ; n = n * 3 / 4 {
+		shown := s
+		if n < len(s) {
+			shown = strings.ToValidUTF8(s[:n], "") + mark
+		}
+		if q := github.Quote(shown); len(q) <= budget || n == 0 {
+			return q
+		}
+	}
 }

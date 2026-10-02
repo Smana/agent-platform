@@ -566,3 +566,20 @@ func TestQueueCallsRefuseWhatTheBrokerWould(t *testing.T) {
 		t.Fatalf("%d requests reached the broker", len(r.b.auth))
 	}
 }
+
+func TestLastSeqIsTheRoomsCurrentSeq(t *testing.T) {
+	r := newRig(t, 7)
+	if last, err := r.c.LastSeq(t.Context(), "3buqdlot"); err != nil || last != 7 {
+		t.Fatalf("%d %v", last, err)
+	}
+	if len(r.b.limits) != 1 || r.b.limits[0] != "1" {
+		t.Fatalf("one event read for its lastSeq: %v", r.b.limits)
+	}
+	if last, err := newRig(t, 0).c.LastSeq(t.Context(), "3buqdlot"); err != nil || last != 0 {
+		t.Fatalf("an empty room is at 0: %d %v", last, err)
+	}
+	r.b.fail["/v1/rooms/3buqdlot/events"], r.b.reason = http.StatusNotFound, wire.ReasonNoRoom
+	if _, err := r.c.LastSeq(t.Context(), "3buqdlot"); !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("the broker's refusal: %v", err)
+	}
+}

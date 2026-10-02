@@ -46,6 +46,8 @@ type issueForge interface {
 	RemoveLabel(ctx context.Context, number int, label string) error
 	RecentComments(ctx context.Context, number int) ([]forge.Comment, error)
 	Comment(ctx context.Context, number int, body string) error
+	AgentPulls(ctx context.Context) ([]forge.AgentPull, error)
+	AddLabels(ctx context.Context, number int, labels ...string) error
 }
 
 // errorCounter counts a failed poll, and a label left for the next one (fmetrics.Set).
@@ -132,7 +134,8 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 }
 
 // Poll is one pass: stop labels first, honoured even with intake paused, then each issue
-// carrying the trigger label. One issue's failure does not keep the others waiting.
+// carrying the trigger label, then the orphan scan (R51), which also runs on leader start —
+// this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
 	if err := p.stops(ctx); err != nil {
 		return err
@@ -152,6 +155,9 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 		if err := p.one(ctx, it.Number); err != nil {
 			errs = append(errs, fmt.Errorf("#%d: %w", it.Number, err))
 		}
+	}
+	if err := p.orphans(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("orphans: %w", err))
 	}
 	return errors.Join(errs...)
 }

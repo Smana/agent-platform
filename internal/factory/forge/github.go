@@ -257,6 +257,45 @@ func (g *GitHub) PullRequestForBranch(ctx context.Context, branch string) (int, 
 	return prs[0].GetNumber(), nil // newest first
 }
 
+// AgentPulls are the repository's open pull requests from `agent/` branches (R51's orphan scan),
+// newest first, one page of 100: the head branch, its labels, and whether the head is this
+// repository's own branch. Labelling shrinks the set every poll, so the window slides over any
+// backlog. The scan judges the rest.
+func (g *GitHub) AgentPulls(ctx context.Context) ([]AgentPull, error) {
+	var q struct {
+		Repository struct {
+			PullRequests struct {
+				Nodes []struct {
+					Number         int
+					HeadRefName    string
+					HeadRepository *struct {
+						Owner struct{ Login string }
+						Name  string
+					} `graphql:"headRepository"`
+					Labels struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 30)"`
+				}
+			} `graphql:"pullRequests(headRefPrefix: \"agent/\", states: [OPEN], first: 100, orderBy: {field: CREATED_AT, direction: DESC})"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	vars := map[string]any{"owner": githubv4.String(g.owner), "name": githubv4.String(g.name)}
+	err := g.v4.Query(ctx, &q, vars)
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list agent pull requests", err)
+	}
+	out := make([]AgentPull, 0, len(q.Repository.PullRequests.Nodes))
+	for _, p := range q.Repository.PullRequests.Nodes {
+		// A deleted head repository is nobody's branch: never the factory's.
+		own := p.HeadRepository != nil && p.HeadRepository.Owner.Login == g.owner && p.HeadRepository.Name == g.name
+		ap := AgentPull{Number: p.Number, HeadRef: p.HeadRefName, Fork: !own}
+		for _, l := range p.Labels.Nodes {
+			ap.Labels = append(ap.Labels, l.Name)
+		}
+		out = append(out, ap)
+	}
+	return out, nil
+}
+
 // actor is GraphQL's Actor interface. A bot's login has no "[bot]" there; REST has it.
 type actor struct {
 	Typename string `graphql:"__typename"`

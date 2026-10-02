@@ -165,6 +165,13 @@ func (c *Client) Events(ctx context.Context, room string, afterSeq int64, limit 
 	return out.Events, out.LastSeq, nil
 }
 
+// LastSeq is the room's current sequence: a run records it at creation, and its verdicts and
+// end are read after it.
+func (c *Client) LastSeq(ctx context.Context, room string) (int64, error) {
+	_, last, err := c.Events(ctx, room, 0, 1)
+	return last, err
+}
+
 // EventsSince pages through room's log after afterSeq, pageSize at a time and at most maxPages
 // pages. It returns the events read and the cursor to resume from: the seq of the last event read,
 // or afterSeq when there was none. Never the room's lastSeq, which would skip what a capped read
