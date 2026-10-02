@@ -55,22 +55,22 @@ func (r *Reconciler) requestVerifier(t *v1alpha1.Task, role string) {
 	r.to(t, v1alpha1.PhaseQueued, "")
 }
 
-// startVerifier starts the NextRole run from Queued, past adopt, the caps, C4 and lateReviews, on
-// pr as queued checked it (open), and records its head: the run's approve counts for that commit
-// only (F1). The verifiers of one chain all review one head: when the head moved since the run
-// before, the chain starts again from the template's first verifier, so a ready task holds every
+// startVerifier starts the NextRole run from Queued, past the caps, C4 and lateReviews, on pr as
+// queued checked it (open), and records its head: the run's approve counts for that commit only
+// (F1). The verifiers of one chain all review one head: when the head moved since the run before,
+// the chain starts again from the template's first verifier, so a ready task holds every
 // verifier's approve of the same head. When a chain begins the run before is the implementer, whose
-// record has no head, and NextRole is the first verifier already; an adopted verifier's head is
-// unknown (""), which restarts the chain too.
+// record has no head, and NextRole is the first verifier already.
 func (r *Reconciler) startVerifier(ctx context.Context, t *v1alpha1.Task, pr forge.PR) error {
 	role := t.Status.NextRole
 	if current(t).HeadSHA != pr.HeadSHA {
 		role = r.nextVerifier(t, "implementer")
 	}
-	if err := r.startRun(ctx, t, r.verifierSpec(t, role), "review"); err != nil {
+	s := r.verifierSpec(t, role)
+	s.Head = pr.HeadSHA // rides the claim (AnnHead): a replay that records the run knows its head
+	if err := r.startRun(ctx, t, s, "review"); err != nil {
 		return err
 	}
-	current(t).HeadSHA = pr.HeadSHA
 	t.Status.NextRole = ""
 	return nil
 }
@@ -97,6 +97,9 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !found {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, r.lostReason(ctx, t))
+	}
+	if err := r.boundPending(ctx, t, run); err != nil {
+		return err
 	}
 	if !runs.Terminal(run.Phase) {
 		return nil

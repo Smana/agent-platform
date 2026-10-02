@@ -94,7 +94,7 @@ const escalatedPoll = 5 * time.Minute
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
 // every change of one of its AgentRuns; one worker, so the caps are counted without a race
-// between two tasks starting at once.
+// between two tasks starting at once. Run ids are derived from the task (R48), never random.
 type Reconciler struct {
 	Client    client.Client
 	Namespace string
@@ -105,7 +105,6 @@ type Reconciler struct {
 	Triage    triage.Triager
 	Metrics   metrics
 	Now       func() time.Time
-	NewRunID  func() string
 	Nonce     func() string
 	Log       *slog.Logger
 	Trace     tracing.Sink // nil: tracing off (R46)
@@ -134,7 +133,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ended := v1alpha1.TerminalPhase(t.Status.Phase)
-	if ended && len(t.Status.Outbox) == 0 && !r.spanDue(&t) {
+	if ended && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) {
 		return ctrl.Result{}, nil
 	}
 	before := t.Status.DeepCopy()
@@ -143,8 +142,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	fx := &effects{}
 	var err error
-	if !ended {
+	switch {
+	case !ended:
 		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
+	case r.settling(&t):
+		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
 	}
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
@@ -173,7 +175,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err == nil && r.spanDue(&t) {
 		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
-	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
+	if v1alpha1.TerminalPhase(t.Status.Phase) {
+		if err == nil && r.settling(&t) {
+			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
+		}
+		return ctrl.Result{}, err
+	}
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if t.Status.Phase == v1alpha1.PhaseEscalated {
@@ -331,15 +339,51 @@ func target(t *v1alpha1.Task) int {
 	return 0
 }
 
-// end moves a task to a terminal or escalated phase and says why, once.
-func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+// end moves a task to a terminal or escalated phase and says why, once. The task's tokens are
+// not recorded here: the settle does that, once, after the meter's late readings have had their
+// window (R49).
+func (r *Reconciler) end(_ context.Context, t *v1alpha1.Task, phase, reason string) error {
 	r.to(t, phase, reason)
-	if v1alpha1.TerminalPhase(phase) {
-		tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
-		record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
-	}
 	narrateLater(t, narrate.Ended(t, phase, reason))
 	return nil
+}
+
+// settleWindow bounds how long an ended task keeps refreshing its usage before the total is
+// recorded (R49): twice the meter's period — one reading can trail one tick — plus the travel of
+// the annotation the reading becomes.
+func (r *Reconciler) settleWindow() time.Duration {
+	return 2*r.Cfg.Poll.Meter.Duration + 30*time.Second
+}
+
+// settling: the task has ended with runs whose usage has not settled yet (R49). A task without
+// runs has nothing to settle: no claim exists for the meter to annotate.
+func (r *Reconciler) settling(t *v1alpha1.Task) bool {
+	return v1alpha1.TerminalPhase(t.Status.Phase) && len(t.Status.Runs) > 0 && !t.Status.UsageSettled
+}
+
+// settle refreshes a settling task's records from their claims, and once the window closes
+// records the task's tokens and marks the usage settled. The metric rides the same status write
+// as the mark, so a conflicting write replays both; the write that lands records them once.
+func (r *Reconciler) settle(ctx context.Context, t *v1alpha1.Task) error {
+	if _, _, err := r.observe(ctx, t); err != nil {
+		return err
+	}
+	if t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) < r.settleWindow() {
+		return nil
+	}
+	t.Status.UsageSettled = true
+	tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
+	record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
+	return nil
+}
+
+// settleLeft is how much of the settle window an ended task still owes: it is requeued for its
+// settle, never on the poll interval an ended task otherwise skips.
+func (r *Reconciler) settleLeft(t *v1alpha1.Task) time.Duration {
+	if t.Status.PhaseSince == nil {
+		return r.Cfg.Poll.Tasks.Duration
+	}
+	return max(r.settleWindow()-r.Now().Sub(t.Status.PhaseSince.Time), time.Second)
 }
 
 // spanDue: the task has ended and its root span is still to export (R46).
@@ -455,7 +499,19 @@ func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
 }
 
 func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
-	if adopted, err := r.adopt(ctx, t); err != nil || adopted {
+	// A claim of the next run's deterministic id is a run the status does not know: the write
+	// that recorded it was lost (R48). Recorded, never duplicated, and before the caps: the run
+	// already holds its slot.
+	x, found, err := r.Runs.Get(ctx, runID(t.Name, len(t.Status.Runs)))
+	if err != nil {
+		return err
+	}
+	if found {
+		return r.recordExisting(t, x)
+	}
+	// The records are refreshed here too (R49): a task waiting in Queued still holds ended runs
+	// whose late readings must land.
+	if _, _, err := r.observe(ctx, t); err != nil {
 		return err
 	}
 	ok, why, err := r.slotFree(ctx, t)

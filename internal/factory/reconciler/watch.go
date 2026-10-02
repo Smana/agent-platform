@@ -237,7 +237,8 @@ func commandLine(body, verb string) bool {
 // escalated waits for a maintainer (§6.3): a pull request merged or closed meanwhile ends the
 // task; a /factory retry sends it back for a fresh run, through Queued and its caps. The command
 // is marked handled in the same status write as the move, and no run is created here, so a replay
-// after a lost write repeats the move, and queued's adopt never starts a second run.
+// after a lost write repeats the move; the next run's deterministic id (R48) keeps a replay from
+// ever starting a second one.
 func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 	var pr forge.PR
 	if t.Status.PullRequest != nil {

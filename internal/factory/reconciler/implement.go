@@ -4,11 +4,14 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
 	"github.com/Smana/agent-platform/internal/factory/tracing"
 )
 
@@ -47,8 +51,8 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 		if x.Principal == runs.PrincipalFactory {
 			live++
 		}
-		// One live run per room (C3: a room's runs share its branch). The task's own was adopted
-		// before; anyone else's, a run a human started in the room, is waited for.
+		// One live run per room (C3: a room's runs share its branch). The task's own was recorded
+		// before this; anyone else's, a run a human started in the room, is waited for.
 		if x.RoomRef == t.Status.RoomRef && x.TaskID != t.Name {
 			return false, "waiting_room_busy", nil
 		}
@@ -66,33 +70,37 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	return true, "", nil
 }
 
-// adopt records a live run of this task that status does not know about: the run was created
-// but the status write that recorded it was lost. It is never duplicated.
-func (r *Reconciler) adopt(ctx context.Context, t *v1alpha1.Task) (bool, error) {
-	all, err := r.Runs.List(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, x := range all {
-		if x.TaskID != t.Name || runs.Terminal(x.Phase) || known(t, x.ID) {
-			continue
-		}
-		now := metav1.NewTime(r.Now())
-		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: nextTrigger(t), Started: &now})
-		t.Status.NextTrigger, t.Status.NextRole = "", ""
-		r.to(t, phaseFor(x.Role), "adopted")
-		return true, nil
-	}
-	return false, nil
+// runID is the deterministic id of a task's nth run (R48): the claim a replay recomputes, so a
+// lost status write finds the run it created instead of minting another. A C2 id, like a Task
+// name, so the claim's name is always xplane-run-<id>.
+func runID(task string, n int) string {
+	return taskid.Name(task + ":run:" + strconv.Itoa(n))
 }
 
-func known(t *v1alpha1.Task, id string) bool {
-	for _, rec := range t.Status.Runs {
-		if rec.ID == id {
-			return true
-		}
+// recordExisting records a claim the task's status does not know (R48): the run was created and
+// the write that recorded it was lost, so the replay found the claim by its deterministic id.
+// The claim is the record — its own role, start seq, head and tokens, whatever its phase — never
+// the replay's spec, which may hold a newer brief or a later room seq.
+func (r *Reconciler) recordExisting(t *v1alpha1.Task, x runs.Run) error {
+	if x.TaskID != t.Name {
+		return fmt.Errorf("record run %s of task %s: the id belongs to task %q", x.ID, t.Name, x.TaskID)
 	}
-	return false
+	// A verifier's trigger is always "review", and the lost write is what cleared NextRole; an
+	// implementer's survives in NextTrigger, which the same write would have cleared.
+	trigger := nextTrigger(t)
+	if x.Role == "reviewer" || x.Role == "tester" {
+		trigger = "review"
+	}
+	started := metav1.NewTime(r.Now())
+	if !x.Created.IsZero() {
+		started = metav1.NewTime(x.Created) // when the claim really was created, not the replay
+	}
+	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: trigger,
+		Round: t.Status.ReviewRounds, Phase: x.Phase, Tokens: x.Tokens, StartSeq: x.StartSeq, HeadSHA: x.Head,
+		Started: &started})
+	t.Status.NextTrigger, t.Status.NextRole = "", ""
+	r.to(t, phaseFor(x.Role), "adopted")
+	return nil
 }
 
 func phaseFor(role string) string {
@@ -129,18 +137,31 @@ func traceparent(t *v1alpha1.Task) string {
 
 func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec, trigger string) error {
 	// The room's lastSeq before the run: its handoff, verdict and end are read after it, never
-	// from the start of a long room (EventsSince stops at 10,000 events).
+	// from the start of a long room (EventsSince stops at 10,000 events). It rides the claim
+	// (AnnStartSeq), so a replay that finds the claim records the seq the run was given.
 	last, err := r.Rooms.LastSeq(ctx, t.Status.RoomRef)
 	if err != nil {
 		return err
 	}
-	s.RunID = r.NewRunID()
+	s.RunID, s.StartSeq = runID(t.Name, len(t.Status.Runs)), last
 	if err := r.Runs.Create(ctx, s); err != nil {
-		return err
+		// The deterministic id already has a claim: the run was created and its record lost
+		// (R48). Recorded, never re-created.
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		x, found, gerr := r.Runs.Get(ctx, s.RunID)
+		if gerr != nil {
+			return errors.Join(err, gerr)
+		}
+		if !found {
+			return err
+		}
+		return r.recordExisting(t, x)
 	}
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
-		Round: t.Status.ReviewRounds, StartSeq: last, Started: &now})
+		Round: t.Status.ReviewRounds, StartSeq: last, HeadSHA: s.Head, Started: &now})
 	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
@@ -150,22 +171,55 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 // current is the task's last run record.
 func current(t *v1alpha1.Task) *v1alpha1.RunRecord { return &t.Status.Runs[len(t.Status.Runs)-1] }
 
-// observe copies the run's phase and usage into its record and sums the task's usage. A record's
-// tokens never go down, since a stale read of a run must not lower them, so neither does the sum.
+// observe lists the task's claims once and copies each one's usage into its record, so a
+// reading the meter annotated after a run ended — the current run or any before it — still
+// lands (R49). A record's tokens never go down, since a stale read of a run must not lower
+// them, so neither does the sum; a deleted claim leaves its record's last reading in place.
 func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, bool, error) {
-	cur := current(t)
-	run, found, err := r.Runs.Get(ctx, cur.ID)
-	if err != nil || !found {
-		return run, found, err
+	if len(t.Status.Runs) == 0 {
+		return runs.Run{}, false, nil
 	}
-	cur.Phase = run.Phase
-	cur.Tokens = max(cur.Tokens, run.Tokens)
+	all, err := r.Runs.List(ctx)
+	if err != nil {
+		return runs.Run{}, false, err
+	}
+	claims := make(map[string]runs.Run, len(all))
+	for _, x := range all {
+		claims[x.ID] = x
+	}
+	cur := current(t)
 	var sum int64
-	for _, x := range t.Status.Runs {
-		sum += x.Tokens
+	for i := range t.Status.Runs {
+		rec := &t.Status.Runs[i]
+		if x, ok := claims[rec.ID]; ok {
+			rec.Tokens = max(rec.Tokens, x.Tokens)
+			if rec.ID == cur.ID {
+				rec.Phase = x.Phase
+			}
+		}
+		sum += rec.Tokens
 	}
 	t.Status.Usage.Tokens = sum
-	return run, true, nil
+	x, found := claims[cur.ID]
+	return x, found, nil
+}
+
+// pending is a claim that exists but never started: not admitted, no phase written yet.
+func pending(phase string) bool { return phase == "" || phase == "Pending" }
+
+// boundPending ends a run that never started (P): nothing else bounds Pending —
+// activeDeadlineSeconds counts from the pod's start, and Kueue queues unadmitted work forever.
+// A run Pending past caps.maxPendingMinutes never ran, so deleting it loses no usage; the task
+// escalates as run_unschedulable, and a maintainer's /factory retry starts a fresh run.
+func (r *Reconciler) boundPending(ctx context.Context, t *v1alpha1.Task, run runs.Run) error {
+	if !pending(run.Phase) || run.Created.IsZero() ||
+		r.Now().Sub(run.Created) < time.Duration(r.Cfg.Caps.MaxPendingMinutes)*time.Minute {
+		return nil
+	}
+	if err := r.Runs.Delete(ctx, run.ID); err != nil {
+		return err
+	}
+	return r.end(ctx, t, v1alpha1.PhaseEscalated, "run_unschedulable")
 }
 
 // roomReason is the broker's end reason for the task's current run, if the room has it.
@@ -209,6 +263,9 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !found {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, r.lostReason(ctx, t))
+	}
+	if err := r.boundPending(ctx, t, run); err != nil {
+		return err
 	}
 	if t.Status.PullRequest == nil {
 		if err := r.detectPR(ctx, t, run); err != nil {

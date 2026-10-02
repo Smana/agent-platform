@@ -198,6 +198,7 @@ func reasons() map[string]string {
 		"verdict_stale":           "its approval was not for the pull request's current head",
 		"room_log_too_long":       "the room's log was too long to read to its end",
 		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
+		"run_unschedulable":       "the cluster never admitted the task's run within its bound",
 	}
 }
 

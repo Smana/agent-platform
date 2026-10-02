@@ -118,6 +118,7 @@ type Budget struct {
 // TaskStatus is the task's audit record: the whole §4 record, including the fields later
 // phases fill.
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.trace) || has(self.trace)",message="a task's trace is never removed: its runs are parented on it"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.usageSettled) || !oldSelf.usageSettled || (has(self.usageSettled) && self.usageSettled)",message="settled usage stays settled"
 type TaskStatus struct {
 	// +kubebuilder:validation:Enum=Received;Rejected;Triaged;Queued;Implementing;NoOp;Reviewing;AwaitingCI;AutoMerging;AwaitingHuman;Merged;Verifying;Done;Reverted;Escalated;Closed;Stopped
 	// +optional
@@ -140,6 +141,10 @@ type TaskStatus struct {
 	PullRequest *PullRequestRef `json:"pullRequest,omitempty"`
 	// +optional
 	Usage Usage `json:"usage,omitempty"`
+	// The task's usage has settled (R49): the meter's late readings have had their window, and
+	// the total is final. Written once, with the one TaskTokens the settle records.
+	// +optional
+	UsageSettled bool `json:"usageSettled,omitempty"`
 	// +optional
 	ReviewRounds int32 `json:"reviewRounds,omitempty"`
 	// +optional

@@ -43,6 +43,14 @@ const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://git
  "labels":{"nodes":[{"name":"factory/ready"}]},
  "timelineItems":{"nodes":[{"createdAt":"2026-09-27T09:04:00Z"}]}}}}}`
 
+// R51's orphan scan: one own-repo agent pull request, one fork's, one with no head repository.
+const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
+ {"number":31,"headRefName":"agent/3buqdlot","headRepository":{"owner":{"login":"Smana"},"name":"demo"},
+  "labels":{"nodes":[{"name":"factory/class:docs-links"}]}},
+ {"number":32,"headRefName":"agent/forkedit","headRepository":{"owner":{"login":"someone"},"name":"demo"}},
+ {"number":33,"headRefName":"agent/gonesome","headRepository":null,
+  "labels":{"nodes":[{"name":"factory/class:review"}]}}]}}}}`
+
 const eventsJSON = `[
  {"event":"labeled","label":{"name":"factory/ready"},"actor":{"login":"someone"},"created_at":"2026-09-27T09:00:00Z"},
  {"event":"labeled","label":{"name":"bug"},"actor":{"login":"Smana"},"created_at":"2026-09-27T09:01:00Z"},
@@ -108,6 +116,13 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	})
 	mux.HandleFunc("POST /graphql", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(b), "pullRequests(") {
+			if !strings.Contains(string(b), `headRefPrefix: \"agent/\"`) || !strings.Contains(string(b), "states: [OPEN]") {
+				g.t.Errorf("the orphan scan lists open agent branches only: %s", b)
+			}
+			_, _ = io.WriteString(w, agentPullsJSON)
+			return
+		}
 		if strings.Contains(string(b), "pullRequest(") {
 			_, _ = io.WriteString(w, prJSON)
 			return
@@ -317,6 +332,26 @@ func TestPullRequestSnapshot(t *testing.T) {
 	}
 	if len(pr.Comments) != 2 || pr.Comments[0].ID != 55 || pr.Comments[0].Author != "Smana" || pr.Comments[0].Edited || !pr.Comments[1].Edited {
 		t.Fatalf("comments, and which were edited: %+v", pr.Comments)
+	}
+}
+
+// R51: the orphan scan's list is the open agent-branch pull requests of this repository, with
+// their labels; a fork's branch and a deleted head repository are never the factory's.
+func TestAgentPullsAreTheOwnOnes(t *testing.T) {
+	r := newRig(t)
+	ps, err := r.g.AgentPulls(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 3 {
+		t.Fatalf("%+v", ps)
+	}
+	if ps[0].Number != 31 || ps[0].HeadRef != "agent/3buqdlot" || ps[0].Fork || len(ps[0].Labels) != 1 ||
+		ps[0].Labels[0] != "factory/class:docs-links" {
+		t.Fatalf("the own one, with its labels: %+v", ps[0])
+	}
+	if !ps[1].Fork || !ps[2].Fork {
+		t.Fatalf("a fork's and a deleted head's are marked: %+v %+v", ps[1], ps[2])
 	}
 }
 

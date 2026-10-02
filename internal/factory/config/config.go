@@ -31,6 +31,11 @@ const (
 	MaxTextCeiling = 14336
 	// maxRunMinutes is SP1's XRD maximum for budget.maxMinutes.
 	maxRunMinutes = 480
+	// defaultMaxPendingMinutes bounds a Pending run when the config omits its own (P).
+	defaultMaxPendingMinutes = 30
+	// minMaxPendingMinutes keeps the Pending bound meaningful: under five minutes a busy cluster
+	// would escalate healthy tasks.
+	minMaxPendingMinutes = 5
 )
 
 // Duration is a time.Duration written as a string such as "30s".
@@ -120,6 +125,10 @@ type Caps struct {
 	ConcurrentRuns int `json:"concurrentRuns"`
 	TasksPerDay    int `json:"tasksPerDay"`
 	MaxTextBytes   int `json:"maxTextBytes"`
+	// How long a run may sit Pending before the task escalates as run_unschedulable (P): no
+	// other layer bounds it — activeDeadlineSeconds counts from the pod's start, and Kueue
+	// queues unadmitted work forever. Defaulted when omitted, never left open.
+	MaxPendingMinutes int `json:"maxPendingMinutes"`
 }
 
 // Meter is where the run meter reads token usage (R12).
@@ -169,6 +178,9 @@ func Parse(raw []byte) (*Config, error) {
 	var c Config
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if c.Caps.MaxPendingMinutes == 0 {
+		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -283,6 +295,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Caps.MaxTextBytes < 1 || c.Caps.MaxTextBytes > MaxTextCeiling {
 		bad("caps.maxTextBytes must be 1..%d (R6)", MaxTextCeiling)
+	}
+	if c.Caps.MaxPendingMinutes < minMaxPendingMinutes || c.Caps.MaxPendingMinutes > maxRunMinutes {
+		bad("caps.maxPendingMinutes must be %d..%d (P)", minMaxPendingMinutes, maxRunMinutes)
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

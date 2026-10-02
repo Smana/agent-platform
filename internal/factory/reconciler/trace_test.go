@@ -55,7 +55,7 @@ func TestEveryRunOfATaskSharesItsTrace(t *testing.T) {
 	if tr == nil || len(tr.TraceID) != 32 || len(tr.SpanID) != 16 || tr.Exported {
 		t.Fatalf("minted at acceptance: %+v", tr)
 	}
-	s := g.runs.specs["7f3cq2xz"]
+	s := g.runs.specs[rid(0)]
 	if s.Traceparent != tracing.Traceparent(tr.TraceID, tr.SpanID) || s.Tier != "standard" {
 		t.Fatalf("the run carries the task's trace and tier: %q %q", s.Traceparent, s.Tier)
 	}
@@ -85,7 +85,7 @@ func TestEveryRunOfATaskSharesItsTrace(t *testing.T) {
 func TestNoSinkNoTaskTrace(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "fix"))
 	tk := g.reconcile(t, "3buqdlot", 3)
-	if tk.Status.Trace != nil || g.runs.specs["7f3cq2xz"].Traceparent != "" {
+	if tk.Status.Trace != nil || g.runs.specs[rid(0)].Traceparent != "" {
 		t.Fatal("tracing off: no trace minted; each run starts its own, as task agent:run's do")
 	}
 }
@@ -117,7 +117,7 @@ func TestTheTraceIsMintedOnce(t *testing.T) {
 		t.Fatal("minted with the acceptance, before triage")
 	}
 	if tk := g.reconcile(t, "3buqdlot", 3); *tk.Status.Trace != *first ||
-		g.runs.specs["7f3cq2xz"].Traceparent != tracing.Traceparent(first.TraceID, first.SpanID) {
+		g.runs.specs[rid(0)].Traceparent != tracing.Traceparent(first.TraceID, first.SpanID) {
 		t.Fatalf("re-minted: %+v, then %+v", first, tk.Status.Trace)
 	}
 }
@@ -193,8 +193,8 @@ func TestNoIssueTextReachesTheSpan(t *testing.T) {
 	mem := tracetest.NewInMemoryExporter()
 	g.r.Trace = tracing.New(mem)
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Failed")
-	g.log.end("7f3cq2xz", "Failed", canary+" the agent said")
+	g.runs.set(rid(0), "Failed")
+	g.log.end(rid(0), "Failed", canary+" the agent said")
 	g.reconcile(t, "3buqdlot", 1) // Escalated, with the room's reason
 	stopTask(t, g, g.reconcile(t, "3buqdlot", 0))
 	g.reconcile(t, "3buqdlot", 2)

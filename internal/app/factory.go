@@ -129,7 +129,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	rc := runs.Client{C: mgr.GetClient()}
 	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Runs: rc, Rooms: broker,
-		Triage: triage.Static{Cfg: cfg}, Metrics: m, Now: time.Now, NewRunID: taskid.Random, Nonce: taskid.Random, Log: log,
+		Triage: triage.Static{Cfg: cfg}, Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
