@@ -36,6 +36,10 @@ const (
 	// minMaxPendingMinutes keeps the Pending bound meaningful: under five minutes a busy cluster
 	// would escalate healthy tasks.
 	minMaxPendingMinutes = 5
+	// OD-10's daily token budgets, when the config omits them: R3 wants a week of shadow
+	// numbers first, so the ceilings exist even before an operator writes them down.
+	defaultFactoryDaily = 25_000_000
+	defaultHumanDaily   = 5_000_000
 )
 
 // Duration is a time.Duration written as a string such as "30s".
@@ -72,6 +76,7 @@ type Config struct {
 	Tiers        map[string]Tier     `json:"tiers"`
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
+	Budgets      Budgets             `json:"budgets"`
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
@@ -145,6 +150,19 @@ type Caps struct {
 	// other layer bounds it — activeDeadlineSeconds counts from the pod's start, and Kueue
 	// queues unadmitted work forever. Defaulted when omitted, never left open.
 	MaxPendingMinutes int `json:"maxPendingMinutes"`
+	// AwaitingHumanWIP bounds the tasks waiting on a human review before the factory queues
+	// more of the review-class work that produces them (§6.2's back-pressure on reviewers).
+	// Required, never defaulted: a config that omits it fails its rollout (§4).
+	AwaitingHumanWIP int `json:"awaitingHumanWIP"`
+}
+
+// Budgets are the admission-time caps SP3 owns (C5). Enforcement starts false: a week of
+// shadow numbers first (OD-10, R3). The run cap is always enforced by the meter.
+type Budgets struct {
+	EnforceTask      bool  `json:"enforceTask"`
+	EnforcePrincipal bool  `json:"enforcePrincipal"`
+	FactoryDaily     int64 `json:"factoryDaily"`
+	HumanDaily       int64 `json:"humanDaily"`
 }
 
 // Meter is where the run meter reads token usage (R12).
@@ -197,6 +215,12 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if c.Caps.MaxPendingMinutes == 0 {
 		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)
+	}
+	if c.Budgets.FactoryDaily == 0 {
+		c.Budgets.FactoryDaily = defaultFactoryDaily // OD-10
+	}
+	if c.Budgets.HumanDaily == 0 {
+		c.Budgets.HumanDaily = defaultHumanDaily
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -328,6 +352,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Caps.MaxPendingMinutes < minMaxPendingMinutes || c.Caps.MaxPendingMinutes > maxRunMinutes {
 		bad("caps.maxPendingMinutes must be %d..%d (P)", minMaxPendingMinutes, maxRunMinutes)
+	}
+	if c.Caps.AwaitingHumanWIP < 1 {
+		bad("caps.awaitingHumanWIP must be positive")
+	}
+	if c.Budgets.FactoryDaily < 1 {
+		bad("budgets.factoryDaily must be positive")
+	}
+	if c.Budgets.HumanDaily < 1 {
+		bad("budgets.humanDaily must be positive")
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

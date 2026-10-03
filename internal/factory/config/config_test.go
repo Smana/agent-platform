@@ -36,7 +36,8 @@ templates:
   pair: {roles: [implementer, reviewer], maxReviewRounds: 2}
   trio: {roles: [implementer, tester, reviewer], maxReviewRounds: 2}
   investigate: {roles: [triager]}  # R38: proposes a public issue text, never writes
-caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336}
+caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}
+budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}
 meter:
   url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428
   query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'
@@ -59,8 +60,26 @@ func TestGoodConfigParses(t *testing.T) {
 	if c.Caps.MaxPendingMinutes != 30 {
 		t.Fatalf("an omitted Pending bound defaults to 30 (P): %d", c.Caps.MaxPendingMinutes)
 	}
+	if c.Caps.AwaitingHumanWIP != 5 {
+		t.Fatalf("awaitingHumanWIP: %d", c.Caps.AwaitingHumanWIP)
+	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
+	}
+}
+
+// OD-10: an omitted budgets block still carries the daily ceilings, unenforced (R3).
+func TestBudgetDefaults(t *testing.T) {
+	raw := strings.Replace(good, "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n", "", 1)
+	if raw == good {
+		t.Fatal("the edit did not apply")
+	}
+	c, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Budgets.FactoryDaily != 25_000_000 || c.Budgets.HumanDaily != 5_000_000 || c.Budgets.EnforceTask || c.Budgets.EnforcePrincipal {
+		t.Fatalf("defaults are 25 M and 5 M, both unenforced: %+v", c.Budgets)
 	}
 }
 
@@ -107,8 +126,8 @@ func TestGoodVariantsParse(t *testing.T) {
 		"internal data":        {"dataClass: public", "dataClass: internal"},
 		"implementer anywhere": {"pair: {roles: [implementer, reviewer]", "pair: {roles: [reviewer, implementer]"},
 		// P: an explicit Pending bound, inside 5..480.
-		"an explicit pending bound": {"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336}",
-			"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, maxPendingMinutes: 20}"},
+		"an explicit pending bound": {"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}",
+			"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5, maxPendingMinutes: 20}"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c[0], c[1], 1)
@@ -175,6 +194,9 @@ func TestBadConfigsFail(t *testing.T) {
 		"no active tasks":            {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
 		"no concurrent runs":         {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
 		"no tasks per day":           {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
+		"no awaiting human wip":      {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
+		"negative factory daily":     {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
+		"negative human daily":       {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
 		"issues poll not positive":   {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
 		"tasks poll negative":        {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
 		"meter poll not positive":    {"meter: 30s", "meter: 0s", "poll.meter must be positive"},

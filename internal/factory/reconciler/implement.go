@@ -39,6 +39,17 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	if active >= r.Cfg.Caps.ActiveTasks {
 		return false, "waiting_active_tasks", nil
 	}
+	// A live class may auto-merge its PR, so human review WIP is not its bottleneck; the shadow
+	// and unclassified work is exactly what lands on the review queue.
+	if len(t.Status.Runs) == 0 && !r.Cfg.Classes[t.Spec.PredictedClass].Live {
+		wip, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool { return o.Status.Phase == v1alpha1.PhaseAwaitingHuman })
+		if err != nil {
+			return false, "", err
+		}
+		if wip >= r.Cfg.Caps.AwaitingHumanWIP {
+			return false, "waiting_review_wip", nil // back-pressure on the reviewers (§6.2)
+		}
+	}
 	all, err := r.Runs.List(ctx)
 	if err != nil {
 		return false, "", err
@@ -123,8 +134,25 @@ func sourceURL(t *v1alpha1.Task) string {
 func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 	return runs.Spec{TaskID: t.Name, Role: "implementer", Repository: t.Spec.Repository, BaseRef: "main",
 		Branch: "agent/" + t.Name, TaskText: text, Principal: runs.PrincipalFactory, DataClass: t.Spec.DataClass,
-		Model: t.Spec.Budget.Model, RoomRef: t.Status.RoomRef, SourceURL: sourceURL(t),
+		Model: t.Spec.Budget.Model, RoomRef: t.Status.RoomRef, SourceURL: sourceURL(t), Queue: runs.QueueFactory,
 		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
+}
+
+// factorySpentToday is §6.2's "SP3 at admission" for the factory's own principal (R34): today's
+// system:factory runs, as the meter annotated them. Shadow only until Task 5.3 reads the day's
+// ledger: a stopped run's deleted claim drops out of this sum, its tokens with it.
+func (r *Reconciler) factorySpentToday(ctx context.Context) (int64, error) {
+	all, err := r.Runs.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, x := range all {
+		if x.Principal == runs.PrincipalFactory && sameUTCDay(x.Created, r.Now()) {
+			n += x.Tokens
+		}
+	}
+	return n, nil
 }
 
 // traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.

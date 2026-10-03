@@ -42,10 +42,21 @@ func (r *Reconciler) nextVerifier(t *v1alpha1.Task, after string) string {
 	return ""
 }
 
+// otherTier is the reviewer's rule (§3): run where the implementer did not.
+func otherTier(tier string) string {
+	if tier == "frontier" {
+		return "standard"
+	}
+	return "frontier"
+}
+
 // verifierSpec: a read-only role starts from the task's branch with the pull request as its task (R25).
 func (r *Reconciler) verifierSpec(t *v1alpha1.Task, role string) runs.Spec {
 	s := r.implementerSpec(t, "")
 	s.Role, s.TaskText, s.TaskURL, s.BaseRef = role, "", t.Status.PullRequest.URL, "agent/"+t.Name
+	if role == "reviewer" { // "on a different tier from the implementer where possible" (§3)
+		s.Model = r.Cfg.Tiers[otherTier(t.Spec.Budget.Tier)].Model
+	}
 	return s
 }
 

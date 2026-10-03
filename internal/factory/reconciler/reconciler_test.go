@@ -234,6 +234,7 @@ func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template
 	m.add("task_tokens " + strconv.FormatInt(tokens, 10) + " " + tier + " " + template + " " + class)
 }
 func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("intervention " + kind) }
+func (m *fakeMetrics) Revoked(_ context.Context, reason string)    { m.add("revoked " + reason) }
 func (m *fakeMetrics) TraceExportAbandoned(context.Context)        { m.add("trace_export_abandoned") }
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
@@ -243,11 +244,13 @@ func cfg() *config.Config {
 		FactoryLogin: "ogenki-agent-factory[bot]",
 		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}, Meter: config.Duration{Duration: 30 * time.Second}},
 		Defaults:     config.Defaults{Template: "solo", Tier: "standard", DataClass: "public", PredictedClass: "review"},
-		Tiers:        map[string]config.Tier{"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45}},
+		// The reviewer runs on the other tier (4.2): frontier's model is observable as tier-frontier.
+		Tiers: map[string]config.Tier{"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45},
+			"frontier": {Model: "tier-frontier", RunTokens: 4_000_000, TaskTokens: 8_000_000, RunMinutes: 90}},
 		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}},
 			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
 			"trio": {Roles: []string{"implementer", "tester", "reviewer"}, MaxReviewRounds: 2}},
-		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30},
+		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30, AwaitingHumanWIP: 5},
 		Hash: strings.Repeat("a", 64)}
 }
 
