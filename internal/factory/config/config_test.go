@@ -25,6 +25,8 @@ broker: {url: "https://room-broker.agent-system.svc.cluster.local:8443", caFile:
 github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent-factory-github/private_key}
 poll: {issues: 60s, tasks: 30s, meter: 30s}
 defaults: {template: solo, tier: standard, dataClass: public, predictedClass: review}
+triage: {classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", controlPercent: 10}
+classes: {docs-links: {live: true}, revert: {live: true}, docs: {}, tests: {}, dashboards: {}}
 tiers:
   light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}
   standard: {model: agent-default, runTokens: 1500000, taskTokens: 3000000, runMinutes: 45}
@@ -160,17 +162,24 @@ func TestBadConfigsFail(t *testing.T) {
 			"template investigate: only an implementer writes"},
 		"a triager with a reviewer": {"investigate: {roles: [triager]}", "investigate: {roles: [triager, reviewer]}",
 			"template investigate: only an implementer writes"},
-		"unknown default tier":      {"tier: standard,", "tier: medium,", `defaults.tier "medium" is not a tier`},
-		"unknown data class":        {"dataClass: public", "dataClass: secret", "defaults.dataClass is public or internal"},
-		"no predicted class":        {", predictedClass: review}", "}", "defaults.predictedClass is required"},
-		"no active tasks":           {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
-		"no concurrent runs":        {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
-		"no tasks per day":          {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
-		"issues poll not positive":  {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
-		"tasks poll negative":       {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
-		"meter poll not positive":   {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
-		"repository not owner/name": {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
-		"repository with a path":    {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
+		"unknown default tier": {"tier: standard,", "tier: medium,", `defaults.tier "medium" is not a tier`},
+		"unknown data class":   {"dataClass: public", "dataClass: secret", "defaults.dataClass is public or internal"},
+		"no predicted class":   {", predictedClass: review}", "}", "defaults.predictedClass is required"},
+		// §5.2: C7's endpoint, the OD-14 share, and the two entry classes are required.
+		"no classifier URL":          {`classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", `, "", "triage.classifierURL is required"},
+		"control percent above 100":  {"controlPercent: 10", "controlPercent: 101", "triage.controlPercent must be 0..100"},
+		"control percent negative":   {"controlPercent: 10", "controlPercent: -1", "triage.controlPercent must be 0..100"},
+		"no docs-links class":        {"classes: {docs-links: {live: true}, revert: {live: true}", "classes: {revert: {live: true}", "class docs-links is required (OD-8)"},
+		"no revert class":            {"classes: {docs-links: {live: true}, revert: {live: true}, ", "classes: {docs-links: {live: true}, ", "class revert is required (OD-8)"},
+		"review declared as a class": {"classes: {docs-links:", "classes: {review: {}, docs-links:", "review is the implicit class of everything else"},
+		"no active tasks":            {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
+		"no concurrent runs":         {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
+		"no tasks per day":           {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
+		"issues poll not positive":   {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
+		"tasks poll negative":        {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
+		"meter poll not positive":    {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
+		"repository not owner/name":  {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
+		"repository with a path":     {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
 		// Ruling SC: the broker's :8443 is TLS, verified against the mounted CA.
 		"broker not https":       {`url: "https://room-broker`, `url: "http://room-broker`, "must be an https:// URL"},
 		"broker without host":    {`"https://room-broker.agent-system.svc.cluster.local:8443"`, `"https://"`, `broker.url "https://" must be an https:// URL`},

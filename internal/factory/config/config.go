@@ -67,6 +67,8 @@ type Config struct {
 	GitHub       GitHub              `json:"github"`
 	Poll         Poll                `json:"poll"`
 	Defaults     Defaults            `json:"defaults"`
+	Triage       Triage              `json:"triage"`
+	Classes      map[string]Class    `json:"classes"`
 	Tiers        map[string]Tier     `json:"tiers"`
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
@@ -103,6 +105,20 @@ type Defaults struct {
 	Tier           string `json:"tier"`
 	DataClass      string `json:"dataClass"`
 	PredictedClass string `json:"predictedClass"`
+}
+
+// Triage is phase 4's classification config (§2, §5.2).
+type Triage struct {
+	// C7's endpoint (R24). An error or timeout falls back to standard: never blocks.
+	ClassifierURL string `json:"classifierURL"`
+	// OD-14: this share of tasks runs at tier-frontier whatever C7 says.
+	ControlPercent int `json:"controlPercent"`
+}
+
+// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; shadow
+// classes are a prediction and a PR label only (OD-8).
+type Class struct {
+	Live bool `json:"live,omitempty"`
 }
 
 // Tier is a model and its budgets.
@@ -289,6 +305,20 @@ func (c *Config) Validate() error {
 	}
 	if c.Defaults.PredictedClass == "" {
 		bad("defaults.predictedClass is required")
+	}
+	if c.Triage.ClassifierURL == "" {
+		bad("triage.classifierURL is required")
+	}
+	if c.Triage.ControlPercent < 0 || c.Triage.ControlPercent > 100 {
+		bad("triage.controlPercent must be 0..100")
+	}
+	for _, name := range []string{"docs-links", "revert"} {
+		if _, ok := c.Classes[name]; !ok {
+			bad("class %s is required (OD-8)", name)
+		}
+	}
+	if _, ok := c.Classes["review"]; ok {
+		bad("review is the implicit class of everything else; do not declare it")
 	}
 	if c.Caps.ActiveTasks < 1 || c.Caps.ConcurrentRuns < 1 || c.Caps.TasksPerDay < 1 {
 		bad("caps must be positive")
