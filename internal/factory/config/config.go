@@ -79,6 +79,7 @@ type Config struct {
 	Budgets      Budgets             `json:"budgets"`
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
+	API          API                 `json:"api"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -174,6 +175,21 @@ type Meter struct {
 // Tracing is where task spans go (R46): the trace collector's platform port. Empty: tracing off.
 type Tracing struct {
 	OTLPEndpoint string `json:"otlpEndpoint"`
+}
+
+// API is the run-request API's configuration (§4): what it binds, which repositories it
+// accepts (OD-6), and how it authenticates callers (Task 5.1's Authenticator).
+type API struct {
+	Listen       string   `json:"listen"`
+	Repositories []string `json:"repositories"` // OD-6: cloud-native-ref only
+	HumanIssuer  string   `json:"humanIssuer"`
+	HumanJWKS    string   `json:"humanJWKS"`
+	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
+	ClientIDFiles []string `json:"clientIDFiles"`
+	// Empty today (R23): no system caller of POST /v1/runs exists.
+	SystemIssuer     string            `json:"systemIssuer,omitempty"`
+	SystemJWKS       string            `json:"systemJWKS,omitempty"`
+	SystemPrincipals map[string]string `json:"systemPrincipals,omitempty"`
 }
 
 var (
@@ -361,6 +377,30 @@ func (c *Config) Validate() error {
 	}
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
+	}
+	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
+	// block is as required as the rest of this file. A human caller is verified against the
+	// ZITADEL issuer and one of the rooms client ids; a system caller pairs issuer with JWKS.
+	for _, f := range []struct{ key, value string }{
+		{"api.listen", c.API.Listen}, {"api.humanIssuer", c.API.HumanIssuer}, {"api.humanJWKS", c.API.HumanJWKS},
+	} {
+		if f.value == "" {
+			bad("%s is required", f.key)
+		}
+	}
+	if len(c.API.Repositories) == 0 {
+		bad("api.repositories is empty: with none listed the API admits no repository")
+	}
+	for _, r := range c.API.Repositories {
+		if !repoRE.MatchString(r) {
+			bad("api.repository %q is not owner/name", r)
+		}
+	}
+	if len(c.API.ClientIDFiles) == 0 {
+		bad("api.clientIDFiles is empty: the rooms-proxy and roomctl client ids name the human callers")
+	}
+	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
+		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

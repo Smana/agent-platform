@@ -38,6 +38,12 @@ templates:
   investigate: {roles: [triager]}  # R38: proposes a public issue text, never writes
 caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}
 budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}
+api:
+  listen: ":8443"
+  repositories: [Smana/cloud-native-ref]
+  humanIssuer: https://auth.ogenki.io
+  humanJWKS: https://auth.ogenki.io/oauth/v2/keys
+  clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]
 meter:
   url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428
   query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'
@@ -62,6 +68,10 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 	if c.Caps.AwaitingHumanWIP != 5 {
 		t.Fatalf("awaitingHumanWIP: %d", c.Caps.AwaitingHumanWIP)
+	}
+	if c.API.Listen != ":8443" || len(c.API.Repositories) != 1 || len(c.API.ClientIDFiles) != 2 ||
+		c.API.HumanIssuer != "https://auth.ogenki.io" || c.API.HumanJWKS != "https://auth.ogenki.io/oauth/v2/keys" {
+		t.Fatalf("api: %+v", c.API)
 	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
@@ -128,6 +138,9 @@ func TestGoodVariantsParse(t *testing.T) {
 		// P: an explicit Pending bound, inside 5..480.
 		"an explicit pending bound": {"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}",
 			"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5, maxPendingMinutes: 20}"},
+		// R23: a system caller pairs issuer with JWKS (empty today: none exists).
+		"api with a system caller": {"humanJWKS: https://auth.ogenki.io/oauth/v2/keys",
+			"humanJWKS: https://auth.ogenki.io/oauth/v2/keys\n  systemIssuer: https://accounts.cluster.local\n  systemJWKS: https://accounts.cluster.local/keys"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c[0], c[1], 1)
@@ -226,6 +239,14 @@ func TestBadConfigsFail(t *testing.T) {
 		"no meter URL":              {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
 		"no meter query": {`query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'`,
 			"query: ''", "meter.query is required"},
+		// §4: what the run-request API binds, admits and authenticates against.
+		"no api listen":                 {`listen: ":8443"`, `listen: ''`, "api.listen is required"},
+		"no api issuer":                 {"humanIssuer: https://auth.ogenki.io", "humanIssuer: ''", "api.humanIssuer is required"},
+		"no api jwks":                   {"humanJWKS: https://auth.ogenki.io/oauth/v2/keys", "humanJWKS: ''", "api.humanJWKS is required"},
+		"api without repositories":      {"repositories: [Smana/cloud-native-ref]", "repositories: []", "api.repositories is empty"},
+		"api repository not owner/name": {"repositories: [Smana/cloud-native-ref]", "repositories: ['../x']", `api.repository "../x" is not owner/name`},
+		"api without client ids":        {"clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]", "clientIDFiles: []", "api.clientIDFiles is empty"},
+		"api system issuer alone":       {"humanIssuer: https://auth.ogenki.io", "humanIssuer: https://auth.ogenki.io\n  systemIssuer: https://accounts.example", "api.systemIssuer and api.systemJWKS are both set or both empty"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c.from, c.to, 1)
