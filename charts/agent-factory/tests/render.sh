@@ -17,8 +17,11 @@ check "audience: rooms-system" "the broker's system audience (SP2 P3)"
 check "mountPath: /var/run/secrets/agents/rooms" "the rooms token where config.broker.tokenFile reads it"
 check "secretName: openbao-ca" "the broker's CA (ruling SC)"
 check "mountPath: /etc/agent-factory/openbao-ca" "the CA where config.broker.caFile reads it"
+check "secretName: agent-factory-oidc" "the ZITADEL client ids the API reads tokens from"
+check "mountPath: /etc/agent-factory-oidc" "the client ids where config.api.clientIDFiles reads them"
 check "value: /etc/agent-factory/config/config.yaml" "FACTORY_CONFIG names the rendered config"
 check "mountPath: /etc/agent-factory/config" "the config mounted where FACTORY_CONFIG points"
+check "name: api" "the run-request API port"
 check "repository: Smana/cloud-native-ref" "the config is rendered verbatim"
 check "image: \"ghcr.io/smana/agent-factory:$digest\"" "the image by digest"
 check "readOnlyRootFilesystem: true" "restricted securityContext"
@@ -37,7 +40,8 @@ check "secret: {secretName: agent-factory-github, defaultMode: 0440}" "the App k
 # Review M4: exactly the verbs the code uses.
 check "verbs: [get, list, watch, create, update, patch]" "tasks without delete"
 check "verbs: [get, create, update]" "leases: what leader election calls"
-check "resourceNames: [agent-factory-stop]" "configmaps: the stop object only"
+check "resourceNames: [agent-factory-stop]" "configmaps: a name-bounded rule for the stop object"
+check "verbs: [get, list, create, update, delete]" "day ledgers: R50's admission and the meter's settle"
 if grep -qF "resources: [secrets]" <<<"$out"; then
   echo "FAIL: the factory never reads Secrets through the API" >&2; fail=1
 fi

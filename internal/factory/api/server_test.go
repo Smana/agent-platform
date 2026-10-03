@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -63,7 +64,7 @@ func serverWith(t *testing.T, st *store, enforce, stopped bool, objs ...client.O
 	return mkServer(t, st, c, enforce, stopped, "7f3cq2xz", 5_000_000).Handler()
 }
 
-func mkServer(t *testing.T, st *store, c client.Client, enforce, stopped bool, runID string, humanDaily int64) *Server {
+func mkServer(t *testing.T, st RunStore, c client.Client, enforce, stopped bool, runID string, humanDaily int64) *Server {
 	t.Helper()
 	m, err := fmetrics.New(nil, nil, "agent-system", func() bool { return false })
 	if err != nil {
@@ -334,5 +335,30 @@ func TestDeleteDoesNotRefund(t *testing.T) {
 	if w := post(server(t, st, true, l), "alice", base()); w.Code != http.StatusTooManyRequests ||
 		!strings.Contains(w.Body.String(), "over_budget") || len(st.created) != 0 {
 		t.Fatalf("%d %s %d", w.Code, w.Body, len(st.created))
+	}
+}
+
+// R48's retry path end to end: a caller that timed out waiting for its 201 posts the same
+// request again, through the real runs.Client. The ledger's equal-entry bypass reserves once,
+// the replayed Create finds its own landed claim, and the API answers 201 again — the first
+// attempt's reservation kept, not dropped as a create failure.
+func TestTheRetryOfAWholeAdmissionAnswers201Again(t *testing.T) {
+	s := scheme()
+	runs.Scheme(s)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	h := mkServer(t, runs.Client{C: c}, c, false, false, "7f3cq2xz", 5_000_000).Handler()
+	if w := post(h, "alice", base()); w.Code != http.StatusCreated {
+		t.Fatalf("the first attempt: %d %s", w.Code, w.Body)
+	}
+	if w := post(h, "alice", base()); w.Code != http.StatusCreated {
+		t.Fatalf("the retry of a landed creation must not 503 or eat a second slot: %d %s", w.Code, w.Body)
+	}
+	var cm corev1.ConfigMap
+	key := types.NamespacedName{Namespace: "agent-system", Name: LedgerPrefix + "20260927"}
+	if err := c.Get(t.Context(), key, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cm.Data[LedgerReserved+"7f3cq2xz"]; !ok {
+		t.Fatalf("the retry dropped the reservation of a live run: %v", cm.Data)
 	}
 }
