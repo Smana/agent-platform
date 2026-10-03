@@ -73,6 +73,7 @@ type Config struct {
 	Defaults     Defaults            `json:"defaults"`
 	Triage       Triage              `json:"triage"`
 	Classes      map[string]Class    `json:"classes"`
+	Merge        Merge               `json:"merge"`
 	Tiers        map[string]Tier     `json:"tiers"`
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
@@ -121,10 +122,27 @@ type Triage struct {
 	ControlPercent int `json:"controlPercent"`
 }
 
-// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; shadow
-// classes are a prediction and a PR label only (OD-8).
+// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; a shadow
+// class is decided exactly like a live one and never armed until the wave (R32, owner,
+// 2026-09-27); an unmarked class is a prediction and a PR label only (OD-8). Never both.
 type Class struct {
-	Live bool `json:"live,omitempty"`
+	Live   bool `json:"live,omitempty"`
+	Shadow bool `json:"shadow,omitempty"`
+}
+
+// Merge is §5.1's merge actor and §6.4's rollback.
+type Merge struct {
+	// The 8 contexts classic protection requires, by name (GitHub Actions, app 15368).
+	RequiredChecks []string `json:"requiredChecks"`
+	// The checks main's CI runs on push, watched on the merge commit. Not RequiredChecks: a
+	// path-filtered push workflow never reports there, and absent must not mean pending (§6.4).
+	VerifyChecks     []string `json:"verifyChecks"`
+	PolicyBotLogin   string   `json:"policyBotLogin"` // the status's expected creator
+	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
+	AutoMergesPerDay int      `json:"autoMergesPerDay"`
+	FixRuns          int32    `json:"fixRuns"`
+	VerifyFor        Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
+	RevertWindow     Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
 }
 
 // Tier is a model and its budgets.
@@ -363,6 +381,11 @@ func (c *Config) Validate() error {
 			bad("class %s is required (OD-8)", name)
 		}
 	}
+	for name, cl := range c.Classes {
+		if cl.Live && cl.Shadow {
+			bad("class %s: live and shadow never together (R32)", name)
+		}
+	}
 	if _, ok := c.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")
 	}
@@ -383,6 +406,33 @@ func (c *Config) Validate() error {
 	}
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
+	}
+	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
+	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.
+	if len(c.Merge.RequiredChecks) == 0 {
+		bad("merge.requiredChecks is empty: arming waits for every context classic protection requires")
+	}
+	if len(c.Merge.VerifyChecks) == 0 {
+		bad("merge.verifyChecks is empty: §6.4 watches these on the merge commit")
+	}
+	for _, f := range []struct{ key, value string }{
+		{"merge.policyBotLogin", c.Merge.PolicyBotLogin}, {"merge.mergerLogin", c.Merge.MergerLogin},
+	} {
+		if !strings.HasSuffix(strings.ToLower(f.value), "[bot]") {
+			bad("%s %q must be a bot login", f.key, f.value)
+		}
+	}
+	if c.Merge.AutoMergesPerDay < 0 {
+		bad("merge.autoMergesPerDay must be 0 or more")
+	}
+	if c.Merge.FixRuns < 0 {
+		bad("merge.fixRuns must be 0 or more")
+	}
+	if c.Merge.VerifyFor.Duration <= 0 {
+		bad("merge.verifyFor must be positive")
+	}
+	if c.Merge.RevertWindow.Duration <= 0 {
+		bad("merge.revertWindow must be positive")
 	}
 	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
 	// block is as required as the rest of this file. A human caller is verified against the

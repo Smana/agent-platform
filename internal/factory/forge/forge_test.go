@@ -126,4 +126,8 @@ func TestFakeRecordsWhatTheFactoryDid(t *testing.T) {
 	if p, err := f.PullRequest(ctx, 12); err != nil || p.HeadRef != "agent/3buqdlot" {
 		t.Errorf("%+v %v", p, err)
 	}
+	f.SetFiles(map[string]string{"docs/a.md": "old"}, map[string]string{"docs/a.md": "new"})
+	if b, h, err := f.Files(ctx, "base", "head"); err != nil || b["docs/a.md"] != "old" || h["docs/a.md"] != "new" {
+		t.Errorf("files %v %v %v", b, h, err)
+	}
 }

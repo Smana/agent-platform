@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -43,6 +44,12 @@ const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://git
  "title":"Fix the link","body":"The link in docs/a.md is broken.","state":"OPEN","lastEditedAt":null,
  "labels":{"nodes":[{"name":"factory/ready"}]},
  "timelineItems":{"nodes":[{"createdAt":"2026-09-27T09:04:00Z"}]}}}}}`
+
+// The two sides of docs/a.md the Files test reads (task 7.2, R52).
+const (
+	aBase = "see [the guide](docs/old.md).\n"
+	aHead = "see [the guide](docs/new.md).\n"
+)
 
 // R51's orphan scan: one own-repo agent pull request, one fork's, one with no head repository.
 const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
@@ -251,6 +258,36 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/compare/{basehead}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("basehead") {
+		case "old...new": // one modified file: both sides have content.
+			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/a.md","status":"modified"}]}`)
+		case "old...mid": // a file over the contents API's megabyte: GitHub lists it without content.
+			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/big.png","status":"modified"}]}`)
+		default: // mid...new: exactly one page, so more changed files are unread.
+			var fs []string
+			for i := range 100 {
+				fs = append(fs, fmt.Sprintf(`{"filename":"f%03d.md","status":"modified"}`, i))
+			}
+			_, _ = io.WriteString(w, `{"files":[`+strings.Join(fs, `,`)+`]}`)
+		}
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/contents/{path...}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		p, ref := r.PathValue("path"), r.URL.Query().Get("ref")
+		switch {
+		case p == "docs/a.md" && (ref == "old" || ref == "new"):
+			text := aBase
+			if ref == "new" {
+				text = aHead
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "a.md", "path": p, "type": "file",
+				"encoding": "base64", "size": len(text), "content": base64.StdEncoding.EncodeToString([]byte(text))})
+		case p == "docs/big.png":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "big.png", "path": p, "type": "file", "size": 2_000_000})
+		default:
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}
 	}))
 	mux.HandleFunc("GET /rate_limit", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"resources":{}}`)
@@ -528,6 +565,26 @@ func TestChecksAndMutations(t *testing.T) {
 	runs, err := r.g.CommitChecks(ctx, "abc123")
 	if err != nil || len(runs) != 1 || runs[0].State != "SUCCESS" {
 		t.Fatalf("%+v %v", runs, err)
+	}
+}
+
+// Task 7.2 (R52): Files reads both sides of a changed diff, and refuses a comparison it
+// cannot see whole — a file too large for the contents API, a diff past one page.
+func TestFilesReadsBothSidesOfADiff(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	b, h, err := r.g.Files(ctx, "old", "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b["docs/a.md"] != aBase || h["docs/a.md"] != aHead {
+		t.Fatalf("base %q head %q", b["docs/a.md"], h["docs/a.md"])
+	}
+	if _, _, err := r.g.Files(ctx, "old", "mid"); err == nil || !strings.Contains(err.Error(), "big.png") {
+		t.Errorf("an unfetchable file must be an error, not a skip: %v", err)
+	}
+	if _, _, err := r.g.Files(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
+		t.Errorf("a truncated compare must be an error: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ type Fake struct {
 	agentPulls   []AgentPull
 	checks       map[int]Checks
 	commitChecks map[string][]Check
+	filesBase    map[string]string
+	filesHead    map[string]string
 	open         []PRSummary
 	armed        []string
 	disarmed     []string
@@ -271,6 +274,21 @@ func (f *Fake) SetCommitChecks(sha string, cs ...Check) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commitChecks[sha] = cs
+}
+
+// SetFiles sets what Files returns: only the files a compare says changed, each side "" when
+// the file is absent there, as an added or deleted file reads on GitHub.
+func (f *Fake) SetFiles(base, head map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.filesBase, f.filesHead = maps.Clone(base), maps.Clone(head)
+}
+
+// Files implements the Merger's Files.
+func (f *Fake) Files(context.Context, string, string) (map[string]string, map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.filesBase), maps.Clone(f.filesHead), nil
 }
 
 // SetOpenPRs sets the open pull requests OpenPullRequests returns.

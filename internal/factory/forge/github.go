@@ -612,6 +612,65 @@ func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
 	return out, nil
 }
 
+// Files are the contents, at two commits, of every file that differs between them: an added
+// file's base side and a deleted file's head side read "", so the maps' union is the changed
+// set. A rename reads as its delete beside its add — which is right: a rename is not a link
+// retarget. §5.1's links-only test for the docs classes (R52) decides on these.
+func (g *GitHub) Files(ctx context.Context, base, head string) (map[string]string, map[string]string, error) {
+	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: 100})
+	g.mark(err)
+	if err != nil {
+		return nil, nil, wrap("compare commits", err)
+	}
+	if len(cmp.Files) == 100 { // one page exactly: unseen files must not let a diff pass as links-only
+		return nil, nil, fmt.Errorf("forge: 100 files differ between %s and %s, a full page: the links-only test cannot see them all", base, head)
+	}
+	baseFiles, headFiles := make(map[string]string, len(cmp.Files)), make(map[string]string, len(cmp.Files))
+	for _, f := range cmp.Files {
+		p := f.GetFilename()
+		hc, err := g.fileAt(ctx, p, head)
+		if err != nil {
+			return nil, nil, err
+		}
+		bp := f.GetPreviousFilename()
+		if bp == "" {
+			bp = p
+		}
+		bc, err := g.fileAt(ctx, bp, base)
+		if err != nil {
+			return nil, nil, err
+		}
+		headFiles[p], baseFiles[bp] = hc, bc
+	}
+	return baseFiles, headFiles, nil
+}
+
+// fileAt is one file's content at one commit. Absent there — an added file's base, a deleted
+// file's head — reads "". A file GitHub will not inline (over a megabyte, a submodule) is an
+// error: the links-only test must see every byte of the diff or refuse to decide it.
+func (g *GitHub) fileAt(ctx context.Context, path, ref string) (string, error) {
+	fc, _, resp, err := g.rest.Repositories.GetContents(ctx, g.owner, g.name, path, &github.RepositoryContentGetOptions{Ref: ref})
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		g.mark(nil)
+		return "", nil
+	}
+	g.mark(err)
+	if err != nil {
+		return "", wrap("read a file", err)
+	}
+	if fc == nil {
+		return "", fmt.Errorf("forge: %s at %s is not a file", path, ref)
+	}
+	text, err := fc.GetContent()
+	if err != nil {
+		return "", wrap("decode a file", err)
+	}
+	if text == "" && fc.GetSize() > 0 {
+		return "", fmt.Errorf("forge: %s at %s is %d bytes and not readable through the contents API (%s)", path, ref, fc.GetSize(), fc.GetType())
+	}
+	return text, nil
+}
+
 func wrap(what string, err error) error {
 	if err == nil {
 		return nil

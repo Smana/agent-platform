@@ -172,11 +172,13 @@ type PRSummary struct {
 }
 
 // Merger is GitHub through the merger App (owner, 2026-09-27; R16): the only identity that reads
-// checks and statuses, arms auto-merge and opens reverts. Its key lives in the factory alone; the
-// factory App, whose key the broker shares, never gets these powers.
+// checks, statuses and the changed files of a decision, arms auto-merge and opens reverts. Its
+// key lives in the factory alone; the factory App, whose key the broker shares, never gets these
+// powers.
 type Merger interface {
 	PullRequestChecks(ctx context.Context, number int) (Checks, error)
 	CommitChecks(ctx context.Context, sha string) ([]Check, error)
+	Files(ctx context.Context, base, head string) (baseFiles, headFiles map[string]string, err error)
 	EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error
 	DisableAutoMerge(ctx context.Context, nodeID string) error
 	RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error)

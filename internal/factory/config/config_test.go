@@ -26,7 +26,16 @@ github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent
 poll: {issues: 60s, tasks: 30s, meter: 30s}
 defaults: {template: solo, tier: standard, dataClass: public, predictedClass: review}
 triage: {classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", controlPercent: 10}
-classes: {docs-links: {live: true}, revert: {live: true}, docs: {}, tests: {}, dashboards: {}}
+classes: {docs-links: {shadow: true}, revert: {shadow: true}, docs: {}, tests: {}, dashboards: {}}
+merge:
+  requiredChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Rendered manifest diff 📝", "Check the shell scripts 💻", "Check the documentation links 🔗", "Validate Vector Log Parsing Configuration (vlsingle)", "Validate Vector Log Parsing Configuration (vlcluster)"]
+  verifyChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Check the shell scripts 💻", "Check the documentation links 🔗"]
+  policyBotLogin: ogenki-merge-gate[bot]
+  mergerLogin: ogenki-agent-merger[bot]
+  autoMergesPerDay: 10
+  fixRuns: 2
+  verifyFor: 30m
+  revertWindow: 168h
 tiers:
   light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}
   standard: {model: agent-default, runTokens: 1500000, taskTokens: 3000000, runMinutes: 45}
@@ -77,6 +86,16 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
+	}
+	// §5.1 and §6.4: the arming gate's own block, and the classes held in shadow (R32).
+	if len(c.Merge.RequiredChecks) != 8 || len(c.Merge.VerifyChecks) != 5 ||
+		c.Merge.PolicyBotLogin != "ogenki-merge-gate[bot]" || c.Merge.MergerLogin != "ogenki-agent-merger[bot]" ||
+		c.Merge.AutoMergesPerDay != 10 || c.Merge.FixRuns != 2 ||
+		c.Merge.VerifyFor.Minutes() != 30 || c.Merge.RevertWindow.Hours() != 168 {
+		t.Fatalf("merge: %+v", c.Merge)
+	}
+	if cl := c.Classes["docs-links"]; !cl.Shadow || cl.Live {
+		t.Fatalf("docs-links is shadow until task 10.7, not live: %+v", cl)
 	}
 }
 
@@ -203,9 +222,22 @@ func TestBadConfigsFail(t *testing.T) {
 		"no classifier URL":          {`classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", `, "", "triage.classifierURL is required"},
 		"control percent above 100":  {"controlPercent: 10", "controlPercent: 101", "triage.controlPercent must be 0..100"},
 		"control percent negative":   {"controlPercent: 10", "controlPercent: -1", "triage.controlPercent must be 0..100"},
-		"no docs-links class":        {"classes: {docs-links: {live: true}, revert: {live: true}", "classes: {revert: {live: true}", "class docs-links is required (OD-8)"},
-		"no revert class":            {"classes: {docs-links: {live: true}, revert: {live: true}, ", "classes: {docs-links: {live: true}, ", "class revert is required (OD-8)"},
+		"no docs-links class":        {"classes: {docs-links: {shadow: true}, revert: {shadow: true}", "classes: {revert: {shadow: true}", "class docs-links is required (OD-8)"},
+		"no revert class":            {"classes: {docs-links: {shadow: true}, revert: {shadow: true}, ", "classes: {docs-links: {shadow: true}, ", "class revert is required (OD-8)"},
 		"review declared as a class": {"classes: {docs-links:", "classes: {review: {}, docs-links:", "review is the implicit class of everything else"},
+		// R32: a class is decided live or held in shadow, never both.
+		"live and shadow": {"docs-links: {shadow: true}", "docs-links: {live: true, shadow: true}", "class docs-links: live and shadow never together"},
+		// §5.1's arming and §6.4's rollback: the merge block is the gate's own config.
+		"merge without required checks": {"requiredChecks: [\"Pre-commit checks 🛃\", \"Security scanning 🔒\", \"Kubernetes validation ☸\", \"Rendered manifest diff 📝\", \"Check the shell scripts 💻\", \"Check the documentation links 🔗\", \"Validate Vector Log Parsing Configuration (vlsingle)\", \"Validate Vector Log Parsing Configuration (vlcluster)\"]",
+			"requiredChecks: []", "merge.requiredChecks is empty"},
+		"merge without verify checks": {"verifyChecks: [\"Pre-commit checks 🛃\", \"Security scanning 🔒\", \"Kubernetes validation ☸\", \"Check the shell scripts 💻\", \"Check the documentation links 🔗\"]",
+			"verifyChecks: []", "merge.verifyChecks is empty"},
+		"policy bot not a bot":       {"policyBotLogin: ogenki-merge-gate[bot]", "policyBotLogin: ogenki-merge-gate", "merge.policyBotLogin"},
+		"merger not a bot":           {"mergerLogin: ogenki-agent-merger[bot]", "mergerLogin: ogenki-agent-merger", "merge.mergerLogin"},
+		"negative auto merges":       {"autoMergesPerDay: 10", "autoMergesPerDay: -1", "merge.autoMergesPerDay must be 0 or more"},
+		"negative fix runs":          {"fixRuns: 2", "fixRuns: -1", "merge.fixRuns must be 0 or more"},
+		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
+		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
 		"no active tasks":            {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
 		"no concurrent runs":         {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
 		"no tasks per day":           {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
