@@ -174,6 +174,40 @@ func TestCreateRefusesWhatItCannotVouchFor(t *testing.T) {
 	}
 }
 
+// R48: the API's idempotent retry re-Creates after its first attempt may have landed. An
+// AlreadyExists whose claim carries the same CREATE-only values is that same run: nil, so the
+// caller keeps its 201 and its reservation. Different values name a different run under this id:
+// a wrapped error, and the live claim untouched.
+func TestCreateReplaysItsOwnClaim(t *testing.T) {
+	c := newClient()
+	s := spec()
+	s.StartSeq, s.Head = 1202, "4be1c9d0a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	if err := c.Create(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Create(t.Context(), s); err != nil {
+		t.Fatalf("the retry of a landed creation is its success: %v", err)
+	}
+	if err := c.Create(t.Context(), func() Spec { x := s; x.StartSeq = 99; return x }()); err == nil {
+		t.Fatal("a different start seq is a different run")
+	}
+	if err := c.Create(t.Context(), func() Spec { x := s; x.Head = "deadbeef"; return x }()); err == nil {
+		t.Fatal("a different head is a different run")
+	}
+}
+
+func TestCreateReplaysAClaimWithNoCreateOnlyValues(t *testing.T) {
+	c := newClient()
+	if err := c.Create(t.Context(), spec()); err != nil {
+		t.Fatal(err)
+	}
+	// A claim built with neither start seq nor head replays as absent annotations equal zero
+	// values: still the same run.
+	if err := c.Create(t.Context(), spec()); err != nil {
+		t.Fatalf("an equal replay of a bare claim: %v", err)
+	}
+}
+
 func TestCreateAcceptsTheURLsGitHubWrites(t *testing.T) {
 	for name, edit := range map[string]func(*Spec){
 		"an issue":          func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/2112" },

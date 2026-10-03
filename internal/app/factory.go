@@ -9,6 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -27,6 +30,8 @@ import (
 
 	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
@@ -41,6 +46,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/triage"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/version"
 )
 
@@ -56,10 +62,11 @@ const (
 	traceDrain = 2 * time.Second
 )
 
-// RunFactory runs agent-factory (SP3): the Task reconciler, the issue poller and the run meter
-// on the leader; :9090 metrics and probes and the GitHub ping on every replica. getenv reads
-// FACTORY_CONFIG and POD_NAMESPACE. A config that does not load fails the start, so a bad
-// config fails the rollout rather than the running factory (§4).
+// RunFactory runs agent-factory (SP3): the Task reconciler, the issue poller, the run meter
+// and the stop's sweep on the leader; the run-request API on :8443, :9090 metrics and probes
+// and the GitHub ping on every replica. getenv reads FACTORY_CONFIG and POD_NAMESPACE. A
+// config that does not load fails the start, so a bad config fails the rollout rather than
+// the running factory (§4).
 func RunFactory(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	if err := runFactory(ctx, log, getenv); err != nil {
 		return fmt.Errorf("agent-factory: %w", err)
@@ -135,13 +142,59 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
 	}
+	// stopped is §6.1's pause: the stop object stops intake, and from phase 5 the API is intake
+	// too — it refuses 503 kill_switch exactly when the poller stands down.
+	stopped := func(ctx context.Context) bool {
+		on, err := killswitch.Engaged(ctx, mgr.GetClient(), ns)
+		return on || err != nil // intake pauses on doubt
+	}
+	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
+	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation and
+	// the meter's settle read and write date-named ledgers, so they go through a live client.
+	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		return err
+	}
+	humansV, err := authn.NewVerifier(ctx, cfg.API.HumanIssuer, cfg.API.HumanJWKS)
+	if err != nil {
+		return err
+	}
+	var systemsV *authn.Verifier
+	if cfg.API.SystemIssuer != "" {
+		if systemsV, err = authn.NewVerifier(ctx, cfg.API.SystemIssuer, cfg.API.SystemJWKS); err != nil {
+			return err
+		}
+	}
+	clientIDs := func() []string { // re-read: the ExternalSecret may rotate a rebuilt client
+		out := make([]string, 0, len(cfg.API.ClientIDFiles))
+		for _, f := range cfg.API.ClientIDFiles {
+			b, _ := os.ReadFile(filepath.Clean(f))
+			out = append(out, strings.TrimSpace(string(b)))
+		}
+		return out
+	}
+	// The two groups R23 admits. The names are platform-fixed — the broker's config carries the
+	// same values — and the factory's config has no groups block to name them from.
+	groups := policy.Groups{Admin: "agents-admin", Member: "agents-member"}
+	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
+		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
+		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
+		NewRunID: taskid.Random, Now: time.Now, Metrics: m}
 	for _, r := range []manager.Runnable{
 		&intake.IssuePoller{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Errors: m, Log: log,
-			Stopped: func(ctx context.Context) bool {
-				on, err := killswitch.Engaged(ctx, mgr.GetClient(), ns)
-				return on || err != nil // intake pauses on doubt
-			}},
-		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log},
+			Stopped: stopped},
+		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log,
+			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
+			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,
+			Remaining: func(p string, n, _ int64) { m.BudgetRemaining(ctx, p, n) },
+			Ledger:    live, Namespace: ns},
+		&killswitch.Sweeper{Reader: mgr.GetClient(), Namespace: ns, Runs: rc, Every: 15 * time.Second,
+			OnSweep: func(n int) {
+				for range n {
+					m.Revoked(ctx, "manual")
+				}
+			}, Log: log},
+		apiSrv,
 		&pinger{ping: gh.Ping, every: pingEvery},
 	} {
 		if err := mgr.Add(r); err != nil {
