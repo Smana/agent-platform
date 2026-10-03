@@ -102,6 +102,8 @@ func TestLinksOnly(t *testing.T) {
 		"a definition retarget":           {"[a]: https://example.com/old\n[a] and text", "[a]: https://example.com/new\n[a] and text", true},
 		"a title unchanged, target moved": {`[a](docs/old.md "The Guide")`, `[a](docs/new.md "The Guide")`, true},
 		"relative to absolute":            {"[a](docs/x.md)", "[a](https://example.com/x)", false},
+		"a protocol-relative jump":        {"[a](docs/x.md)", "[a](//evil.com/x)", false},
+		"a fenced retarget":               {"```\n[a](docs/old.md)\n```", "```\n[a](docs/new.md)\n```", false},
 		"an injected script":              {"plain text.", "plain text <script>alert(1)</script>.", false},
 		"a changed fenced command":        {"```\ncurl https://example.com/old\n```", "```\ncurl https://example.com/new\n```", false},
 		"a reworded sentence":             {"The link is broken.", "The link has rotted.", false},
@@ -142,6 +144,8 @@ func TestDecideArm(t *testing.T) {
 	byOwner.Author = "Smana"
 	red := green("SUCCESS")
 	red.Runs[1].State = "FAILURE"
+	errored := green("SUCCESS")
+	errored.Runs[1].State = "ERROR" // a state the merger's rollup never emits: recognized or not, it is not green
 	pending := green("SUCCESS")
 	pending.Runs = pending.Runs[:1] // a required check has not reported yet
 	forged := green("SUCCESS")
@@ -153,6 +157,7 @@ func TestDecideArm(t *testing.T) {
 		"all conditions": {ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""),
 			ReportedHead: head, Files: changed("[x](old.md)", "[x](new.md)")}, "arm", "", "docs-links"},
 		"CI red":                   {ArmInputs{PR: agentPR(), Checks: red, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
+		"CI errored":               {ArmInputs{PR: agentPR(), Checks: errored, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
 		"CI still running":         {ArmInputs{PR: agentPR(), Checks: pending, Task: armTask("docs-links", "solo", "")}, "wait", "ci_pending", ""},
 		"gate path":                {ArmInputs{PR: agentPR(), Checks: green("ERROR"), Task: armTask("docs-links", "solo", "")}, "human", "gate_path", "gate"},
 		"diff not the class":       {ArmInputs{PR: agentPR(), Checks: green("PENDING"), Task: armTask("docs-links", "solo", "")}, "human", "policy_pending", "review"},

@@ -39,8 +39,10 @@ type ArmDecision struct {
 	Matched string
 }
 
-// CIState over the required checks: FAILURE if one failed, PENDING while one is missing or
-// running, SUCCESS when all passed.
+// CIState over the required checks: FAILURE if one failed or reported a state the rollup's
+// vocabulary does not, PENDING while one is missing or running, SUCCESS when all passed.
+// NEUTRAL and SKIPPED never reach here as words: forge.checkState already maps them to
+// SUCCESS on the read. Fail-closed on the unrecognized: a renamed state is not green.
 func CIState(c forge.Checks, required []string) string {
 	state := "SUCCESS"
 	for _, name := range required {
@@ -48,7 +50,7 @@ func CIState(c forge.Checks, required []string) string {
 		switch {
 		case i < 0 || c.Runs[i].State == "PENDING":
 			state = "PENDING"
-		case c.Runs[i].State == "FAILURE":
+		case c.Runs[i].State != "SUCCESS":
 			return "FAILURE"
 		}
 	}
@@ -146,17 +148,23 @@ var reLinkTarget = regexp.MustCompile(`(?m)^ {0,3}\[[^()\]\r\n]+\]:[ \t]*(<[^<>\
 // any file a class like this edits, and counted below if one ever appears.
 const linkPlaceholder = "\x00"
 
-// linksOf is the text with every link target replaced by the placeholder, and the targets in
-// order of appearance.
+// linksOf is the text with every link target outside a code fence replaced by the placeholder,
+// and those targets in order of appearance. Fenced lines are left unsubstituted on purpose:
+// fenced content is code, and a docs-links diff that moved a link inside a fence moved code,
+// which the byte compare below then sees.
 func linksOf(s string) (string, []string) {
 	var out []string
 	m := reLinkTarget.FindAllStringSubmatchIndex(s, -1)
 	if m == nil {
 		return s, nil
 	}
+	fences := fencesOf(s)
 	var b strings.Builder
 	last := 0
 	for _, ix := range m {
+		if inFence(fences, ix[0]) {
+			continue // the fenced text still gets written: last never jumps over it
+		}
 		start, end := ix[4], ix[5] // the inline alternative
 		if ix[2] >= 0 {
 			start, end = ix[2], ix[3] // the reference-definition alternative
@@ -174,8 +182,45 @@ func linksOf(s string) (string, []string) {
 	return b.String(), out
 }
 
-// targetKind is a link target's scheme and host, with ("", "") for a relative target. An
-// unparseable one gets a scheme of its own so no pair can match it.
+// fencesOf are the byte ranges of ```-fenced blocks, fence lines included. An unbalanced
+// fence runs to the end of the text: its links go uncounted, which fails the byte compare
+// for any change there — the safe direction.
+func fencesOf(s string) [][2]int {
+	var out [][2]int
+	in, start := false, 0
+	for off := 0; off < len(s); {
+		end := strings.IndexByte(s[off:], '\n')
+		if end < 0 {
+			end = len(s)
+		} else {
+			end += off
+		}
+		if strings.HasPrefix(strings.TrimLeft(s[off:end], " \t"), "```") {
+			if in {
+				out = append(out, [2]int{start, end})
+			} else {
+				start, in = off, true
+			}
+		}
+		if end == len(s) {
+			break
+		}
+		off = end + 1
+	}
+	if in {
+		out = append(out, [2]int{start, len(s)})
+	}
+	return out
+}
+
+func inFence(ranges [][2]int, off int) bool {
+	return slices.ContainsFunc(ranges, func(r [2]int) bool { return r[0] <= off && off < r[1] })
+}
+
+// targetKind is a link target's scheme and host, with ("", "") only for a target relative to
+// the current document. A schemeless one with a host is protocol-relative — host-absolute, and
+// its non-empty host keeps it out of the relative clause. An unparseable one gets a scheme of
+// its own so no pair can match it.
 func targetKind(t string) (scheme, host string) {
 	u, err := url.Parse(t)
 	if err != nil {
@@ -187,13 +232,14 @@ func targetKind(t string) (scheme, host string) {
 	return strings.ToLower(u.Scheme), strings.ToLower(u.Host)
 }
 
-// retargetOK is R52's rule for a changed pair: relative to relative, or https staying on its
-// host, or landing on the archive. Never another scheme, never a host jump.
+// retargetOK is R52's rule for a changed pair: relative to relative — hosts empty on both sides,
+// so a protocol-relative //host is never "relative" — or https staying on its host, or landing
+// on the archive. Never another scheme, never a host jump.
 func retargetOK(from, to string) bool {
 	fs, fh := targetKind(from)
 	ts, th := targetKind(to)
 	switch {
-	case fs == "" && ts == "":
+	case fs == "" && fh == "" && ts == "" && th == "":
 		return true
 	case fs == "https" && ts == "https" && (fh == th || th == "web.archive.org"):
 		return true
