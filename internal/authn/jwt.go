@@ -232,6 +232,12 @@ func (v *Verifier) parse(ctx context.Context, raw, audience string) (*Claims, er
 	if audience == "" {
 		return nil, fmt.Errorf("%w: no audience to check", ErrUnauthenticated)
 	}
+	return v.parseWith(ctx, raw, jwt.WithAudience(audience))
+}
+
+// parseWith checks raw's signature, algorithm, iss, exp, nbf and iat, adding
+// opts to the parser.
+func (v *Verifier) parseWith(ctx context.Context, raw string, opts ...jwt.ParserOption) (*Claims, error) {
 	c := &Claims{}
 	_, err := jwt.ParseWithClaims(raw, c, func(t *jwt.Token) (any, error) {
 		// Before any key lookup, so another issuer's kid never refreshes this JWKS.
@@ -240,10 +246,32 @@ func (v *Verifier) parse(ctx context.Context, raw, audience string) (*Claims, er
 		}
 		return v.keys(ctx, t)
 	},
-		jwt.WithValidMethods(validMethods), jwt.WithIssuer(v.issuer), jwt.WithAudience(audience),
-		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(clockSkew), jwt.WithTimeFunc(v.now))
+		append([]jwt.ParserOption{jwt.WithValidMethods(validMethods), jwt.WithIssuer(v.issuer),
+			jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(clockSkew), jwt.WithTimeFunc(v.now)},
+			opts...)...)
 	if err != nil {
 		return nil, classify(err)
+	}
+	return c, nil
+}
+
+// VerifyAuthorizedParty checks raw, a token issued to the named client. Only azp
+// says which app a ZITADEL token was issued to: aud lists every app of the
+// project, so it goes unchecked here (the rule Humans.verify states, applied to
+// one client). A refusal wraps ErrUnauthenticated.
+func (v *Verifier) VerifyAuthorizedParty(ctx context.Context, raw, clientID string) (*Claims, error) {
+	if clientID == "" {
+		return nil, fmt.Errorf("%w: no client to check", ErrUnauthenticated)
+	}
+	c, err := v.parseWith(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	if c.AuthorizedParty != clientID {
+		return nil, fmt.Errorf("%w: not issued to %s", ErrWrongAudience, clientID)
+	}
+	if c.Subject == "" {
+		return nil, fmt.Errorf("%w: no subject", ErrUnauthenticated)
 	}
 	return c, nil
 }
