@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,20 +60,30 @@ const eventsJSON = `[
 
 const appID = "123456"
 
+// rollupJSON is the merger's one-query read of a head commit (task 7.1, R16): three check runs
+// in three states and one policy-bot commit status whose creator is a Bot.
+const rollupJSON = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+   {"__typename":"CheckRun","name":"Pre-commit checks","status":"COMPLETED","conclusion":"SUCCESS"},
+   {"__typename":"CheckRun","name":"Kubernetes validation","status":"IN_PROGRESS","conclusion":null},
+   {"__typename":"CheckRun","name":"Security scanning","status":"COMPLETED","conclusion":"FAILURE"},
+   {"__typename":"StatusContext","context":"policy-bot: main","state":"PENDING","creator":{"__typename":"Bot","login":"ogenki-merge-gate"}}
+ ]}}}}]}}}}}`
+
 // fakeGitHub is GitHub for one App installed on Smana/demo: it verifies the App JWT with the
 // current public key, mints installation tokens, and serves the REST and GraphQL calls only to
 // a request carrying the current token.
 type fakeGitHub struct {
-	t     *testing.T
-	srv   *httptest.Server
-	mu    sync.Mutex
-	pub   *rsa.PublicKey
-	token string
-	mints int
-	ttl   time.Duration
-	now   func() time.Time
-	calls []string
-	mint  func(w http.ResponseWriter) bool // overrides the mint reply when it returns true
+	t      *testing.T
+	srv    *httptest.Server
+	mu     sync.Mutex
+	pub    *rsa.PublicKey
+	token  string
+	mints  int
+	ttl    time.Duration
+	now    func() time.Time
+	calls  []string
+	bodies []string                         // the POST /graphql bodies, in order
+	mint   func(w http.ResponseWriter) bool // overrides the mint reply when it returns true
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
@@ -116,6 +127,25 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	})
 	mux.HandleFunc("POST /graphql", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		g.mu.Lock()
+		g.bodies = append(g.bodies, string(b))
+		g.mu.Unlock()
+		// The merger's rollup and mutations (task 7.1), routed before the snapshot tests:
+		// the rollup query also selects pullRequest(number: $number).
+		switch {
+		case strings.Contains(string(b), "statusCheckRollup"):
+			_, _ = io.WriteString(w, rollupJSON)
+			return
+		case strings.Contains(string(b), "revertPullRequest"):
+			_, _ = io.WriteString(w, `{"data":{"revertPullRequest":{"revertPullRequest":{"id":"PR_rev","number":13,"url":"https://github.com/Smana/demo/pull/13"}}}}`)
+			return
+		case strings.Contains(string(b), "enablePullRequestAutoMerge"):
+			_, _ = io.WriteString(w, `{"data":{"enablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		case strings.Contains(string(b), "disablePullRequestAutoMerge"):
+			_, _ = io.WriteString(w, `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		}
 		if strings.Contains(string(b), "pullRequests(") {
 			if !strings.Contains(string(b), `headRefPrefix: \"agent/\"`) || !strings.Contains(string(b), "states: [OPEN]") {
 				g.t.Errorf("the orphan scan lists open agent branches only: %s", b)
@@ -150,6 +180,9 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			t.Errorf("query %v", q)
 		}
 		_, _ = io.WriteString(w, `[{"number":7},{"number":12,"pull_request":{"url":"x"}}]`)
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/commits/{sha}/check-runs", g.authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"total_count":1,"check_runs":[{"name":"Pre-commit checks","status":"completed","conclusion":"success"}]}`)
 	}))
 	mux.HandleFunc("GET /repos/Smana/demo/pulls", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("head") != "Smana:agent/3buqdlot" {
@@ -258,6 +291,14 @@ func (g *fakeGitHub) authed(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// graphqlBodies are the bodies of the GraphQL calls so far, in order, for tests that assert on
+// what was actually sent.
+func (g *fakeGitHub) graphqlBodies() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.bodies)
 }
 
 func newKey(t *testing.T) (*rsa.PrivateKey, []byte) {
@@ -450,6 +491,43 @@ func TestIssueAndLabels(t *testing.T) {
 	}
 	if err := r.g.Ping(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Task 7.1 (R16): the merger reads the head rollup and a commit's check runs, arms squash
+// auto-merge pinned to the decided head, and opens reverts.
+func TestChecksAndMutations(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+
+	c, err := r.g.PullRequestChecks(ctx, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Check{{"Pre-commit checks", "SUCCESS"}, {"Kubernetes validation", "PENDING"}, {"Security scanning", "FAILURE"}}
+	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
+		t.Fatalf("%+v", c.Runs)
+	}
+	if st, by := c.StatusOf("policy-bot: main"); st != "PENDING" || by != "ogenki-merge-gate[bot]" {
+		t.Fatalf("%s %s", st, by)
+	}
+	if err := r.g.EnableAutoMerge(ctx, "PR_1", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := r.gh.graphqlBodies()
+	if len(bodies) != 2 { // the rollup query, then the arm
+		t.Fatalf("%d graphql calls", len(bodies))
+	}
+	if !strings.Contains(bodies[1], "SQUASH") || !strings.Contains(bodies[1], `"expectedHeadOid":"abc123"`) {
+		t.Fatalf("squash auto-merge of the decided head only: %s", bodies[1])
+	}
+	rv, err := r.g.RevertPR(ctx, "PR_1", `Revert "docs: fix a link"`, "reverts #12")
+	if err != nil || rv.Number != 13 || rv.NodeID != "PR_rev" {
+		t.Fatalf("%+v %v", rv, err)
+	}
+	runs, err := r.g.CommitChecks(ctx, "abc123")
+	if err != nil || len(runs) != 1 || runs[0].State != "SUCCESS" {
+		t.Fatalf("%+v %v", runs, err)
 	}
 }
 

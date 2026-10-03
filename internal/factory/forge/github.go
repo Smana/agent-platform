@@ -460,6 +460,158 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	return out, nil
 }
 
+// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | PENDING. Both the
+// GraphQL rollup and the REST check runs use the same words; REST spells them lowercase.
+func checkState(status, conclusion string) string {
+	if status != "COMPLETED" {
+		return "PENDING"
+	}
+	switch conclusion {
+	case "SUCCESS", "NEUTRAL", "SKIPPED":
+		return "SUCCESS"
+	}
+	return "FAILURE"
+}
+
+// PullRequestChecks is the head commit's rollup, one GraphQL query. It needs checks: read and
+// statuses: read (R16), hence the merger App's own method.
+func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, error) {
+	var q struct {
+		Repository struct {
+			PullRequest struct {
+				Commits struct {
+					Nodes []struct {
+						Commit struct {
+							StatusCheckRollup *struct {
+								Contexts struct {
+									Nodes []struct {
+										Typename string `graphql:"__typename"`
+										CheckRun struct {
+											Name       string
+											Status     string
+											Conclusion string
+										} `graphql:"... on CheckRun"`
+										StatusContext struct {
+											Context string
+											State   string
+											Creator *actor
+										} `graphql:"... on StatusContext"`
+									}
+								} `graphql:"contexts(first: 100)"`
+							}
+						}
+					}
+				} `graphql:"commits(last: 1)"`
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	vars, err := g.vars(number)
+	if err != nil {
+		return Checks{}, err
+	}
+	err = g.v4.Query(ctx, &q, vars)
+	g.mark(err)
+	if err != nil {
+		return Checks{}, wrap("read pull request checks", err)
+	}
+	var out Checks
+	if len(q.Repository.PullRequest.Commits.Nodes) == 0 {
+		return out, nil
+	}
+	rollup := q.Repository.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup
+	if rollup == nil {
+		return out, nil
+	}
+	for _, n := range rollup.Contexts.Nodes {
+		switch n.Typename {
+		case "CheckRun":
+			out.Runs = append(out.Runs, Check{Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
+		case "StatusContext":
+			out.Statuses = append(out.Statuses, Status{Context: n.StatusContext.Context, State: n.StatusContext.State, Creator: n.StatusContext.Creator.login()})
+		}
+	}
+	return out, nil
+}
+
+// CommitChecks are the check runs on one commit: main's CI after a merge, where no pull request
+// carries the verdict anymore.
+func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) {
+	res, _, err := g.rest.Checks.ListCheckRunsForRef(ctx, g.owner, g.name, sha, &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list check runs", err)
+	}
+	out := make([]Check, 0, len(res.CheckRuns))
+	for _, cr := range res.CheckRuns {
+		out = append(out, Check{Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
+	}
+	return out, nil
+}
+
+// EnableAutoMerge arms GitHub's native auto-merge (S7): it waits for classic protection AND
+// every ruleset, so it cannot pass the gate; it only removes the human's click. A push by an
+// actor with write access (the agents' App included) does not disarm it, so the decided head is
+// pinned with expectedHeadOid: a later push is never merged on this decision (SC-14).
+func (g *GitHub) EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error {
+	var m struct {
+		EnablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"enablePullRequestAutoMerge(input: $input)"`
+	}
+	squash := githubv4.PullRequestMergeMethodSquash
+	in := githubv4.EnablePullRequestAutoMergeInput{PullRequestID: githubv4.ID(nodeID), MergeMethod: &squash}
+	if expectedHeadSHA != "" {
+		oid := githubv4.GitObjectID(expectedHeadSHA)
+		in.ExpectedHeadOid = &oid
+	}
+	err := g.v4.Mutate(ctx, &m, in, nil)
+	g.mark(err)
+	return wrap("arm auto-merge", err)
+}
+
+// DisableAutoMerge disarms a PR whose head moved after the decision, or a revert that never went
+// green (§6.4).
+func (g *GitHub) DisableAutoMerge(ctx context.Context, nodeID string) error {
+	var m struct {
+		DisablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"disablePullRequestAutoMerge(input: $input)"`
+	}
+	err := g.v4.Mutate(ctx, &m, githubv4.DisablePullRequestAutoMergeInput{PullRequestID: githubv4.ID(nodeID)}, nil)
+	g.mark(err)
+	return wrap("disarm auto-merge", err)
+}
+
+// RevertPR produces the revert PR GitHub's own button would (§6.4); its revert-<n>-<head> branch is
+// created by the merger App, which is why only that App bypasses agent-merge (R16).
+func (g *GitHub) RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error) {
+	var m struct {
+		RevertPullRequest struct {
+			RevertPullRequest struct {
+				ID     string
+				Number int
+				URL    string `graphql:"url"`
+			}
+		} `graphql:"revertPullRequest(input: $input)"`
+	}
+	t, b := githubv4.String(title), githubv4.String(body)
+	err := g.v4.Mutate(ctx, &m, githubv4.RevertPullRequestInput{PullRequestID: githubv4.ID(nodeID), Title: &t, Body: &b}, nil)
+	g.mark(err)
+	r := m.RevertPullRequest.RevertPullRequest
+	return Revert{Number: r.Number, URL: r.URL, NodeID: r.ID}, wrap("open a revert", err)
+}
+
+// OpenPullRequests are the repository's open pull requests, one page of 100: the factory App's
+// read of the queue (the merger reads PR state through Merger, not here).
+func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
+	prs, _, err := g.rest.PullRequests.List(ctx, g.owner, g.name, &github.PullRequestListOptions{State: "open", ListOptions: github.ListOptions{PerPage: 100}})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list open pull requests", err)
+	}
+	out := make([]PRSummary, 0, len(prs))
+	for _, p := range prs {
+		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time})
+	}
+	return out, nil
+}
+
 func wrap(what string, err error) error {
 	if err == nil {
 		return nil
