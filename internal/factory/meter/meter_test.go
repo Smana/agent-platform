@@ -4,12 +4,26 @@ package meter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/Smana/agent-platform/internal/factory/api"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -271,5 +285,253 @@ func TestStartTicksAtOnceThenEveryPeriodUntilCancelled(t *testing.T) {
 func TestStartRefusesNoPeriod(t *testing.T) {
 	if err := (&Meter{Runs: &store{}, Source: source{}}).Start(t.Context()); err == nil {
 		t.Fatal("a zero period would tick forever or panic")
+	}
+}
+
+type throttled map[string]bool
+
+func (t throttled) RecentlyThrottled(context.Context) (map[string]bool, error) { return t, nil }
+
+type badThrottle struct{}
+
+func (badThrottle) RecentlyThrottled(context.Context) (map[string]bool, error) {
+	return nil, errors.New("victorialogs down")
+}
+
+// cmScheme is the fake client's scheme: the meter's ledger work touches ConfigMaps only.
+func cmScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	return s
+}
+
+// ledgerDay is one day's R50 ledger as meter reads it: the spent column and, in reserved,
+// whole entry values keyed by run id.
+func ledgerDay(t *testing.T, day string, spent map[string]int64, reserved map[string]string) *corev1.ConfigMap {
+	t.Helper()
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: api.LedgerPrefix + day, Namespace: "agent-system"}}
+	data := map[string]string{}
+	if spent != nil {
+		b, err := json.Marshal(spent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data[api.LedgerSpent] = string(b)
+	}
+	for id, v := range reserved {
+		data[api.LedgerReserved+id] = v
+	}
+	if len(data) > 0 {
+		cm.Data = data
+	}
+	return cm
+}
+
+// spentOf reads a day ledger back; found is false once the ledger never landed.
+func spentOf(t *testing.T, c client.Client, day string) (map[string]int64, bool) {
+	t.Helper()
+	var cm corev1.ConfigMap
+	err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "agent-system", Name: api.LedgerPrefix + day}, &cm)
+	if apierrors.IsNotFound(err) {
+		return nil, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := cm.Data[api.LedgerSpent]
+	if !ok || raw == "" {
+		return nil, true
+	}
+	var m map[string]int64
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("spent column %q: %v", raw, err)
+	}
+	return m, true
+}
+
+// R50/R07: the day's spend comes from the ledger the meter maintains, never from a re-sum of
+// live runs. The ledger already holds the day's earlier spend (what the run annotations record);
+// this tick adds only the increase, and budget-principal fires when the day is spent.
+func TestGateway429sAndThePrincipalsDay(t *testing.T) {
+	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 5_000_000, Tokens: 100, Principal: "system:factory", Created: day}, // 429 below B1
+		{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 5_000_000, Tokens: 100, Principal: "system:factory", Created: day}, // 429 at B1
+		{ID: "cccccccc", Phase: "Running", MaxTokens: 5_000_000, Tokens: 100, Principal: "human:291", Created: day},      // her day is spent
+		{ID: "dddddddd", Phase: "Succeeded", MaxTokens: 5_000_000, Tokens: 4_900_000, Principal: "human:291", Created: day},
+	}}
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
+		ledgerDay(t, "20260927", map[string]int64{"system:factory": 200, "human:291": 4_900_100}, nil)).Build()
+	remaining := map[string]int64{}
+	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 200, "bbbbbbbb": 5_000_000, "cccccccc": 200_000, "dddddddd": 4_900_000},
+		Throttle: throttled{"aaaaaaaa": true, "bbbbbbbb": true}, B1Ceiling: 5_000_000,
+		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDaily: 25_000_000, HumanDaily: 5_000_000},
+		Ledger:  c, Namespace: "agent-system",
+		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"aaaaaaaa": "budget-fleet", "bbbbbbbb": "budget-run", "cccccccc": "budget-principal"} {
+		if got := st.patches[id][runs.AnnRevoked]; got != want {
+			t.Errorf("%s: %q, want %q", id, got, want)
+		}
+	}
+	if remaining["human:291"] != 0 || remaining["system:factory"] != 25_000_000-5_000_200 {
+		t.Fatalf("%v", remaining)
+	}
+	// The ledger now holds the full day: the seeded 5_000_100 plus the tick's increase.
+	spent, _ := spentOf(t, c, "20260927")
+	if spent["human:291"] != 5_100_000 || spent["system:factory"] != 5_000_200 {
+		t.Fatalf("ledger %v", spent)
+	}
+}
+
+// A lost 429 lookup costs only the fleet mapping: a run at its own cap is still revoked.
+func TestAFailedThrottleLookupKeepsTheOtherCauses(t *testing.T) {
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 10, Tokens: 0},
+		{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 1000, Tokens: 0},
+	}}
+	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 20, "bbbbbbbb": 20}, Throttle: badThrottle{}}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st.patches["aaaaaaaa"][runs.AnnRevoked] != "budget-run" {
+		t.Errorf("own cap stands without the lookup: %v", st.patches["aaaaaaaa"])
+	}
+	if st.patches["bbbbbbbb"][runs.AnnRevoked] != "" {
+		t.Errorf("budget-fleet needs the lookup: %v", st.patches["bbbbbbbb"])
+	}
+}
+
+// R07: the day is when the increase is observed, not when the run began. A run straddling
+// midnight is billed to each day's ledger for only the spend of that day, and its principal's
+// budget-principal revocation reads the day it is in.
+func TestMidnightCrossingSplitsSpend(t *testing.T) {
+	start := time.Date(2026, 9, 27, 23, 0, 0, 0, time.UTC)
+	now := start
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: start}}}
+	src := source{"aaaaaaaa": 100}
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).Build()
+	m := &Meter{Runs: st, Source: src, Ledger: c, Namespace: "agent-system",
+		Budgets: config.Budgets{EnforcePrincipal: true, HumanDaily: 120},
+		Now:     func() time.Time { return now }}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 100 {
+		t.Fatalf("day one: %v", spent)
+	}
+	if st.patches["aaaaaaaa"][runs.AnnRevoked] != "" {
+		t.Fatalf("100 under a cap of 120 is no revocation: %v", st.patches["aaaaaaaa"])
+	}
+	now = start.Add(2 * time.Hour) // 2026-09-28: the same run, a new ledger
+	src["aaaaaaaa"] = 250
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 100 {
+		t.Fatalf("yesterday's ledger never moves: %v", spent)
+	}
+	// 150, not 250: the day counts the increase observed in it, not the run's lifetime total.
+	if spent, _ := spentOf(t, c, "20260928"); spent["human:291"] != 150 {
+		t.Fatalf("today: %v", spent)
+	}
+	if st.patches["aaaaaaaa"][runs.AnnRevoked] != "budget-principal" {
+		t.Fatalf("her new day is spent at 150 over 120: %v", st.patches["aaaaaaaa"])
+	}
+}
+
+// R50: the meter is the only dropper of a reservation once its run is terminal; a live run's
+// reservation stays.
+func TestTerminalRunLosesItsReservation(t *testing.T) {
+	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	entry := `{"principal":"human:291","maxTokens":2000000}`
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: day},
+		{ID: "dddddddd", Phase: "Succeeded", Tokens: 1000, Principal: "human:291", Created: day},
+	}}
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
+		ledgerDay(t, "20260927", nil, map[string]string{"aaaaaaaa": entry, "dddddddd": entry})).Build()
+	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 10}, Ledger: c, Namespace: "agent-system",
+		Now: func() time.Time { return day }}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var cm corev1.ConfigMap
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "agent-system", Name: api.LedgerPrefix + "20260927"}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cm.Data[api.LedgerReserved+"dddddddd"]; ok {
+		t.Error("the terminal run's reservation is dropped")
+	}
+	if _, ok := cm.Data[api.LedgerReserved+"aaaaaaaa"]; !ok {
+		t.Error("a live run keeps its reservation")
+	}
+}
+
+// R50: a day's ledger outlives its budget but not long: a month plus a week of margin.
+func TestLedgersOlderThan35DaysAreDeleted(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: now}}}
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
+		ledgerDay(t, "20260822", map[string]int64{"human:291": 1}, nil), // 36 days: gone
+		ledgerDay(t, "20260823", map[string]int64{"human:291": 1}, nil), // 35 days: kept
+		ledgerDay(t, "20260927", nil, nil),
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: api.LedgerPrefix + "20251301", Namespace: "agent-system"}}, // not a day
+	).Build()
+	m := &Meter{Runs: st, Source: source{}, Ledger: c, Namespace: "agent-system",
+		Now: func() time.Time { return now }}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		day  string
+		want bool
+	}{{"20260822", false}, {"20260823", true}, {"20260927", true}, {"20251301", true}} {
+		var cm corev1.ConfigMap
+		err := c.Get(context.Background(),
+			types.NamespacedName{Namespace: "agent-system", Name: api.LedgerPrefix + tc.day}, &cm)
+		if got := err == nil; got != tc.want {
+			t.Errorf("ledger %s exists = %v, want %v", tc.day, got, tc.want)
+		}
+	}
+}
+
+// R13: agent-router's 429s come back keyed by run id, read from the verified identity header.
+func TestRecentlyThrottled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/select/logsql/query" || r.URL.Query().Get("query") == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("query") == "boom" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = fmt.Fprintln(w, `{"log.x_ar_agent":"system:serviceaccount:agents:xplane-run-7f3cq2xz","hits":"3"}`)
+		_, _ = fmt.Fprintln(w, `{"log.x_ar_agent":"system:serviceaccount:agents:xplane-run-notarun!","hits":"1"}`)
+		_, _ = fmt.Fprintln(w, `{"hits":"9"}`)
+		_, _ = fmt.Fprintln(w, `not json`)
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	got, err := VL{URL: srv.URL, Query: "q", HC: srv.Client()}.RecentlyThrottled(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got["7f3cq2xz"] {
+		t.Fatalf("%v", got)
+	}
+	if _, err := (VL{URL: srv.URL, Query: "boom", HC: srv.Client()}).RecentlyThrottled(ctx); err == nil {
+		t.Error("a failed query is an error, not an empty map")
+	}
+	if _, err := (VL{URL: srv.URL, Query: "q"}).RecentlyThrottled(ctx); err == nil {
+		t.Error("the audited httpx client is required, never a hand-rolled one")
 	}
 }

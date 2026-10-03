@@ -90,22 +90,23 @@ var (
 
 // Ledger layout (R50). One ConfigMap per UTC day, agent-factory-ledger-<YYYYMMDD>, in the
 // factory's namespace: the apiserver's resourceVersion is the transaction, so two replicas
-// cannot take one slot.
+// cannot take one slot. Exported so the meter (Task 5.3) reads and writes the same encoding:
+// admission owns the reservations, the meter owns the spend.
 const (
-	ledgerPrefix = "agent-factory-ledger-"
-	// ledgerSpent is one JSON map, principal → tokens. It is a map rather than one key per
+	LedgerPrefix = "agent-factory-ledger-"
+	// LedgerSpent is one JSON map, principal → tokens. It is a map rather than one key per
 	// principal because principal ids carry ":", which no ConfigMap key may hold. The meter
 	// (Task 5.3) owns this column; admission only reads it.
-	ledgerSpent = "spent"
-	// ledgerReserved prefixes one key per admitted run — reserved.<runId>, whose C2 id is
+	LedgerSpent = "spent"
+	// LedgerReserved prefixes one key per admitted run — reserved.<runId>, whose C2 id is
 	// key-safe — holding {principal, room, maxTokens}. The meter drops the entry when the run
 	// is terminal; deleting a run refunds nothing.
-	ledgerReserved = "reserved."
-	// dayLayout labels the ledger with the UTC day it counts.
-	dayLayout = "20060102"
-	// ledgerAttempts bounds the conflict-retry loop: steady contention of that depth is
+	LedgerReserved = "reserved."
+	// LedgerDayLayout labels the ledger with the UTC day it counts.
+	LedgerDayLayout = "20060102"
+	// LedgerAttempts bounds the conflict-retry loop: steady contention of that depth is
 	// failure, not patience.
-	ledgerAttempts = 5
+	LedgerAttempts = 5
 )
 
 // reservation is one ledger entry: what the run may spend, on whose behalf and on which room.
@@ -351,10 +352,10 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 	if p.ID == runs.PrincipalFactory {
 		limit = s.Cfg.Budgets.FactoryDaily
 	}
-	name := ledgerPrefix + s.Now().UTC().Format(dayLayout)
+	name := LedgerPrefix + s.Now().UTC().Format(LedgerDayLayout)
 	key := types.NamespacedName{Namespace: s.Namespace, Name: name}
 	mine := reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}
-	for range ledgerAttempts {
+	for range LedgerAttempts {
 		cm := &corev1.ConfigMap{}
 		err := s.Rooms.Get(ctx, key, cm)
 		existed := true
@@ -364,7 +365,7 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 		} else if err != nil {
 			return http.StatusServiceUnavailable, "ledger_unavailable"
 		}
-		spent, err := ledgerSpentColumn(cm)
+		spent, err := LedgerSpentColumn(cm)
 		if err != nil {
 			return http.StatusServiceUnavailable, "ledger_unavailable"
 		}
@@ -405,7 +406,7 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 		if err != nil {
 			return http.StatusServiceUnavailable, "ledger_unavailable"
 		}
-		cm.Data[ledgerReserved+id] = string(b)
+		cm.Data[LedgerReserved+id] = string(b)
 		if existed {
 			err = s.Rooms.Update(ctx, cm)
 		} else {
@@ -431,20 +432,22 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 // entry costs one day of budget, while a delete that fights a concurrent replica could drop
 // another admission's reservation instead.
 func (s *Server) dropReservation(ctx context.Context, id string) {
-	key := types.NamespacedName{Namespace: s.Namespace, Name: ledgerPrefix + s.Now().UTC().Format(dayLayout)}
+	key := types.NamespacedName{Namespace: s.Namespace, Name: LedgerPrefix + s.Now().UTC().Format(LedgerDayLayout)}
 	cm := &corev1.ConfigMap{}
 	if err := s.Rooms.Get(ctx, key, cm); err != nil {
 		return
 	}
-	if _, ok := cm.Data[ledgerReserved+id]; !ok {
+	if _, ok := cm.Data[LedgerReserved+id]; !ok {
 		return
 	}
-	delete(cm.Data, ledgerReserved+id)
+	delete(cm.Data, LedgerReserved+id)
 	_ = s.Rooms.Update(ctx, cm)
 }
 
-func ledgerSpentColumn(cm *corev1.ConfigMap) (map[string]int64, error) {
-	raw, ok := cm.Data[ledgerSpent]
+// LedgerSpentColumn reads a ledger's spent map, nil when the column is empty. Exported with
+// the layout constants above so admission and the meter parse and write one encoding.
+func LedgerSpentColumn(cm *corev1.ConfigMap) (map[string]int64, error) {
+	raw, ok := cm.Data[LedgerSpent]
 	if !ok || raw == "" {
 		return nil, nil
 	}
@@ -455,10 +458,23 @@ func ledgerSpentColumn(cm *corev1.ConfigMap) (map[string]int64, error) {
 	return m, nil
 }
 
+// SetLedgerSpentColumn writes the spent map as the ledger's one JSON column.
+func SetLedgerSpentColumn(cm *corev1.ConfigMap, spent map[string]int64) error {
+	b, err := json.Marshal(spent)
+	if err != nil {
+		return fmt.Errorf("ledger %s spent: %w", cm.Name, err)
+	}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data[LedgerSpent] = string(b)
+	return nil
+}
+
 func ledgerReservations(cm *corev1.ConfigMap) (map[string]reservation, error) {
 	m := map[string]reservation{}
 	for k, raw := range cm.Data {
-		id, ok := strings.CutPrefix(k, ledgerReserved)
+		id, ok := strings.CutPrefix(k, LedgerReserved)
 		if !ok {
 			continue
 		}

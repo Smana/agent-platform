@@ -96,13 +96,13 @@ func scheme() *runtime.Scheme {
 // column, so a test is the only one who writes it before then.
 func ledgerCM(day string, spent map[string]int64) *corev1.ConfigMap {
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Name: ledgerPrefix + day, Namespace: "agent-system"}}
+		Name: LedgerPrefix + day, Namespace: "agent-system"}}
 	if spent != nil {
 		b, err := json.Marshal(spent)
 		if err != nil {
 			panic(err)
 		}
-		cm.Data = map[string]string{ledgerSpent: string(b)}
+		cm.Data = map[string]string{LedgerSpent: string(b)}
 	}
 	return cm
 }
@@ -285,7 +285,7 @@ func TestTwoAdmissionsOneSlot(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var objs []client.Object
-			ledger := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ledgerPrefix + "20260927", Namespace: "agent-system"}}
+			ledger := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: LedgerPrefix + "20260927", Namespace: "agent-system"}}
 			objs = append(objs, ledger)
 			body := base()
 			if c.room {

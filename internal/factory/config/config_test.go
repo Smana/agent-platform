@@ -47,6 +47,8 @@ api:
 meter:
   url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428
   query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'
+  logsURL: http://victoria-logs-victoria-logs-single-server.observability.svc:9428
+  throttleQuery: '_time:2m kubernetes.pod_labels.gateway.envoyproxy.io/owning-gateway-name:"agent-router" | unpack_json | log.response_code:429 AND log.response_flags:~"RL" | stats by (log.x_ar_agent) count() hits'
 `
 
 func TestGoodConfigParses(t *testing.T) {
@@ -239,6 +241,10 @@ func TestBadConfigsFail(t *testing.T) {
 		"no meter URL":              {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
 		"no meter query": {`query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'`,
 			"query: ''", "meter.query is required"},
+		// R13: the 429 lookup needs its endpoint and its query.
+		"no meter logs URL": {"logsURL: http://victoria-logs-victoria-logs-single-server.observability.svc:9428", "logsURL: ''", "meter.logsURL is required"},
+		"no meter throttle query": {`throttleQuery: '_time:2m kubernetes.pod_labels.gateway.envoyproxy.io/owning-gateway-name:"agent-router" | unpack_json | log.response_code:429 AND log.response_flags:~"RL" | stats by (log.x_ar_agent) count() hits'`,
+			"throttleQuery: ''", "meter.throttleQuery is required"},
 		// §4: what the run-request API binds, admits and authenticates against.
 		"no api listen":                 {`listen: ":8443"`, `listen: ''`, "api.listen is required"},
 		"no api issuer":                 {"humanIssuer: https://auth.ogenki.io", "humanIssuer: ''", "api.humanIssuer is required"},

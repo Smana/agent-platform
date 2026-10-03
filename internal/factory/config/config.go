@@ -166,10 +166,15 @@ type Budgets struct {
 	HumanDaily       int64 `json:"humanDaily"`
 }
 
-// Meter is where the run meter reads token usage (R12).
+// Meter is where the run meter reads token usage (R12) and the gateway's 429s (R13).
 type Meter struct {
 	URL   string `json:"url"`
 	Query string `json:"query"`
+	// LogsURL is VictoriaLogs', where VL looks up which runs agent-router throttled.
+	LogsURL string `json:"logsURL"`
+	// ThrottleQuery is the LogsQL that names them: the last minutes of 429s with Envoy's RL
+	// flag on agent-router, grouped by the verified identity header.
+	ThrottleQuery string `json:"throttleQuery"`
 }
 
 // Tracing is where task spans go (R46): the trace collector's platform port. Empty: tracing off.
@@ -274,6 +279,7 @@ func (c *Config) Validate() error {
 		{"roomsURL", c.RoomsURL}, {"broker.url", c.Broker.URL}, {"broker.caFile", c.Broker.CAFile},
 		{"broker.tokenFile", c.Broker.TokenFile}, {"github.appIDFile", c.GitHub.AppIDFile},
 		{"github.privateKeyFile", c.GitHub.PrivateKeyFile}, {"meter.url", c.Meter.URL}, {"meter.query", c.Meter.Query},
+		{"meter.logsURL", c.Meter.LogsURL}, {"meter.throttleQuery", c.Meter.ThrottleQuery},
 	} {
 		if f.value == "" {
 			bad("%s is required", f.key)
