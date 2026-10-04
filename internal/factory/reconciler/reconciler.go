@@ -68,6 +68,7 @@ type metrics interface {
 	PROutcome(ctx context.Context, class, outcome string)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
+	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
 	Revoked(ctx context.Context, reason string)
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
@@ -366,10 +367,12 @@ func target(t *v1alpha1.Task) int {
 
 // end moves a task to a terminal or escalated phase and says why, once. The task's tokens are
 // not recorded here: the settle does that, once, after the meter's late readings have had their
-// window (R49).
-func (r *Reconciler) end(_ context.Context, t *v1alpha1.Task, phase, reason string) error {
+// window (R49). An escalation names the maintainers (§6.3); the outcome records tier fit and the
+// task.final line the moment the task first ends.
+func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
 	r.to(t, phase, reason)
-	narrateLater(t, narrate.Ended(t, phase, reason))
+	narrateLater(t, narrate.Ended(t, phase, reason, r.Cfg.Maintainers...))
+	r.outcome(ctx, t)
 	return nil
 }
 
@@ -435,10 +438,10 @@ func (r *Reconciler) endTrace(ctx context.Context, t *v1alpha1.Task) {
 	if err != nil {
 		if r.Now().Sub(end) >= spanGiveUp {
 			tr.ExportAbandoned = true
-			r.log().Warn("task span given up", "task", t.Name, "err", err)
+			r.log().Warn("task span given up", "task.id", t.Name, "err", err)
 			return
 		}
-		r.log().Warn("task span not exported", "task", t.Name, "err", err)
+		r.log().Warn("task span not exported", "task.id", t.Name, "err", err)
 		return
 	}
 	tr.Exported = true
@@ -553,7 +556,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		// R3: shadow first, a week of numbers before the flag flips.
 		record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-task-shadow") })
-		r.log().Info("task over its token cap (shadow)", "task", t.Name, "used", used, "cap", t.Spec.Budget.TaskTokens)
+		r.log().Info("task over its token cap (shadow)", "task.id", t.Name, "used", used, "cap", t.Spec.Budget.TaskTokens)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
@@ -605,7 +608,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// Consumed once the run exists, and only what its brief quoted (F-A). A failure only means
 	// the next brief repeats them.
 	if err := r.Rooms.Consume(ctx, t.Status.RoomRef, refs, current(t).ID); err != nil {
-		r.log().Warn("queue consume failed", "task", t.Name, "err", err)
+		r.log().Warn("queue consume failed", "task.id", t.Name, "run.id", current(t).ID, "err", err)
 	}
 	return nil
 }

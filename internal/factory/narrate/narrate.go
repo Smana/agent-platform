@@ -167,6 +167,7 @@ func reasons() map[string]string {
 		"agent_finished":          "the agent finished its work",
 		"agent_error":             "the agent stopped on an error",
 		"agent_stuck":             "the agent reported that it was stuck",
+		"stuck":                   "the run showed no activity for 10 minutes",
 		"deadline":                "the run hit its wall-clock limit",
 		"pod_lost":                "the sandbox was lost (spot reclaim or eviction)",
 		"revoked":                 "the run was stopped by hand",
@@ -378,8 +379,9 @@ func hints() map[string]string {
 }
 
 // Ended announces the task's end, why, and what a human can do next. Its key carries the phase
-// and the run count, so a task that ends, is retried and ends again narrates both.
-func Ended(t *v1alpha1.Task, phase, reason string) Event {
+// and the run count, so a task that ends, is retried and ends again narrates both. An Escalated
+// ending mentions the maintainers given: §6.3 puts a named human on every escalation.
+func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agent factory task `%s` %s", t.Name, headlines()[phase])
 	if why := Reason(reason); why != "" {
@@ -388,6 +390,9 @@ func Ended(t *v1alpha1.Task, phase, reason string) Event {
 	b.WriteString(".")
 	if pr := t.Status.PullRequest; pr != nil && pr.MergedBy != "" && phase == v1alpha1.PhaseDone {
 		fmt.Fprintf(&b, " Merged by @%s.", strings.TrimSuffix(pr.MergedBy, "[bot]"))
+	}
+	if phase == v1alpha1.PhaseEscalated && len(maintainers) > 0 {
+		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task needs a maintainer.")
 	}
 	if h := hints()[phase]; h != "" {
 		b.WriteString("\n\n" + h)

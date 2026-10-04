@@ -48,6 +48,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	}
+	r.countApproves(ctx, t, pr)
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}

@@ -26,6 +26,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -524,5 +525,21 @@ func TestRevertLabelReachesADoneTask(t *testing.T) {
 	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
 	if got.Annotations[v1alpha1.AnnotationRevert] != "label" {
 		t.Fatalf("%v", got.Annotations)
+	}
+}
+
+func TestControlIssue(t *testing.T) {
+	defer killswitch.SetIssue(false)
+	f := forge.NewFake()
+	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
+	f.SetLabeled(LabelStop, forge.Item{Number: 1})
+	p, _ := poller(t, f)
+	p.Cfg.ControlIssue = 1
+	_ = p.Poll(context.Background())
+	if on, _ := killswitch.Engaged(context.Background(), p.Client, "agent-system"); !on {
+		t.Fatal("factory/stop on the control issue is the global stop (§6.1)")
+	}
+	if len(f.Removed(1)) != 0 {
+		t.Fatal("the control issue keeps its label: removing it is how a human resumes")
 	}
 }

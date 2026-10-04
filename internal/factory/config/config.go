@@ -62,9 +62,12 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // Config is the factory's configuration.
 type Config struct {
-	Repository   string              `json:"repository"`
-	Maintainers  []string            `json:"maintainers"`
-	TriggerLabel string              `json:"triggerLabel"`
+	Repository   string   `json:"repository"`
+	Maintainers  []string `json:"maintainers"`
+	TriggerLabel string   `json:"triggerLabel"`
+	// ControlIssue is the pinned issue whose factory/stop label is the global stop (§6.1);
+	// 0: none, and only the stop object stops the factory.
+	ControlIssue int                 `json:"controlIssue,omitempty"`
 	FactoryLogin string              `json:"factoryLogin"`
 	AgentsLogin  string              `json:"agentsLogin"`
 	RoomsURL     string              `json:"roomsURL"`
@@ -307,6 +310,9 @@ func (c *Config) Validate() error {
 	bad := func(f string, a ...any) { errs = append(errs, fmt.Errorf(f, a...)) }
 	if !repoRE.MatchString(c.Repository) {
 		bad("repository %q is not owner/name", c.Repository)
+	}
+	if c.ControlIssue < 0 {
+		bad("controlIssue must be 0 or more")
 	}
 	if len(c.Maintainers) == 0 {
 		bad("maintainers is empty: nobody could start a task")
