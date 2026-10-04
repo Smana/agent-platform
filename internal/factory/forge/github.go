@@ -242,6 +242,18 @@ func (g *GitHub) RemoveLabel(ctx context.Context, number int, label string) erro
 	return wrap("remove a label", err)
 }
 
+// CreateIssue opens an issue with these labels and returns its number (FA-8: the RunLore intake
+// proposes one per finding). issues:write is in the factory App's scope already.
+func (g *GitHub) CreateIssue(ctx context.Context, title, body string, labels []string) (int, error) {
+	iss, _, err := g.rest.Issues.Create(ctx, g.owner, g.name, github.CreateIssueRequest{
+		Title: title, Body: new(body), Labels: labels})
+	g.mark(err)
+	if err != nil {
+		return 0, wrap("create an issue", err)
+	}
+	return iss.GetNumber(), nil
+}
+
 // ClosePR closes a pull request without merging it (§6.3's stale close).
 func (g *GitHub) ClosePR(ctx context.Context, number int) error {
 	_, _, err := g.rest.PullRequests.Edit(ctx, g.owner, g.name, number, &github.PullRequest{State: new("closed")})

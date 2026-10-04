@@ -195,6 +195,14 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			Stopped: stopped},
 		&intake.Scheduler{Forge: gh, Merger: merger, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
+		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
+		// so the ExternalSecret's rotations need no restart (AGENTS.md).
+		&intake.RunLore{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+			Token: func() string {
+				b, _ := os.ReadFile(filepath.Clean(cfg.RunLore.TokenFile))
+				return strings.TrimSpace(string(b))
+			},
+			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log,
 			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
 			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,

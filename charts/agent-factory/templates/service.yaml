@@ -8,3 +8,4 @@ spec:
   ports:
     - {name: metrics, port: 9090, targetPort: ops, protocol: TCP}
     - {name: api, port: 8443, targetPort: api, protocol: TCP}
+    - {name: intake, port: 8080, targetPort: intake, protocol: TCP}

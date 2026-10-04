@@ -20,6 +20,9 @@ brokerCASecret: openbao-ca
 roomsAudience: rooms-system
 # The ZITADEL client ids the API accepts tokens from (rooms-proxy, roomctl). Ids, not secrets.
 oidcSecret: agent-factory-oidc
+# The RunLore intake's bearer token (key token), from the agents-secrets store. Mounted at
+# /etc/agent-factory-intake: config.runlore.tokenFile names the file there (FA-8).
+intakeSecret: agent-factory-intake
 # The factory config (internal/factory/config), rendered verbatim to
 # /etc/agent-factory/config/config.yaml. A gate path. An empty config fails the start (§4).
 config: {}

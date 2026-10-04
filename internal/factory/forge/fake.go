@@ -34,6 +34,7 @@ type Fake struct {
 	filesBase    map[string]string
 	filesHead    map[string]string
 	open         []PRSummary
+	created      []string
 	armed        []string
 	disarmed     []string
 	reverts      []string
@@ -228,6 +229,22 @@ func (f *Fake) ClosePR(_ context.Context, n int) error {
 		f.prs[n] = p
 	}
 	return nil
+}
+
+// CreateIssue implements the forge's CreateIssue, recording each issue as
+// "title\nbody\nlabels: a,b" and returning the next number from 501.
+func (f *Fake) CreateIssue(_ context.Context, title, body string, labels []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created = append(f.created, title+"\n"+body+"\nlabels: "+strings.Join(labels, ","))
+	return 500 + len(f.created), nil
+}
+
+// Created are the issues CreateIssue recorded, in order, for tests of what the factory proposed.
+func (f *Fake) Created() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.created)
 }
 
 // Calls are the label and close calls made, in order ("add-labels 12 a,b", "remove-label 12 a",

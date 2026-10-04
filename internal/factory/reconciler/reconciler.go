@@ -484,6 +484,12 @@ func (r *Reconciler) admit(ctx context.Context, t *v1alpha1.Task) (string, error
 }
 
 func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
+	// A RunLore task's issue is written by the intake just after its creation (FA-8): wait for
+	// it, so the first narration has a place to land. Past two minutes the intake is gone and
+	// the task proceeds without one.
+	if t.Spec.Source.Kind == "runlore" && t.Spec.Issue == 0 && r.Now().Sub(t.CreationTimestamp.Time) < 2*time.Minute {
+		return nil
+	}
 	reason, err := r.admit(ctx, t)
 	if err != nil {
 		return err

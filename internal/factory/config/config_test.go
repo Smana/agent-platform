@@ -55,6 +55,11 @@ api:
   humanIssuer: https://auth.ogenki.io
   humanJWKS: https://auth.ogenki.io/oauth/v2/keys
   clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]
+runlore:
+  listen: ":8080"
+  tokenFile: /etc/agent-factory-intake/token
+  minConfidence: 0.75
+  dailyCap: 5
 meter:
   url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428
   query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'
@@ -88,6 +93,10 @@ func TestGoodConfigParses(t *testing.T) {
 	if c.API.Listen != ":8443" || len(c.API.Repositories) != 1 || len(c.API.ClientIDFiles) != 2 ||
 		c.API.HumanIssuer != "https://auth.ogenki.io" || c.API.HumanJWKS != "https://auth.ogenki.io/oauth/v2/keys" {
 		t.Fatalf("api: %+v", c.API)
+	}
+	if c.RunLore.Listen != ":8080" || c.RunLore.TokenFile != "/etc/agent-factory-intake/token" ||
+		c.RunLore.MinConfidence != 0.75 || c.RunLore.DailyCap != 5 {
+		t.Fatalf("runlore: %+v", c.RunLore)
 	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
@@ -302,6 +311,13 @@ func TestBadConfigsFail(t *testing.T) {
 		"api repository not owner/name": {"repositories: [Smana/cloud-native-ref]", "repositories: ['../x']", `api.repository "../x" is not owner/name`},
 		"api without client ids":        {"clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]", "clientIDFiles: []", "api.clientIDFiles is empty"},
 		"api system issuer alone":       {"humanIssuer: https://auth.ogenki.io", "humanIssuer: https://auth.ogenki.io\n  systemIssuer: https://accounts.example", "api.systemIssuer and api.systemJWKS are both set or both empty"},
+		// FA-8 §1: every replica serves the RunLore intake, so its block is as required as api's.
+		"no runlore listen":       {`listen: ":8080"`, `listen: ''`, "runlore.listen is required"},
+		"no runlore token file":   {"tokenFile: /etc/agent-factory-intake/token", "tokenFile: ''", "runlore.tokenFile is required"},
+		"runlore without a block": {"runlore:\n  listen: \":8080\"\n  tokenFile: /etc/agent-factory-intake/token\n  minConfidence: 0.75\n  dailyCap: 5\n", "", "runlore.listen is required"},
+		"runlore confidence high": {"minConfidence: 0.75", "minConfidence: 1.25", "runlore.minConfidence must be in (0, 1]"},
+		"runlore confidence zero": {"minConfidence: 0.75", "minConfidence: 0", "runlore.minConfidence must be in (0, 1]"},
+		"runlore cap negative":    {"dailyCap: 5", "dailyCap: -1", "runlore.dailyCap must be 0 or more"},
 		// §1 schedules: the name keys the task, the cron must fire, the class must exist.
 		"schedule name twice":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
 		"schedule name uppercase":     {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},

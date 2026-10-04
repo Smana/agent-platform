@@ -85,6 +85,7 @@ type Config struct {
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
+	RunLore      RunLore             `json:"runlore"`
 	Schedules    []Schedule          `json:"schedules,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
@@ -242,6 +243,14 @@ type API struct {
 	SystemIssuer     string            `json:"systemIssuer,omitempty"`
 	SystemJWKS       string            `json:"systemJWKS,omitempty"`
 	SystemPrincipals map[string]string `json:"systemPrincipals,omitempty"`
+}
+
+// RunLore is the intake of §1: findings become tasks when actionable, 5 a day (OD-9).
+type RunLore struct {
+	Listen        string  `json:"listen"`
+	TokenFile     string  `json:"tokenFile"`
+	MinConfidence float64 `json:"minConfidence"`
+	DailyCap      int     `json:"dailyCap"`
 }
 
 var (
@@ -538,6 +547,20 @@ func (c *Config) Validate() error {
 	}
 	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
 		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")
+	}
+	// §1's RunLore intake (FA-8): every replica serves it, like the API, so its block is as
+	// required as api's. OD-9: the bar is real and the cap is stated; 0 admits nothing.
+	if c.RunLore.Listen == "" {
+		bad("runlore.listen is required")
+	}
+	if c.RunLore.TokenFile == "" {
+		bad("runlore.tokenFile is required")
+	}
+	if c.RunLore.MinConfidence <= 0 || c.RunLore.MinConfidence > 1 {
+		bad("runlore.minConfidence must be in (0, 1] (OD-9)")
+	}
+	if c.RunLore.DailyCap < 0 {
+		bad("runlore.dailyCap must be 0 or more")
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)
