@@ -101,3 +101,32 @@ func TestBarAuthAndCap(t *testing.T) {
 		t.Fatalf("at most 5 a day (OD-9): %d", w.Code)
 	}
 }
+
+// TW6: the attacker-influenced identifiers reach the public issue transposed to the label
+// charset — the fields still appear, but no image, link or HTML form survives and the
+// zero-width character is gone.
+func TestIssueFieldsAreTransposedNotDropped(t *testing.T) {
+	h, _, f := runlore(t)
+	p := finding
+	p.AlertName = "KubePod![x](https://evil.example)Crash"
+	p.ResourceRef = "apps/[click](javascript:alert(1))gallery"
+	p.Severity = "critical<img src=y>\u200b"
+	if w := send(h, "s3cret", p); w.Code != http.StatusCreated {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	issue := f.Created()[0]
+	for _, active := range []string{"![", "](", "[x]", "<img", "<", "\u200b"} {
+		if strings.Contains(issue, active) {
+			t.Fatalf("the public issue carries the active form %q: %s", active, issue)
+		}
+	}
+	// Sanitised, not dropped (TW6): readable remnants of all three fields must remain.
+	for _, kept := range []string{"KubePod__x__https://evil.example_Crash", "apps/_click__javascript:alert_1__gallery", "critical_img_src_y_"} {
+		if !strings.Contains(issue, kept) {
+			t.Fatalf("the issue lost %q: %s", kept, issue)
+		}
+	}
+	if strings.Contains(issue, "INTERNAL DETAIL") || strings.Contains(issue, "S3_BUCKET") {
+		t.Fatalf("the finding text never reaches the issue (R33): %s", issue)
+	}
+}

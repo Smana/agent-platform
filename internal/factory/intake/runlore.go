@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -134,6 +135,13 @@ func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reply(w, code, body)
 }
 
+// labelSafe transposes every character outside the label charset ([A-Za-z0-9_.:/-]) to "_",
+// so no markdown or HTML trigger reaches the public issue. See its use in intake for why this
+// filter, not sanitize.Text, guards those fields (TW6).
+var labelUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]`)
+
+func labelSafe(s string) string { return labelUnsafe.ReplaceAllString(s, "_") }
+
 // intake dedups the finding while a task for its key is open (SC-9), holds OD-9's daily cap,
 // then creates the task before the issue: the task's name is the key's hash, so a replay racing
 // on the other replica loses on AlreadyExists and opens no second issue.
@@ -188,12 +196,22 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 	} else if err != nil {
 		return 0, nil, err
 	}
-	// The issue is public: alert, resource, verdict and the room, never the finding (R33).
+	// The issue is public: alert, resource, verdict and the room, never the finding (R33). The
+	// attacker-influenced identifiers reach it transposed to the label charset (TW6): they are
+	// still there, but no markup can form around them.
+	//
+	// Chosen over sanitize.Text deliberately: that defuses images, "]:" definitions and raw HTML
+	// but leaves an inline link — "[click](javascript:alert(1))" — intact, and these fields are
+	// identifiers whose natural charset is [A-Za-z0-9_.:/-] (alert names, resource refs,
+	// severities). Transposing everything else to "_" costs nothing they legitimately hold while
+	// removing every markdown and HTML trigger character ("!", "[", "]", "(", "<", "`", space)
+	// and every invisible code point. Verdict is already a closed set and Confidence a float.
+	alert, ref, sev := labelSafe(f.AlertName), labelSafe(f.ResourceRef), labelSafe(f.Severity)
 	body := fmt.Sprintf("RunLore reported **%s** on `%s` (alert `%s`, verdict `%s`, confidence %.2f).\n\n"+
 		"Agent factory task `%s` investigates it. The finding and the work stay in its room: %s/r/%s (tailnet only).\n\n"+
-		"Apply `factory/stop` to stop it.", f.Severity, f.ResourceRef, f.AlertName, f.Verdict, f.Confidence,
+		"Apply `factory/stop` to stop it.", sev, ref, alert, f.Verdict, f.Confidence,
 		name, strings.TrimSuffix(h.Cfg.RoomsURL, "/"), name)
-	n, err := h.Forge.CreateIssue(ctx, fmt.Sprintf("RunLore: %s on %s", f.AlertName, f.ResourceRef), body, []string{"factory/proposed"})
+	n, err := h.Forge.CreateIssue(ctx, fmt.Sprintf("RunLore: %s on %s", alert, ref), body, []string{"factory/proposed"})
 	if err != nil {
 		return 0, nil, err
 	}
