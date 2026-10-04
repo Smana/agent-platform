@@ -259,7 +259,9 @@ func cfg() *config.Config {
 			VerifyChecks:   []string{"Pre-commit checks", "Kubernetes validation"},
 			PolicyBotLogin: "ogenki-merge-gate[bot]", MergerLogin: "ogenki-agent-merger[bot]",
 			AutoMergesPerDay: 10, FixRuns: 2,
-			VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour}},
+			VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour},
+			// R41: a validated config always carries a breaker; the zero value would demote every class.
+			Breaker: config.Breaker{Window: 10, MaxReverts: 1}},
 		Hash: strings.Repeat("a", 64)}
 }
 

@@ -36,6 +36,7 @@ merge:
   fixRuns: 2
   verifyFor: 30m
   revertWindow: 168h
+  breaker: {window: 10, maxReverts: 1}
 tiers:
   light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}
   standard: {model: agent-default, runTokens: 1500000, taskTokens: 3000000, runMinutes: 45}
@@ -238,17 +239,20 @@ func TestBadConfigsFail(t *testing.T) {
 		"negative fix runs":          {"fixRuns: 2", "fixRuns: -1", "merge.fixRuns must be 0 or more"},
 		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
 		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
-		"no active tasks":            {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
-		"no concurrent runs":         {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
-		"no tasks per day":           {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
-		"no awaiting human wip":      {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
-		"negative factory daily":     {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
-		"negative human daily":       {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
-		"issues poll not positive":   {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
-		"tasks poll negative":        {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
-		"meter poll not positive":    {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
-		"repository not owner/name":  {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
-		"repository with a path":     {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
+		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.
+		"breaker never trips":       {"maxReverts: 1}", "maxReverts: 0}", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
+		"breaker window 0":          {"breaker: {window: 10", "breaker: {window: 0", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
+		"no active tasks":           {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
+		"no concurrent runs":        {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
+		"no tasks per day":          {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
+		"no awaiting human wip":     {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
+		"negative factory daily":    {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
+		"negative human daily":      {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
+		"issues poll not positive":  {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
+		"tasks poll negative":       {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
+		"meter poll not positive":   {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
+		"repository not owner/name": {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
+		"repository with a path":    {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
 		// Ruling SC: the broker's :8443 is TLS, verified against the mounted CA.
 		"broker not https":       {`url: "https://room-broker`, `url: "http://room-broker`, "must be an https:// URL"},
 		"broker without host":    {`"https://room-broker.agent-system.svc.cluster.local:8443"`, `"https://"`, `broker.url "https://" must be an https:// URL`},

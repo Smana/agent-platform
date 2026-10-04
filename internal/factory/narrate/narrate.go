@@ -341,7 +341,16 @@ func CIExhausted(t *v1alpha1.Task, names []string) Event {
 // RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4).
 func RevertOpened(t *v1alpha1.Task, number int, why string) Event {
 	return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
-		"Auto-merge of the class `%s` is paused until the factory's config changes.", t.Name, number, Reason(why), t.Spec.PredictedClass)}
+		"Auto-merge of the class `%s` goes back to human review until its recent merges pass without a revert (R41).",
+		t.Name, number, Reason(why), t.Spec.PredictedClass)}
+}
+
+// ClassDemoted goes to the control issue (Task 8.1a): a revert counts toward its class's breaker (R41).
+func ClassDemoted(t *v1alpha1.Task, window, maxReverts int) Event {
+	return Event{Key: "demoted-" + t.Name, Body: fmt.Sprintf("Agent factory: an auto-merge of `%s` was reverted "+
+		"(task `%s`, #%d). It counts toward the class's breaker: `%s` goes to human review while %d or more of its "+
+		"last %d merges are reverts, and maintainers' merges of the class count toward that window (R41).",
+		t.Spec.PredictedClass, t.Name, t.Status.PullRequest.Number, t.Spec.PredictedClass, maxReverts, window)}
 }
 
 // RevertStalled announces the disarm of a revert that did not go green. Its key starts with

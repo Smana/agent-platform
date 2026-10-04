@@ -11,9 +11,11 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 )
@@ -31,6 +33,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	case "MERGED": // a maintainer merged it through the bypass…
 		if pr.MergedBy != r.Cfg.Merge.MergerLogin {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+			// R41: a human merge records when, so it counts in the class's breaker window.
+			now := metav1.NewTime(r.Now())
+			t.Status.PullRequest.MergedAt = &now
 			class := t.Spec.PredictedClass
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
@@ -347,13 +352,39 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
-// paused: the circuit breaker. One revert of a class under the current config stops arming
-// for that class until the config changes (§6.4).
+// paused: the circuit breaker (§6.4, extended by R41 for review G5). It reads outcomes, not the
+// config: a class whose last merge.breaker.window merges hold merge.breaker.maxReverts reverts
+// (a maintainer's factory/revert, or main_red) is demoted to human review, whatever the config
+// hash. Maintainers' merges of a demoted class refill the window, so clean ones lift it.
 func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
-	n, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool {
-		return o.Status.Phase == v1alpha1.PhaseReverted && o.Spec.PredictedClass == class && o.Status.ConfigHash == r.Cfg.Hash
+	var l v1alpha1.TaskList
+	if err := r.Client.List(ctx, &l, client.InNamespace(r.Namespace)); err != nil {
+		return false, err
+	}
+	var merged []*v1alpha1.Task
+	for i := range l.Items {
+		o := &l.Items[i]
+		if o.Spec.PredictedClass == class && o.Status.PullRequest != nil && o.Status.PullRequest.MergedAt != nil {
+			merged = append(merged, o)
+		}
+	}
+	demoted, _ := Demoted(merged, r.Cfg.Merge.Breaker)
+	return demoted, nil
+}
+
+// Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, and how
+// many they hold.
+func Demoted(merged []*v1alpha1.Task, b config.Breaker) (bool, int) {
+	slices.SortFunc(merged, func(x, y *v1alpha1.Task) int {
+		return y.Status.PullRequest.MergedAt.Compare(x.Status.PullRequest.MergedAt.Time)
 	})
-	return n > 0, err
+	reverts := 0
+	for _, o := range merged[:min(len(merged), b.Window)] {
+		if o.Status.Phase == v1alpha1.PhaseReverted {
+			reverts++
+		}
+	}
+	return reverts >= b.MaxReverts, reverts
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the

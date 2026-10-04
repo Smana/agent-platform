@@ -29,7 +29,8 @@ func mergeRig(t *testing.T, phase string, objs ...client.Object) *rig {
 	g.r.Cfg.Classes = map[string]config.Class{"docs-links": {Live: true}, "revert": {Live: true}}
 	g.r.Cfg.Merge = config.Merge{RequiredChecks: required, VerifyChecks: required, PolicyBotLogin: "ogenki-merge-gate[bot]",
 		MergerLogin: "ogenki-agent-merger[bot]", AutoMergesPerDay: 10, FixRuns: 2,
-		VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour}}
+		VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour},
+		Breaker: config.Breaker{Window: 10, MaxReverts: 1}}
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
 		HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0)})
 	g.log.handoff(rid(0), "abc")
@@ -184,8 +185,8 @@ func TestMainRedRevertsAndPausesTheClass(t *testing.T) {
 		t.Fatal("one revert pauses the class until the config changes (§6.4)")
 	}
 	g.r.Cfg.Hash = strings.Repeat("c", 64)
-	if paused, _ := g.r.paused(t.Context(), "docs-links"); paused {
-		t.Fatal("a config change resets the breaker")
+	if paused, _ := g.r.paused(t.Context(), "docs-links"); !paused {
+		t.Fatal("R41: a config change no longer lifts a demotion while the revert is among the class's last 10 merges")
 	}
 }
 
@@ -225,5 +226,34 @@ func TestAMaintainersRevertAfterDone(t *testing.T) {
 	got := g.reconcile(t, "3buqdlot", 1)
 	if got.Status.Phase != v1alpha1.PhaseReverted || got.Status.Reason != "revert_requested" {
 		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	}
+}
+
+// R41 (review G5): 1 revert among the last 10 merges demotes; 10 clean merges after it lift it.
+func TestRevertsAmongTheLastMergesDemoteTheClass(t *testing.T) {
+	b := config.Breaker{Window: 10, MaxReverts: 1}
+	at := func(i int, phase string) *v1alpha1.Task {
+		m := metav1.NewTime(now.Add(time.Duration(i) * time.Hour))
+		return &v1alpha1.Task{Status: v1alpha1.TaskStatus{Phase: phase, ConfigHash: strings.Repeat("h", i+1),
+			PullRequest: &v1alpha1.PullRequestRef{MergedAt: &m}}}
+	}
+	merged := []*v1alpha1.Task{at(0, v1alpha1.PhaseReverted)}
+	for i := 1; i <= 9; i++ {
+		merged = append(merged, at(i, v1alpha1.PhaseDone))
+	}
+	if d, n := Demoted(merged, b); !d || n != 1 {
+		t.Fatalf("1 revert in the last 10 merges demotes, whatever the config: %v %d", d, n)
+	}
+	if d, _ := Demoted(append(merged, at(10, v1alpha1.PhaseDone)), b); d {
+		t.Fatal("the revert left the window: 10 clean merges lift the demotion")
+	}
+}
+
+// A maintainer's merge of a demoted class refills the window.
+func TestAHumanMergeCountsInTheBreakerWindow(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1"})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
+		t.Fatalf("%s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
 	}
 }

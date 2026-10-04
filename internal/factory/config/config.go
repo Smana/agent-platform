@@ -143,6 +143,14 @@ type Merge struct {
 	FixRuns          int32    `json:"fixRuns"`
 	VerifyFor        Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
 	RevertWindow     Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
+	Breaker          Breaker  `json:"breaker"`
+}
+
+// Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
+// merges hold MaxReverts reverts is demoted to human review, whatever the config.
+type Breaker struct {
+	Window     int `json:"window"`
+	MaxReverts int `json:"maxReverts"`
 }
 
 // Tier is a model and its budgets.
@@ -433,6 +441,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Merge.RevertWindow.Duration <= 0 {
 		bad("merge.revertWindow must be positive")
+	}
+	if b := c.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
+		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
 	}
 	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
 	// block is as required as the rest of this file. A human caller is verified against the
