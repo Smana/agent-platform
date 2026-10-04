@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -315,6 +316,22 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)
+	// R38: the triager's output reaches a public implementer only through a human. Its summary
+	// stays in the room (internal); the issue gets the room link and the next step, nothing else.
+	if current(t).Role == "triager" {
+		if run.Phase != "Succeeded" {
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
+		}
+		evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, current(t).StartSeq)
+		if err != nil {
+			return err
+		}
+		if !handedOffTo(evs, "implementer") {
+			return r.end(ctx, t, v1alpha1.PhaseNoOp, "no_action")
+		}
+		narrateLater(t, narrate.ProposalReady(t, r.Cfg.RoomsURL))
+		return r.end(ctx, t, v1alpha1.PhaseDone, "proposal_ready")
+	}
 	switch {
 	case run.Phase == "Succeeded" && t.Status.PullRequest != nil:
 		return r.afterWriter(ctx, t)
@@ -323,6 +340,18 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	default:
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
 	}
+}
+
+// handedOffTo reports whether any event is a handoff to role: the triager's proposal exists only
+// if it made one (R38).
+func handedOffTo(evs []envelope.Event, role string) bool {
+	for _, e := range evs {
+		var p envelope.HandoffPayload
+		if e.Type == envelope.Handoff && json.Unmarshal(e.Payload, &p) == nil && p.ToRole == role {
+			return true
+		}
+	}
+	return false
 }
 
 // lostReason is why a run of the task vanished: SP2 records a deleted claim as Revoked, reason

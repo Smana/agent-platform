@@ -178,6 +178,8 @@ func reasons() map[string]string {
 		"budget-task":             "the task spent its token budget",
 		"run_lost":                "the run disappeared",
 		"no_pr":                   "the agent opened no pull request",
+		"no_action":               "the triager found nothing to change",
+		"proposal_ready":          "the triager proposed a change for a maintainer to publish",
 		"merged":                  "the pull request was merged",
 		"pr_closed":               "the pull request was closed",
 		"text_too_long":           "the issue text is longer than the factory accepts (14 KiB)",
@@ -241,6 +243,15 @@ func Started(t *v1alpha1.Task, s runs.Spec, roomsURL string) Event {
 		t.Name, s.RunID, s.Role, s.Branch, Tokens(s.MaxTokens), s.MaxMinutes, t.Spec.Budget.Tier,
 		strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
 	return Event{Key: "run-" + s.RunID + "-started", Body: body}
+}
+
+// ProposalReady narrates a finished triage on the task's issue: the proposal stays in the room
+// (internal) until a human publishes it (R38).
+func ProposalReady(t *v1alpha1.Task, roomsURL string) Event {
+	return Event{Key: "proposal", Body: fmt.Sprintf("Agent factory task `%s`: the triager proposes a change. Read the "+
+		"proposal in the room, %s/r/%s (tailnet only). If it is safe to publish, open a new issue with the text you "+
+		"approve and label it `factory/ready`; nothing else starts from this finding.",
+		t.Name, strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)}
 }
 
 // Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
