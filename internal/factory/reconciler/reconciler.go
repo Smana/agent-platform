@@ -604,15 +604,14 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			return r.startVerifier(ctx, t, pr)
 		}
 	}
-	// R38: the investigate template's first run is the triager, not an implementer: it confirms
-	// the finding read-only and proposes. A missing template is no team, so it is not a triager
-	// one either: the config's validation cannot guard a name removed after a task was triaged.
-	if len(t.Status.Runs) == 0 {
-		if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
-			s := r.implementerSpec(t, TriagerBrief(t, r.Nonce()))
-			s.Role = "triager"
-			return r.startRun(ctx, t, s, "initial")
-		}
+	// R38: a task of a [triager] template always runs the triager, retry included: no implementer
+	// run ever starts from an internal-origin task. A missing template is no team, so it is not a
+	// triager one either: the config's validation cannot guard a name removed after a task was
+	// triaged.
+	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
+		s := r.implementerSpec(t, TriagerBrief(t, r.Nonce()))
+		s.Role = "triager"
+		return r.startRun(ctx, t, s, nextTrigger(t))
 	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)
 	if err != nil {
