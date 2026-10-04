@@ -97,6 +97,24 @@ func TestAMergeThatIsNotMergeableGoesToAHuman(t *testing.T) {
 	}
 }
 
+// R41 (review G5): a revert's effect on its class is narrated where the kill switch lives.
+func TestARevertIsNarratedOnTheControlIssue(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseVerifying)
+	g.r.Cfg.ControlIssue = 1
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	merged := metav1.NewTime(now)
+	tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = "m1", true, &merged
+	_ = g.c.Status().Update(t.Context(), &tk)
+	red := green("SUCCESS")
+	red.Runs[0].State = "FAILURE"
+	g.f.SetCommitChecks("m1", red.Runs...)
+	g.reconcile(t, "3buqdlot", 1)
+	if c := g.f.Comments(1); len(c) != 1 || !strings.Contains(c[0], "`docs-links` goes to human review while 1 or more of its last 10 merges are reverts") {
+		t.Fatalf("%q", c)
+	}
+}
+
 // §6.4: a revert that never goes green is disarmed and handed to a maintainer, never left armed.
 func TestAStalledRevertIsDisarmed(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseVerifying)
