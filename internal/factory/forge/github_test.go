@@ -52,11 +52,17 @@ const (
 	aHead = "see [the guide](docs/new.md).\n"
 )
 
-// R51's orphan scan: one own-repo agent pull request, one fork's, one with no head repository.
+// R51's orphan scan: the newest-100 window GitHub returns, a mix of `agent/` and other heads.
+// The connection takes no headRefPrefix, so the filtering is client-side; `agents/` and
+// `my-agent/` must not slip through a loose match.
 const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
+ {"number":34,"headRefName":"main","headRepository":{"owner":{"login":"Smana"},"name":"demo"},
+  "labels":{"nodes":[{"name":"bug"}]}},
  {"number":31,"headRefName":"agent/3buqdlot","headRepository":{"owner":{"login":"Smana"},"name":"demo"},
   "labels":{"nodes":[{"name":"factory/class:docs-links"}]}},
+ {"number":35,"headRefName":"agents/not-mine","headRepository":{"owner":{"login":"Smana"},"name":"demo"}},
  {"number":32,"headRefName":"agent/forkedit","headRepository":{"owner":{"login":"someone"},"name":"demo"}},
+ {"number":36,"headRefName":"my-agent/looks-close","headRepository":{"owner":{"login":"Smana"},"name":"demo"}},
  {"number":33,"headRefName":"agent/gonesome","headRepository":null,
   "labels":{"nodes":[{"name":"factory/class:review"}]}}]}}}}`
 
@@ -189,8 +195,8 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			return
 		}
 		if strings.Contains(string(b), "pullRequests(") {
-			if !strings.Contains(string(b), `headRefPrefix: \"agent/\"`) || !strings.Contains(string(b), "states: [OPEN]") {
-				g.t.Errorf("the orphan scan lists open agent branches only: %s", b)
+			if strings.Contains(string(b), "headRefPrefix") || !strings.Contains(string(b), "states: [OPEN]") {
+				g.t.Errorf("the orphan scan must not send headRefPrefix (GitHub rejects it on the pullRequests connection) and must keep states: [OPEN]: %s", b)
 			}
 			_, _ = io.WriteString(w, agentPullsJSON)
 			return
@@ -457,7 +463,9 @@ func TestPullRequestSnapshot(t *testing.T) {
 }
 
 // R51: the orphan scan's list is the open agent-branch pull requests of this repository, with
-// their labels; a fork's branch and a deleted head repository are never the factory's.
+// their labels; a fork's branch and a deleted head repository are never the factory's. The stub
+// window mixes in non-agent heads (main, agents/, my-agent/) because GitHub's connection cannot
+// filter them; none may reach the caller.
 func TestAgentPullsAreTheOwnOnes(t *testing.T) {
 	r := newRig(t)
 	ps, err := r.g.AgentPulls(t.Context())
@@ -466,6 +474,11 @@ func TestAgentPullsAreTheOwnOnes(t *testing.T) {
 	}
 	if len(ps) != 3 {
 		t.Fatalf("%+v", ps)
+	}
+	for _, p := range ps {
+		if !strings.HasPrefix(p.HeadRef, "agent/") {
+			t.Fatalf("a non-agent head survived the client-side filter: %+v", p)
+		}
 	}
 	if ps[0].Number != 31 || ps[0].HeadRef != "agent/3buqdlot" || ps[0].Fork || len(ps[0].Labels) != 1 ||
 		ps[0].Labels[0] != "factory/class:docs-links" {
