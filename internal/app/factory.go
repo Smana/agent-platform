@@ -120,10 +120,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
-	// workload holds.
+	// workload holds. TW4: its token asks the merger profile, not the factory App's scope —
+	// checks and statuses read, contents and pull requests write.
 	merger, err := forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
 		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now})
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions()})
 	if err != nil {
 		return err
 	}
@@ -192,6 +193,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	for _, r := range []manager.Runnable{
 		&intake.IssuePoller{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Errors: m, Log: log,
 			Stopped: stopped},
+		&intake.Scheduler{Forge: gh, Merger: merger, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log,
 			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
 			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,

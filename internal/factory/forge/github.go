@@ -33,6 +33,11 @@ type Options struct {
 	UserAgent      string
 	HTTP           *http.Client // httpx.New: the one audited egress client
 	Now            func() time.Time
+	// Permissions is the installation token's scope (TW4). nil keeps the factory App's
+	// permissions(); the merger connection passes MergerPermissions(), so no factory token
+	// ever asks for checks:read the factory App does not hold — a mint beyond the App's
+	// scope fails, which would break the factory with it.
+	Permissions map[string]string
 }
 
 // GitHub is the forge on one repository, as one App installation.
@@ -70,7 +75,7 @@ func Connect(ctx context.Context, o Options) (*GitHub, error) {
 	}
 	g := &GitHub{api: api, agent: o.UserAgent, owner: owner, name: name, now: o.Now,
 		tokens: &tokens{api: api, hc: o.HTTP, owner: owner, name: name, agent: o.UserAgent,
-			idFile: o.AppIDFile, keyFile: o.PrivateKeyFile, now: o.Now}}
+			idFile: o.AppIDFile, keyFile: o.PrivateKeyFile, now: o.Now, perms: o.Permissions}}
 	hc := g.authed(o.HTTP)
 	base := api.String()
 	if g.rest, err = github.NewClient(github.WithHTTPClient(hc), github.WithURLs(&base, &base),

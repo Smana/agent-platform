@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -91,10 +92,27 @@ type fakeGitHub struct {
 	calls  []string
 	bodies []string                         // the POST /graphql bodies, in order
 	mint   func(w http.ResponseWriter) bool // overrides the mint reply when it returns true
+	// TW4: the scope the next mint must request; every other request gets GitHub's refusal.
+	// perms records each minted body's scope, in order, so a test can pin it per connection.
+	wantPerms map[string]string
+	perms     []map[string]string
+}
+
+func (g *fakeGitHub) setWantPerms(p map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.wantPerms = p
+}
+
+// mintedPerms are the permission maps of the mints served so far, in order.
+func (g *fakeGitHub) mintedPerms() []map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.perms)
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
-	g := &fakeGitHub{t: t, pub: pub, ttl: time.Hour, now: now}
+	g := &fakeGitHub{t: t, pub: pub, ttl: time.Hour, now: now, wantPerms: permissions()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/Smana/demo/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !g.appJWT(r) {
@@ -118,16 +136,21 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			Repositories []string          `json:"repositories"`
 			Permissions  map[string]string `json:"permissions"`
 		}
+		g.mu.Lock()
+		want := g.wantPerms
+		g.mu.Unlock()
+		// GitHub 422s a token asking beyond the App's installation scope; so does this.
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Repositories) != 1 || in.Repositories[0] != "demo" ||
-			in.Permissions["contents"] != "read" || in.Permissions["issues"] != "write" || in.Permissions["pull_requests"] != "write" ||
-			len(in.Permissions) != 4 || in.Permissions["metadata"] != "read" {
-			t.Errorf("the token is scoped to one repository and the factory App's permissions: %+v %v", in, err)
+			!maps.Equal(in.Permissions, want) {
+			http.Error(w, `{"message":"Unprocessable Entity"}`, http.StatusUnprocessableEntity)
+			return
 		}
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		if g.mint != nil && g.mint(w) {
 			return
 		}
+		g.perms = append(g.perms, maps.Clone(in.Permissions))
 		g.mints++
 		g.token = "ghs_" + strings.Repeat("x", g.mints)
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": g.token, "expires_at": g.now().Add(g.ttl).Format(time.RFC3339)})
@@ -839,4 +862,37 @@ func write(t *testing.T, s string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TW4 (the 7.4 review): the mint body is pinned per connection. The factory connection keeps
+// its App's scope; the merger connection carries the merger profile — checks and statuses read,
+// contents and pull requests write — and a mint asking beyond the App's scope fails, as GitHub
+// refuses it (the fail-loud contract of app.go's permissions()).
+func TestEachConnectionMintsItsOwnScope(t *testing.T) {
+	r := newRig(t) // the factory connection: its mint pins the factory scope
+	r.gh.setWantPerms(MergerPermissions())
+	o := r.opts
+	o.Permissions = MergerPermissions()
+	if _, err := Connect(t.Context(), o); err != nil {
+		t.Fatal(err)
+	}
+	got := r.gh.mintedPerms()
+	if len(got) != 2 {
+		t.Fatalf("two connections, two mints: %d", len(got))
+	}
+	if !maps.Equal(got[0], permissions()) {
+		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
+	}
+	if !maps.Equal(got[1], MergerPermissions()) {
+		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
+	}
+}
+
+func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
+	r := newRig(t)
+	o := r.opts
+	o.Permissions = MergerPermissions() // checks:read is beyond the factory App
+	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
+		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
+	}
 }

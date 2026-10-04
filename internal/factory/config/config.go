@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"sigs.k8s.io/yaml"
 )
 
@@ -81,6 +82,7 @@ type Config struct {
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
+	Schedules    []Schedule          `json:"schedules,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -214,6 +216,16 @@ type Tracing struct {
 	OTLPEndpoint string `json:"otlpEndpoint"`
 }
 
+// Schedule starts a task from config (§1). The config is a gate path, so its text is trusted.
+type Schedule struct {
+	Name      string `json:"name"`
+	Cron      string `json:"cron"`  // 5 fields, UTC
+	Class     string `json:"class"` // the predicted class (§2)
+	Text      string `json:"text"`
+	DataClass string `json:"dataClass,omitempty"`
+	Probe     string `json:"probe,omitempty"` // "" or renovate-red
+}
+
 // API is the run-request API's configuration (§4): what it binds, which repositories it
 // accepts (OD-6), and how it authenticates callers (Task 5.1's Authenticator).
 type API struct {
@@ -230,9 +242,10 @@ type API struct {
 }
 
 var (
-	repoRE     = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
-	hostPortRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
-	hostRE     = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+	repoRE      = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+	hostPortRE  = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
+	hostRE      = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+	schedNameRE = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 )
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
@@ -415,6 +428,35 @@ func (c *Config) Validate() error {
 	}
 	if _, ok := c.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")
+	}
+	// §1 schedules. The name keys every task it starts, so names are unique and C2-shaped;
+	// the cron must parse to have slots at all.
+	seenSchedule := map[string]bool{}
+	for _, e := range c.Schedules {
+		switch {
+		case !schedNameRE.MatchString(e.Name):
+			bad("schedule name %q must match ^[a-z0-9-]{1,40}$", e.Name)
+		case seenSchedule[e.Name]:
+			bad("schedule name %q is used twice", e.Name)
+		}
+		seenSchedule[e.Name] = true
+		if _, err := cron.ParseStandard(e.Cron); err != nil {
+			bad("schedule %s: cron %q does not parse", e.Name, e.Cron)
+		}
+		if e.Class != "review" {
+			if _, ok := c.Classes[e.Class]; !ok {
+				bad("schedule %s: class %q is review or a declared class", e.Name, e.Class)
+			}
+		}
+		if e.Text == "" || len(e.Text) > c.Caps.MaxTextBytes {
+			bad("schedule %s: text must be 1..%d bytes", e.Name, c.Caps.MaxTextBytes)
+		}
+		if e.Probe != "" && e.Probe != "renovate-red" {
+			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
+		}
+		if e.DataClass != "" && e.DataClass != "public" && e.DataClass != "internal" {
+			bad("schedule %s: dataClass %q is public or internal", e.Name, e.DataClass)
+		}
 	}
 	if c.Caps.ActiveTasks < 1 || c.Caps.ConcurrentRuns < 1 || c.Caps.TasksPerDay < 1 {
 		bad("caps must be positive")

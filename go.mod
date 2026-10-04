@@ -11,6 +11,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/otlptranslator v1.0.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.33.0
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0

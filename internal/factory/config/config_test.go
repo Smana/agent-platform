@@ -302,6 +302,14 @@ func TestBadConfigsFail(t *testing.T) {
 		"api repository not owner/name": {"repositories: [Smana/cloud-native-ref]", "repositories: ['../x']", `api.repository "../x" is not owner/name`},
 		"api without client ids":        {"clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]", "clientIDFiles: []", "api.clientIDFiles is empty"},
 		"api system issuer alone":       {"humanIssuer: https://auth.ogenki.io", "humanIssuer: https://auth.ogenki.io\n  systemIssuer: https://accounts.example", "api.systemIssuer and api.systemJWKS are both set or both empty"},
+		// §1 schedules: the name keys the task, the cron must fire, the class must exist.
+		"schedule name twice":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
+		"schedule name uppercase":     {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},
+		"schedule cron unparsable":    {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 oops\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: cron "0 6 oops" does not parse`},
+		"schedule class undeclared":   {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: ops, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: class "ops" is review or a declared class`},
+		"schedule text empty":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: \"\"}]\ncaps: {activeTasks: 3,", "schedule a: text must be 1..14336 bytes"},
+		"schedule probe unknown":      {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, probe: dependabot-red}]\ncaps: {activeTasks: 3,", `schedule a: probe "dependabot-red" is not renovate-red`},
+		"schedule data class unknown": {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, dataClass: secret}]\ncaps: {activeTasks: 3,", `schedule a: dataClass "secret" is public or internal`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c.from, c.to, 1)
@@ -313,6 +321,29 @@ func TestBadConfigsFail(t *testing.T) {
 				t.Errorf("err = %v, want one naming %q", err, c.err)
 			}
 		})
+	}
+}
+
+// §1: schedules start tasks from config. The block parses, and a trusted entry carries its
+// class, data class and probe.
+func TestSchedules(t *testing.T) {
+	raw := good + `schedules:
+  - {name: link-rot, cron: "0 6 * * 1", class: docs-links, text: Fix broken external links.}
+  - {name: renovate-red, cron: "0 6 * * 1", class: review, text: Fix red Renovate PRs., dataClass: internal, probe: renovate-red}
+`
+	c, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Schedules) != 2 {
+		t.Fatalf("%+v", c.Schedules)
+	}
+	s := c.Schedules[1]
+	if s.Name != "renovate-red" || s.Cron != "0 6 * * 1" || s.Class != "review" || s.DataClass != "internal" || s.Probe != "renovate-red" {
+		t.Fatalf("%+v", s)
+	}
+	if c.Schedules[0].DataClass != "" || c.Schedules[0].Probe != "" {
+		t.Fatalf("an omitted dataClass falls back to the default at use; an omitted probe is none: %+v", c.Schedules[0])
 	}
 }
 
