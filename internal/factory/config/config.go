@@ -93,10 +93,15 @@ type Broker struct {
 	TokenFile string `json:"tokenFile"`
 }
 
-// GitHub names the factory App's mounted credentials.
+// GitHub names the factory App's mounted credentials, and the merger App's (R16): merge-side
+// calls — checks, merges, reverts — go through the merger's key, which no other workload holds.
 type GitHub struct {
 	AppIDFile      string `json:"appIDFile"`
 	PrivateKeyFile string `json:"privateKeyFile"`
+	// The merger App's pair: both files or neither, and both required once any class is live
+	// or shadow, because deciding that class reads checks and arms through the merger.
+	MergerAppIDFile string `json:"mergerAppIDFile,omitempty"`
+	MergerKeyFile   string `json:"mergerKeyFile,omitempty"`
 }
 
 // Poll is how often each loop runs.
@@ -394,6 +399,19 @@ func (c *Config) Validate() error {
 		if cl.Live && cl.Shadow {
 			bad("class %s: live and shadow never together (R32)", name)
 		}
+	}
+	// R16: the merger App's key is both files or neither — a half pair cannot mint a token —
+	// and both are required once any class is live or shadow, whose decision reads checks
+	// through it.
+	var anyMerge bool
+	for _, cl := range c.Classes {
+		anyMerge = anyMerge || cl.Live || cl.Shadow
+	}
+	switch {
+	case (c.GitHub.MergerAppIDFile == "") != (c.GitHub.MergerKeyFile == ""):
+		bad("github.mergerAppIDFile and github.mergerKeyFile are both set or both empty")
+	case anyMerge && c.GitHub.MergerAppIDFile == "":
+		bad("github.mergerAppIDFile: required by a live or shadow class")
 	}
 	if _, ok := c.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")

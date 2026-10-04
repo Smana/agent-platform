@@ -102,7 +102,7 @@ type Reconciler struct {
 	Namespace string
 	Cfg       *config.Config
 	Forge     taskForge
-	Merger    forge.Merger // the merger App: checks, merges and reverts (R16; wired in Task 7.4)
+	Merger    forge.Merger // the merger App: checks, merges and reverts (R16)
 	Runs      RunClient
 	Rooms     RoomLog
 	Triage    triage.Triager

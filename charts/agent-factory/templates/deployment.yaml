@@ -53,6 +53,7 @@ spec:
             - {name: config, mountPath: /etc/agent-factory/config, readOnly: true}
             - {name: broker-ca, mountPath: /etc/agent-factory/openbao-ca, readOnly: true}
             - {name: github, mountPath: /etc/agent-factory-github, readOnly: true}
+            - {name: merger, mountPath: /etc/agent-factory-merger, readOnly: true}
             - {name: rooms-token, mountPath: /var/run/secrets/agents/rooms, readOnly: true}
             - {name: oidc, mountPath: /etc/agent-factory-oidc, readOnly: true}
       volumes:
@@ -62,6 +63,8 @@ spec:
           secret: {secretName: {{ .Values.brokerCASecret }}, items: [{key: ca.crt, path: ca.crt}]}
         - name: github
           secret: {secretName: {{ .Values.githubSecret }}, defaultMode: 0440}
+        - name: merger
+          secret: {secretName: {{ .Values.mergerSecret }}, defaultMode: 0440}
         - name: rooms-token
           projected:
             sources:

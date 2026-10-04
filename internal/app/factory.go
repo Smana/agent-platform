@@ -119,6 +119,14 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
+	// workload holds.
+	merger, err := forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
+		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now})
+	if err != nil {
+		return err
+	}
 
 	sink, shutdownTrace, err := taskSink(ctx, cfg.Tracing.OTLPEndpoint)
 	if err != nil {
@@ -135,7 +143,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	rc := runs.Client{C: mgr.GetClient()}
-	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Runs: rc, Rooms: broker,
+	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
+		Runs: rc, Rooms: broker,
 		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL}, Forge: gh},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink}

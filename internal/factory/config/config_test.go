@@ -22,7 +22,7 @@ factoryLogin: ogenki-agent-factory[bot]
 agentsLogin: ogenki-agents[bot]
 roomsURL: https://rooms.priv.gcp.ogenki.io
 broker: {url: "https://room-broker.agent-system.svc.cluster.local:8443", caFile: /etc/agent-factory/openbao-ca/ca.crt, tokenFile: /var/run/secrets/agents/rooms/token}
-github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent-factory-github/private_key}
+github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent-factory-github/private_key, mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key}
 poll: {issues: 60s, tasks: 30s, meter: 30s}
 defaults: {template: solo, tier: standard, dataClass: public, predictedClass: review}
 triage: {classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", controlPercent: 10}
@@ -72,6 +72,9 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 	if c.Broker.CAFile != "/etc/agent-factory/openbao-ca/ca.crt" {
 		t.Fatalf("broker.caFile = %q", c.Broker.CAFile)
+	}
+	if c.GitHub.MergerAppIDFile != "/etc/agent-factory-merger/app_id" || c.GitHub.MergerKeyFile != "/etc/agent-factory-merger/private_key" {
+		t.Fatalf("github merger pair: %+v", c.GitHub)
 	}
 	if !c.IsMaintainer("smana") || c.IsMaintainer("someone") {
 		t.Fatal("maintainers match case-insensitively, and only listed logins")
@@ -278,7 +281,13 @@ func TestBadConfigsFail(t *testing.T) {
 		"rooms URL with a tag":      {"roomsURL: https://rooms.priv.gcp.ogenki.io", "roomsURL: 'https://ro<img>ms'", "roomsURL must be https://<host>"},
 		"no app id file":            {"appIDFile: /etc/agent-factory-github/app_id", "appIDFile: ''", "github.appIDFile is required"},
 		"no private key file":       {"privateKeyFile: /etc/agent-factory-github/private_key", "privateKeyFile: ''", "github.privateKeyFile is required"},
-		"no meter URL":              {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
+		// R16: the merger App's key is both files or neither, and a live or shadow class reaches
+		// for it: such a config without the pair fails its rollout.
+		"a shadow class without the merger key": {", mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key",
+			"", "github.mergerAppIDFile: required by a live or shadow class"},
+		"half a merger key pair": {"mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key",
+			"mergerAppIDFile: /etc/agent-factory-merger/app_id", "github.mergerAppIDFile and github.mergerKeyFile are both set or both empty"},
+		"no meter URL": {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
 		"no meter query": {`query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'`,
 			"query: ''", "meter.query is required"},
 		// R13: the 429 lookup needs its endpoint and its query.
@@ -304,6 +313,22 @@ func TestBadConfigsFail(t *testing.T) {
 				t.Errorf("err = %v, want one naming %q", err, c.err)
 			}
 		})
+	}
+}
+
+// R16: the merger pair binds to live or shadow classes only: an all-prediction config needs
+// no merger key, but dropping one half of a configured pair is refused by the pair rule.
+func TestMergerPairFollowsClasses(t *testing.T) {
+	raw := strings.Replace(good, ", mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key", "", 1)
+	raw = strings.Replace(raw, "classes: {docs-links: {shadow: true}, revert: {shadow: true},", "classes: {docs-links: {}, revert: {},", 1)
+	if raw == good {
+		t.Fatal("the edits did not apply")
+	}
+	if _, err := Parse([]byte(raw)); err != nil {
+		t.Fatalf("no live or shadow class, no pair: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(raw, "classes: {docs-links: {},", "classes: {docs-links: {live: true},", 1))); err == nil {
+		t.Fatal("a live class without the pair is refused")
 	}
 }
 
