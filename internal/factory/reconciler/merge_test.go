@@ -249,11 +249,43 @@ func TestRevertsAmongTheLastMergesDemoteTheClass(t *testing.T) {
 	}
 }
 
-// A maintainer's merge of a demoted class refills the window.
+// The bypass race at the CI gate: a maintainer's merge seen by awaitingCI records when it merged,
+// so the task carries a timestamp the breaker window can count.
 func TestAHumanMergeCountsInTheBreakerWindow(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1"})
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
 		t.Fatalf("%s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
+	}
+}
+
+// R41's lift, through the flow a demotion actually routes merges along: a demoted class' PRs sit
+// in AwaitingHuman, and the maintainer's merges of them refill the breaker window until the
+// revert leaves it. The rig's window is 2 for the test to be watchable: revert + 1 clean still
+// demotes, revert + 2 clean lifts.
+func TestAHumanMergeOfADemotedClassRefillsTheWindow(t *testing.T) {
+	old := metav1.NewTime(now.Add(-3 * time.Hour))
+	reverted := awaiting()
+	reverted.Name, reverted.Spec.PredictedClass, reverted.Status.Phase = "1reverted", "docs-links", v1alpha1.PhaseReverted
+	reverted.Status.PullRequest.Number, reverted.Status.PullRequest.AutoMerged = 9, true
+	reverted.Status.PullRequest.MergedAt, reverted.Status.Runs = &old, nil
+	next := awaiting()
+	next.Name, next.Spec.PredictedClass = "2cleanmerge", "docs-links"
+	next.Status.PullRequest.Number, next.Status.PullRequest.NodeID, next.Status.Runs = 13, "PR_13", nil
+	g := mergeRig(t, v1alpha1.PhaseAwaitingHuman, reverted, next)
+	g.r.Cfg.Merge.Breaker = config.Breaker{Window: 2, MaxReverts: 1}
+	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "m1"})
+	g.f.SetPR(forge.PR{Number: 13, NodeID: "PR_13", State: "MERGED", MergedBy: "octocat", MergeCommitSHA: "m2"})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
+		t.Fatalf("prEnded must timestamp the merge too: %s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
+	}
+	if paused, _ := g.r.paused(t.Context(), "docs-links"); !paused {
+		t.Fatal("one clean merge beside the revert does not lift the demotion")
+	}
+	if tk := g.reconcile(t, "2cleanmerge", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
+		t.Fatalf("the second human merge: %s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
+	}
+	if paused, _ := g.r.paused(t.Context(), "docs-links"); paused {
+		t.Fatal("R41: clean merges of the demoted class must refill the window until the revert leaves it")
 	}
 }

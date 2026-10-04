@@ -373,7 +373,9 @@ func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
 }
 
 // Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, and how
-// many they hold.
+// many they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
+// and Validate keep it off the production path, so a test rig that builds config.Merge by hand
+// must set a breaker.
 func Demoted(merged []*v1alpha1.Task, b config.Breaker) (bool, int) {
 	slices.SortFunc(merged, func(x, y *v1alpha1.Task) int {
 		return y.Status.PullRequest.MergedAt.Compare(x.Status.PullRequest.MergedAt.Time)
