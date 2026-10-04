@@ -137,6 +137,7 @@ type Merge struct {
 	// The checks main's CI runs on push, watched on the merge commit. Not RequiredChecks: a
 	// path-filtered push workflow never reports there, and absent must not mean pending (§6.4).
 	VerifyChecks     []string `json:"verifyChecks"`
+	LeakScanCheck    string   `json:"leakScanCheck"`  // R42: TruffleHog's check run, "Security scanning 🔒"
 	PolicyBotLogin   string   `json:"policyBotLogin"` // the status's expected creator
 	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
 	AutoMergesPerDay int      `json:"autoMergesPerDay"`
@@ -422,6 +423,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Merge.VerifyChecks) == 0 {
 		bad("merge.verifyChecks is empty: §6.4 watches these on the merge commit")
+	}
+	if m := c.Merge; !slices.Contains(m.RequiredChecks, m.LeakScanCheck) || !slices.Contains(m.VerifyChecks, m.LeakScanCheck) {
+		bad("merge.leakScanCheck %q must be in merge.requiredChecks and merge.verifyChecks (R42)", c.Merge.LeakScanCheck)
 	}
 	for _, f := range []struct{ key, value string }{
 		{"merge.policyBotLogin", c.Merge.PolicyBotLogin}, {"merge.mergerLogin", c.Merge.MergerLogin},

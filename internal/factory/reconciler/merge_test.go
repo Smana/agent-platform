@@ -289,3 +289,19 @@ func TestAHumanMergeOfADemotedClassRefillsTheWindow(t *testing.T) {
 		t.Fatal("R41: clean merges of the demoted class must refill the window until the revert leaves it")
 	}
 }
+
+// R42 (review G6): a red secret scan is a live credential in a public diff. No fix run: a human.
+func TestARedSecretScanEscalatesWithoutAFixRun(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.LeakScanCheck = "Security scanning"
+	red := green("SUCCESS")
+	red.Runs = append(red.Runs, forge.Check{Name: "Security scanning", State: "FAILURE"})
+	g.f.SetChecks(12, red)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "secret_scan_red" || tk.Status.FixRuns != 0 {
+		t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.FixRuns)
+	}
+	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "live credential") {
+		t.Fatalf("%q", c)
+	}
+}

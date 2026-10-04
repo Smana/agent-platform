@@ -30,9 +30,9 @@ type ArmInputs struct {
 	Files        struct{ Base, Head map[string]string }
 }
 
-// ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | human. Matched is
-// what the class policy-bot's verdict implies: the predicted class on a clean success, review on
-// a pending one, gate on an error; a difference from the prediction is a class_mismatch (§2).
+// ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | escalate | human.
+// Matched is what the class policy-bot's verdict implies: the predicted class on a clean success,
+// review on a pending one, gate on an error; a difference from the prediction is a class_mismatch (§2).
 type ArmDecision struct {
 	Verdict string
 	Reason  string
@@ -59,6 +59,12 @@ func CIState(c forge.Checks, required []string) string {
 
 // DecideArm is §5.1's merge-actor rule. Every "no" fails towards a human (property 3).
 func DecideArm(in ArmInputs) ArmDecision {
+	// R42 (review G6): TruffleHog runs --only-verified, so a red scan is a live credential in the
+	// diff. A fix run would remove it from the head and leave it in a public history.
+	if i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == in.Cfg.Merge.LeakScanCheck }); i >= 0 &&
+		in.Checks.Runs[i].State == "FAILURE" {
+		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}
+	}
 	switch CIState(in.Checks, in.Cfg.Merge.RequiredChecks) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}

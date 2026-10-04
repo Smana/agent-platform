@@ -200,6 +200,7 @@ func reasons() map[string]string {
 		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
 		"run_unschedulable":       "the cluster never admitted the task's run within its bound",
 		"ci_red":                  "CI stayed red after the fix runs",
+		"secret_scan_red":         "the secret scan (Security scanning 🔒, TruffleHog) found a live credential in this pull request: a maintainer revokes it and closes the pull request, and the factory does not retry",
 		"ci_pending":              "CI has not finished",
 		"main_red":                "main's CI went red after the merge",
 		"revert_requested":        "a maintainer asked for a revert",

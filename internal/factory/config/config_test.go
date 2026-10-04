@@ -30,6 +30,7 @@ classes: {docs-links: {shadow: true}, revert: {shadow: true}, docs: {}, tests: {
 merge:
   requiredChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Rendered manifest diff 📝", "Check the shell scripts 💻", "Check the documentation links 🔗", "Validate Vector Log Parsing Configuration (vlsingle)", "Validate Vector Log Parsing Configuration (vlcluster)"]
   verifyChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Check the shell scripts 💻", "Check the documentation links 🔗"]
+  leakScanCheck: "Security scanning 🔒"
   policyBotLogin: ogenki-merge-gate[bot]
   mergerLogin: ogenki-agent-merger[bot]
   autoMergesPerDay: 10
@@ -233,6 +234,9 @@ func TestBadConfigsFail(t *testing.T) {
 			"requiredChecks: []", "merge.requiredChecks is empty"},
 		"merge without verify checks": {"verifyChecks: [\"Pre-commit checks 🛃\", \"Security scanning 🔒\", \"Kubernetes validation ☸\", \"Check the shell scripts 💻\", \"Check the documentation links 🔗\"]",
 			"verifyChecks: []", "merge.verifyChecks is empty"},
+		// R42 (review G6): the secret scan cannot be dropped from either list silently.
+		"leak scan not required":     {"leakScanCheck: \"Security scanning 🔒\"", "leakScanCheck: \"Trivy\"", "merge.leakScanCheck"},
+		"no leak scan":               {"  leakScanCheck: \"Security scanning 🔒\"\n", "", "merge.leakScanCheck"},
 		"policy bot not a bot":       {"policyBotLogin: ogenki-merge-gate[bot]", "policyBotLogin: ogenki-merge-gate", "merge.policyBotLogin"},
 		"merger not a bot":           {"mergerLogin: ogenki-agent-merger[bot]", "mergerLogin: ogenki-agent-merger", "merge.mergerLogin"},
 		"negative auto merges":       {"autoMergesPerDay: 10", "autoMergesPerDay: -1", "merge.autoMergesPerDay must be 0 or more"},

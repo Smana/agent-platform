@@ -91,6 +91,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "ci_red":
 		return r.fixCI(ctx, t, pr, checks)
+	case "escalate": // R42: nothing the factory may fix
+		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, d.Reason)
 	case "human":
 		if d.Matched != "" && d.Matched != t.Spec.PredictedClass {
 			pred, matched := t.Spec.PredictedClass, d.Matched

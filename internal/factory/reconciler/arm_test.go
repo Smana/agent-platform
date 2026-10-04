@@ -26,7 +26,7 @@ func armCfg() *config.Config {
 	return &config.Config{Maintainers: []string{"Smana"}, AgentsLogin: "ogenki-agents[bot]",
 		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}}, "pair": {Roles: []string{"implementer", "reviewer"}}},
 		Classes:   map[string]config.Class{"docs-links": {Live: true}, "revert": {Live: true}, "docs": {}},
-		Merge:     config.Merge{RequiredChecks: required, PolicyBotLogin: "ogenki-merge-gate[bot]", AutoMergesPerDay: 10}}
+		Merge:     config.Merge{RequiredChecks: required, LeakScanCheck: "Security scanning", PolicyBotLogin: "ogenki-merge-gate[bot]", AutoMergesPerDay: 10}}
 }
 
 func green(policy string) forge.Checks {
@@ -150,6 +150,8 @@ func TestDecideArm(t *testing.T) {
 	pending.Runs = pending.Runs[:1] // a required check has not reported yet
 	forged := green("SUCCESS")
 	forged.Statuses[0].Creator = "ogenki-agents[bot]"
+	scanRed := green("SUCCESS")
+	scanRed.Runs = append(scanRed.Runs, forge.Check{Name: "Security scanning", State: "FAILURE"})
 	for name, c := range map[string]struct {
 		in                       ArmInputs
 		verdict, reason, matched string
@@ -159,6 +161,7 @@ func TestDecideArm(t *testing.T) {
 		"CI red":                   {ArmInputs{PR: agentPR(), Checks: red, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
 		"CI errored":               {ArmInputs{PR: agentPR(), Checks: errored, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
 		"CI still running":         {ArmInputs{PR: agentPR(), Checks: pending, Task: armTask("docs-links", "solo", "")}, "wait", "ci_pending", ""},
+		"secret scan red":          {ArmInputs{PR: agentPR(), Checks: scanRed, Task: armTask("docs-links", "solo", "")}, "escalate", "secret_scan_red", ""},
 		"gate path":                {ArmInputs{PR: agentPR(), Checks: green("ERROR"), Task: armTask("docs-links", "solo", "")}, "human", "gate_path", "gate"},
 		"diff not the class":       {ArmInputs{PR: agentPR(), Checks: green("PENDING"), Task: armTask("docs-links", "solo", "")}, "human", "policy_pending", "review"},
 		"a forged status":          {ArmInputs{PR: agentPR(), Checks: forged, Task: armTask("docs-links", "solo", "")}, "human", "policy_absent", ""},
