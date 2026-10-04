@@ -143,6 +143,18 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		case strings.Contains(string(b), "statusCheckRollup"):
 			_, _ = io.WriteString(w, rollupJSON)
 			return
+		case strings.Contains(string(b), "mergePullRequest(input"):
+			switch {
+			case strings.Contains(string(b), `"expectedHeadOid":"def456"`):
+				w.WriteHeader(http.StatusConflict) // GitHub checks the head at merge time (R52)
+				_, _ = io.WriteString(w, `{"errors":[{"message":"Head sha does not match expected"}]}`)
+			case strings.Contains(string(b), `"expectedHeadOid":"blocked"`):
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				_, _ = io.WriteString(w, `{"errors":[{"message":"Merge pull request not allowed"}]}`)
+			default:
+				_, _ = io.WriteString(w, `{"data":{"mergePullRequest":{"clientMutationId":null}}}`)
+			}
+			return
 		case strings.Contains(string(b), "revertPullRequest"):
 			_, _ = io.WriteString(w, `{"data":{"revertPullRequest":{"revertPullRequest":{"id":"PR_rev","number":13,"url":"https://github.com/Smana/demo/pull/13"}}}}`)
 			return
@@ -183,7 +195,15 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	mux.HandleFunc("GET /repos/Smana/demo/issues", g.authed(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query(); q.Get("labels") != "factory/ready" || q.Get("state") != "open" {
+		q := r.URL.Query()
+		if q.Get("labels") == "factory/revert" {
+			if q.Get("state") != "all" {
+				t.Errorf("revert labels must list closed pull requests too: %v", q)
+			}
+			_, _ = io.WriteString(w, `[{"number":901,"pull_request":{"url":"x"}}]`)
+			return
+		}
+		if q.Get("labels") != "factory/ready" || q.Get("state") != "open" {
 			t.Errorf("query %v", q)
 		}
 		_, _ = io.WriteString(w, `[{"number":7},{"number":12,"pull_request":{"url":"x"}}]`)
@@ -548,6 +568,7 @@ func TestChecksAndMutations(t *testing.T) {
 	if st, by := c.StatusOf("policy-bot: main"); st != "PENDING" || by != "ogenki-merge-gate[bot]" {
 		t.Fatalf("%s %s", st, by)
 	}
+	// Arming stays for the revert path (R52): expectedHeadOid still pins it when a caller gives one.
 	if err := r.g.EnableAutoMerge(ctx, "PR_1", "abc123"); err != nil {
 		t.Fatal(err)
 	}
@@ -565,6 +586,43 @@ func TestChecksAndMutations(t *testing.T) {
 	runs, err := r.g.CommitChecks(ctx, "abc123")
 	if err != nil || len(runs) != 1 || runs[0].State != "SUCCESS" {
 		t.Fatalf("%+v %v", runs, err)
+	}
+}
+
+// R52: the decision merges now, with expectedHeadOid — GitHub checks the head at merge time, so
+// a 409 is the head moving and a 405 a merge it will not allow as it stands.
+func TestMergeChecksTheHeadAtMergeTime(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if err := r.g.Merge(ctx, "PR_1", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := r.gh.graphqlBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("%d graphql calls", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "mergePullRequest(input") || !strings.Contains(bodies[0], "SQUASH") ||
+		!strings.Contains(bodies[0], `"expectedHeadOid":"abc123"`) {
+		t.Fatalf("squash merge of the decided head only: %s", bodies[0])
+	}
+	if err := r.g.Merge(ctx, "PR_1", "def456"); !errors.Is(err, ErrHeadMoved) {
+		t.Fatalf("a moved head: %v", err)
+	}
+	if err := r.g.Merge(ctx, "PR_1", "blocked"); !errors.Is(err, ErrNotMergeable) {
+		t.Fatalf("a refused merge: %v", err)
+	}
+	if err := r.g.Merge(ctx, "PR_1", ""); err == nil {
+		t.Fatal("a merge without the decided head would merge whatever landed since")
+	}
+}
+
+// §6.4: a maintainer's factory/revert lands on merged pull requests, which are closed, so the
+// forge lists that one label in every state.
+func TestRevertLabelListsClosedPullRequests(t *testing.T) {
+	r := newRig(t)
+	items, err := r.g.Labeled(t.Context(), "factory/revert")
+	if err != nil || len(items) != 1 || !items[0].PullRequest || items[0].Number != 901 {
+		t.Fatalf("%+v %v", items, err)
 	}
 }
 

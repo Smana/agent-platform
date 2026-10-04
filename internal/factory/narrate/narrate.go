@@ -199,6 +199,25 @@ func reasons() map[string]string {
 		"room_log_too_long":       "the room's log was too long to read to its end",
 		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
 		"run_unschedulable":       "the cluster never admitted the task's run within its bound",
+		"ci_red":                  "CI stayed red after the fix runs",
+		"ci_pending":              "CI has not finished",
+		"main_red":                "main's CI went red after the merge",
+		"revert_requested":        "a maintainer asked for a revert",
+		"merged_verified":         "merged, and main stayed green for 30 minutes",
+		"gate_path":               "it touches a gate path, so an agent can never merge it; a human must re-author the change",
+		"class_mismatch":          "the diff is not the class the triage predicted",
+		"foreign_trailer":         "its head commit comes from another task's run",
+		"class_paused":            "auto-merge of this class is paused after a revert",
+		"head_unreported":         "the room never reported its current head as a commit one of the task's runs pushed",
+		"auto_merge_cap":          "today's auto-merge cap is reached",
+		"policy_pending":          "the policy needs a maintainer's approval",
+		"policy_absent":           "policy-bot has not evaluated it",
+		"maintainer_approved":     "a maintainer approved it: a human merges it",
+		"no_approving_verdict":    "the reviewer did not approve it",
+		"not_agent_authored":      "it is not the agents' pull request",
+		"not_mergeable":           "GitHub does not allow merging it as it stands",
+		"head_moved":              "a new commit landed since the decision, so the merge was refused and it is decided again",
+		"shadow_would_arm":        "it would auto-merge, and the merge gate is in shadow until the merge wave",
 	}
 }
 
@@ -289,6 +308,47 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 // PROpened announces the task's pull request.
 func PROpened(t *v1alpha1.Task, number int, url, runID string) Event {
 	return Event{Key: "pr-opened", Body: fmt.Sprintf("Run `%s` of task `%s` opened #%d: %s", runID, t.Name, number, url)}
+}
+
+// Armed announces the merge the gate issued on the decision (§5.1). R52 merged it at the decided
+// head, where GitHub checks that head at merge time; the key keeps the word "armed" — the status
+// records the same arming.
+func Armed(t *v1alpha1.Task) Event {
+	return Event{Key: "armed-" + fmt.Sprint(len(t.Status.Runs)), Body: fmt.Sprintf("Agent factory task `%s`: CI is green and policy-bot "+
+		"matched the live class `%s`, so it is merged now, at the decided head: GitHub re-checks that head at merge time and refuses "+
+		"a moved one. main's CI is watched after the merge.", t.Name, t.Spec.PredictedClass)}
+}
+
+// WouldArm is the shadow gate's record (R32): the same decision as Armed, and nothing armed.
+func WouldArm(t *v1alpha1.Task, class string) Event {
+	return Event{Key: "would-arm-" + fmt.Sprint(len(t.Status.Runs)), Body: fmt.Sprintf("Agent factory task `%s`: "+
+		"would auto-merge: `%s`, checks green, verdict approve. The merge gate is in shadow until the "+
+		"merge wave, so nothing is armed: a maintainer merges or closes this pull request.", t.Name, class)}
+}
+
+// WaitingForHuman says the gate stopped deciding and a maintainer's review is what remains.
+func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
+	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)),
+		Body: fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))}
+}
+
+// CIExhausted says the CI fix runs are spent and the named checks are still failing (§6.3).
+func CIExhausted(t *v1alpha1.Task, names []string) Event {
+	return Event{Key: fmt.Sprintf("ci-exhausted-%d", t.Status.FixRuns),
+		Body: fmt.Sprintf("Agent factory task `%s` used its %d CI fix runs; still failing: %s.", t.Name, t.Status.FixRuns, strings.Join(names, ", "))}
+}
+
+// RevertOpened announces the merger-authored revert of an auto-merged pull request (§6.4).
+func RevertOpened(t *v1alpha1.Task, number int, why string) Event {
+	return Event{Key: "revert", Body: fmt.Sprintf("Agent factory task `%s` opened #%d to revert this pull request: %s. "+
+		"Auto-merge of the class `%s` is paused until the factory's config changes.", t.Name, number, Reason(why), t.Spec.PredictedClass)}
+}
+
+// RevertStalled announces the disarm of a revert that did not go green. Its key starts with
+// revert-end-, which ends the reconciler's revert watch.
+func RevertStalled(t *v1alpha1.Task, number int) Event {
+	return Event{Key: "revert-end-stalled", Body: fmt.Sprintf("The revert #%d of agent factory task `%s` did not go green "+
+		"in time, so its auto-merge is off: a maintainer merges or closes it.", number, t.Name)}
 }
 
 func headlines() map[string]string {

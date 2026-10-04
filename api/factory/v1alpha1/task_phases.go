@@ -27,6 +27,9 @@ const (
 // the poller from factory/stop, "superseded" when a re-label replaces an escalated task (R4).
 const AnnotationStop = "agents.ogenki.io/stop"
 
+// AnnotationRevert records a maintainer's factory/revert on an auto-merged PR, within the window (§6.4).
+const AnnotationRevert = "agents.ogenki.io/revert"
+
 // LabelIssue carries the number of the issue a task narrates on.
 const LabelIssue = "agents.ogenki.io/issue"
 

@@ -104,7 +104,7 @@ func TestChangesThenApprove(t *testing.T) {
 	g.log.verdict(rid(3), "approve", head2[:7], "Looks right.")
 	g.finish(rid(3), "Succeeded", "agent_finished")
 	tk = g.reconcile(t, "3buqdlot", 2)
-	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" || tk.Status.Runs[3].Verdict != "approve" ||
+	if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" || tk.Status.Runs[3].Verdict != "approve" ||
 		tk.Status.ReviewRounds != 1 || len(g.runs.specs) != 4 {
 		t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Verdict, tk.Status.Runs)
 	}
@@ -193,7 +193,7 @@ func TestAnApproveOfAnotherHeadIsNoVerdict(t *testing.T) {
 	g := pairRig(t)
 	g.log.verdict(rid(1), "approve", head1, "LGTM")
 	g.finish(rid(1), "Succeeded", "agent_finished")
-	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" {
 		t.Fatalf("the full sha of the head it was given: %s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 }
@@ -281,7 +281,7 @@ func TestAReviewerIsStartedOnceThroughALostWrite(t *testing.T) {
 	}
 	g.log.verdict(rid(1), "approve", head1, "LGTM")
 	g.finish(rid(1), "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Verdict != "approve" || tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Verdict != "approve" || tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
 		t.Fatalf("a recorded run's approve counts for its head: %s %+v", tk.Status.Verdict, tk.Status.Runs)
 	}
 }
@@ -291,7 +291,7 @@ func TestAHumanRevisionSkipsTheReviewer(t *testing.T) {
 	g := pairRig(t)
 	g.log.verdict(rid(1), "approve", head1, "LGTM")
 	g.finish(rid(1), "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 2) // AwaitingHuman
+	g.reconcile(t, "3buqdlot", 2) // AwaitingCI
 	pr := pr12At(head1)
 	pr.Reviews = []forge.Review{changes(901, "Smana", "rename it", -time.Minute)}
 	g.f.SetPR(pr)
@@ -320,7 +320,7 @@ func TestTrioRunsTheReviewerAfterTheTester(t *testing.T) {
 	}
 	g.log.verdict(rid(2), "approve", head1, "LGTM")
 	g.finish(rid(2), "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 	// A reviewer without a verdict is run again, as a reviewer, on the head the tester approved.
@@ -445,7 +445,7 @@ func TestAFinishedReviewerWaitsForTheRoomsEnd(t *testing.T) {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 	g.log.end(rid(1), "Succeeded", "agent_finished")
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Verdict != "approve" {
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
 	}
 }

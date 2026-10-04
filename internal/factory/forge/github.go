@@ -118,11 +118,15 @@ func (g *GitHub) Ping(ctx context.Context) error {
 	return wrap("ping", err)
 }
 
-// Labeled lists the open issues and pull requests carrying label: one page of 100, since the
+// Labeled lists the issues and pull requests carrying label: one page of 100, since the
 // factory removes the trigger label on every decision (R4).
 func (g *GitHub) Labeled(ctx context.Context, label string) ([]Item, error) {
+	state := "open"
+	if label == "factory/revert" { // merged PRs are closed: the revert label lands on them (§6.4)
+		state = "all"
+	}
 	iss, _, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, &github.IssueListByRepoOptions{
-		State: "open", Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
+		State: state, Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
 	g.mark(err)
 	if err != nil {
 		return nil, wrap("list labelled issues", err)
@@ -548,10 +552,42 @@ func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) 
 	return out, nil
 }
 
-// EnableAutoMerge arms GitHub's native auto-merge (S7): it waits for classic protection AND
-// every ruleset, so it cannot pass the gate; it only removes the human's click. A push by an
-// actor with write access (the agents' App included) does not disarm it, so the decided head is
-// pinned with expectedHeadOid: a later push is never merged on this decision (SC-14).
+// Merge merges the pull request now, at the decided head (external review R02, ruling R52):
+// mergePullRequest with expectedHeadOid checks the head at merge time, so a push that lands
+// after the decision refuses the merge instead of merging on the old decision — which is what
+// enablePullRequestAutoMerge's enable-time-only check failed to guarantee. GitHub answers a
+// moved head with 409 and a disallowed merge with 405; the sentinels are what the reconciler
+// decides on. squash always: the factory's one commit per task is the history.
+func (g *GitHub) Merge(ctx context.Context, nodeID, head string) error {
+	if head == "" {
+		return errors.New("forge: Merge needs the decided head: without expectedHeadOid any push since the decision merges")
+	}
+	var m struct {
+		MergePullRequest struct{ ClientMutationID *string } `graphql:"mergePullRequest(input: $input)"`
+	}
+	squash := githubv4.PullRequestMergeMethodSquash
+	oid := githubv4.GitObjectID(head)
+	err := g.v4.Mutate(ctx, &m, githubv4.MergePullRequestInput{PullRequestID: githubv4.ID(nodeID), MergeMethod: &squash, ExpectedHeadOid: &oid}, nil)
+	g.mark(err)
+	if err == nil {
+		return nil
+	}
+	// githubv4 puts the HTTP status in the error text; these two refusals are decisions, not
+	// transport failures, so they read as the sentinels the reconciler branches on.
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "409"):
+		return fmt.Errorf("forge: merge: %w", ErrHeadMoved)
+	case strings.Contains(s, "405"):
+		return fmt.Errorf("forge: merge: %w", ErrNotMergeable)
+	}
+	return wrap("merge", err)
+}
+
+// EnableAutoMerge arms GitHub's native auto-merge — for the revert PR alone (R52): it waits for
+// every required check and merges even with the factory down, which for a revert of red main
+// (§6.4) is the safety net, not the fail-open the decision path must not be. The revert branch
+// is the merger App's own, so no later push can move the head it merges.
 func (g *GitHub) EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error {
 	var m struct {
 		EnablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"enablePullRequestAutoMerge(input: $input)"`
@@ -567,8 +603,9 @@ func (g *GitHub) EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA st
 	return wrap("arm auto-merge", err)
 }
 
-// DisableAutoMerge disarms a PR whose head moved after the decision, or a revert that never went
-// green (§6.4).
+// DisableAutoMerge disarms a revert that never went green (§6.4): the stalled revert is handed
+// to a maintainer rather than left armed indefinitely. The decision path never arms, so it never
+// disarms (R52).
 func (g *GitHub) DisableAutoMerge(ctx context.Context, nodeID string) error {
 	var m struct {
 		DisablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"disablePullRequestAutoMerge(input: $input)"`

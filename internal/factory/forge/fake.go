@@ -37,6 +37,7 @@ type Fake struct {
 	armed        []string
 	disarmed     []string
 	reverts      []string
+	refused      map[string]error
 	calls        []string
 	nextID       int64
 }
@@ -298,7 +299,8 @@ func (f *Fake) SetOpenPRs(ps ...PRSummary) {
 	f.open = ps
 }
 
-// Armed are the node ids EnableAutoMerge was called with, in order.
+// Armed are the mergings and arming recorded, in order: Merge appends "nodeID sha" — the head
+// its merge was pinned to — and EnableAutoMerge the bare nodeID it armed (a revert, §6.4).
 func (f *Fake) Armed() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -317,6 +319,43 @@ func (f *Fake) Reverts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.reverts)
+}
+
+// RefuseMerge makes the next Merge of nodeID fail with err — the race GitHub's merge-time check
+// catches between reading the pull request and merging it (R52). One-shot: the merge after it
+// runs the fake's own head check.
+func (f *Fake) RefuseMerge(nodeID string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refused == nil {
+		f.refused = map[string]error{}
+	}
+	f.refused[nodeID] = err
+}
+
+// Merge implements the Merger's Merge. Like GitHub checking the head at merge time (R52), a
+// stored pull request whose head is no longer head is refused and stays open: nothing merges
+// on a moved head.
+func (f *Fake) Merge(_ context.Context, nodeID, head string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err, ok := f.refused[nodeID]; ok {
+		delete(f.refused, nodeID)
+		return err
+	}
+	for n, p := range f.prs {
+		if p.NodeID != nodeID {
+			continue
+		}
+		if p.HeadSHA != head {
+			return fmt.Errorf("forge: fake: %w: %s is at %s, not %s", ErrHeadMoved, nodeID, p.HeadSHA, head)
+		}
+		p.State, p.MergeCommitSHA, p.MergedBy = "MERGED", head, "ogenki-agent-merger[bot]"
+		f.prs[n] = p
+		break
+	}
+	f.armed = append(f.armed, nodeID+" "+head)
+	return nil
 }
 
 // PullRequestChecks implements the Merger's PullRequestChecks.

@@ -176,7 +176,7 @@ func TestNothingIsPostedBeforeItsTransitionIsWritten(t *testing.T) {
 	g.f.SetBranch("agent/3buqdlot", 12)
 	g.f.SetPR(forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN"})
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if all := strings.Join(g.f.Comments(7), "\n"); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman ||
+	if all := strings.Join(g.f.Comments(7), "\n"); tk.Status.Phase != v1alpha1.PhaseAwaitingCI ||
 		strings.Contains(all, "no pull request") || !strings.Contains(all, "#12") {
 		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
 	}

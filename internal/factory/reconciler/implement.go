@@ -334,6 +334,9 @@ func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
 		return nil
 	}
+	if current(t).Trigger == "ci" {
+		return r.ready(ctx, t) // a CI fix goes back to CI, not to another review round
+	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {
 		r.requestVerifier(t, next)
 		return nil

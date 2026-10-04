@@ -87,9 +87,9 @@ func (r *Reconciler) startVerifier(ctx context.Context, t *v1alpha1.Task, pr for
 	return nil
 }
 
-// ready: the work is done and reviewed. Phase 7 routes this to AwaitingCI and the merge gate.
+// ready: the work is done and reviewed; CI and the merge gate decide the rest (§4).
 func (r *Reconciler) ready(_ context.Context, t *v1alpha1.Task) error {
-	r.to(t, v1alpha1.PhaseAwaitingHuman, "")
+	r.to(t, v1alpha1.PhaseAwaitingCI, "")
 	return nil
 }
 
@@ -130,7 +130,7 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 		return r.noVerdict(ctx, t, why)
 	}
 	if v.Verdict == "approve" {
-		// A pull request merged or closed meanwhile ends the task through ready's AwaitingHuman, or
+		// A pull request merged or closed meanwhile ends the task through ready's AwaitingCI, or
 		// the next Queued's lateReviews.
 		pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
 		if err != nil {

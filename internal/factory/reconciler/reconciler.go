@@ -70,6 +70,7 @@ type metrics interface {
 	Intervention(ctx context.Context, kind string)
 	Revoked(ctx context.Context, reason string)
 	TraceExportAbandoned(ctx context.Context)
+	ClassMismatch(ctx context.Context, predicted, matched string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -101,6 +102,7 @@ type Reconciler struct {
 	Namespace string
 	Cfg       *config.Config
 	Forge     taskForge
+	Merger    forge.Merger // the merger App: checks, merges and reverts (R16; wired in Task 7.4)
 	Runs      RunClient
 	Rooms     RoomLog
 	Triage    triage.Triager
@@ -134,7 +136,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ended := v1alpha1.TerminalPhase(t.Status.Phase)
-	if ended && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) {
+	// A requested revert and an open revert PR are the two exceptions to leaving a terminal
+	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
+	// its action, even after the task itself has ended.
+	revertWait := r.revertable(&t) || r.revertPending(&t)
+	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) {
 		return ctrl.Result{}, nil
 	}
 	before := t.Status.DeepCopy()
@@ -144,7 +150,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	fx := &effects{}
 	var err error
 	switch {
-	case !ended:
+	case !ended, revertWait:
 		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
 	case r.settling(&t):
 		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
@@ -177,6 +183,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
 	if v1alpha1.TerminalPhase(t.Status.Phase) {
+		// The revert watch polls: a revert PR merges, closes or stalls on GitHub's clock, not ours.
+		if err == nil && (r.revertable(&t) || r.revertPending(&t)) {
+			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
+		}
 		if err == nil && r.settling(&t) {
 			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
 		}
@@ -192,12 +202,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
-	stop, why, err := r.stopRequested(ctx, t)
-	if err != nil {
-		return err
-	}
-	if stop {
-		return r.stop(ctx, t, why)
+	// A terminal task reaches step only for its revert (§6.4); the stop machinery must not
+	// rewrite an ended task into Stopped, and its runs are already over.
+	if !v1alpha1.TerminalPhase(t.Status.Phase) {
+		stop, why, err := r.stopRequested(ctx, t)
+		if err != nil {
+			return err
+		}
+		if stop {
+			return r.stop(ctx, t, why)
+		}
 	}
 	switch t.Status.Phase {
 	case v1alpha1.PhaseReceived:
@@ -214,6 +228,16 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.awaitingHuman(ctx, t)
 	case v1alpha1.PhaseEscalated:
 		return r.escalated(ctx, t)
+	case v1alpha1.PhaseAwaitingCI:
+		return r.awaitingCI(ctx, t)
+	case v1alpha1.PhaseAutoMerging:
+		return r.autoMerging(ctx, t)
+	case v1alpha1.PhaseVerifying:
+		return r.verifying(ctx, t)
+	case v1alpha1.PhaseReverted:
+		return r.revertWatch(ctx, t) // reached only while revertPending
+	case v1alpha1.PhaseDone:
+		return r.revert(ctx, t, "revert_requested") // reached only when revertable
 	}
 	return nil
 }
