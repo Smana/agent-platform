@@ -68,6 +68,11 @@ serves it statically:
 npm --prefix web run preview   # http://127.0.0.1:4180/preview/preview.html (?live replays)
 ```
 
+The palette is the app-wizard's: `web/src/app.css` carries its design tokens verbatim
+(light first, a `.dark` block), and `web/src/theme.ts` ports its three-mode theme
+(light/dark/system, the `dark` class on `<html>`, the same `app-wizard:theme` storage
+key). Change a token in the wizard, change it here; do not fork the palette.
+
 Room text is untrusted, so there are three rules, all tested in `web/test/render.test.ts`:
 
 - **Parse once, as text.** markdown-it parses with HTML off, and each token becomes a DOM node
