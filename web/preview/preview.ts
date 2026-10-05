@@ -7,8 +7,10 @@
 
 import type { RoomEvent } from "../src/conn";
 import { mountViews, type Views } from "../src/roomview";
+import { initTheme, mountThemeButton } from "../src/theme";
 
 const app = document.getElementById("app")!;
+const theme = initTheme();
 
 async function load(): Promise<RoomEvent[]> {
   const r = await fetch("/test/fixtures/live-session.jsonl");
@@ -22,6 +24,7 @@ function skeleton(): { views: Views; counters: HTMLElement; status: HTMLElement;
   title.className = "title";
   title.textContent = "3kq7x2ma · Open · internal · preview of test/fixtures/live-session.jsonl";
   header.append(title);
+  mountThemeButton(header, theme);
   const main = document.createElement("main");
   const foot = document.createElement("footer");
   const counters = document.createElement("span");

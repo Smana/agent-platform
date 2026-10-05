@@ -6,9 +6,14 @@ import { mountControls, rejection } from "./controls";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
+import { initTheme, mountThemeButton } from "./theme";
 import { listRooms } from "./view";
 
 const app = document.getElementById("app")!;
+
+// The platform's theme, before anything paints: light by default, dark when the
+// user chose it or follows a dark OS (theme.ts, the app-wizard's contract).
+const theme = initTheme();
 
 function room(id: string) {
   const header = document.createElement("header");
@@ -27,6 +32,7 @@ function room(id: string) {
   footer.append(counters, notice, status);
   app.replaceChildren(header, main, section, footer);
   const views = mountViews(main, header);
+  mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
   let controls: ReturnType<typeof mountControls> | undefined;
