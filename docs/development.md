@@ -58,6 +58,16 @@ task ui:test     # tsc and vitest
 task ui:build    # rewrite dist/; commit it with the source
 ```
 
+A room page renders the log twice: the chat view (`web/src/chat.ts` — bubbles, tool rows
+paired by `callId`, timeline markers) and the raw event stream, one toggle apart
+(`web/src/roomview.ts`, remembered in `localStorage`). To read or restyle it without a
+broker, `web/test/fixtures/live-session.jsonl` holds a recorded session and the preview
+serves it statically:
+
+```bash
+npm --prefix web run preview   # http://127.0.0.1:4180/preview/preview.html (?live replays)
+```
+
 Room text is untrusted, so there are three rules, all tested in `web/test/render.test.ts`:
 
 - **Parse once, as text.** markdown-it parses with HTML off, and each token becomes a DOM node
