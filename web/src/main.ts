@@ -4,14 +4,17 @@ import { api } from "./api";
 import { RoomConnection, type Snapshot } from "./conn";
 import { mountControls, rejection } from "./controls";
 import { PendingActs } from "./pending";
-import { renderEvent } from "./render";
 import { RoomState } from "./room-state";
-import { listRooms, RoomLog } from "./view";
+import { mountViews } from "./roomview";
+import { listRooms } from "./view";
 
 const app = document.getElementById("app")!;
 
 function room(id: string) {
   const header = document.createElement("header");
+  const title = document.createElement("span");
+  title.className = "title";
+  header.append(title);
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
@@ -23,14 +26,14 @@ function room(id: string) {
   status.className = "status";
   footer.append(counters, notice, status);
   app.replaceChildren(header, main, section, footer);
-  const log = new RoomLog(main);
+  const views = mountViews(main, header);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
   let controls: ReturnType<typeof mountControls> | undefined;
   const say = (text: string) => { notice.textContent = text; };
   let snap: Snapshot | undefined;
   const renderHeader = () => {
-    if (snap) header.textContent = `${snap.roomId} · ${snap.phase} · ${snap.dataClass} · driver ${state.driver} · you: ${snap.you.role}${snap.you.approver ? " (approver)" : ""}`;
+    if (snap) title.textContent = `${snap.roomId} · ${snap.phase} · ${snap.dataClass} · driver ${state.driver} · you: ${snap.you.role}${snap.you.approver ? " (approver)" : ""}`;
   };
   const conn = new RoomConnection(id, {
     // A state frame comes on every (re)connect: an invite may have changed the role.
@@ -48,7 +51,7 @@ function room(id: string) {
       controls.refresh();
     },
     onEvent: (e) => {
-      log.put(e.seq, renderEvent(e));
+      views.apply(e);
       state.apply(e);
       renderHeader();
       controls?.refresh();
