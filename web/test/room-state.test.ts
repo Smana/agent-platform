@@ -59,6 +59,20 @@ describe("RoomState", () => {
       expect(t.sealed).toBe(true);
     }
   });
+  // R10: the header shows the room's phase. The log leads the state frame's phase,
+  // which follows the Room (docs/api.md), so a replayed room_phase applies too.
+  it("follows the room's phase", () => {
+    const s = new RoomState();
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 10);
+    expect(s.phase).toBe("Open");
+    s.apply(ev(11, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    expect(s.phase).toBe("Closed");
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 20); // the Room lags the seal
+    s.apply(ev(11, "state_changed", { kind: "room_phase", phase: "Closed" })); // the replay
+    expect(s.phase).toBe("Closed");
+    s.apply(ev(21, "state_changed", { kind: "run_phase", phase: "Failed" })); // a run's, not the room's
+    expect(s.phase).toBe("Closed");
+  });
   it("follows the driver token", () => {
     const s = new RoomState("system:factory", 7);
     s.apply(ev(1, "driver", { from: "system:factory", to: "human:a", epoch: 8, reason: "requested" }));

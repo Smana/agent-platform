@@ -217,6 +217,7 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 }
 
 /* Timeline markers and system lines */
+.handoff > .md { margin: -2px 0 8px 14px; font-size: 13px; max-width: 72ch; }
 .mark, .sys { color: var(--muted-foreground); font-size: 12px; margin: 6px 0; display: flex; gap: 8px; align-items: baseline; }
 .mark .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--placeholder); align-self: center; flex: none; }
 .mark-text { overflow-wrap: anywhere; }
@@ -237,6 +238,8 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow
 footer .notice { margin-left: 12px; color: var(--destructive); font-family: inherit; }
 
 /* Controls (unchanged behaviour, platform palette) */
+/* hidden must win over a flex display: the controls toggle it, never re-mount (R10). */
+[hidden] { display: none !important; }
 .controls { padding: 8px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; background: var(--background); }
 .controls .composer, .controls .driver, .controls form, .new-room { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .controls textarea { flex: 1 1 100%; box-sizing: border-box; font: inherit; padding: 6px; }

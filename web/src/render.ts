@@ -113,6 +113,11 @@ export function deliveryChip(p: any): HTMLElement {
   return el("span", `chip chip-delivery dl-${cls(p.delivery)}`, label);
 }
 
+// handoffHead names a handoff's roles and the commit it hands over.
+export function handoffHead(p: any): string {
+  return `handoff ${p.fromRole ?? "?"} → ${p.toRole ?? "?"}${p.commit ? " @ " + String(p.commit).slice(0, 7) : ""}`;
+}
+
 // stateHead names a state change and, for one about a message (delivered,
 // undeliverable, interrupted, queued_removed), the message by its seq.
 export function stateHead(p: any): string {
@@ -150,6 +155,15 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
       break;
     case "approval_decided":
       row.append(el("div", `decision decision-${cls(p.decision)}`, [p.decision, p.reason ?? ""].filter(Boolean).join(" · ")));
+      break;
+    case "handoff": // the summary is the agent's: untrusted markdown (T10)
+      row.append(el("div", "handoff-head", handoffHead(p)), markdown(String(p.summary ?? "")));
+      break;
+    case "driver":
+      row.append(el("div", "change", `${p.from ?? "?"} → ${p.to ?? "?"}${p.reason ? " · " + p.reason : ""}`));
+      break;
+    case "participant":
+      row.append(el("div", "change", [p.principal, p.change, p.role].filter(Boolean).join(" · ")));
       break;
     case "state_changed":
       row.append(el("div", "state", [stateHead(p), p.phase ?? p.status ?? "", p.reason ?? ""].filter(Boolean).join(" · ")));

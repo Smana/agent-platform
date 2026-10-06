@@ -105,6 +105,20 @@ describe("renderEvent (T10)", () => {
     const d = renderEvent(ev("state_changed", { kind: "delivered", ref: 1846, runId: "7f3cq2xz" }));
     expect(d.querySelector(".state")?.textContent).toBe("delivered #1846");
   });
+  // R10: a handoff, a token move and a membership change read as text, never raw JSON.
+  it("renders a handoff, a driver change and a membership change, not their JSON", () => {
+    const h = renderEvent(ev("handoff", { fromRole: "implementer", toRole: "reviewer", commit: "0123456789abcdef",
+      branch: "agent/3kq7x2ma", summary: "**done**: <img src=x onerror=alert(1)> [x](javascript:alert(1))" }));
+    inert(h);
+    expect(h.querySelector(".handoff-head")?.textContent).toBe("handoff implementer → reviewer @ 0123456");
+    expect(h.querySelector(".md strong")?.textContent).toBe("done"); // the summary is untrusted markdown (T10)
+    expect(h.querySelector("img")).toBeNull();
+    const d = renderEvent(ev("driver", { from: "human:a", to: "system:factory", epoch: 5, reason: "given" }, "system:room-broker"));
+    expect(d.querySelector(".change")?.textContent).toBe("human:a → system:factory · given");
+    const p = renderEvent(ev("participant", { principal: "human:b", change: "role_changed", role: "collaborator" }, "system:room-broker"));
+    expect(p.querySelector(".change")?.textContent).toBe("human:b · role_changed · collaborator");
+    for (const row of [h, d, p]) expect(row.querySelector("pre.raw")).toBeNull();
+  });
   it("keeps markdown's structure", () => {
     const el = chat("# T\n\n- a\n- `b`\n\n```\n<i>c</i>\n```\n\n> q");
     inert(el);

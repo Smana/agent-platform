@@ -1,18 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RoomConnection, type RoomEvent, type SocketLike } from "../src/conn";
-
-class FakeSocket implements SocketLike {
-  onopen: SocketLike["onopen"] = null;
-  onmessage: SocketLike["onmessage"] = null;
-  onclose: SocketLike["onclose"] = null;
-  sent: Record<string, unknown>[] = [];
-  constructor(readonly url: string) {}
-  send(data: string) { this.sent.push(JSON.parse(data)); }
-  close(code = 1000, reason = "") { this.onclose?.({ code, reason }); }
-  open() { this.onopen?.(); }
-  recv(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
-  drop(code: number, reason = "") { this.onclose?.({ code, reason }); }
-}
+import { RoomConnection, type RoomEvent } from "../src/conn";
+import { FakeSocket } from "./fakes";
 
 const event = (seq: number) => ({ type: "event", event: { seq, type: "message", payload: {} } });
 

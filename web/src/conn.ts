@@ -114,6 +114,9 @@ export class RoomConnection {
     return true;
   }
 
+  // resync drops the socket: the reconnect's state frame re-reads the room.
+  resync() { this.ws?.close(1000, "membership changed"); }
+
   counters(): Counters { return { last: this.tracker.last, gaps: this.tracker.gaps, duplicates: this.tracker.duplicates }; }
 
   private frame(f: Frame) {

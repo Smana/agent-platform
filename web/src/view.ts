@@ -81,6 +81,7 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   form.className = "new-room";
   const dataClass = document.createElement("select");
   dataClass.name = "dataClass";
+  dataClass.setAttribute("aria-label", "data class");
   for (const v of ["internal", "public"]) {
     const o = document.createElement("option");
     o.value = o.textContent = v;
@@ -89,6 +90,7 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   const repository = document.createElement("input");
   repository.name = "repository";
   repository.placeholder = "owner/name (default: the CRD's)";
+  repository.setAttribute("aria-label", "repository, owner/name");
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.textContent = "new room";

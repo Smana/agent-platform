@@ -153,6 +153,14 @@ describe("ChatView markers and system lines", () => {
     expect(el.querySelector(".mark")?.textContent).toContain("t3");
     expect(el.querySelector(".mark")?.textContent).toContain("completed");
   });
+  // R10: the chat view shows the commit a handoff names, and its summary as markdown (T10).
+  it("renders a handoff's line, then its summary as markdown", () => {
+    const { el } = view([ev(1, "handoff", { fromRole: "implementer", toRole: "reviewer", commit: "0123456789abcdef",
+      branch: "agent/3kq7x2ma", summary: "**ready** <img src=x onerror=alert(1)>" })]);
+    inert(el);
+    expect(el.querySelector(".handoff .sys")?.textContent).toMatch(/^handoff implementer → reviewer @ 0123456 · agent\/3kq7x2ma/);
+    expect(el.querySelector(".handoff .md strong")?.textContent).toBe("ready");
+  });
   it("renders a participant change as a subtle system line", () => {
     const { el } = view([ev(1, "participant", { principal: "agent:ikely2yk", change: "left", role: "implementer" }, { kind: "system", id: "system:room-broker" })]);
     const s = el.querySelector(".sys")!;

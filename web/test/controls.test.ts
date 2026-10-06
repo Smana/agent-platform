@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
 import { hasControls, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
+import { newRoomForm } from "../src/view";
 
 type You = Snapshot["you"];
+const shown = (e: Element) => !e.closest("[hidden]");
 const you = (principal: string, role: string): You => ({ principal, role, approver: false, driver: false, webUI: true });
 
 function setup(who: You, driver = "human:a", epoch = 4) {
@@ -16,7 +18,8 @@ function setup(who: You, driver = "human:a", epoch = 4) {
   const root = document.createElement("section");
   const controls = mountControls(root, conn, state, who, (t) => notices.push(t));
   controls.refresh();
-  const btn = (act: string) => root.querySelector<HTMLButtonElement>(`button[data-act="${act}"]`);
+  // A button counts when the human can see it: sections toggle hidden (R10).
+  const btn = (act: string) => [...root.querySelectorAll<HTMLButtonElement>(`button[data-act="${act}"]`)].find(shown) ?? null;
   const field = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[name="${name}"]`)!;
   return { sent, notices, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
 }
@@ -198,6 +201,47 @@ describe("mountControls", () => {
   });
 });
 
+describe("refresh", () => {
+  // R10: every event refreshes the controls. The field the human is in keeps its
+  // focus: refresh used to re-mount every section, and the driver's fields with it.
+  it("keeps the focused field across refreshes", () => {
+    const approvals = [{ approvalId: "ap1", runId: "7f3cq2xz", callId: "c3", class: "forge.pr", action: {},
+      expiresAt: "2026-10-01T10:30:00Z", seq: 3 }];
+    for (const [who, name] of [["human:a", "text"], ["human:a", "giveTo"], ["human:o", "takeReason"], ["human:a", "decisionReason"]]) {
+      const c = setup(you(who, "owner"));
+      c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+      c.controls.refresh();
+      document.body.append(c.root);
+      const f = c.field<HTMLInputElement>(name);
+      f.focus();
+      expect(document.activeElement, name).toBe(f);
+      c.controls.refresh();
+      c.state.apply(queued(11, "human:c", "an event between")); // re-renders the queue
+      c.controls.refresh();
+      expect(document.activeElement, name).toBe(f);
+      c.root.remove();
+    }
+  });
+});
+
+describe("accessible names", () => {
+  // R10: a placeholder is not a name; every field says what it is for.
+  it("names every form control", () => {
+    const approvals = [{ approvalId: "ap1", runId: "7f3cq2xz", callId: "c3", class: "forge.pr", action: {},
+      expiresAt: "2026-10-01T10:30:00Z", seq: 3 }];
+    const roots: HTMLElement[] = [newRoomForm()];
+    for (const who of ["human:a", "human:o"]) { // the driver's fields, then an owner's who does not drive
+      const c = setup(you(who, "owner"));
+      c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+      c.controls.refresh();
+      roots.push(c.root);
+    }
+    const fields = roots.flatMap((r) => [...r.querySelectorAll<HTMLElement>("input, select, textarea")]);
+    expect(fields.length).toBeGreaterThanOrEqual(10);
+    for (const f of fields) expect(f.getAttribute("aria-label")?.trim(), f.getAttribute("name") ?? f.tagName).toBeTruthy();
+  });
+});
+
 describe("approval cards", () => {
   const pending = (id: string, seq: number, action: unknown = { command: "gh pr create" }) => ({ approvalId: id, runId: "7f3cq2xz",
     callId: "call_" + seq, class: "forge.pr", action, expiresAt: "2026-10-01T10:30:00Z", seq });
@@ -248,8 +292,8 @@ describe("approval cards", () => {
   // Review 5.3 I2: policy Decide is the approver flag, whatever the room role.
   it("gives a watcher who approves the cards and their buttons, and nothing else", () => {
     const c = withApprovals({ ...you("human:wat", "watcher"), approver: true }, pending("ap1", 3));
-    expect([...c.root.children].map((e) => e.className)).toEqual(["approvals"]);
-    expect(c.root.querySelector("textarea")).toBeNull();
+    expect([...c.root.children].filter(shown).map((e) => e.className)).toEqual(["approvals"]);
+    expect(shown(c.field("text"))).toBe(false);
     expect(c.btn("driver_request")).toBeNull();
     c.btn("approve")!.click();
     expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" }]);
@@ -261,7 +305,7 @@ describe("approval cards", () => {
     const p = withApprovals(who, pending("ap1", 3));
     who.role = "collaborator";
     p.controls.refresh();
-    expect(p.root.querySelector("textarea")).not.toBeNull();
+    expect(shown(p.field("text"))).toBe(true);
   });
 
   it("drops a card once decided", () => {
