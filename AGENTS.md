@@ -142,7 +142,7 @@ flowchart LR
 |---|---|---|---|
 | Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ |
 | Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
-| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | 6 |
+| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | ✓ |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | ✓ |
 | Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |

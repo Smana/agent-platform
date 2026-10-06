@@ -117,12 +117,12 @@ describe("ChatView fork buttons", () => {
 describe("cliSetup", () => {
   it("prints the roomctl configure line from the broker's values", async () => {
     const get = vi.fn(() => Promise.resolve(new Response(JSON.stringify(
-      { url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "3434@agents" }))));
+      { url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "3434@agents", projectID: "29184" }))));
     const d = cliSetup(get as unknown as typeof fetch);
     d.open = true;
     d.dispatchEvent(new Event("toggle"));
     await vi.waitFor(() => expect(d.querySelector("pre")?.textContent).toBe(
-      "roomctl configure --url https://rooms.priv.example --issuer https://auth.example --client-id 3434@agents\nroomctl login"));
+      "roomctl configure --url https://rooms.priv.example --issuer https://auth.example --client-id 3434@agents --project-id 29184\nroomctl login"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
   });
   it("says so when this broker has no roomctl client", async () => {

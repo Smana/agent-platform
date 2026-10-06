@@ -277,7 +277,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
-| `GET /api/roomctl` | `{url, issuer, clientID}` for the room list's CLI setup view, any agents member. `clientID` is `""` while the broker has no roomctl client | 6 / AP-6 |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`. `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` (ruling AS) | 6 / AP-6 |
 
 ### `GET /v1/ws`
 

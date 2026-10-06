@@ -113,7 +113,7 @@ func TestCreateRoom(t *testing.T) {
 func TestRoomctlSetup(t *testing.T) {
 	id := "3434@agents"
 	srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Issuer: "https://auth.example",
-		RoomctlClient: func() string { return id }}
+		RoomctlClient: func() string { return id }, ProjectID: func() string { return "29184" }}
 	get := func(user string) (int, map[string]string) {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/roomctl", nil)
 		if user != "" {
@@ -126,7 +126,8 @@ func TestRoomctlSetup(t *testing.T) {
 		return rec.Code, out
 	}
 	code, out := get("alice")
-	if code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" || out["clientID"] != id {
+	if code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" || out["clientID"] != id ||
+		out["projectID"] != "29184" {
 		t.Fatalf("%d %v", code, out)
 	}
 	if code, _ := get("stranger"); code != http.StatusForbidden {
@@ -139,8 +140,8 @@ func TestRoomctlSetup(t *testing.T) {
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
 		t.Fatalf("no roomctl client yet: %d %v", code, out)
 	}
-	srv.RoomctlClient = nil
-	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
+	srv.RoomctlClient, srv.ProjectID = nil, nil
+	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" || out["projectID"] != "" {
 		t.Fatalf("none configured: %d %v", code, out)
 	}
 }

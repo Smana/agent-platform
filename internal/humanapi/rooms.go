@@ -94,19 +94,24 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 
 // roomctlSetup is GET /api/roomctl: the values of `roomctl configure`, for the
 // UI's CLI setup view. clientID is "" while the broker has no roomctl client.
+// roomctl asks for the project's audience with projectID: ZITADEL adds the
+// project to aud only then, and the broker refuses a token without it (ruling AS).
 func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.principal(w, r); !ok {
 		return
 	}
-	id := ""
-	if s.RoomctlClient != nil {
-		id = s.RoomctlClient()
+	read := func(f func() string) string {
+		if f == nil {
+			return ""
+		}
+		return f()
 	}
 	writeJSON(w, struct {
-		URL      string `json:"url"`
-		Issuer   string `json:"issuer"`
-		ClientID string `json:"clientID"`
-	}{s.PublicURL, s.Issuer, id})
+		URL       string `json:"url"`
+		Issuer    string `json:"issuer"`
+		ClientID  string `json:"clientID"`
+		ProjectID string `json:"projectID"`
+	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID)})
 }
 
 // roomRow is one row of GET /api/rooms.

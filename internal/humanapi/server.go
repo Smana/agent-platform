@@ -84,11 +84,12 @@ type Server struct {
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
 	// through it is the web UI, which may steer and decide (ruling P18).
 	WebClient func() string
-	// PublicURL, Issuer and RoomctlClient are what `roomctl configure` needs
-	// (GET /api/roomctl); the client id is read at use like WebClient's.
+	// PublicURL, Issuer, RoomctlClient and ProjectID are what `roomctl
+	// configure` needs (GET /api/roomctl); the ids are read at use like WebClient.
 	PublicURL     string
 	Issuer        string
 	RoomctlClient func() string
+	ProjectID     func() string
 	Rooms         client.Reader
 	Namespace     string
 	Log           Log

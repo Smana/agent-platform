@@ -53,8 +53,18 @@ Later phases add the driver/steering channel (4), approvals (5) and forking with
 |---|---|---|
 | `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/room-broker` |
 | `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
+| `roomctl` | A developer's CLI: list, watch, post, queue and fork rooms; `roomctl token` for scripts. Never steers or approves (ruling P18) | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
 
 Both images are multi-arch (`linux/amd64`, `linux/arm64`), static binaries on distroless `nonroot`.
+
+```bash
+roomctl configure --url … --issuer … --client-id … --project-id …   # the room list's "CLI setup" has the line
+roomctl login                                                        # device flow, in any browser
+roomctl rooms
+roomctl watch 3kq7x2ma
+roomctl post 3kq7x2ma --queue "address L42"
+roomctl fork 3kq7x2ma --at 42 --role implementer --egress pypi --note "try uv"
+```
 
 ## Releases
 

@@ -83,9 +83,9 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
     asked = true;
     try {
       const r = await api("/api/roomctl", {}, get);
-      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string };
+      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string };
       out.textContent = r.ok && c.clientID
-        ? `roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID}\nroomctl login`
+        ? `roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
         : "roomctl is not set up on this broker: it has no roomctl client.";
     } catch (err) {
       asked = false;

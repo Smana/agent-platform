@@ -462,8 +462,10 @@ func TestHumanServer(t *testing.T) {
 	writeID(t, clientFile, "web-1")
 	roomctlFile := filepath.Join(t.TempDir(), "roomctl-client-id")
 	writeID(t, roomctlFile, "cli-1")
+	projectFile := filepath.Join(t.TempDir(), "project-id")
+	writeID(t, projectFile, "proj-1")
 	cfg := config.Config{PublicURL: "https://rooms.example.test", Human: config.HumanConfig{Issuer: humanIssuer,
-		ClientIDFile: clientFile, RoomctlClientIDFile: roomctlFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
+		ClientIDFile: clientFile, RoomctlClientIDFile: roomctlFile, ProjectIDFile: projectFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
 	humans := authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), "https://rooms.example.test")
 	m, err := metrics.New(nil)
 	if err != nil {
@@ -481,7 +483,7 @@ func TestHumanServer(t *testing.T) {
 		t.Fatalf("web client %q, want the file's current id", got)
 	}
 	writeID(t, roomctlFile, "cli-2")
-	if got := s.RoomctlClient(); got != "cli-2" || s.PublicURL != cfg.PublicURL || s.Issuer != humanIssuer {
+	if got := s.RoomctlClient(); got != "cli-2" || s.PublicURL != cfg.PublicURL || s.Issuer != humanIssuer || s.ProjectID() != "proj-1" {
 		t.Fatalf("roomctl setup %q %q %q, want the file's current id, the public URL and the issuer", got, s.PublicURL, s.Issuer)
 	}
 	rec := httptest.NewRecorder()
