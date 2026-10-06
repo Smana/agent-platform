@@ -185,9 +185,10 @@ type Caps struct {
 	ConcurrentRuns int `json:"concurrentRuns"`
 	TasksPerDay    int `json:"tasksPerDay"`
 	MaxTextBytes   int `json:"maxTextBytes"`
-	// How long a run may sit Pending before the task escalates as run_unschedulable (P): no
-	// other layer bounds it — activeDeadlineSeconds counts from the pod's start, and Kueue
-	// queues unadmitted work forever. Defaulted when omitted, never left open.
+	// How long a run that never started may sit Pending before the task escalates as
+	// run_unschedulable (P): no other layer bounds it — activeDeadlineSeconds counts from the
+	// pod's start, and Kueue queues unadmitted work forever. Defaulted when omitted, never left
+	// open.
 	MaxPendingMinutes int `json:"maxPendingMinutes"`
 	// AwaitingHumanWIP bounds the tasks waiting on a human review before the factory queues
 	// more of the review-class work that produces them (§6.2's back-pressure on reviewers).

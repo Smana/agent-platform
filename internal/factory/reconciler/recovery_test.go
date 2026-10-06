@@ -200,3 +200,74 @@ func TestPendingRunEscalatesAndFreesSlot(t *testing.T) {
 		t.Fatalf("the escalation says why and how to restart: %s", issue)
 	}
 }
+
+// A run that started is never run_unschedulable, and the Pending bound never deletes it (aws-0,
+// 2026-10-04): the composition reports a started run as Pending whenever its Sandbox is not
+// Ready and not yet Finished — the harness exited and the sidecars drain — so 37 minutes in, the
+// bound deleted a finished run that had opened its PR. Its record saw it Running, or its claim
+// carries usage: either says it was admitted.
+func TestStartedRunIsNeverUnschedulable(t *testing.T) {
+	for name, c := range map[string]struct {
+		running bool  // the factory saw the claim Running before it read Pending again
+		tokens  int64 // the meter's reading on the claim
+	}{
+		"seen Running, then Pending while its pod drains": {running: true},
+		"never seen Running, metered":                     {tokens: 294_000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, issueTask("3buqdlot", 7, "x"))
+			g.reconcile(t, "3buqdlot", 3)
+			if c.running {
+				g.runs.set(rid(0), "Running")
+				g.f.SetBranch("agent/3buqdlot", 12)
+				g.f.SetPR(forge.PR{Number: 12, URL: "https://github.com/Smana/cloud-native-ref/pull/12", State: "OPEN", NodeID: "PR_1", HeadSHA: "abc"})
+				g.reconcile(t, "3buqdlot", 1)
+			}
+			run := g.runs.runs[rid(0)]
+			run.Phase, run.Tokens = "Pending", c.tokens
+			g.runs.runs[rid(0)] = run
+			g.r.Now = func() time.Time { return now.Add(37 * time.Minute) }
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if _, ok := g.runs.runs[rid(0)]; !ok || tk.Status.Phase != v1alpha1.PhaseImplementing {
+				t.Fatalf("the started run is kept: claim %t, %s %s", ok, tk.Status.Phase, tk.Status.Reason)
+			}
+			if issue := strings.Join(g.f.Comments(7), "\n"); strings.Contains(issue, "never admitted") {
+				t.Fatalf("narrated as unschedulable: %s", issue)
+			}
+			if !c.running {
+				return
+			}
+			g.runs.set(rid(0), "Succeeded") // the pod completed: the composition latches Succeeded
+			g.log.end(rid(0), "Succeeded", "agent_finished")
+			if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+				t.Fatalf("the PR goes on, as any finished run's: %s %s", tk.Status.Phase, tk.Status.Reason)
+			}
+		})
+	}
+}
+
+// A later run of a task starts unseen: run 0 ran, and run 1 never admitted is still bounded.
+func TestLaterRunOfAStartedTaskIsStillBounded(t *testing.T) {
+	g := pairRig(t) // rid(0) Succeeded, the reviewer rid(1) created and Pending
+	g.r.Now = func() time.Time { return now.Add(31 * time.Minute) }
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if _, ok := g.runs.runs[rid(1)]; ok || tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "run_unschedulable" {
+		t.Fatalf("claim kept %t, %s %s", ok, tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// A claim deleted out of band after its run was seen Running, past the Pending bound: the room's
+// reason, never run_unschedulable, and no second run.
+func TestRunDeletedAfterItRan(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	g.runs.set(rid(0), "Running")
+	g.reconcile(t, "3buqdlot", 1)
+	g.r.Now = func() time.Time { return now.Add(37 * time.Minute) }
+	_ = g.runs.Delete(t.Context(), rid(0))
+	g.log.end(rid(0), "Revoked", "deleted")
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "deleted" || len(g.runs.runs) != 0 {
+		t.Fatalf("%s %s, %d claims", tk.Status.Phase, tk.Status.Reason, len(g.runs.runs))
+	}
+}
