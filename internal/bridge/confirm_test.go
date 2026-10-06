@@ -839,3 +839,70 @@ func TestRequestApprovalPostsToTheBroker(t *testing.T) {
 		t.Fatalf("%v %v", fb.approvals, fb.tokens)
 	}
 }
+
+// Finding A (run ikely2yk): the broker deployed with that run predated phase 5.
+// Its hello handed over no policy (so attended) and it had no approvals route,
+// so the push, forge.other without a branch, asked a human and got ServeMux's
+// 404. The step stays rejected, but the agent is no longer told to retry what a
+// retry cannot change: it retried for 25 minutes.
+func TestABrokerWithoutApprovalsRefusesForGood(t *testing.T) {
+	fb := &fakeBroker{noApprovals: true}
+	srv, ca := fb.start(t)
+	br, err := NewBroker(srv.URL, writeToken(t, t.TempDir(), "v1"), ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeAgentServer{pageSize: 100, status: waiting}
+	c := &Confirmer{Harness: NewHarness(f.start(t, conv).URL, conv), Broker: br, RunID: "ikely2yk", Push: func(wire.Item) {}}
+	c.SetPolicy(wire.ApprovalPolicy{})
+	c.Observe(action("c1", "cd /workspace/cloud-native-ref && git push origin agent/ibbay5ud"))
+	c.OnStatus(t.Context(), waiting)
+	if r := f.responded(); len(r) != 1 || r[0] {
+		t.Fatalf("the step is rejected: %v", r)
+	}
+	if got := f.answers()[0]; got == textBrokerDown || strings.Contains(got, "Retry it later") || !strings.Contains(got, "404") {
+		t.Fatalf("the agent is told %q", got)
+	}
+}
+
+// A refusal a retry gets again is not an outage; a timeout, a 408, a 429, a 401
+// (a token mid-rotation) or a 5xx may clear, so the agent is told to retry later.
+func TestARefusalIsToldApartFromAnOutage(t *testing.T) {
+	for _, tc := range []struct {
+		code  int
+		err   error
+		retry bool
+	}{
+		{0, errors.New("context deadline exceeded"), true},
+		{http.StatusServiceUnavailable, nil, true},
+		{http.StatusInternalServerError, nil, true},
+		// A 4xx whose body could not be read: Broker.call returns its code and the error.
+		{http.StatusNotFound, errors.New("broker POST /v1/bridge/approvals: unexpected EOF"), true},
+		{http.StatusTooManyRequests, nil, true},
+		{http.StatusUnauthorized, nil, true},
+		{http.StatusRequestTimeout, nil, true},
+		{http.StatusNotFound, nil, false},
+		{http.StatusBadRequest, nil, false},
+		{http.StatusForbidden, nil, false},
+		{http.StatusConflict, nil, false},
+		{http.StatusGone, nil, false},
+	} {
+		t.Run(fmt.Sprint(tc.code, tc.err), func(t *testing.T) {
+			c, f, ap, _ := setup(t, "attended")
+			ap.code, ap.err = tc.code, tc.err
+			c.Observe(action("c1", "gh pr create --fill"))
+			c.OnStatus(t.Context(), waiting)
+			r, got := f.responded(), f.answers()
+			if len(r) != 1 || r[0] {
+				t.Fatalf("the step is rejected: %v", r)
+			}
+			want := textBrokerDown
+			if !tc.retry {
+				want = textRefused(tc.code)
+			}
+			if got[0] != want {
+				t.Fatalf("told %q, want %q", got[0], want)
+			}
+		})
+	}
+}

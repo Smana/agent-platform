@@ -89,6 +89,24 @@ func denial(p wire.ApprovalPolicy, class Class) string {
 	return fmt.Sprintf("Denied by the room's %s policy.%s", profile, rejected)
 }
 
+// textRefused is the text for an approval request the broker refused with code,
+// which a retry gets again. A broker that predates phase 5 answers 404: told to
+// retry later, run ikely2yk's agent retried for 25 minutes (Finding A).
+func textRefused(code int) string {
+	return fmt.Sprintf("The room refused the approval request (HTTP %d), so this step was rejected and none of it ran."+
+		" Retrying will not change that: say so in the room.", code)
+}
+
+// refusedForGood is a refusal a retry gets again: any 4xx but those that mean
+// "not now", a token mid-rotation (401), a timeout (408) or a rate limit (429).
+func refusedForGood(code int) bool {
+	switch code {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return code >= 400 && code < 500
+}
+
 // declined is the text for a step an approver rejected, with their reason.
 func declined(reason string) string {
 	if reason == "" {
@@ -451,8 +469,8 @@ func (c *Confirmer) settle(ctx context.Context, fromDecision bool) {
 			humans, asked = append(humans, j), append(asked, j.p)
 		}
 	}
-	if !c.askAll(ctx, humans, policy) {
-		_ = c.answer(ctx, step, false, textBrokerDown, nil, fromDecision)
+	if text := c.askAll(ctx, humans, policy); text != "" {
+		_ = c.answer(ctx, step, false, text, nil, fromDecision)
 		return
 	}
 	outcome, refs := c.decisions(asked)
@@ -479,25 +497,25 @@ func (c *Confirmer) logVerdicts(js []judged, v Verdict) {
 }
 
 // askAll opens the approval of each human action not asked yet, all within
-// one askBudget. It reports false when the broker did not open one, named a
-// spent approval, or ctx ended.
-func (c *Confirmer) askAll(ctx context.Context, humans []judged, policy wire.ApprovalPolicy) bool {
+// one askBudget. It returns the step's rejection text when the broker did not
+// open one, named a spent approval, or ctx ended, and "" once all are open.
+func (c *Confirmer) askAll(ctx context.Context, humans []judged, policy wire.ApprovalPolicy) string {
 	ctx, cancel := context.WithTimeout(ctx, askBudget)
 	defer cancel()
 	for _, j := range humans {
-		if !c.ask(ctx, j.p, j.class, policy) {
-			return false
+		if text := c.ask(ctx, j.p, j.class, policy); text != "" {
+			return text
 		}
 	}
-	return true
+	return ""
 }
 
-func (c *Confirmer) ask(ctx context.Context, p *pendingAction, class Class, policy wire.ApprovalPolicy) bool {
+func (c *Confirmer) ask(ctx context.Context, p *pendingAction, class Class, policy wire.ApprovalPolicy) string {
 	c.mu.Lock()
 	asked := p.approvalID != ""
 	c.mu.Unlock()
 	if asked {
-		return true
+		return ""
 	}
 	action := p.action
 	if len(action) == 0 {
@@ -508,8 +526,12 @@ func (c *Confirmer) ask(ctx context.Context, p *pendingAction, class Class, poli
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil || code != http.StatusOK || ack.ApprovalID == "" || c.spent[ack.ApprovalID] {
-		c.log().Warn("the room did not open an approval; the step is rejected", "eventId", p.key, "code", code, "err", err)
-		return false
+		c.log().Warn("the room did not open an approval; the step is rejected", "eventId", p.key, "class", class,
+			"code", code, "err", err)
+		if err == nil && refusedForGood(code) {
+			return textRefused(code)
+		}
+		return textBrokerDown
 	}
 	expires := ack.ExpiresAt
 	if expires.IsZero() {
@@ -519,7 +541,7 @@ func (c *Confirmer) ask(ctx context.Context, p *pendingAction, class Class, poli
 	if d := expires.Add(decisionGrace); c.deadline.IsZero() || d.Before(c.deadline) {
 		c.deadline = d
 	}
-	return true
+	return ""
 }
 
 // decisions reads the step's approvals: "accept" once all allow, a rejection

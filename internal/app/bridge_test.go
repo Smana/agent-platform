@@ -133,6 +133,19 @@ func TestWireBridgeSetsEveryHook(t *testing.T) {
 	}
 }
 
+// Finding A: a composition that never set BRANCH made every push of run
+// ikely2yk forge.other, silently. The bridge still starts, and says why.
+func TestAnUnsetBranchIsLoggedAtStart(t *testing.T) {
+	for branch, warned := range map[string]bool{"": true, "agent/3kq7x2ma": false} {
+		var buf strings.Builder
+		b := &bridge.Bridge{Harness: bridge.NewHarness("http://127.0.0.1:1", "c1"), RunID: "7f3cq2xz"}
+		wireBridge(b, nil, bridgeConfig{branch: branch}, slog.New(slog.NewTextHandler(&buf, nil)))
+		if got := strings.Contains(buf.String(), "level=WARN") && strings.Contains(buf.String(), "BRANCH"); got != warned {
+			t.Errorf("branch %q: warned %v, want %v: %s", branch, got, warned, buf.String())
+		}
+	}
+}
+
 // The classifier's inputs (phase 5): both optional, since CC-S5 adds BRANCH.
 func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
 	env := map[string]string{"BRANCH": "agent/3kq7x2ma", "EGRESS_PROFILES": " golang, ,npm ,"}
