@@ -875,6 +875,9 @@ func TestARefusalIsToldApartFromAnOutage(t *testing.T) {
 	}{
 		{0, errors.New("context deadline exceeded"), true},
 		{http.StatusServiceUnavailable, nil, true},
+		{http.StatusInternalServerError, nil, true},
+		// A 4xx whose body could not be read: Broker.call returns its code and the error.
+		{http.StatusNotFound, errors.New("broker POST /v1/bridge/approvals: unexpected EOF"), true},
 		{http.StatusTooManyRequests, nil, true},
 		{http.StatusUnauthorized, nil, true},
 		{http.StatusRequestTimeout, nil, true},
@@ -893,8 +896,12 @@ func TestARefusalIsToldApartFromAnOutage(t *testing.T) {
 			if len(r) != 1 || r[0] {
 				t.Fatalf("the step is rejected: %v", r)
 			}
-			if (got[0] == textBrokerDown) != tc.retry {
-				t.Fatalf("told %q, want retry later %v", got[0], tc.retry)
+			want := textBrokerDown
+			if !tc.retry {
+				want = textRefused(tc.code)
+			}
+			if got[0] != want {
+				t.Fatalf("told %q, want %q", got[0], want)
 			}
 		})
 	}
