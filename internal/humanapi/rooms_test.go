@@ -107,3 +107,40 @@ func TestCreateRoom(t *testing.T) {
 		t.Fatalf("no actor: %d", rec.Code)
 	}
 }
+
+// GET /api/roomctl: what `roomctl configure` needs, for any agents member. The
+// client id is read at use, like the web client's: the IdP mints it per build.
+func TestRoomctlSetup(t *testing.T) {
+	id := "3434@agents"
+	srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Issuer: "https://auth.example",
+		RoomctlClient: func() string { return id }}
+	get := func(user string) (int, map[string]string) {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/roomctl", nil)
+		if user != "" {
+			req.Header.Set("X-Test-User", user)
+		}
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		var out map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	code, out := get("alice")
+	if code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" || out["clientID"] != id {
+		t.Fatalf("%d %v", code, out)
+	}
+	if code, _ := get("stranger"); code != http.StatusForbidden {
+		t.Fatalf("not in an agents group: %d", code)
+	}
+	if code, _ := get(""); code != http.StatusUnauthorized {
+		t.Fatalf("not signed in: %d", code)
+	}
+	id = ""
+	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
+		t.Fatalf("no roomctl client yet: %d %v", code, out)
+	}
+	srv.RoomctlClient = nil
+	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
+		t.Fatalf("none configured: %d %v", code, out)
+	}
+}

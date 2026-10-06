@@ -92,6 +92,23 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"id": room.Name})
 }
 
+// roomctlSetup is GET /api/roomctl: the values of `roomctl configure`, for the
+// UI's CLI setup view. clientID is "" while the broker has no roomctl client.
+func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.principal(w, r); !ok {
+		return
+	}
+	id := ""
+	if s.RoomctlClient != nil {
+		id = s.RoomctlClient()
+	}
+	writeJSON(w, struct {
+		URL      string `json:"url"`
+		Issuer   string `json:"issuer"`
+		ClientID string `json:"clientID"`
+	}{s.PublicURL, s.Issuer, id})
+}
+
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
 	ID        string   `json:"id"`

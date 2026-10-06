@@ -277,7 +277,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
-| `GET /api/roomctl` | `{url, issuer, clientID}` for the UI's CLI setup page | 6 / AP-6 |
+| `GET /api/roomctl` | `{url, issuer, clientID}` for the room list's CLI setup view, any agents member. `clientID` is `""` while the broker has no roomctl client | 6 / AP-6 |
 
 ### `GET /v1/ws`
 
@@ -331,7 +331,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, an expiry or a supersede included). With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision | 5 |
-| `fork` | `seq`, `note`, `role?`, `prUrl?`, `egressProfiles?` | Watcher and up; also from `roomctl` | 6 |
+| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`, and from a sealed room, since only the new room is written. A new room owned and driven by the forker, with the source's data class, repository, approvals and retention and none of its members: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made | 6 |
 
 | `rejected` | Meaning |
 |---|---|

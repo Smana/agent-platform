@@ -85,6 +85,7 @@ function toolRow(c: Call): HTMLElement {
   const d = el("details", `tool st-${cls(status)}`) as HTMLDetailsElement;
   d.dataset.seq = String(c.seq);
   d.dataset.callId = c.callId;
+  d.dataset.lastSeq = String(Math.max(...[c.call, c.result, ...c.decisions].map((e) => e?.seq ?? 0)));
 
   const sum = el("summary", "");
   const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
@@ -206,7 +207,8 @@ export class ChatView {
   // renders as a marker; if the call still arrives, the marker folds into it.
   private pending = new Map<string, RoomEvent[]>();
 
-  constructor(private el: HTMLElement, private cap = maxRows) {}
+  // fork, when set, gives every row a "fork here" at the last seq it shows.
+  constructor(private el: HTMLElement, private cap = maxRows, private fork?: (seq: number) => void) {}
 
   apply(ev: RoomEvent) {
     const p = ev.payload ?? {};
@@ -273,7 +275,21 @@ export class ChatView {
     this.seqs.splice(this.seqs.indexOf(seq), 1);
   }
 
+  private forkButton(row: HTMLElement, fork: (seq: number) => void) {
+    const b = el("button", "fork-here", "fork here") as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.act = "fork";
+    b.title = "Branch a room of your own from the log up to here";
+    const at = Number(row.dataset.lastSeq ?? row.dataset.seq);
+    b.onclick = (e) => {
+      e.preventDefault(); // inside a summary, a click would also toggle the row
+      fork(at);
+    };
+    (row.querySelector(":scope > summary, :scope > header") ?? row).append(b);
+  }
+
   private put(seq: number, row: HTMLElement) {
+    if (this.fork) this.forkButton(row, this.fork);
     const old = this.rows.get(seq);
     if (old) {
       old.replaceWith(row);

@@ -3,6 +3,7 @@
 import { api } from "./api";
 import { RoomConnection, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
+import { mountFork } from "./fork";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -23,6 +24,7 @@ function room(id: string) {
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
+  const forkPanel = document.createElement("section");
   const footer = document.createElement("footer");
   const counters = document.createElement("span");
   const notice = document.createElement("span");
@@ -30,8 +32,8 @@ function room(id: string) {
   const status = document.createElement("span");
   status.className = "status";
   footer.append(counters, notice, status);
-  app.replaceChildren(header, main, section, footer);
-  const views = mountViews(main, header);
+  app.replaceChildren(header, main, section, forkPanel, footer);
+  const views = mountViews(main, header, localStorage, (seq) => fork.open(seq));
   mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -66,6 +68,7 @@ function room(id: string) {
       pending.ack(f);
       say(f.rejected ? rejection(f.rejected) : "");
       controls?.onAck(f);
+      fork.onAck(f);
     },
     onRefused: () => void api("/api/rooms").catch(() => {}), // a 401 there signs in again
     onCounters: (c) => {
@@ -85,6 +88,7 @@ function room(id: string) {
       return sent;
     },
   };
+  const fork = mountFork(forkPanel, sender, state);
   conn.connect();
 }
 

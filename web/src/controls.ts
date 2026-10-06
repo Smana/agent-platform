@@ -31,7 +31,7 @@ export interface Sender { send(frame: Record<string, unknown>): boolean }
 
 let clientSeq = 0;
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}): HTMLElementTagNameMap[K] {
   return Object.assign(document.createElement(tag), props);
 }
 
@@ -42,7 +42,7 @@ function button(label: string, act: string, onClick: () => void): HTMLButtonElem
   return b;
 }
 
-function select(name: string, options: [string, string][]): HTMLSelectElement {
+export function select(name: string, options: [string, string][]): HTMLSelectElement {
   const s = el("select", { name });
   for (const [value, label] of options) s.append(el("option", { value, textContent: label }));
   return s;
@@ -53,6 +53,12 @@ function select(name: string, options: [string, string][]): HTMLSelectElement {
 export function act(conn: Sender, state: RoomState, action: Record<string, unknown>): number {
   const seq = ++clientSeq;
   return conn.send({ type: "act", clientSeq: seq, driverEpoch: state.driverEpoch, action }) ? seq : 0;
+}
+
+// claimText is a run's rendered AgentRun as the owner applies it, before SP3 (ruling P14).
+// JSON escapes every newline in a string, so no line of it can be a bare EOF.
+export function claimText(result: unknown): string {
+  return `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
 }
 
 // approvalCard shows one approval, read-only: the class, the run, the deadline,
@@ -173,8 +179,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   root.replaceChildren(...sections());
   const showResult = (result: unknown) => {
     if (!result) return;
-    // JSON escapes every newline in a string, so no line of it can be a bare EOF.
-    claim.textContent = `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
+    claim.textContent = claimText(result);
     manifest.hidden = false;
   };
   return {
