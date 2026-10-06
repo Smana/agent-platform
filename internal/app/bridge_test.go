@@ -9,17 +9,23 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/bridge"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 func writeCA(t *testing.T, dir string) string {
@@ -95,12 +101,163 @@ func TestRunBridge(t *testing.T) {
 func TestHealthz(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(map[bool]string{true: "healthy is 200", false: "unhealthy is 503"}[healthy], func(t *testing.T) {
-			h := healthHandler(func(time.Time) bool { return healthy }, time.Now)
+			h := healthHandler(func(time.Time) bool { return healthy }, func() bridge.Admission { return bridge.Admission{} }, time.Now)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 			if want := map[bool]int{true: http.StatusOK, false: http.StatusServiceUnavailable}[healthy]; rec.Code != want {
 				t.Fatalf("GET /healthz = %d, want %d", rec.Code, want)
 			}
 		})
+	}
+}
+
+// Review M7: a hook left unset fails open (OnReady, the steering gate) or
+// wedges every run (OnStatus).
+func TestWireBridgeSetsEveryHook(t *testing.T) {
+	b := &bridge.Bridge{Harness: bridge.NewHarness("http://127.0.0.1:1", "c1"), RunID: "7f3cq2xz"}
+	cfg := bridgeConfig{branch: "agent/3kq7x2ma", egress: map[string]bool{"npm": true}}
+	confirm, steer := wireBridge(b, nil, cfg, slog.New(slog.DiscardHandler))
+	hooks := map[string]bool{"OnDeliver": b.OnDeliver != nil, "OnInterrupt": b.OnInterrupt != nil,
+		"OnResume": b.OnResume != nil, "OnReady": b.OnReady != nil, "OnRaw": b.OnRaw != nil,
+		"OnStatus": b.OnStatus != nil, "OnDecision": b.OnDecision != nil, "Classify": b.Classify != nil,
+		"steering gate": steer.Gate != nil, "confirmer": confirm != nil}
+	for name, set := range hooks {
+		if !set {
+			t.Errorf("%s is not wired", name)
+		}
+	}
+	for cmd, want := range map[string]string{"git push origin agent/3kq7x2ma": "forge.push", "npm install x": ""} {
+		if got := b.Classify("terminal", json.RawMessage(`{"command":"`+cmd+`"}`), "LOW"); got != want {
+			t.Errorf("%s classifies as %q, want %q: the branch and egress reach the classifier", cmd, got, want)
+		}
+	}
+}
+
+// The classifier's inputs (phase 5): both optional, since CC-S5 adds BRANCH.
+func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
+	env := map[string]string{"BRANCH": "agent/3kq7x2ma", "EGRESS_PROFILES": " golang, ,npm ,"}
+	c, _ := loadBridgeConfig(func(k string) string { return env[k] })
+	if c.branch != "agent/3kq7x2ma" || len(c.egress) != 2 || !c.egress["golang"] || !c.egress["npm"] {
+		t.Fatalf("branch %q egress %v", c.branch, c.egress)
+	}
+	if c, _ = loadBridgeConfig(func(string) string { return "" }); c.branch != "" || len(c.egress) != 0 {
+		t.Fatalf("unset: branch %q egress %v", c.branch, c.egress)
+	}
+}
+
+// F15: /admission is what room-bridge gate reads before the harness may start.
+func TestAdmissionEndpoint(t *testing.T) {
+	cases := []struct {
+		name    string
+		a       bridge.Admission
+		code    int
+		bodyHas string
+	}{
+		{"pending is 503", bridge.Admission{}, http.StatusServiceUnavailable, "pending"},
+		{"admitted is 200", bridge.Admission{Admitted: true}, http.StatusOK, "admitted"},
+		{"refused is 409 with the reason", bridge.Admission{Refused: wire.ReasonRoomBusy}, http.StatusConflict, wire.ReasonRoomBusy},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return c.a }, time.Now)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admission", nil))
+			if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.bodyHas) {
+				t.Fatalf("GET /admission = %d %q, want %d naming %q", rec.Code, rec.Body.String(), c.code, c.bodyHas)
+			}
+		})
+	}
+}
+
+// F15: the gate holds the harness until the bridge decides, then lets it start
+// only on admission. Anything else, a refusal or the pod ending, fails it, and
+// with it the pod, before the harness runs.
+func TestRunGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		answers []int // GET /admission, in order; the last repeats
+		want    string
+	}{
+		{"admitted at once lets the harness start", []int{http.StatusOK}, ""},
+		{"pending, then admitted, waits and lets it start", []int{http.StatusServiceUnavailable, http.StatusServiceUnavailable, http.StatusOK}, ""},
+		{"refused fails the pod with the reason", []int{http.StatusServiceUnavailable, http.StatusConflict}, wire.ReasonRoomBusy},
+		{"never decided fails when the pod ends", []int{http.StatusServiceUnavailable}, context.DeadlineExceeded.Error()},
+		{"a bridge without /admission holds the gate", []int{http.StatusNotFound}, context.DeadlineExceeded.Error()},
+		{"a bridge error holds the gate", []int{http.StatusInternalServerError}, context.DeadlineExceeded.Error()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var mu sync.Mutex
+			asked := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				code := c.answers[min(asked, len(c.answers)-1)]
+				asked++
+				mu.Unlock()
+				if r.URL.Path != "/admission" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(wire.ReasonRoomBusy + "\n"))
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+			defer cancel()
+			err := gate(ctx, slog.New(slog.DiscardHandler), srv.URL+"/admission", 5*time.Millisecond)
+			switch {
+			case c.want == "" && err != nil:
+				t.Fatalf("RunGate = %v, want the harness let through", err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("RunGate = %v, want an error naming %q", err, c.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if c.want == "" && asked < len(c.answers) {
+				t.Fatalf("the gate asked %d times, want at least %d", asked, len(c.answers))
+			}
+		})
+	}
+}
+
+// F15: a bridge that is not listening (not started yet, or restarted after a
+// liveness kill or an OOM) holds the harness; the gate never fails open.
+func TestRunGateFailsClosedWhileTheBridgeIsUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL + "/admission"
+	srv.Close() // connection refused from here on
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if err := gate(ctx, slog.New(slog.DiscardHandler), url, 5*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("gate = %v, want it held until the pod ends", err)
+	}
+}
+
+// RunGate reads the bridge on loopback, at HEALTH_ADDR's port.
+func TestRunGateReadsTheBridgeOnLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/admission" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("admitted\n"))
+	}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := RunGate(ctx, slog.New(slog.DiscardHandler), func(k string) string {
+		return map[string]string{"HEALTH_ADDR": ":" + port}[k]
+	}); err != nil {
+		t.Fatalf("RunGate = %v, want the harness let through", err)
+	}
+}
+
+func TestLoopback(t *testing.T) {
+	for in, want := range map[string]string{":8085": "127.0.0.1:8085", "0.0.0.0:8085": "127.0.0.1:8085",
+		"[::]:8085": "127.0.0.1:8085", "127.0.0.2:9": "127.0.0.2:9", "nonsense": "nonsense"} {
+		if got := loopback(in); got != want {
+			t.Errorf("loopback(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

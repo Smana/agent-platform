@@ -1,29 +1,263 @@
-body { font: 14px/1.45 system-ui, sans-serif; margin: 0; }
-header, footer { padding: 8px 16px; background: #f4f4f5; position: sticky; }
-header { top: 0; } footer { bottom: 0; font-family: ui-monospace, monospace; }
-footer .status { float: right; color: #52525b; }
-footer[data-status="live"] .status { color: #15803d; }
-main { padding: 8px 16px; }
-.ev { border-bottom: 1px solid #e4e4e7; padding: 6px 0; }
-.ev-head { color: #52525b; font-size: 12px; }
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The platform's design tokens, verbatim from the app-wizard (ui/src/index.css):
+   one design language across the platform's UIs. Light is the default; the
+   .dark block applies when theme.ts puts the class on <html> (the wizard's
+   contract — a media query would ignore the user's explicit choice). */
+:root {
+  color-scheme: light;
+
+  --background: #ffffff;
+  --foreground: #002538; /* deep navy text on white — AAA */
+  --card: #ffffff;
+  --card-foreground: #002538;
+
+  --muted: #f2f2f2; /* haze surface */
+  --muted-foreground: #575757; /* neutral text — AA on white */
+  --border: #dedede;
+  --input: #dedede;
+
+  --primary: #0077b8; /* ocean blue */
+  --primary-foreground: #ffffff;
+  --ring: #0077b8;
+
+  --accent: #6ab825; /* green accent — use sparingly */
+  --accent-foreground: #ffffff;
+
+  --success: #4d8f14; /* darkened green for AA-compliant success text */
+  --success-foreground: #ffffff;
+
+  --warning: #ed9d13;
+  --warning-foreground: #4a2f00;
+
+  --destructive: #d22323;
+  --destructive-foreground: #ffffff;
+
+  /* Brand navy header/dark surfaces */
+  --brand-navy: #002538;
+  --brand-navy-foreground: #f2f2f2;
+
+  --placeholder: #8a8a8a;
+
+  /* Elevation: a layered transparent shadow lifts a card off whatever surface
+     ends up underneath; a border colour doesn't. Structural borders stay borders. */
+  --shadow-border:
+    0 0 0 1px rgb(0 0 0 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.06),
+    0 2px 4px 0 rgb(0 0 0 / 0.04);
+  --shadow-border-hover:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 2px -1px rgb(0 0 0 / 0.08),
+    0 2px 4px 0 rgb(0 0 0 / 0.06);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: #002538; /* deep navy */
+  --foreground: #f2f2f2;
+  --card: #003552; /* mid navy surface */
+  --card-foreground: #f2f2f2;
+
+  --muted: #003552;
+  --muted-foreground: #b8c6d0;
+  --border: #004070; /* logo navy */
+  --input: #004070;
+
+  --primary: #2b9fda; /* lightened ocean blue for contrast on navy */
+  --primary-foreground: #002538;
+  --ring: #2b9fda;
+
+  --accent: #6ab825;
+  --accent-foreground: #002538;
+
+  --success: #6ab825;
+  --success-foreground: #002538;
+
+  --warning: #ed9d13;
+  /* Light amber, not deep navy: warning text renders on a faint warning tint. */
+  --warning-foreground: #f5c97f;
+
+  --destructive: #f26363;
+  --destructive-foreground: #002538;
+
+  --brand-navy: #002538;
+  --brand-navy-foreground: #f2f2f2;
+
+  --placeholder: #7f93a1;
+
+  /* Layered depth shadows are invisible against navy — collapse to the ring. */
+  --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
+  --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.13);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+h1, h2, h3, h4 { text-wrap: balance; }
+p, li { text-wrap: pretty; }
+
+a { color: var(--primary); }
+
+/* The page chrome: a brand-navy header, a card footer holding the counters. */
+header, footer { padding: 8px 16px; position: sticky; }
+header {
+  top: 0; z-index: 1;
+  display: flex; gap: 12px; align-items: baseline;
+  background: var(--brand-navy); color: var(--brand-navy-foreground);
+}
+header .title { overflow-wrap: anywhere; }
+footer {
+  bottom: 0;
+  font-family: ui-monospace, monospace;
+  background: var(--card); color: var(--card-foreground);
+  border-top: 1px solid var(--border);
+}
+footer .status { float: right; color: var(--muted-foreground); }
+footer[data-status="live"] .status { color: var(--success); }
+main { padding: 8px 16px 16px; max-width: 100%; }
+
+button {
+  font: inherit; cursor: pointer;
+  background: var(--card); color: var(--card-foreground);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px;
+}
+button:hover { box-shadow: var(--shadow-border-hover); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--ring); outline-offset: 1px;
+}
+header button { background: transparent; color: var(--brand-navy-foreground); }
+.view-toggle, .theme-toggle { margin-left: auto; font-size: 12px; }
+.theme-toggle { margin-left: 0; }
+
+/* Chat view */
+.msg { margin: 12px 0; max-width: 72ch; }
+.msg-head { color: var(--muted-foreground); font-size: 12px; display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
+.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 11px; white-space: nowrap; }
+.bubble {
+  background: var(--card); color: var(--card-foreground);
+  border-radius: 4px 12px 12px 12px; padding: 6px 12px;
+  box-shadow: var(--shadow-border);
+}
+.from-human .bubble { background: color-mix(in srgb, var(--primary) 10%, var(--card)); }
+.from-system .bubble { background: var(--muted); }
+.bubble .md > :first-child { margin-top: 0; } .bubble .md > :last-child { margin-bottom: 0; }
+.bubble p { margin: .45em 0; }
+
+/* A tool row: one line, the detail behind the toggle */
+.tool {
+  background: var(--card); color: var(--card-foreground);
+  border-radius: 8px; margin: 6px 0; max-width: 72ch;
+  box-shadow: var(--shadow-border);
+}
+.tool summary { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; cursor: pointer; list-style: none; flex-wrap: wrap; border-radius: 8px; }
+.tool summary::before { content: "▸"; color: var(--placeholder); }
+.tool[open] summary::before { content: "▾"; }
+.tool summary::-webkit-details-marker { display: none; }
+.tool.st-rejected, .tool.st-error { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--destructive) 65%, var(--card)); }
+.tool.st-rejected { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--warning) 80%, var(--card)); }
+.t-name { color: var(--primary); font-weight: 600; }
+.t-cmd { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; flex: 1 1 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool[open] .t-cmd { white-space: normal; overflow-wrap: anywhere; }
+.t-body { border-top: 1px solid var(--border); padding: 6px 10px; }
+.t-sec { color: var(--placeholder); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
+.t-meta { color: var(--placeholder); font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
+.t-body pre, .other pre { background: var(--muted); border-radius: 6px; padding: 6px 8px; }
+
+/* Chips and badges: a tinted pill, the status token for its text. */
+.chip, .pol {
+  font-size: 11px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--border); color: var(--muted-foreground);
+}
+.chip-ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--card));
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+.chip-error {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+}
+.chip-rejected, .chip-delivery {
+  color: var(--warning-foreground);
+  background: color-mix(in srgb, var(--warning) 18%, var(--card));
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
+}
+.chip-running {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chip-running { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+}
+.pol-allow, .pol-approved, .verdict-approve {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+.pol-deny, .pol-denied, .pol-expired {
+  color: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+}
+.verdict-changes {
+  color: var(--warning-foreground);
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
+}
+
+/* Timeline markers and system lines */
+.mark, .sys { color: var(--muted-foreground); font-size: 12px; margin: 6px 0; display: flex; gap: 8px; align-items: baseline; }
+.mark .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--placeholder); align-self: center; flex: none; }
+.mark-text { overflow-wrap: anywhere; }
+.sys { font-style: italic; }
+.sys::before { content: "·"; }
+.mk-harness_error .mark-text, .mk-limit .mark-text { color: var(--destructive); }
+.other { max-width: 72ch; color: var(--muted-foreground); }
+.other summary { cursor: pointer; }
+
+/* Raw view */
+.ev { border-bottom: 1px solid var(--border); padding: 6px 0; }
+.ev-head { color: var(--muted-foreground); font-size: 12px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
 .md a { overflow-wrap: anywhere; }
-.status-error, .status-rejected { color: #b91c1c; }
-.verdict-approve { color: #15803d; } .verdict-changes { color: #b45309; }
-.redacted { color: #7c3aed; font-size: 12px; }
-footer .notice { margin-left: 12px; color: #b91c1c; font-family: system-ui, sans-serif; }
-.controls { padding: 8px 16px; border-top: 1px solid #e4e4e7; display: grid; gap: 8px; }
+.status-error, .status-rejected { color: var(--destructive); }
+/* An audit note, not an alarm: the warning foreground reads on both schemes. */
+.redacted { color: var(--warning-foreground); font-size: 12px; }
+footer .notice { margin-left: 12px; color: var(--destructive); font-family: inherit; }
+
+/* Controls (unchanged behaviour, platform palette) */
+.controls { padding: 8px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; background: var(--background); }
 .controls .composer, .controls .driver, .controls form, .new-room { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.controls textarea { flex: 1 1 100%; box-sizing: border-box; font: inherit; }
+.controls textarea { flex: 1 1 100%; box-sizing: border-box; font: inherit; padding: 6px; }
 .controls input, .new-room input { flex: 1 1 12em; min-width: 0; }
+input, select, textarea {
+  font: inherit;
+  background: var(--card); color: var(--card-foreground);
+  border: 1px solid var(--input); border-radius: 6px; padding: 2px 6px;
+}
+input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .queue { margin: 0; padding-left: 18px; } .queue li span { overflow-wrap: anywhere; margin-right: 6px; }
-.manifest pre { background: #f4f4f5; padding: 8px; }
-.new-room { padding: 8px 16px; } .new-room .notice { color: #b91c1c; }
-@media (prefers-color-scheme: dark) {
-  body { background: #18181b; color: #e4e4e7; }
-  header, footer { background: #27272a; }
-  .ev, .controls { border-color: #3f3f46; }
-  .manifest pre { background: #27272a; }
-  footer .notice, .new-room .notice { color: #f87171; }
-  .ev-head, footer .status { color: #a1a1aa; }
+/* Approvals: the amber accent and subtle panel background, on the platform palette. */
+.approvals { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.approval { border: 1px solid var(--warning); border-radius: 4px; padding: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.approval-head { flex-basis: 100%; font-weight: 600; overflow-wrap: anywhere; }
+.approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
+.manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
+.new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

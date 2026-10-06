@@ -60,12 +60,20 @@ type memLog struct {
 	queue       []store.Queued
 	queueErr    error
 	sealed      bool
+	approvals   []store.Approval
+	approvalErr error
 }
 
 func (m *memLog) Queue(context.Context, string) ([]store.Queued, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.queue, m.queueErr
+}
+
+func (m *memLog) OpenApprovals(context.Context, string) ([]store.Approval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.approvals, m.approvalErr
 }
 
 func (m *memLog) add(n int) int64 {
@@ -1086,6 +1094,38 @@ func TestSnapshotQueue(t *testing.T) {
 
 	e.log.mu.Lock()
 	e.log.queueErr = errors.New("conn refused")
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if code, reason := closed(t, c); code != websocket.StatusTryAgainLater || reason != dropLogUnavailable {
+		t.Fatalf("closed %v %q", code, reason)
+	}
+}
+
+// Like the queue, the pending approvals come with the state frame: a request far
+// behind the page's tail still shows its card.
+func TestSnapshotApprovals(t *testing.T) {
+	e := setup(t)
+	e.log.add(600)
+	expires := time.Date(2026, 10, 1, 10, 30, 0, 0, time.UTC)
+	e.log.mu.Lock()
+	e.log.approvals = []store.Approval{{ID: "ap1", RoomID: roomID, RunID: "7f3cq2xz", EventID: "e1", CallID: "c1",
+		Class: "forge.pr", State: "pending", Action: []byte(`{"command":"gh pr create"}`), Prompters: []string{"human:own"},
+		RequestedSeq: 3, ExpiresAt: expires.In(time.FixedZone("x", 3600))}}
+	e.log.mu.Unlock()
+	c := dial(t, e, "dev", hello(nil, 0))
+	b, _ := json.Marshal(read(t, c).Snapshot.Approvals)
+	if want := `[{"approvalId":"ap1","runId":"7f3cq2xz","callId":"c1","class":"forge.pr","action":{"command":"gh pr create"},"expiresAt":"2026-10-01T10:30:00Z","seq":3}]`; string(b) != want {
+		t.Fatalf("approvals %s", b)
+	}
+	e.log.mu.Lock()
+	e.log.approvals = nil
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if s := read(t, c).Snapshot; s.Approvals == nil || len(s.Approvals) != 0 {
+		t.Fatalf("approvals %#v", s.Approvals)
+	}
+	e.log.mu.Lock()
+	e.log.approvalErr = errors.New("conn refused")
 	e.log.mu.Unlock()
 	c = dial(t, e, "dev", hello(nil, 0))
 	if code, reason := closed(t, c); code != websocket.StatusTryAgainLater || reason != dropLogUnavailable {

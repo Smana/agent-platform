@@ -44,14 +44,28 @@ const (
 	// maxRetryWait caps a Retry-After, so a broker's answer cannot park the bridge.
 	maxRetryWait = 30 * time.Second
 	// heartbeatEvery is the longest the bridge goes without renewing its room's
-	// lease: an empty batch when nothing else was accepted. The broker frees a
-	// lease not renewed for 2 min, and a quiet run (a long LLM call, a pending
-	// confirmation) pushes no items (review I2).
+	// lease: an empty batch when nothing else was accepted. A quiet run (a long LLM
+	// call, a pending confirmation) pushes no items (review I2), and the heartbeat
+	// is fenced like an append, so a displaced bridge learns it within 30 s. Time
+	// alone never frees a lease (ruling SBB).
 	heartbeatEvery = 30 * time.Second
+	// busyPatience is how long the first hello may hear room_busy before the run
+	// is refused for good (F15): how long a second run waits for the holder's run
+	// to end. The broker frees a lease only once its run ends (ruling SBB), and the
+	// factory starts the next run only after that, so this covers the broker's
+	// watch catching up, never a holder at work.
+	busyPatience = 3 * time.Minute
 
 	defaultInterval   = time.Second
 	defaultMinBackoff = 250 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
+	// The harness is on loopback, so MaxBackoff, sized for the broker, is too
+	// slow for it (F11): agent-server's cold start under gVisor (~85 s) grew the
+	// wait past a whole conversation, which ended unread. Until the harness first
+	// answers, a failed read of its log waits at most firstContactPolls
+	// intervals; after, at most answeredPolls.
+	firstContactPolls = 2
+	answeredPolls     = 10
 	// MemoryLimit is the soft heap limit room-bridge sets (GOMEMLIMIT) inside
 	// the sidecar's 64 Mi limit, leaving the rest to the runtime and stacks.
 	MemoryLimit = 48 << 20
@@ -274,6 +288,19 @@ type Bridge struct {
 	OnDecision  func(ctx context.Context, d wire.Decision) error  // phase 5
 	OnResume    func(ctx context.Context, r wire.Resume)          // phase 5
 
+	// The confirmation loop's hooks (phase 5), called on the loop except OnReady.
+	//
+	// OnReady runs from the start, before the broker's hello and whatever it
+	// answers, until it succeeds (review C2). OnRaw sees every harness event read, those a restart skips
+	// included, before it is mapped. OnStatus gets a status only after an
+	// events poll that started after that status was read and reached the
+	// log's end, so every action the harness wrote before it was passed to
+	// OnRaw. Classify sets each tool_call's class.
+	OnReady  func(ctx context.Context) error
+	OnRaw    func(e RawEvent)
+	OnStatus func(ctx context.Context, status string)
+	Classify func(tool string, action json.RawMessage, risk string) string
+
 	// inbox holds what Push hands over from other goroutines, until the loop,
 	// the only one to touch buf and status, takes it.
 	inMu  sync.Mutex
@@ -292,9 +319,11 @@ type Bridge struct {
 	sendRetry  backoff
 	leaseLost  bool
 	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
+	lastStatus string    // the status the previous step read, "" if it failed
 
-	sealed   atomic.Bool
-	lastSeen atomic.Int64
+	sealed    atomic.Bool
+	lastSeen  atomic.Int64
+	admission atomic.Pointer[Admission]
 
 	stalls  metric.Int64Counter
 	stubbed metric.Int64Counter
@@ -325,7 +354,33 @@ func (b *Bridge) backoffs() (lo, hi time.Duration) {
 	return lo, max(lo, hi)
 }
 
+// pollBackoffs bound the retry of a failed read of the harness log.
+func (b *Bridge) pollBackoffs() (lo, hi time.Duration) {
+	lo, hi = b.backoffs()
+	polls := time.Duration(firstContactPolls)
+	if b.lastSeen.Load() != 0 {
+		polls = answeredPolls
+	}
+	return lo, max(lo, min(hi, polls*b.Interval))
+}
+
 func (b *Bridge) sawHarness(t time.Time) { b.lastSeen.Store(t.UnixNano()) }
+
+// Admission is what the bridge's first hellos decided (F15). The zero value is
+// pending. room-bridge gate holds the harness until it is decided, and fails
+// the pod on a refusal, so no run executes unless its bridge holds the room.
+type Admission struct {
+	Admitted bool   // the broker handed this run the room's bridge lease
+	Refused  string // why it never will: wire.ReasonRoomBusy or wire.ReasonSealed
+}
+
+// Admission is the decision so far; safe from any goroutine.
+func (b *Bridge) Admission() Admission {
+	if a := b.admission.Load(); a != nil {
+		return *a
+	}
+	return Admission{}
+}
 
 // Healthy backs /healthz (ruling P6): a native sidecar must not fail before the
 // harness starts, since its startup probe gates the harness container. A
@@ -367,9 +422,16 @@ func (b *Bridge) Run(ctx context.Context) error {
 	if err := b.init(); err != nil {
 		return err
 	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	// Confirmation mode never waits for the broker: an outage or a lease held
+	// by another run must not leave the harness on NeverConfirm (review C2).
+	wg.Go(func() { b.confirmMode(ctx) })
 	resume, ok := b.connect(ctx)
 	if !ok {
-		<-ctx.Done() // a sealed room: stay up, idle, until the pod ends
+		// Sealed or refused: stay up, idle, until the pod ends. room-bridge gate
+		// fails the pod on a refusal before the harness starts.
+		<-ctx.Done()
 		return nil
 	}
 	b.resumeAt = resume.AfterHarnessSeq
@@ -377,8 +439,6 @@ func (b *Bridge) Run(ctx context.Context) error {
 	if b.OnResume != nil {
 		b.OnResume(ctx, resume)
 	}
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	wg.Go(func() { b.consume(ctx) })
 	for {
 		b.step(ctx)
@@ -389,14 +449,57 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 }
 
-// connect says hello until the broker hands over the lease. It reports false
-// if ctx ended first or the room is sealed.
-func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
+// confirmMode calls OnReady until it succeeds or ctx ends, talking only to the
+// harness. A conversation agent-run has not created yet answers 404. It
+// retries at the minimum backoff (250 ms), never doubling: every retry while
+// the conversation exists is time its actions run unconfirmed (ruling P5).
+func (b *Bridge) confirmMode(ctx context.Context) {
+	if b.OnReady == nil {
+		return
+	}
+	every, _ := b.backoffs()
 	for {
-		if r, ok := b.hello(ctx); ok {
-			return r, true
+		err := b.OnReady(ctx)
+		if err == nil {
+			return
 		}
-		if b.sealed.Load() || pause(ctx, b.sendAt.Sub(b.now())) != nil {
+		if se, ok := errors.AsType[*StatusError](err); ok && se.Code == http.StatusNotFound {
+			b.log().Debug("no conversation to set AlwaysConfirm on yet")
+		} else if ctx.Err() == nil {
+			b.log().Warn("the harness did not take AlwaysConfirm; retrying", "err", err)
+		}
+		if pause(ctx, every) != nil {
+			return
+		}
+	}
+}
+
+// connect says hello until the broker hands over the lease, and records the
+// Admission. It reports false if ctx ended first, the room is sealed, or
+// another run kept the room for busyPatience.
+func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
+	var busySince time.Time
+	for {
+		r, rep, ok := b.hello(ctx)
+		switch {
+		case ok:
+			b.admission.Store(&Admission{Admitted: true})
+			return r, true
+		case b.sealed.Load():
+			b.admission.Store(&Admission{Refused: wire.ReasonSealed})
+			return wire.Resume{}, false
+		case rep.Code == http.StatusConflict:
+			if busySince.IsZero() {
+				busySince = b.now()
+			}
+			if b.now().Sub(busySince) >= busyPatience {
+				b.log().Error("another run kept the room; this run is refused and its harness never starts",
+					"reason", wire.ReasonRoomBusy, "waited", busyPatience)
+				b.admission.Store(&Admission{Refused: wire.ReasonRoomBusy})
+				return wire.Resume{}, false
+			}
+		}
+		if pause(ctx, b.sendAt.Sub(b.now())) != nil {
 			return wire.Resume{}, false
 		}
 	}
@@ -404,27 +507,27 @@ func (b *Bridge) connect(ctx context.Context) (wire.Resume, bool) {
 
 // hello makes one attempt at the room's bridge lease; on failure sendAt is when
 // to try again.
-func (b *Bridge) hello(ctx context.Context) (wire.Resume, bool) {
+func (b *Bridge) hello(ctx context.Context) (wire.Resume, Reply, bool) {
 	r, rep, err := b.Broker.Hello(ctx)
 	if err != nil && ctx.Err() != nil {
-		return r, false // cut short by SIGTERM: not the broker's failure
+		return r, rep, false // cut short by SIGTERM: not the broker's failure
 	}
 	switch {
 	case err == nil && rep.Code == http.StatusOK:
 		b.sendRetry.reset()
 		b.sendAt = time.Time{}
 		b.renewedAt = b.now()
-		return r, true
+		return r, rep, true
 	case err == nil && rep.Code == http.StatusGone:
 		b.seal()
-		return r, false
+		return r, rep, false
 	case err == nil && rep.Code == http.StatusConflict:
 		b.log().Info("another run holds the room's bridge lease; saying hello again later", "reason", rep.Reason)
 	default:
 		b.log().Warn("hello failed", "code", rep.Code, "reason", rep.Reason, "err", err)
 	}
 	b.sendAt = b.now().Add(b.retryIn(rep))
-	return r, false
+	return r, rep, false
 }
 
 // retryIn is the wait before the next call to the broker: its Retry-After on a
@@ -474,47 +577,92 @@ func (b *Bridge) step(ctx context.Context) {
 	}
 	b.takeInbox(ctx)
 	now := b.now()
+	caughtUp := false
 	if !now.Before(b.pollAt) {
-		b.pollEvents(ctx)
+		caughtUp = b.pollEvents(ctx)
 	}
-	b.pollStatus(ctx)
+	// The status the previous step read: the events poll above started after
+	// it, so it saw every action written before it (and any answer the hook
+	// gave came before the status read below).
+	if caughtUp && b.lastStatus != "" && b.OnStatus != nil {
+		b.OnStatus(ctx, b.lastStatus)
+	}
+	b.lastStatus = b.pollStatus(ctx)
 	if !now.Before(b.sendAt) {
 		b.send(ctx)
 	}
 }
 
 // pollEvents reads and maps the harness events after the cursor, unless the
-// buffer is full: the harness keeps its own store meanwhile.
-func (b *Bridge) pollEvents(ctx context.Context) {
+// buffer is full: the harness keeps its own store meanwhile. It reports that
+// the read reached the log's end.
+func (b *Bridge) pollEvents(ctx context.Context) bool {
 	if b.bufBytes >= b.MaxBuffer {
-		return
+		return false
 	}
 	if !b.positioned {
 		b.position(ctx)
-		return
+		return false
 	}
-	evs, next, err := b.Harness.Next(ctx, b.cursor)
+	evs, next, end, err := b.Harness.next(ctx, b.cursor)
 	start := b.cursor.Count
 	for i, e := range evs {
+		if b.OnRaw != nil {
+			b.OnRaw(e)
+		}
 		for k, m := range Map(e, b.RunID) {
+			m = b.classified(m)
 			b.push(ctx, wire.Item{Stream: wire.StreamEvents, Seq: SeqFor(start+int64(i)+1, k), Type: m.Type, Payload: m.Payload})
 		}
 	}
 	b.cursor = next // Next advances over exactly the events it returned, error or not
 	b.harnessRead(ctx, err)
+	return end && err == nil
+}
+
+// readLog reads the harness log to its end, whatever the poll's backoff, until
+// a read fails, the buffer is full or ctx ends (F11).
+func (b *Bridge) readLog(ctx context.Context) {
+	for ctx.Err() == nil {
+		count := b.cursor.Count // positioning moves it too: Skip counts what it passes
+		if b.pollEvents(ctx) || b.cursor.Count == count {
+			return // at the log's end, or it did not move: a failed read, a full buffer
+		}
+	}
+}
+
+// classified sets a tool_call's class. An oversize stub is left as it is.
+func (b *Bridge) classified(m Mapped) Mapped {
+	if m.Type != envelope.ToolCall || b.Classify == nil {
+		return m
+	}
+	var p envelope.ToolCallPayload
+	var stub struct {
+		Oversize bool `json:"oversize"`
+	}
+	if json.Unmarshal(m.Payload, &stub) != nil || stub.Oversize || json.Unmarshal(m.Payload, &p) != nil {
+		return m
+	}
+	p.Class = b.Classify(p.Tool, p.Args, p.Risk)
+	return fitted(envelope.ToolCall, envelope.Must(p))
 }
 
 // position rebuilds the cursor after a restart: the log holds events up to
 // resumeAt, and the last event it touched is mapped again, since only some of
 // its items may have landed (the store drops the rest). Skip rebuilds all three
 // fields of the cursor a bridge that never stopped would hold (Ruling AL c).
+// OnRaw still sees the skipped events, so the actions still pending are known.
 func (b *Bridge) position(ctx context.Context) {
 	n := b.resumeAt/ItemsPerEvent - 1
 	if n <= 0 {
 		b.positioned = true
 		return
 	}
-	c, err := b.Harness.Skip(ctx, n)
+	raw := b.OnRaw
+	if raw == nil {
+		raw = func(RawEvent) {}
+	}
+	c, err := b.Harness.skip(ctx, n, raw)
 	b.harnessRead(ctx, err)
 	if err == nil {
 		b.cursor, b.positioned = c, true
@@ -556,21 +704,30 @@ func (b *Bridge) harnessRead(ctx context.Context, err error) {
 			b.log().Warn("read the harness events", "err", err)
 		}
 	}
-	b.pollAt = now.Add(b.pollRetry.next(b.backoffs()))
+	b.pollAt = now.Add(b.pollRetry.next(b.pollBackoffs()))
 }
 
-func (b *Bridge) pollStatus(ctx context.Context) {
+// pollStatus records the conversation's status and returns it, "" when the
+// harness did not answer.
+func (b *Bridge) pollStatus(ctx context.Context) string {
 	status, err := b.Harness.Status(ctx)
 	if err != nil {
-		return
+		return ""
 	}
 	b.sawHarness(b.now())
 	if b.bufBytes >= statusCap(b.MaxBuffer) {
-		return // a later poll records the status the harness settles on
+		return status // a later poll records the status the harness settles on
 	}
-	for _, it := range b.status.Observe(status, b.RunID) {
+	changed := b.status.Observe(status, b.RunID)
+	for _, it := range changed {
 		b.pushStatus(ctx, it)
 	}
+	if len(changed) > 0 {
+		// The events behind a change are in the log by now, and agent-run stops
+		// agent-server soon after the conversation ends: read them at once (F11).
+		b.readLog(ctx)
+	}
+	return status
 }
 
 func (b *Bridge) pushStatus(ctx context.Context, it StatusItem) {
@@ -599,7 +756,7 @@ func (b *Bridge) stubOf(ctx context.Context, p pending, why string, code int, re
 // send re-acquires a lost lease first, then flushes.
 func (b *Bridge) send(ctx context.Context) {
 	if b.leaseLost {
-		if _, ok := b.hello(ctx); !ok {
+		if _, _, ok := b.hello(ctx); !ok {
 			return
 		}
 		b.leaseLost = false
@@ -677,8 +834,9 @@ func (b *Bridge) flush(ctx context.Context) {
 	}
 }
 
-// shutdown drains the buffer within FlushGrace, then takes what the harness
-// has left, since agent-run may stop it first, and drains that too (review I1).
+// shutdown drains the buffer within FlushGrace, then reads what the harness
+// log has left to its end, if agent-run has not stopped it yet, and drains that
+// too (review I1, F11).
 // The loop's backoff does not carry over: the buffer is sent first and at once,
 // before a poll that a hung harness could hold for its whole timeout, and each
 // wait after a refusal is capped at drainWait.
@@ -693,9 +851,7 @@ func (b *Bridge) shutdown() {
 	b.takeInbox(ctx)
 	b.drain(ctx)
 	if ctx.Err() == nil && !b.sealed.Load() {
-		if b.positioned {
-			b.pollEvents(ctx)
-		}
+		b.readLog(ctx) // it positions the cursor first if the loop never could
 		b.pollStatus(ctx)
 		b.drain(ctx)
 	}

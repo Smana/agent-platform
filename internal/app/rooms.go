@@ -78,7 +78,8 @@ func humanActor(h config.HumanConfig, roomLog humanapi.ActLog, red humanapi.Reda
 		Runs: runs, Redactor: red, Rooms: rooms, Requester: requester,
 		OnReject: func(ctx context.Context, reason string) {
 			m.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
-		}}, nil
+		},
+		OnDecided: func(d time.Duration) { m.DecisionSeconds.Record(context.Background(), d.Seconds()) }}, nil
 }
 
 // runRequester is SP3's factory at factoryURL, or before SP3 (unset) the
