@@ -37,8 +37,9 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let you: Snapshot["you"] | undefined;
   let controls: ReturnType<typeof mountControls> | undefined;
   const say = (text: string) => { notice.textContent = text; };
-  // What an act said (a refusal, not connected, a lost act): an act or its ack clears
-  // only that, never a notice the controls set meanwhile, such as a lost token's.
+  // What an act said (a refusal, not connected, a lost act): an ack clears only that,
+  // never a notice the controls set meanwhile, such as a lost token's. A send that went
+  // out supersedes every notice.
   let actSaid = "";
   const sayAct = (text: string) => { say((actSaid = text)); };
   const clearAct = () => { if (notice.textContent === actSaid) sayAct(""); };
@@ -54,6 +55,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     onState: (s: Snapshot, throughSeq: number) => {
       snap = s;
       mark = throughSeq;
+      absent = 0; // the broker let us in: the room is readable
       state.reset(s, throughSeq);
       renderHeader();
       if (!hasControls(s.you)) {
@@ -115,7 +117,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const sender = {
     send: (f: Record<string, unknown>) => {
       const sent = pending.send(conn, f);
-      if (sent) clearAct(); else sayAct("Not connected: the action was not sent. Retry once the room is live.");
+      sayAct(sent ? "" : "Not connected: the action was not sent. Retry once the room is live.");
       return sent;
     },
   };

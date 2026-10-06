@@ -144,6 +144,58 @@ describe("the room page", () => {
     expect(notice()).toBe("");
   });
 
+  // Re-review N2: a connection the broker accepted proves the room readable, so the
+  // three-in-a-row count starts over.
+  it("restarts the count of absent answers after a state frame", async () => {
+    const l = lists([]);
+    const p = page(l.get);
+    const refuse = async () => {
+      p.last().drop(1006);
+      await flush();
+      vi.advanceTimersByTime(30_000);
+    };
+    await refuse();
+    await refuse(); // two absent answers
+    p.join(snapshot(), 0); // the third dial is accepted
+    p.last().drop(1006); // a drop after the open asks the list nothing
+    vi.advanceTimersByTime(30_000);
+    await refuse();
+    await refuse();
+    expect(p.app.querySelector(".title")).not.toBeNull();
+    expect(p.sockets).toHaveLength(6);
+    p.last().drop(1006); // the third in a row since the open
+    await flush();
+    expect(p.app.textContent).toBe(gone);
+    expect(l.calls).toHaveLength(5);
+  });
+
+  // Re-review N1: a send that went out supersedes every notice, the lost token's too;
+  // only an ack is limited to clearing what an act said.
+  it("clears the lost token's notice once the human picks a delivery and sends", () => {
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    const delivery = p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!;
+    const text = p.app.querySelector<HTMLTextAreaElement>('textarea[name="text"]')!;
+    const send = p.app.querySelector<HTMLButtonElement>('[data-act="message"]')!;
+    delivery.value = "steering";
+    p.last().recv(event(1, "driver", { from: "human:a", to: "human:c", epoch: 2, reason: "taken" }));
+    const choose = "You no longer hold the driver token: choose where this message goes.";
+    expect(notice()).toBe(choose);
+    const frames = p.last().sent.length;
+    text.value = "for the room, then";
+    send.click(); // no delivery chosen: refused, and said again
+    expect(p.last().sent).toHaveLength(frames);
+    expect(notice()).toBe(choose);
+    delivery.value = "none";
+    send.click();
+    const msg = p.last().sent.at(-1) as { clientSeq: number; action: unknown };
+    expect(msg.action).toEqual({ kind: "message", text: "for the room, then", delivery: "none" });
+    expect(notice()).toBe("");
+    p.last().recv({ type: "ack", clientSeq: msg.clientSeq, seq: 2 });
+    expect(notice()).toBe("");
+  });
+
   it("announces its notices politely (R10)", () => {
     const notice = page().app.querySelector("footer .notice")!;
     expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
