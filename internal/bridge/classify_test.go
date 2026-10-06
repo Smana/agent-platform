@@ -274,6 +274,35 @@ func TestClassifyWithoutABranch(t *testing.T) {
 	}
 }
 
+// Finding A (run ikely2yk): the shapes OpenHands writes for an implementer's push
+// of its own branch. Given the run's branch, each is forge.push, which both §6
+// profiles allow; without it, as that run's bridge had, each is forge.other.
+func TestAnOwnBranchPushAsOpenHandsWritesIt(t *testing.T) {
+	const branch = "agent/ibbay5ud"
+	for _, profile := range []string{"attended", "unattended"} {
+		if v := Decide(wire.ApprovalPolicy{Profile: profile}, ForgePush); v != Allow {
+			t.Fatalf("%s: forge.push is %q, want allow (§6)", profile, v)
+		}
+	}
+	for _, cmd := range []string{
+		"git push origin " + branch,
+		"cd /workspace/cloud-native-ref && git push origin " + branch,
+		"git push -u origin " + branch,
+		"git push --set-upstream origin " + branch,
+		"git push origin HEAD:" + branch,
+		"git push origin HEAD",
+		"git push origin " + branch + " 2>&1",
+		"cd /workspace/cloud-native-ref && git push -u origin " + branch + " 2>&1 | tail -20",
+	} {
+		if got := (Classifier{Branch: branch}).Classify("terminal", shell(cmd), "UNKNOWN"); got != ForgePush {
+			t.Errorf("%q, branch set: got %q want forge.push", cmd, got)
+		}
+		if got := (Classifier{}).Classify("terminal", shell(cmd), "UNKNOWN"); got != ForgeOther {
+			t.Errorf("%q, no branch: got %q want forge.other", cmd, got)
+		}
+	}
+}
+
 func TestDecideFallbacks(t *testing.T) {
 	for _, tc := range []struct {
 		p    wire.ApprovalPolicy
