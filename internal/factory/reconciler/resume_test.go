@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -137,5 +139,45 @@ func TestAResumedFirstBriefFitsTheTaskText(t *testing.T) {
 	tk := issueTask("3buqdlot", 7, strings.Repeat("x", config.MaxTextCeiling))
 	if n := len(resumed(tk, "resume") + FirstBrief(tk, "n0nce234")); n > 16384 {
 		t.Fatalf("a resumed brief of a %d-byte issue is %d bytes, over 16384", config.MaxTextCeiling, n)
+	}
+}
+
+func TestALostReviewerRunsAgainWithoutARound(t *testing.T) {
+	g := pairRig(t)
+	g.lose(rid(1), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.ReviewRounds != 0 || tk.Status.Resumes != 1 ||
+		g.runs.specs[rid(2)].Role != "reviewer" || tk.Status.Runs[2].HeadSHA != head1 {
+		t.Fatalf("%s rounds=%d resumes=%d %+v", tk.Status.Phase, tk.Status.ReviewRounds, tk.Status.Resumes, tk.Status.Runs)
+	}
+	if issue := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(issue, "The new review run uses no review round.") {
+		t.Fatalf("%s", issue)
+	}
+}
+
+// A verdict recorded before the loss still counts: the review is done, nothing re-runs.
+func TestALostReviewersVerdictStillCounts(t *testing.T) {
+	g := pairRig(t)
+	g.log.verdict(rid(1), "approve", head1[:7], "lgtm")
+	g.lose(rid(1), runs.ReasonDisrupted)
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Resumes != 0 {
+		t.Fatalf("%s %d", tk.Status.Phase, tk.Status.Resumes)
+	}
+}
+
+// Past the cap a lost reviewer is a run without a verdict, as before: it spends a round.
+func TestPastTheCapALostReviewerSpendsARound(t *testing.T) {
+	g := pairRig(t)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.Resumes = 2
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	g.lose(rid(1), runs.ReasonDisrupted)
+	if got := g.reconcile(t, "3buqdlot", 2); got.Status.ReviewRounds != 1 || got.Status.Resumes != 2 || got.Status.Verdict != "none" {
+		t.Fatalf("rounds=%d resumes=%d verdict=%s", got.Status.ReviewRounds, got.Status.Resumes, got.Status.Verdict)
 	}
 }

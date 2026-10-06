@@ -134,6 +134,10 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 		return r.roomUnreadable(ctx, t, err)
 	}
 	if why != "" {
+		if r.resumable(t, run) {
+			r.resume(ctx, t, run)
+			return nil
+		}
 		return r.noVerdict(ctx, t, why)
 	}
 	if v.Verdict == "approve" {

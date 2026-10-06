@@ -393,13 +393,17 @@ func (r *Reconciler) resumable(t *v1alpha1.Task, run runs.Run) bool {
 // resume sends the task back to Queued for a new run of the lost run's role, on the same branch
 // and in the same room (disruption design §4). The new run is a new AgentRun with the task's next
 // deterministic id (R48), so a replay after a lost status write never starts two; the lost one
-// stays Failed.
+// stays Failed. A reviewer's or tester's re-run spends no review round.
 func (r *Reconciler) resume(ctx context.Context, t *v1alpha1.Task, run runs.Run) {
 	t.Status.Resumes++
 	n, why := int(t.Status.Resumes), run.Reason
 	record(ctx, func(ctx context.Context) { r.Metrics.Resumed(ctx, why) })
-	t.Status.NextTrigger = "resume"
-	r.to(t, v1alpha1.PhaseQueued, "")
+	if run.Role == "reviewer" || run.Role == "tester" {
+		r.requestVerifier(t, run.Role) // no ReviewRounds++: the loss was the platform's, not the review's
+	} else {
+		t.Status.NextTrigger = "resume"
+		r.to(t, v1alpha1.PhaseQueued, "")
+	}
 	narrateLater(t, narrate.Resuming(t, run.ID, run.Role, n, r.Cfg.Resume.MaxPerTask))
 }
 
