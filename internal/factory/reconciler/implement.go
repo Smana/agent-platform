@@ -241,9 +241,9 @@ func pending(phase string) bool { return phase == "" || phase == "Pending" }
 
 // boundPending ends a run that never started (P): nothing else bounds Pending —
 // activeDeadlineSeconds counts from the pod's start, and Kueue queues unadmitted work forever.
-// A run Pending past caps.maxPendingMinutes never ran, so deleting it loses no usage; the task
-// escalates as run_unschedulable, and a maintainer's /factory retry starts a fresh run. Never
-// ran: its record never saw it start (observe), and its claim carries no usage.
+// A run still Pending past caps.maxPendingMinutes whose record never saw it start (observe) and
+// whose claim carries no usage never ran, so deleting it loses no usage; the task escalates as
+// run_unschedulable, and a maintainer's /factory retry starts a fresh run.
 func (r *Reconciler) boundPending(ctx context.Context, t *v1alpha1.Task, run runs.Run) error {
 	if !pending(current(t).Phase) || run.Tokens > 0 || run.Created.IsZero() ||
 		r.Now().Sub(run.Created) < time.Duration(r.Cfg.Caps.MaxPendingMinutes)*time.Minute {

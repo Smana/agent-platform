@@ -246,6 +246,16 @@ func TestStartedRunIsNeverUnschedulable(t *testing.T) {
 	}
 }
 
+// A later run of a task starts unseen: run 0 ran, and run 1 never admitted is still bounded.
+func TestLaterRunOfAStartedTaskIsStillBounded(t *testing.T) {
+	g := pairRig(t) // rid(0) Succeeded, the reviewer rid(1) created and Pending
+	g.r.Now = func() time.Time { return now.Add(31 * time.Minute) }
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if _, ok := g.runs.runs[rid(1)]; ok || tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "run_unschedulable" {
+		t.Fatalf("claim kept %t, %s %s", ok, tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
 // A claim deleted out of band after its run was seen Running, past the Pending bound: the room's
 // reason, never run_unschedulable, and no second run.
 func TestRunDeletedAfterItRan(t *testing.T) {
