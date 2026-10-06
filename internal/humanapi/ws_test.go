@@ -535,8 +535,8 @@ func TestATokenExpiringBeforeTheHelloIsReauth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := closed(t, c); code != closeReauth {
-		t.Fatalf("closed %d, want %d: the client must re-authenticate", code, closeReauth)
+	if code, reason := closed(t, c); code != closeReauth || reason != "reauth" {
+		t.Fatalf("closed %d %q, want %d \"reauth\": the client must re-authenticate", code, reason, closeReauth)
 	}
 	eventually(t, "the drop is counted as reauth", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="reauth"} 1`)

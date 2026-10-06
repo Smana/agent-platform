@@ -198,7 +198,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	case dropLogUnavailable:
 		_ = c.Close(websocket.StatusTryAgainLater, reason)
 	}
-	// The reader returns once the socket is closed, the pinger with the life.
+	// The hello's read and the reader return once the socket is closed, the pinger with the life.
 	_ = c.CloseNow()
 	cancel(nil)
 	v.wg.Wait()
@@ -241,7 +241,7 @@ type viewer struct {
 	room   *v1alpha1.Room
 	id     string
 	last   int64          // the last seq written
-	wg     sync.WaitGroup // the hello's read, the reader and the pinger
+	wg     sync.WaitGroup // the reader and the pinger
 }
 
 // write sends one frame within WriteWait. A peer that does not take it in time
