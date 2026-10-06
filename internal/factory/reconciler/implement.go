@@ -204,6 +204,9 @@ func current(t *v1alpha1.Task) *v1alpha1.RunRecord { return &t.Status.Runs[len(t
 // reading the meter annotated after a run ended — the current run or any before it — still
 // lands (R49). A record's tokens never go down, since a stale read of a run must not lower
 // them, so neither does the sum; a deleted claim leaves its record's last reading in place.
+// Nor does its phase go back to Pending: the composition reports a started run whose Sandbox
+// is not Ready as Pending (its harness exited and the sidecars drain, or a probe fails), and
+// the record is what remembers it was admitted.
 func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, bool, error) {
 	if len(t.Status.Runs) == 0 {
 		return runs.Run{}, false, nil
@@ -222,7 +225,7 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 		rec := &t.Status.Runs[i]
 		if x, ok := claims[rec.ID]; ok {
 			rec.Tokens = max(rec.Tokens, x.Tokens)
-			if rec.ID == cur.ID {
+			if rec.ID == cur.ID && (!pending(x.Phase) || pending(rec.Phase)) {
 				rec.Phase = x.Phase
 			}
 		}
@@ -239,9 +242,10 @@ func pending(phase string) bool { return phase == "" || phase == "Pending" }
 // boundPending ends a run that never started (P): nothing else bounds Pending —
 // activeDeadlineSeconds counts from the pod's start, and Kueue queues unadmitted work forever.
 // A run Pending past caps.maxPendingMinutes never ran, so deleting it loses no usage; the task
-// escalates as run_unschedulable, and a maintainer's /factory retry starts a fresh run.
+// escalates as run_unschedulable, and a maintainer's /factory retry starts a fresh run. Never
+// ran: its record never saw it start (observe), and its claim carries no usage.
 func (r *Reconciler) boundPending(ctx context.Context, t *v1alpha1.Task, run runs.Run) error {
-	if !pending(run.Phase) || run.Created.IsZero() ||
+	if !pending(current(t).Phase) || run.Tokens > 0 || run.Created.IsZero() ||
 		r.Now().Sub(run.Created) < time.Duration(r.Cfg.Caps.MaxPendingMinutes)*time.Minute {
 		return nil
 	}
