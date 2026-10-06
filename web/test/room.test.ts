@@ -46,10 +46,11 @@ describe("the room page", () => {
   // projection: the reconnect's state frame re-resolves you; the broker checks every act.
   it("re-syncs when a membership change past the mark names you", () => {
     const p = page();
-    p.join(snapshot(), 2, event(1, "participant", { principal: "human:b", change: "joined", role: "watcher" }),
+    // A human's membership events are invites' role_changed (internal/humanapi/acts.go).
+    p.join(snapshot(), 2, event(1, "participant", { principal: "human:b", change: "role_changed", role: "watcher" }),
       event(2, "participant", { principal: "human:b", change: "role_changed", role: "collaborator" }));
     expect(p.last().closed).toBe(false); // the state frame already holds what the replay resends
-    p.last().recv(event(3, "participant", { principal: "human:c", change: "joined", role: "watcher" }));
+    p.last().recv(event(3, "participant", { principal: "human:c", change: "role_changed", role: "watcher" }));
     expect(p.last().closed).toBe(false); // someone else's
     p.last().recv(event(4, "participant", { principal: "human:b", change: "left" }));
     expect(p.sockets[0].closed).toBe(true);
@@ -61,40 +62,86 @@ describe("the room page", () => {
 
   // R11: a refused socket asks the room list. A room the list does not hold, whether
   // it does not exist or the caller cannot read it, gets one answer and no re-dial.
-  it("stops on a room the list does not hold, with one answer for both cases", async () => {
-    const list = (ids: string[]) => (() => Promise.resolve({ ok: true, status: 200,
-      json: () => Promise.resolve(ids.map((id) => ({ id }))) })) as unknown as typeof fetch;
-    const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  // A room just created is often refused (roomctrl writes its log row afterwards) and
+  // the list reads a replica's informer cache, which may lag the POST (review I2): the
+  // page stops only after three absent answers in a row, each a backoff apart.
+  const listed = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  const lists = (...script: string[][]) => {
+    const calls: number[] = [];
+    const get = (() => {
+      calls.push(calls.length);
+      return listed(script[Math.min(calls.length - 1, script.length - 1)].map((id) => ({ id })));
+    }) as unknown as typeof fetch;
+    return { get, calls };
+  };
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const gone = "No such room, or you cannot read it. See the rooms you can read.";
 
-    const gone = page(list(["aaaaaaaa"]));
-    gone.last().drop(1006);
+  it("stops on a room the list misses three refusals in a row, with one answer for both cases", async () => {
+    const l = lists([], ["3kq7x2ma"], [], [], []);
+    const p = page(l.get);
+    for (let n = 1; n <= 4; n++) { // absent, then listed (which starts the count over), then absent twice
+      p.last().drop(1006);
+      await flush();
+      vi.advanceTimersByTime(30_000); // past any backoff: the re-dial continues
+      expect(p.sockets).toHaveLength(n + 1);
+      expect(p.app.querySelector(".title")).not.toBeNull();
+    }
+    p.last().drop(1006); // the third absent answer in a row
     await flush();
-    expect(gone.app.textContent).toBe("No such room, or you cannot read it. See the rooms you can read.");
-    expect(gone.app.querySelector("a")?.getAttribute("href")).toBe("/");
+    expect(p.app.textContent).toBe(gone);
+    expect(p.app.querySelector("a")?.getAttribute("href")).toBe("/");
     vi.advanceTimersByTime(60_000);
-    expect(gone.sockets).toHaveLength(1);
+    expect(p.sockets).toHaveLength(5);
+    expect(l.calls).toHaveLength(5);
+  });
 
-    // The list answers after the retry dialled: stop closes that socket too, and its
-    // refusal asks the list nothing more.
+  // The last answer lands after the retry dialled: stop closes that socket too, and
+  // its refusal asks the list nothing more.
+  it("stops a re-dial already under way", async () => {
     let answer!: (r: unknown) => void;
     let asked = 0;
-    const slow = page((() => { asked++; return new Promise((r) => { answer = r; }); }) as unknown as typeof fetch);
-    slow.last().drop(1006);
-    vi.advanceTimersByTime(500);
-    expect(slow.sockets).toHaveLength(2);
-    answer({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    const p = page((() => {
+      asked++;
+      return asked < 3 ? listed([]) : new Promise((r) => { answer = r; });
+    }) as unknown as typeof fetch);
+    for (let n = 0; n < 2; n++) {
+      p.last().drop(1006);
+      await flush();
+      vi.advanceTimersByTime(30_000);
+    }
+    p.last().drop(1006);
+    vi.advanceTimersByTime(30_000);
+    expect(p.sockets).toHaveLength(4);
+    answer(await listed([]));
     await flush();
-    expect(slow.sockets[1].closed).toBe(true);
-    expect(asked).toBe(1);
+    expect(p.sockets[3].closed).toBe(true);
+    expect(asked).toBe(3);
+    expect(p.app.textContent).toBe(gone);
     vi.advanceTimersByTime(60_000);
-    expect(slow.sockets).toHaveLength(2);
+    expect(p.sockets).toHaveLength(4);
+  });
 
-    const listed = page(list(["3kq7x2ma"])); // a broker restarting: retry
-    listed.last().drop(1006);
-    await flush();
-    vi.advanceTimersByTime(500);
-    expect(listed.sockets).toHaveLength(2);
-    expect(listed.app.querySelector(".title")).not.toBeNull();
+  // Review M3: an ack clears what an act said, never a notice the controls set
+  // meanwhile, such as a lost token's.
+  it("keeps the lost token's notice past the ack of the give that lost it", () => {
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
+    p.app.querySelector<HTMLInputElement>('[name="giveTo"]')!.value = "human:c";
+    p.app.querySelector<HTMLButtonElement>('[data-act="driver_give"]')!.click();
+    const give = p.last().sent.at(-1) as { clientSeq: number };
+    p.last().recv(event(1, "driver", { from: "human:a", to: "human:c", epoch: 2, reason: "given" }));
+    const choose = "You no longer hold the driver token: choose where this message goes.";
+    expect(notice()).toBe(choose);
+    p.last().recv({ type: "ack", clientSeq: give.clientSeq, seq: 1 });
+    expect(notice()).toBe(choose);
+    // A refusal is an act's own: the next accepted ack clears it.
+    p.last().recv({ type: "ack", clientSeq: give.clientSeq + 1, rejected: "rate_limited" });
+    expect(notice()).toMatch(/^Too many actions/);
+    p.last().recv({ type: "ack", clientSeq: give.clientSeq + 2, seq: 2 });
+    expect(notice()).toBe("");
   });
 
   it("announces its notices politely (R10)", () => {

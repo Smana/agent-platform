@@ -59,18 +59,21 @@ describe("RoomState", () => {
       expect(t.sealed).toBe(true);
     }
   });
-  // R10: the header shows the room's phase. The log leads the state frame's phase,
-  // which follows the Room (docs/api.md), so a replayed room_phase applies too.
+  // R10: the header shows the room's phase. Active, Idle and AwaitingHuman never reach
+  // the log (roomctrl derives them), so at or below the mark only the seal moves it: a
+  // replayed room_phase{Open}, in most tails, must not undo the state frame's Active.
   it("follows the room's phase", () => {
     const s = new RoomState();
-    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 10);
-    expect(s.phase).toBe("Open");
-    s.apply(ev(11, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Active" }, 40);
+    expect(s.phase).toBe("Active");
+    s.apply(ev(1, "state_changed", { kind: "room_phase", phase: "Open" })); // the replayed tail
+    expect(s.phase).toBe("Active");
+    s.apply(ev(39, "state_changed", { kind: "room_phase", phase: "Closed" })); // the Room lags the seal
     expect(s.phase).toBe("Closed");
-    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 20); // the Room lags the seal
-    s.apply(ev(11, "state_changed", { kind: "room_phase", phase: "Closed" })); // the replay
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 40);
+    s.apply(ev(41, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
     expect(s.phase).toBe("Closed");
-    s.apply(ev(21, "state_changed", { kind: "run_phase", phase: "Failed" })); // a run's, not the room's
+    s.apply(ev(42, "state_changed", { kind: "run_phase", phase: "Failed" })); // a run's, not the room's
     expect(s.phase).toBe("Closed");
   });
   it("follows the driver token", () => {

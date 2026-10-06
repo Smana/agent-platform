@@ -37,6 +37,13 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let you: Snapshot["you"] | undefined;
   let controls: ReturnType<typeof mountControls> | undefined;
   const say = (text: string) => { notice.textContent = text; };
+  // What an act said (a refusal, not connected, a lost act): an act or its ack clears
+  // only that, never a notice the controls set meanwhile, such as a lost token's.
+  let actSaid = "";
+  const sayAct = (text: string) => { say((actSaid = text)); };
+  const clearAct = () => { if (notice.textContent === actSaid) sayAct(""); };
+  // Refusals in a row the room list answered without this room (R11).
+  let absent = 0;
   let snap: Snapshot | undefined;
   let mark = 0; // the latest state frame's throughSeq
   const renderHeader = () => {
@@ -69,17 +76,23 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
     onAck: (f) => {
       pending.ack(f);
-      say(f.rejected ? rejection(f.rejected) : "");
+      if (f.rejected) sayAct(rejection(f.rejected)); else clearAct();
       controls?.onAck(f);
     },
     // Refused before it opened: an expired session (a 401 from the list signs in
     // again), a broker restarting, or a room this caller cannot read. Only the list
     // tells the last apart, and it says the same of a room that does not exist: no
-    // existence oracle (R11).
+    // existence oracle (R11). A room just created is refused until roomctrl writes its
+    // log row, and the list reads a replica's informer cache, which may lag the POST:
+    // only three absent answers in a row, a backoff apart, stop the page.
     onRefused: () => void api("/api/rooms", {}, o.get).then(async (r) => {
       if (!r.ok) return;
       const rooms = (await r.json()) as { id: string }[];
-      if (rooms.some((row) => row.id === id)) return;
+      if (rooms.some((row) => row.id === id)) {
+        absent = 0;
+        return;
+      }
+      if (++absent < 3) return;
       conn.stop();
       const back = document.createElement("a");
       back.href = "/";
@@ -98,11 +111,11 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       pending.status(s);
     },
   }, o);
-  const pending = new PendingActs(say);
+  const pending = new PendingActs(sayAct);
   const sender = {
     send: (f: Record<string, unknown>) => {
       const sent = pending.send(conn, f);
-      say(sent ? "" : "Not connected: the action was not sent. Retry once the room is live.");
+      if (sent) clearAct(); else sayAct("Not connected: the action was not sent. Retry once the room is live.");
       return sent;
     },
   };
