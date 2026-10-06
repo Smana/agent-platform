@@ -95,6 +95,16 @@ describe("renderEvent (T10)", () => {
     expect(d.querySelector(".decision-denied")?.textContent).toBe("denied · <b>not</b> this branch");
     expect(d.querySelector("b")).toBeNull();
   });
+  // R09: a row says where its message went, and a delivery names the message it delivered.
+  it("badges a message with its delivery, one per value", () => {
+    const badge = (payload: object) =>
+      renderEvent(ev("message", { kind: "chat", text: "x", ...payload })).querySelector(".chip-delivery")?.textContent;
+    expect(badge({ delivery: "none" })).toBe("chat");
+    expect(badge({ delivery: "queued" })).toBe("queued");
+    expect(badge({ delivery: "steering", to: ["agent:7f3cq2xz"] })).toBe("steering → agent:7f3cq2xz");
+    const d = renderEvent(ev("state_changed", { kind: "delivered", ref: 1846, runId: "7f3cq2xz" }));
+    expect(d.querySelector(".state")?.textContent).toBe("delivered #1846");
+  });
   it("keeps markdown's structure", () => {
     const el = chat("# T\n\n- a\n- `b`\n\n```\n<i>c</i>\n```\n\n> q");
     inert(el);

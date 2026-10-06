@@ -105,14 +105,30 @@ export function markdown(src: string): HTMLElement {
 // A class name from a payload value: letters, digits, _ and - only.
 const cls = (v: unknown) => String(v ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 
+// deliveryChip says where a message went (R09): the room only, the next run's
+// brief, or the running agent it steered.
+export function deliveryChip(p: any): HTMLElement {
+  const to = Array.isArray(p.to) && p.to.length ? ` → ${p.to.join(", ")}` : "";
+  const label = p.delivery === "none" ? "chat" : p.delivery === "steering" ? `steering${to}` : String(p.delivery ?? "");
+  return el("span", `chip chip-delivery dl-${cls(p.delivery)}`, label);
+}
+
+// stateHead names a state change and, for one about a message (delivered,
+// undeliverable, interrupted, queued_removed), the message by its seq.
+export function stateHead(p: any): string {
+  return typeof p.ref === "number" && p.ref > 0 ? `${p.kind} #${p.ref}` : String(p.kind ?? "");
+}
+
 export function renderEvent(ev: RoomEvent): HTMLElement {
   const row = el("article", `ev ev-${cls(ev.type)}`);
   row.dataset.seq = String(ev.seq);
-  row.append(el("header", "ev-head",
-    `#${ev.seq} · ${ev.actor.id}${ev.actor.role ? " (" + ev.actor.role + ")" : ""} · ${new Date(ev.ts).toLocaleTimeString()}`));
+  const head = el("header", "ev-head",
+    `#${ev.seq} · ${ev.actor.id}${ev.actor.role ? " (" + ev.actor.role + ")" : ""} · ${new Date(ev.ts).toLocaleTimeString()} `);
+  row.append(head);
   const p = ev.payload ?? {};
   switch (ev.type) {
     case "message":
+      head.append(deliveryChip(p));
       if (p.kind === "review_verdict") row.append(el("div", `verdict verdict-${cls(p.verdict)}`, `verdict: ${p.verdict}`));
       row.append(markdown(String(p.text ?? "")));
       break;
@@ -136,7 +152,7 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
       row.append(el("div", `decision decision-${cls(p.decision)}`, [p.decision, p.reason ?? ""].filter(Boolean).join(" · ")));
       break;
     case "state_changed":
-      row.append(el("div", "state", [p.kind, p.phase ?? p.status ?? "", p.reason ?? ""].filter(Boolean).join(" · ")));
+      row.append(el("div", "state", [stateHead(p), p.phase ?? p.status ?? "", p.reason ?? ""].filter(Boolean).join(" · ")));
       break;
     default:
       row.append(el("pre", "raw", JSON.stringify(p, null, 2)));

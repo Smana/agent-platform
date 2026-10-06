@@ -10,14 +10,15 @@ const you = (principal: string, role: string): You => ({ principal, role, approv
 
 function setup(who: You, driver = "human:a", epoch = 4) {
   const sent: Record<string, any>[] = [];
+  const notices: string[] = [];
   const conn = { send: (f: Record<string, unknown>) => { sent.push(f); return true; } };
   const state = new RoomState(driver, epoch);
   const root = document.createElement("section");
-  const controls = mountControls(root, conn, state, who);
+  const controls = mountControls(root, conn, state, who, (t) => notices.push(t));
   controls.refresh();
   const btn = (act: string) => root.querySelector<HTMLButtonElement>(`button[data-act="${act}"]`);
   const field = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[name="${name}"]`)!;
-  return { sent, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
+  return { sent, notices, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
 }
 
 const queued = (seq: number, author: string, text: string) => ({ v: 1, id: String(seq), seq, roomId: "3kq7x2ma",
@@ -60,13 +61,36 @@ describe("mountControls", () => {
     c.state.apply({ ...queued(1, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:b", epoch: 5, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(false);
-    // Losing the token falls back to chat, never a steer the broker refuses (review 4.5 I3).
+    // Losing the token picks nothing for the human: queued text enters an LLM prompt,
+    // so neither the room nor the queue is a safe guess (R09, reversing review 4.5 I3).
     const delivery = c.field<HTMLSelectElement>("delivery");
     delivery.value = "steering";
     c.state.apply({ ...queued(2, "human:a", ""), type: "driver", payload: { from: "human:b", to: "human:c", epoch: 6, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(true);
+    expect(delivery.value).toBe("");
+    const choose = "You no longer hold the driver token: choose where this message goes.";
+    expect(c.notices).toEqual([choose]);
+    c.field<HTMLTextAreaElement>("text").value = "steer this";
+    c.btn("message")!.click();
+    expect(c.sent).toHaveLength(0);
+    expect(c.notices).toEqual([choose, choose]);
+    delivery.value = "none";
+    c.btn("message")!.click();
+    expect(c.acts()).toEqual([{ kind: "message", text: "steer this", delivery: "none" }]);
+  });
+
+  // R09: each option says what it does; the room is the default, since it prompts no agent.
+  it("names where each delivery goes, the room by default", () => {
+    const delivery = setup(you("human:a", "owner")).field<HTMLSelectElement>("delivery");
     expect(delivery.value).toBe("none");
+    expect([...delivery.options].map((o) => [o.value, o.textContent])).toEqual([
+      ["none", "post to the room (no agent is prompted)"],
+      ["queued", "queue for the next run's brief"],
+      ["steering", "steer the running agent now"],
+      ["", "choose where this goes"],
+    ]);
+    expect(delivery.options[3].disabled).toBe(true);
   });
 
   it("shows the queue as text, with remove for its author and steer for the driver", () => {

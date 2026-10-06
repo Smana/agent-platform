@@ -192,6 +192,8 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
   background: color-mix(in srgb, var(--warning) 18%, var(--card));
   border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
 }
+/* A message for the room prompts no agent: a neutral chip, the others amber (R09). */
+.chip-delivery.dl-none { color: var(--muted-foreground); background: none; border-color: var(--border); }
 .chip-running {
   color: var(--primary);
   background: color-mix(in srgb, var(--primary) 10%, var(--card));

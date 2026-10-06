@@ -7,7 +7,7 @@
 // The same untrusted-text rules as render.ts hold: DOM nodes and textContent only.
 
 import type { RoomEvent } from "./conn";
-import { markdown } from "./render";
+import { deliveryChip, markdown, stateHead } from "./render";
 import { maxRows } from "./view";
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
@@ -37,7 +37,7 @@ function bubble(ev: RoomEvent): HTMLElement {
   const row = el("article", `msg from-${cls(ev.actor.kind)}`);
   row.dataset.seq = String(ev.seq);
   const head = el("header", "msg-head", who(ev));
-  if (p.delivery && p.delivery !== "none") head.append(el("span", `chip chip-delivery`, String(p.delivery)));
+  head.append(deliveryChip(p));
   if (p.kind === "review_verdict" && p.verdict) {
     head.append(el("span", `chip verdict-${cls(p.verdict)}`, `verdict: ${p.verdict}`));
   }
@@ -150,6 +150,12 @@ function marker(ev: RoomEvent): HTMLElement {
       break;
     case "harness_error":
       text = `harness error ${p.code ?? ""}${p.detail ? ": " + p.detail : ""}`;
+      break;
+    case "delivered":
+    case "undeliverable":
+    case "interrupted":
+    case "queued_removed":
+      text = `${stateHead(p)}${p.code ? " · " + p.code : ""}`;
       break;
     case "harness_paused":
       text = "harness paused";

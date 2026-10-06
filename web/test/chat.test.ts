@@ -45,9 +45,18 @@ describe("ChatView messages", () => {
     expect(el.querySelector("img")).toBeNull();
     expect(el.textContent).toContain("<img src=x onerror=alert(1)>");
   });
-  it("marks a queued or steering message", () => {
-    const { el } = view([ev(1, "message", { kind: "chat", text: "later", delivery: "queued" })]);
-    expect(el.querySelector(".chip-delivery")?.textContent).toBe("queued");
+  // R09: every bubble says where it went, as the raw row does.
+  it("marks each message with its delivery", () => {
+    const { el } = view([
+      ev(1, "message", { kind: "chat", text: "for the room", delivery: "none" }),
+      ev(2, "message", { kind: "chat", text: "later", delivery: "queued" }),
+      ev(3, "message", { kind: "chat", text: "now", delivery: "steering", to: ["agent:ikely2yk"] }),
+    ]);
+    expect([...el.querySelectorAll(".chip-delivery")].map((c) => c.textContent)).toEqual(["chat", "queued", "steering → agent:ikely2yk"]);
+  });
+  it("names the message a delivery delivered", () => {
+    const { el } = view([ev(1, "state_changed", { kind: "delivered", ref: 1846, runId: "ikely2yk" }, { kind: "system", id: "system:room-broker" })]);
+    expect(el.querySelector(".mark-text")?.textContent).toBe("delivered #1846");
   });
   it("keeps a review verdict's chip", () => {
     const { el } = view([ev(1, "message", { kind: "review_verdict", text: "add a test", delivery: "none", verdict: "changes" })]);
@@ -192,6 +201,6 @@ describe("the recorded session fixture", () => {
     expect(el.querySelectorAll(".pol-allow")).toHaveLength(3); // policy badges on their rows
     expect(el.querySelectorAll(".sys")).toHaveLength(2); // owner and agent joined
     expect(el.querySelector(".redacted")?.textContent).toContain("github-app-token");
-    expect(el.querySelector(".msg.from-human .chip-delivery")?.textContent).toBe("steering");
+    expect(el.querySelector(".msg.from-human .chip-delivery")?.textContent).toBe("steering → agent:ikely2yk");
   });
 });

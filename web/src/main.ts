@@ -53,7 +53,7 @@ function room(id: string) {
         return;
       }
       if (you && controls) Object.assign(you, s.you);
-      else controls = mountControls(section, sender, state, (you = { ...s.you }));
+      else controls = mountControls(section, sender, state, (you = { ...s.you }), say);
       controls.refresh();
     },
     onEvent: (e) => {

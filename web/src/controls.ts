@@ -77,19 +77,25 @@ export function hasControls(you: Snapshot["you"]): boolean {
 // mountControls renders what a collaborator and up, or an approver, can do: the composer, the queue,
 // the driver token, interrupt, and hand to role. Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
-export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"]) {
+// say sets the footer's notice.
+export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"], say: (text: string) => void) {
   const send = (action: Record<string, unknown>) => act(conn, state, action);
   const isDriver = () => state.driver === you.principal;
   const isOwner = () => you.role === "owner";
 
   const text = el("textarea", { name: "text", maxLength: 16384, rows: 3, placeholder: "Write to the room" });
-  const delivery = select("delivery", [["none", "chat"], ["queued", "queue for the next run"], ["steering", "steer the run now"]]);
+  // The room is the default: queued and steered text enters an agent's prompt (R09).
+  const delivery = select("delivery", [["none", "post to the room (no agent is prompted)"],
+    ["queued", "queue for the next run's brief"], ["steering", "steer the running agent now"]]);
+  delivery.append(el("option", { value: "", textContent: "choose where this goes", disabled: true, hidden: true }));
   const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+  const choose = "You no longer hold the driver token: choose where this message goes.";
   const composer = el("div", { className: "composer" });
   // The text stays until its own ack accepts it: a rejected message is not lost.
   let sent = { seq: 0, text: "" };
   composer.append(text, delivery, button("send", "message", () => {
     if (!text.value.trim()) return;
+    if (!delivery.value) return say(choose);
     sent = { seq: send({ kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
   }));
 
@@ -180,7 +186,12 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   return {
     refresh() {
       steering.disabled = !isDriver();
-      if (steering.disabled && delivery.value === "steering") delivery.value = "none";
+      // A lost token picks no other delivery for the human: both prompt or skip an
+      // agent the human meant to reach (R09, reversing review 4.5 I3).
+      if (steering.disabled && delivery.value === "steering") {
+        delivery.value = "";
+        say(choose);
+      }
       hand.hidden = !(isDriver() || isOwner());
       renderDriver();
       renderQueue();
