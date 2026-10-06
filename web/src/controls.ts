@@ -42,10 +42,41 @@ function button(label: string, act: string, onClick: () => void): HTMLButtonElem
   return b;
 }
 
-function select(name: string, options: [string, string][]): HTMLSelectElement {
-  const s = el("select", { name });
-  for (const [value, label] of options) s.append(el("option", { value, textContent: label }));
+// named gives a field its accessible name: a placeholder is not one (R10).
+function named<T extends HTMLElement>(e: T, label: string): T {
+  e.setAttribute("aria-label", label);
+  return e;
+}
+
+function select(name: string, label: string, options: [string, string][]): HTMLSelectElement {
+  const s = named(el("select", { name }), label);
+  for (const [value, text] of options) s.append(el("option", { value, textContent: text }));
   return s;
+}
+
+interface Row { key: string; sig: string; build: () => HTMLElement }
+
+// keyed renders rows into list, rebuilding a row only when its sig changes and
+// moving none already in place: the row a human is in keeps its focus (R10).
+function keyed(list: HTMLElement) {
+  const held = new Map<string, { sig: string; node: HTMLElement }>();
+  return (rows: Row[]) => {
+    const keys = new Set(rows.map((r) => r.key));
+    for (const [key, h] of held) if (!keys.has(key)) { h.node.remove(); held.delete(key); }
+    let prev: HTMLElement | null = null;
+    for (const r of rows) {
+      let h = held.get(r.key);
+      if (!h || h.sig !== r.sig) {
+        const node = r.build();
+        h?.node.replaceWith(node);
+        held.set(r.key, (h = { sig: r.sig, node }));
+      }
+      if ((prev ? prev.nextElementSibling : list.firstElementChild) !== h.node) {
+        if (prev) prev.after(h.node); else list.prepend(h.node);
+      }
+      prev = h.node;
+    }
+  };
 }
 
 // Every act carries the epoch it was decided on; the broker fences driver-only
@@ -61,8 +92,10 @@ export function approvalCard(a: { class: string; runId?: string; callId: string;
   tag: "li" | "div" = "div"): HTMLElement {
   const li = el(tag, { className: "approval" });
   const due = new Date(a.expiresAt);
+  // Today's deadline shows its time; another day's, its date too (R11).
+  const when = isNaN(due.getTime()) ? "?" : due.toDateString() === new Date().toDateString() ? due.toLocaleTimeString() : due.toLocaleString();
   li.append(
-    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${isNaN(due.getTime()) ? "?" : due.toLocaleTimeString()}` }),
+    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${when}` }),
     el("pre", { className: "approval-action", textContent: JSON.stringify(a.action ?? null, null, 2) }),
   );
   return li;
@@ -77,83 +110,89 @@ export function hasControls(you: Snapshot["you"]): boolean {
 // mountControls renders what a collaborator and up, or an approver, can do: the composer, the queue,
 // the driver token, interrupt, and hand to role. Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
-export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"]) {
+// say sets the footer's notice.
+export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"], say: (text: string) => void) {
   const send = (action: Record<string, unknown>) => act(conn, state, action);
   const isDriver = () => state.driver === you.principal;
   const isOwner = () => you.role === "owner";
 
-  const text = el("textarea", { name: "text", maxLength: 16384, rows: 3, placeholder: "Write to the room" });
-  const delivery = select("delivery", [["none", "chat"], ["queued", "queue for the next run"], ["steering", "steer the run now"]]);
+  const text = named(el("textarea", { name: "text", maxLength: 16384, rows: 3, placeholder: "Write to the room" }), "message");
+  // The room is the default: queued and steered text enters an agent's prompt (R09).
+  const delivery = select("delivery", "where this message goes", [["none", "post to the room (no agent is prompted)"],
+    ["queued", "queue for the next run's brief"], ["steering", "steer the running agent now"]]);
+  delivery.append(el("option", { value: "", textContent: "choose where this goes", disabled: true, hidden: true }));
   const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+  const choose = "You no longer hold the driver token: choose where this message goes.";
   const composer = el("div", { className: "composer" });
   // The text stays until its own ack accepts it: a rejected message is not lost.
   let sent = { seq: 0, text: "" };
   composer.append(text, delivery, button("send", "message", () => {
     if (!text.value.trim()) return;
+    if (!delivery.value) return say(choose);
     sent = { seq: send({ kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
   }));
 
   const queue = el("ul", { className: "queue" });
-  const renderQueue = () => {
-    queue.replaceChildren(...state.queue().map((q) => {
+  const queueRows = keyed(queue);
+  const renderQueue = () => queueRows(state.queue().map((q) => {
+    const remove = !state.sealed && (q.author === you.principal || isDriver()); // sealed: every action answers sealed
+    const promote = !state.sealed && isDriver();
+    return { key: String(q.ref), sig: `${remove} ${promote}`, build: () => {
       const li = el("li");
       li.append(el("span", { textContent: `#${q.ref} ${q.author}: ${q.text}` }));
-      if (state.sealed) return li; // every action answers sealed
-      if (q.author === you.principal || isDriver()) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
-      if (isDriver()) li.append(button("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
+      if (remove) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
+      if (promote) li.append(button("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
       return li;
-    }));
-  };
+    } };
+  }));
 
   // One card per pending approval (§6): its class, the raw action as text, never
   // agent prose (T3), and its deadline. Approvers and owners decide; the broker
-  // still checks four-eyes and who decided first. A typed reason survives re-renders.
+  // still checks four-eyes and who decided first.
   const approvals = el("ul", { className: "approvals" });
-  const reasons = new Map<string, HTMLInputElement>();
-  const canDecide = () => you.approver || isOwner();
-  const renderApprovals = () => {
-    const cards = state.approvals();
-    for (const id of reasons.keys()) if (!cards.some((a) => a.approvalId === id)) reasons.delete(id);
-    approvals.replaceChildren(...cards.map((a) => {
-      const li = approvalCard(a, "li");
-      if (state.sealed || !canDecide()) return li; // the broker answers sealed or not_permitted
-      let reason = reasons.get(a.approvalId);
-      if (!reason) reasons.set(a.approvalId, (reason = el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" })));
-      const decide = (decision: string) => () => {
-        const action: Record<string, unknown> = { kind: "decide", approvalId: a.approvalId, decision };
-        if (reason.value.trim()) action.reason = reason.value.trim();
-        send(action);
-      };
-      li.append(reason, button("approve", "approve", decide("approved")), button("deny", "deny", decide("denied")));
-      return li;
-    }));
-  };
+  const approvalRows = keyed(approvals);
+  const canDecide = () => !state.sealed && (you.approver || isOwner()); // else the broker answers sealed or not_permitted
+  const renderApprovals = () => approvalRows(state.approvals().map((a) => ({ key: a.approvalId, sig: String(canDecide()), build: () => {
+    const li = approvalCard(a, "li");
+    if (!canDecide()) return li;
+    const reason = named(el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" }), "reason for the decision (optional)");
+    const decide = (decision: string) => () => {
+      const action: Record<string, unknown> = { kind: "decide", approvalId: a.approvalId, decision };
+      if (reason.value.trim()) action.reason = reason.value.trim();
+      send(action);
+    };
+    li.append(reason, button("approve", "approve", decide("approved")), button("deny", "deny", decide("denied")));
+    return li;
+  } })));
 
-  const giveTo = el("input", { name: "giveTo", placeholder: "human:<sub> or system:factory" });
-  const takeReason = el("input", { name: "takeReason", maxLength: 256, placeholder: "why take the token" });
+  // The driver's fields stay mounted and toggle hidden: a refresh never takes the
+  // focus or the text of a field the human is in (R10).
+  const holder = el("span");
+  const giveTo = named(el("input", { name: "giveTo", placeholder: "human:<sub> or system:factory" }), "give the driver token to");
+  const give = button("give", "driver_give", () => {
+    const to = giveTo.value.trim();
+    if (to && send({ kind: "driver_give", to })) giveTo.value = "";
+  });
+  const interrupt = button("interrupt", "interrupt", () => send({ kind: "interrupt" }));
+  const request = button("request the token", "driver_request", () => send({ kind: "driver_request" }));
+  const takeReason = named(el("input", { name: "takeReason", maxLength: 256, placeholder: "why take the token" }), "why take the driver token");
+  const take = button("take", "driver_take", () => {
+    const reason = takeReason.value.trim();
+    if (reason && send({ kind: "driver_take", reason })) takeReason.value = "";
+  });
   const driver = el("div", { className: "driver" });
+  driver.append(holder, giveTo, give, interrupt, request, takeReason, take);
   const renderDriver = () => {
-    driver.replaceChildren(el("span", { textContent: `driver: ${state.driver}${isDriver() ? " (you)" : ""} · epoch ${state.driverEpoch}` }));
-    if (isDriver()) {
-      driver.append(giveTo, button("give", "driver_give", () => {
-        const to = giveTo.value.trim();
-        if (to && send({ kind: "driver_give", to })) giveTo.value = "";
-      }), button("interrupt", "interrupt", () => send({ kind: "interrupt" })));
-      return;
-    }
-    driver.append(button("request the token", "driver_request", () => send({ kind: "driver_request" })));
-    if (isOwner()) {
-      driver.append(takeReason, button("take", "driver_take", () => {
-        const reason = takeReason.value.trim();
-        if (reason && send({ kind: "driver_take", reason })) takeReason.value = "";
-      }));
-    }
+    holder.textContent = `driver: ${state.driver}${isDriver() ? " (you)" : ""} · epoch ${state.driverEpoch}`;
+    for (const e of [giveTo, give, interrupt]) e.hidden = !isDriver();
+    request.hidden = isDriver();
+    for (const e of [takeReason, take]) e.hidden = isDriver() || !isOwner();
   };
 
   const hand = el("form", { className: "hand" });
-  const role = select("role", [["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
-  const prUrl = el("input", { name: "prUrl", type: "url", placeholder: "PR URL (reviewer only)" });
-  const egress = el("input", { name: "egress", placeholder: "egress profiles: pypi, npm" });
+  const role = select("role", "role of the run to start", [["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
+  const prUrl = named(el("input", { name: "prUrl", type: "url", placeholder: "PR URL (reviewer only)" }), "pull request URL (reviewer only)");
+  const egress = named(el("input", { name: "egress", placeholder: "egress profiles: pypi, npm" }), "egress profiles, comma-separated");
   hand.append(role, prUrl, egress, el("button", { type: "submit", textContent: "hand to role" }));
   hand.onsubmit = (e) => {
     e.preventDefault();
@@ -168,9 +207,8 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const claim = el("pre");
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
-  // A watcher who is an approver gets the approval cards only (policy Decide).
-  const sections = () => (you.role === "watcher" ? [approvals] : [approvals, driver, composer, queue, hand, manifest]);
-  root.replaceChildren(...sections());
+  // Mounted once: refresh toggles hidden, never re-mounts (R10).
+  root.replaceChildren(approvals, driver, composer, queue, hand, manifest);
   const showResult = (result: unknown) => {
     if (!result) return;
     // JSON escapes every newline in a string, so no line of it can be a bare EOF.
@@ -180,12 +218,20 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   return {
     refresh() {
       steering.disabled = !isDriver();
-      if (steering.disabled && delivery.value === "steering") delivery.value = "none";
-      hand.hidden = !(isDriver() || isOwner());
+      // A lost token picks no other delivery for the human: both prompt or skip an
+      // agent the human meant to reach (R09, reversing review 4.5 I3).
+      if (steering.disabled && delivery.value === "steering") {
+        delivery.value = "";
+        say(choose);
+      }
+      // A watcher who is an approver gets the approval cards only (policy Decide).
+      const watcher = you.role === "watcher";
+      for (const e of [driver, composer, queue]) e.hidden = watcher;
+      hand.hidden = watcher || !(isDriver() || isOwner());
+      manifest.hidden = watcher || !claim.textContent;
       renderDriver();
       renderQueue();
       renderApprovals();
-      root.replaceChildren(...sections()); // the same nodes: typed text stays
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,
