@@ -81,6 +81,14 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   form.className = "new-room";
   const dataClass = document.createElement("select");
   dataClass.name = "dataClass";
+  dataClass.setAttribute("aria-label", "data class");
+  dataClass.required = true;
+  // No default, least of all public: the class outlives every choice made after it (R11).
+  const choose = document.createElement("option");
+  choose.value = "";
+  choose.textContent = "choose a data class";
+  choose.disabled = choose.defaultSelected = true;
+  dataClass.append(choose);
   for (const v of ["internal", "public"]) {
     const o = document.createElement("option");
     o.value = o.textContent = v;
@@ -89,14 +97,25 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   const repository = document.createElement("input");
   repository.name = "repository";
   repository.placeholder = "owner/name (default: the CRD's)";
+  repository.setAttribute("aria-label", "repository, owner/name");
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.textContent = "new room";
   const notice = document.createElement("span");
   notice.className = "notice";
-  form.append(dataClass, repository, submit, notice);
+  const hint = document.createElement("small");
+  hint.className = "hint";
+  hint.id = "data-class-hint";
+  hint.textContent = "The data class cannot change once the room exists. It sets the model route, the tools and the egress " +
+    "its runs get; it does not change who can read the room.";
+  dataClass.setAttribute("aria-describedby", hint.id);
+  form.append(dataClass, repository, submit, notice, hint);
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (!dataClass.value) { // required stops a click; this stops any other submit
+      notice.textContent = "Choose a data class first.";
+      return;
+    }
     const body: Record<string, string> = { dataClass: dataClass.value };
     if (repository.value.trim()) body.repository = repository.value.trim();
     notice.textContent = "";
