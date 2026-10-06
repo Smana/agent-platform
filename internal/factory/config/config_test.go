@@ -192,6 +192,17 @@ func TestGoodVariantsParse(t *testing.T) {
 // A bad config fails its rollout (§4): unknown keys, caps above the platform's, gaps. Each
 // case names the error its own rule reports, so no rule hides behind another that fires on
 // the same edit (review I2: a rule deleted must fail a test).
+// Disruption design §4: two automatic resumes per task unless the config says otherwise.
+func TestResumeDefault(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Resume.MaxPerTask != 2 {
+		t.Fatalf("an omitted resume.maxPerTask is 2: %+v", c.Resume)
+	}
+}
+
 func TestBadConfigsFail(t *testing.T) {
 	for name, c := range map[string]struct{ from, to, err string }{
 		"unknown key":           {"triggerLabel: factory/ready", "triggerLabel: factory/ready\ntrigerLabel: x", `unknown field "trigerLabel"`},
@@ -203,6 +214,8 @@ func TestBadConfigsFail(t *testing.T) {
 		// P: the Pending bound is 5..480 minutes; an omitted one defaults to 30.
 		"pending minutes below five": {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 4", "caps.maxPendingMinutes must be 5..480"},
 		"pending minutes above 480":  {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 481", "caps.maxPendingMinutes must be 5..480"},
+		"resumes above five":         {"budgets: {enforceTask", "resume: {maxPerTask: 6}\nbudgets: {enforceTask", "resume.maxPerTask must be 1..5"},
+		"negative resumes":           {"budgets: {enforceTask", "resume: {maxPerTask: -1}\nbudgets: {enforceTask", "resume.maxPerTask must be 1..5"},
 		"unknown role":               {"roles: [implementer]}", "roles: [implementor]}", `template solo: unknown role "implementor"`},
 		"missing tier":               {"  light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}\n", "", "tier light is missing"},
 		"a fourth tier": {"tiers:\n", "tiers:\n  huge: {model: agent-default, runTokens: 1, taskTokens: 1, runMinutes: 1}\n",

@@ -318,6 +318,17 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries), Body: body}
 }
 
+// Resuming says the factory resumes a run its sandbox lost, on its own, n of limit (disruption
+// design §4). A reviewer's or tester's new run uses no review round.
+func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
+	body := fmt.Sprintf("Agent factory task `%s`: run `%s` stopped because %s; resuming automatically (%d/%d).",
+		t.Name, runID, Reason("pod_lost"), n, limit)
+	if role == "reviewer" || role == "tester" {
+		body += " The new review run uses no review round."
+	}
+	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
+}
+
 // PROpened announces the task's pull request.
 func PROpened(t *v1alpha1.Task, number int, url, runID string) Event {
 	return Event{Key: "pr-opened", Body: fmt.Sprintf("Run `%s` of task `%s` opened #%d: %s", runID, t.Name, number, url)}

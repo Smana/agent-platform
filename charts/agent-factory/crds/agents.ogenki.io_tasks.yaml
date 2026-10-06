@@ -276,6 +276,7 @@ spec:
                 - human
                 - ci
                 - retry
+                - resume
                 type: string
               outbox:
                 description: |-
@@ -365,6 +366,13 @@ spec:
               reason:
                 maxLength: 1024
                 type: string
+              resumes:
+                description: |-
+                  Automatic resumes of runs lost to their infrastructure (disruption design §4), every role
+                  counted; capped by the config's resume.maxPerTask.
+                format: int32
+                minimum: 0
+                type: integer
               retries:
                 format: int32
                 type: integer
@@ -439,6 +447,7 @@ spec:
                       - human
                       - ci
                       - retry
+                      - resume
                       type: string
                     verdict:
                       maxLength: 32

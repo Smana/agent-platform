@@ -31,6 +31,8 @@ func TestTaskCRDCarriesTheDesignRules(t *testing.T) {
 		"- AwaitingHuman",
 		"- Verifying",
 		"- Stopped",
+		"- resume",
+		"resumes:",
 		"maxLength: 65536",
 		"maximum: 5000000",
 		"subresources:",

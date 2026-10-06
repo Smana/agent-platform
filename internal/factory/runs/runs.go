@@ -51,6 +51,13 @@ const (
 	namePrefix = runwatch.ClaimPrefix
 )
 
+// The AgentRun's status.reason for a run lost to its infrastructure (disruption design §3): the
+// factory resumes these, never a PodFailed.
+const (
+	ReasonDisrupted = "Disrupted"
+	ReasonPodLost   = "PodLost"
+)
+
 // GVK is SP1's AgentRun claim: the broker's own, so the two readers of a claim never disagree.
 func GVK() schema.GroupVersionKind { return runwatch.GVK() }
 

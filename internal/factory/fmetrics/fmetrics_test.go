@@ -133,6 +133,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.Revoked(ctx, "budget-run")
 	s.GitHubRemaining(ctx, 4990)
 	s.TraceExportAbandoned(ctx)
+	s.Resumed(ctx, "Disrupted")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -148,6 +149,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
 		`agent_factory_github_rate_remaining 4990`,
 		`agent_factory_trace_export_abandoned_total 1`,
+		`agent_factory_resumes_total{reason="Disrupted"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -171,12 +173,14 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.PROutcome(ctx, "docs-links", "exploded")
 	s.Intervention(ctx, "a comment's text")
 	s.IntakeError(ctx, "webhook")
+	s.Resumed(ctx, "an agent's text")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_run_revocations_total{reason="other"} 1`,
 		`agent_factory_pr_outcomes_total{class="docs-links",outcome="other"} 1`,
 		`agent_factory_human_interventions_total{kind="other"} 1`,
 		`agent_factory_intake_errors_total{source="other"} 1`,
+		`agent_factory_resumes_total{reason="other"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)
