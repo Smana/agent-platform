@@ -54,6 +54,8 @@ type fakeBroker struct {
 	sse     []string // frames the stream sends before idling
 	// approvals are the approval requests received; each opens "ap-<callId>".
 	approvals []wire.ApprovalRequest
+	// noApprovals is a broker built before phase 5: no approvals route, so ServeMux's 404.
+	noApprovals bool
 	// conflicts are seqs pushed again with other content than the log holds.
 	conflicts []string
 }
@@ -148,6 +150,13 @@ func (b *fakeBroker) start(t *testing.T) (srv *httptest.Server, caFile string) {
 		_ = json.NewEncoder(w).Encode(wire.BatchAck{})
 	})
 	mux.HandleFunc("POST /v1/bridge/approvals", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		gone := b.noApprovals
+		b.mu.Unlock()
+		if gone {
+			http.NotFound(w, r)
+			return
+		}
 		var req wire.ApprovalRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CallID == "" || !json.Valid(req.Action) {
 			refuse(w, reply{code: http.StatusBadRequest, reason: "bad_approval"})

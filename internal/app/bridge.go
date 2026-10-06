@@ -118,6 +118,11 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridgeConfig,
 	log *slog.Logger,
 ) (*bridge.Confirmer, *bridge.Steering) {
+	if cfg.branch == "" {
+		// Fail-cautious, so nothing else shows it: the push of the run's own
+		// branch waits on approvers or is denied (Finding A).
+		log.Warn("BRANCH is unset: every git push is forge.other, the run's own branch included (CC-S5)")
+	}
 	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
 		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
