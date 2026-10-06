@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -276,9 +277,10 @@ func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 	if err := b.client(fixed).Rooms(t.Context(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "3kq7x2ma") || !strings.Contains(got, "Active") || !strings.Contains(got, "42") ||
-		!strings.Contains(got, "human:own") || !strings.Contains(got, "watcher") {
-		t.Fatalf("%s", got)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "PHASE", "EVENTS", "OWNER", "YOU"}) ||
+		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Active", "42", "human:own", "watcher"}) {
+		t.Fatalf("%q", lines)
 	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })
 	if err := bad.Rooms(t.Context(), &out); err == nil || !strings.Contains(err.Error(), "roomctl login") {

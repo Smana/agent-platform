@@ -103,7 +103,7 @@ func (c Client) Rooms(ctx context.Context, out io.Writer) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "ROOM\tPHASE\tEVENTS\tOWNER\tYOU")
 	for _, r := range rows {
-		_, _ = fmt.Fprintln(tw, printable(fmt.Sprintf("%s\t%s\t%d\t%s\t%s", r.ID, r.Phase, r.LastSeq, r.Owner, r.You.Role)))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", printable(r.ID), printable(r.Phase), r.LastSeq, printable(r.Owner), printable(r.You.Role))
 	}
 	return tw.Flush()
 }
@@ -157,13 +157,18 @@ func again(err error) bool {
 // broker says to, with a fresh token, from the last seq it printed.
 func (c Client) Watch(ctx context.Context, room string, tail int, out io.Writer) error {
 	w := watch{c: c, out: out}
-	wait := c.Backoff
-	if wait <= 0 {
-		wait = time.Second
+	first := c.Backoff
+	if first <= 0 {
+		first = time.Second
 	}
+	wait := first
 	hello := wire.ClientFrame{Type: wire.FrameHello, RoomID: room, Tail: tail}
 	for {
+		states := w.states
 		err := w.follow(ctx, hello)
+		if w.states > states {
+			wait = first // that connection got through: a later drop starts the backoff again
+		}
 		switch {
 		case ctx.Err() != nil:
 			return nil
@@ -185,6 +190,7 @@ type watch struct {
 	c         Client
 	out       io.Writer
 	connected bool
+	states    int // state frames seen, one per connection that got through
 	last      int64
 }
 
@@ -198,6 +204,9 @@ func (w *watch) follow(ctx context.Context, hello wire.ClientFrame) error {
 		var f wire.ServerFrame
 		if err := wsjson.Read(ctx, conn, &f); err != nil {
 			return err
+		}
+		if f.Type == wire.FrameState {
+			w.states++
 		}
 		switch {
 		case f.Type == wire.FrameState && f.Snapshot != nil && !w.connected:
