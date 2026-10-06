@@ -99,6 +99,23 @@ func TriagerBrief(t *v1alpha1.Task, nonce string) string {
 		t.Name, t.Spec.Repository, fence, fence, t.Spec.Text, fence)
 }
 
+// ResumeNotice opens the brief of a run that resumes one its sandbox lost (disruption design §4):
+// the agent did nothing wrong, so it carries on from the branch and the room instead of starting over.
+func ResumeNotice(t *v1alpha1.Task) string {
+	return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
+		"was reclaimed (spot reclaim or eviction), not stopped for anything it did. What it pushed is on branch "+
+		"agent/%s, the last commit carrying \"Agent-Checkpoint: disruption\" if it left uncommitted changes. Call "+
+		"room_read first, check the branch with git log, and continue from there; do not start over.\n\n", t.Name, t.Name)
+}
+
+// resumed is ResumeNotice before a resumed run's brief, and nothing before any other.
+func resumed(t *v1alpha1.Task, trigger string) string {
+	if trigger != "resume" {
+		return ""
+	}
+	return ResumeNotice(t)
+}
+
 // ReviewMessage is a maintainer's "Request changes" review as the room's queued message (Δ5).
 // Its body, and each inline comment's path and body, are text written outside the platform: they
 // are sanitised as an issue is (G2, R43), the message says so, and a text the sanitiser withholds

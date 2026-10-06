@@ -320,6 +320,10 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)
+	if r.resumable(t, run) {
+		r.resume(ctx, t, run)
+		return nil
+	}
 	// R38: the triager's output reaches a public implementer only through a human. Its summary
 	// stays in the room (internal); the issue gets the room link and the next step, nothing else.
 	if current(t).Role == "triager" {
@@ -367,14 +371,58 @@ func (r *Reconciler) lostReason(ctx context.Context, t *v1alpha1.Task) string {
 	return "run_lost"
 }
 
+// infraLost: the AgentRun says its pod was disrupted or lost (disruption design §3). The room's
+// pod_lost is no trigger: it reads the same for a harness that crashed, and a crashing agent must
+// never be resumed in a loop.
+func infraLost(run runs.Run) bool {
+	return run.Phase == "Failed" && (run.Reason == runs.ReasonDisrupted || run.Reason == runs.ReasonPodLost)
+}
+
+// resumable: the run was lost to its infrastructure, an automatic resume is left
+// (resume.maxPerTask), and the task's token cap holds one more RunTokens. The cap is enforced here
+// whatever budgets.enforceTask says: a resume is the factory's own decision, so it never spends
+// past the cap, even while the cap is shadow elsewhere (disruption design §4).
+func (r *Reconciler) resumable(t *v1alpha1.Task, run runs.Run) bool {
+	if !infraLost(run) || int(t.Status.Resumes) >= r.Cfg.Resume.MaxPerTask {
+		return false
+	}
+	b := t.Spec.Budget
+	return b.TaskTokens <= 0 || b.TaskTokens-t.Status.Usage.Tokens >= b.RunTokens
+}
+
+// resume sends the task back to Queued for a new run of the lost run's role, on the same branch
+// and in the same room (disruption design §4). The new run is a new AgentRun with the task's next
+// deterministic id (R48), so a replay after a lost status write never starts two; the lost one
+// stays Failed.
+func (r *Reconciler) resume(ctx context.Context, t *v1alpha1.Task, run runs.Run) {
+	t.Status.Resumes++
+	n, why := int(t.Status.Resumes), run.Reason
+	record(ctx, func(ctx context.Context) { r.Metrics.Resumed(ctx, why) })
+	t.Status.NextTrigger = "resume"
+	r.to(t, v1alpha1.PhaseQueued, "")
+	narrateLater(t, narrate.Resuming(t, run.ID, run.Role, n, r.Cfg.Resume.MaxPerTask))
+}
+
+// cause is why the current implementer run's work exists: a resumed run carries on the run it
+// replaces, so it takes that run's trigger, and a revision a maintainer asked for still goes back
+// to the maintainer.
+func cause(t *v1alpha1.Task) string {
+	for i := len(t.Status.Runs) - 1; i >= 0; i-- {
+		if tr := t.Status.Runs[i].Trigger; tr != "resume" {
+			return tr
+		}
+	}
+	return "initial"
+}
+
 // afterWriter: a revision a maintainer asked for goes straight back to the maintainer; otherwise
 // the template's first verifier after the implementer runs, or the task is ready (solo).
 func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
-	if current(t).Trigger == "human" {
+	if cause(t) == "human" {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
 		return nil
 	}
-	if current(t).Trigger == "ci" {
+	if cause(t) == "ci" {
 		return r.ready(ctx, t) // a CI fix goes back to CI, not to another review round
 	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {

@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package reconciler
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/runs"
+)
+
+// Disruption design §4: a run lost to its infrastructure resumes on its own, capped and inside the
+// task's budget; a run that failed on its own still escalates.
+
+// lose ends run id as the composition records a pod lost to its node: Failed with the AgentRun's
+// reason, and the broker's pod_lost in the room.
+func (g *rig) lose(id, reason string) {
+	r := g.runs.runs[id]
+	r.Phase, r.Reason = "Failed", reason
+	g.runs.runs[id] = r
+	g.log.end(id, "Failed", "pod_lost")
+}
+
+func TestALostImplementerResumesOnTheSameBranchAndRoom(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	g.lose(rid(0), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2) // Implementing → Queued (resume) → Implementing
+	s := g.runs.specs[rid(1)]
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Resumes != 1 || tk.Status.Runs[1].Trigger != "resume" ||
+		s.Branch != "agent/3buqdlot" || s.RoomRef != "3buqdlot" ||
+		!strings.HasPrefix(s.TaskText, "The previous run of agent factory task 3buqdlot was interrupted") || !strings.Contains(s.TaskText, "TASK-DATA-") {
+		t.Fatalf("%s resumes=%d %+v %+v", tk.Status.Phase, tk.Status.Resumes, tk.Status.Runs, s)
+	}
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "the sandbox was lost (spot reclaim or eviction); resuming automatically (1/2)") {
+		t.Fatalf("%q", c)
+	}
+	if !slices.Contains(g.metrics.recorded, "resumed Disrupted") {
+		t.Fatalf("%q", g.metrics.recorded)
+	}
+}
+
+func TestResumesStopAtTheCapThenEscalate(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	for i := range 2 {
+		g.lose(rid(i), runs.ReasonPodLost)
+		if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Resumes != int32(i+1) || tk.Status.Phase != v1alpha1.PhaseImplementing {
+			t.Fatalf("resume %d: %s %d", i+1, tk.Status.Phase, tk.Status.Resumes)
+		}
+	}
+	g.lose(rid(2), runs.ReasonPodLost)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "pod_lost" || len(g.runs.specs) != 3 {
+		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+	}
+}
+
+func TestAFailedHarnessIsNeverResumed(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	g.lose(rid(0), "PodFailed") // the broker's pod_lost reads the same for a crash
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Resumes != 0 || len(g.runs.specs) != 1 {
+		t.Fatalf("%s %d %d runs", tk.Status.Phase, tk.Status.Resumes, len(g.runs.specs))
+	}
+}
+
+// The task cap is enforced on this path although budgets.enforceTask is false: a resume needs a
+// whole RunTokens left under TaskTokens (standard tier: 1.5 M of 3 M).
+func TestAResumeNeedsARunsWorthOfTheTaskBudget(t *testing.T) {
+	for name, c := range map[string]struct {
+		used int64
+		want string
+	}{
+		"a run's worth left":      {1_500_000, v1alpha1.PhaseImplementing},
+		"less than a run's worth": {1_500_001, v1alpha1.PhaseEscalated},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, issueTask("3buqdlot", 7, "x"))
+			g.reconcile(t, "3buqdlot", 3)
+			r := g.runs.runs[rid(0)]
+			r.Tokens = c.used
+			g.runs.runs[rid(0)] = r
+			g.lose(rid(0), runs.ReasonDisrupted)
+			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != c.want {
+				t.Fatalf("%s %+v resumes=%d", tk.Status.Phase, tk.Status.Usage, tk.Status.Resumes)
+			}
+		})
+	}
+}
+
+func TestALostTriagerRunsTheTriagerAgain(t *testing.T) {
+	g := investigateRig(t)
+	g.reconcile(t, "3buqdlot", 3)
+	g.lose(rid(0), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(1)]; tk.Status.Phase != v1alpha1.PhaseImplementing || s.Role != "triager" || tk.Status.Resumes != 1 ||
+		!strings.HasPrefix(s.TaskText, "The previous run") {
+		t.Fatalf("%s %d %+v", tk.Status.Phase, tk.Status.Resumes, s)
+	}
+}
+
+// #20's latch is per run: a resumed run is a new record, unseen, so one never admitted is still
+// bounded although the run it replaces had started.
+func TestAResumedRunThatNeverStartsIsStillBounded(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	g.runs.set(rid(0), "Running")
+	g.reconcile(t, "3buqdlot", 1)
+	g.lose(rid(0), runs.ReasonDisrupted)
+	g.reconcile(t, "3buqdlot", 2)
+	g.r.Now = func() time.Time { return now.Add(31 * time.Minute) }
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if _, ok := g.runs.runs[rid(1)]; ok || tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "run_unschedulable" ||
+		tk.Status.Runs[0].Phase != "Failed" {
+		t.Fatalf("claim kept %t, %s %s %+v", ok, tk.Status.Phase, tk.Status.Reason, tk.Status.Runs)
+	}
+}
+
+// A resumed run carries on the run it replaces: a resumed revision still goes back to the maintainer.
+func TestAResumedRunCarriesOnItsCause(t *testing.T) {
+	tk := &v1alpha1.Task{Status: v1alpha1.TaskStatus{Runs: []v1alpha1.RunRecord{{Trigger: "initial"}, {Trigger: "human"}, {Trigger: "resume"}, {Trigger: "resume"}}}}
+	if got := cause(tk); got != "human" {
+		t.Fatalf("cause = %q, want human", got)
+	}
+	if got := cause(&v1alpha1.Task{}); got != "initial" {
+		t.Fatalf("cause of no run = %q", got)
+	}
+}
+
+// R6: the notice must not push the longest first brief past AgentRun's 16 KiB task.text.
+func TestAResumedFirstBriefFitsTheTaskText(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, strings.Repeat("x", config.MaxTextCeiling))
+	if n := len(resumed(tk, "resume") + FirstBrief(tk, "n0nce234")); n > 16384 {
+		t.Fatalf("a resumed brief of a %d-byte issue is %d bytes, over 16384", config.MaxTextCeiling, n)
+	}
+}

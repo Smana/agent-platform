@@ -38,7 +38,7 @@ func nextTrigger(t *v1alpha1.Task) string {
 func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (runs.Spec, []int64, string, error) {
 	trigger := nextTrigger(t)
 	if t.Status.PullRequest == nil {
-		return r.implementerSpec(t, FirstBrief(t, r.Nonce())), nil, trigger, nil
+		return r.implementerSpec(t, resumed(t, trigger)+FirstBrief(t, r.Nonce())), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
 	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
@@ -50,7 +50,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		return runs.Spec{}, nil, "", err
 	}
 	text, refs := ReviseBrief(t, evs, q, r.Nonce())
-	return r.implementerSpec(t, text), refs, trigger, nil
+	return r.implementerSpec(t, resumed(t, trigger)+text), refs, trigger, nil
 }
 
 // maxTailReads bounds roomTail: each EventsSince reads at most 10,000 events.

@@ -72,6 +72,7 @@ type metrics interface {
 	Revoked(ctx context.Context, reason string)
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
+	Resumed(ctx context.Context, reason string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -609,7 +610,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// triager one either: the config's validation cannot guard a name removed after a task was
 	// triaged.
 	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
-		s := r.implementerSpec(t, TriagerBrief(t, r.Nonce()))
+		s := r.implementerSpec(t, resumed(t, nextTrigger(t))+TriagerBrief(t, r.Nonce()))
 		s.Role = "triager"
 		return r.startRun(ctx, t, s, nextTrigger(t))
 	}
