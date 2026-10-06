@@ -169,6 +169,23 @@ func TestNoVerdictRetriesThenEscalates(t *testing.T) {
 	}
 }
 
+// F27 (brhe2ia4): a reviewer that exhausts its run budget is a run without a verdict like any
+// other, so it spends a round; the reviewer after the last round is the last one.
+func TestABudgetExhaustedReviewerSpendsARound(t *testing.T) {
+	g := pairRig(t)
+	g.finish(rid(1), "BudgetExhausted", "budget-run")
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.ReviewRounds != 1 || g.runs.specs[rid(2)].Role != "reviewer" {
+		t.Fatalf("%d %+v", tk.Status.ReviewRounds, tk.Status.Runs)
+	}
+	g.finish(rid(2), "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2)
+	g.finish(rid(3), "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 4)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "no_verdict" || len(g.runs.specs) != 4 {
+		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+	}
+}
+
 // An approve counts only for the head the run was given, while it is still the pull request's (F1).
 func TestAnApproveOfAnotherHeadIsNoVerdict(t *testing.T) {
 	for name, c := range map[string]struct{ commit, headNow string }{
