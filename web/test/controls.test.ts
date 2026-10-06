@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
-import { hasControls, mountControls, rejection } from "../src/controls";
+import { approvalCard, hasControls, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
 import { newRoomForm } from "../src/view";
 
@@ -306,6 +306,22 @@ describe("approval cards", () => {
     who.role = "collaborator";
     p.controls.refresh();
     expect(shown(p.field("text"))).toBe(true);
+  });
+
+  // R11: a deadline on another day shows its date, not a bare time.
+  it("dates a deadline that is not today", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 1, 9, 0));
+    try {
+      const head = (due: Date) => approvalCard({ class: "forge.pr", callId: "c", action: {}, expiresAt: due.toISOString() })
+        .querySelector(".approval-head")!.textContent;
+      const today = new Date(2026, 9, 1, 10, 30);
+      const tomorrow = new Date(2026, 9, 2, 10, 30);
+      expect(head(today)).toBe(`approval: forge.pr · call c · expires ${today.toLocaleTimeString()}`);
+      expect(head(tomorrow)).toBe(`approval: forge.pr · call c · expires ${tomorrow.toLocaleString()}`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("drops a card once decided", () => {

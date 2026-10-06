@@ -168,6 +168,30 @@ describe("RoomConnection", () => {
     expect(c.conn.send({ type: "act" })).toBe(false);
   });
 
+  // R11: a room the caller cannot read, or that does not exist, is never re-dialled.
+  it("stops re-dialling once stopped, a refused socket's pending retry included", () => {
+    const c = setup();
+    c.last().drop(1006); // refused: its retry is already scheduled
+    c.conn.stop(); // as the page does once the room list answers
+    vi.advanceTimersByTime(60_000);
+    expect(c.sockets).toHaveLength(1);
+
+    const sockets: FakeSocket[] = [];
+    const conn: RoomConnection = new RoomConnection("3kq7x2ma", { onEvent: () => {}, onState: () => {}, onStatus: () => {},
+      onRefused: () => conn.stop() }, { socket: (url) => { const s = new FakeSocket(url); sockets.push(s); return s; }, random: () => 0 });
+    conn.connect();
+    sockets[0].drop(1006); // stopped from within onRefused
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+
+    const o = setup();
+    o.last().open();
+    o.conn.stop();
+    expect(o.last().closed).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(o.sockets).toHaveLength(1);
+  });
+
   // A refused upgrade (an expired session among others) closes before it opens.
   it("reports a socket that closed before it opened", () => {
     const refused: number[] = [];

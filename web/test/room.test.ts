@@ -59,6 +59,44 @@ describe("the room page", () => {
     expect(p.last().sent[0]).toMatchObject({ type: "hello", afterSeq: 4 });
   });
 
+  // R11: a refused socket asks the room list. A room the list does not hold, whether
+  // it does not exist or the caller cannot read it, gets one answer and no re-dial.
+  it("stops on a room the list does not hold, with one answer for both cases", async () => {
+    const list = (ids: string[]) => (() => Promise.resolve({ ok: true, status: 200,
+      json: () => Promise.resolve(ids.map((id) => ({ id }))) })) as unknown as typeof fetch;
+    const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+    const gone = page(list(["aaaaaaaa"]));
+    gone.last().drop(1006);
+    await flush();
+    expect(gone.app.textContent).toBe("No such room, or you cannot read it. See the rooms you can read.");
+    expect(gone.app.querySelector("a")?.getAttribute("href")).toBe("/");
+    vi.advanceTimersByTime(60_000);
+    expect(gone.sockets).toHaveLength(1);
+
+    // The list answers after the retry dialled: stop closes that socket too, and its
+    // refusal asks the list nothing more.
+    let answer!: (r: unknown) => void;
+    let asked = 0;
+    const slow = page((() => { asked++; return new Promise((r) => { answer = r; }); }) as unknown as typeof fetch);
+    slow.last().drop(1006);
+    vi.advanceTimersByTime(500);
+    expect(slow.sockets).toHaveLength(2);
+    answer({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    await flush();
+    expect(slow.sockets[1].closed).toBe(true);
+    expect(asked).toBe(1);
+    vi.advanceTimersByTime(60_000);
+    expect(slow.sockets).toHaveLength(2);
+
+    const listed = page(list(["3kq7x2ma"])); // a broker restarting: retry
+    listed.last().drop(1006);
+    await flush();
+    vi.advanceTimersByTime(500);
+    expect(listed.sockets).toHaveLength(2);
+    expect(listed.app.querySelector(".title")).not.toBeNull();
+  });
+
   it("announces its notices politely (R10)", () => {
     const notice = page().app.querySelector("footer .notice")!;
     expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);

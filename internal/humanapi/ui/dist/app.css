@@ -258,6 +258,8 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
+.new-room .hint { flex-basis: 100%; color: var(--muted-foreground); font-size: 12px; }
+.gone { padding: 16px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

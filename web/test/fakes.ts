@@ -7,10 +7,15 @@ export class FakeSocket implements SocketLike {
   onclose: SocketLike["onclose"] = null;
   sent: Record<string, unknown>[] = [];
   closed = false; // by the page, not the broker
+  private done = false; // as a WebSocket, a closed socket closes no more
   constructor(readonly url: string) {}
   send(data: string) { this.sent.push(JSON.parse(data)); }
-  close(code = 1000, reason = "") { this.closed = true; this.onclose?.({ code, reason }); }
+  close(code = 1000, reason = "") { this.closed = true; this.drop(code, reason); }
   open() { this.onopen?.(); }
   recv(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
-  drop(code: number, reason = "") { this.onclose?.({ code, reason }); }
+  drop(code: number, reason = "") {
+    if (this.done) return;
+    this.done = true;
+    this.onclose?.({ code, reason });
+  }
 }

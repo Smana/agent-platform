@@ -92,8 +92,10 @@ export function approvalCard(a: { class: string; runId?: string; callId: string;
   tag: "li" | "div" = "div"): HTMLElement {
   const li = el(tag, { className: "approval" });
   const due = new Date(a.expiresAt);
+  // Today's deadline shows its time; another day's, its date too (R11).
+  const when = isNaN(due.getTime()) ? "?" : due.toDateString() === new Date().toDateString() ? due.toLocaleTimeString() : due.toLocaleString();
   li.append(
-    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${isNaN(due.getTime()) ? "?" : due.toLocaleTimeString()}` }),
+    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${when}` }),
     el("pre", { className: "approval-action", textContent: JSON.stringify(a.action ?? null, null, 2) }),
   );
   return li;

@@ -72,7 +72,23 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       say(f.rejected ? rejection(f.rejected) : "");
       controls?.onAck(f);
     },
-    onRefused: () => void api("/api/rooms", {}, o.get).catch(() => {}), // a 401 there signs in again
+    // Refused before it opened: an expired session (a 401 from the list signs in
+    // again), a broker restarting, or a room this caller cannot read. Only the list
+    // tells the last apart, and it says the same of a room that does not exist: no
+    // existence oracle (R11).
+    onRefused: () => void api("/api/rooms", {}, o.get).then(async (r) => {
+      if (!r.ok) return;
+      const rooms = (await r.json()) as { id: string }[];
+      if (rooms.some((row) => row.id === id)) return;
+      conn.stop();
+      const back = document.createElement("a");
+      back.href = "/";
+      back.textContent = "See the rooms you can read";
+      const gone = document.createElement("p");
+      gone.className = "gone";
+      gone.append("No such room, or you cannot read it. ", back, ".");
+      app.replaceChildren(gone);
+    }).catch(() => {}),
     onCounters: (c) => {
       counters.textContent = `seq ${c.last} · gaps ${c.gaps} · dups ${c.duplicates}`;
     },
