@@ -198,7 +198,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	case dropLogUnavailable:
 		_ = c.Close(websocket.StatusTryAgainLater, reason)
 	}
-	// The reader returns once the socket is closed, the pinger with the life.
+	// The hello's read and the reader return once the socket is closed, the pinger with the life.
 	_ = c.CloseNow()
 	cancel(nil)
 	v.wg.Wait()
@@ -259,10 +259,21 @@ func (v *viewer) write(f wire.ServerFrame) error {
 // serve runs the connection and returns why it ended, a drop reason. For
 // protocol, the socket is already closed.
 func (v *viewer) serve() string {
-	hctx, hcancel := context.WithTimeout(v.life, or(v.s.HelloWait, defaultHelloWait))
+	// Read under base, like every read: a life that ends while the hello is awaited
+	// still sends its close frame (1001 at shutdown, 4001 at the token's end).
+	hctx, hcancel := context.WithTimeout(v.base, or(v.s.HelloWait, defaultHelloWait))
 	var hello wire.ClientFrame
-	err := wsjson.Read(hctx, v.c, &hello)
-	hcancel()
+	got := make(chan error, 1)
+	v.wg.Go(func() {
+		defer hcancel()
+		got <- wsjson.Read(hctx, v.c, &hello)
+	})
+	var err error
+	select {
+	case <-v.life.Done():
+		return v.ended()
+	case err = <-got:
+	}
 	if err != nil {
 		// No hello within HelloWait tore the socket down: the broker's drop, not the peer's.
 		if refused(err) || errors.Is(hctx.Err(), context.DeadlineExceeded) && v.life.Err() == nil {
