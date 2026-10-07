@@ -55,6 +55,10 @@ type actLog struct {
 	approvals   map[string]store.Approval
 	approvalErr error
 	decisions   []string
+	// forked is each fork's forked_from by new room, forkedRoom the last row asked for.
+	forked     map[string]envelope.Event
+	forkedRoom store.NewRoom
+	forkErr    error
 }
 
 // Approval is the store's: one approval, or ErrNoApproval.
@@ -405,15 +409,65 @@ func TestQueueAndPromote(t *testing.T) {
 	}
 }
 
-// Ruling P18.
+// Ruling P18: from a CLI session (roomctl), nobody steers, interrupts, promotes,
+// moves the driver token or decides, whatever their standing; they read, chat,
+// queue and fork. Each refused act is accepted from the web UI, so only the
+// web-UI gate refuses it.
 func TestCLISessionsNeverSteer(t *testing.T) {
-	a, _, room := fixture("human:own")
-	raw, _ := json.Marshal(Action{Kind: "interrupt"})
 	e7 := int64(7)
-	f := a.Handle(context.Background(), authn.Principal{Kind: envelope.ActorHuman, ID: "human:own", Groups: []string{"agents-member"}},
-		false, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 1, Action: raw, DriverEpoch: &e7})
-	if f.Rejected != "not_permitted" {
-		t.Fatalf("%+v", f)
+	owner := func(*testing.T) (*Actor, *v1alpha1.Room) { a, _, room := fixture("human:own"); return a, room }
+	held := func(*testing.T) (*Actor, *v1alpha1.Room) { a, _, room := fixture("human:col"); return a, room }
+	queued := func(t *testing.T) (*Actor, *v1alpha1.Room) {
+		a, _, room := fixture("human:own")
+		if f := act(a, room, "human:col", 1, nil, Action{Kind: "message", Text: "later", Delivery: "queued"}); f.Rejected != "" {
+			t.Fatal(f)
+		}
+		return a, room
+	}
+	approval := func(*testing.T) (*Actor, *v1alpha1.Room) {
+		a, log, room := fixture("human:own")
+		log.approvals = map[string]store.Approval{"ap1": {ID: "ap1", RoomID: room.Name, State: store.ApprovalPending}}
+		return a, room
+	}
+	forkable := func(t *testing.T) (*Actor, *v1alpha1.Room) { a, _, room, _ := forkFixture(t, nil); return a, room }
+	cases := []struct {
+		name    string
+		setup   func(*testing.T) (*Actor, *v1alpha1.Room)
+		who     string
+		epoch   *int64
+		action  Action
+		refused bool
+	}{
+		{"steer", owner, "human:own", &e7, Action{Kind: "message", Text: "now", Delivery: "steering"}, true},
+		{"interrupt", owner, "human:own", &e7, Action{Kind: "interrupt"}, true},
+		{"promote a queued message", queued, "human:own", &e7, Action{Kind: "promote_queued", Ref: 1}, true},
+		{"give the token", owner, "human:own", &e7, Action{Kind: "driver_give", To: "human:col"}, true},
+		{"take the token", held, "human:own", nil, Action{Kind: "driver_take", Reason: "mine"}, true},
+		{"ask for the token", owner, "human:col", nil, Action{Kind: "driver_request"}, true},
+		{"decide", approval, "human:own", nil, Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"}, true},
+		{"chat", owner, "human:col", nil, Action{Kind: "message", Text: "hi", Delivery: "none"}, false},
+		{"queue", owner, "human:col", nil, Action{Kind: "message", Text: "later", Delivery: "queued"}, false},
+		{"fork", forkable, "human:col", nil, Action{Kind: "fork", Seq: 1}, false},
+	}
+	for _, c := range cases {
+		send := func(web bool) wire.ServerFrame {
+			a, room := c.setup(t)
+			raw, _ := json.Marshal(c.action)
+			p := authn.Principal{Kind: envelope.ActorHuman, ID: c.who, Groups: []string{"agents-member"}}
+			return a.Handle(context.Background(), p, web, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 7, Action: raw, DriverEpoch: c.epoch})
+		}
+		t.Run(c.name, func(t *testing.T) {
+			if f := send(true); c.refused && f.Rejected != "" {
+				t.Fatalf("refused from the web UI too, so the case does not isolate the gate: %+v", f)
+			}
+			want := ""
+			if c.refused {
+				want = "not_permitted"
+			}
+			if f := send(false); f.Rejected != want {
+				t.Fatalf("from roomctl: %+v, want %q", f, want)
+			}
+		})
 	}
 }
 

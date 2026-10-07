@@ -326,6 +326,47 @@ func TestDecideFallbacks(t *testing.T) {
 	}
 }
 
+// A fork its source's owner did not make takes, class by class, the stricter of
+// the source's policy and a new room's default (ruling M2): deny over human over
+// allow, written as attended plus the overrides that differ from its row.
+func TestStricter(t *testing.T) {
+	att := wire.ApprovalPolicy{Profile: "attended"}
+	o := func(kv ...string) map[string]string {
+		m := map[string]string{}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name string
+		src  wire.ApprovalPolicy
+		want wire.ApprovalPolicy
+	}{
+		{"attended stays attended", att, att},
+		{"unattended keeps its denies and loses its allow", wire.ApprovalPolicy{Profile: "unattended", Overrides: o("forge.pr", "human")},
+			wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.other", "deny", "mcp.write", "deny")}},
+		{"an allow override is dropped", wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.pr", "allow", "mcp.write", "allow")}, att},
+		{"a stricter override is kept", wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.push", "deny", "shell.high", "human")},
+			wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.push", "deny", "shell.high", "human")}},
+		{"an unknown profile is attended", wire.ApprovalPolicy{Profile: "bogus"}, att},
+		{"an unknown override value asks a human", wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.push", "maybe")},
+			wire.ApprovalPolicy{Profile: "attended", Overrides: o("forge.push", "human")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Stricter(tc.src, att)
+			if got.Profile != tc.want.Profile || len(got.Overrides) != len(tc.want.Overrides) {
+				t.Fatalf("got %+v want %+v", got, tc.want)
+			}
+			for k, v := range tc.want.Overrides {
+				if got.Overrides[k] != v {
+					t.Fatalf("got %+v want %+v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestDecideFollowsTheProfileTable(t *testing.T) {
 	att := wire.ApprovalPolicy{Profile: "attended"}
 	un := wire.ApprovalPolicy{Profile: "unattended", Overrides: map[string]string{"forge.pr": "human"}}

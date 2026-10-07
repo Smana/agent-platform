@@ -42,6 +42,21 @@ describe("the room page", () => {
     expect(p.title()).toMatch(/^3kq7x2ma · Closed · internal · /);
   });
 
+  // Every reader may fork (policy Fork): a chat row's "fork here" opens the panel at
+  // that row's seq, a watcher's included, and its submit sends the fork act.
+  it("forks from a chat row, as a watcher", () => {
+    const p = page();
+    p.join(snapshot({ role: "watcher" }), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "try uv?", delivery: "none" }));
+    const panel = p.app.querySelector<HTMLElement>("section.fork")!;
+    expect(panel.hidden).toBe(true);
+    p.app.querySelector<HTMLButtonElement>(".fork-here")!.click();
+    expect(panel.hidden).toBe(false);
+    expect(panel.querySelector(".fork-at")?.textContent).toBe("fork at #1");
+    panel.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(p.last().sent.at(-1)).toMatchObject({ type: "act", action: { kind: "fork", seq: 1 } });
+  });
+
   // R10: an invite or a removal changes what the page may offer. No client
   // projection: the reconnect's state frame re-resolves you; the broker checks every act.
   it("re-syncs when a membership change past the mark names you", () => {

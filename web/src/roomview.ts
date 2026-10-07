@@ -19,15 +19,16 @@ export interface Views {
 
 // mountViews fills main with the chat and raw containers and adds the toggle to
 // bar. store is a parameter so tests drive it; a throwing Storage (private
-// mode) only loses persistence.
-export function mountViews(main: HTMLElement, bar: HTMLElement, store: Storage = localStorage): Views {
+// mode) only loses persistence. fork, when set, puts "fork here" on chat rows.
+export function mountViews(main: HTMLElement, bar: HTMLElement, store: Storage = localStorage,
+  fork?: (seq: number) => void): Views {
   const chatEl = document.createElement("div");
   chatEl.className = "view-chat";
   const rawEl = document.createElement("div");
   rawEl.className = "view-raw";
   main.replaceChildren(chatEl, rawEl);
 
-  const chat = new ChatView(chatEl);
+  const chat = new ChatView(chatEl, undefined, fork);
   const raw = new RoomLog(rawEl);
 
   const btn = document.createElement("button");

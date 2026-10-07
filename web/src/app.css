@@ -258,6 +258,13 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
+.fork-here { margin-left: 8px; font-size: 11px; padding: 0 6px; opacity: 0.55; }
+.fork-here:hover, .fork-here:focus-visible { opacity: 1; }
+.fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
+.fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fork input { flex: 1 1 12em; min-width: 0; }
+.fork pre, .cli-setup pre { background: var(--muted); padding: 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cli-setup { padding: 0 16px 8px; }
 .new-room .hint { flex-basis: 100%; color: var(--muted-foreground); font-size: 12px; }
 .gone { padding: 16px; }
 

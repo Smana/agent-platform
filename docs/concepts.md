@@ -24,7 +24,7 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Verdict** | A reviewer's or tester's `approve` or `changes`, recorded as `message{kind: review_verdict}`. The broker also posts it on the pull request as one comment | The log; the PR | AP-3 |
 | **Brief** | The fenced, bounded text the next run starts from: the last handoff and verdict, plus the queued messages, quoted as untrusted data | Built by the broker | Planned, phase 4 / AP-4 |
 | **Approval** | A human decision on a pending harness action. Oversight, not a security boundary: a run's capabilities are fixed at creation. The first valid decision wins | `approval_requested`, `approval_decided` | Planned, phase 5 / AP-5 |
-| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it | New `Room`; `state_changed{forked_from}` | Planned, phase 6 / AP-6 |
+| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it | New `Room` annotated `agents.ogenki.io/forked-from: <room>@<seq>`; `state_changed{forked_from}` | Phase 6 / AP-6 |
 | **Envelope** | The frozen C4 v1 shape of every log entry: `v, id, seq, roomId, runId, actor, type, causedBy, origin, ts, redactions, payload` | [Event envelope](event-envelope.md) | AP-1 |
 | **seq** | The per-room sequence number: gapless from 1, assigned by the broker under the room's row lock | `events.seq`, `rooms.last_seq` | AP-1 |
 | **Origin** | Who produced an event: `harness` (mirrored from a run), `client` (a human, a system caller, a room tool) or `broker` | Every event | AP-1 |

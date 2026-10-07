@@ -51,3 +51,38 @@ jobs:
       - env:
           REF: ghcr.io/smana/${{ matrix.image }}@${{ steps.build.outputs.digest }}
         run: cosign sign --yes "$REF"
+
+  # roomctl's binaries and their checksums, on the tag's GitHub release (P33).
+  roomctl:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the release and its assets
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          cache: false
+      - name: Build
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}" arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X github.com/Smana/agent-platform/internal/version.Version=${VERSION}" \
+              -o "roomctl-${os}-${arch}" ./cmd/roomctl
+          done
+          sha256sum roomctl-* > roomctl.sha256
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes
+          gh release upload "$TAG" roomctl-* roomctl.sha256 --clobber
