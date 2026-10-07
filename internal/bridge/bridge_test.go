@@ -780,6 +780,28 @@ func TestAFinalReadMirrorsTheLogBeforeItAnswers(t *testing.T) {
 	}
 }
 
+// A room sealed mid-run has nothing left to mirror: a final read answers so at once, reading the
+// log no further and calling the broker no more.
+func TestAFinalReadOnASealedRoomAnswersSealed(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 100, status: "running"}
+	f.add(chatEvent("hi"))
+	fb := &fakeBroker{events: []reply{{code: http.StatusGone, reason: wire.ReasonSealed}}}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	ctx, _ := r.run(t)
+	eventually(ctx, t, "the broker sealed the room", func() bool {
+		return slices.ContainsFunc(fb.callLog(), func(c string) bool { return strings.HasSuffix(c, " Gone") })
+	})
+	calls := len(fb.callLog())
+	f.add(chatEvent("after the seal"))
+	res, err := r.b.FinalRead(ctx)
+	if err != nil || res != (FinalReadResult{Events: 1, Unmirrored: res.Unmirrored, Sealed: true}) {
+		t.Fatalf("got %+v, %v: want a sealed answer over the one event read before the seal", res, err)
+	}
+	if got := fb.callLog(); len(got) != calls {
+		t.Fatalf("the final read called a sealed room: %v", got[calls:])
+	}
+}
+
 // A final read is bounded by its caller: a broker that keeps refusing still gets the caller an
 // answer naming what is unmirrored, before the caller's deadline.
 func TestAFinalReadAnswersBeforeItsDeadline(t *testing.T) {
