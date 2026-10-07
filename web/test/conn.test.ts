@@ -1,18 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RoomConnection, type RoomEvent, type SocketLike } from "../src/conn";
-
-class FakeSocket implements SocketLike {
-  onopen: SocketLike["onopen"] = null;
-  onmessage: SocketLike["onmessage"] = null;
-  onclose: SocketLike["onclose"] = null;
-  sent: Record<string, unknown>[] = [];
-  constructor(readonly url: string) {}
-  send(data: string) { this.sent.push(JSON.parse(data)); }
-  close(code = 1000, reason = "") { this.onclose?.({ code, reason }); }
-  open() { this.onopen?.(); }
-  recv(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
-  drop(code: number, reason = "") { this.onclose?.({ code, reason }); }
-}
+import { RoomConnection, type RoomEvent } from "../src/conn";
+import { FakeSocket } from "./fakes";
 
 const event = (seq: number) => ({ type: "event", event: { seq, type: "message", payload: {} } });
 
@@ -178,6 +166,30 @@ describe("RoomConnection", () => {
     expect(c.last().sent.at(-1)).toEqual({ type: "act", clientSeq: 1 });
     c.last().drop(1006);
     expect(c.conn.send({ type: "act" })).toBe(false);
+  });
+
+  // R11: a room the caller cannot read, or that does not exist, is never re-dialled.
+  it("stops re-dialling once stopped, a refused socket's pending retry included", () => {
+    const c = setup();
+    c.last().drop(1006); // refused: its retry is already scheduled
+    c.conn.stop(); // as the page does once the room list answers
+    vi.advanceTimersByTime(60_000);
+    expect(c.sockets).toHaveLength(1);
+
+    const sockets: FakeSocket[] = [];
+    const conn: RoomConnection = new RoomConnection("3kq7x2ma", { onEvent: () => {}, onState: () => {}, onStatus: () => {},
+      onRefused: () => conn.stop() }, { socket: (url) => { const s = new FakeSocket(url); sockets.push(s); return s; }, random: () => 0 });
+    conn.connect();
+    sockets[0].drop(1006); // stopped from within onRefused
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+
+    const o = setup();
+    o.last().open();
+    o.conn.stop();
+    expect(o.last().closed).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(o.sockets).toHaveLength(1);
   });
 
   // A refused upgrade (an expired session among others) closes before it opens.

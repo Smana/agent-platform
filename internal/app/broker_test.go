@@ -448,6 +448,8 @@ func (fakeRoomLog) Room(context.Context, string) (store.RoomState, error) {
 
 func (fakeRoomLog) Queue(context.Context, string) ([]store.Queued, error) { return nil, nil }
 
+func (fakeRoomLog) OpenApprovals(context.Context, string) ([]store.Approval, error) { return nil, nil }
+
 type fakeRuns struct{}
 
 func (fakeRuns) InRoom(string) []runwatch.Run { return nil }
@@ -458,14 +460,19 @@ func TestHumanServer(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	clientFile := filepath.Join(t.TempDir(), "client-id")
 	writeID(t, clientFile, "web-1")
-	h := config.HumanConfig{ClientIDFile: clientFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}
+	roomctlFile := filepath.Join(t.TempDir(), "roomctl-client-id")
+	writeID(t, roomctlFile, "cli-1")
+	projectFile := filepath.Join(t.TempDir(), "project-id")
+	writeID(t, projectFile, "proj-1")
+	cfg := config.Config{PublicURL: "https://rooms.example.test", Human: config.HumanConfig{Issuer: humanIssuer,
+		ClientIDFile: clientFile, RoomctlClientIDFile: roomctlFile, ProjectIDFile: projectFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
 	humans := authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), "https://rooms.example.test")
 	m, err := metrics.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	actor := &humanapi.Actor{}
-	s := humanServer(h, humans, fake.NewClientBuilder().Build(), "agent-system", fakeRoomLog{},
+	s := humanServer(cfg, humans, fake.NewClientBuilder().Build(), "agent-system", fakeRoomLog{},
 		fanout.New(fakeRoomLog{}, nil, log), fakeRuns{}, actor, m, log)
 	if s.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || s.Namespace != "agent-system" || s.Metrics != m ||
 		s.Actor != actor {
@@ -474,6 +481,10 @@ func TestHumanServer(t *testing.T) {
 	writeID(t, clientFile, "web-2")
 	if got := s.WebClient(); got != "web-2" {
 		t.Fatalf("web client %q, want the file's current id", got)
+	}
+	writeID(t, roomctlFile, "cli-2")
+	if got := s.RoomctlClient(); got != "cli-2" || s.PublicURL != cfg.PublicURL || s.Issuer != humanIssuer || s.ProjectID() != "proj-1" {
+		t.Fatalf("roomctl setup %q %q %q, want the file's current id, the public URL and the issuer", got, s.PublicURL, s.Issuer)
 	}
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))

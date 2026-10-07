@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/Smana/agent-platform/internal/bridge"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // The bridge's defaults (docs/integration.md, "The bridge's environment").
@@ -34,6 +36,9 @@ const (
 	// maxFlushGrace keeps the drain inside the pod's 30 s grace, with room for
 	// the "unmirrored" Warn line before the kubelet's SIGKILL.
 	maxFlushGrace = 28 * time.Second
+	// finalReadWait bounds a final read: agent-run gives it 3 s of its 15 s shutdown and gives up
+	// at the same mark (disruption design §2).
+	finalReadWait = 3 * time.Second
 )
 
 type bridgeConfig struct {
@@ -42,6 +47,9 @@ type bridgeConfig struct {
 	harnessURL, healthAddr         string
 	flushGrace                     time.Duration // 0: the bridge's default
 	memLimitSet                    bool          // GOMEMLIMIT is in the environment
+	// branch is the run's branch (CC-S5). Unset, every push is forge.other.
+	branch string
+	egress map[string]bool // the run's egress profiles
 }
 
 func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
@@ -56,6 +64,12 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 		tokenFile: getenv("ROOM_TOKEN_FILE"), harnessURL: or("HARNESS_URL", defaultHarnessURL),
 		healthAddr: or("HEALTH_ADDR", defaultHealthAddr)}
 	c.memLimitSet = getenv("GOMEMLIMIT") != ""
+	c.branch, c.egress = getenv("BRANCH"), map[string]bool{}
+	for p := range strings.SplitSeq(getenv("EGRESS_PROFILES"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			c.egress[p] = true
+		}
+	}
 	var missing []error
 	if v := getenv("FLUSH_GRACE"); v != "" {
 		d, err := time.ParseDuration(v)
@@ -76,11 +90,13 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 	return c, errors.Join(missing...)
 }
 
-// healthHandler serves /healthz for the kubelet only (ruling P6), and
-// /admission for room-bridge gate on loopback (F15): 503 while the first hellos
-// are undecided, 200 once the run holds the room, 409 and the reason once it
-// never will.
-func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admission, now func() time.Time) http.Handler {
+// healthHandler serves /healthz for the kubelet only (ruling P6), /admission for room-bridge gate
+// on loopback (F15): 503 while the first hellos are undecided, 200 once the run holds the room,
+// 409 and the reason once it never will; and POST /final-read for agent-run on loopback (F11, the
+// harness half): the log read to its end and mirrored, then the answer.
+func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admission,
+	finalRead func(context.Context) (bridge.FinalReadResult, error), now func() time.Time,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !healthy(now()) {
@@ -89,7 +105,12 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 		}
 		_, _ = w.Write([]byte("ok " + version.Version + "\n"))
 	})
-	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, r *http.Request) {
+		// The gate's call: like /final-read, nothing outside the pod reads it.
+		if !fromLoopback(r) {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
 		switch a := admission(); {
 		case a.Admitted:
 			_, _ = w.Write([]byte("admitted\n"))
@@ -99,7 +120,51 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 			http.Error(w, "pending", http.StatusServiceUnavailable)
 		}
 	})
+	mux.HandleFunc("POST /final-read", func(w http.ResponseWriter, r *http.Request) {
+		// The harness's call: the run CNP admits the kubelet alone on 8085, and this keeps it so.
+		if !fromLoopback(r) {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), finalReadWait)
+		defer cancel()
+		res, err := finalRead(ctx)
+		if err != nil {
+			http.Error(w, "the final read did not answer in time", http.StatusGatewayTimeout)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(res)
+	})
 	return mux
+}
+
+// fromLoopback reports that r comes from inside the pod's network namespace.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback()
+}
+
+// wireBridge sets the bridge's hooks: steering (phase 4) and the confirmation
+// loop (phase 5). A hook left unset fails open or wedges every run, so the
+// wiring is tested on its own (review M7).
+func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridgeConfig,
+	log *slog.Logger,
+) (*bridge.Confirmer, *bridge.Steering) {
+	if cfg.branch == "" {
+		// Fail-cautious, so nothing else shows it: the push of the run's own
+		// branch waits on approvers or is denied (Finding A).
+		log.Warn("BRANCH is unset: every git push is forge.other, the run's own branch included (CC-S5)")
+	}
+	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
+	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
+	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
+	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }
+	b.OnReady, b.OnRaw, b.OnStatus, b.OnDecision = confirm.Ready, confirm.Observe, confirm.OnStatus, confirm.Decision
+	b.Classify = confirm.ClassOf
+	return confirm, steer
 }
 
 // gatePoll is how often room-bridge gate asks the bridge, and gateTimeout
@@ -196,15 +261,14 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 	}
 	b := &bridge.Bridge{Harness: bridge.NewHarness(cfg.harnessURL, cfg.conversationID), Broker: broker,
 		RunID: cfg.runID, Logger: log, FlushGrace: cfg.flushGrace}
-	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push}
-	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
+	_, _ = wireBridge(b, broker, cfg, log)
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.healthAddr)
 	if err != nil {
 		return fmt.Errorf("room-bridge: health listener: %w", err)
 	}
-	srv := &http.Server{Handler: healthHandler(b.Healthy, b.Admission, time.Now), ReadHeaderTimeout: 5 * time.Second,
+	srv := &http.Server{Handler: healthHandler(b.Healthy, b.Admission, b.FinalRead, time.Now), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8 << 10}
 	var wg sync.WaitGroup
 	wg.Go(func() {

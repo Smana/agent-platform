@@ -4,6 +4,7 @@ package wire
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 )
@@ -54,6 +55,18 @@ type QueuedView struct {
 	Text   string `json:"text"`
 }
 
+// ApprovalView is one approval still pending: its card (§6). Action is the raw,
+// redacted call, never agent prose (T3).
+type ApprovalView struct {
+	ApprovalID string          `json:"approvalId"`
+	RunID      string          `json:"runId"`
+	CallID     string          `json:"callId"`
+	Class      string          `json:"class"`
+	Action     json.RawMessage `json:"action"`
+	ExpiresAt  time.Time       `json:"expiresAt"`
+	Seq        int64           `json:"seq"` // its approval_requested event
+}
+
 // Snapshot is the room's state at the high-water mark of a state frame.
 type Snapshot struct {
 	RoomID      string    `json:"roomId"`
@@ -68,6 +81,9 @@ type Snapshot struct {
 	Queue []QueuedView `json:"queue"`
 	// Sealed is the log's own seal at the mark; Phase follows the Room CR and lags it.
 	Sealed bool `json:"sealed"`
+	// Approvals are the pending ones, read after the mark like Queue: a request
+	// may be far behind the page's tail.
+	Approvals []ApprovalView `json:"approvals"`
 }
 
 // ServerFrame is a frame from the broker: state, sync, event, ack or transient.

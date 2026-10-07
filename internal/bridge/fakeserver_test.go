@@ -16,19 +16,32 @@ import (
 // event_router.py and event_service.py: page_id is inclusive, and next_page_id is
 // the id of the first event of the next page.
 type fakeAgentServer struct {
-	mu        sync.Mutex
-	events    []map[string]any
-	status    string
-	sent      []string
-	responses []bool
-	policy    string
-	pageSize  int
-	limits    []int
-	searches  int  // event searches asked
-	hang      bool // event searches never answer while set
-	flap      bool // each status read flips running and paused
-	down      bool // every request is cut, as when agent-server is not listening
-	cut       int  // event searches cut while down
+	mu         sync.Mutex
+	events     []map[string]any
+	status     string
+	sent       []string
+	responses  []bool
+	reasons    []string // the reason of each response
+	refuse     int      // while set, confirmations and the policy are answered with this status
+	policy     string
+	policySets int // confirmation policies taken
+	pageSize   int
+	limits     []int
+	searches   int  // event searches asked
+	hang       bool // event searches never answer while set
+	flap       bool // each status read flips running and paused
+	// writes logs each write in order: "respond true|false", "send", "run", "interrupt".
+	writes  []string
+	runCode int // while set, POST /run is answered with this status
+	// runTakenCode: POST /run runs the conversation, then answers this status.
+	runTakenCode int
+	statusCode   int // while set, the conversation read is answered with this status
+	// parkAfterRead makes the running step park on a confirmation right after
+	// the next status read, unless a message arrived during it.
+	parkAfterRead bool
+	messaged      bool // a message arrived during the current step
+	down          bool // every request is cut, as when agent-server is not listening
+	cut           int  // event searches cut while down
 	// failSearch, when set, runs under mu before an event search; true answers 500.
 	failSearch func() bool
 }
@@ -37,6 +50,26 @@ func (f *fakeAgentServer) setDown(down bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.down = down
+}
+
+// runStep is run() (local_conversation.py:2191-2197, agent.py:652-661): on a
+// conversation waiting for a confirmation, or paused with actions unmatched,
+// it runs every pending action, an implicit confirmation. Under f.mu.
+func (f *fakeAgentServer) runStep() {
+	if f.status == "waiting_for_confirmation" || f.status == "paused" {
+		f.writes = append(f.writes, "implicit accept")
+	}
+	if f.status != "running" {
+		f.messaged = false // a new step
+	}
+	f.status = "running"
+}
+
+// written copies the writes received so far, in order.
+func (f *fakeAgentServer) written() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.writes...)
 }
 
 // searched is how many event searches were asked so far.
@@ -74,6 +107,20 @@ func (f *fakeAgentServer) snapshot() (sent []string, responses []bool, policy st
 	return append([]string{}, f.sent...), append([]bool{}, f.responses...), f.policy
 }
 
+// policySet is the confirmation policy taken last, and how many were taken.
+func (f *fakeAgentServer) policySet() (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.policy, f.policySets
+}
+
+// answers copies the reasons of the confirmations answered so far.
+func (f *fakeAgentServer) answers() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.reasons...)
+}
+
 func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -81,10 +128,25 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if code := f.statusCode; code != 0 {
+			http.Error(w, "refused", code)
+			return
+		}
 		if f.flap {
 			f.status = map[string]string{"running": "paused", "paused": "running"}[f.status]
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": conv, "execution_status": f.status})
+		if f.parkAfterRead && f.status == "running" {
+			// The running step ends right after this read and asks to park.
+			f.parkAfterRead = false
+			if f.messaged {
+				// local_conversation.py:2289-2324: the live loop rejects the
+				// park and goes on with the message.
+				f.writes = append(f.writes, "rejected by the message")
+			} else {
+				f.status = "waiting_for_confirmation"
+			}
+		}
 	})
 	mux.HandleFunc("GET "+base+"/events/search", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -125,20 +187,41 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 			Content []struct{ Text string } `json:"content"`
 			Run     bool                    `json:"run"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Content) != 1 || in.Role != "user" || !in.Run {
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Content) != 1 || in.Role != "user" {
 			http.Error(w, "bad message", http.StatusUnprocessableEntity)
 			return
 		}
 		f.mu.Lock()
 		f.sent = append(f.sent, in.Content[0].Text)
+		f.messaged = true
+		if in.Run {
+			f.writes = append(f.writes, "send run")
+			f.runStep()
+		} else {
+			f.writes = append(f.writes, "send")
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
 	mux.HandleFunc("POST "+base+"/events/respond_to_confirmation", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Accept bool }
+		var in struct {
+			Accept bool
+			Reason string
+		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
+		if code := f.refuse; code != 0 {
+			f.mu.Unlock()
+			http.Error(w, "refused", code)
+			return
+		}
 		f.responses = append(f.responses, in.Accept)
+		f.reasons = append(f.reasons, in.Reason)
+		f.writes = append(f.writes, "respond "+strconv.FormatBool(in.Accept))
+		f.status = "running"
+		if !in.Accept {
+			f.status = "idle" // OpenHands rejects, goes idle, and does not run
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
@@ -146,12 +229,38 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		var in struct{ Policy struct{ Kind string } }
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.mu.Lock()
+		if code := f.refuse; code != 0 {
+			f.mu.Unlock()
+			http.Error(w, "refused", code)
+			return
+		}
 		f.policy = in.Policy.Kind
+		f.policySets++
 		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	})
+	mux.HandleFunc("POST "+base+"/run", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.writes = append(f.writes, "run")
+		switch {
+		case f.runCode != 0:
+			http.Error(w, "refused", f.runCode)
+			return
+		case f.runTakenCode != 0:
+			f.runStep() // taken, but the answer is lost on the way back
+			http.Error(w, "gateway timeout", f.runTakenCode)
+			return
+		case f.status == "running":
+			http.Error(w, "already running", http.StatusConflict)
+			return
+		}
+		f.runStep()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 	})
 	mux.HandleFunc("POST "+base+"/interrupt", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
+		f.writes = append(f.writes, "interrupt")
 		f.status = "paused"
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})

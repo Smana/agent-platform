@@ -155,7 +155,7 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 }
 
 // LastAck is the store's: the highest ref the run acknowledged as delivered,
-// interrupted or undeliverable that is a delivery of that run.
+// interrupted, undeliverable or decision_applied that is a delivery of that run.
 func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -167,7 +167,7 @@ func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error)
 			Ref  int64  `json:"ref"`
 		}
 		if e.RunID == runID && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil &&
-			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
+			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable" || p.Kind == "decision_applied") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
 			if _, _, ok := Deliverable(evs[p.Ref-1], runID); ok {
 				last = max(last, p.Ref)
 			}

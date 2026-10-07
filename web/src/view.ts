@@ -63,10 +63,37 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch) {
     li.append(a);
     ul.append(li);
   }
-  app.replaceChildren(newRoomForm(get), ul);
+  app.replaceChildren(newRoomForm(get), cliSetup(get), ul);
 }
 
-const roomId = /^[a-z2-7]{8}$/;
+export const roomId = /^[a-z2-7]{8}$/;
+
+// cliSetup is the CLI setup view: the roomctl configure line for this broker,
+// read from GET /api/roomctl the first time it opens.
+export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
+  const d = document.createElement("details");
+  d.className = "cli-setup";
+  const summary = document.createElement("summary");
+  summary.textContent = "CLI setup";
+  const out = document.createElement("pre");
+  d.append(summary, out);
+  let asked = false;
+  d.addEventListener("toggle", async () => {
+    if (!d.open || asked) return;
+    asked = true;
+    try {
+      const r = await api("/api/roomctl", {}, get);
+      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string };
+      out.textContent = r.ok && c.clientID
+        ? `roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
+        : "roomctl is not set up on this broker: it has no roomctl client.";
+    } catch (err) {
+      asked = false;
+      if (!(err instanceof SignInRequired)) out.textContent = `CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+  return d;
+}
 
 // Why POST /api/rooms refused (docs/api.md).
 const createErrors: Record<number, string> = {
@@ -81,6 +108,14 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   form.className = "new-room";
   const dataClass = document.createElement("select");
   dataClass.name = "dataClass";
+  dataClass.setAttribute("aria-label", "data class");
+  dataClass.required = true;
+  // No default, least of all public: the class outlives every choice made after it (R11).
+  const choose = document.createElement("option");
+  choose.value = "";
+  choose.textContent = "choose a data class";
+  choose.disabled = choose.defaultSelected = true;
+  dataClass.append(choose);
   for (const v of ["internal", "public"]) {
     const o = document.createElement("option");
     o.value = o.textContent = v;
@@ -89,14 +124,25 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   const repository = document.createElement("input");
   repository.name = "repository";
   repository.placeholder = "owner/name (default: the CRD's)";
+  repository.setAttribute("aria-label", "repository, owner/name");
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.textContent = "new room";
   const notice = document.createElement("span");
   notice.className = "notice";
-  form.append(dataClass, repository, submit, notice);
+  const hint = document.createElement("small");
+  hint.className = "hint";
+  hint.id = "data-class-hint";
+  hint.textContent = "The data class cannot change once the room exists. It sets the model route, the tools and the egress " +
+    "its runs get; it does not change who can read the room.";
+  dataClass.setAttribute("aria-describedby", hint.id);
+  form.append(dataClass, repository, submit, notice, hint);
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (!dataClass.value) { // required stops a click; this stops any other submit
+      notice.textContent = "Choose a data class first.";
+      return;
+    }
     const body: Record<string, string> = { dataClass: dataClass.value };
     if (repository.value.trim()) body.repository = repository.value.trim();
     notice.textContent = "";

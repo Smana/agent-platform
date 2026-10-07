@@ -139,6 +139,19 @@ func (b *Broker) Send(ctx context.Context, items []json.RawMessage) (Reply, erro
 	return b.call(ctx, "/v1/bridge/events", joinBatch(items), nil)
 }
 
+// RequestApproval asks the room's approvers to decide a pending action, and
+// returns the approval the broker opened (idempotent per call id) with the
+// status code of its answer. An error means the request got no answer.
+func (b *Broker) RequestApproval(ctx context.Context, r wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+	var a wire.ApprovalAck
+	body, err := json.Marshal(r)
+	if err != nil {
+		return a, 0, fmt.Errorf("broker approval request: %w", err)
+	}
+	rep, err := b.call(ctx, "/v1/bridge/approvals", body, &a)
+	return a, rep.Code, err
+}
+
 // joinBatch is json.Marshal(wire.Batch{Items: items}) for pre-marshalled items.
 func joinBatch(items []json.RawMessage) []byte {
 	var buf bytes.Buffer

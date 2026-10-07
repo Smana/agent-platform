@@ -6,6 +6,7 @@ package wire
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 )
@@ -78,6 +79,8 @@ const (
 	ReasonBadPayload      = "bad_payload"       // 400: a payload that is not a JSON object
 	ReasonBadRoom         = "bad_room"          // 400: not a C2 room id
 	ReasonBadMessage      = "bad_message"       // 400: not a task_state message
+	ReasonBadApproval     = "bad_approval"      // 400: not an approval request: no eventId or callId, or an unknown class
+	ReasonBadAction       = "bad_action"        // 400: an approval's action that is not a JSON object, or over the cap
 	ReasonNoRoom          = "no_room"           // 404 (system API) or 503 (hello, before the Room's first reconcile)
 	ReasonRateLimited     = "rate_limited"      // 429: over the principal's request rate or requests in flight; retry after Retry-After
 	ReasonLogUnavailable  = "log_unavailable"   // 503: the log could not be read or written; retry
@@ -98,11 +101,31 @@ type Deliver struct {
 	Text string `json:"text"`
 }
 
-// Decision answers an approval the harness is waiting on (phase 5).
+// Decision answers an approval the harness is waiting on (phase 5). Ref is the
+// approval_decided event's seq, which the bridge acknowledges as decision_applied.
 type Decision struct {
 	ApprovalID string `json:"approvalId"`
 	Allow      bool   `json:"allow"`
 	Reason     string `json:"reason,omitempty"`
+	Ref        int64  `json:"ref"`
+}
+
+// ApprovalRequest is the body of POST /v1/bridge/approvals: a pending action
+// whose class the room's policy sends to its approvers (phase 5). EventID, the
+// harness event's id, keys the request's idempotency: a model provider may
+// reuse a tool call id (review I2).
+type ApprovalRequest struct {
+	EventID string          `json:"eventId"`
+	CallID  string          `json:"callId"`
+	Class   string          `json:"class"`
+	Action  json.RawMessage `json:"action"`
+}
+
+// ApprovalAck answers an ApprovalRequest: the approval's id, which a later
+// decision names, and when the broker expires it.
+type ApprovalAck struct {
+	ApprovalID string    `json:"approvalId"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 
 // Interrupt stops the run's current turn (phase 4).

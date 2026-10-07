@@ -51,6 +51,47 @@ type actLog struct {
 	queueErr   error
 	pendingErr error
 	recordErrs int // how many RecordRunRequest calls fail first
+	// approvals by id; decisions records each Decide that went through.
+	approvals   map[string]store.Approval
+	approvalErr error
+	decisions   []string
+	// forked is each fork's forked_from by new room, forkedRoom the last row asked for.
+	forked     map[string]envelope.Event
+	forkedRoom store.NewRoom
+	forkErr    error
+}
+
+// Approval is the store's: one approval, or ErrNoApproval.
+func (l *actLog) Approval(_ context.Context, id string) (store.Approval, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.approvalErr != nil {
+		return store.Approval{}, l.approvalErr
+	}
+	a, ok := l.approvals[id]
+	if !ok {
+		return store.Approval{}, store.ErrNoApproval
+	}
+	return a, nil
+}
+
+// Decide is the store's: the first decision wins, a later one is ErrAlreadyDecided.
+func (l *actLog) Decide(_ context.Context, id, decision, by, reason string, d envelope.Draft) (envelope.Event, store.Approval, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a, ok := l.approvals[id]
+	switch {
+	case !ok:
+		return envelope.Event{}, a, store.ErrNoApproval
+	case a.State != store.ApprovalPending:
+		return envelope.Event{}, a, store.ErrAlreadyDecided
+	}
+	a.State = decision
+	l.approvals[id] = a
+	l.decisions = append(l.decisions, by+" "+decision+" "+reason)
+	d.Type, d.RunID = envelope.ApprovalDecided, a.RunID
+	d.Payload = envelope.Must(envelope.ApprovalDecidedPayload{ApprovalID: id, Decision: decision, Reason: reason})
+	return l.appendLocked(d), a, nil
 }
 
 func (l *actLog) Room(context.Context, string) (store.RoomState, error) {
@@ -368,15 +409,65 @@ func TestQueueAndPromote(t *testing.T) {
 	}
 }
 
-// Ruling P18.
+// Ruling P18: from a CLI session (roomctl), nobody steers, interrupts, promotes,
+// moves the driver token or decides, whatever their standing; they read, chat,
+// queue and fork. Each refused act is accepted from the web UI, so only the
+// web-UI gate refuses it.
 func TestCLISessionsNeverSteer(t *testing.T) {
-	a, _, room := fixture("human:own")
-	raw, _ := json.Marshal(Action{Kind: "interrupt"})
 	e7 := int64(7)
-	f := a.Handle(context.Background(), authn.Principal{Kind: envelope.ActorHuman, ID: "human:own", Groups: []string{"agents-member"}},
-		false, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 1, Action: raw, DriverEpoch: &e7})
-	if f.Rejected != "not_permitted" {
-		t.Fatalf("%+v", f)
+	owner := func(*testing.T) (*Actor, *v1alpha1.Room) { a, _, room := fixture("human:own"); return a, room }
+	held := func(*testing.T) (*Actor, *v1alpha1.Room) { a, _, room := fixture("human:col"); return a, room }
+	queued := func(t *testing.T) (*Actor, *v1alpha1.Room) {
+		a, _, room := fixture("human:own")
+		if f := act(a, room, "human:col", 1, nil, Action{Kind: "message", Text: "later", Delivery: "queued"}); f.Rejected != "" {
+			t.Fatal(f)
+		}
+		return a, room
+	}
+	approval := func(*testing.T) (*Actor, *v1alpha1.Room) {
+		a, log, room := fixture("human:own")
+		log.approvals = map[string]store.Approval{"ap1": {ID: "ap1", RoomID: room.Name, State: store.ApprovalPending}}
+		return a, room
+	}
+	forkable := func(t *testing.T) (*Actor, *v1alpha1.Room) { a, _, room, _ := forkFixture(t, nil); return a, room }
+	cases := []struct {
+		name    string
+		setup   func(*testing.T) (*Actor, *v1alpha1.Room)
+		who     string
+		epoch   *int64
+		action  Action
+		refused bool
+	}{
+		{"steer", owner, "human:own", &e7, Action{Kind: "message", Text: "now", Delivery: "steering"}, true},
+		{"interrupt", owner, "human:own", &e7, Action{Kind: "interrupt"}, true},
+		{"promote a queued message", queued, "human:own", &e7, Action{Kind: "promote_queued", Ref: 1}, true},
+		{"give the token", owner, "human:own", &e7, Action{Kind: "driver_give", To: "human:col"}, true},
+		{"take the token", held, "human:own", nil, Action{Kind: "driver_take", Reason: "mine"}, true},
+		{"ask for the token", owner, "human:col", nil, Action{Kind: "driver_request"}, true},
+		{"decide", approval, "human:own", nil, Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"}, true},
+		{"chat", owner, "human:col", nil, Action{Kind: "message", Text: "hi", Delivery: "none"}, false},
+		{"queue", owner, "human:col", nil, Action{Kind: "message", Text: "later", Delivery: "queued"}, false},
+		{"fork", forkable, "human:col", nil, Action{Kind: "fork", Seq: 1}, false},
+	}
+	for _, c := range cases {
+		send := func(web bool) wire.ServerFrame {
+			a, room := c.setup(t)
+			raw, _ := json.Marshal(c.action)
+			p := authn.Principal{Kind: envelope.ActorHuman, ID: c.who, Groups: []string{"agents-member"}}
+			return a.Handle(context.Background(), p, web, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 7, Action: raw, DriverEpoch: c.epoch})
+		}
+		t.Run(c.name, func(t *testing.T) {
+			if f := send(true); c.refused && f.Rejected != "" {
+				t.Fatalf("refused from the web UI too, so the case does not isolate the gate: %+v", f)
+			}
+			want := ""
+			if c.refused {
+				want = "not_permitted"
+			}
+			if f := send(false); f.Rejected != want {
+				t.Fatalf("from roomctl: %+v, want %q", f, want)
+			}
+		})
 	}
 }
 
@@ -690,5 +781,79 @@ func TestInviteNeverDemotesTheDriver(t *testing.T) {
 	}
 	if f := act(a, read, "human:own", 2, nil, Action{Kind: "invite", Principal: "human:two", MemberRole: "watcher"}); f.Rejected != "" {
 		t.Fatalf("another member demoted: %+v", f)
+	}
+}
+
+// pendingApproval is one of the room's approvals, prompted by human:own.
+func pendingApproval(id, roomName string) store.Approval {
+	return store.Approval{ID: id, RoomID: roomName, RunID: "7f3cq2xz", CallID: "c1", Class: "forge.pr", State: store.ApprovalPending,
+		Action: []byte(`{}`), Prompters: []string{"human:own"}, RequestedAt: time.Now().Add(-time.Minute)}
+}
+
+// OD-16: with four-eyes on, whoever prompted the run cannot decide its approvals;
+// another approver can.
+func TestFourEyes(t *testing.T) {
+	a, log, room := fixture("system:factory")
+	room.Spec.Approvals.FourEyes = true
+	room.Spec.Members = append(room.Spec.Members, v1alpha1.Member{Principal: "human:apr", Role: "collaborator", Approver: true})
+	log.approvals = map[string]store.Approval{"ap1": pendingApproval("ap1", room.Name)}
+	var waited []time.Duration
+	a.OnDecided = func(d time.Duration) { waited = append(waited, d) }
+	decide := Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"}
+	if f := act(a, room, "human:own", 1, nil, decide); f.Rejected != "four_eyes" {
+		t.Fatalf("the prompter decides: %+v", f)
+	}
+	if f := act(a, room, "human:apr", 1, nil, decide); f.Rejected != "" || f.Seq == 0 {
+		t.Fatalf("another approver: %+v", f)
+	}
+	if len(waited) != 1 || waited[0] < time.Minute {
+		t.Fatalf("decision waits %v", waited)
+	}
+	// Four-eyes off, the owner may decide what they prompted.
+	room.Spec.Approvals.FourEyes = false
+	log.approvals["ap2"] = pendingApproval("ap2", room.Name)
+	if f := act(a, room, "human:own", 2, nil, Action{Kind: "decide", ApprovalID: "ap2", Decision: "denied"}); f.Rejected != "" {
+		t.Fatalf("four-eyes off: %+v", f)
+	}
+}
+
+// §6: the first valid decision wins; only approvers and owners decide, from the
+// web UI, on this room's approvals, with approved or denied and a short reason,
+// redacted.
+func TestDecide(t *testing.T) {
+	a, log, room := fixture("system:factory")
+	room.Spec.Members = append(room.Spec.Members, v1alpha1.Member{Principal: "human:apr", Role: "collaborator", Approver: true})
+	log.approvals = map[string]store.Approval{"ap1": pendingApproval("ap1", room.Name), "far": pendingApproval("far", "abcdefgh")}
+	d := func(id, decision, reason string) Action {
+		return Action{Kind: "decide", ApprovalID: id, Decision: decision, Reason: reason}
+	}
+	if f := act(a, room, "human:col", 1, nil, d("ap1", "approved", "")); f.Rejected != "not_permitted" {
+		t.Fatalf("a collaborator without the flag: %+v", f)
+	}
+	for i, bad := range []Action{d("ap1", "expired", ""), d("ap1", "", ""), d("ap1", "Approved", ""), d("", "approved", ""),
+		d("nope", "approved", ""), d("far", "approved", ""), d("ap1", "denied", strings.Repeat("x", 1025))} {
+		if f := act(a, room, "human:apr", int64(10+i), nil, bad); f.Rejected != "bad_action" {
+			t.Fatalf("%+v: %+v", bad, f)
+		}
+	}
+	if f := act(a, room, "human:apr", 2, nil, d("ap1", "denied", "  leaks a SECRET  ")); f.Rejected != "" {
+		t.Fatalf("deny: %+v", f)
+	}
+	last := log.last()
+	if last.Type != envelope.ApprovalDecided || !slices.Equal(last.Redactions, []string{"test"}) ||
+		!slices.Equal(log.decisions, []string{"human:apr denied leaks a [REDACTED:test]"}) {
+		t.Fatalf("decision %+v %v", last, log.decisions)
+	}
+	if f := act(a, room, "human:own", 3, nil, d("ap1", "approved", "")); f.Rejected != "already_decided" {
+		t.Fatalf("a second decision: %+v", f)
+	}
+	p := authn.Principal{Kind: envelope.ActorHuman, ID: "human:own", Groups: []string{"agents-member"}}
+	raw, _ := json.Marshal(d("ap1", "approved", ""))
+	if f := a.Handle(context.Background(), p, false, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 4, Action: raw}); f.Rejected != "not_permitted" {
+		t.Fatalf("a CLI token decides: %+v", f)
+	}
+	log.approvalErr = errors.New("down")
+	if f := act(a, room, "human:apr", 5, nil, d("ap1", "approved", "")); f.Rejected != "log_unavailable" {
+		t.Fatalf("an unreadable approval: %+v", f)
 	}
 }
