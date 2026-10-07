@@ -5,6 +5,7 @@ package roomctl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -375,5 +376,50 @@ func TestWatchStopsOnARefusal(t *testing.T) {
 	err := c.Watch(t.Context(), "3kq7x2ma", 50, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "403") || dials.Load() != 1 {
 		t.Fatalf("%v after %d dials", err, dials.Load())
+	}
+}
+
+// A dial that cannot get a token, or a frame over the read limit, would fail the
+// same way on every reconnect: the watch ends with why instead of retrying.
+func TestWatchStopsWhereRetryingCannotHelp(t *testing.T) {
+	state := wire.ServerFrame{Type: wire.FrameState, ThroughSeq: 2,
+		Snapshot: &wire.Snapshot{RoomID: "3kq7x2ma", Phase: "Active", You: wire.You{Role: "watcher"}}}
+	cases := []struct {
+		name  string
+		token func(context.Context) (string, error)
+		conn  func(ctx context.Context, c *websocket.Conn)
+		want  string
+	}{
+		{"a refresh the issuer refuses", func() func(context.Context) (string, error) {
+			var calls atomic.Int32
+			return func(context.Context) (string, error) {
+				if calls.Add(1) == 1 {
+					return "tok", nil
+				}
+				return "", errors.New(`refresh the token (oauth2: "invalid_grant"): run roomctl login`)
+			}
+		}(), func(ctx context.Context, c *websocket.Conn) {
+			_ = wsjson.Write(ctx, c, state)
+			_ = c.Close(4001, "reauth")
+		}, "run roomctl login"},
+		{"a frame over the read limit", fixed, func(ctx context.Context, c *websocket.Conn) {
+			_ = wsjson.Write(ctx, c, state)
+			_ = c.Write(ctx, websocket.MessageText, []byte(`"`+strings.Repeat("x", maxFrame)+`"`))
+			<-ctx.Done()
+		}, "4 MiB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newBroker(t)
+			b.conn = func(_ int, ctx context.Context, c *websocket.Conn) { tc.conn(ctx, c) }
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			err := b.client(tc.token).Watch(ctx, "3kq7x2ma", 50, &strings.Builder{})
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(b.hellos) != 1 {
+				t.Fatalf("%v after %d dials", err, len(b.hellos))
+			}
+		})
 	}
 }

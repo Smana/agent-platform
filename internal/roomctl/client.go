@@ -59,10 +59,14 @@ func (r *Refusal) Error() string {
 	return fmt.Sprintf("%s: %d: %s", r.Op, r.Code, why)
 }
 
+// errToken is no access token to dial with: the token file is gone, or the
+// issuer refused its refresh. Dialling again cannot help.
+var errToken = errors.New("no access token")
+
 func (c Client) header(ctx context.Context) (http.Header, error) {
 	tok, err := c.Token(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errToken, err)
 	}
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+tok)
@@ -135,11 +139,11 @@ func (c Client) dial(ctx context.Context, hello wire.ClientFrame) (*websocket.Co
 
 // again reports whether the broker asked to be dialled again (docs/api.md: 4001
 // reauth, 1001 shutdown, 1013 log_unavailable, 1008 slow_consumer), or the
-// connection dropped without a close frame. A refusal or another close code
-// (hello first, a frame too big) would fail the same way again.
+// connection dropped without a close frame. A refusal, no token, a frame over
+// the read limit or another close code (hello first) would fail the same way again.
 func again(err error) bool {
 	var refused *Refusal
-	if errors.As(err, &refused) {
+	if errors.As(err, &refused) || errors.Is(err, errToken) || errors.Is(err, websocket.ErrMessageTooBig) {
 		return false
 	}
 	switch websocket.CloseStatus(err) {
@@ -203,6 +207,9 @@ func (w *watch) follow(ctx context.Context, hello wire.ClientFrame) error {
 	for {
 		var f wire.ServerFrame
 		if err := wsjson.Read(ctx, conn, &f); err != nil {
+			if errors.Is(err, websocket.ErrMessageTooBig) {
+				return fmt.Errorf("room %s: the broker sent a frame over %d MiB, which roomctl does not read: %w", hello.RoomID, maxFrame>>20, err)
+			}
 			return err
 		}
 		if f.Type == wire.FrameState {
