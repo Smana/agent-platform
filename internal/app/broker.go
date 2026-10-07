@@ -141,7 +141,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	defer st.Close()
-	logStore := &meteredLog{Store: st, appends: st, m: m, now: time.Now}
+	logStore := &meteredLog{Store: st, appends: st, drivers: st, m: m, now: time.Now}
 	red, err := redact.New()
 	if err != nil {
 		return fmt.Errorf("room-broker: redaction rules: %w", err)
@@ -172,7 +172,11 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	humans := humanServer(cfg.Human, a.humans, mgr.GetClient(), ns, st, hub, rw.watch, m, log)
+	api.Hub, api.LastAck = hub, st.LastAck // the stream's deliveries (phase 4)
+	humans, err := humanSide(cfg, a.humans, mgr.GetClient(), ns, logStore, red, hub, rw.watch, mgr.Add, m, log)
+	if err != nil {
+		return fmt.Errorf("room-broker: %w", err)
+	}
 	key := mcpKey(getenv)
 	if key == "" {
 		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
@@ -247,14 +251,14 @@ func fanoutHub(r fanout.Reader, l fanout.Listener, m *metrics.Set, log *slog.Log
 	return hub, nil
 }
 
-// humanServer is the :8080 API over the broker's parts. The web client id is
-// read at use (Ruling AS-a); the group names are literals.
+// humanServer is the :8080 API over the broker's parts, its acts served by
+// actor. The web client id is read at use (Ruling AS-a); the group names are literals.
 func humanServer(h config.HumanConfig, humans *authn.Humans, rooms client.Reader, ns string, roomLog humanapi.Log,
-	hub humanapi.Hub, runs humanapi.Runs, m *metrics.Set, log *slog.Logger,
+	hub humanapi.Hub, runs humanapi.Runs, actor *humanapi.Actor, m *metrics.Set, log *slog.Logger,
 ) *humanapi.Server {
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
 		WebClient: idFile(h.ClientIDFile), Rooms: rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs,
-		Metrics: m, UI: ui.FS, Logger: log}
+		Actor: actor, Metrics: m, UI: ui.FS, Logger: log}
 }
 
 // roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.

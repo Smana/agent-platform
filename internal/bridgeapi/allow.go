@@ -16,7 +16,8 @@ import (
 // bridgeKinds are the state_changed kinds a bridge produces: its status tracker and
 // mapping (phase 1), its acks (phase 4) and its local decisions (phase 5).
 var bridgeKinds = map[string]bool{"harness_status": true, "harness_error": true, "harness_paused": true,
-	"harness_event": true, "delivered": true, "interrupted": true, "policy_decision": true, "decision_applied": true}
+	"harness_event": true, "delivered": true, "interrupted": true, "undeliverable": true, "policy_decision": true,
+	"decision_applied": true}
 
 // knownFields are, per type a bridge may push, the top-level keys a reader of
 // the log looks up. A key that folds onto one of them must be spelled as it.

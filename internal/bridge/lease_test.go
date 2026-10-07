@@ -45,9 +45,9 @@ func (c *fakeClock) add(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// leaseLog is bridgeapi.Log with the store's lease semantics on a fake clock:
-// a holder seen within stale keeps the room while it is live, and one not seen
-// within stale loses it to any claimant, live or not (store.claimFree).
+// leaseLog is bridgeapi.Log with the store's lease semantics on a fake clock: a
+// holder keeps the room while it is live, however long since it was seen, and
+// loses it only once its run ended (store.ClaimBridge, ruling SBB).
 type leaseLog struct {
 	clock *fakeClock
 
@@ -78,16 +78,19 @@ func (l *leaseLog) Range(context.Context, string, int64, int) ([]envelope.Event,
 
 func (l *leaseLog) Cursor(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (l *leaseLog) Deliveries(context.Context, string, string, int64, int64, int) ([]envelope.Event, error) {
+	return nil, nil
+}
+
 func (l *leaseLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id}, nil
 }
 
-func (l *leaseLog) ClaimBridge(ctx context.Context, _, run string, stale time.Duration, live func(context.Context, string) bool) (string, bool, error) {
+func (l *leaseLog) ClaimBridge(ctx context.Context, _, run string, live func(context.Context, string) bool) (string, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.claims[run]++
-	fresh := l.clock.now().Sub(l.seenAt) < stale
-	if l.holder != "" && l.holder != run && fresh && live(ctx, l.holder) {
+	if l.holder != "" && l.holder != run && live(ctx, l.holder) {
 		return l.holder, false, nil
 	}
 	l.holder, l.seenAt = run, l.clock.now()
@@ -214,10 +217,9 @@ func (r *leaseRig) hello(t *testing.T, run string) (int, string) {
 	return resp.StatusCode, e.Reason
 }
 
-// Review I2 (Ruling AX): the broker frees a lease not renewed for two minutes,
-// and a quiet run (a long LLM call, a pending confirmation) pushes no items. Its
-// bridge heartbeats instead, so it keeps its room against a second run and its
-// next event still lands.
+// Review I2 (Ruling AX, SBB): a quiet run (a long LLM call, a pending
+// confirmation) pushes no items, yet keeps its room against a second run for as
+// long as it is live, and its next event still lands.
 func TestAQuietRunKeepsItsRoom(t *testing.T) {
 	r := newLeaseRig(t)
 	for range 5 { // 150 s of silence, past the broker's 2 min window

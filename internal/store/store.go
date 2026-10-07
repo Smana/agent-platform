@@ -28,6 +28,9 @@ var (
 	ErrInvalidRetention = errors.New("retention must be at least a day")
 	// ErrNoBridgeRun is AppendAsBridge without a run: it would append unfenced.
 	ErrNoBridgeRun = errors.New("a bridge append names its run")
+	// ErrKeyConflict is an idempotency key already stored for another kind of event:
+	// a replay of it would report a change that never happened.
+	ErrKeyConflict = errors.New("idempotency key already used by another event type")
 )
 
 // Store is the room log over a PostgreSQL pool, connected as rooms_broker.
@@ -106,9 +109,10 @@ func scan(row pgx.Row, roomID string) (envelope.Event, error) {
 }
 
 // Append adds d to its room's log, for writers that hold no bridge lease (humans,
-// the broker, system callers). dup is true for a replayed idempotency key.
+// the broker, system callers). dup is true for a replayed idempotency key; a key
+// stored for another event type is ErrKeyConflict.
 func (s *Store) Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
-	return s.append(ctx, d, "")
+	return sameType(d)(s.append(ctx, d, fence{}))
 }
 
 // AppendAsBridge appends for the bridge of bridgeRun, and refuses with ErrLeaseLost
@@ -117,13 +121,44 @@ func (s *Store) AppendAsBridge(ctx context.Context, bridgeRun string, d envelope
 	if bridgeRun == "" { // "" is append's "no fence": refuse it rather than append unfenced
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrNoBridgeRun)
 	}
-	return s.append(ctx, d, bridgeRun)
+	return s.append(ctx, d, fence{bridgeRun: bridgeRun})
+}
+
+// AppendAsDriver appends a driver-only action for driver, and refuses with
+// ErrStaleEpoch unless driver still holds the token at epoch (§2): the check
+// runs under the room's row lock, so it holds across broker replicas.
+func (s *Store) AppendAsDriver(ctx context.Context, driver string, epoch int64, d envelope.Draft) (envelope.Event, bool, error) {
+	if driver == "" { // "" is append's "no fence": refuse it rather than append unfenced
+		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrStaleEpoch)
+	}
+	return sameType(d)(s.append(ctx, d, fence{driver: driver, epoch: epoch}))
+}
+
+// sameType refuses a replay whose stored event is not of d's type: the key was
+// used for another action, and its event would be reported as this one. Bridge
+// appends are left out: their keys are derived per item, never reused across types.
+func sameType(d envelope.Draft) func(envelope.Event, bool, error) (envelope.Event, bool, error) {
+	return func(ev envelope.Event, dup bool, err error) (envelope.Event, bool, error) {
+		if err == nil && dup && ev.Type != d.Type {
+			return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, ErrKeyConflict)
+		}
+		return ev, dup, err
+	}
+}
+
+// fence is what an append requires of the room under its row lock: the bridge
+// lease held by bridgeRun, or the driver token held by driver at epoch. The zero
+// fence requires nothing.
+type fence struct {
+	bridgeRun string
+	driver    string
+	epoch     int64
 }
 
 // append is one transaction under the room's row lock: a replayed idempotency key
 // returns the stored event, a sealed room or a lost lease refuses, and otherwise the
 // event takes the next seq. A full room is then sealed with a final limit event.
-func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (envelope.Event, bool, error) {
+func (s *Store) append(ctx context.Context, d envelope.Draft, f fence) (envelope.Event, bool, error) {
 	if err := d.Validate(); err != nil {
 		return envelope.Event{}, false, err
 	}
@@ -132,7 +167,7 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (env
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ev, dup, err := s.appendTx(ctx, tx, d, fence)
+	ev, dup, err := s.appendTx(ctx, tx, d, f)
 	if err == nil && !dup {
 		err = tx.Commit(ctx)
 	}
@@ -142,7 +177,7 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, fence string) (env
 	return ev, dup, nil
 }
 
-func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence string) (envelope.Event, bool, error) {
+func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fence) (envelope.Event, bool, error) {
 	if len(d.Payload) > envelope.MaxPayload {
 		d.Payload = envelope.Oversize(d.Type, len(d.Payload))
 	}
@@ -150,7 +185,10 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 	// none of the checks below can race them.
 	var sealed bool
 	var holder *string
-	err := tx.QueryRow(ctx, `SELECT sealed, bridge_run FROM rooms WHERE room_id = $1 FOR UPDATE`, d.RoomID).Scan(&sealed, &holder)
+	var driver string
+	var epoch int64
+	err := tx.QueryRow(ctx, `SELECT sealed, bridge_run, driver, driver_epoch FROM rooms WHERE room_id = $1 FOR UPDATE`,
+		d.RoomID).Scan(&sealed, &holder, &driver, &epoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return envelope.Event{}, false, ErrNoRoom
 	}
@@ -158,19 +196,17 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 		return envelope.Event{}, false, err
 	}
 	// Before the seal check: a retry of the append that sealed the room is a duplicate.
-	existing, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM events
-		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
-	if err == nil {
-		return existing, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return envelope.Event{}, false, err
+	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
+		return existing, dup, err
 	}
 	if sealed {
 		return envelope.Event{}, false, ErrSealed
 	}
-	if fence != "" && (holder == nil || *holder != fence) {
+	if f.bridgeRun != "" && (holder == nil || *holder != f.bridgeRun) {
 		return envelope.Event{}, false, ErrLeaseLost
+	}
+	if f.driver != "" && (driver != f.driver || epoch != f.epoch) {
+		return envelope.Event{}, false, ErrStaleEpoch
 	}
 	var seq, size int64
 	if err := tx.QueryRow(ctx, `UPDATE rooms SET last_seq = last_seq + 1, bytes = bytes + $2, last_event_at = now()
@@ -195,6 +231,35 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, fence
 		}
 	}
 	return ev, false, nil
+}
+
+// Stored returns the event already stored under d's idempotency key, if any. An
+// act whose side effect lies outside the log, such as a run request, checks it
+// first, so a replayed key never repeats that effect.
+func (s *Store) Stored(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error) {
+	ev, dup, err := stored(ctx, s.pool, d)
+	if err != nil {
+		return envelope.Event{}, false, fmt.Errorf("store: key in room %s: %w", d.RoomID, err)
+	}
+	return ev, dup, nil
+}
+
+// rowQuerier is a pool or a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// stored returns the event already stored under d's idempotency key, if any.
+func stored(ctx context.Context, q rowQuerier, d envelope.Draft) (envelope.Event, bool, error) {
+	existing, err := scan(q.QueryRow(ctx, `SELECT `+cols+` FROM events
+		WHERE room_id = $1 AND origin_client = $2 AND origin_seq = $3`, d.RoomID, d.OriginClient, d.OriginSeq), d.RoomID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return envelope.Event{}, false, nil
+	}
+	if err != nil {
+		return envelope.Event{}, false, err
+	}
+	return existing, true, nil
 }
 
 func insert(ctx context.Context, tx pgx.Tx, ev envelope.Event, client string, n int64) error {

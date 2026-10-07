@@ -133,6 +133,13 @@ Set by the `AgentRun` composition (CC-S2).
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities
 dropped.
 
+**The gate (F15).** The composition adds `room-bridge gate`, the same image with the argument
+`gate`, as a plain init container after the bridge and before the harness. It reads the bridge's
+`/admission` on `127.0.0.1` at `HEALTH_ADDR`'s port, exits 0 once the bridge holds the room, and
+exits 1 once the room refuses the run. The pod's `restartPolicy: Never` then fails the run before
+the harness starts. Without the gate the lease only holds the log: a refused run still executes,
+unrecorded, on the room's shared branch.
+
 ### What the broker reads from `AgentRun` (SP1)
 
 `spec.roomRef` (immutable), `spec.role`, `spec.principal`, `spec.branch`, `spec.budget.maxMinutes`,
@@ -149,7 +156,7 @@ annotation `agents.ogenki.io/revoked`, and `metadata.uid`. The run's CNP already
 | Report task state | `POST /v1/rooms/{id}/messages`, `kind: task_state` |
 | Verdicts and handoffs | `message{kind: review_verdict}` and `handoff` in the log (phase 3); the verdict comment is the broker's, SP3 never posts it again |
 | Who drives | `Room.status.driver` and `driverEpoch`: the factory never advances a room while a `human:` holds the token |
-| Run requests to SP3 | From phase 4, `POST {factoryURL}/v1/runs` with `{role, repository, baseRef, task, dataClass, roomRef, egressProfiles?}` and the human's access token as `Authorization: Bearer` |
+| Run requests to SP3 | From phase 4, `POST {factoryURL}/v1/runs` with `{role, repository, baseRef, task, dataClass, roomRef, egressProfiles?}`, the human's access token as `Authorization: Bearer`, and `Idempotency-Key: <roomId>:<originClient>:<originSeq>`, the act's own key. **The factory must answer a key it has seen with the same `runId` and create nothing** (review 4.4 I1): the broker requests the run, then records it, and a client retrying a failed record sends the same key. A request without a key is refused before the call. Until SP3 the rendered claim's run id is derived from the same key, so applying both claims makes one run. SP3 should also refuse a second pending run per `roomRef`, which closes the cross-replica race the broker's `room_busy` cannot see. The `Idempotency-Key` alone decides: a replay gets the first request's `runId` whatever its body |
 
 ### Starting a run in a room before SP3
 

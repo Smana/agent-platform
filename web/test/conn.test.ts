@@ -169,4 +169,29 @@ describe("RoomConnection", () => {
     c.last().open();
     expect(() => c.last().onmessage?.({ data: "{" })).not.toThrow();
   });
+
+  it("sends only on an open socket, and says so", () => {
+    const c = setup();
+    expect(c.conn.send({ type: "act" })).toBe(false);
+    c.last().open();
+    expect(c.conn.send({ type: "act", clientSeq: 1 })).toBe(true);
+    expect(c.last().sent.at(-1)).toEqual({ type: "act", clientSeq: 1 });
+    c.last().drop(1006);
+    expect(c.conn.send({ type: "act" })).toBe(false);
+  });
+
+  // A refused upgrade (an expired session among others) closes before it opens.
+  it("reports a socket that closed before it opened", () => {
+    const refused: number[] = [];
+    const sockets: FakeSocket[] = [];
+    const conn = new RoomConnection("3kq7x2ma", { onEvent: () => {}, onState: () => {}, onStatus: () => {},
+      onRefused: () => refused.push(sockets.length) }, { socket: (url) => { const s = new FakeSocket(url); sockets.push(s); return s; }, random: () => 0 });
+    conn.connect();
+    sockets[0].drop(1006);
+    expect(refused).toEqual([1]);
+    vi.advanceTimersByTime(500);
+    sockets[1].open();
+    sockets[1].drop(1006);
+    expect(refused).toEqual([1]);
+  });
 });

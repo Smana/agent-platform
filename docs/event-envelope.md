@@ -113,7 +113,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
-| `driver` | `{from, to, epoch, reason: given \| requested \| taken \| lease_expired}` | The broker | Planned, phase 4 |
+| `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker | Store AP-4 (Task 4.1); written by human actions from Task 4.2 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge | Per kind |
 
@@ -130,14 +130,16 @@ From the design's Appendix A, with the plan's additive fields.
 | `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge | AP-1 |
 | `verdict_posted`, `verdict_not_posted` | `verdictSeq`, and `url` or `reason`: `no_pull_request`, `github_refused` with `detail` `http_<status>` or `too_many_comments`, or `expired` with `detail: window_24h` | Broker (leader) | AP-3 |
 | `interrupt` | `runId` | Broker, on the driver's interrupt | Planned, phase 4 |
-| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements phase 4 |
+| `delivered`, `interrupted` | `ref`, `runId`: the bridge's acknowledgement of a delivery; `interrupted` without `ref` is the harness's own `InterruptEvent` | Bridge | `interrupted` from the harness AP-1; acknowledgements AP-4 (Task 4.3) |
+| `undeliverable` | `ref`, `runId`, `code`: the harness refused the delivery for good, with that HTTP status; the stream goes on past it | Bridge | AP-4 (Task 4.3) |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
+| `run_requested` | `role`, `runId`, `via: manifest \| factory`, `baseRef`, `taskUrl` (a reviewer's PR), `consumed`: the refs of the queued messages its brief quoted, moved to `consumed` in the same transaction | Broker, on a human's `start_run` | AP-4 (Task 4.4) |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
 | `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
 | `commit` | — | — | Listed in Appendix A; no plan task writes it yet |
 
 A bridge may push only `message{kind: chat, delivery: none}`, `turn`, `tool_call`, `tool_result`, and
-the `state_changed` kinds `harness_*`, `delivered`, `interrupted`, `policy_decision` and
+the `state_changed` kinds `harness_*`, `delivered`, `interrupted`, `undeliverable`, `policy_decision` and
 `decision_applied`. Anything else is `400 bad_item`, so a compromised sandbox cannot forge a verdict,
 a driver change or a decision (review M5).
 

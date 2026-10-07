@@ -76,6 +76,10 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
   interrupt or move the driver token (ruling P18), because a local agent could run it.
 - **Four-eyes** (OD-16, off by default, per room): the humans in the triggering turn's `causedBy`
   chain cannot decide it.
+- **An invite is two writes**: the Room CR, then the `participant` event. If the append fails after
+  the update, the membership briefly has no record; retrying the act with the same `clientSeq`
+  heals it (the update is then a no-op, and the append writes or replays the record). The CR
+  change is also in the Kubernetes audit log. A sealed room refuses the invite before the update.
 - **The broker never creates `AgentRun`s**: its RBAC is `get`, `list`, `watch`, `delete` on
   `agentruns` in `agents` (C3); CRUD on `rooms` in `agent-system`; leases; no cluster-admin.
 
@@ -127,8 +131,9 @@ A unit test pins the four rules the design names:
 | Broker-origin text from a claim | The one free text, a revocation annotation used as an end reason, is redacted like a payload, then cut to 64 bytes |
 | gitleaks' `gitleaks:allow` marker | Ignored: a line carrying it is redacted like any other, because the marker is harness content too |
 
-Later phases apply the same redactor to queued text (phase 4, review M7) and to the action on an
-approval card (phase 5). The harness also redacts GitHub tokens from its own step log before
+Human actions (phase 4) run every payload they append through the same redactor, a take's reason
+included, and a queued message's row keeps the redacted text the next run's brief quotes (review M7).
+Phase 5 applies it to the action on an approval card. The harness also redacts GitHub tokens from its own step log before
 printing (cloud-native-ref H-1, review M4).
 
 ## Database roles

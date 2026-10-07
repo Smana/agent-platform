@@ -180,6 +180,7 @@ Packages that do touch the platform name their seam:
 |---|---|
 | `internal/authn` | issuers, subject patterns and the system allowlist are config; the audiences `room-broker` and `rooms-system` are constants in `internal/authn/jwt.go` |
 | `internal/runwatch` | the `AgentRun` GVK, its `agents` namespace, the `xplane-run-` claim-name prefix and the `agents.ogenki.io/revoked` annotation; a `RunSource` interface would replace them in a spin-out |
+| `internal/runrequest` | the rendered claim reuses runwatch's seam plus the claim's spec fields; the factory is SP3's `POST /v1/runs`, at the configured `factoryURL` |
 | `internal/roomctrl` | the `Room` CRD group |
 | `internal/bridgeapi` | principal allowlists come from config |
 | `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
