@@ -60,8 +60,11 @@ type RoomSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="retention is immutable"
 	// +optional
 	Retention string `json:"retention,omitempty"`
-	// Runs requested for this room inherit it (C3).
+	// Runs requested for this room inherit it (C3). Fixed at creation (ruling
+	// TD): a room turned public would publish the summaries of verdicts queued
+	// under its internal class.
 	// +kubebuilder:validation:Enum=public;internal
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="dataClass is immutable"
 	DataClass string `json:"dataClass"`
 	// +kubebuilder:default="Smana/cloud-native-ref"
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`

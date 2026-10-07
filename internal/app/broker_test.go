@@ -513,7 +513,7 @@ func TestDrainsFitTheGrace(t *testing.T) {
 	if humanDrain < 15*time.Second {
 		t.Fatalf(":8080 drains for %s, want at least 15 s", humanDrain)
 	}
-	if d := max(bridgeDrain, managerDrain, humanDrain) + opsDrain + metricsDrain; d >= podGrace {
+	if d := max(bridgeDrain, managerDrain, humanDrain, mcpDrain) + opsDrain + metricsDrain; d >= podGrace {
 		t.Fatalf("the drains take %s, want under the %s grace", d, podGrace)
 	}
 }

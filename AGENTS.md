@@ -183,6 +183,7 @@ Packages that do touch the platform name their seam:
 | `internal/roomctrl` | the `Room` CRD group |
 | `internal/bridgeapi` | principal allowlists come from config |
 | `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
+| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository) is a constant |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,
