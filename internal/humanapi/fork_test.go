@@ -97,10 +97,31 @@ func forkFixture(t *testing.T, funcs *interceptor.Funcs) (*Actor, *actLog, *v1al
 // forkAs sends fork as who, an agents member with no standing of their own in
 // the room (a watcher), through roomctl unless web.
 func forkAs(a *Actor, room *v1alpha1.Room, who string, web bool, action Action) wire.ServerFrame {
+	return forkIn(a, room, who, "agents-member", web, action)
+}
+
+// forkIn is forkAs for a member of group.
+func forkIn(a *Actor, room *v1alpha1.Room, who, group string, web bool, action Action) wire.ServerFrame {
 	action.Kind = "fork"
 	raw, _ := json.Marshal(action)
-	p := authn.Principal{Kind: envelope.ActorHuman, ID: who, Groups: []string{"agents-member"}, AccessToken: "tok-" + who}
+	p := authn.Principal{Kind: envelope.ActorHuman, ID: who, Groups: []string{group}, AccessToken: "tok-" + who}
 	return a.Handle(context.Background(), p, web, "s1", room, wire.ClientFrame{Type: "act", ClientSeq: 1, Action: raw})
+}
+
+// forkedSpec is the Room a successful fork created.
+func forkedSpec(t *testing.T, a *Actor, room *v1alpha1.Room, f wire.ServerFrame) v1alpha1.RoomSpec {
+	t.Helper()
+	var res struct {
+		RoomID string `json:"roomId"`
+	}
+	child := &v1alpha1.Room{}
+	if err := json.Unmarshal(f.Result, &res); f.Rejected != "" || err != nil {
+		t.Fatalf("%+v: %v", f, err)
+	}
+	if err := a.Rooms.Get(context.Background(), client.ObjectKey{Namespace: room.Namespace, Name: res.RoomID}, child); err != nil {
+		t.Fatal(err)
+	}
+	return child.Spec
 }
 
 // SC-7, offline: a watcher forks from roomctl (ruling P18 allows it) into a room
@@ -126,8 +147,9 @@ func TestForkCreatesTheForkersRoomAndItsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := child.Spec
+	stricter := v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.other": "deny", "mcp.write": "deny"}}
 	if s.Owner != "human:bob" || s.Driver != "human:bob" || len(s.Members) != 0 || s.DataClass != room.Spec.DataClass ||
-		s.Repository != room.Spec.Repository || s.Retention != "30d" || !equality.Semantic.DeepEqual(s.Approvals, room.Spec.Approvals) ||
+		s.Repository != room.Spec.Repository || s.Retention != "30d" || !equality.Semantic.DeepEqual(s.Approvals, stricter) ||
 		child.Annotations[ForkedFrom] != room.Name+"@2" {
 		t.Fatalf("%+v %v", s, child.Annotations)
 	}
@@ -156,18 +178,76 @@ func TestForkCreatesTheForkersRoomAndItsRun(t *testing.T) {
 	}
 }
 
-// With no role, a fork is a room and nothing else; the source's seal does not
-// stop it, since nothing is written there.
-func TestForkWithoutARunFromASealedRoom(t *testing.T) {
-	a, log, room, req := forkFixture(t, nil)
-	log.st.Sealed = true
-	f := forkAs(a, room, "human:bob", true, Action{Seq: 1})
-	if f.Rejected != "" || string(f.Result) != `{"roomId":"`+log.forkedRoom.ID+`"}` || len(req.calls()) != 0 {
-		t.Fatalf("%+v %s", f, f.Result)
+// With no role, a fork is a room and nothing else. A sealed room forks only for
+// its owner or an agents-admin (ruling M3): nothing is written there, but a
+// sealed room's log is no longer everyone's to branch.
+func TestOnlyAnOwnerForksASealedRoom(t *testing.T) {
+	cases := []struct {
+		name, who, group string
+		want             string
+	}{
+		{"its owner", "human:own", "agents-member", ""},
+		{"an agents-admin", "human:adm", "agents-admin", ""},
+		{"a collaborator", "human:col", "agents-member", "sealed"},
+		{"a watcher", "human:bob", "agents-member", "sealed"},
 	}
-	if _, ok := log.forked[log.forkedRoom.ID]; !ok {
-		t.Fatal("no fork")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, log, room, req := forkFixture(t, nil)
+			log.st.Sealed = true
+			f := forkIn(a, room, c.who, c.group, true, Action{Seq: 1})
+			if f.Rejected != c.want || len(req.calls()) != 0 {
+				t.Fatalf("%+v %s", f, f.Result)
+			}
+			if c.want != "" {
+				if len(log.forked) != 0 {
+					t.Fatal("a refused fork creates nothing")
+				}
+				return
+			}
+			if string(f.Result) != `{"roomId":"`+log.forkedRoom.ID+`"}` {
+				t.Fatalf("%s", f.Result)
+			}
+		})
 	}
+}
+
+// A fork keeps its source's approvals only for the source's owners; anyone else
+// gets, class by class, the stricter of the source's and a new room's default
+// (ruling M2): an unattended source never hands a watcher a weaker gate.
+func TestAForksApprovalsAreNeverWeakerThanANewRooms(t *testing.T) {
+	stricter := v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.other": "deny", "mcp.write": "deny"},
+		TTL: "2h", FourEyes: true}
+	cases := []struct {
+		name, who, group string
+		source           bool // keeps the source's approvals as they are
+	}{
+		{"its owner", "human:own", "agents-member", true},
+		{"an agents-admin", "human:adm", "agents-admin", true},
+		{"a collaborator", "human:col", "agents-member", false},
+		{"a watcher", "human:bob", "agents-member", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, _, room, _ := forkFixture(t, nil)
+			room.Spec.Approvals.TTL, room.Spec.Approvals.FourEyes = "2h", true
+			want := stricter
+			if c.source {
+				want = room.Spec.Approvals
+			}
+			if got := forkedSpec(t, a, room, forkIn(a, room, c.who, c.group, false, Action{Seq: 1})).Approvals; !equality.Semantic.DeepEqual(got, want) {
+				t.Fatalf("got %+v want %+v", got, want)
+			}
+		})
+	}
+	t.Run("an allow override is dropped", func(t *testing.T) {
+		a, _, room, _ := forkFixture(t, nil)
+		room.Spec.Approvals = v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.pr": "allow"}}
+		if got := forkedSpec(t, a, room, forkAs(a, room, "human:bob", false, Action{Seq: 1})).Approvals; !equality.Semantic.DeepEqual(got,
+			v1alpha1.Approvals{Profile: "attended"}) {
+			t.Fatalf("got %+v", got)
+		}
+	})
 }
 
 func TestForkRefusals(t *testing.T) {

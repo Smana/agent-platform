@@ -15,7 +15,7 @@ const rejections: Record<string, string> = {
   factory_unavailable: "The run could not be requested right now. Retry.",
   bad_action: "The broker refused the request as malformed. Check the fields: a give goes to a member who can drive, or to the room's system holder.",
   not_queued: "That message was already delivered or removed.",
-  sealed: "This room is sealed: it takes no more actions.",
+  sealed: "This room is sealed: it takes no more actions, and only its owner or an admin may fork it.",
   conflict: "The room changed at the same moment. Retry.",
   log_unavailable: "The room's log is unavailable right now. Retry.",
   already_decided: "Another approver decided first.",

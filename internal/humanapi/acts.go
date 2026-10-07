@@ -22,6 +22,7 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/bridge"
 	"github.com/Smana/agent-platform/internal/brief"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -211,8 +212,9 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 		return reject(rejectNotPermitted)
 	}
 	// Every other action writes this room, and an invite must not change the Room
-	// first (review 4.2 M2); a fork writes only the new room.
-	if st.Sealed && act.Kind != "fork" {
+	// first (review 4.2 M2). A fork writes only the new room, but a sealed room
+	// forks only for its owners, agents-admin included (ruling M3).
+	if st.Sealed && (act.Kind != "fork" || sub.Role < policy.Owner) {
 		return reject(rejectSealed)
 	}
 	if fenced[fenceKey] && (f.DriverEpoch == nil || *f.DriverEpoch != st.DriverEpoch) {
@@ -226,7 +228,7 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	case "start_run":
 		ev, ack.Result, why = a.startRun(ctx, p, room, act, d)
 	case "fork":
-		ev, ack.Result, why = a.fork(ctx, p, room, act, d)
+		ev, ack.Result, why = a.fork(ctx, p, sub.Role == policy.Owner, room, act, d)
 	default:
 		ev, why = a.dispatch(ctx, p, room, st, act, d)
 	}
@@ -621,9 +623,11 @@ const maxNote = 1 << 10
 // (§5): the log prefix with its seqs, then state_changed{forked_from} with the
 // commit at that seq, then, for a role, the new room's first run, on its own
 // branch and the forker's token. Nothing is written to the source room, so a
-// sealed one forks too. The ack's result is {roomId, run?, runError?}: a run
-// that fails leaves the fork made.
-func (a *Actor) fork(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
+// sealed one forks too, for its owners. The source's approvals carry over for
+// its owners; anyone else gets, class by class, the stricter of them and a new
+// room's (ruling M2). The ack's result is {roomId, run?, runError?}: a run that
+// fails leaves the fork made.
+func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
 	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
 	note := strings.TrimSpace(act.Note)
 	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
@@ -660,10 +664,16 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, room *v1alpha1.Room
 	case err != nil:
 		return fail(rejectLogUnavailable)
 	}
+	approvals := *room.Spec.Approvals.DeepCopy()
+	if !owner {
+		// A new room's policy is the CRD's default: createRoom sets none.
+		s := bridge.Stricter(wire.ApprovalPolicy{Profile: approvals.Profile, Overrides: approvals.Overrides}, wire.ApprovalPolicy{})
+		approvals.Profile, approvals.Overrides = s.Profile, s.Overrides
+	}
 	child := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: room.Namespace,
 		Annotations: map[string]string{ForkedFrom: fmt.Sprintf("%s@%d", room.Name, act.Seq)}},
 		Spec: v1alpha1.RoomSpec{Owner: p.ID, Driver: p.ID, DataClass: room.Spec.DataClass, Repository: room.Spec.Repository,
-			Approvals: *room.Spec.Approvals.DeepCopy(), Retention: room.Spec.Retention}}
+			Approvals: approvals, Retention: room.Spec.Retention}}
 	if err := a.Rooms.Create(ctx, child); err != nil {
 		// A row no Room projects is never closed, so retention would never purge it.
 		_ = a.Log.CloseRoom(ctx, id, "fork failed: no Room")

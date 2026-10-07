@@ -94,7 +94,7 @@ var reasons = map[string]string{
 	"over_budget":         "the factory refused the run: you are over your budget",
 	"factory_unavailable": "the run could not be requested right now; retry",
 	"bad_action":          "the broker refused the request as malformed: check the seq, role, PR and egress profiles",
-	"sealed":              "the room is sealed: it takes no more messages",
+	"sealed":              "the room is sealed: it takes no more messages, and only its owner or an agents-admin may fork it",
 	"conflict":            "the room changed at the same moment; retry",
 	"log_unavailable":     "the room's log is unavailable right now; retry",
 	"too_large":           "the fork point is past 5,000 events or 32 MiB of the room's log: fork at an earlier seq",
