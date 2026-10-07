@@ -12,6 +12,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -107,6 +108,37 @@ func TestTaskTokenCapLeavesRoomForAWholeRun(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A task queued for its reviewer whose pull request was merged meanwhile needs no run: the late
+// review path ends it, and the task cap, which only guards a run's start, never escalates it.
+func TestAMergedPullRequestIsNotEscalatedForTheTaskCap(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Triage = staticWith("pair")
+	g.r.Cfg.Budgets.EnforceTask = true
+	g.reconcile(t, "3buqdlot", 3)
+	g.f.SetBranch("agent/3buqdlot", 12)
+	g.f.SetPR(pr12At(head1))
+	r := g.runs.runs[rid(0)]
+	r.Tokens = 1_500_001 // less than a run's worth left
+	g.runs.runs[rid(0)] = r
+	g.finish(rid(0), "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.NextRole != "reviewer" {
+		t.Fatalf("queued for the reviewer: %s %q", tk.Status.Phase, tk.Status.NextRole)
+	}
+	g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", HeadSHA: head1})
+	// Not even for one reconcile: Escalated would itself find the merge, but only after pinging
+	// the maintainers about a budget the task no longer needs.
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseDone || len(g.runs.specs) != 1 {
+		t.Fatalf("%s %s, %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+	}
+	if say := strings.Join(g.f.Comments(7), "\n"); strings.Contains(say, "no room left") || strings.Contains(say, "needs a maintainer") {
+		t.Fatalf("no escalation was narrated: %q", say)
 	}
 }
 

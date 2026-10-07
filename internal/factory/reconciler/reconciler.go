@@ -570,6 +570,17 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Reason = why
 		return nil
 	}
+	// A pull request merged or closed meanwhile ends the wait with no run, so it is read before
+	// the caps that guard a run's start: a landed task never escalates for a budget it no longer
+	// needs.
+	var pr forge.PR
+	late := t.Status.PullRequest != nil && len(t.Status.Runs) > 0
+	if late {
+		var done bool
+		if pr, done, err = r.lateReviews(ctx, t); err != nil || done {
+			return err
+		}
+	}
 	if !runFits(t) {
 		if r.Cfg.Budgets.EnforceTask {
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
@@ -610,14 +621,8 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
-	if t.Status.PullRequest != nil && len(t.Status.Runs) > 0 {
-		pr, done, err := r.lateReviews(ctx, t)
-		if err != nil || done {
-			return err
-		}
-		if t.Status.NextRole != "" {
-			return r.startVerifier(ctx, t, pr)
-		}
+	if late && t.Status.NextRole != "" {
+		return r.startVerifier(ctx, t, pr)
 	}
 	// R38: a task of a [triager] template always runs the triager, retry included: no implementer
 	// run ever starts from an internal-origin task. A missing template is no team, so it is not a
