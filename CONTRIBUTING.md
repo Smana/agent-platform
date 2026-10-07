@@ -7,7 +7,7 @@ the one guide for humans and agents alike. This page covers the workflow around 
 
 | Tool | Why |
 |---|---|
-| [mise](https://mise.jdx.dev) | Installs the pinned Go, golangci-lint, task and govulncheck from `mise.toml` |
+| [mise](https://mise.jdx.dev) | Installs the pinned Go, Node.js (the web UI's build), golangci-lint, task and govulncheck from `mise.toml` |
 | Docker | Store tests start PostgreSQL with testcontainers (from SP2 phase 1) |
 | [Atlas](https://atlasgo.io) | Hashes the migration directory; pinned in `mise.toml` once the first migration lands |
 

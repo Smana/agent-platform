@@ -11,10 +11,13 @@ package authn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +68,22 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Groups          []string `json:"groups,omitempty"`
 	AuthorizedParty string   `json:"azp,omitempty"`
+	// ClientID is where ZITADEL names the client in a JWT access token, which has no azp.
+	ClientID string `json:"client_id,omitempty"`
+	// ProjectRoles is the roles claim ZITADEL asserts natively: role name to granting orgs.
+	ProjectRoles map[string]json.RawMessage `json:"urn:zitadel:iam:org:project:roles,omitempty"`
+}
+
+// GroupNames is the groups claim our ZITADEL action sets on ID tokens, else the
+// project role names ZITADEL asserts natively, which is what a roomctl access
+// token may carry instead (accessTokenRoleAssertion). Sorted, never nil.
+func (c *Claims) GroupNames() []string {
+	if len(c.Groups) > 0 {
+		return c.Groups
+	}
+	out := slices.AppendSeq(make([]string, 0, len(c.ProjectRoles)), maps.Keys(c.ProjectRoles))
+	slices.Sort(out)
+	return out
 }
 
 // keyLookup returns the key a token claims to be signed with. It may fetch, so
@@ -133,6 +152,24 @@ func newOptions(opts []Option) options {
 // stale cap. A JWKS that cannot be fetched or holds no usable key fails
 // construction.
 func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*Verifier, error) {
+	v, err := NewLazyVerifier(issuer, jwksURL, opts...)
+	if err != nil {
+		return nil, err
+	}
+	c := v.jwks
+	c.sem <- struct{}{} // not shared yet: never blocks
+	err = c.refreshHeld(ctx)
+	<-c.sem
+	if err != nil {
+		return nil, fmt.Errorf("authn: initial JWKS fetch for %s: %w", issuer, err)
+	}
+	return v, nil
+}
+
+// NewLazyVerifier is NewVerifier without the fetch at construction: the first
+// token or Refresh fetches the keys, and until then every token is refused. It
+// suits an issuer the process must start without, such as the humans' IdP.
+func NewLazyVerifier(issuer, jwksURL string, opts ...Option) (*Verifier, error) {
 	if issuer == "" {
 		return nil, errors.New("authn: an issuer is required")
 	}
@@ -140,12 +177,6 @@ func NewVerifier(ctx context.Context, issuer, jwksURL string, opts ...Option) (*
 	c, err := newJWKSCache(jwksURL, o)
 	if err != nil {
 		return nil, err
-	}
-	c.sem <- struct{}{} // not shared yet: never blocks
-	err = c.refreshHeld(ctx)
-	<-c.sem
-	if err != nil {
-		return nil, fmt.Errorf("authn: initial JWKS fetch for %s: %w", issuer, err)
 	}
 	return &Verifier{issuer: issuer, keys: c.lookup, now: o.now, jwks: c}, nil
 }
@@ -183,6 +214,21 @@ func NewVerifierWithKeyfunc(issuer string, kf jwt.Keyfunc, opts ...Option) *Veri
 // Verify checks raw for audience and returns its claims. A refusal wraps
 // ErrUnauthenticated and, where one applies, a finer sentinel.
 func (v *Verifier) Verify(ctx context.Context, raw, audience string) (*Claims, error) {
+	c, err := v.parse(ctx, raw, audience)
+	if err != nil {
+		return nil, err
+	}
+	// jwt matches when any aud element does. A token minted for several
+	// audiences is refused: one presented here must be good for nothing else.
+	if len(c.Audience) != 1 || c.Audience[0] != audience {
+		return nil, fmt.Errorf("%w: want exactly one audience", ErrWrongAudience)
+	}
+	return c, nil
+}
+
+// parse checks raw's signature, algorithm, iss, exp, nbf and iat, and that one
+// of its aud elements is audience. The callers add their own audience rules.
+func (v *Verifier) parse(ctx context.Context, raw, audience string) (*Claims, error) {
 	if audience == "" {
 		return nil, fmt.Errorf("%w: no audience to check", ErrUnauthenticated)
 	}
@@ -198,11 +244,6 @@ func (v *Verifier) Verify(ctx context.Context, raw, audience string) (*Claims, e
 		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithLeeway(clockSkew), jwt.WithTimeFunc(v.now))
 	if err != nil {
 		return nil, classify(err)
-	}
-	// jwt matches when any aud element does. A token minted for several
-	// audiences is refused: one presented here must be good for nothing else.
-	if len(c.Audience) != 1 || c.Audience[0] != audience {
-		return nil, fmt.Errorf("%w: want exactly one audience", ErrWrongAudience)
 	}
 	return c, nil
 }
@@ -235,7 +276,7 @@ type Principal struct {
 	RunID       string
 	Sub         string
 	Groups      []string
-	ClientID    string    // azp, for humans (ruling P18)
+	ClientID    string    // humans: the rooms client, the ID token's azp or roomctl's client_id (ruling P18)
 	Expiry      time.Time // a connection lives min(exp, 1 h)
 	AccessToken string    // humans only; forwarded to the factory (C4), never logged
 }

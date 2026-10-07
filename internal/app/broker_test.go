@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,9 +19,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
 )
@@ -426,5 +432,88 @@ func TestServeHTTPStopsWithItsContext(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("serveHTTP did not return when its context ended")
+	}
+}
+
+type fakeRoomLog struct{}
+
+func (fakeRoomLog) Range(context.Context, string, int64, int) ([]envelope.Event, error) {
+	return nil, nil
+}
+
+func (fakeRoomLog) Room(context.Context, string) (store.RoomState, error) {
+	return store.RoomState{}, nil
+}
+
+type fakeRuns struct{}
+
+func (fakeRuns) InRoom(string) []runwatch.Run { return nil }
+
+// :8080 gets the config's groups, the web client read at use (Ruling AS-a), the
+// embedded UI, the metrics, and every part Serve requires.
+func TestHumanServer(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	clientFile := filepath.Join(t.TempDir(), "client-id")
+	writeID(t, clientFile, "web-1")
+	h := config.HumanConfig{ClientIDFile: clientFile, Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}
+	humans := authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), "https://rooms.example.test")
+	m, err := metrics.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := humanServer(h, humans, fake.NewClientBuilder().Build(), "agent-system", fakeRoomLog{},
+		fanout.New(fakeRoomLog{}, nil, log), fakeRuns{}, m, log)
+	if s.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || s.Namespace != "agent-system" || s.Metrics != m {
+		t.Fatalf("groups %+v, namespace %q, metrics %p", s.Groups, s.Namespace, s.Metrics)
+	}
+	writeID(t, clientFile, "web-2")
+	if got := s.WebClient(); got != "web-2" {
+		t.Fatalf("web client %q, want the file's current id", got)
+	}
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<html") {
+		t.Fatalf("GET / = %d, want the UI's index.html", rec.Code)
+	}
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := s.Serve(ctx, ln, time.Second); err != nil {
+		t.Fatalf("Serve refused its parts: %v", err)
+	}
+}
+
+// The hub's listener gauge is exported from the start (FORWARD 2.6).
+func TestFanoutHub(t *testing.T) {
+	exp, err := metrics.NewExporter("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := metrics.New(exp.Meter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fanoutHub(fakeRoomLog{}, nil, m, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_fanout_listener_up 0\n") {
+		t.Fatalf("no listener gauge in\n%s", body)
+	}
+}
+
+// The pod's 30 s grace holds the parallel drains, then :9090's and the metrics
+// flush. :8080's covers a write blocked for WriteWait (10 s) plus coder/websocket's
+// 5 s close handshake (review M11).
+func TestDrainsFitTheGrace(t *testing.T) {
+	const podGrace = 30 * time.Second
+	if humanDrain < 15*time.Second {
+		t.Fatalf(":8080 drains for %s, want at least 15 s", humanDrain)
+	}
+	if d := max(bridgeDrain, managerDrain, humanDrain) + opsDrain + metricsDrain; d >= podGrace {
+		t.Fatalf("the drains take %s, want under the %s grace", d, podGrace)
 	}
 }

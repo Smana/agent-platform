@@ -42,7 +42,7 @@ flowchart LR
 | PR | Phase | Carries |
 |---|---|---|
 | S1 | 1 | ADR-0044 (session protocol); the vendored `Room` CRD and its schema in the validation catalog; `SQLInstance xplane-rooms` with generated credentials and its CNPG network policy; the broker's `App` claim, config, RBAC and CNP; the `Certificate room-broker-tls` and `ExternalSecret room-broker-ca` (GP-18); the retention CronJob; the `VMServiceScrape`; the phase-1 `VMRule`; `task agent:run -- --room`; the umbrella child `room-broker` |
-| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; `KVStore xplane-rooms`; two broker replicas; the log's recovery seed |
+| S2 | 2 | ADR-0049 (room client and human auth); ZITADEL roles `agents-admin`, `agents-member` and the `rooms-proxy` client; oauth2-proxy; the `HTTPRoute` on the Tailscale Gateway; two broker replicas; the log's recovery seed |
 | S3 | 3 | The `room-broker` backend on both MCPRoutes with its key and CNP; the factory App's key; egress to `api.github.com`; `RoomVerdictsNotReachingGitHub` |
 | S4 | 4 | Pins |
 | S5 | 5 | `RoomApprovalPendingTooLong`; pins |
@@ -88,7 +88,9 @@ Rules that keep pins honest:
 
 One file, `ROOMS_CONFIG` (a ConfigMap, Flux-substituted). Parsing is strict: an unknown key or a
 `subPattern` without exactly one capture group fails the rollout, not the first request. The broker
-reads it once at start, so restart it after a change.
+reads it once at start, so restart it after a change. A machine issuer whose JWKS the broker cannot
+fetch at start fails the rollout too; the `human` issuer does not: until it answers, humans get
+`401` and agents are unaffected.
 
 | Key | Meaning | Phase |
 |---|---|---|
@@ -96,7 +98,7 @@ reads it once at start, so restart it after a change.
 | `runIssuers[]` | `{issuer, jwksURL, subPattern}`. The cluster's OIDC issuer today; its JWKS URI is per cloud (`<issuer>/keys` on EKS, `<issuer>/jwks` on GKE) | 1 |
 | `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens | 1 |
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
-| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, origin}` | 2, 6 |
+| `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build (Ruling AS-a); the group names are literals | 2, 6 |
 | `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 
