@@ -532,6 +532,14 @@ func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
+// runFits: the task's cap still holds one whole run (owner, 2026-10-07). A run may spend up to
+// RunTokens before the meter revokes it, so admitting on "under the cap" let a task end 1.5 M past
+// it; a resume follows the same rule.
+func runFits(t *v1alpha1.Task) bool {
+	b := t.Spec.Budget
+	return b.TaskTokens <= 0 || b.TaskTokens-t.Status.Usage.Tokens >= b.RunTokens
+}
+
 func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// A claim of the next run's deterministic id is a run the status does not know: the write
 	// that recorded it was lost (R48). Recorded, never duplicated, and before the caps: the run
@@ -556,13 +564,14 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Reason = why
 		return nil
 	}
-	if used := t.Status.Usage.Tokens; t.Spec.Budget.TaskTokens > 0 && used >= t.Spec.Budget.TaskTokens {
+	if !runFits(t) {
 		if r.Cfg.Budgets.EnforceTask {
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
 		}
 		// R3: shadow first, a week of numbers before the flag flips.
 		record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-task-shadow") })
-		r.log().Info("task over its token cap (shadow)", "task.id", t.Name, "used", used, "cap", t.Spec.Budget.TaskTokens)
+		r.log().Info("task cap has no room for a whole run (shadow)", "task.id", t.Name, "used", t.Status.Usage.Tokens,
+			"run", t.Spec.Budget.RunTokens, "cap", t.Spec.Budget.TaskTokens)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
