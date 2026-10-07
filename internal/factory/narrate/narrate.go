@@ -175,7 +175,7 @@ func reasons() map[string]string {
 		"budget-run":              "the run spent its token budget",
 		"budget-principal":        "the factory's daily token budget is spent",
 		"budget-fleet":            "the agent fleet's daily token budget is spent",
-		"budget-task":             "the task spent its token budget",
+		"budget-task":             "the task's token budget has no room left for another full run",
 		"run_lost":                "the run disappeared",
 		"no_pr":                   "the agent opened no pull request",
 		"no_action":               "the triager found nothing to change",

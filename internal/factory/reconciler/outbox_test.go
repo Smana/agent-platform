@@ -106,7 +106,8 @@ func TestTheEndIsPostedOnceAfterAnOutage(t *testing.T) {
 	if n := strings.Count(strings.Join(g.f.Comments(7), "\n"), "was stopped"); n != 1 || len(tk.Status.Outbox) != 0 {
 		t.Fatalf("%d end comments, outbox %+v", n, tk.Status.Outbox)
 	}
-	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens 0 standard solo review" {
+	// The stop revoked the task's one run, counted once through the outage (F30).
+	if strings.Join(g.metrics.recorded, "|") != "revoked manual|intervention stop|task_tokens 0 standard solo review" {
 		t.Fatalf("an ended task is drained, then settled once: %q", g.metrics.recorded)
 	}
 }

@@ -160,7 +160,11 @@ func (r *Reconciler) revise(ctx context.Context, t *v1alpha1.Task, pr forge.PR, 
 	record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "request_changes") })
 	t.Status.NextTrigger = "human"
 	r.to(t, v1alpha1.PhaseQueued, "")
-	narrateLater(t, narrate.Revising(t, rvs[len(rvs)-1].Author))
+	// A revision the task cap will refuse is not announced: Queued escalates it as budget-task,
+	// and the review stays queued in the room for whoever picks the task up.
+	if runFits(t) || !r.Cfg.Budgets.EnforceTask {
+		narrateLater(t, narrate.Revising(t, rvs[len(rvs)-1].Author))
+	}
 	return nil
 }
 

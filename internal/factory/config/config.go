@@ -196,8 +196,10 @@ type Caps struct {
 	AwaitingHumanWIP int `json:"awaitingHumanWIP"`
 }
 
-// Budgets are the admission-time caps SP3 owns (C5). Enforcement starts false: a week of
-// shadow numbers first (OD-10, R3). The run cap is always enforced by the meter.
+// Budgets are the admission-time caps SP3 owns (C5). The task cap is enforced unless the config
+// writes enforceTask: false (owner, 2026-10-07: a shadow cap let a task run to 3.35 M of its 3 M);
+// the principal's starts false, a week of shadow numbers first (OD-10, R3). The run cap is always
+// enforced by the meter.
 type Budgets struct {
 	EnforceTask      bool  `json:"enforceTask"`
 	EnforcePrincipal bool  `json:"enforcePrincipal"`
@@ -288,7 +290,7 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(j))
 	dec.DisallowUnknownFields()
-	var c Config
+	c := Config{Budgets: Budgets{EnforceTask: true}} // decoding keeps a default the file omits
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
