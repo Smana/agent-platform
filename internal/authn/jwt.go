@@ -255,10 +255,24 @@ func (v *Verifier) parseWith(ctx context.Context, raw string, opts ...jwt.Parser
 	return c, nil
 }
 
-// VerifyAuthorizedParty checks raw, a token issued to the named client. Only azp
-// says which app a ZITADEL token was issued to: aud lists every app of the
-// project, so it goes unchecked here (the rule Humans.verify states, applied to
-// one client). A refusal wraps ErrUnauthenticated.
+// issuedTo is the app a ZITADEL token was issued to: azp on an ID token,
+// client_id on a JWT access token, which has no azp (review C1). A token that
+// names two different apps names none.
+func (c *Claims) issuedTo() string {
+	switch {
+	case c.AuthorizedParty == "":
+		return c.ClientID
+	case c.ClientID == "" || c.ClientID == c.AuthorizedParty:
+		return c.AuthorizedParty
+	}
+	return ""
+}
+
+// VerifyAuthorizedParty checks raw, a token issued to the named client: its azp,
+// or its client_id when it has no azp. aud lists every app of the project, so
+// only those claims say which app a ZITADEL token was issued to, and aud goes
+// unchecked here (the rule Humans.verify states, applied to one client). A
+// refusal wraps ErrUnauthenticated.
 func (v *Verifier) VerifyAuthorizedParty(ctx context.Context, raw, clientID string) (*Claims, error) {
 	if clientID == "" {
 		return nil, fmt.Errorf("%w: no client to check", ErrUnauthenticated)
@@ -267,7 +281,7 @@ func (v *Verifier) VerifyAuthorizedParty(ctx context.Context, raw, clientID stri
 	if err != nil {
 		return nil, err
 	}
-	if c.AuthorizedParty != clientID {
+	if c.issuedTo() != clientID {
 		return nil, fmt.Errorf("%w: not issued to %s", ErrWrongAudience, clientID)
 	}
 	if c.Subject == "" {

@@ -314,6 +314,12 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 			if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil {
 				return err
 			}
+			// Counted now, not with the status write: a replay finds the claim gone or already
+			// revoked, so a deferred count would be lost. A run that carried a revoke was counted
+			// by whoever wrote it, the kill switch's sweeper included (F30).
+			if run.Revoked == "" {
+				r.Metrics.Revoked(ctx, "manual")
+			}
 		}
 		if err := r.Runs.Delete(ctx, run.ID); err != nil {
 			return err
@@ -532,6 +538,14 @@ func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
+// runFits: the task's cap still holds one whole run (owner, 2026-10-07). A run may spend up to
+// RunTokens before the meter revokes it, so admitting on "under the cap" let a task end 1.5 M past
+// it; a resume follows the same rule.
+func runFits(t *v1alpha1.Task) bool {
+	b := t.Spec.Budget
+	return b.TaskTokens <= 0 || b.TaskTokens-t.Status.Usage.Tokens >= b.RunTokens
+}
+
 func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// A claim of the next run's deterministic id is a run the status does not know: the write
 	// that recorded it was lost (R48). Recorded, never duplicated, and before the caps: the run
@@ -556,13 +570,25 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Reason = why
 		return nil
 	}
-	if used := t.Status.Usage.Tokens; t.Spec.Budget.TaskTokens > 0 && used >= t.Spec.Budget.TaskTokens {
+	// A pull request merged or closed meanwhile ends the wait with no run, so it is read before
+	// the caps that guard a run's start: a landed task never escalates for a budget it no longer
+	// needs.
+	var pr forge.PR
+	late := t.Status.PullRequest != nil && len(t.Status.Runs) > 0
+	if late {
+		var done bool
+		if pr, done, err = r.lateReviews(ctx, t); err != nil || done {
+			return err
+		}
+	}
+	if !runFits(t) {
 		if r.Cfg.Budgets.EnforceTask {
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
 		}
 		// R3: shadow first, a week of numbers before the flag flips.
 		record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-task-shadow") })
-		r.log().Info("task over its token cap (shadow)", "task.id", t.Name, "used", used, "cap", t.Spec.Budget.TaskTokens)
+		r.log().Info("task cap has no room for a whole run (shadow)", "task.id", t.Name, "used", t.Status.Usage.Tokens,
+			"run", t.Spec.Budget.RunTokens, "cap", t.Spec.Budget.TaskTokens)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
@@ -595,14 +621,8 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
-	if t.Status.PullRequest != nil && len(t.Status.Runs) > 0 {
-		pr, done, err := r.lateReviews(ctx, t)
-		if err != nil || done {
-			return err
-		}
-		if t.Status.NextRole != "" {
-			return r.startVerifier(ctx, t, pr)
-		}
+	if late && t.Status.NextRole != "" {
+		return r.startVerifier(ctx, t, pr)
 	}
 	// R38: a task of a [triager] template always runs the triager, retry included: no implementer
 	// run ever starts from an internal-origin task. A missing template is no team, so it is not a
