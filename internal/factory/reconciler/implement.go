@@ -398,7 +398,7 @@ func infraLost(run runs.Run) bool {
 }
 
 // resumeBlock is why a run lost to its infrastructure is not resumed, "" when it is: no automatic
-// resume is left (resume.maxPerTask), or the task's token cap cannot hold one more RunTokens. The
+// resume is left (resume.maxPerTask), or the task's token cap cannot hold one more run (runFits). The
 // cap is enforced here whatever budgets.enforceTask says: a resume is the factory's own decision,
 // so it never spends past the cap, even while the cap is shadow elsewhere (disruption design §4).
 // The usage it reads can trail the meter by one poll.meter, so a resume can overshoot the cap by
@@ -407,7 +407,7 @@ func (r *Reconciler) resumeBlock(t *v1alpha1.Task) string {
 	if int(t.Status.Resumes) >= r.Cfg.Resume.MaxPerTask {
 		return "resumes_exhausted"
 	}
-	if b := t.Spec.Budget; b.TaskTokens > 0 && b.TaskTokens-t.Status.Usage.Tokens < b.RunTokens {
+	if !runFits(t) {
 		return "resume_budget"
 	}
 	return ""
