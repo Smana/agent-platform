@@ -35,6 +35,11 @@ type RoomState struct {
 	LastEventAt    time.Time
 }
 
+// insertRoomSQL creates a room's row ($1 id, $2 driver, $3 retention in seconds);
+// every other column takes its default, as broker_create_rooms requires.
+const insertRoomSQL = `INSERT INTO rooms (room_id, driver, fallback_driver, retention)
+	VALUES ($1, $2, CASE WHEN $2 LIKE 'system:%' THEN $2 ELSE '' END, make_interval(secs => $3))`
+
 // EnsureRoom inserts the room's row once. created is false when it already existed.
 // fallback_driver is the system holder a lapsed human driver falls back to (§2);
 // a room that starts with a human driver has none until a system principal holds it.
@@ -44,10 +49,7 @@ func (s *Store) EnsureRoom(ctx context.Context, r NewRoom) (bool, error) {
 	if r.Retention < MinRetention {
 		return false, fmt.Errorf("store: room %s: %w", r.ID, ErrInvalidRetention)
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO rooms (room_id, driver, fallback_driver, retention)
-		VALUES ($1, $2, CASE WHEN $2 LIKE 'system:%' THEN $2 ELSE '' END, make_interval(secs => $3))
-		ON CONFLICT (room_id) DO NOTHING`,
-		r.ID, r.Driver, r.Retention.Seconds())
+	tag, err := s.pool.Exec(ctx, insertRoomSQL+` ON CONFLICT (room_id) DO NOTHING`, r.ID, r.Driver, r.Retention.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("store: ensure room %s: %w", r.ID, err)
 	}

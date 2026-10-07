@@ -7,7 +7,7 @@ import type { RoomState } from "./room-state";
 const rejections: Record<string, string> = {
   not_permitted: "Not allowed: your role in this room, or this client, does not permit it; or the factory refused you a run.",
   stale_epoch: "Someone else holds the driver token now. The page shows the new holder; try again if it still applies.",
-  rate_limited: "Too many actions at once (10 a second). Wait a moment and retry.",
+  rate_limited: "Too many actions at once (10 a second), or forks (3, then one a minute). Wait and retry.",
   no_running_run: "No run is running, so there is nothing to steer or interrupt. Queue it for the next run instead.",
   room_busy: "A run is already running here, or one was just requested and has not joined yet.",
   reviewer_needs_pr: "A reviewer needs a pull request: give its URL, since no agent handoff or verdict names one.",
@@ -15,11 +15,12 @@ const rejections: Record<string, string> = {
   factory_unavailable: "The run could not be requested right now. Retry.",
   bad_action: "The broker refused the request as malformed. Check the fields: a give goes to a member who can drive, or to the room's system holder.",
   not_queued: "That message was already delivered or removed.",
-  sealed: "This room is sealed: it takes no more actions.",
+  sealed: "This room is sealed: it takes no more actions, and only its owner or an admin may fork it.",
   conflict: "The room changed at the same moment. Retry.",
   log_unavailable: "The room's log is unavailable right now. Retry.",
   already_decided: "Another approver decided first.",
   four_eyes: "This room needs an approver who did not prompt the turn.",
+  too_large: "Forking here copies over 5,000 events or 32 MiB. Fork from an earlier message.",
 };
 
 export function rejection(reason: string): string {
@@ -31,7 +32,7 @@ export interface Sender { send(frame: Record<string, unknown>): boolean }
 
 let clientSeq = 0;
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}): HTMLElementTagNameMap[K] {
   return Object.assign(document.createElement(tag), props);
 }
 
@@ -43,12 +44,12 @@ function button(label: string, act: string, onClick: () => void): HTMLButtonElem
 }
 
 // named gives a field its accessible name: a placeholder is not one (R10).
-function named<T extends HTMLElement>(e: T, label: string): T {
+export function named<T extends HTMLElement>(e: T, label: string): T {
   e.setAttribute("aria-label", label);
   return e;
 }
 
-function select(name: string, label: string, options: [string, string][]): HTMLSelectElement {
+export function select(name: string, label: string, options: [string, string][]): HTMLSelectElement {
   const s = named(el("select", { name }), label);
   for (const [value, text] of options) s.append(el("option", { value, textContent: text }));
   return s;
@@ -84,6 +85,12 @@ function keyed(list: HTMLElement) {
 export function act(conn: Sender, state: RoomState, action: Record<string, unknown>): number {
   const seq = ++clientSeq;
   return conn.send({ type: "act", clientSeq: seq, driverEpoch: state.driverEpoch, action }) ? seq : 0;
+}
+
+// claimText is a run's rendered AgentRun as the owner applies it, before SP3 (ruling P14).
+// JSON escapes every newline in a string, so no line of it can be a bare EOF.
+export function claimText(result: unknown): string {
+  return `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
 }
 
 // approvalCard shows one approval, read-only: the class, the run, the deadline,
@@ -211,8 +218,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   root.replaceChildren(approvals, driver, composer, queue, hand, manifest);
   const showResult = (result: unknown) => {
     if (!result) return;
-    // JSON escapes every newline in a string, so no line of it can be a bare EOF.
-    claim.textContent = `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
+    claim.textContent = claimText(result);
     manifest.hidden = false;
   };
   return {

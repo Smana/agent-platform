@@ -1151,6 +1151,33 @@ var profiles = map[string]map[Class]Verdict{
 	"unattended": {Plain: Allow, ForgePush: Allow, ForgePR: Allow, ForgeOther: Deny, MCPWrite: Deny, ShellHigh: Allow, EgressNew: Deny},
 }
 
+// overridable are the classes a Room's approvals.overrides may name (the CRD's rule).
+var overridable = []Class{ForgePush, ForgePR, ForgeOther, MCPWrite, ShellHigh}
+
+// strictness orders verdicts from the weakest gate to the strictest.
+var strictness = map[Verdict]int{Allow: 0, Human: 1, Deny: 2}
+
+// Stricter decides every class as the stricter of a and b, deny over human over
+// allow, written as attended plus the overrides that differ from its row. A fork
+// its source's owner did not make takes it against a new room's default, so a
+// watcher never drives under a weaker gate than a room of their own (ruling M2).
+func Stricter(a, b wire.ApprovalPolicy) wire.ApprovalPolicy {
+	out := wire.ApprovalPolicy{Profile: "attended"}
+	for _, c := range overridable {
+		v := Decide(a, c)
+		if w := Decide(b, c); strictness[w] > strictness[v] {
+			v = w
+		}
+		if v != profiles["attended"][c] {
+			if out.Overrides == nil {
+				out.Overrides = map[string]string{}
+			}
+			out.Overrides[string(c)] = string(v)
+		}
+	}
+	return out
+}
+
 // Decide applies the room's policy to a class: an override first, then the
 // profile's row. It returns only allow, deny or human: an unknown profile
 // falls back to attended, and an unknown override value or class asks a human.

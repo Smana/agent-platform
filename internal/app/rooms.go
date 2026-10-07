@@ -53,7 +53,7 @@ func humanSide(cfg config.Config, humans *authn.Humans, rooms client.Client, ns 
 	if err := add(leaseLoop(roomLog, log, nil)); err != nil {
 		return nil, fmt.Errorf("driver lease: %w", err)
 	}
-	return humanServer(cfg.Human, humans, rooms, ns, roomLog, hub, runs, actor, m, log), nil
+	return humanServer(cfg, humans, rooms, ns, roomLog, hub, runs, actor, m, log), nil
 }
 
 // humanActor serves humans' acts on :8080 over the broker's parts: the same

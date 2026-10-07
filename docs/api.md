@@ -289,6 +289,7 @@ It also serves `GET /admission`, read by `room-bridge gate` on loopback (F15):
 | `503` | `pending` | No hello has been decided yet: the broker is unreachable, or another run's live run has held the room for less than 3 minutes |
 | `200` | `admitted` | The bridge holds the room's lease. The gate exits 0 and the harness starts |
 | `409` | `room_busy` or `sealed` | The run will never hold the room. The gate exits 1, which fails the pod before the harness runs |
+| `403` | `loopback only` | The request came from outside the pod |
 
 ## `:8080` — human API (phase 2 / AP-2)
 
@@ -316,7 +317,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
-| `GET /api/roomctl` | `{url, issuer, clientID}` for the UI's CLI setup page | 6 / AP-6 |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`. `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` (ruling AS) | 6 / AP-6 |
 
 ### `GET /v1/ws`
 
@@ -370,13 +371,13 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, an expiry or a supersede included). With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision | 5 |
-| `fork` | `seq`, `note`, `role?`, `prUrl?`, `egressProfiles?` | Watcher and up; also from `roomctl` | 6 |
+| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`. A sealed room forks only for its owner or an `agents-admin` (`sealed`). A new room owned and driven by the forker, with the source's data class, repository and retention and none of its members. Its approvals are the source's for the source's owners (owner, owner members, `agents-admin`); anyone else gets, class by class, the stricter of the source's and a new room's (`attended`), so an `unattended` or `allow` override never carries over to a watcher: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica | 6 |
 
 | `rejected` | Meaning |
 |---|---|
 | `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run |
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
-| `rate_limited` | Over 10 actions per second (burst 20), per replica |
+| `rate_limited` | Over 10 actions per second (burst 20), or over 3 forks at once then one a minute; per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
 | `room_busy` | A run is already running; or a run was requested in the last 10 minutes and has not joined yet, and the broker does not know it ended (a claim not applied, or a factory run not seen yet). Two replicas answering a `start_run` in the same instant can both pass this check until SP3's factory refuses a second pending run per room |
 | `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
@@ -384,9 +385,10 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `factory_unavailable` | The run could not be requested: no requester, or the factory failed or answered no run id. Retry |
 | `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
 | `not_queued` | The queued message was already delivered or removed |
-| `sealed` | The room's log is sealed. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
+| `sealed` | The room's log is sealed; a fork of it by anyone but its owner or an `agents-admin` too. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
 | `conflict` | The Room changed under an `invite`: retry |
 | `log_unavailable` | The log or the Room could not be read or written: retry |
+| `too_large` | A fork's prefix over 5,000 events or 32 MiB: fork at an earlier `seq` |
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 

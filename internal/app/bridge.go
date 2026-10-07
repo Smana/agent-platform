@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,9 @@ const (
 	// maxFlushGrace keeps the drain inside the pod's 30 s grace, with room for
 	// the "unmirrored" Warn line before the kubelet's SIGKILL.
 	maxFlushGrace = 28 * time.Second
+	// finalReadWait bounds a final read: agent-run gives it 3 s of its 15 s shutdown and gives up
+	// at the same mark (disruption design §2).
+	finalReadWait = 3 * time.Second
 )
 
 type bridgeConfig struct {
@@ -86,11 +90,13 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 	return c, errors.Join(missing...)
 }
 
-// healthHandler serves /healthz for the kubelet only (ruling P6), and
-// /admission for room-bridge gate on loopback (F15): 503 while the first hellos
-// are undecided, 200 once the run holds the room, 409 and the reason once it
-// never will.
-func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admission, now func() time.Time) http.Handler {
+// healthHandler serves /healthz for the kubelet only (ruling P6), /admission for room-bridge gate
+// on loopback (F15): 503 while the first hellos are undecided, 200 once the run holds the room,
+// 409 and the reason once it never will; and POST /final-read for agent-run on loopback (F11, the
+// harness half): the log read to its end and mirrored, then the answer.
+func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admission,
+	finalRead func(context.Context) (bridge.FinalReadResult, error), now func() time.Time,
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !healthy(now()) {
@@ -99,7 +105,12 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 		}
 		_, _ = w.Write([]byte("ok " + version.Version + "\n"))
 	})
-	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, r *http.Request) {
+		// The gate's call: like /final-read, nothing outside the pod reads it.
+		if !fromLoopback(r) {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
 		switch a := admission(); {
 		case a.Admitted:
 			_, _ = w.Write([]byte("admitted\n"))
@@ -109,7 +120,30 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 			http.Error(w, "pending", http.StatusServiceUnavailable)
 		}
 	})
+	mux.HandleFunc("POST /final-read", func(w http.ResponseWriter, r *http.Request) {
+		// The harness's call: the run CNP admits the kubelet alone on 8085, and this keeps it so.
+		if !fromLoopback(r) {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), finalReadWait)
+		defer cancel()
+		res, err := finalRead(ctx)
+		if err != nil {
+			http.Error(w, "the final read did not answer in time", http.StatusGatewayTimeout)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(res)
+	})
 	return mux
+}
+
+// fromLoopback reports that r comes from inside the pod's network namespace.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback()
 }
 
 // wireBridge sets the bridge's hooks: steering (phase 4) and the confirmation
@@ -234,7 +268,7 @@ func RunBridge(ctx context.Context, log *slog.Logger, getenv func(string) string
 	if err != nil {
 		return fmt.Errorf("room-bridge: health listener: %w", err)
 	}
-	srv := &http.Server{Handler: healthHandler(b.Healthy, b.Admission, time.Now), ReadHeaderTimeout: 5 * time.Second,
+	srv := &http.Server{Handler: healthHandler(b.Healthy, b.Admission, b.FinalRead, time.Now), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8 << 10}
 	var wg sync.WaitGroup
 	wg.Go(func() {

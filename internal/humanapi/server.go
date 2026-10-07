@@ -84,15 +84,21 @@ type Server struct {
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
 	// through it is the web UI, which may steer and decide (ruling P18).
 	WebClient func() string
-	Rooms     client.Reader
-	Namespace string
-	Log       Log
-	Hub       Hub
-	Runs      Runs
-	Metrics   *metrics.Set
-	UI        fs.FS  // Task 2.5; nil serves 404
-	Actor     *Actor // serves act frames (phase 4); nil refuses every one
-	Logger    *slog.Logger
+	// PublicURL, Issuer, RoomctlClient and ProjectID are what `roomctl
+	// configure` needs (GET /api/roomctl); the ids are read at use like WebClient.
+	PublicURL     string
+	Issuer        string
+	RoomctlClient func() string
+	ProjectID     func() string
+	Rooms         client.Reader
+	Namespace     string
+	Log           Log
+	Hub           Hub
+	Runs          Runs
+	Metrics       *metrics.Set
+	UI            fs.FS  // Task 2.5; nil serves 404
+	Actor         *Actor // serves act frames (phase 4); nil refuses every one
+	Logger        *slog.Logger
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)
@@ -124,6 +130,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /assets/{file}", withCSP(assets))
 	mux.HandleFunc("GET /api/rooms", s.listRooms)
 	mux.HandleFunc("POST /api/rooms", s.createRoom)
+	mux.HandleFunc("GET /api/roomctl", s.roomctlSetup)
 	mux.HandleFunc("GET /v1/ws", s.ws)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response has a write deadline; a hijacked WebSocket's is cleared

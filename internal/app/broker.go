@@ -256,13 +256,15 @@ func fanoutHub(r fanout.Reader, l fanout.Listener, m *metrics.Set, log *slog.Log
 }
 
 // humanServer is the :8080 API over the broker's parts, its acts served by
-// actor. The web client id is read at use (Ruling AS-a); the group names are literals.
-func humanServer(h config.HumanConfig, humans *authn.Humans, rooms client.Reader, ns string, roomLog humanapi.Log,
+// actor. The client ids are read at use (Ruling AS-a); the group names are literals.
+func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, ns string, roomLog humanapi.Log,
 	hub humanapi.Hub, runs humanapi.Runs, actor *humanapi.Actor, m *metrics.Set, log *slog.Logger,
 ) *humanapi.Server {
+	h := cfg.Human
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
-		WebClient: idFile(h.ClientIDFile), Rooms: rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs,
-		Actor: actor, Metrics: m, UI: ui.FS, Logger: log}
+		WebClient: idFile(h.ClientIDFile), PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: idFile(h.RoomctlClientIDFile),
+		ProjectID: idFile(h.ProjectIDFile),
+		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log}
 }
 
 // roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.

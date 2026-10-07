@@ -185,7 +185,7 @@ enforces: the role cannot see, let alone delete, anything else.
 | Sizing | About 4 MB per run; 20 runs a day for 90 days is about 7 GB on a 20 Gi volume. `RoomLogDiskFilling` fires at 80 % |
 | Later tables | Phase 4's `queue` references `events`, so it is deleted first, before the events and the `rooms` row; readable by retention only as `room_id` of an expired room (Ruling AX); phase 5's `approvals` references `events` too and goes with it |
 
-A forked room copies its source's events (phase 6), so a fork survives its source's purge.
+A forked room copies its source's events (phase 6), at most 5,000 of them and 32 MiB, so a fork survives its source's purge.
 
 ## The bridge lease
 

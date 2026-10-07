@@ -6,6 +6,7 @@
 import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
+import { mountFork } from "./fork";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -21,6 +22,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
+  const forkPanel = document.createElement("section");
   const footer = document.createElement("footer");
   const counters = document.createElement("span");
   const notice = document.createElement("span");
@@ -30,8 +32,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const status = document.createElement("span");
   status.className = "status";
   footer.append(counters, notice, status);
-  app.replaceChildren(header, main, section, footer);
-  const views = mountViews(main, header);
+  app.replaceChildren(header, main, section, forkPanel, footer);
+  const views = mountViews(main, header, localStorage, (seq) => fork.open(seq));
   mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -80,6 +82,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       pending.ack(f);
       if (f.rejected) sayAct(rejection(f.rejected)); else clearAct();
       controls?.onAck(f);
+      fork.onAck(f);
     },
     // Refused before it opened: an expired session (a 401 from the list signs in
     // again), a broker restarting, or a room this caller cannot read. Only the list
@@ -121,5 +124,6 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       return sent;
     },
   };
+  const fork = mountFork(forkPanel, sender, state);
   conn.connect();
 }

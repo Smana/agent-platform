@@ -63,10 +63,37 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch) {
     li.append(a);
     ul.append(li);
   }
-  app.replaceChildren(newRoomForm(get), ul);
+  app.replaceChildren(newRoomForm(get), cliSetup(get), ul);
 }
 
-const roomId = /^[a-z2-7]{8}$/;
+export const roomId = /^[a-z2-7]{8}$/;
+
+// cliSetup is the CLI setup view: the roomctl configure line for this broker,
+// read from GET /api/roomctl the first time it opens.
+export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
+  const d = document.createElement("details");
+  d.className = "cli-setup";
+  const summary = document.createElement("summary");
+  summary.textContent = "CLI setup";
+  const out = document.createElement("pre");
+  d.append(summary, out);
+  let asked = false;
+  d.addEventListener("toggle", async () => {
+    if (!d.open || asked) return;
+    asked = true;
+    try {
+      const r = await api("/api/roomctl", {}, get);
+      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string };
+      out.textContent = r.ok && c.clientID
+        ? `roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
+        : "roomctl is not set up on this broker: it has no roomctl client.";
+    } catch (err) {
+      asked = false;
+      if (!(err instanceof SignInRequired)) out.textContent = `CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+  return d;
+}
 
 // Why POST /api/rooms refused (docs/api.md).
 const createErrors: Record<number, string> = {
