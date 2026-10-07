@@ -58,7 +58,9 @@ func (s *Sweeper) Start(ctx context.Context) error {
 
 // Sweep revokes and deletes every non-terminal run while the stop is engaged: the annotation
 // first, so the composition sees the revoke even if the delete then fails. A run already gone
-// mid-sweep is done, not an error.
+// mid-sweep is done, not an error. It returns how many runs it revoked: a run that already
+// carried a revoke, such as one the task reconciler's stop revoked seconds earlier, was counted by
+// whoever wrote it (F30).
 func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 	on, err := Engaged(ctx, s.Reader, s.Namespace)
 	if err != nil || !on {
@@ -74,15 +76,17 @@ func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 		if runs.Terminal(r.Phase) {
 			continue
 		}
-		if err := s.Runs.Annotate(ctx, r.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil && !apierrors.IsNotFound(err) {
+		err := s.Runs.Annotate(ctx, r.ID, map[string]string{runs.AnnRevoked: "manual"})
+		if err != nil && !apierrors.IsNotFound(err) {
 			errs = append(errs, err)
 			continue
+		}
+		if err == nil && r.Revoked == "" {
+			n++
 		}
 		if err := s.Runs.Delete(ctx, r.ID); err != nil {
 			errs = append(errs, err)
-			continue
 		}
-		n++
 	}
 	return n, errors.Join(errs...)
 }

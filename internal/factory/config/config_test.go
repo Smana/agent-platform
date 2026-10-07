@@ -113,18 +113,31 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 }
 
-// OD-10: an omitted budgets block still carries the daily ceilings, unenforced (R3).
+// OD-10: an omitted budgets block still carries the daily ceilings, the principal's unenforced
+// (R3). The task cap is enforced unless the config says shadow (owner, 2026-10-07).
 func TestBudgetDefaults(t *testing.T) {
-	raw := strings.Replace(good, "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n", "", 1)
-	if raw == good {
-		t.Fatal("the edit did not apply")
-	}
-	c, err := Parse([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Budgets.FactoryDaily != 25_000_000 || c.Budgets.HumanDaily != 5_000_000 || c.Budgets.EnforceTask || c.Budgets.EnforcePrincipal {
-		t.Fatalf("defaults are 25 M and 5 M, both unenforced: %+v", c.Budgets)
+	line := "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n"
+	for name, c := range map[string]struct {
+		with    string
+		enforce bool
+	}{
+		"omitted":             {"", true},
+		"enforceTask omitted": {"budgets: {enforcePrincipal: false}\n", true},
+		"shadow, written":     {line, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := strings.Replace(good, line, c.with, 1)
+			if !strings.Contains(good, line) {
+				t.Fatal("the edit did not apply")
+			}
+			cfg, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b := cfg.Budgets; b.FactoryDaily != 25_000_000 || b.HumanDaily != 5_000_000 || b.EnforceTask != c.enforce || b.EnforcePrincipal {
+				t.Fatalf("defaults are 25 M and 5 M, the principal's unenforced: %+v", b)
+			}
+		})
 	}
 }
 

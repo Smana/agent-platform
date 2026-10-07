@@ -753,8 +753,42 @@ func TestAStopIsCountedOnceThroughAConflict(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
 		t.Fatalf("settled on the replay: %+v", tk.Status)
 	}
-	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens 0 standard solo review" {
+	// The revoke is counted with the claim's annotation, not the status write: the replay finds the
+	// run already gone, so a deferred count would be lost (F30).
+	if strings.Join(g.metrics.recorded, "|") != "revoked manual|intervention stop|task_tokens 0 standard solo review" {
 		t.Fatalf("%q", g.metrics.recorded)
+	}
+}
+
+// F30: the reconciler's stop revokes and deletes a task's runs seconds before the kill switch's
+// sweeper would, so it counts them, one per run it revokes. A run already carrying a revoke was
+// counted by whoever wrote it: a claim still draining an earlier stop, which the sweeper's next
+// pass also skips, or a run the meter revoked. A finished run is deleted, never revoked.
+func TestAStopCountsEachRunItRevokesOnce(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	g.runs.set(rid(0), "Running")
+	for id, r := range map[string]runs.Run{
+		"aaaaaaa2": {Phase: "Pending"},
+		"aaaaaaa3": {Phase: "Running", Revoked: "manual"},
+		"aaaaaaa4": {Phase: "Running", Revoked: "budget-run"},
+		"aaaaaaa5": {Phase: "Succeeded"},
+	} {
+		r.ID, r.TaskID = id, "3buqdlot"
+		g.runs.runs[id] = r
+	}
+	_ = g.c.Create(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system"}})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseStopped || len(g.runs.runs) != 0 {
+		t.Fatalf("%s, %d runs left", tk.Status.Phase, len(g.runs.runs))
+	}
+	revoked := 0
+	for _, m := range g.metrics.recorded {
+		if m == "revoked manual" {
+			revoked++
+		}
+	}
+	if revoked != 2 {
+		t.Fatalf("one per run the stop revoked, rid(0) and aaaaaaa2: %q", g.metrics.recorded)
 	}
 }
 
