@@ -553,7 +553,9 @@ func TestATokenExpiringBeforeTheHelloIsReauth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed(t, c)
+	if code, reason := closed(t, c); code != closeReauth || reason != "reauth" {
+		t.Fatalf("closed %d %q, want %d \"reauth\": the client must re-authenticate", code, reason, closeReauth)
+	}
 	eventually(t, "the drop is counted as reauth", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="reauth"} 1`)
 	})
@@ -806,6 +808,33 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 	eventually(t, "the connection is uncounted", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
 	})
+}
+
+// A shutdown while the handler still waits for the hello says 1001 as well: the
+// hello's read must not tear the socket down under the close frame.
+func TestShutdownBeforeTheHelloSays1001(t *testing.T) {
+	e := setup(t)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- e.srv.Serve(ctx, ln, 5*time.Second) }()
+	c, _, err := connectTo(t, "ws://"+ln.Addr().String()+"/v1/ws?room="+roomID, header("dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the connection is counted", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 1`)
+	})
+	cancel()
+	if code, reason := closed(t, c); code != websocket.StatusGoingAway || reason != "shutdown" {
+		t.Fatalf("closed %d %q", code, reason)
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
 }
 
 // Handlers that outlast the drain are named, not dropped silently: their viewers

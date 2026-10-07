@@ -101,7 +101,8 @@ func TestRunBridge(t *testing.T) {
 func TestHealthz(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(map[bool]string{true: "healthy is 200", false: "unhealthy is 503"}[healthy], func(t *testing.T) {
-			h := healthHandler(func(time.Time) bool { return healthy }, func() bridge.Admission { return bridge.Admission{} }, time.Now)
+			noRead := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
+			h := healthHandler(func(time.Time) bool { return healthy }, func() bridge.Admission { return bridge.Admission{} }, noRead, time.Now)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 			if want := map[bool]int{true: http.StatusOK, false: http.StatusServiceUnavailable}[healthy]; rec.Code != want {
@@ -172,7 +173,8 @@ func TestAdmissionEndpoint(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return c.a }, time.Now)
+			noRead := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
+			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return c.a }, noRead, time.Now)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admission", nil))
 			if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.bodyHas) {
@@ -272,5 +274,37 @@ func TestLoopback(t *testing.T) {
 		if got := loopback(in); got != want {
 			t.Errorf("loopback(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// F11, the harness half: agent-run asks for the final read on loopback, POST only, and waits at
+// most finalReadWait for the answer.
+func TestFinalReadEndpoint(t *testing.T) {
+	read := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{Events: 7}, nil }
+	never := func(ctx context.Context) (bridge.FinalReadResult, error) {
+		<-ctx.Done()
+		return bridge.FinalReadResult{}, ctx.Err()
+	}
+	for _, c := range []struct {
+		name, method, from string
+		read               func(context.Context) (bridge.FinalReadResult, error)
+		code               int
+		body               string
+	}{
+		{"the harness gets the answer", http.MethodPost, "127.0.0.1:41234", read, http.StatusOK, `{"events":7,"unmirrored":0,"sealed":false}`},
+		{"loopback only", http.MethodPost, "10.0.0.7:41234", read, http.StatusForbidden, "loopback only"},
+		{"POST only", http.MethodGet, "127.0.0.1:41234", read, http.StatusMethodNotAllowed, ""},
+		{"a read that never answers is a 504", http.MethodPost, "127.0.0.1:41234", never, http.StatusGatewayTimeout, "in time"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return bridge.Admission{} }, c.read, time.Now)
+			req := httptest.NewRequestWithContext(t.Context(), c.method, "/final-read", nil)
+			req.RemoteAddr = c.from
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.body) {
+				t.Fatalf("%s /final-read from %s = %d %q, want %d %q", c.method, c.from, rec.Code, rec.Body.String(), c.code, c.body)
+			}
+		})
 	}
 }

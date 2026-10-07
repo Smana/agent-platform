@@ -13,12 +13,15 @@ export class RoomState {
   private pending = new Map<string, Approval>();
   private through = 0;
   sealed = false;
+  phase = "";
   constructor(public driver = "", public driverEpoch = 0) {}
 
   // reset takes a state frame. Its queue is the store's at the mark: a page's tail
   // of 500 events rarely reaches back to what was queued for the next run.
-  reset(s: { driver: string; driverEpoch: number; queue?: Queued[]; sealed?: boolean; approvals?: Approval[] }, throughSeq: number) {
+  reset(s: { driver: string; driverEpoch: number; phase?: string; queue?: Queued[]; sealed?: boolean; approvals?: Approval[] },
+    throughSeq: number) {
     this.driver = s.driver;
+    this.phase = s.phase ?? "";
     this.driverEpoch = s.driverEpoch;
     this.sealed = !!s.sealed;
     this.queued = new Map((s.queue ?? []).map((q) => [q.ref, { ref: q.ref, author: q.author, text: q.text }]));
@@ -59,6 +62,11 @@ export class RoomState {
         if (p.kind === "queued_removed") this.queued.delete(p.ref);
         // Only what the brief quoted is consumed; a reviewer's request consumes nothing.
         if (p.kind === "run_requested" && Array.isArray(p.consumed)) for (const ref of p.consumed) this.queued.delete(ref);
+        // Active, Idle and AwaitingHuman never reach the log (roomctrl derives them), so at
+        // or below the mark only the seal beats the state frame's phase, which lags it.
+        if (p.kind === "room_phase" && typeof p.phase === "string" && (ev.seq > this.through || p.phase === "Closed")) {
+          this.phase = p.phase;
+        }
         // The seals (internal/store sealTx): a close, or the room's event or byte limit.
         if ((p.kind === "room_phase" && p.phase === "Closed") || (p.kind === "limit" && p.events !== undefined)) this.sealed = true;
         break;

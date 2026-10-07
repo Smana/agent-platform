@@ -7,7 +7,7 @@
 // The same untrusted-text rules as render.ts hold: DOM nodes and textContent only.
 
 import type { RoomEvent } from "./conn";
-import { markdown } from "./render";
+import { deliveryChip, handoffHead, markdown, stateHead } from "./render";
 import { maxRows } from "./view";
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
@@ -37,7 +37,7 @@ function bubble(ev: RoomEvent): HTMLElement {
   const row = el("article", `msg from-${cls(ev.actor.kind)}`);
   row.dataset.seq = String(ev.seq);
   const head = el("header", "msg-head", who(ev));
-  if (p.delivery && p.delivery !== "none") head.append(el("span", `chip chip-delivery`, String(p.delivery)));
+  head.append(deliveryChip(p));
   if (p.kind === "review_verdict" && p.verdict) {
     head.append(el("span", `chip verdict-${cls(p.verdict)}`, `verdict: ${p.verdict}`));
   }
@@ -152,6 +152,12 @@ function marker(ev: RoomEvent): HTMLElement {
     case "harness_error":
       text = `harness error ${p.code ?? ""}${p.detail ? ": " + p.detail : ""}`;
       break;
+    case "delivered":
+    case "undeliverable":
+    case "interrupted":
+    case "queued_removed":
+      text = `${stateHead(p)}${p.code ? " · " + p.code : ""}`;
+      break;
     case "harness_paused":
       text = "harness paused";
       break;
@@ -176,9 +182,6 @@ function sysline(ev: RoomEvent): HTMLElement {
     case "driver":
       text = `driver: ${p.from ?? "?"} → ${p.to ?? "?"}${p.reason ? " · " + p.reason : ""}`;
       break;
-    case "handoff":
-      text = `handoff ${p.fromRole ?? "?"} → ${p.toRole ?? "?"}${p.branch ? " · " + p.branch : ""}${p.summary ? ": " + p.summary : ""}`;
-      break;
     default:
       text = `${ev.type}: ${JSON.stringify(p)}`;
   }
@@ -186,6 +189,18 @@ function sysline(ev: RoomEvent): HTMLElement {
   row.dataset.seq = String(ev.seq);
   row.append(time(ev.ts));
   return row;
+}
+
+// handoff renders work passing between roles: its line, then the agent's summary
+// as markdown (untrusted, T10).
+function handoff(ev: RoomEvent): HTMLElement {
+  const p = ev.payload ?? {};
+  const box = el("div", "handoff");
+  box.dataset.seq = String(ev.seq);
+  const line = el("div", "sys", `${handoffHead(p)}${p.branch ? " · " + p.branch : ""}`);
+  line.append(time(ev.ts));
+  box.append(line, markdown(String(p.summary ?? "")));
+  return box;
 }
 
 // fallback keeps a type the view does not know visible, behind a toggle.
@@ -241,8 +256,10 @@ export class ChatView {
         break;
       case "participant":
       case "driver":
-      case "handoff":
         this.put(ev.seq, sysline(ev));
+        break;
+      case "handoff":
+        this.put(ev.seq, handoff(ev));
         break;
       default:
         this.put(ev.seq, fallback(ev));

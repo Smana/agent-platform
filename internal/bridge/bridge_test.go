@@ -754,3 +754,49 @@ func TestStreamFramesReachTheHooks(t *testing.T) {
 		t.Fatalf("frames seen: %v", seen)
 	}
 }
+
+// F11, the harness half (disruption design §2): a final read answers only once the log is read
+// to its end and mirrored, whatever the loop's own pace.
+func TestAFinalReadMirrorsTheLogBeforeItAnswers(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	for i := range 3 {
+		f.add(chatEvent(fmt.Sprint("hi ", i)))
+	}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.Interval = time.Hour // one step, then the loop idles: only a final read moves the log
+	ctx, _ := r.run(t)
+	eventually(ctx, t, "the first step mirrors the log", func() bool { return len(fb.stored(wire.StreamEvents)) == 3 })
+	for i := 3; i < 7; i++ {
+		f.add(chatEvent(fmt.Sprint("hi ", i)))
+	}
+	res, err := r.b.FinalRead(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0), SeqFor(4, 0), SeqFor(5, 0), SeqFor(6, 0), SeqFor(7, 0)}
+	if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, want) || res != (FinalReadResult{Events: 7}) {
+		t.Fatalf("answered %+v with %v mirrored, want every event mirrored first: %v", res, got, want)
+	}
+}
+
+// A final read is bounded by its caller: a broker that keeps refusing still gets the caller an
+// answer naming what is unmirrored, before the caller's deadline.
+func TestAFinalReadAnswersBeforeItsDeadline(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	f.add(chatEvent("hi"))
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.Interval = time.Hour
+	ctx, _ := r.run(t)
+	eventually(ctx, t, "the first step mirrors the log", func() bool { return len(fb.stored(wire.StreamEvents)) == 1 })
+	fb.set(func(b *fakeBroker) { b.hold = true })
+	f.add(chatEvent("unmirrored"))
+	call, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := r.b.FinalRead(call)
+	if took := time.Since(start); err != nil || res.Unmirrored == 0 || res.Events != 2 || took >= time.Second {
+		t.Fatalf("got %+v, %v after %v: want an answer naming the unmirrored items inside the deadline", res, err, took)
+	}
+}

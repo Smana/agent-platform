@@ -2,22 +2,26 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
-import { hasControls, mountControls, rejection } from "../src/controls";
+import { approvalCard, hasControls, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
+import { newRoomForm } from "../src/view";
 
 type You = Snapshot["you"];
+const shown = (e: Element) => !e.closest("[hidden]");
 const you = (principal: string, role: string): You => ({ principal, role, approver: false, driver: false, webUI: true });
 
 function setup(who: You, driver = "human:a", epoch = 4) {
   const sent: Record<string, any>[] = [];
+  const notices: string[] = [];
   const conn = { send: (f: Record<string, unknown>) => { sent.push(f); return true; } };
   const state = new RoomState(driver, epoch);
   const root = document.createElement("section");
-  const controls = mountControls(root, conn, state, who);
+  const controls = mountControls(root, conn, state, who, (t) => notices.push(t));
   controls.refresh();
-  const btn = (act: string) => root.querySelector<HTMLButtonElement>(`button[data-act="${act}"]`);
+  // A button counts when the human can see it: sections toggle hidden (R10).
+  const btn = (act: string) => [...root.querySelectorAll<HTMLButtonElement>(`button[data-act="${act}"]`)].find(shown) ?? null;
   const field = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[name="${name}"]`)!;
-  return { sent, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
+  return { sent, notices, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
 }
 
 const queued = (seq: number, author: string, text: string) => ({ v: 1, id: String(seq), seq, roomId: "3kq7x2ma",
@@ -60,13 +64,36 @@ describe("mountControls", () => {
     c.state.apply({ ...queued(1, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:b", epoch: 5, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(false);
-    // Losing the token falls back to chat, never a steer the broker refuses (review 4.5 I3).
+    // Losing the token picks nothing for the human: queued text enters an LLM prompt,
+    // so neither the room nor the queue is a safe guess (R09, reversing review 4.5 I3).
     const delivery = c.field<HTMLSelectElement>("delivery");
     delivery.value = "steering";
     c.state.apply({ ...queued(2, "human:a", ""), type: "driver", payload: { from: "human:b", to: "human:c", epoch: 6, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(true);
+    expect(delivery.value).toBe("");
+    const choose = "You no longer hold the driver token: choose where this message goes.";
+    expect(c.notices).toEqual([choose]);
+    c.field<HTMLTextAreaElement>("text").value = "steer this";
+    c.btn("message")!.click();
+    expect(c.sent).toHaveLength(0);
+    expect(c.notices).toEqual([choose, choose]);
+    delivery.value = "none";
+    c.btn("message")!.click();
+    expect(c.acts()).toEqual([{ kind: "message", text: "steer this", delivery: "none" }]);
+  });
+
+  // R09: each option says what it does; the room is the default, since it prompts no agent.
+  it("names where each delivery goes, the room by default", () => {
+    const delivery = setup(you("human:a", "owner")).field<HTMLSelectElement>("delivery");
     expect(delivery.value).toBe("none");
+    expect([...delivery.options].map((o) => [o.value, o.textContent])).toEqual([
+      ["none", "post to the room (no agent is prompted)"],
+      ["queued", "queue for the next run's brief"],
+      ["steering", "steer the running agent now"],
+      ["", "choose where this goes"],
+    ]);
+    expect(delivery.options[3].disabled).toBe(true);
   });
 
   it("shows the queue as text, with remove for its author and steer for the driver", () => {
@@ -174,6 +201,47 @@ describe("mountControls", () => {
   });
 });
 
+describe("refresh", () => {
+  // R10: every event refreshes the controls. The field the human is in keeps its
+  // focus: refresh used to re-mount every section, and the driver's fields with it.
+  it("keeps the focused field across refreshes", () => {
+    const approvals = [{ approvalId: "ap1", runId: "7f3cq2xz", callId: "c3", class: "forge.pr", action: {},
+      expiresAt: "2026-10-01T10:30:00Z", seq: 3 }];
+    for (const [who, name] of [["human:a", "text"], ["human:a", "giveTo"], ["human:o", "takeReason"], ["human:a", "decisionReason"]]) {
+      const c = setup(you(who, "owner"));
+      c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+      c.controls.refresh();
+      document.body.append(c.root);
+      const f = c.field<HTMLInputElement>(name);
+      f.focus();
+      expect(document.activeElement, name).toBe(f);
+      c.controls.refresh();
+      c.state.apply(queued(11, "human:c", "an event between")); // re-renders the queue
+      c.controls.refresh();
+      expect(document.activeElement, name).toBe(f);
+      c.root.remove();
+    }
+  });
+});
+
+describe("accessible names", () => {
+  // R10: a placeholder is not a name; every field says what it is for.
+  it("names every form control", () => {
+    const approvals = [{ approvalId: "ap1", runId: "7f3cq2xz", callId: "c3", class: "forge.pr", action: {},
+      expiresAt: "2026-10-01T10:30:00Z", seq: 3 }];
+    const roots: HTMLElement[] = [newRoomForm()];
+    for (const who of ["human:a", "human:o"]) { // the driver's fields, then an owner's who does not drive
+      const c = setup(you(who, "owner"));
+      c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+      c.controls.refresh();
+      roots.push(c.root);
+    }
+    const fields = roots.flatMap((r) => [...r.querySelectorAll<HTMLElement>("input, select, textarea")]);
+    expect(fields.length).toBeGreaterThanOrEqual(10);
+    for (const f of fields) expect(f.getAttribute("aria-label")?.trim(), f.getAttribute("name") ?? f.tagName).toBeTruthy();
+  });
+});
+
 describe("approval cards", () => {
   const pending = (id: string, seq: number, action: unknown = { command: "gh pr create" }) => ({ approvalId: id, runId: "7f3cq2xz",
     callId: "call_" + seq, class: "forge.pr", action, expiresAt: "2026-10-01T10:30:00Z", seq });
@@ -224,8 +292,8 @@ describe("approval cards", () => {
   // Review 5.3 I2: policy Decide is the approver flag, whatever the room role.
   it("gives a watcher who approves the cards and their buttons, and nothing else", () => {
     const c = withApprovals({ ...you("human:wat", "watcher"), approver: true }, pending("ap1", 3));
-    expect([...c.root.children].map((e) => e.className)).toEqual(["approvals"]);
-    expect(c.root.querySelector("textarea")).toBeNull();
+    expect([...c.root.children].filter(shown).map((e) => e.className)).toEqual(["approvals"]);
+    expect(shown(c.field("text"))).toBe(false);
     expect(c.btn("driver_request")).toBeNull();
     c.btn("approve")!.click();
     expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" }]);
@@ -237,7 +305,23 @@ describe("approval cards", () => {
     const p = withApprovals(who, pending("ap1", 3));
     who.role = "collaborator";
     p.controls.refresh();
-    expect(p.root.querySelector("textarea")).not.toBeNull();
+    expect(shown(p.field("text"))).toBe(true);
+  });
+
+  // R11: a deadline on another day shows its date, not a bare time.
+  it("dates a deadline that is not today", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 1, 9, 0));
+    try {
+      const head = (due: Date) => approvalCard({ class: "forge.pr", callId: "c", action: {}, expiresAt: due.toISOString() })
+        .querySelector(".approval-head")!.textContent;
+      const today = new Date(2026, 9, 1, 10, 30);
+      const tomorrow = new Date(2026, 9, 2, 10, 30);
+      expect(head(today)).toBe(`approval: forge.pr · call c · expires ${today.toLocaleTimeString()}`);
+      expect(head(tomorrow)).toBe(`approval: forge.pr · call c · expires ${tomorrow.toLocaleString()}`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("drops a card once decided", () => {

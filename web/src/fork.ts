@@ -7,7 +7,7 @@
 
 import { nav } from "./api";
 import type { Frame } from "./conn";
-import { act, claimText, el, rejection, select, type Sender } from "./controls";
+import { act, claimText, el, named, rejection, select, type Sender } from "./controls";
 import type { RoomState } from "./room-state";
 import { roomId } from "./view";
 
@@ -17,10 +17,10 @@ export function mountFork(root: HTMLElement, conn: Sender, state: RoomState) {
   let at = 0;
   let sent = 0; // the clientSeq of the fork awaiting its ack
   const title = el("span", { className: "fork-at" });
-  const note = el("input", { name: "note", maxLength: 1024, placeholder: "why fork (optional)" });
-  const role = select("forkRole", [["", "no run"], ["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
-  const prUrl = el("input", { name: "forkPrUrl", type: "url", placeholder: "PR URL (reviewer only)" });
-  const egress = el("input", { name: "forkEgress", placeholder: "egress profiles: pypi, npm" });
+  const note = named(el("input", { name: "note", maxLength: 1024, placeholder: "why fork (optional)" }), "why fork");
+  const role = select("forkRole", "role of the fork's first run", [["", "no run"], ["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
+  const prUrl = named(el("input", { name: "forkPrUrl", type: "url", placeholder: "PR URL (reviewer only)" }), "pull request URL, reviewer only");
+  const egress = named(el("input", { name: "forkEgress", placeholder: "egress profiles: pypi, npm" }), "egress profiles");
   const cancel = el("button", { type: "button", textContent: "cancel" });
   cancel.onclick = () => { root.hidden = true; };
   const form = el("form");
