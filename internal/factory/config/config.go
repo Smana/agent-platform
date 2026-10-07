@@ -41,6 +41,10 @@ const (
 	// numbers first, so the ceilings exist even before an operator writes them down.
 	defaultFactoryDaily = 25_000_000
 	defaultHumanDaily   = 5_000_000
+	// Disruption design §4: how many runs of one task the factory resumes on its own by default,
+	// and the most a config may ask for.
+	defaultResumesPerTask = 2
+	maxResumesPerTask     = 5
 )
 
 // Duration is a time.Duration written as a string such as "30s".
@@ -82,6 +86,7 @@ type Config struct {
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
 	Budgets      Budgets             `json:"budgets"`
+	Resume       Resume              `json:"resume"`
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
@@ -207,6 +212,13 @@ type Budgets struct {
 	HumanDaily       int64 `json:"humanDaily"`
 }
 
+// Resume bounds the automatic resume of a run lost to its infrastructure (disruption design §4).
+type Resume struct {
+	// MaxPerTask is how many runs of one task the factory resumes on its own; past it the task
+	// escalates as before. Defaulted when omitted.
+	MaxPerTask int `json:"maxPerTask"`
+}
+
 // Meter is where the run meter reads token usage (R12) and the gateway's 429s (R13).
 type Meter struct {
 	URL   string `json:"url"`
@@ -302,6 +314,9 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if c.Budgets.HumanDaily == 0 {
 		c.Budgets.HumanDaily = defaultHumanDaily
+	}
+	if c.Resume.MaxPerTask == 0 {
+		c.Resume.MaxPerTask = defaultResumesPerTask
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -493,6 +508,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
+	}
+	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
+		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)
 	}
 	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
 	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.

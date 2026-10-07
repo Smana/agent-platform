@@ -170,6 +170,11 @@ func reasons() map[string]string {
 		"stuck":                   "the run showed no activity for 10 minutes",
 		"deadline":                "the run hit its wall-clock limit",
 		"pod_lost":                "the sandbox was lost (spot reclaim or eviction)",
+		"Disrupted":               "the sandbox's node was reclaimed or drained",
+		"PodLost":                 "the sandbox was lost (deleted, or its node disappeared)",
+		"PodFailed":               "the sandbox failed on its own",
+		"resumes_exhausted":       "the sandbox was lost again and the automatic resumes are used up",
+		"resume_budget":           "the sandbox was lost and the task's token budget cannot cover another run",
 		"revoked":                 "the run was stopped by hand",
 		"deleted":                 "the run's claim was deleted",
 		"budget-run":              "the run spent its token budget",
@@ -316,6 +321,17 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 			"`changes` verdict, or a review without a verdict, escalates it again."
 	}
 	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries), Body: body}
+}
+
+// Resuming says the factory resumes a run its sandbox lost, on its own, n of limit (disruption
+// design §4). A reviewer's or tester's new run uses no review round.
+func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
+	body := fmt.Sprintf("Agent factory task `%s`: run `%s` stopped because %s; resuming automatically (%d/%d).",
+		t.Name, runID, Reason("pod_lost"), n, limit)
+	if role == "reviewer" || role == "tester" {
+		body += " The new review run uses no review round."
+	}
+	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
 }
 
 // PROpened announces the task's pull request.

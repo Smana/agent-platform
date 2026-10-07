@@ -108,7 +108,8 @@ func TestBuildCarriesTheStartSeqAndHead(t *testing.T) {
 		t.Fatalf("%v", u.GetAnnotations())
 	}
 	r, ok := FromUnstructured(u)
-	if !ok || r.StartSeq != 1202 || r.Head != s.Head {
+	// The brief reads back too: a resumed run is briefed with its lost run's (disruption design §4).
+	if !ok || r.StartSeq != 1202 || r.Head != s.Head || r.TaskText == "" || r.TaskText != s.TaskText {
 		t.Fatalf("read back: %+v", r)
 	}
 	u = Build(spec())

@@ -151,6 +151,11 @@ type TaskStatus struct {
 	FixRuns int32 `json:"fixRuns,omitempty"`
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
+	// Automatic resumes of runs lost to their infrastructure (disruption design §4), every role
+	// counted; capped by the config's resume.maxPerTask.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Resumes int32 `json:"resumes,omitempty"`
 	// The effective verdict of the last review: approve, changes or none.
 	// +kubebuilder:validation:MaxLength=32
 	// +optional
@@ -176,7 +181,7 @@ type TaskStatus struct {
 	RoomSeq int64 `json:"roomSeq,omitempty"`
 	// The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and
 	// cleared once that run exists.
-	// +kubebuilder:validation:Enum=initial;review;human;ci;retry
+	// +kubebuilder:validation:Enum=initial;review;human;ci;retry;resume
 	// +optional
 	NextTrigger string `json:"nextTrigger,omitempty"`
 	// The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
@@ -264,7 +269,7 @@ type RunRecord struct {
 	// +kubebuilder:validation:Enum=implementer;reviewer;tester;triager
 	Role string `json:"role"`
 	// Why the run exists.
-	// +kubebuilder:validation:Enum=initial;review;human;ci;retry
+	// +kubebuilder:validation:Enum=initial;review;human;ci;retry;resume
 	Trigger string `json:"trigger"`
 	// +optional
 	Round int32 `json:"round,omitempty"`
