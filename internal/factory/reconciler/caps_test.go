@@ -142,6 +142,65 @@ func TestAMergedPullRequestIsNotEscalatedForTheTaskCap(t *testing.T) {
 	}
 }
 
+// A maintainer's "Request changes" on a task with no room left for a run escalates it as
+// budget-task without first announcing a revision that cannot start; the review is still queued
+// in the room for whoever picks the task up. In shadow the revision is announced and starts.
+// Two ways in: the review lands while the task awaits a human, or while it is queued for its
+// reviewer.
+func TestARequestChangesPastTheCapIsQueuedNotAnnounced(t *testing.T) {
+	review := forge.Review{ID: 901, Author: "Smana", State: "CHANGES_REQUESTED", Body: "Use the relative link.", At: now.Add(time.Minute)}
+	paths := map[string]func(t *testing.T, enforce bool) (*rig, *v1alpha1.Task){
+		"awaiting a human": func(t *testing.T, enforce bool) (*rig, *v1alpha1.Task) {
+			tk := awaiting()
+			tk.Spec.Budget.TaskTokens = 3_000_000
+			tk.Status.Runs[0].Tokens, tk.Status.Usage.Tokens = 1_500_001, 1_500_001
+			g := newRig(t, tk, roomOf("3buqdlot"))
+			g.f.SetPR(pr12(review))
+			g.r.Cfg.Budgets.EnforceTask = enforce
+			return g, g.reconcile(t, "3buqdlot", 2) // → Queued → admitted or not
+		},
+		"queued for its reviewer": func(t *testing.T, enforce bool) (*rig, *v1alpha1.Task) {
+			g := newRig(t, issueTask("3buqdlot", 7, "x"))
+			g.r.Triage = staticWith("pair")
+			g.r.Cfg.Budgets.EnforceTask = enforce
+			g.reconcile(t, "3buqdlot", 3)
+			g.f.SetBranch("agent/3buqdlot", 12)
+			g.f.SetPR(pr12At(head1))
+			r := g.runs.runs[rid(0)]
+			r.Tokens = 1_500_001
+			g.runs.runs[rid(0)] = r
+			g.finish(rid(0), "Succeeded", "agent_finished")
+			g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+			pr := pr12At(head1)
+			pr.Reviews = []forge.Review{review}
+			g.f.SetPR(pr)
+			return g, g.reconcile(t, "3buqdlot", 1)
+		},
+	}
+	for path, start := range paths {
+		for name, enforce := range map[string]bool{"enforced": true, "shadow": false} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				g, tk := start(t, enforce)
+				if !slices.Equal(g.log.reviews(), []int64{901}) {
+					t.Fatalf("the review is queued in the room either way: %v", g.log.reviews())
+				}
+				say := strings.Join(g.f.Comments(7), "\n")
+				announced := strings.Contains(say, "is revising after @Smana's review")
+				_, started := g.runs.specs[rid(1)]
+				if enforce {
+					if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "budget-task" || announced || started {
+						t.Fatalf("%s %s, started %v: %q", tk.Status.Phase, tk.Status.Reason, started, say)
+					}
+					return
+				}
+				if !announced || !started || g.runs.specs[rid(1)].Role != "implementer" {
+					t.Fatalf("in shadow the revision is announced and starts: %s, started %v: %q", tk.Status.Phase, started, say)
+				}
+			})
+		}
+	}
+}
+
 // R34: the factory's own day is checked before every run it starts, not only by the meter.
 func TestFactoryDailyBudget(t *testing.T) {
 	spent := func(g *rig, enforce bool) {
