@@ -43,6 +43,7 @@ func revocations() []string {
 		"budget-task-shadow", "budget-principal-shadow"}
 }
 func intakeSources() []string { return []string{"issue", "runlore", "schedule", "api"} }
+func resumeReasons() []string { return []string{"Disrupted", "PodLost"} }
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -73,6 +74,7 @@ type Set struct {
 	revocations     metric.Int64Counter
 	githubRemaining metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
+	resumes         metric.Int64Counter
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -124,6 +126,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.traceAbandoned, err = meter.Int64Counter("agent_factory_trace_export_abandoned_total",
 		metric.WithDescription("Task spans given up after the collector refused them for a day (ruling ST2)."))
+	check(err)
+	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
+		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -245,6 +250,12 @@ func (s *Set) LabelEventsTruncated(ctx context.Context, label string) {
 // Revoked counts a run the factory revoked, by reason: the run meter's OnRevoke.
 func (s *Set) Revoked(ctx context.Context, reason string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations()))))
+}
+
+// Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason
+// (disruption design §6).
+func (s *Set) Resumed(ctx context.Context, reason string) {
+	s.resumes.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, resumeReasons()))))
 }
 
 // TraceExportAbandoned counts a task span given up unexported (ruling ST2).

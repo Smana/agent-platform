@@ -55,7 +55,7 @@ func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
 	}
 	f.specs[s.RunID] = s
 	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef,
-		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created}
+		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created, TaskText: s.TaskText}
 	return nil
 }
 
@@ -242,6 +242,7 @@ func (m *fakeMetrics) TraceExportAbandoned(context.Context)     { m.add("trace_e
 func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string) {
 	m.add("class_mismatch " + predicted + " " + matched)
 }
+func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
@@ -256,7 +257,8 @@ func cfg() *config.Config {
 		Templates: map[string]config.Template{"solo": {Roles: []string{"implementer"}},
 			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
 			"trio": {Roles: []string{"implementer", "tester", "reviewer"}, MaxReviewRounds: 2}},
-		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30, AwaitingHumanWIP: 5},
+		Caps:   config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30, AwaitingHumanWIP: 5},
+		Resume: config.Resume{MaxPerTask: 2}, // a parsed config's default (disruption design §4)
 		// The merge gate reads these; a config without them would make CIState vacuously green.
 		Merge: config.Merge{RequiredChecks: []string{"Pre-commit checks", "Kubernetes validation"},
 			VerifyChecks:   []string{"Pre-commit checks", "Kubernetes validation"},

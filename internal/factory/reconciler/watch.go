@@ -37,11 +37,26 @@ func nextTrigger(t *v1alpha1.Task) string {
 // queued messages that brief quoted: the only ones the run may consume (F-A).
 func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (runs.Spec, []int64, string, error) {
 	trigger := nextTrigger(t)
+	text, ok, err := r.resumeBrief(ctx, t)
+	if err != nil {
+		return runs.Spec{}, nil, "", err
+	}
+	if ok && t.Status.PullRequest == nil {
+		return r.implementerSpec(t, text), nil, trigger, nil
+	}
+	if ok {
+		q, err := r.Rooms.Queue(ctx, t.Status.RoomRef)
+		if err != nil {
+			return runs.Spec{}, nil, "", err
+		}
+		text, refs := withQueued(text, q, r.Nonce())
+		return r.implementerSpec(t, text), refs, trigger, nil
+	}
 	if t.Status.PullRequest == nil {
-		return r.implementerSpec(t, FirstBrief(t, r.Nonce())), nil, trigger, nil
+		return r.implementerSpec(t, resumed(t, trigger)+FirstBrief(t, r.Nonce())), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
-	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, briefSince(t), briefEvent)
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
@@ -50,7 +65,24 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		return runs.Spec{}, nil, "", err
 	}
 	text, refs := ReviseBrief(t, evs, q, r.Nonce())
-	return r.implementerSpec(t, text), refs, trigger, nil
+	return r.implementerSpec(t, resumed(t, trigger)+text), refs, trigger, nil
+}
+
+// briefSince is the room seq a revision brief reads after: the start of the run before it. A
+// resumed run whose lost run's claim is gone reads after the start of the run before its resumed
+// chain, as the lost run's brief did: the room after the lost run's own start holds no verdict.
+func briefSince(t *v1alpha1.Task) int64 {
+	i := len(t.Status.Runs) - 1
+	if nextTrigger(t) == "resume" {
+		for i > 0 && t.Status.Runs[i].Trigger == "resume" {
+			i--
+		}
+		i--
+	}
+	if i < 0 {
+		return 0
+	}
+	return t.Status.Runs[i].StartSeq
 }
 
 // maxTailReads bounds roomTail: each EventsSince reads at most 10,000 events.
