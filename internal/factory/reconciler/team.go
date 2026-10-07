@@ -134,9 +134,13 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 		return r.roomUnreadable(ctx, t, err)
 	}
 	if why != "" {
-		if r.resumable(t, run) {
+		switch {
+		case r.resumable(t, run):
 			r.resume(ctx, t, run)
 			return nil
+		case infraLost(run) && !runFits(t) && r.Cfg.Budgets.EnforceTask:
+			// As a lost implementer: noVerdict would narrate a review run that queued() then refuses.
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "resume_budget")
 		}
 		return r.noVerdict(ctx, t, why)
 	}

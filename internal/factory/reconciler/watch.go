@@ -41,8 +41,16 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
-	if ok {
+	if ok && t.Status.PullRequest == nil {
 		return r.implementerSpec(t, text), nil, trigger, nil
+	}
+	if ok {
+		q, err := r.Rooms.Queue(ctx, t.Status.RoomRef)
+		if err != nil {
+			return runs.Spec{}, nil, "", err
+		}
+		text, refs := withQueued(text, q, r.Nonce())
+		return r.implementerSpec(t, text), refs, trigger, nil
 	}
 	if t.Status.PullRequest == nil {
 		return r.implementerSpec(t, resumed(t, trigger)+FirstBrief(t, r.Nonce())), nil, trigger, nil

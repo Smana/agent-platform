@@ -13,6 +13,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -314,5 +315,81 @@ func TestInfraLost(t *testing.T) {
 		if got := infraLost(c.run); got != c.want {
 			t.Errorf("infraLost(%+v) = %t", c.run, got)
 		}
+	}
+}
+
+// Re-review (#25): a maintainer's review posted while a revision runs, which then loses its
+// sandbox, reaches the resumed run. lateReviews queues it and marks it handled on the way back to
+// Queued; the replayed brief quotes it after the lost run's own and the resumed run consumes it.
+// The resume stays a resume, not a revision.
+func TestAReviewPostedDuringALostRunReachesTheResumedRun(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	first := changes(901, "Smana", "Use the relative link.", 5*time.Minute)
+	g.f.SetPR(pr12(first))
+	g.reconcile(t, "3buqdlot", 2) // → Queued (human) → the revision rid(1), which consumes 901
+	g.f.SetPR(pr12(first, changes(902, "Smana", "Also fix the title.", -time.Minute)))
+	g.lose(rid(1), runs.ReasonPodLost)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	s := g.runs.specs[rid(2)]
+	q, err := g.log.Queue(t.Context(), "3buqdlot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status.Runs[2].Trigger != "resume" || !strings.HasPrefix(s.TaskText, ResumeNotice(tk)) ||
+		!strings.Contains(s.TaskText, "Use the relative link.") || !strings.Contains(s.TaskText, "Also fix the title.") || len(q) != 0 {
+		t.Fatalf("%+v queued=%d\n%s", tk.Status.Runs, len(q), s.TaskText)
+	}
+	if n := len(s.TaskText); n > reviseCap {
+		t.Fatalf("the resumed brief is %d bytes, over reviseCap", n)
+	}
+}
+
+// Re-review (#25): past the task cap a lost reviewer is not narrated into a review run the cap then
+// refuses. Enforced, the task escalates at once and spends no round; in shadow, it re-runs as before.
+// A reviewer that ended on its own without a verdict is no resume: resume_budget never names it.
+func TestALostReviewerPastTheTaskCap(t *testing.T) {
+	for name, c := range map[string]struct {
+		enforce, lost bool
+		phase, reason string
+		rounds        int32
+		runs          int
+	}{
+		"enforced":         {true, true, v1alpha1.PhaseEscalated, "resume_budget", 0, 2},
+		"shadow":           {false, true, v1alpha1.PhaseReviewing, "", 1, 3},
+		"ended on its own": {true, false, v1alpha1.PhaseEscalated, "budget-task", 1, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := pairRig(t)
+			g.r.Cfg.Budgets.EnforceTask = c.enforce
+			r := g.runs.runs[rid(1)]
+			r.Tokens = 1_500_001 // standard tier: less than a run's worth left of 3 M
+			g.runs.runs[rid(1)] = r
+			if c.lost {
+				g.lose(rid(1), runs.ReasonDisrupted)
+			} else {
+				g.finish(rid(1), "Succeeded", "agent_finished")
+			}
+			tk := g.reconcile(t, "3buqdlot", 2)
+			if tk.Status.Phase != c.phase || tk.Status.Reason != c.reason || tk.Status.ReviewRounds != c.rounds || len(g.runs.specs) != c.runs {
+				t.Fatalf("%s %q rounds=%d %d runs", tk.Status.Phase, tk.Status.Reason, tk.Status.ReviewRounds, len(g.runs.specs))
+			}
+			if issue := strings.Join(g.f.Comments(7), "\n"); c.lost && c.enforce && strings.Contains(issue, "A new review run starts") {
+				t.Fatalf("narrated a run the cap refuses: %s", issue)
+			}
+		})
+	}
+}
+
+// R6 on the resume path: messages queued since the lost run are quoted only while the whole brief
+// stays within reviseCap; with no room they stay queued, unquoted and unconsumed.
+func TestWithQueuedKeepsTheBriefUnderTheCap(t *testing.T) {
+	q := []rooms.Queued{{Ref: 902, Author: "Smana", Text: strings.Repeat("y", 1024)}}
+	got, refs := withQueued(strings.Repeat("x", 1024), q, "n0nce234")
+	if !slices.Equal(refs, []int64{902}) || len(got) > reviseCap || !strings.Contains(got, "QUEUED-DATA-n0nce234") {
+		t.Fatalf("room left: refs=%v len=%d", refs, len(got))
+	}
+	full := strings.Repeat("x", reviseCap-200)
+	if got, refs := withQueued(full, q, "n0nce234"); refs != nil || got != full {
+		t.Fatalf("no room: refs=%v len=%d", refs, len(got))
 	}
 }
