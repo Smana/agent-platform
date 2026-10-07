@@ -162,23 +162,26 @@ func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
 // F15: /admission is what room-bridge gate reads before the harness may start.
 func TestAdmissionEndpoint(t *testing.T) {
 	cases := []struct {
-		name    string
-		a       bridge.Admission
-		code    int
-		bodyHas string
+		name, from string
+		a          bridge.Admission
+		code       int
+		bodyHas    string
 	}{
-		{"pending is 503", bridge.Admission{}, http.StatusServiceUnavailable, "pending"},
-		{"admitted is 200", bridge.Admission{Admitted: true}, http.StatusOK, "admitted"},
-		{"refused is 409 with the reason", bridge.Admission{Refused: wire.ReasonRoomBusy}, http.StatusConflict, wire.ReasonRoomBusy},
+		{"pending is 503", "127.0.0.1:41234", bridge.Admission{}, http.StatusServiceUnavailable, "pending"},
+		{"admitted is 200", "127.0.0.1:41234", bridge.Admission{Admitted: true}, http.StatusOK, "admitted"},
+		{"refused is 409 with the reason", "127.0.0.1:41234", bridge.Admission{Refused: wire.ReasonRoomBusy}, http.StatusConflict, wire.ReasonRoomBusy},
+		{"loopback only", "10.0.0.7:41234", bridge.Admission{Admitted: true}, http.StatusForbidden, "loopback only"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			noRead := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
 			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return c.a }, noRead, time.Now)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admission", nil)
+			req.RemoteAddr = c.from
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admission", nil))
+			h.ServeHTTP(rec, req)
 			if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.bodyHas) {
-				t.Fatalf("GET /admission = %d %q, want %d naming %q", rec.Code, rec.Body.String(), c.code, c.bodyHas)
+				t.Fatalf("GET /admission from %s = %d %q, want %d naming %q", c.from, rec.Code, rec.Body.String(), c.code, c.bodyHas)
 			}
 		})
 	}

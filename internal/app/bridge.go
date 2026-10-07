@@ -105,7 +105,12 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 		}
 		_, _ = w.Write([]byte("ok " + version.Version + "\n"))
 	})
-	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /admission", func(w http.ResponseWriter, r *http.Request) {
+		// The gate's call: like /final-read, nothing outside the pod reads it.
+		if !fromLoopback(r) {
+			http.Error(w, "loopback only", http.StatusForbidden)
+			return
+		}
 		switch a := admission(); {
 		case a.Admitted:
 			_, _ = w.Write([]byte("admitted\n"))

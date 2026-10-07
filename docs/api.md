@@ -250,6 +250,7 @@ It also serves `GET /admission`, read by `room-bridge gate` on loopback (F15):
 | `503` | `pending` | No hello has been decided yet: the broker is unreachable, or another run's live run has held the room for less than 3 minutes |
 | `200` | `admitted` | The bridge holds the room's lease. The gate exits 0 and the harness starts |
 | `409` | `room_busy` or `sealed` | The run will never hold the room. The gate exits 1, which fails the pod before the harness runs |
+| `403` | `loopback only` | The request came from outside the pod |
 
 ## `:8080` — human API (phase 2 / AP-2)
 
