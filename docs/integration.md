@@ -98,12 +98,14 @@ reads it once at start, so restart it after a change.
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, origin}` | 2, 6 |
 | `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
+| `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 
 | Broker environment | Meaning | Phase |
 |---|---|---|
 | `ROOMS_CONFIG` | Path of the config file | 1 |
 | `ROOMS_DATABASE_URL` | The `uri` of `xplane-rooms-cnpg-role-rooms-broker` (the retention job: `…-rooms-retention`) | 1 |
 | `POD_NAMESPACE` | Where Rooms and the leader lease live | 1 |
+| `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally | 1 |
 | `ROOMS_MCP_KEY` | The key the MCPRoute injects | 3 |
 
 ### The bridge's environment
@@ -118,8 +120,11 @@ Set by the `AgentRun` composition (CC-S2).
 | `BROKER_CA_FILE` | `/etc/room-broker-ca/ca.crt` |
 | `HARNESS_URL` | `http://127.0.0.1:8000` |
 | `ROOM_TOKEN_FILE` | `/var/run/secrets/agents/room/token` |
-| `EGRESS_PROFILES` | The run's egress profiles, comma-separated |
-| `HEALTH_ADDR` | `:8085` (default) |
+| `EGRESS_PROFILES` | The run's egress profiles, comma-separated. Reserved: nothing reads it in phase 1 |
+| `HEALTH_ADDR` | `:8085` (default): `/healthz` for kubelet only. The bridge serves no metrics; the broker counts its stalls and stubs (Ruling AP) |
+| `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
+| `FLUSH_GRACE` | How long the SIGTERM drain may take; `25s` (default), at most `28s`. Set it lower when the harness uses much of the pod's 30 s grace: the kubelet signals the sidecar only after the harness exits |
+| `GOMEMLIMIT` | Unset: the binary sets `48MiB`, the soft heap limit its buffer budget is sized for inside the 64 Mi limit. A pod spec may set its own |
 | `BRANCH` | The run's branch (phase 5, CC-S5) |
 
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities

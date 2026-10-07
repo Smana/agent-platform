@@ -1,11 +1,11 @@
 # Roadmap
 
-**Phase 0 is merged. Phase 1 is in progress**: on the AP-1 branch the envelope, redaction, the log
-schema, the store and the `Room` CRD are written and tested (tasks 1.1–1.5), Ruling Y's hardening
-of the log is being applied, and tasks 1.6 onwards are next. Phases 2 to 6 are planned. Phase 7 is the
+**Phase 0 is merged. Phase 1 is in progress**: AP-1 implements every agent-platform task
+(1.1–1.12) and awaits its pull request; the crossplane-configuration and cloud-native-ref tasks
+are in progress. Phases 2 to 6 are planned. Phase 7 is the
 owner's UX sign-off, after which cloud-native-ref and crossplane-configuration merge in one wave.
 
-Status as of 2026-09-29.
+Status as of 2026-09-30.
 
 ## Phases
 
@@ -41,16 +41,16 @@ flowchart LR
 |---|---|---|---|
 | 1.1 | The C4 envelope | AP-1, `internal/envelope` | Implemented |
 | 1.2 | Redaction | AP-1, `internal/redact` | Implemented |
-| 1.3 | Log schema and Atlas migration | AP-1, `internal/store/migrations` | Implemented; Ruling Y's grants, trigger and check being added |
-| 1.4 | The store | AP-1, `internal/store` | Implemented; Ruling Y's lease fencing being added |
+| 1.3 | Log schema and Atlas migration | AP-1, `internal/store/migrations` | Implemented |
+| 1.4 | The store | AP-1, `internal/store` | Implemented |
 | 1.5 | The `Room` CRD, bounds included | AP-1, `api/v1alpha1`, `config/crd` | Implemented |
-| 1.6 | Offline authentication for runs and system callers | AP-1, `internal/authn` | Planned |
-| 1.7 | The `AgentRun` watch, run events, end reasons | AP-1, `internal/runwatch` | Planned |
-| 1.8 | The `Room` controller | AP-1, `internal/roomctrl` | Planned |
-| 1.9 | The bridge and system API on `:8443`, TLS (GP-18), the lease `409` (Ruling Y) | AP-1, `internal/bridgeapi` | Planned |
-| 1.10 | The harness adapter and event mapping | AP-1, `internal/bridge` | Planned |
-| 1.11 | The `room-bridge` binary, trusting the broker CA (GP-18) | AP-1, `cmd/room-bridge` | Planned |
-| 1.12 | The broker binary, metrics, retention subcommand, AP-1's pre-release | AP-1, `cmd/room-broker` | Planned |
+| 1.6 | Offline authentication for runs and system callers | AP-1, `internal/authn` | Implemented |
+| 1.7 | The `AgentRun` watch, run events, end reasons | AP-1, `internal/runwatch` | Implemented |
+| 1.8 | The `Room` controller | AP-1, `internal/roomctrl` | Implemented |
+| 1.9 | The bridge and system API on `:8443`, TLS (GP-18), the lease `409` (Ruling Y) | AP-1, `internal/bridgeapi` | Implemented |
+| 1.10 | The harness adapter and event mapping | AP-1, `internal/bridge` | Implemented |
+| 1.11 | The `room-bridge` binary, trusting the broker CA (GP-18) | AP-1, `cmd/room-bridge` | Implemented |
+| 1.12 | The broker binary, metrics, retention subcommand, AP-1's pre-release | AP-1, `cmd/room-broker`, `internal/app` | Implemented; pre-release pending |
 | 1.13 | `SQLInstance` generated credentials | CC-S1 (crossplane-configuration) | Implemented, in review |
 | 1.14 | The bridge in the `AgentRun` composition | CC-S2 | Planned |
 | 1.15–1.22 | ADR-0044, the vendored CRD, storage, the broker's manifests, alerts, `agent:run --room`, pins, the live gate | S1 (cloud-native-ref) | Planned |

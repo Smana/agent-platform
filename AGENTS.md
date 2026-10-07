@@ -18,6 +18,8 @@ task check      # exit 0, or it is not done
 | `lint` | `hack/lint.sh` | any golangci-lint issue under [`.golangci.yaml`](.golangci.yaml), gofmt and goimports included |
 | `vuln` | `go run …/govulncheck@v1.8.0 ./...` | a known vulnerability reachable from our code, stdlib included |
 | `test` | `go test -race -count=1 ./...` | a failing test or a data race; never cached |
+| `crd:check` | `crd:gen`, then `git diff --exit-code -- config/crd api` | a committed CRD or deepcopy that differs from what the types generate |
+| `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
 
 CI's `check` job runs the same `task check`; `analyze` (CodeQL) is the other required check.
 Store tests use testcontainers, so from phase 1 `task test` needs a running Docker daemon.
@@ -107,8 +109,9 @@ packages that need a newer one.
   under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
   Label values are bounded: never a payload field; `room` only on the per-Active-room gauge.
 - **`rooms_build_info{version}` = 1** from the first metric.
-- **Traces are expected here** (RunLore has none): OTel spans across bridge → broker → store and
-  outbound calls, W3C `traceparent` propagated on every hop. Spans carry ids (room, run, seq),
+- **Traces: none yet.** Phase 1 has no span and propagates no `traceparent`; a tracked follow-up
+  adds OTel spans across bridge → broker → store and outbound calls, W3C `traceparent` on every hop.
+  When they land, spans carry ids (room, run, seq),
   event types and end reasons, never payload text or an error message that could echo it.
 
 ### Added with first use, not before
@@ -135,11 +138,12 @@ flowchart LR
 
 | Stage | Package | Contract | Status |
 |---|---|---|---|
-| Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ stub |
-| Entry | `cmd/room-bridge` | the sidecar binary | ✓ stub |
+| Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ |
+| Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | 6 |
-| Entry | `internal/app` | wiring per binary, the only importer of every adapter | not in the SP2 plan |
-| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | 1 |
+| Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ |
+| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | ✓ |
+| Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |
 | Entry | `internal/version` | build version stamped by `-ldflags` | ✓ |
 | Ingress | `internal/bridge` | harness adapter over loopback, event mapping, status, uploader, SSE consumer | 1, 4, 5 |
 | Ingress | `internal/wire` | bridge and browser frames: the types both ends of a connection share | 1, 2 |
@@ -158,7 +162,7 @@ flowchart LR
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
-| Ops | `internal/metrics` | the §9 metric set | 1 |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
 
 ## Seams
 
@@ -172,10 +176,11 @@ Packages that do touch the platform name their seam:
 
 | Package | Seam |
 |---|---|
-| `internal/authn` | issuer and audience are config |
-| `internal/runwatch` | the `AgentRun` GVK and namespace; a `RunSource` interface would replace them in a spin-out |
+| `internal/authn` | issuers, subject patterns and the system allowlist are config; the audiences `room-broker` and `rooms-system` are constants in `internal/authn/jwt.go` |
+| `internal/runwatch` | the `AgentRun` GVK, its `agents` namespace, the `xplane-run-` claim-name prefix and the `agents.ogenki.io/revoked` annotation; a `RunSource` interface would replace them in a spin-out |
 | `internal/roomctrl` | the `Room` CRD group |
 | `internal/bridgeapi` | principal allowlists come from config |
+| `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,
