@@ -344,25 +344,28 @@ func TestAReviewPostedDuringALostRunReachesTheResumedRun(t *testing.T) {
 	}
 }
 
-// Re-review (#25): past the task cap a lost reviewer is not narrated into a review run the cap then
-// refuses. Enforced, the task escalates at once and spends no round; in shadow, it re-runs as before.
-// A reviewer that ended on its own without a verdict is no resume: resume_budget never names it.
-func TestALostReviewerPastTheTaskCap(t *testing.T) {
+// Past the task cap no reviewer is narrated into a review run the cap then refuses. Lost and
+// enforced, the task escalates at once and spends no round; in shadow, it re-runs as before. One
+// that ended on its own without a verdict is no resume: resume_budget never names it, and queued()
+// escalates it after lateReviews (#30), with no "new review run" narrated.
+func TestAReviewerWithoutAVerdictAtTheTaskCap(t *testing.T) {
 	for name, c := range map[string]struct {
-		enforce, lost bool
-		phase, reason string
-		rounds        int32
-		runs          int
+		enforce, lost, narrated bool
+		used                    int64
+		phase, reason           string
+		rounds                  int32
+		runs                    int
 	}{
-		"enforced":         {true, true, v1alpha1.PhaseEscalated, "resume_budget", 0, 2},
-		"shadow":           {false, true, v1alpha1.PhaseReviewing, "", 1, 3},
-		"ended on its own": {true, false, v1alpha1.PhaseEscalated, "budget-task", 1, 2},
+		"enforced":               {true, true, false, 1_500_001, v1alpha1.PhaseEscalated, "resume_budget", 0, 2},
+		"shadow":                 {false, true, true, 1_500_001, v1alpha1.PhaseReviewing, "", 1, 3},
+		"ended on its own":       {true, false, false, 1_500_001, v1alpha1.PhaseEscalated, "budget-task", 1, 2},
+		"ended on its own, fits": {true, false, true, 1_500_000, v1alpha1.PhaseReviewing, "", 1, 3},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := pairRig(t)
 			g.r.Cfg.Budgets.EnforceTask = c.enforce
 			r := g.runs.runs[rid(1)]
-			r.Tokens = 1_500_001 // standard tier: less than a run's worth left of 3 M
+			r.Tokens = c.used // standard tier: 1.5 M of 3 M leaves exactly a run's worth
 			g.runs.runs[rid(1)] = r
 			if c.lost {
 				g.lose(rid(1), runs.ReasonDisrupted)
@@ -373,8 +376,8 @@ func TestALostReviewerPastTheTaskCap(t *testing.T) {
 			if tk.Status.Phase != c.phase || tk.Status.Reason != c.reason || tk.Status.ReviewRounds != c.rounds || len(g.runs.specs) != c.runs {
 				t.Fatalf("%s %q rounds=%d %d runs", tk.Status.Phase, tk.Status.Reason, tk.Status.ReviewRounds, len(g.runs.specs))
 			}
-			if issue := strings.Join(g.f.Comments(7), "\n"); c.lost && c.enforce && strings.Contains(issue, "A new review run starts") {
-				t.Fatalf("narrated a run the cap refuses: %s", issue)
+			if issue := strings.Join(g.f.Comments(7), "\n"); strings.Contains(issue, "A new review run starts") != c.narrated {
+				t.Fatalf("narrated a new review run: %t, want %t: %s", !c.narrated, c.narrated, issue)
 			}
 		})
 	}

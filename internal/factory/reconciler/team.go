@@ -218,7 +218,11 @@ func (r *Reconciler) noVerdict(ctx context.Context, t *v1alpha1.Task, why string
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "no_verdict")
 	}
 	t.Status.ReviewRounds++
-	narrateLater(t, narrate.NoVerdict(t, cur.ID, why))
+	// Past an enforced cap queued() escalates budget-task, after lateReviews (#30): never narrate a
+	// review run it refuses.
+	if runFits(t) || !r.Cfg.Budgets.EnforceTask {
+		narrateLater(t, narrate.NoVerdict(t, cur.ID, why))
+	}
 	r.requestVerifier(t, cur.Role)
 	return nil
 }
