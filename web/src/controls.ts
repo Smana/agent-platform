@@ -7,7 +7,7 @@ import type { RoomState } from "./room-state";
 const rejections: Record<string, string> = {
   not_permitted: "Not allowed: your role in this room, or this client, does not permit it; or the factory refused you a run.",
   stale_epoch: "Someone else holds the driver token now. The page shows the new holder; try again if it still applies.",
-  rate_limited: "Too many actions at once (10 a second). Wait a moment and retry.",
+  rate_limited: "Too many actions at once (10 a second), or forks (3, then one a minute). Wait and retry.",
   no_running_run: "No run is running, so there is nothing to steer or interrupt. Queue it for the next run instead.",
   room_busy: "A run is already running here, or one was just requested and has not joined yet.",
   reviewer_needs_pr: "A reviewer needs a pull request: give its URL, since no agent handoff or verdict names one.",
@@ -20,6 +20,7 @@ const rejections: Record<string, string> = {
   log_unavailable: "The room's log is unavailable right now. Retry.",
   already_decided: "Another approver decided first.",
   four_eyes: "This room needs an approver who did not prompt the turn.",
+  too_large: "Forking here copies over 5,000 events or 32 MiB. Fork from an earlier message.",
 };
 
 export function rejection(reason: string): string {

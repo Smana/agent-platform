@@ -88,7 +88,7 @@ func SafeText(s string) string {
 // reasons explains the rejections roomctl's acts can meet (docs/api.md).
 var reasons = map[string]string{
 	"not_permitted":       "not allowed: your role in this room or this client does not permit it, or the factory refused you a run",
-	"rate_limited":        "too many actions at once; wait a moment and retry",
+	"rate_limited":        "too many actions at once, or over 3 forks then one a minute; wait and retry",
 	"room_busy":           "a run is already running there, or one was just requested and has not joined yet",
 	"reviewer_needs_pr":   "a reviewer needs --pr, since no agent handoff or verdict names a pull request",
 	"over_budget":         "the factory refused the run: you are over your budget",
@@ -97,6 +97,7 @@ var reasons = map[string]string{
 	"sealed":              "the room is sealed: it takes no more messages",
 	"conflict":            "the room changed at the same moment; retry",
 	"log_unavailable":     "the room's log is unavailable right now; retry",
+	"too_large":           "the fork point is past 5,000 events or 32 MiB of the room's log: fork at an earlier seq",
 }
 
 // Explain is a rejection in words, or the reason itself when it has none.

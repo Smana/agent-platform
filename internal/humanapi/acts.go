@@ -103,6 +103,7 @@ type Actor struct {
 
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
+	forks    map[string]*rate.Limiter
 }
 
 // The rejections an ack carries (docs/api.md).
@@ -122,6 +123,7 @@ const (
 	rejectNoFactory      = "factory_unavailable"
 	rejectDecided        = "already_decided" // another approver decided first, or it expired or was superseded
 	rejectFourEyes       = "four_eyes"       // OD-16: the decider prompted the run
+	rejectTooLarge       = "too_large"       // a fork's prefix over the store's caps
 )
 
 // maxReason bounds a take's reason, which the driver event carries.
@@ -134,18 +136,29 @@ const maxDecisionReason = 1 << 10
 // memberPrincipal is the Room CRD's pattern for a member.
 var memberPrincipal = regexp.MustCompile(`^human:[A-Za-z0-9@._-]{1,255}$`)
 
+// limited takes one of principal's actions: 10/s, burst 20 (§4); per replica (P22).
 func (a *Actor) limited(principal string) bool {
+	return !a.allow(&a.limiters, principal, 10, 20)
+}
+
+// forkLimited takes one of principal's forks, on top of limited: each copies a
+// prefix in one transaction and keeps it under a fresh retention.
+func (a *Actor) forkLimited(principal string) bool {
+	return !a.allow(&a.forks, principal, rate.Every(time.Minute), 3)
+}
+
+func (a *Actor) allow(limiters *map[string]*rate.Limiter, principal string, r rate.Limit, burst int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.limiters == nil {
-		a.limiters = map[string]*rate.Limiter{}
+	if *limiters == nil {
+		*limiters = map[string]*rate.Limiter{}
 	}
-	l, ok := a.limiters[principal]
+	l, ok := (*limiters)[principal]
 	if !ok {
-		l = rate.NewLimiter(10, 20) // 10 actions/s per human, burst 20 (§4); per replica (P22)
-		a.limiters[principal] = l
+		l = rate.NewLimiter(r, burst)
+		(*limiters)[principal] = l
 	}
-	return !l.Allow()
+	return l.Allow()
 }
 
 var kinds = map[string]policy.Action{"remove_queued": policy.RemoveQueued, "promote_queued": policy.PromoteQueued,
@@ -616,6 +629,9 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, room *v1alpha1.Room
 	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
 		return fail(rejectBadAction) // the owner must be one the Room CRD admits
 	}
+	if a.forkLimited(p.ID) {
+		return fail(rejectRateLimited)
+	}
 	retention, err := roomctrl.ParseRetention(room.Spec.Retention)
 	if err != nil || a.Rooms == nil {
 		return fail(rejectLogUnavailable)
@@ -639,6 +655,8 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, room *v1alpha1.Room
 	switch {
 	case errors.Is(err, store.ErrBadSeq):
 		return fail(rejectBadAction)
+	case errors.Is(err, store.ErrForkTooLarge):
+		return fail(rejectTooLarge)
 	case err != nil:
 		return fail(rejectLogUnavailable)
 	}

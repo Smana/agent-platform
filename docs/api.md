@@ -331,13 +331,13 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, an expiry or a supersede included). With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision | 5 |
-| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`, and from a sealed room, since only the new room is written. A new room owned and driven by the forker, with the source's data class, repository, approvals and retention and none of its members: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made | 6 |
+| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`, and from a sealed room, since only the new room is written. A new room owned and driven by the forker, with the source's data class, repository, approvals and retention and none of its members: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica | 6 |
 
 | `rejected` | Meaning |
 |---|---|
 | `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run |
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
-| `rate_limited` | Over 10 actions per second (burst 20), per replica |
+| `rate_limited` | Over 10 actions per second (burst 20), or over 3 forks at once then one a minute; per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
 | `room_busy` | A run is already running; or a run was requested in the last 10 minutes and has not joined yet, and the broker does not know it ended (a claim not applied, or a factory run not seen yet). Two replicas answering a `start_run` in the same instant can both pass this check until SP3's factory refuses a second pending run per room |
 | `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
@@ -348,6 +348,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `sealed` | The room's log is sealed. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
 | `conflict` | The Room changed under an `invite`: retry |
 | `log_unavailable` | The log or the Room could not be read or written: retry |
+| `too_large` | A fork's prefix over 5,000 events or 32 MiB: fork at an earlier `seq` |
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 

@@ -109,3 +109,39 @@ func TestForkRefusals(t *testing.T) {
 		t.Fatal("copying the source's seal event does not seal the fork")
 	}
 }
+
+// A fork is one transaction inside the act's 15 s, and the copy is new bytes
+// under a fresh retention: a prefix over either cap is refused before it commits.
+func TestForkRefusesAPrefixOverTheCaps(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := context.Background()
+	for i := int64(1); i <= 3; i++ {
+		if _, _, err := s.Append(ctx, draft("agent:x", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	by := envelope.Draft{Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:bob"}, Origin: envelope.OriginClient,
+		OriginClient: "human:bob:s1", OriginSeq: 1, Payload: []byte(`{}`), Type: envelope.StateChanged}
+	nr := NewRoom{ID: "bbbbbbbb", Driver: "human:bob", Retention: 24 * time.Hour}
+	if s.MaxForkEvents != 5000 || s.MaxForkBytes != 32<<20 {
+		t.Fatalf("caps %d events, %d bytes", s.MaxForkEvents, s.MaxForkBytes)
+	}
+	for _, c := range []struct {
+		name          string
+		events, bytes int64
+	}{{"over the event cap", 2, 1 << 20}, {"over the byte cap", 10, 64}} {
+		t.Run(c.name, func(t *testing.T) {
+			s.MaxForkEvents, s.MaxForkBytes = c.events, c.bytes
+			if _, err := s.Fork(ctx, room, 3, nr, by, nil); !errors.Is(err, ErrForkTooLarge) {
+				t.Fatalf("got %v, want ErrForkTooLarge", err)
+			}
+			if _, err := s.Room(ctx, "bbbbbbbb"); !errors.Is(err, ErrNoRoom) {
+				t.Fatal("a refused fork leaves no room behind")
+			}
+		})
+	}
+	s.MaxForkEvents, s.MaxForkBytes = 3, 1<<20
+	if _, err := s.Fork(ctx, room, 3, nr, by, nil); err != nil {
+		t.Fatalf("a prefix at the caps: %v", err)
+	}
+}

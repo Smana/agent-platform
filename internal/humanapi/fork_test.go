@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -210,6 +211,13 @@ func TestForkRefusals(t *testing.T) {
 			t.Fatalf("%+v", f)
 		}
 	})
+	t.Run("a prefix over the store's caps", func(t *testing.T) {
+		a, log, room, _ := forkFixture(t, nil)
+		log.forkErr = fmt.Errorf("store: fork: %w", store.ErrForkTooLarge)
+		if f := forkAs(a, room, "human:bob", false, Action{Seq: 1}); f.Rejected != "too_large" {
+			t.Fatalf("%+v", f)
+		}
+	})
 	t.Run("the log is down", func(t *testing.T) {
 		a, log, room, _ := forkFixture(t, nil)
 		log.forkErr = errors.New("conn reset")
@@ -251,5 +259,25 @@ func TestAForksRunErrorRidesTheResult(t *testing.T) {
 	var res map[string]any
 	if err := json.Unmarshal(f.Result, &res); f.Rejected != "" || err != nil || res["run"] != nil || res["runError"] != "over_budget" {
 		t.Fatalf("%+v %s", f, f.Result)
+	}
+}
+
+// Each fork copies a prefix in one transaction: forks have their own budget per
+// principal, 3 at once then one a minute, apart from the 10 actions a second.
+func TestForksAreRateLimitedPerPrincipal(t *testing.T) {
+	a, log, room, _ := forkFixture(t, nil)
+	for i := range 3 {
+		if f := forkAs(a, room, "human:bob", false, Action{Seq: 1}); f.Rejected != "" {
+			t.Fatalf("fork %d: %+v", i+1, f)
+		}
+	}
+	if f := forkAs(a, room, "human:bob", false, Action{Seq: 1}); f.Rejected != "rate_limited" || len(log.forked) != 3 {
+		t.Fatalf("a 4th fork within the minute: %+v, %d forks", f, len(log.forked))
+	}
+	if f := forkAs(a, room, "human:alice", true, Action{Seq: 1}); f.Rejected != "" {
+		t.Fatalf("another principal's fork: %+v", f)
+	}
+	if f := act(a, room, "human:col", 51, nil, Action{Kind: "message", Text: "still here", Delivery: "none"}); f.Rejected != "" {
+		t.Fatalf("other actions keep their own limit: %+v", f)
 	}
 }

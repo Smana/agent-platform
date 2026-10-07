@@ -16,6 +16,9 @@ import (
 // ErrBadSeq is a fork point outside the source room's log.
 var ErrBadSeq = errors.New("bad_seq")
 
+// ErrForkTooLarge is a prefix over MaxForkEvents or MaxForkBytes.
+var ErrForkTooLarge = errors.New("fork prefix over the caps")
+
 // forkBatch is how many events one round trip copies, two statements each.
 const forkBatch = 256
 
@@ -38,7 +41,8 @@ const (
 // plus the source room and seq. The copy is the fork's own, so it outlives src's
 // purge, and a copied key deduplicates the Room controller's seq-1 Open. It runs
 // as the broker's role, under the grants and triggers every append meets: the
-// row starts empty, and nothing in src changes, a sealed src included.
+// row starts empty, and nothing in src changes, a sealed src included. A prefix
+// over MaxForkEvents or MaxForkBytes is refused with ErrForkTooLarge.
 func (s *Store) Fork(ctx context.Context, src string, upTo int64, r NewRoom, d envelope.Draft, fields map[string]any) (envelope.Event, error) {
 	if r.Retention < MinRetention {
 		return envelope.Event{}, fmt.Errorf("store: fork room %s: %w", r.ID, ErrInvalidRetention)
@@ -73,6 +77,8 @@ func (s *Store) fork(ctx context.Context, src string, upTo int64, r NewRoom, d e
 		return envelope.Event{}, err
 	case upTo < 1 || upTo > last:
 		return envelope.Event{}, ErrBadSeq
+	case upTo > s.MaxForkEvents:
+		return envelope.Event{}, ErrForkTooLarge
 	}
 	if _, err := tx.Exec(ctx, insertRoomSQL, r.ID, r.Driver, r.Retention.Seconds()); err != nil {
 		return envelope.Event{}, err
@@ -85,6 +91,15 @@ func (s *Store) fork(ctx context.Context, src string, upTo int64, r NewRoom, d e
 		}
 		if err := tx.SendBatch(ctx, b).Close(); err != nil {
 			return envelope.Event{}, err
+		}
+		// The bump keeps the copy's size; reading it per batch bounds the work a
+		// refused fork does to one batch past the cap.
+		var size int64
+		if err := tx.QueryRow(ctx, `SELECT bytes FROM rooms WHERE room_id = $1`, r.ID).Scan(&size); err != nil {
+			return envelope.Event{}, err
+		}
+		if size > s.MaxForkBytes {
+			return envelope.Event{}, ErrForkTooLarge
 		}
 	}
 	ev, _, err := s.appendTx(ctx, tx, d, fence{})
