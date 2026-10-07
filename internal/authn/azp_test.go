@@ -31,10 +31,19 @@ func TestVerifyAuthorizedParty(t *testing.T) {
 		raw, client string
 		want        error // nil accepts; every refusal must also be ErrUnauthenticated
 	}{
-		"valid":              {tok(nil), "roomctl-id", nil},
-		"any audience":       {tok(func(c *Claims) { c.Audience = jwt.ClaimStrings{"anything", issuer} }), "roomctl-id", nil},
-		"another client":     {tok(nil), "rooms-proxy-id", ErrWrongAudience},
-		"no azp":             {tok(func(c *Claims) { c.AuthorizedParty = "" }), "roomctl-id", ErrWrongAudience},
+		"valid":                {tok(nil), "roomctl-id", nil},
+		"any audience":         {tok(func(c *Claims) { c.Audience = jwt.ClaimStrings{"anything", issuer} }), "roomctl-id", nil},
+		"another client":       {tok(nil), "rooms-proxy-id", ErrWrongAudience},
+		"no azp, no client_id": {tok(func(c *Claims) { c.AuthorizedParty = "" }), "roomctl-id", ErrWrongAudience},
+		// A ZITADEL JWT access token names its client in client_id and has no azp (review C1).
+		"client_id, no azp": {tok(func(c *Claims) { c.AuthorizedParty, c.ClientID = "", "roomctl-id" }), "roomctl-id", nil},
+		"another app's client_id": {tok(func(c *Claims) { c.AuthorizedParty, c.ClientID = "", "grafana" }), "roomctl-id",
+			ErrWrongAudience},
+		"azp and client_id agree": {tok(func(c *Claims) { c.ClientID = "roomctl-id" }), "roomctl-id", nil},
+		// A token naming two clients names none: neither claim may outvote the other.
+		"azp ours, client_id another": {tok(func(c *Claims) { c.ClientID = "grafana" }), "roomctl-id", ErrWrongAudience},
+		"client_id ours, azp another": {tok(func(c *Claims) { c.AuthorizedParty, c.ClientID = "grafana", "roomctl-id" }), "roomctl-id",
+			ErrWrongAudience},
 		"no subject":         {tok(func(c *Claims) { c.Subject = "" }), "roomctl-id", ErrUnauthenticated},
 		"expired past skew":  {tok(func(c *Claims) { c.ExpiresAt = at(-time.Minute) }), "roomctl-id", ErrTokenExpired},
 		"wrong issuer":       {tok(func(c *Claims) { c.Issuer = "https://evil.example" }), "roomctl-id", ErrWrongIssuer},
@@ -48,8 +57,8 @@ func TestVerifyAuthorizedParty(t *testing.T) {
 				if err != nil {
 					t.Fatalf("refused: %v", err)
 				}
-				if c.client != "" && got != nil && got.AuthorizedParty != c.client {
-					t.Fatalf("accepted a token for %q", got.AuthorizedParty)
+				if got == nil || (got.AuthorizedParty != c.client && got.ClientID != c.client) {
+					t.Fatalf("accepted a token for azp %q, client_id %q", got.AuthorizedParty, got.ClientID)
 				}
 				return
 			}

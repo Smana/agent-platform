@@ -62,6 +62,17 @@ func TestAuthenticate(t *testing.T) {
 	if _, err := call(stranger); !errors.Is(err, authn.ErrForbidden) {
 		t.Fatalf("outside the agents groups: %v", err)
 	}
+	// What the broker forwards and roomctl sends: a ZITADEL JWT access token,
+	// which names its client in client_id and carries no azp (review C1).
+	access := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "291847362183", "client_id": "rooms-proxy-id",
+		"groups": []string{"agents-member"}})
+	if p, err := call(access); err != nil || p.ID != "human:291847362183" || p.ClientID != "rooms-proxy-id" || p.AccessToken != access {
+		t.Fatalf("an access token: %+v %v", p, err)
+	}
+	otherAccess := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "1", "client_id": "grafana", "groups": []string{"agents-admin"}})
+	if _, err := call(otherAccess); !errors.Is(err, authn.ErrUnauthenticated) {
+		t.Fatalf("an access token issued to another client: %v", err)
+	}
 	otherClient := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "1", "azp": "grafana", "groups": []string{"agents-admin"}})
 	if _, err := call(otherClient); !errors.Is(err, authn.ErrUnauthenticated) {
 		t.Fatalf("a token issued to another client: %v", err)
