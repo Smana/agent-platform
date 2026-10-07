@@ -61,6 +61,14 @@ func TestResumesStopAtTheCapThenEscalate(t *testing.T) {
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "resumes_exhausted" || len(g.runs.specs) != 3 {
 		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
 	}
+	// The cap is per task, as the user guide says: a /factory retry runs again, but gives no resume back.
+	g.f.SetComments(7, retryBy(77, "smana", -time.Minute))
+	g.reconcile(t, "3buqdlot", 2)
+	g.lose(rid(3), runs.ReasonPodLost)
+	tk = g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "resumes_exhausted" || tk.Status.Resumes != 2 || len(g.runs.specs) != 4 {
+		t.Fatalf("after a retry: %s %s resumes=%d %d runs", tk.Status.Phase, tk.Status.Reason, tk.Status.Resumes, len(g.runs.specs))
+	}
 }
 
 func TestAFailedHarnessIsNeverResumed(t *testing.T) {
