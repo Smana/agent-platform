@@ -52,7 +52,8 @@ jobs:
           REF: ghcr.io/smana/${{ matrix.image }}@${{ steps.build.outputs.digest }}
         run: cosign sign --yes "$REF"
 
-  # roomctl's binaries and their checksums, on the tag's GitHub release (P33).
+  # roomctl's binaries and their checksums, on the tag's GitHub release (P33), and the Room CRD:
+  # cloud-native-ref vendors it from the release asset, not from a branch (ruling P16).
   roomctl:
     needs: release
     runs-on: ubuntu-latest
@@ -85,4 +86,5 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes
-          gh release upload "$TAG" roomctl-* roomctl.sha256 --clobber
+          cp config/crd/agents.ogenki.io_rooms.yaml crd-rooms.yaml
+          gh release upload "$TAG" roomctl-* roomctl.sha256 crd-rooms.yaml --clobber
