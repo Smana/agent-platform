@@ -314,6 +314,12 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 			if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil {
 				return err
 			}
+			// Counted now, not with the status write: a replay finds the claim gone or already
+			// revoked, so a deferred count would be lost. A run that carried a revoke was counted
+			// by whoever wrote it, the kill switch's sweeper included (F30).
+			if run.Revoked == "" {
+				r.Metrics.Revoked(ctx, "manual")
+			}
 		}
 		if err := r.Runs.Delete(ctx, run.ID); err != nil {
 			return err
