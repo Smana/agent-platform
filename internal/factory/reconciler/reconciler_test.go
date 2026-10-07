@@ -55,7 +55,7 @@ func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
 	}
 	f.specs[s.RunID] = s
 	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef,
-		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created}
+		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created, TaskText: s.TaskText}
 	return nil
 }
 

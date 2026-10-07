@@ -610,7 +610,14 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// triager one either: the config's validation cannot guard a name removed after a task was
 	// triaged.
 	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
-		s := r.implementerSpec(t, resumed(t, nextTrigger(t))+TriagerBrief(t, r.Nonce()))
+		text, ok, err := r.resumeBrief(ctx, t)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			text = resumed(t, nextTrigger(t)) + TriagerBrief(t, r.Nonce())
+		}
+		s := r.implementerSpec(t, text)
 		s.Role = "triager"
 		return r.startRun(ctx, t, s, nextTrigger(t))
 	}

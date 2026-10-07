@@ -51,11 +51,12 @@ const (
 	namePrefix = runwatch.ClaimPrefix
 )
 
-// The AgentRun's status.reason for a run lost to its infrastructure (disruption design §3): the
-// factory resumes these, never a PodFailed.
+// The AgentRun's status.reason for a run's pod (disruption design §3). The factory resumes a run
+// lost to its infrastructure (Disrupted, PodLost), never one whose pod failed on its own.
 const (
 	ReasonDisrupted = "Disrupted"
 	ReasonPodLost   = "PodLost"
+	ReasonPodFailed = "PodFailed"
 )
 
 // GVK is SP1's AgentRun claim: the broker's own, so the two readers of a claim never disagree.
@@ -181,7 +182,7 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 // Run is the part of a claim the factory reads back.
 type Run struct {
 	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef string
-	Head                                                                              string
+	Head, TaskText                                                                    string
 	Tokens, MaxTokens, StartSeq                                                       int64
 	Created, Finished                                                                 time.Time
 }
@@ -197,7 +198,8 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	r := Run{ID: id, TaskID: u.GetLabels()[LabelTask], Created: u.GetCreationTimestamp().Time,
 		Role: str("spec", "role"), Principal: str("spec", "principal"), Branch: str("spec", "branch"),
 		RoomRef: str("spec", "roomRef"), Phase: str("status", "phase"), Reason: str("status", "reason"),
-		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead]}
+		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead],
+		TaskText: str("spec", "task", "text")}
 	// The CREATE-only start seq (R48): absent means the room was empty when the run was created.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnStartSeq], 10, 64); err == nil {
 		r.StartSeq = v

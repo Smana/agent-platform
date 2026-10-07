@@ -12,6 +12,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -57,7 +58,7 @@ func TestResumesStopAtTheCapThenEscalate(t *testing.T) {
 	}
 	g.lose(rid(2), runs.ReasonPodLost)
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "pod_lost" || len(g.runs.specs) != 3 {
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "resumes_exhausted" || len(g.runs.specs) != 3 {
 		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
 	}
 }
@@ -66,8 +67,13 @@ func TestAFailedHarnessIsNeverResumed(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
 	g.lose(rid(0), "PodFailed") // the broker's pod_lost reads the same for a crash
-	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Resumes != 0 || len(g.runs.specs) != 1 {
-		t.Fatalf("%s %d %d runs", tk.Status.Phase, tk.Status.Resumes, len(g.runs.specs))
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Resumes != 0 || len(g.runs.specs) != 1 || tk.Status.Reason != "PodFailed" {
+		t.Fatalf("%s %s %d %d runs", tk.Status.Phase, tk.Status.Reason, tk.Status.Resumes, len(g.runs.specs))
+	}
+	// The AgentRun's reason, not the broker's: a crash is never narrated as a reclaim.
+	if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "the sandbox failed on its own") || strings.Contains(c, "spot reclaim") {
+		t.Fatalf("%q", c)
 	}
 }
 
@@ -75,11 +81,11 @@ func TestAFailedHarnessIsNeverResumed(t *testing.T) {
 // whole RunTokens left under TaskTokens (standard tier: 1.5 M of 3 M).
 func TestAResumeNeedsARunsWorthOfTheTaskBudget(t *testing.T) {
 	for name, c := range map[string]struct {
-		used int64
-		want string
+		used      int64
+		want, why string
 	}{
-		"a run's worth left":      {1_500_000, v1alpha1.PhaseImplementing},
-		"less than a run's worth": {1_500_001, v1alpha1.PhaseEscalated},
+		"a run's worth left":      {1_500_000, v1alpha1.PhaseImplementing, ""},
+		"less than a run's worth": {1_500_001, v1alpha1.PhaseEscalated, "resume_budget"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
@@ -88,8 +94,8 @@ func TestAResumeNeedsARunsWorthOfTheTaskBudget(t *testing.T) {
 			r.Tokens = c.used
 			g.runs.runs[rid(0)] = r
 			g.lose(rid(0), runs.ReasonDisrupted)
-			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != c.want {
-				t.Fatalf("%s %+v resumes=%d", tk.Status.Phase, tk.Status.Usage, tk.Status.Resumes)
+			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != c.want || c.why != "" && tk.Status.Reason != c.why {
+				t.Fatalf("%s %s %+v resumes=%d", tk.Status.Phase, tk.Status.Reason, tk.Status.Usage, tk.Status.Resumes)
 			}
 		})
 	}
@@ -179,5 +185,126 @@ func TestPastTheCapALostReviewerSpendsARound(t *testing.T) {
 	g.lose(rid(1), runs.ReasonDisrupted)
 	if got := g.reconcile(t, "3buqdlot", 2); got.Status.ReviewRounds != 1 || got.Status.Resumes != 2 || got.Status.Verdict != "none" {
 		t.Fatalf("rounds=%d resumes=%d verdict=%s", got.Status.ReviewRounds, got.Status.Resumes, got.Status.Verdict)
+	}
+}
+
+// Review I1: a resumed revision carries the review it revises. The room after the lost run's own
+// start holds no verdict: the resumed run is briefed with the lost run's brief.
+func TestAResumedRevisionCarriesTheReviewItRevises(t *testing.T) {
+	g := pairRig(t)
+	g.log.verdict(rid(1), "changes", head1, "Add a test for the new link.")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2) // → the revision rid(2)
+	g.lose(rid(2), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	s := g.runs.specs[rid(3)]
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Runs[3].Trigger != "resume" || tk.Status.ReviewRounds != 1 ||
+		!strings.HasPrefix(s.TaskText, ResumeNotice(tk)) || !strings.Contains(s.TaskText, "Add a test for the new link.") {
+		t.Fatalf("%s rounds=%d %+v\n%s", tk.Status.Phase, tk.Status.ReviewRounds, tk.Status.Runs, s.TaskText)
+	}
+	// Lost again: one notice, never two.
+	g.lose(rid(3), runs.ReasonPodLost)
+	g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(4)]; strings.Count(s.TaskText, "was interrupted by the platform") != 1 || !strings.Contains(s.TaskText, "Add a test for the new link.") {
+		t.Fatalf("%s", s.TaskText)
+	}
+}
+
+// Review I1: with the lost run's claim gone the brief is rebuilt, reading the room from the start
+// of the run before the resumed chain, where the verdict is.
+func TestAResumedRevisionWithoutItsClaimRereadsTheReview(t *testing.T) {
+	g := pairRig(t)
+	g.log.verdict(rid(1), "changes", head1, "Add a test for the new link.")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2)
+	g.lose(rid(2), runs.ReasonDisrupted)
+	g.reconcile(t, "3buqdlot", 1) // → Queued (resume)
+	_ = g.runs.Delete(t.Context(), rid(2))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if s := g.runs.specs[rid(3)]; tk.Status.Phase != v1alpha1.PhaseImplementing || !strings.HasPrefix(s.TaskText, ResumeNotice(tk)) ||
+		!strings.Contains(s.TaskText, "Add a test for the new link.") {
+		t.Fatalf("%s\n%s", tk.Status.Phase, s.TaskText)
+	}
+}
+
+// Review I1 and I3 (M-B, M-C): the queued review a lost revision consumed is quoted again, and a
+// maintainer's revision resumed still goes back to the maintainer.
+func TestAResumedMaintainerRevisionKeepsItsReviewAndItsCause(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	latest := changes(901, "Smana", "Use the relative link.", 5*time.Minute)
+	latest.Comments = []forge.ReviewComment{{Path: "docs/a.md", Line: 3, Body: "here"}}
+	g.f.SetPR(pr12(latest))
+	g.reconcile(t, "3buqdlot", 2) // → Queued (human) → the revision rid(1), which consumes 901
+	g.lose(rid(1), runs.ReasonPodLost)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(2)]; tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Runs[2].Trigger != "resume" ||
+		!strings.Contains(s.TaskText, "docs/a.md:3") || !strings.Contains(s.TaskText, "Use the relative link.") {
+		t.Fatalf("%s %+v\n%s", tk.Status.Phase, tk.Status.Runs, s.TaskText)
+	}
+	if !slices.Contains(g.metrics.recorded, "resumed PodLost") {
+		t.Fatalf("%q", g.metrics.recorded)
+	}
+	g.finish(rid(2), "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+		t.Fatalf("a resumed maintainer revision goes back to the maintainer: %s", tk.Status.Phase)
+	}
+}
+
+// Review I3 (M-A): a lost tester re-runs as the tester, without a round.
+func TestALostTesterRunsAgainAsTheTester(t *testing.T) {
+	g := teamRig(t, "trio", nil) // rid(1) is the tester
+	g.lose(rid(1), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || g.runs.specs[rid(2)].Role != "tester" || tk.Status.ReviewRounds != 0 || tk.Status.Resumes != 1 {
+		t.Fatalf("%s %s rounds=%d resumes=%d", tk.Status.Phase, g.runs.specs[rid(2)].Role, tk.Status.ReviewRounds, tk.Status.Resumes)
+	}
+}
+
+// Review M1: an implementer that handed off before its sandbox was lost finished its work. It is
+// read as Succeeded, never resumed into a second run of finished work.
+func TestALostImplementerThatHandedOffIsNotResumed(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Triage = staticWith("pair")
+	g.reconcile(t, "3buqdlot", 3)
+	g.f.SetBranch("agent/3buqdlot", 12)
+	g.f.SetPR(pr12At(head1))
+	g.log.handoff(rid(0), head1)
+	g.lose(rid(0), runs.ReasonPodLost)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || tk.Status.Resumes != 0 || g.runs.specs[rid(1)].Role != "reviewer" {
+		t.Fatalf("%s resumes=%d %+v", tk.Status.Phase, tk.Status.Resumes, tk.Status.Runs)
+	}
+}
+
+// Review M3: when the room records no end, the record keeps the AgentRun's reason.
+func TestALostRunWithoutARoomEndKeepsTheAgentRunsReason(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 3)
+	r := g.runs.runs[rid(0)]
+	r.Phase, r.Reason = "Failed", runs.ReasonDisrupted
+	g.runs.runs[rid(0)] = r
+	g.reconcile(t, "3buqdlot", 1) // waits for the room's end
+	g.r.Now = func() time.Time { return now.Add(runEndGrace) }
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Runs[0].Reason != runs.ReasonDisrupted || tk.Status.Resumes != 1 {
+		t.Fatalf("%+v resumes=%d", tk.Status.Runs[0], tk.Status.Resumes)
+	}
+}
+
+// Only the AgentRun's Disrupted or PodLost on a Failed run, never a revoked one, is a loss to resume.
+func TestInfraLost(t *testing.T) {
+	for _, c := range []struct {
+		run  runs.Run
+		want bool
+	}{
+		{runs.Run{Phase: "Failed", Reason: runs.ReasonDisrupted}, true},
+		{runs.Run{Phase: "Failed", Reason: runs.ReasonPodLost}, true},
+		{runs.Run{Phase: "Failed", Reason: runs.ReasonPodFailed}, false},
+		{runs.Run{Phase: "Failed", Reason: runs.ReasonDisrupted, Revoked: "manual"}, false},
+		{runs.Run{Phase: "Succeeded", Reason: runs.ReasonPodLost}, false},
+	} {
+		if got := infraLost(c.run); got != c.want {
+			t.Errorf("infraLost(%+v) = %t", c.run, got)
+		}
 	}
 }

@@ -286,6 +286,10 @@ func (r *Reconciler) finished(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 	if run.Revoked != "" {
 		return run.Revoked
 	}
+	switch run.Reason {
+	case runs.ReasonDisrupted, runs.ReasonPodLost, runs.ReasonPodFailed:
+		return run.Reason // the composition read the pod (disruption design §3)
+	}
 	return strings.ToLower(run.Phase)
 }
 
@@ -318,11 +322,25 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	if reason == "" {
 		return nil
 	}
+	if reason == "pod_lost" && run.Reason == runs.ReasonPodFailed {
+		reason = run.Reason // the broker's pod_lost reads the same for a crash; the AgentRun read the pod
+	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)
-	if r.resumable(t, run) {
-		r.resume(ctx, t, run)
-		return nil
+	if infraLost(run) {
+		done, err := r.handedOff(ctx, t)
+		if err != nil {
+			return err
+		}
+		switch why := r.resumeBlock(t); {
+		case done:
+			run.Phase = "Succeeded" // it finished before its sandbox was lost: nothing to resume
+		case why == "":
+			r.resume(ctx, t, run)
+			return nil
+		default:
+			reason = why
+		}
 	}
 	// R38: the triager's output reaches a public implementer only through a human. Its summary
 	// stays in the room (internal); the issue gets the room link and the next step, nothing else.
@@ -374,20 +392,55 @@ func (r *Reconciler) lostReason(ctx context.Context, t *v1alpha1.Task) string {
 // infraLost: the AgentRun says its pod was disrupted or lost (disruption design §3). The room's
 // pod_lost is no trigger: it reads the same for a harness that crashed, and a crashing agent must
 // never be resumed in a loop.
+// A revoked run is never resumed: someone stopped it.
 func infraLost(run runs.Run) bool {
-	return run.Phase == "Failed" && (run.Reason == runs.ReasonDisrupted || run.Reason == runs.ReasonPodLost)
+	return run.Phase == "Failed" && run.Revoked == "" && (run.Reason == runs.ReasonDisrupted || run.Reason == runs.ReasonPodLost)
 }
 
-// resumable: the run was lost to its infrastructure, an automatic resume is left
-// (resume.maxPerTask), and the task's token cap holds one more RunTokens. The cap is enforced here
-// whatever budgets.enforceTask says: a resume is the factory's own decision, so it never spends
-// past the cap, even while the cap is shadow elsewhere (disruption design §4).
-func (r *Reconciler) resumable(t *v1alpha1.Task, run runs.Run) bool {
-	if !infraLost(run) || int(t.Status.Resumes) >= r.Cfg.Resume.MaxPerTask {
-		return false
+// resumeBlock is why a run lost to its infrastructure is not resumed, "" when it is: no automatic
+// resume is left (resume.maxPerTask), or the task's token cap cannot hold one more RunTokens. The
+// cap is enforced here whatever budgets.enforceTask says: a resume is the factory's own decision,
+// so it never spends past the cap, even while the cap is shadow elsewhere (disruption design §4).
+// The usage it reads can trail the meter by one poll.meter, so a resume can overshoot the cap by
+// what the lost run spent in its last poll, and no more.
+func (r *Reconciler) resumeBlock(t *v1alpha1.Task) string {
+	if int(t.Status.Resumes) >= r.Cfg.Resume.MaxPerTask {
+		return "resumes_exhausted"
 	}
-	b := t.Spec.Budget
-	return b.TaskTokens <= 0 || b.TaskTokens-t.Status.Usage.Tokens >= b.RunTokens
+	if b := t.Spec.Budget; b.TaskTokens > 0 && b.TaskTokens-t.Status.Usage.Tokens < b.RunTokens {
+		return "resume_budget"
+	}
+	return ""
+}
+
+// resumable: the run was lost to its infrastructure and resumeBlock lets it resume.
+func (r *Reconciler) resumable(t *v1alpha1.Task, run runs.Run) bool {
+	return infraLost(run) && r.resumeBlock(t) == ""
+}
+
+// handedOff: the room holds a handoff of the task's current run, so its agent finished its work
+// before the sandbox was lost: a resume would run finished work again.
+func (r *Reconciler) handedOff(ctx context.Context, t *v1alpha1.Task) (bool, error) {
+	cur := current(t)
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
+		return e.Type == envelope.Handoff && e.RunID == cur.ID
+	})
+	return len(evs) > 0, err
+}
+
+// resumeBrief is a resumed run's brief: ResumeNotice before the lost run's own, read back from its
+// claim. A brief built now would miss what the lost one carried: the queued messages it quoted are
+// consumed, and the room after its start holds no verdict it revises. ok is false for a run that
+// resumes nothing, and once the lost run's claim is gone.
+func (r *Reconciler) resumeBrief(ctx context.Context, t *v1alpha1.Task) (string, bool, error) {
+	if nextTrigger(t) != "resume" || len(t.Status.Runs) == 0 {
+		return "", false, nil
+	}
+	x, found, err := r.Runs.Get(ctx, current(t).ID)
+	if err != nil || !found || x.TaskText == "" {
+		return "", false, err
+	}
+	return ResumeNotice(t) + strings.TrimPrefix(x.TaskText, ResumeNotice(t)), true, nil
 }
 
 // resume sends the task back to Queued for a new run of the lost run's role, on the same branch

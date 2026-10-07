@@ -189,9 +189,6 @@ func TestGoodVariantsParse(t *testing.T) {
 	}
 }
 
-// A bad config fails its rollout (§4): unknown keys, caps above the platform's, gaps. Each
-// case names the error its own rule reports, so no rule hides behind another that fires on
-// the same edit (review I2: a rule deleted must fail a test).
 // Disruption design §4: two automatic resumes per task unless the config says otherwise.
 func TestResumeDefault(t *testing.T) {
 	c, err := Parse([]byte(good))
@@ -203,6 +200,9 @@ func TestResumeDefault(t *testing.T) {
 	}
 }
 
+// A bad config fails its rollout (§4): unknown keys, caps above the platform's, gaps. Each
+// case names the error its own rule reports, so no rule hides behind another that fires on
+// the same edit (review I2: a rule deleted must fail a test).
 func TestBadConfigsFail(t *testing.T) {
 	for name, c := range map[string]struct{ from, to, err string }{
 		"unknown key":           {"triggerLabel: factory/ready", "triggerLabel: factory/ready\ntrigerLabel: x", `unknown field "trigerLabel"`},
