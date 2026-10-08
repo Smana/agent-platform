@@ -1,0 +1,22 @@
+{
+  "events": [
+    {"v":1,"id":"e1","seq":1,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:room-broker"},"type":"state_changed","origin":"broker","ts":"2026-10-07T18:00:00Z","redactions":[],
+     "payload":{"kind":"room_phase","phase":"Open","owner":"human:own"}},
+    {"v":1,"id":"e2","seq":2,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"human","id":"human:own"},"type":"message","origin":"client","ts":"2026-10-07T18:01:00Z","redactions":[],
+     "payload":{"kind":"chat","text":"please look at the chart","delivery":"none"}}
+  ],
+  "viewer": {"role": "owner", "approver": true, "driver": false, "webUI": true},
+  "now": "2026-10-07T18:30:00Z",
+  "want": {
+    "apiVersion": "summary/v1",
+    "room": "26zfnuxm",
+    "url": "https://rooms.example/r/26zfnuxm",
+    "status": {"phase": "Open", "run": null, "budget": null, "pr": null, "issue": null, "lastVerdict": null},
+    "needsYou": [],
+    "actions": [
+      {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"}
+    ],
+    "notes": {"untrusted": true, "items": []},
+    "cursor": "seq:2"
+  }
+}
