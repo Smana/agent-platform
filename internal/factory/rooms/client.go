@@ -43,6 +43,7 @@ const (
 
 	eventsRoute   = "/v1/rooms/{id}/events"
 	messagesRoute = "/v1/rooms/{id}/messages"
+	taskRoute     = "/v1/rooms/{id}/task"
 	queueRoute    = "/v1/rooms/{id}/queue"
 	consumeRoute  = "/v1/rooms/{id}/queue/consume"
 
@@ -216,6 +217,28 @@ func (c *Client) TaskState(ctx context.Context, room, text string, clientSeq int
 		Seq int64 `json:"seq"`
 	}
 	return c.do(ctx, http.MethodPost, messagesRoute, room, "", in, maxReplyOverhead, &out)
+}
+
+// TaskFacts posts the task's structured facts (state_changed{kind:task}), system:* only. Replays
+// are keyed on (room, principal, clientSeq): each distinct snapshot needs its own clientSeq.
+func (c *Client) TaskFacts(ctx context.Context, room string, f envelope.TaskFacts, clientSeq int64) error {
+	switch {
+	case !envelope.ValidID(room):
+		return fmt.Errorf("rooms: %q is not a C2 room id", room)
+	case clientSeq < 1:
+		return fmt.Errorf("rooms: clientSeq %d is not positive", clientSeq)
+	}
+	if err := f.Validate(); err != nil {
+		return err
+	}
+	in := struct {
+		ClientSeq int64              `json:"clientSeq"`
+		Facts     envelope.TaskFacts `json:"facts"`
+	}{clientSeq, f}
+	var out struct {
+		Seq int64 `json:"seq"`
+	}
+	return c.do(ctx, http.MethodPost, taskRoute, room, "", in, maxReplyOverhead, &out)
 }
 
 // Queued is one live message of the room's FIFO queue (SP2 §2); Ref is its seq in the room.

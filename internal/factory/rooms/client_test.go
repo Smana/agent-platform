@@ -102,6 +102,17 @@ func newBroker(t *testing.T, n int) (*broker, *httptest.Server) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"seq":9}`)
 	})
+	mux.HandleFunc("POST /v1/rooms/{id}/task", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		b.mu.Lock()
+		b.bodies = append(b.bodies, string(raw))
+		b.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"seq":10}`)
+	})
 	mux.HandleFunc("POST /v1/rooms/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
 		if b.refuse(w, r) {
 			return
@@ -561,6 +572,35 @@ func TestQueueCallsRefuseWhatTheBrokerWould(t *testing.T) {
 				t.Fatal("sent")
 			}
 		})
+	}
+	if len(r.b.auth) != 0 {
+		t.Fatalf("%d requests reached the broker", len(r.b.auth))
+	}
+}
+
+func TestTaskFactsPostsToTheTaskRoute(t *testing.T) {
+	r := newRig(t, 0)
+	f := envelope.TaskFacts{Phase: "Implementing", Run: &envelope.RunFact{ID: "cf4ato2x", Role: "implementer"}}
+	// The fake mounts only POST /v1/rooms/{id}/task for this body, so a wrong path fails the call.
+	if err := r.c.TaskFacts(t.Context(), "3buqdlot", f, 7); err != nil {
+		t.Fatal(err)
+	}
+	if body := r.b.bodies[len(r.b.bodies)-1]; body != `{"clientSeq":7,"facts":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"}}}` {
+		t.Fatalf("body %s", body)
+	}
+}
+
+func TestTaskFactsRefusesBeforeARequest(t *testing.T) {
+	r := newRig(t, 0)
+	ok := envelope.TaskFacts{Phase: "Queued"}
+	for name, err := range map[string]error{
+		"a bad room":       r.c.TaskFacts(t.Context(), "3BUQDLOT", ok, 1),
+		"a zero clientSeq": r.c.TaskFacts(t.Context(), "3buqdlot", ok, 0),
+		"no phase":         r.c.TaskFacts(t.Context(), "3buqdlot", envelope.TaskFacts{}, 1),
+	} {
+		if err == nil {
+			t.Errorf("%s: sent", name)
+		}
 	}
 	if len(r.b.auth) != 0 {
 		t.Fatalf("%d requests reached the broker", len(r.b.auth))

@@ -139,6 +139,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/bridge/approvals", s.bounded(maxApprovalBytes, s.approval))
 	mux.HandleFunc("GET /v1/rooms/{id}/events", s.bounded(0, s.roomEvents))
 	mux.HandleFunc("POST /v1/rooms/{id}/messages", s.bounded(maxMessageBytes, s.roomMessage))
+	mux.HandleFunc("POST /v1/rooms/{id}/task", s.bounded(maxMessageBytes, s.roomTask))
 	mux.HandleFunc("POST /v1/rooms/{id}/queue", s.bounded(maxMessageBytes, s.queueRoute(s.enqueue)))
 	mux.HandleFunc("GET /v1/rooms/{id}/queue", s.bounded(0, s.queueRoute(s.listQueue)))
 	mux.HandleFunc("POST /v1/rooms/{id}/queue/consume", s.bounded(maxConsumeBytes, s.queueRoute(s.consume)))
