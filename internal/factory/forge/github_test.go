@@ -43,6 +43,7 @@ const prJSON = `{"data":{"repository":{"pullRequest":{
 
 const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://github.com/Smana/demo/issues/7",
  "title":"Fix the link","body":"The link in docs/a.md is broken.","state":"OPEN","lastEditedAt":null,
+ "author":{"__typename":"User","login":"dev1"},
  "labels":{"nodes":[{"name":"factory/ready"}]},
  "timelineItems":{"nodes":[{"createdAt":"2026-09-27T09:04:00Z"}]}}}}}`
 
@@ -525,6 +526,14 @@ func TestRecentCommentsAreTheNewest(t *testing.T) {
 				t.Fatalf("#%d: comment %d is id %d, want %d (newest first)", issue, i, c.ID, want)
 			}
 		}
+	}
+}
+
+// The issue's author is a login, for the room list's "mine" filter.
+func TestIssueAuthorIsItsLogin(t *testing.T) {
+	r := newRig(t)
+	if iss, err := r.g.Issue(t.Context(), 7); err != nil || iss.Author != "dev1" {
+		t.Fatalf("author %q %v", iss.Author, err)
 	}
 }
 

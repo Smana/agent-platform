@@ -59,6 +59,10 @@ type TaskSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Issue int `json:"issue,omitempty"`
+	// The issue's author on GitHub, for the room list's "mine" filter.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	IssueAuthor string `json:"issueAuthor,omitempty"`
 	// The snapshot. Admission caps it at caps.maxTextBytes (R6); this bound only protects etcd.
 	// +kubebuilder:validation:MaxLength=65536
 	Text string `json:"text"`

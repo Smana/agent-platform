@@ -267,7 +267,7 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 		Spec: v1alpha1.TaskSpec{
 			Source: v1alpha1.Source{Kind: "issue", Ref: fmt.Sprintf("%s#%d", p.Cfg.Repository, n), Key: key,
 				RequestedBy: "github:" + last.Actor, Trust: "untrusted", ContentSHA256: sum},
-			Repository: p.Cfg.Repository, Issue: n, Text: text, DataClass: p.Cfg.Defaults.DataClass,
+			Repository: p.Cfg.Repository, Issue: n, IssueAuthor: iss.Author, Text: text, DataClass: p.Cfg.Defaults.DataClass,
 		},
 	}
 	if err := p.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {

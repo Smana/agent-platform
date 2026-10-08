@@ -98,6 +98,11 @@ spec:
                   one (R28).
                 minimum: 0
                 type: integer
+              issueAuthor:
+                description: The issue's author on GitHub, for the room list's "mine"
+                  filter.
+                maxLength: 64
+                type: string
               predictedClass:
                 description: 'Intent, not authority: it picks team and budget; only
                   policy-bot merges (§2).'

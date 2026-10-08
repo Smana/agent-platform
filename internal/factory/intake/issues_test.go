@@ -116,6 +116,20 @@ func TestAMaintainersLabelCreatesOneTask(t *testing.T) {
 	}
 }
 
+// The issue's author rides the task, for the room list's "mine" filter: not the labeller.
+func TestATaskKeepsItsIssueAuthor(t *testing.T) {
+	f := forge.NewFake()
+	labelled(f, 7, "Smana")
+	f.SetIssue(forge.Issue{Number: 7, Title: "Fix the link", Body: "docs/a.md links to a moved page.", Author: "dev1"})
+	p, c := poller(t, f)
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := tasks(t, c); len(got) != 1 || got[0].Spec.IssueAuthor != "dev1" || got[0].Spec.Source.RequestedBy != "github:Smana" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestRefusals(t *testing.T) {
 	for name, setup := range map[string]func(*forge.Fake){
 		"a non-maintainer's label": func(f *forge.Fake) { labelled(f, 7, "Smana", "someone") },
