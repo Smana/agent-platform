@@ -2,7 +2,8 @@
 
 // The room page's lead blocks, rendered from the broker's summary/v1 JSON
 // (GET /api/rooms/{id}/summary): status, needs you, what you can do, the agents'
-// notes. Every string here may be agent-written, so all of it goes in as text.
+// notes. Every string here may be agent-written, so all of it goes in as text. A field
+// the broker omits when empty (omitempty, omitzero) is optional here, and its part is skipped.
 
 import { api } from "./api";
 import { approvalAnchor, el } from "./controls";
@@ -13,13 +14,13 @@ export interface Summary {
   url: string;
   status: {
     phase: string; // a task phase, or Closed/Sealed
-    run: { id: string; role: string; trigger: string; startedAt: string } | null;
+    run: { id: string; role: string; trigger?: string; startedAt?: string } | null;
     budget: { usedTokens: number; limitTokens: number } | null;
-    pr: { number: number; url: string; author: string; reviewers: string[] } | null;
-    issue: { number: number; url: string; author: string; labelledBy: string } | null;
+    pr: { number: number; url: string; author?: string; reviewers?: string[] } | null;
+    issue: { number: number; url: string; author?: string; labelledBy?: string } | null;
     lastVerdict: { by: string; verdict: string; at: string } | null;
   };
-  needsYou: { kind: "approval"; id: string; what: string; deadline: string; url: string }[];
+  needsYou: { kind: "approval"; id: string; what: string; deadline?: string; url: string }[];
   actions: { kind: string; what: string; cli?: string }[];
   notes: { untrusted: true; items: { at: string; run: string; text: string }[] };
   cursor: string;
@@ -66,11 +67,17 @@ function line(...parts: (string | Node)[]): HTMLElement {
 
 function statusBlock(st: Summary["status"]): HTMLElement {
   const rows: HTMLElement[] = [line(`Phase: ${st.phase}`)];
-  rows.push(line(st.run ? `Run: ${st.run.id} · ${st.run.role} · ${st.run.trigger} · since ${when(st.run.startedAt)}` : "Run: none"));
+  const r = st.run;
+  const run = r ? [r.id, r.role, r.trigger, r.startedAt && `since ${when(r.startedAt)}`].filter(Boolean).join(" · ") : "none";
+  rows.push(line(`Run: ${run}`));
   if (st.budget) rows.push(line(`Budget: ${st.budget.usedTokens} / ${st.budget.limitTokens} tokens`));
-  if (st.pr) rows.push(line("PR: ", safeLink(`#${st.pr.number}`, st.pr.url), ` by ${st.pr.author}`,
-    st.pr.reviewers.length ? ` · reviewers ${st.pr.reviewers.join(", ")}` : ""));
-  if (st.issue) rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), ` by ${st.issue.author}`));
+  const by = (who?: string) => (who ? ` by ${who}` : "");
+  if (st.pr) {
+    const reviewers = st.pr.reviewers ?? [];
+    rows.push(line("PR: ", safeLink(`#${st.pr.number}`, st.pr.url), by(st.pr.author),
+      reviewers.length ? ` · reviewers ${reviewers.join(", ")}` : ""));
+  }
+  if (st.issue) rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), by(st.issue.author)));
   if (st.lastVerdict) rows.push(line(`Last verdict: ${st.lastVerdict.verdict} by ${st.lastVerdict.by} · ${when(st.lastVerdict.at)}`));
   return block("status", "Status", ...rows);
 }
@@ -92,7 +99,7 @@ function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
     // Reveal the existing approval card; the page keeps one decide path.
     a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };
     const li = el("li");
-    li.append(`Approval: ${n.what} · decide by ${when(n.deadline)} · `, a);
+    li.append(`Approval: ${n.what} · `, n.deadline ? `decide by ${when(n.deadline)} · ` : "", a);
     ul.append(li);
   }
   return block("needs-you", "Needs you", ul);

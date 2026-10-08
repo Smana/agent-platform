@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
 import { mountRoom } from "../src/room";
@@ -301,6 +303,7 @@ describe("the room page", () => {
     const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
     const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
     const chat = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "chat", text: "x", delivery: "none" }));
+    const note = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "progress", text: "x", delivery: "none" }));
 
     it("keeps the blocks and adds an error line when a refresh fails", async () => {
       const replies = [() => ok(sum("Running", "seq:1")), () => new Response("", { status: 503 })];
@@ -327,6 +330,36 @@ describe("the room page", () => {
       late[0](ok(sum("Older", "seq:1")));
       await vi.advanceTimersByTimeAsync(0);
       expect(p.app.querySelector('[data-block="status"]')!.textContent).toContain("Newer");
+    });
+
+    // C1: the broker omits a PR's reviewers until someone reviews (omitempty).
+    it("renders the broker's own golden summary", async () => {
+      const { want } = JSON.parse(readFileSync(join(__dirname, "../../internal/summary/testdata/normal.json"), "utf8"));
+      const p = page((async () => ok(want)) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("#2239");
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
+    });
+
+    // The getter stands in for a render that fails once: the page says so, and the next refresh
+    // renders the same summary instead of taking it as already shown.
+    it("retries a summary whose render failed, and says it failed", async () => {
+      let reads = 0;
+      const body = { ...sum("Running", "seq:1") } as Record<string, unknown>;
+      const status = body.status;
+      Object.defineProperty(body, "status", { enumerable: true, get: () => {
+        if (++reads === 2) throw new Error("render failed");
+        return status;
+      } });
+      const p = page((async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')).toBeNull();
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(false);
+      p.join(snapshot(), 0);
+      note(p, 1);
+      await tick();
+      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("Running");
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
     });
 
     it("does not rebuild the blocks when the summary is unchanged", async () => {

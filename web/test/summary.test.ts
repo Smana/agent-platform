@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fetchSummary, renderSummary, type Summary } from "../src/summary";
 
@@ -91,6 +93,21 @@ describe("renderSummary", () => {
     expect(r.querySelector('[data-block="needs-you"]')?.textContent).toContain("run kubectl apply");
   });
 
+  // The broker omits empty optional fields (omitempty, omitzero): a part it left out is skipped.
+  it("skips the parts the broker omits", () => {
+    const s = base();
+    s.status.run = { id: "run-1", role: "implementer" };
+    s.status.pr = { number: 7, url: "https://github.com/o/r/pull/7" };
+    s.status.issue = { number: 3, url: "https://github.com/o/r/issues/3" };
+    s.status.lastVerdict = null;
+    s.needsYou = [{ kind: "approval", id: "ap1", what: "git push", url: "https://rooms.example/r/3kq7x2ma#ap1" }];
+    const r = render(s);
+    const status = r.querySelector('[data-block="status"]')!.textContent!;
+    expect(status).toContain("Run: run-1 · implementer");
+    expect(status).not.toMatch(/undefined|since|by |reviewers/);
+    expect(r.querySelector('[data-block="needs-you"]')!.textContent).not.toMatch(/undefined|decide by/);
+  });
+
   it("focuses the existing approval control on click", () => {
     const doc = document.createElement("div");
     document.body.append(doc);
@@ -105,6 +122,22 @@ describe("renderSummary", () => {
     root.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!.click();
     expect(document.activeElement).toBe(approve);
     doc.remove();
+  });
+});
+
+// One fixture for Go and TS: the broker's own golden summaries, read where internal/summary keeps them.
+describe("the broker's golden summaries", () => {
+  const dir = join(__dirname, "../../internal/summary/testdata");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+
+  it("are there", () => expect(files.length).toBeGreaterThan(0));
+  it.each(files)("%s renders every part it carries", (f) => {
+    const { want } = JSON.parse(readFileSync(join(dir, f), "utf8")) as { want: Summary };
+    const r = render(want);
+    expect(r.querySelector('[data-block="status"]')?.textContent).toContain(`Phase: ${want.status.phase}`);
+    if (want.status.pr) expect(r.textContent).toContain(`#${want.status.pr.number}`);
+    for (const n of want.notes.items) expect(r.textContent).toContain(n.text);
+    expect(r.textContent).not.toMatch(/undefined|null|NaN|Invalid Date/);
   });
 });
 

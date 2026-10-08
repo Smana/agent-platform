@@ -68,7 +68,9 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   // Responses can overlap: only one newer than the last rendered one counts, and an
-  // unchanged summary is not rebuilt (it would drop the focus on a link in it).
+  // unchanged summary is not rebuilt (it would drop the focus on a link in it). A render
+  // that throws keeps the blocks, shows its error, and counts as not shown, so the next
+  // refresh tries again.
   let requested = 0;
   let rendered = 0;
   let shown = "";
@@ -78,12 +80,13 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     fetchSummary(id, o.get).then((sum) => {
       if (stopped || n < rendered) return;
       rendered = n;
-      summaryError.hidden = true;
       const key = JSON.stringify(sum);
-      if (key === shown) return;
-      shown = key;
-      renderSummary(blocks, sum);
-    }, (e) => {
+      if (key !== shown) {
+        renderSummary(blocks, sum);
+        shown = key;
+      }
+      summaryError.hidden = true;
+    }).catch((e) => {
       if (stopped || n < rendered) return;
       summaryError.textContent = e instanceof Error ? e.message : String(e);
       summaryError.hidden = false;
