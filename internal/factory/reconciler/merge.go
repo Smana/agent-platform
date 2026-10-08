@@ -48,6 +48,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	}
+	r.countApproves(ctx, t, pr)
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}
@@ -323,6 +324,10 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
 	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
+	if n := r.Cfg.ControlIssue; n > 0 { // R41: where the kill switch lives
+		b := r.Cfg.Merge.Breaker
+		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
+	}
 	return r.end(ctx, t, v1alpha1.PhaseReverted, why)
 }
 

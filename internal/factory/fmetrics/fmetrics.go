@@ -64,6 +64,7 @@ type Set struct {
 	prOutcomes      metric.Int64Counter
 	taskTokens      metric.Int64Histogram
 	budgetRemaining metric.Int64Gauge
+	budgetCap       metric.Int64Gauge
 	interventions   metric.Int64Counter
 	classMismatch   metric.Int64Counter
 	tierFit         metric.Int64Counter
@@ -96,6 +97,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.budgetRemaining, err = meter.Int64Gauge("agent_factory_budget_remaining_tokens",
 		metric.WithDescription("Tokens left today per principal (§6.2)."))
+	check(err)
+	s.budgetCap, err = meter.Int64Gauge("agent_factory_budget_cap_tokens",
+		metric.WithDescription("The principal's daily token cap (§6.2), the dashboard's denominator."))
 	check(err)
 	s.interventions, err = meter.Int64Counter("agent_factory_human_interventions_total",
 		metric.WithDescription("How dark the factory really is (§7)."))
@@ -139,7 +143,12 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 		return err
 	}
 	stop, err := meter.Int64ObservableGauge("agent_factory_kill_switch_engaged",
-		metric.WithDescription("1 while the stop object exists (§6.1)."))
+		metric.WithDescription("1 while the stop is engaged: the stop object or factory/stop on the control issue (§6.1)."))
+	if err != nil {
+		return err
+	}
+	phase, err := meter.Float64ObservableGauge("agent_factory_task_phase_seconds",
+		metric.WithDescription("Seconds a task has spent in its phase (TaskStuck)."))
 	if err != nil {
 		return err
 	}
@@ -159,6 +168,12 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 				o.ObserveInt64(tasks, n, metric.WithAttributes(attribute.String("phase", k[0]), attribute.String("source", k[1]),
 					attribute.String("predicted_class", k[2]), attribute.String("tier", k[3])))
 			}
+			for _, t := range l.Items {
+				if !v1alpha1.TerminalPhase(t.Status.Phase) && t.Status.PhaseSince != nil {
+					o.ObserveFloat64(phase, time.Since(t.Status.PhaseSince.Time).Seconds(),
+						metric.WithAttributes(attribute.String("task", t.Name), attribute.String("phase", t.Status.Phase)))
+				}
+			}
 		}
 		if on, err := killswitch.Engaged(ctx, r, ns); err == nil {
 			v := int64(0)
@@ -168,7 +183,7 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 			o.ObserveInt64(stop, v)
 		}
 		return nil
-	}, tasks, stop)
+	}, tasks, stop, phase)
 	return err
 }
 
@@ -193,6 +208,11 @@ func (s *Set) TaskTokens(ctx context.Context, tokens int64, tier, template, pred
 // BudgetRemaining sets the tokens a principal has left today.
 func (s *Set) BudgetRemaining(ctx context.Context, principal string, tokens int64) {
 	s.budgetRemaining.Record(ctx, tokens, metric.WithAttributes(attribute.String("principal", principal)))
+}
+
+// BudgetCap sets the principal's daily token cap, the gauge's dashboard denominator (§6.2).
+func (s *Set) BudgetCap(ctx context.Context, principal string, tokens int64) {
+	s.budgetCap.Record(ctx, tokens, metric.WithAttributes(attribute.String("principal", principal)))
 }
 
 // Intervention counts a human stepping in: stop, retry, request_changes, steer, takeover, approve.

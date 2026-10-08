@@ -58,12 +58,16 @@ func rig(t *testing.T, c client.Reader, leader func() bool) (*Set, func() string
 }
 
 func TestTasksGaugeIsLeaderOnly(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(tk("3buqdlot", "Implementing"), tk("4buqdlot", "Implementing"),
+	waiting := tk("3buqdlot", "Implementing")
+	ps := metav1.NewTime(time.Now().Add(-time.Hour))
+	waiting.Status.PhaseSince = &ps
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(waiting, tk("4buqdlot", "Implementing"),
 		tk("5buqdlot", "Done"), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "agent-factory-stop", Namespace: "agent-system"}},
 		&v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "6buqdlot", Namespace: "elsewhere"}}).Build()
 	var leader atomic.Bool
 	_, scrape := rig(t, c, leader.Load)
-	if body := scrape(); strings.Contains(body, "agent_factory_tasks") || strings.Contains(body, "agent_factory_kill_switch_engaged") {
+	if body := scrape(); strings.Contains(body, "agent_factory_tasks") || strings.Contains(body, "agent_factory_kill_switch_engaged") ||
+		strings.Contains(body, "agent_factory_task_phase_seconds{") {
 		t.Fatalf("a follower emits no task gauge: sums across pods would double it\n%s", body)
 	}
 	leader.Store(true)
@@ -78,11 +82,18 @@ func TestTasksGaugeIsLeaderOnly(t *testing.T) {
 			t.Errorf("missing %s\n%s", want, body)
 		}
 	}
+	if !strings.Contains(body, `agent_factory_task_phase_seconds{phase="Implementing",task="3buqdlot"}`) {
+		t.Errorf("missing the phase gauge\n%s", body)
+	}
+	if strings.Contains(body, `agent_factory_task_phase_seconds{phase="Done"`) {
+		t.Errorf("a terminal task keeps no phase series: nothing is stuck in Done\n%s", body)
+	}
 	if strings.Contains(body, `phase=""`) {
 		t.Error("a task of another namespace is counted")
 	}
 	leader.Store(false) // the lease moved: this pod's series go with it
-	if body := scrape(); strings.Contains(body, "agent_factory_tasks{") || strings.Contains(body, "agent_factory_kill_switch_engaged") {
+	if body := scrape(); strings.Contains(body, "agent_factory_tasks{") || strings.Contains(body, "agent_factory_kill_switch_engaged") ||
+		strings.Contains(body, "agent_factory_task_phase_seconds{") {
 		t.Fatalf("a former leader keeps its series\n%s", body)
 	}
 }
@@ -113,6 +124,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.PROutcome(ctx, "docs-links", "human_merged")
 	s.TaskTokens(ctx, 120_000, "standard", "solo", "review")
 	s.BudgetRemaining(ctx, "system:factory", 24_000_000)
+	s.BudgetCap(ctx, "system:factory", 25_000_000)
 	s.Intervention(ctx, "stop")
 	s.ClassMismatch(ctx, "docs-links", "review")
 	s.TierFit(ctx, "static", "standard", "fit", false)
@@ -127,6 +139,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged"} 1`,
 		`agent_factory_task_tokens_bucket{predicted_class="review",template="solo",tier="standard",le="200000"} 1`,
 		`agent_factory_budget_remaining_tokens{principal="system:factory"} 2.4e+07`,
+		`agent_factory_budget_cap_tokens{principal="system:factory"} 2.5e+07`,
 		`agent_factory_human_interventions_total{kind="stop"} 1`,
 		`agent_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`agent_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,

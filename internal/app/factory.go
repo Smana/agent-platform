@@ -198,8 +198,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log,
 			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
 			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,
-			Remaining: func(p string, n, _ int64) { m.BudgetRemaining(ctx, p, n) },
-			Ledger:    live, Namespace: ns},
+			Remaining: func(p string, n, c int64) {
+				m.BudgetRemaining(ctx, p, n)
+				m.BudgetCap(ctx, p, c)
+			},
+			Ledger: live, Namespace: ns},
 		&killswitch.Sweeper{Reader: mgr.GetClient(), Namespace: ns, Runs: rc, Every: 15 * time.Second,
 			OnSweep: func(n int) {
 				for range n {

@@ -114,7 +114,10 @@ func TestEveryNewMaintainerReviewIsQueued(t *testing.T) {
 		approved))
 	tk := g.reconcile(t, "3buqdlot", 1)
 	refs := g.log.reviews()
-	if !slices.Equal(refs, []int64{905, 950}) || !slices.Equal(tk.Status.Handled, []int64{905, 950}) || tk.Status.Phase != v1alpha1.PhaseQueued {
+	// BOB's approval is handled too, and counted first: an approve is not a task input, but
+	// it is a human intervention (an intervention approve), marked once by AwaitingHuman.
+	if !slices.Equal(refs, []int64{905, 950}) || !slices.Equal(tk.Status.Handled, []int64{960, 905, 950}) ||
+		tk.Status.Phase != v1alpha1.PhaseQueued {
 		t.Fatalf("queued %v, handled %v, %s", refs, tk.Status.Handled, tk.Status.Phase)
 	}
 	if c := g.f.Comments(7); len(c) != 1 {

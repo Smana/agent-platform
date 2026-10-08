@@ -234,8 +234,11 @@ func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template
 	m.add("task_tokens " + strconv.FormatInt(tokens, 10) + " " + tier + " " + template + " " + class)
 }
 func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("intervention " + kind) }
-func (m *fakeMetrics) Revoked(_ context.Context, reason string)    { m.add("revoked " + reason) }
-func (m *fakeMetrics) TraceExportAbandoned(context.Context)        { m.add("trace_export_abandoned") }
+func (m *fakeMetrics) TierFit(_ context.Context, classifier, tier, fit string, control bool) {
+	m.add("tier_fit " + classifier + " " + tier + " " + fit + " " + strconv.FormatBool(control))
+}
+func (m *fakeMetrics) Revoked(_ context.Context, reason string) { m.add("revoked " + reason) }
+func (m *fakeMetrics) TraceExportAbandoned(context.Context)     { m.add("trace_export_abandoned") }
 func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string) {
 	m.add("class_mismatch " + predicted + " " + matched)
 }
@@ -379,7 +382,8 @@ func TestLabelToNarratedRun(t *testing.T) {
 	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
 		t.Fatalf("settled: %+v", tk.Status)
 	}
-	want := []string{"time_to_pr issue standard solo", "pr review human_merged", "task_tokens 0 standard solo review"}
+	want := []string{"time_to_pr issue standard solo", "pr review human_merged",
+		"tier_fit static standard over false", "task_tokens 0 standard solo review"}
 	if strings.Join(g.metrics.recorded, "|") != strings.Join(want, "|") {
 		t.Fatalf("%q", g.metrics.recorded)
 	}
@@ -403,10 +407,17 @@ func TestEndings(t *testing.T) {
 				t.Errorf("%s %q", tk.Status.Phase, g.f.Comments(7))
 			}
 			// An escalated task may be retried: its tokens are recorded once it ends for good,
-			// by the settle (R49), not by the end.
+			// by the settle (R49), not by the end. Only the task_tokens lines count here: the
+			// end of a task that scored its tier (outcome) records a tier_fit line too.
 			g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
 			g.reconcile(t, "3buqdlot", 1)
-			if counted := len(g.metrics.recorded) == 1; counted != v1alpha1.TerminalPhase(c.want) {
+			settled := 0
+			for _, s := range g.metrics.recorded {
+				if strings.HasPrefix(s, "task_tokens") {
+					settled++
+				}
+			}
+			if counted := settled == 1; counted != v1alpha1.TerminalPhase(c.want) {
 				t.Errorf("task tokens %q at %s", g.metrics.recorded, c.want)
 			}
 		})

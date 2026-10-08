@@ -26,6 +26,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
@@ -136,11 +137,18 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 	}
 }
 
-// Poll is one pass: stop labels first, honoured even with intake paused, then reverts (§6.4's
-// rollback path is a maintainer's, not new work), then each issue carrying the trigger label,
-// then the orphan scan (R51), which also runs on leader start — this poll is the first thing
-// Start runs. One issue's failure does not keep the others waiting.
+// Poll is one pass: the control issue's label first (§6.1), then stop labels, honoured even with
+// intake paused, then reverts (§6.4's rollback path is a maintainer's, not new work), then each
+// issue carrying the trigger label, then the orphan scan (R51), which also runs on leader start —
+// this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
+	if n := p.Cfg.ControlIssue; n > 0 {
+		iss, err := p.Forge.Issue(ctx, n)
+		if err != nil {
+			return err
+		}
+		killswitch.SetIssue(slices.Contains(iss.Labels, LabelStop))
+	}
 	if err := p.stops(ctx); err != nil {
 		return err
 	}
@@ -320,6 +328,9 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 		return fmt.Errorf("list tasks: %w", err)
 	}
 	for _, it := range items {
+		if it.Number == p.Cfg.ControlIssue {
+			continue // the control issue keeps its factory/stop: removing it is how a human resumes (§6.1)
+		}
 		evs, ok, err := p.labelEvents(ctx, it.Number, LabelStop)
 		if err != nil {
 			return err

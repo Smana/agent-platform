@@ -257,7 +257,7 @@ func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, 
 		return e.Type == envelope.StateChanged && e.RunID == cur.ID
 	})
 	if err != nil {
-		r.log().Warn("room log unreadable", "task", t.Name, "err", err)
+		r.log().Warn("room log unreadable", "task.id", t.Name, "run.id", cur.ID, "err", err)
 		return "", false
 	}
 	end, ok := rooms.LastRunEnd(evs, cur.ID)
@@ -301,6 +301,12 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	if !runs.Terminal(run.Phase) {
+		if s, err := r.stuck(ctx, t, run); err != nil || s {
+			if err != nil {
+				return err
+			}
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "stuck")
+		}
 		return nil
 	}
 	reason := r.finished(ctx, t, run)
@@ -308,6 +314,7 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	current(t).Reason = reason
+	r.interventions(ctx, t)
 	switch {
 	case run.Phase == "Succeeded" && t.Status.PullRequest != nil:
 		return r.afterWriter(ctx, t)
@@ -374,10 +381,23 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	if r.prEnded(ctx, t, pr) {
 		return nil
 	}
+	r.countApproves(ctx, t, pr)
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}
 	return r.remind(ctx, t, pr)
+}
+
+// countApproves counts each maintainer's APPROVED review once (§7: how dark the factory is):
+// a gate that still needed a human's approve is not dark. The review id rides status.handled,
+// the same list that dedups request-changes reviews and commands.
+func (r *Reconciler) countApproves(ctx context.Context, t *v1alpha1.Task, pr forge.PR) {
+	for _, rv := range pr.Reviews {
+		if rv.State == "APPROVED" && r.Cfg.IsMaintainer(rv.Author) && !slices.Contains(t.Status.Handled, rv.ID) {
+			markHandled(t, rv.ID)
+			record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "approve") })
+		}
+	}
 }
 
 // prEnded ends the task when its pull request was merged or closed. A closed one carrying

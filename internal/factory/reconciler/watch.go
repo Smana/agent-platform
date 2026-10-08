@@ -77,7 +77,8 @@ func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, kee
 		}
 		after = cursor
 	}
-	r.log().Warn("room log longer than the factory reads", "room", room, "after", after)
+	// The factory's rooms are named for their task, so room is the task id here.
+	r.log().Warn("room log longer than the factory reads", "task.id", room, "after", after)
 	return out, false, nil
 }
 
@@ -365,7 +366,7 @@ func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) 
 	}
 	if err := r.Forge.ClosePR(ctx, pr.Number); err != nil {
 		if rerr := r.Forge.RemoveLabel(ctx, pr.Number, labelStale); rerr != nil {
-			r.log().Warn("stale label left on an open pull request", "task", t.Name, "pr", pr.Number, "err", rerr)
+			r.log().Warn("stale label left on an open pull request", "task.id", t.Name, "pr", pr.Number, "err", rerr)
 		}
 		return err
 	}

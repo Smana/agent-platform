@@ -114,6 +114,12 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	if !runs.Terminal(run.Phase) {
+		if s, err := r.stuck(ctx, t, run); err != nil || s {
+			if err != nil {
+				return err
+			}
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "stuck")
+		}
 		return nil
 	}
 	reason := r.finished(ctx, t, run)
@@ -122,6 +128,7 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	cur := current(t)
 	cur.Reason = reason
+	r.interventions(ctx, t)
 	v, why, err := r.verdict(ctx, t)
 	if err != nil {
 		return r.roomUnreadable(ctx, t, err)
@@ -164,7 +171,7 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 // failure roomLogPatience after the run's end. Never an approve.
 func (r *Reconciler) roomUnreadable(ctx context.Context, t *v1alpha1.Task, err error) error {
 	if errors.Is(err, rooms.ErrNoRoom) || r.Now().Sub(current(t).Finished.Time) >= roomLogPatience {
-		r.log().Warn("review verdict unreadable", "task", t.Name, "err", err)
+		r.log().Warn("review verdict unreadable", "task.id", t.Name, "run.id", current(t).ID, "err", err)
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "room_log_unreadable")
 	}
 	t.Status.Reason = "waiting_room_log"
