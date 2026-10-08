@@ -142,25 +142,29 @@ type roomRow struct {
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
-// request, on the first room that needs it: no extra GitHub call per room.
+// request once it succeeds, on the first room that needs it. A failure is retried on a later
+// room (the App may see one repository and not another), at most maxLoginTries times, so a
+// broken GitHub never costs a call per room.
 type roomFilter struct {
 	repo          string
 	mine, needsMe bool
 	login         string
 	resolved      bool
+	tries         int
 }
+
+const maxLoginTries = 3
 
 // isMine reports whether the caller's linked GitHub login is on the room's task. Without a
 // login, or when ZITADEL cannot say, nothing is theirs.
 func (f *roomFilter) isMine(ctx context.Context, s *Server, p authn.Principal, room *v1alpha1.Room) bool {
-	if !f.resolved {
-		f.resolved = true
-		if s.Identity != nil {
-			login, err := s.Identity.Login(ctx, p.Sub, room.Spec.Repository)
-			if err != nil {
-				s.log().Warn("mine filter: login unresolved", "err", err)
-			}
-			f.login = login
+	if !f.resolved && s.Identity != nil && room.Spec.Repository != "" && f.tries < maxLoginTries {
+		f.tries++
+		login, err := s.Identity.Login(ctx, p.Sub, room.Spec.Repository)
+		if err != nil {
+			s.log().Warn("mine filter: login unresolved", "err", err)
+		} else {
+			f.login, f.resolved = login, true
 		}
 	}
 	t := room.Status.Task

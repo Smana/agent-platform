@@ -227,3 +227,25 @@ func TestMineResolvesTheLoginOnce(t *testing.T) {
 		t.Fatalf("%d ZITADEL link reads", w.links-before)
 	}
 }
+
+// A room whose repository the App cannot see must not disable mine for the rest of the request.
+func TestMineSurvivesAnUnresolvableRoom(t *testing.T) {
+	w := world(nil)
+	w.unseen = map[string]bool{"Smana/b": true}
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
+		a := repoRoom(roomID, "Smana/b") // listed first
+		a.Status.Task = &v1alpha1.TaskStatus{IssueAuthor: "boss"}
+		b := repoRoom(roomB, "Smana/a")
+		b.Status.Task = &v1alpha1.TaskStatus{PRAuthor: "boss"}
+		s.Rooms = roomClient(t, a, b, repoRoom(roomC, "Smana/a"))
+	}, w.option())
+	before := w.links
+	code, body := get(t, e, "/api/rooms?mine=1", admin("boss"))
+	var rows []roomRow
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &rows) != nil || len(rows) != 1 || rows[0].ID != roomB {
+		t.Fatalf("%d %s", code, body)
+	}
+	if n := w.links - before; n > maxLoginTries {
+		t.Fatalf("%d link reads, cap %d", n, maxLoginTries)
+	}
+}
