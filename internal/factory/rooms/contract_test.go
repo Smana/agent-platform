@@ -84,7 +84,7 @@ func (l *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id, LastSeq: int64(len(evs))}, nil
 }
 
-func (l *memLog) ClaimBridge(context.Context, string, string, time.Duration, func(context.Context, string) bool) (string, bool, error) {
+func (l *memLog) ClaimBridge(context.Context, string, string, func(context.Context, string) bool) (string, bool, error) {
 	return "", false, errors.New("unused")
 }
 

@@ -18,7 +18,7 @@ sandbox**; every connection from the `agents` namespace is one the pod opens (C4
 | `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#the-room-crd)) | AP-1 |
 | Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) | Planned, phase 2 / AP-2 |
 | Web UI | Embedded in the broker, TypeScript, behind oauth2-proxy | Watch, then post, steer, approve and fork | Planned, phases 2–6 |
-| `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve (ruling P18) | Planned, phase 6 / AP-6 |
+| `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve (ruling P18) | Phase 6 / AP-6 |
 
 ## Trust boundaries
 
@@ -109,8 +109,30 @@ sequenceDiagram
 ```
 
 A second run whose bridge says hello while the first is live gets `409 room_busy`, and the broker
-appends `state_changed{kind: limit, reason: concurrent_run}` (ruling P17). Before SP3 ships, the
-owner starts each run with `task agent:run -- --room <id>`; the broker never creates one.
+appends `state_changed{kind: limit, reason: concurrent_run}` (ruling P17). The lease holds the work,
+not only the log (F15): `room-bridge gate`, an init container between the bridge and the harness,
+starts the harness only once the bridge holds the lease. A room still busy after 3 minutes fails the
+pod before the harness runs, and the run ends `room_busy`. Before SP3 ships, the owner starts each
+run with `task agent:run -- --room <id>`; the broker never creates one.
+
+```mermaid
+sequenceDiagram
+  participant BR as room-bridge (sidecar)
+  participant G as room-bridge gate (init)
+  participant H as harness
+  participant B as room-broker
+  BR->>B: POST /v1/bridge/hello
+  alt the lease is free
+    B-->>BR: 200 resume
+    G->>BR: GET /admission → 200
+    G-->>H: exit 0: the harness starts
+  else another live run holds it for 3 min
+    B-->>BR: 409 room_busy (retried)
+    G->>BR: GET /admission → 409 room_busy
+    G-->>H: exit 1: the pod fails, the harness never starts
+    B->>B: run_phase Failed, reason room_busy
+  end
+```
 
 ## Replicas and the leader
 
@@ -149,7 +171,9 @@ events.
 | Broker unreachable at start | The bridge retries `hello` with backoff up to 5 s, forever. The sandbox never stops for it |
 | Broker or database down mid-run | The bridge buffers up to 8 MiB, then stops polling (back-pressure) and resumes from the log's cursor |
 | Bridge restarted | `hello` returns the last stored cursor; re-sent items are dropped by their idempotency key |
-| Pod terminating | The bridge polls once more and flushes within 25 s of the 30 s grace period |
+| Harness cold start (agent-server ~85 s under gVisor) | A failed harness read waits at most 2 poll intervals until the harness first answers, then at most 10 |
+| Conversation ends | Each status change reads the harness log to its end at once, before agent-run stops agent-server |
+| Pod terminating | The bridge reads what the log has left to its end, if the harness is still up, and flushes within 25 s of the 30 s grace period |
 | Room sealed (`410`) | The bridge stops mirroring |
 | A run ends or is revoked | Its connections are dropped on the watch event, not at a later token check |
 

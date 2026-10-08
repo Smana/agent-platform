@@ -83,6 +83,42 @@ describe("renderEvent (T10)", () => {
     expect(el.querySelector("img")).toBeNull();
     expect(el.querySelector("header")?.textContent).toContain("<img src=x onerror=alert(1)>");
   });
+  it("shows an approval request as its card, read-only, and a decision with its reason", () => {
+    const el = renderEvent({ ...ev("approval_requested", { approvalId: "ap1", callId: "call_97", class: "forge.pr",
+      action: { command: "<img src=x onerror=alert(1)>" }, expiresAt: "2026-10-01T10:30:00Z" }), runId: "7f3cq2xz" });
+    inert(el);
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("button")).toBeNull();
+    expect(el.querySelector(".approval-head")?.textContent).toMatch(/^approval: forge\.pr · run 7f3cq2xz · call call_97 · expires /);
+    expect(el.querySelector("pre")?.textContent).toBe(JSON.stringify({ command: "<img src=x onerror=alert(1)>" }, null, 2));
+    const d = renderEvent(ev("approval_decided", { approvalId: "ap1", decision: "denied", reason: "<b>not</b> this branch" }, "human:apr"));
+    expect(d.querySelector(".decision-denied")?.textContent).toBe("denied · <b>not</b> this branch");
+    expect(d.querySelector("b")).toBeNull();
+  });
+  // R09: a row says where its message went, and a delivery names the message it delivered.
+  it("badges a message with its delivery, one per value", () => {
+    const badge = (payload: object) =>
+      renderEvent(ev("message", { kind: "chat", text: "x", ...payload })).querySelector(".chip-delivery")?.textContent;
+    expect(badge({ delivery: "none" })).toBe("chat");
+    expect(badge({ delivery: "queued" })).toBe("queued");
+    expect(badge({ delivery: "steering", to: ["agent:7f3cq2xz"] })).toBe("steering → agent:7f3cq2xz");
+    const d = renderEvent(ev("state_changed", { kind: "delivered", ref: 1846, runId: "7f3cq2xz" }));
+    expect(d.querySelector(".state")?.textContent).toBe("delivered #1846");
+  });
+  // R10: a handoff, a token move and a membership change read as text, never raw JSON.
+  it("renders a handoff, a driver change and a membership change, not their JSON", () => {
+    const h = renderEvent(ev("handoff", { fromRole: "implementer", toRole: "reviewer", commit: "0123456789abcdef",
+      branch: "agent/3kq7x2ma", summary: "**done**: <img src=x onerror=alert(1)> [x](javascript:alert(1))" }));
+    inert(h);
+    expect(h.querySelector(".handoff-head")?.textContent).toBe("handoff implementer → reviewer @ 0123456");
+    expect(h.querySelector(".md strong")?.textContent).toBe("done"); // the summary is untrusted markdown (T10)
+    expect(h.querySelector("img")).toBeNull();
+    const d = renderEvent(ev("driver", { from: "human:a", to: "system:factory", epoch: 5, reason: "given" }, "system:room-broker"));
+    expect(d.querySelector(".change")?.textContent).toBe("human:a → system:factory · given");
+    const p = renderEvent(ev("participant", { principal: "human:b", change: "role_changed", role: "collaborator" }, "system:room-broker"));
+    expect(p.querySelector(".change")?.textContent).toBe("human:b · role_changed · collaborator");
+    for (const row of [h, d, p]) expect(row.querySelector("pre.raw")).toBeNull();
+  });
   it("keeps markdown's structure", () => {
     const el = chat("# T\n\n- a\n- `b`\n\n```\n<i>c</i>\n```\n\n> q");
     inert(el);

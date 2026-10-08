@@ -24,7 +24,7 @@ The design's threats, with the controls this repository implements and where eac
 | T9 | Cross-site WebSocket hijacking | `Origin` check; oauth2-proxy cookie `SameSite=Strict` | Phase 2 | — |
 | T10 | XSS from LLM output | Markdown rendered with HTML disabled; strict CSP; HttpOnly cookie | Phase 2 | XSS could still act *as* the user through the page |
 | T11 | Denial of service | Size and rate limits; byte budgets per connection; authentication before subscription; gateway budgets bound agent loops | Phase 1 (payload and batch limits), phase 2 onwards (connections, rates) | A tailnet member can load the broker |
-| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human |
+| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential |
 
 ## Identities
 

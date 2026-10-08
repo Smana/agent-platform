@@ -183,9 +183,9 @@ enforces: the role cannot see, let alone delete, anything else.
 | `Room.spec.retention` | `<n>d`, 1 to 9999 days; default `90d` (OD-17). Copied into `rooms.retention` when the row is created and never changed afterwards (Ruling Y) |
 | Clock | Starts at `closed_at`, the seal |
 | Sizing | About 4 MB per run; 20 runs a day for 90 days is about 7 GB on a 20 Gi volume. `RoomLogDiskFilling` fires at 80 % |
-| Later tables | Phase 4's `queue` references `events`, so it is deleted first, before the events and the `rooms` row; readable by retention only as `room_id` of an expired room (Ruling AX); phase 5's `approvals` does the same |
+| Later tables | Phase 4's `queue` references `events`, so it is deleted first, before the events and the `rooms` row; readable by retention only as `room_id` of an expired room (Ruling AX); phase 5's `approvals` references `events` too and goes with it |
 
-A forked room copies its source's events (phase 6), so a fork survives its source's purge.
+A forked room copies its source's events (phase 6), at most 5,000 of them and 32 MiB, so a fork survives its source's purge.
 
 ## The bridge lease
 
@@ -193,11 +193,11 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 
 | Step | Rule |
 |---|---|
-| `hello` | `ClaimBridge` locks the row. Another run keeps the lease while it is still live in the `AgentRun` watch **and** was seen within 2 minutes; otherwise the caller takes it |
+| `hello` | `ClaimBridge` locks the row. Another run keeps the lease for as long as it is live in the `AgentRun` watch, however long since its bridge was seen (ruling SBB): a quiet or cut-off bridge may still have a harness at work. Otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a quiet run (a long LLM call, a pending confirmation) keeps its room |
+| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
 | A run that ended | Frees the lease at once |
-| A holder that died without ending its run | Blocks the room for at most 2 minutes |
+| A holder whose pod died | Blocks the room until its run ends: a lost pod ends the run `PodLost` (F12), and a hung one ends at its deadline |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |
 
 The broker cannot refuse to *create* a second run (it creates none), but no second run joins the
@@ -222,7 +222,8 @@ and applies only if `UPDATE rooms … WHERE driver_epoch = $epoch` matches.
 | `20261001120000_driver_queue.sql` | `rooms.driver_acted_at`, the broker's `UPDATE` grant on the driver columns, the epoch triggers, the `queue` table | 4 / AP-4 |
 | `20261001130000_delivery_indexes.sql` | The partial indexes `events_deliveries` and `events_acks` a bridge stream reads; `CONCURRENTLY`, outside a transaction (`atlas:txmode none`) | 4 / AP-4 |
 | `20261001140000_brief_index.sql` | The partial index `events_brief`: agent handoffs and review verdicts, run requests and participants, which `start_run` reads; `CONCURRENTLY`, outside a transaction | 4 / AP-4 |
-| `20261005120000_approvals.sql` | The `approvals` table | 5 / AP-5 |
+| `20261005120000_approvals.sql` | The `approvals` table: a row is its `approval_requested` event and closes once, with its `approval_decided` (trigger `approvals_are_their_events`, deferred `approvals_decision_has_event`); the broker updates only the close columns | 5 / AP-5 |
+| `20261005130000_approval_indexes.sql` | The partial indexes `approvals_pending`, `events_decisions`, `events_decision_acks` and `events_tool_results`; `CONCURRENTLY`, outside a transaction | 5 / AP-5 |
 
 **`atlas.sum` must match the directory.** It is a checksum of every migration file and of their
 order. Atlas refuses to apply a directory whose files do not match it, which catches a migration

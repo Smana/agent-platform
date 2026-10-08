@@ -53,7 +53,7 @@ func humanSide(cfg config.Config, humans *authn.Humans, rooms client.Client, ns 
 	if err := add(leaseLoop(roomLog, log, nil)); err != nil {
 		return nil, fmt.Errorf("driver lease: %w", err)
 	}
-	return humanServer(cfg.Human, humans, rooms, ns, roomLog, hub, runs, actor, m, log), nil
+	return humanServer(cfg, humans, rooms, ns, roomLog, hub, runs, actor, m, log), nil
 }
 
 // humanActor serves humans' acts on :8080 over the broker's parts: the same
@@ -78,7 +78,8 @@ func humanActor(h config.HumanConfig, roomLog humanapi.ActLog, red humanapi.Reda
 		Runs: runs, Redactor: red, Rooms: rooms, Requester: requester,
 		OnReject: func(ctx context.Context, reason string) {
 			m.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
-		}}, nil
+		},
+		OnDecided: func(d time.Duration) { m.DecisionSeconds.Record(context.Background(), d.Seconds()) }}, nil
 }
 
 // runRequester is SP3's factory at factoryURL, or before SP3 (unset) the
