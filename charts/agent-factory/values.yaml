@@ -9,6 +9,10 @@ resources:
 # The factory App's key (keys app_id, private_key), from the agents-secrets store. Mounted at
 # /etc/agent-factory-github: config.github.{appIDFile,privateKeyFile} name the files there.
 githubSecret: agent-factory-github
+# The merger App's key (R16): arming, reverts, checks. Keys app_id, private_key, mounted at
+# /etc/agent-factory-merger: config.github.{mergerAppIDFile,mergerKeyFile}. No other workload
+# mounts it (review C1: the group bit plus fsGroup is what makes it readable at all).
+mergerSecret: agent-factory-merger
 # The broker's CA (key ca.crt, ruling SC), mounted at /etc/agent-factory/openbao-ca: config.broker.caFile.
 brokerCASecret: openbao-ca
 # The broker's system API audience (SP2 ruling P3). The token is at

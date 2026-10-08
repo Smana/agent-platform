@@ -236,6 +236,9 @@ func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template
 func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("intervention " + kind) }
 func (m *fakeMetrics) Revoked(_ context.Context, reason string)    { m.add("revoked " + reason) }
 func (m *fakeMetrics) TraceExportAbandoned(context.Context)        { m.add("trace_export_abandoned") }
+func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string) {
+	m.add("class_mismatch " + predicted + " " + matched)
+}
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
@@ -251,6 +254,14 @@ func cfg() *config.Config {
 			"pair": {Roles: []string{"implementer", "reviewer"}, MaxReviewRounds: 2},
 			"trio": {Roles: []string{"implementer", "tester", "reviewer"}, MaxReviewRounds: 2}},
 		Caps: config.Caps{ActiveTasks: 3, ConcurrentRuns: 4, TasksPerDay: 20, MaxTextBytes: 14336, MaxPendingMinutes: 30, AwaitingHumanWIP: 5},
+		// The merge gate reads these; a config without them would make CIState vacuously green.
+		Merge: config.Merge{RequiredChecks: []string{"Pre-commit checks", "Kubernetes validation"},
+			VerifyChecks:   []string{"Pre-commit checks", "Kubernetes validation"},
+			PolicyBotLogin: "ogenki-merge-gate[bot]", MergerLogin: "ogenki-agent-merger[bot]",
+			AutoMergesPerDay: 10, FixRuns: 2,
+			VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour},
+			// R41: a validated config always carries a breaker; the zero value would demote every class.
+			Breaker: config.Breaker{Window: 10, MaxReverts: 1}},
 		Hash: strings.Repeat("a", 64)}
 }
 
@@ -275,7 +286,7 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
-	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Runs: g.runs, Rooms: g.log,
+	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
 	g.runs.now = func() time.Time { return g.r.Now() } // the claims carry the rig's clock
@@ -354,7 +365,7 @@ func TestLabelToNarratedRun(t *testing.T) {
 	g.runs.set(rid(0), "Succeeded")
 	g.log.end(rid(0), "Succeeded", "agent_finished")
 	tk = g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Runs[0].Reason != "agent_finished" {
+	if tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
 		t.Fatal(tk.Status.Phase)
 	}
 	g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "def"})

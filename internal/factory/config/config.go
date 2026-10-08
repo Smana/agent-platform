@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"sigs.k8s.io/yaml"
 )
 
@@ -73,6 +74,7 @@ type Config struct {
 	Defaults     Defaults            `json:"defaults"`
 	Triage       Triage              `json:"triage"`
 	Classes      map[string]Class    `json:"classes"`
+	Merge        Merge               `json:"merge"`
 	Tiers        map[string]Tier     `json:"tiers"`
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
@@ -80,6 +82,7 @@ type Config struct {
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
+	Schedules    []Schedule          `json:"schedules,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -92,10 +95,15 @@ type Broker struct {
 	TokenFile string `json:"tokenFile"`
 }
 
-// GitHub names the factory App's mounted credentials.
+// GitHub names the factory App's mounted credentials, and the merger App's (R16): merge-side
+// calls — checks, merges, reverts — go through the merger's key, which no other workload holds.
 type GitHub struct {
 	AppIDFile      string `json:"appIDFile"`
 	PrivateKeyFile string `json:"privateKeyFile"`
+	// The merger App's pair: both files or neither, and both required once any class is live
+	// or shadow, because deciding that class reads checks and arms through the merger.
+	MergerAppIDFile string `json:"mergerAppIDFile,omitempty"`
+	MergerKeyFile   string `json:"mergerKeyFile,omitempty"`
 }
 
 // Poll is how often each loop runs.
@@ -121,10 +129,36 @@ type Triage struct {
 	ControlPercent int `json:"controlPercent"`
 }
 
-// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; shadow
-// classes are a prediction and a PR label only (OD-8).
+// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; a shadow
+// class is decided exactly like a live one and never armed until the wave (R32, owner,
+// 2026-09-27); an unmarked class is a prediction and a PR label only (OD-8). Never both.
 type Class struct {
-	Live bool `json:"live,omitempty"`
+	Live   bool `json:"live,omitempty"`
+	Shadow bool `json:"shadow,omitempty"`
+}
+
+// Merge is §5.1's merge actor and §6.4's rollback.
+type Merge struct {
+	// The 8 contexts classic protection requires, by name (GitHub Actions, app 15368).
+	RequiredChecks []string `json:"requiredChecks"`
+	// The checks main's CI runs on push, watched on the merge commit. Not RequiredChecks: a
+	// path-filtered push workflow never reports there, and absent must not mean pending (§6.4).
+	VerifyChecks     []string `json:"verifyChecks"`
+	LeakScanCheck    string   `json:"leakScanCheck"`  // R42: TruffleHog's check run, "Security scanning 🔒"
+	PolicyBotLogin   string   `json:"policyBotLogin"` // the status's expected creator
+	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
+	AutoMergesPerDay int      `json:"autoMergesPerDay"`
+	FixRuns          int32    `json:"fixRuns"`
+	VerifyFor        Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
+	RevertWindow     Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
+	Breaker          Breaker  `json:"breaker"`
+}
+
+// Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
+// merges hold MaxReverts reverts is demoted to human review, whatever the config.
+type Breaker struct {
+	Window     int `json:"window"`
+	MaxReverts int `json:"maxReverts"`
 }
 
 // Tier is a model and its budgets.
@@ -182,6 +216,16 @@ type Tracing struct {
 	OTLPEndpoint string `json:"otlpEndpoint"`
 }
 
+// Schedule starts a task from config (§1). The config is a gate path, so its text is trusted.
+type Schedule struct {
+	Name      string `json:"name"`
+	Cron      string `json:"cron"`  // 5 fields, UTC
+	Class     string `json:"class"` // the predicted class (§2)
+	Text      string `json:"text"`
+	DataClass string `json:"dataClass,omitempty"`
+	Probe     string `json:"probe,omitempty"` // "" or renovate-red
+}
+
 // API is the run-request API's configuration (§4): what it binds, which repositories it
 // accepts (OD-6), and how it authenticates callers (Task 5.1's Authenticator).
 type API struct {
@@ -198,9 +242,10 @@ type API struct {
 }
 
 var (
-	repoRE     = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
-	hostPortRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
-	hostRE     = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+	repoRE      = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
+	hostPortRE  = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
+	hostRE      = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
+	schedNameRE = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 )
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
@@ -363,8 +408,55 @@ func (c *Config) Validate() error {
 			bad("class %s is required (OD-8)", name)
 		}
 	}
+	for name, cl := range c.Classes {
+		if cl.Live && cl.Shadow {
+			bad("class %s: live and shadow never together (R32)", name)
+		}
+	}
+	// R16: the merger App's key is both files or neither — a half pair cannot mint a token —
+	// and both are required once any class is live or shadow, whose decision reads checks
+	// through it.
+	var anyMerge bool
+	for _, cl := range c.Classes {
+		anyMerge = anyMerge || cl.Live || cl.Shadow
+	}
+	switch {
+	case (c.GitHub.MergerAppIDFile == "") != (c.GitHub.MergerKeyFile == ""):
+		bad("github.mergerAppIDFile and github.mergerKeyFile are both set or both empty")
+	case anyMerge && c.GitHub.MergerAppIDFile == "":
+		bad("github.mergerAppIDFile: required by a live or shadow class")
+	}
 	if _, ok := c.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")
+	}
+	// §1 schedules. The name keys every task it starts, so names are unique and C2-shaped;
+	// the cron must parse to have slots at all.
+	seenSchedule := map[string]bool{}
+	for _, e := range c.Schedules {
+		switch {
+		case !schedNameRE.MatchString(e.Name):
+			bad("schedule name %q must match ^[a-z0-9-]{1,40}$", e.Name)
+		case seenSchedule[e.Name]:
+			bad("schedule name %q is used twice", e.Name)
+		}
+		seenSchedule[e.Name] = true
+		if _, err := cron.ParseStandard(e.Cron); err != nil {
+			bad("schedule %s: cron %q does not parse", e.Name, e.Cron)
+		}
+		if e.Class != "review" {
+			if _, ok := c.Classes[e.Class]; !ok {
+				bad("schedule %s: class %q is review or a declared class", e.Name, e.Class)
+			}
+		}
+		if e.Text == "" || len(e.Text) > c.Caps.MaxTextBytes {
+			bad("schedule %s: text must be 1..%d bytes", e.Name, c.Caps.MaxTextBytes)
+		}
+		if e.Probe != "" && e.Probe != "renovate-red" {
+			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
+		}
+		if e.DataClass != "" && e.DataClass != "public" && e.DataClass != "internal" {
+			bad("schedule %s: dataClass %q is public or internal", e.Name, e.DataClass)
+		}
 	}
 	if c.Caps.ActiveTasks < 1 || c.Caps.ConcurrentRuns < 1 || c.Caps.TasksPerDay < 1 {
 		bad("caps must be positive")
@@ -383,6 +475,39 @@ func (c *Config) Validate() error {
 	}
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
+	}
+	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
+	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.
+	if len(c.Merge.RequiredChecks) == 0 {
+		bad("merge.requiredChecks is empty: arming waits for every context classic protection requires")
+	}
+	if len(c.Merge.VerifyChecks) == 0 {
+		bad("merge.verifyChecks is empty: §6.4 watches these on the merge commit")
+	}
+	if m := c.Merge; !slices.Contains(m.RequiredChecks, m.LeakScanCheck) || !slices.Contains(m.VerifyChecks, m.LeakScanCheck) {
+		bad("merge.leakScanCheck %q must be in merge.requiredChecks and merge.verifyChecks (R42)", c.Merge.LeakScanCheck)
+	}
+	for _, f := range []struct{ key, value string }{
+		{"merge.policyBotLogin", c.Merge.PolicyBotLogin}, {"merge.mergerLogin", c.Merge.MergerLogin},
+	} {
+		if !strings.HasSuffix(strings.ToLower(f.value), "[bot]") {
+			bad("%s %q must be a bot login", f.key, f.value)
+		}
+	}
+	if c.Merge.AutoMergesPerDay < 0 {
+		bad("merge.autoMergesPerDay must be 0 or more")
+	}
+	if c.Merge.FixRuns < 0 {
+		bad("merge.fixRuns must be 0 or more")
+	}
+	if c.Merge.VerifyFor.Duration <= 0 {
+		bad("merge.verifyFor must be positive")
+	}
+	if c.Merge.RevertWindow.Duration <= 0 {
+		bad("merge.revertWindow must be positive")
+	}
+	if b := c.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
+		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
 	}
 	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
 	// block is as required as the rest of this file. A human caller is verified against the

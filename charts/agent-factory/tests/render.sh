@@ -37,6 +37,8 @@ check "resources: [agentruns]" "AgentRun RBAC"
 # Review C1: a 0400 root-owned key is unreadable to uid 65532; the group bit plus fsGroup is not.
 check "fsGroup: 65532" "the pod's fsGroup owns the mounted Secrets"
 check "secret: {secretName: agent-factory-github, defaultMode: 0440}" "the App key readable by the group only"
+check "mountPath: /etc/agent-factory-merger" "the merger key (R16) where config.github.merger*File reads it"
+check "secret: {secretName: agent-factory-merger, defaultMode: 0440}" "the merger App's key readable by the group only"
 # Review M4: exactly the verbs the code uses.
 check "verbs: [get, list, watch, create, update, patch]" "tasks without delete"
 check "verbs: [get, create, update]" "leases: what leader election calls"

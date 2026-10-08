@@ -33,10 +33,18 @@ const (
 	maxAuthReply = 64 << 10
 )
 
-// permissions is every installation token's scope: exactly what the factory App holds (R16),
+// permissions is the factory App's installation-token scope: exactly what it holds (R16),
 // on the one repository. A token asking for more fails to mint, which is the point.
 func permissions() map[string]string {
 	return map[string]string{"contents": "read", "issues": "write", "pull_requests": "write", "metadata": "read"}
+}
+
+// MergerPermissions is the merger App's installation-token scope (TW4, R16): the merge-side
+// calls read checks and statuses, write contents on the merger's own revert branches, and arm
+// and merge pull requests — and nothing else. Like the factory's, it is the App's ceiling: a
+// mint asking for more fails.
+func MergerPermissions() map[string]string {
+	return map[string]string{"checks": "read", "statuses": "read", "contents": "write", "pull_requests": "write", "metadata": "read"}
 }
 
 // tokens mints and caches installation tokens for one App on one repository. The App id and key
@@ -47,6 +55,8 @@ type tokens struct {
 	owner, name, agent string
 	idFile, keyFile    string
 	now                func() time.Time
+	// perms is the connection's scope; nil is the factory App's (Options.Permissions).
+	perms map[string]string
 
 	mu           sync.Mutex
 	token        string
@@ -125,13 +135,18 @@ func (s *tokens) find(ctx context.Context, appJWT string) (int64, error) {
 	return out.ID, nil
 }
 
-// mint is a new installation token, scoped to the repository and to permissions().
+// mint is a new installation token, scoped to the repository and to the connection's
+// permissions: the factory App's, unless Options said otherwise.
 func (s *tokens) mint(ctx context.Context, appJWT string) (string, time.Time, error) {
 	var out struct {
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	in := map[string]any{"repositories": []string{s.name}, "permissions": permissions()}
+	perms := s.perms
+	if perms == nil {
+		perms = permissions()
+	}
+	in := map[string]any{"repositories": []string{s.name}, "permissions": perms}
 	path := "app/installations/" + strconv.FormatInt(s.installation, 10) + "/access_tokens"
 	if _, err := s.call(ctx, http.MethodPost, path, appJWT, in, &out); err != nil {
 		return "", time.Time{}, fmt.Errorf("mint an installation token: %w", err)

@@ -334,6 +334,9 @@ func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
 		return nil
 	}
+	if current(t).Trigger == "ci" {
+		return r.ready(ctx, t) // a CI fix goes back to CI, not to another review round
+	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {
 		r.requestVerifier(t, next)
 		return nil
@@ -384,6 +387,10 @@ func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 	switch pr.State {
 	case "MERGED":
 		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+		// R41: like the CI gate's bypass record, the timestamp is what puts the merge in the
+		// class's breaker window — without it a demoted class' human merges never refill it.
+		now := metav1.NewTime(r.Now())
+		t.Status.PullRequest.MergedAt = &now
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 		_ = r.end(ctx, t, v1alpha1.PhaseDone, "merged")
 		return true

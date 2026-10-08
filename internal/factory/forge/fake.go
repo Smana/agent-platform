@@ -5,6 +5,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -16,27 +17,37 @@ import (
 type Fake struct {
 	Now func() time.Time
 
-	mu         sync.Mutex
-	labeled    map[string][]Item
-	events     map[int][]LabelEvent
-	issues     map[int]Issue
-	prs        map[int]PR
-	branches   map[string]int
-	comments   map[int][]Comment
-	added      map[int][]string
-	removed    map[int][]string
-	cut        map[int]bool
-	closed     map[int]bool
-	agentPulls []AgentPull
-	calls      []string
-	nextID     int64
+	mu           sync.Mutex
+	labeled      map[string][]Item
+	events       map[int][]LabelEvent
+	issues       map[int]Issue
+	prs          map[int]PR
+	branches     map[string]int
+	comments     map[int][]Comment
+	added        map[int][]string
+	removed      map[int][]string
+	cut          map[int]bool
+	closed       map[int]bool
+	agentPulls   []AgentPull
+	checks       map[int]Checks
+	commitChecks map[string][]Check
+	filesBase    map[string]string
+	filesHead    map[string]string
+	open         []PRSummary
+	armed        []string
+	disarmed     []string
+	reverts      []string
+	refused      map[string]error
+	calls        []string
+	nextID       int64
 }
 
 // NewFake returns an empty Fake.
 func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
-		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{}}
+		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
+		checks: map[int]Checks{}, commitChecks: map[string][]Check{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -250,4 +261,145 @@ func (f *Fake) PullRequest(_ context.Context, n int) (PR, error) {
 		return PR{}, fmt.Errorf("pull request %d not found", n)
 	}
 	return p, nil
+}
+
+// SetChecks sets pull request n's head-commit rollup, as PullRequestChecks returns it.
+func (f *Fake) SetChecks(n int, c Checks) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks[n] = c
+}
+
+// SetCommitChecks sets the check runs sha carries, as CommitChecks returns them.
+func (f *Fake) SetCommitChecks(sha string, cs ...Check) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commitChecks[sha] = cs
+}
+
+// SetFiles sets what Files returns: only the files a compare says changed, each side "" when
+// the file is absent there, as an added or deleted file reads on GitHub.
+func (f *Fake) SetFiles(base, head map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.filesBase, f.filesHead = maps.Clone(base), maps.Clone(head)
+}
+
+// Files implements the Merger's Files.
+func (f *Fake) Files(context.Context, string, string) (map[string]string, map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.filesBase), maps.Clone(f.filesHead), nil
+}
+
+// SetOpenPRs sets the open pull requests OpenPullRequests returns.
+func (f *Fake) SetOpenPRs(ps ...PRSummary) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.open = ps
+}
+
+// Armed are the mergings and arming recorded, in order: Merge appends "nodeID sha" — the head
+// its merge was pinned to — and EnableAutoMerge the bare nodeID it armed (a revert, §6.4).
+func (f *Fake) Armed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.armed)
+}
+
+// Disarmed are the node ids DisableAutoMerge was called with, in order.
+func (f *Fake) Disarmed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.disarmed)
+}
+
+// Reverts are the "<nodeID> <title>" pairs RevertPR was called with, in order.
+func (f *Fake) Reverts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reverts)
+}
+
+// RefuseMerge makes the next Merge of nodeID fail with err — the race GitHub's merge-time check
+// catches between reading the pull request and merging it (R52). One-shot: the merge after it
+// runs the fake's own head check.
+func (f *Fake) RefuseMerge(nodeID string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refused == nil {
+		f.refused = map[string]error{}
+	}
+	f.refused[nodeID] = err
+}
+
+// Merge implements the Merger's Merge. Like GitHub checking the head at merge time (R52), a
+// stored pull request whose head is no longer head is refused and stays open: nothing merges
+// on a moved head.
+func (f *Fake) Merge(_ context.Context, nodeID, head string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err, ok := f.refused[nodeID]; ok {
+		delete(f.refused, nodeID)
+		return err
+	}
+	for n, p := range f.prs {
+		if p.NodeID != nodeID {
+			continue
+		}
+		if p.HeadSHA != head {
+			return fmt.Errorf("forge: fake: %w: %s is at %s, not %s", ErrHeadMoved, nodeID, p.HeadSHA, head)
+		}
+		p.State, p.MergeCommitSHA, p.MergedBy = "MERGED", head, "ogenki-agent-merger[bot]"
+		f.prs[n] = p
+		break
+	}
+	f.armed = append(f.armed, nodeID+" "+head)
+	return nil
+}
+
+// PullRequestChecks implements the Merger's PullRequestChecks.
+func (f *Fake) PullRequestChecks(_ context.Context, n int) (Checks, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checks[n], nil
+}
+
+// CommitChecks implements the Merger's CommitChecks.
+func (f *Fake) CommitChecks(_ context.Context, sha string) ([]Check, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.commitChecks[sha]), nil
+}
+
+// EnableAutoMerge implements the Merger's EnableAutoMerge, recording the arming. The expected
+// head is the caller's decision, not state the fake keeps.
+func (f *Fake) EnableAutoMerge(_ context.Context, nodeID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.armed = append(f.armed, nodeID)
+	return nil
+}
+
+// DisableAutoMerge implements the Merger's DisableAutoMerge, recording the disarming.
+func (f *Fake) DisableAutoMerge(_ context.Context, nodeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.disarmed = append(f.disarmed, nodeID)
+	return nil
+}
+
+// RevertPR implements the Merger's RevertPR: every call opens the next numbered revert.
+func (f *Fake) RevertPR(_ context.Context, nodeID, title, _ string) (Revert, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reverts = append(f.reverts, nodeID+" "+title)
+	return Revert{Number: 900 + len(f.reverts), URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
+}
+
+// OpenPullRequests implements the forge's OpenPullRequests.
+func (f *Fake) OpenPullRequests(context.Context) ([]PRSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.open), nil
 }

@@ -33,6 +33,11 @@ type Options struct {
 	UserAgent      string
 	HTTP           *http.Client // httpx.New: the one audited egress client
 	Now            func() time.Time
+	// Permissions is the installation token's scope (TW4). nil keeps the factory App's
+	// permissions(); the merger connection passes MergerPermissions(), so no factory token
+	// ever asks for checks:read the factory App does not hold — a mint beyond the App's
+	// scope fails, which would break the factory with it.
+	Permissions map[string]string
 }
 
 // GitHub is the forge on one repository, as one App installation.
@@ -70,7 +75,7 @@ func Connect(ctx context.Context, o Options) (*GitHub, error) {
 	}
 	g := &GitHub{api: api, agent: o.UserAgent, owner: owner, name: name, now: o.Now,
 		tokens: &tokens{api: api, hc: o.HTTP, owner: owner, name: name, agent: o.UserAgent,
-			idFile: o.AppIDFile, keyFile: o.PrivateKeyFile, now: o.Now}}
+			idFile: o.AppIDFile, keyFile: o.PrivateKeyFile, now: o.Now, perms: o.Permissions}}
 	hc := g.authed(o.HTTP)
 	base := api.String()
 	if g.rest, err = github.NewClient(github.WithHTTPClient(hc), github.WithURLs(&base, &base),
@@ -118,11 +123,15 @@ func (g *GitHub) Ping(ctx context.Context) error {
 	return wrap("ping", err)
 }
 
-// Labeled lists the open issues and pull requests carrying label: one page of 100, since the
+// Labeled lists the issues and pull requests carrying label: one page of 100, since the
 // factory removes the trigger label on every decision (R4).
 func (g *GitHub) Labeled(ctx context.Context, label string) ([]Item, error) {
+	state := "open"
+	if label == "factory/revert" { // merged PRs are closed: the revert label lands on them (§6.4)
+		state = "all"
+	}
 	iss, _, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, &github.IssueListByRepoOptions{
-		State: "open", Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
+		State: state, Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
 	g.mark(err)
 	if err != nil {
 		return nil, wrap("list labelled issues", err)
@@ -458,6 +467,250 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		out.HeadMessage, out.HeadCommittedAt = p.Commits.Nodes[0].Commit.Message, p.Commits.Nodes[0].Commit.CommittedDate.Time
 	}
 	return out, nil
+}
+
+// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | PENDING. Both the
+// GraphQL rollup and the REST check runs use the same words; REST spells them lowercase.
+func checkState(status, conclusion string) string {
+	if status != "COMPLETED" {
+		return "PENDING"
+	}
+	switch conclusion {
+	case "SUCCESS", "NEUTRAL", "SKIPPED":
+		return "SUCCESS"
+	}
+	return "FAILURE"
+}
+
+// PullRequestChecks is the head commit's rollup, one GraphQL query. It needs checks: read and
+// statuses: read (R16), hence the merger App's own method.
+func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, error) {
+	var q struct {
+		Repository struct {
+			PullRequest struct {
+				Commits struct {
+					Nodes []struct {
+						Commit struct {
+							StatusCheckRollup *struct {
+								Contexts struct {
+									Nodes []struct {
+										Typename string `graphql:"__typename"`
+										CheckRun struct {
+											Name       string
+											Status     string
+											Conclusion string
+										} `graphql:"... on CheckRun"`
+										StatusContext struct {
+											Context string
+											State   string
+											Creator *actor
+										} `graphql:"... on StatusContext"`
+									}
+								} `graphql:"contexts(first: 100)"`
+							}
+						}
+					}
+				} `graphql:"commits(last: 1)"`
+			} `graphql:"pullRequest(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	vars, err := g.vars(number)
+	if err != nil {
+		return Checks{}, err
+	}
+	err = g.v4.Query(ctx, &q, vars)
+	g.mark(err)
+	if err != nil {
+		return Checks{}, wrap("read pull request checks", err)
+	}
+	var out Checks
+	if len(q.Repository.PullRequest.Commits.Nodes) == 0 {
+		return out, nil
+	}
+	rollup := q.Repository.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup
+	if rollup == nil {
+		return out, nil
+	}
+	for _, n := range rollup.Contexts.Nodes {
+		switch n.Typename {
+		case "CheckRun":
+			out.Runs = append(out.Runs, Check{Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
+		case "StatusContext":
+			out.Statuses = append(out.Statuses, Status{Context: n.StatusContext.Context, State: n.StatusContext.State, Creator: n.StatusContext.Creator.login()})
+		}
+	}
+	return out, nil
+}
+
+// CommitChecks are the check runs on one commit: main's CI after a merge, where no pull request
+// carries the verdict anymore.
+func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) {
+	res, _, err := g.rest.Checks.ListCheckRunsForRef(ctx, g.owner, g.name, sha, &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: 100}})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list check runs", err)
+	}
+	out := make([]Check, 0, len(res.CheckRuns))
+	for _, cr := range res.CheckRuns {
+		out = append(out, Check{Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
+	}
+	return out, nil
+}
+
+// Merge merges the pull request now, at the decided head (external review R02, ruling R52):
+// mergePullRequest with expectedHeadOid checks the head at merge time, so a push that lands
+// after the decision refuses the merge instead of merging on the old decision — which is what
+// enablePullRequestAutoMerge's enable-time-only check failed to guarantee. GitHub answers a
+// moved head with 409 and a disallowed merge with 405; the sentinels are what the reconciler
+// decides on. squash always: the factory's one commit per task is the history.
+func (g *GitHub) Merge(ctx context.Context, nodeID, head string) error {
+	if head == "" {
+		return errors.New("forge: Merge needs the decided head: without expectedHeadOid any push since the decision merges")
+	}
+	var m struct {
+		MergePullRequest struct{ ClientMutationID *string } `graphql:"mergePullRequest(input: $input)"`
+	}
+	squash := githubv4.PullRequestMergeMethodSquash
+	oid := githubv4.GitObjectID(head)
+	err := g.v4.Mutate(ctx, &m, githubv4.MergePullRequestInput{PullRequestID: githubv4.ID(nodeID), MergeMethod: &squash, ExpectedHeadOid: &oid}, nil)
+	g.mark(err)
+	if err == nil {
+		return nil
+	}
+	// githubv4 puts the HTTP status in the error text; these two refusals are decisions, not
+	// transport failures, so they read as the sentinels the reconciler branches on.
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "409"):
+		return fmt.Errorf("forge: merge: %w", ErrHeadMoved)
+	case strings.Contains(s, "405"):
+		return fmt.Errorf("forge: merge: %w", ErrNotMergeable)
+	}
+	return wrap("merge", err)
+}
+
+// EnableAutoMerge arms GitHub's native auto-merge — for the revert PR alone (R52): it waits for
+// every required check and merges even with the factory down, which for a revert of red main
+// (§6.4) is the safety net, not the fail-open the decision path must not be. The revert branch
+// is the merger App's own, so no later push can move the head it merges.
+func (g *GitHub) EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error {
+	var m struct {
+		EnablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"enablePullRequestAutoMerge(input: $input)"`
+	}
+	squash := githubv4.PullRequestMergeMethodSquash
+	in := githubv4.EnablePullRequestAutoMergeInput{PullRequestID: githubv4.ID(nodeID), MergeMethod: &squash}
+	if expectedHeadSHA != "" {
+		oid := githubv4.GitObjectID(expectedHeadSHA)
+		in.ExpectedHeadOid = &oid
+	}
+	err := g.v4.Mutate(ctx, &m, in, nil)
+	g.mark(err)
+	return wrap("arm auto-merge", err)
+}
+
+// DisableAutoMerge disarms a revert that never went green (§6.4): the stalled revert is handed
+// to a maintainer rather than left armed indefinitely. The decision path never arms, so it never
+// disarms (R52).
+func (g *GitHub) DisableAutoMerge(ctx context.Context, nodeID string) error {
+	var m struct {
+		DisablePullRequestAutoMerge struct{ ClientMutationID *string } `graphql:"disablePullRequestAutoMerge(input: $input)"`
+	}
+	err := g.v4.Mutate(ctx, &m, githubv4.DisablePullRequestAutoMergeInput{PullRequestID: githubv4.ID(nodeID)}, nil)
+	g.mark(err)
+	return wrap("disarm auto-merge", err)
+}
+
+// RevertPR produces the revert PR GitHub's own button would (§6.4); its revert-<n>-<head> branch is
+// created by the merger App, which is why only that App bypasses agent-merge (R16).
+func (g *GitHub) RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error) {
+	var m struct {
+		RevertPullRequest struct {
+			RevertPullRequest struct {
+				ID     string
+				Number int
+				URL    string `graphql:"url"`
+			}
+		} `graphql:"revertPullRequest(input: $input)"`
+	}
+	t, b := githubv4.String(title), githubv4.String(body)
+	err := g.v4.Mutate(ctx, &m, githubv4.RevertPullRequestInput{PullRequestID: githubv4.ID(nodeID), Title: &t, Body: &b}, nil)
+	g.mark(err)
+	r := m.RevertPullRequest.RevertPullRequest
+	return Revert{Number: r.Number, URL: r.URL, NodeID: r.ID}, wrap("open a revert", err)
+}
+
+// OpenPullRequests are the repository's open pull requests, one page of 100: the factory App's
+// read of the queue (the merger reads PR state through Merger, not here).
+func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
+	prs, _, err := g.rest.PullRequests.List(ctx, g.owner, g.name, &github.PullRequestListOptions{State: "open", ListOptions: github.ListOptions{PerPage: 100}})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list open pull requests", err)
+	}
+	out := make([]PRSummary, 0, len(prs))
+	for _, p := range prs {
+		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time})
+	}
+	return out, nil
+}
+
+// Files are the contents, at two commits, of every file that differs between them: an added
+// file's base side and a deleted file's head side read "", so the maps' union is the changed
+// set. A rename reads as its delete beside its add — which is right: a rename is not a link
+// retarget. §5.1's links-only test for the docs classes (R52) decides on these.
+func (g *GitHub) Files(ctx context.Context, base, head string) (map[string]string, map[string]string, error) {
+	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: 100})
+	g.mark(err)
+	if err != nil {
+		return nil, nil, wrap("compare commits", err)
+	}
+	if len(cmp.Files) == 100 { // one page exactly: unseen files must not let a diff pass as links-only
+		return nil, nil, fmt.Errorf("forge: 100 files differ between %s and %s, a full page: the links-only test cannot see them all", base, head)
+	}
+	baseFiles, headFiles := make(map[string]string, len(cmp.Files)), make(map[string]string, len(cmp.Files))
+	for _, f := range cmp.Files {
+		p := f.GetFilename()
+		hc, err := g.fileAt(ctx, p, head)
+		if err != nil {
+			return nil, nil, err
+		}
+		bp := f.GetPreviousFilename()
+		if bp == "" {
+			bp = p
+		}
+		bc, err := g.fileAt(ctx, bp, base)
+		if err != nil {
+			return nil, nil, err
+		}
+		headFiles[p], baseFiles[bp] = hc, bc
+	}
+	return baseFiles, headFiles, nil
+}
+
+// fileAt is one file's content at one commit. Absent there — an added file's base, a deleted
+// file's head — reads "". A file GitHub will not inline (over a megabyte, a submodule) is an
+// error: the links-only test must see every byte of the diff or refuse to decide it.
+func (g *GitHub) fileAt(ctx context.Context, path, ref string) (string, error) {
+	fc, _, resp, err := g.rest.Repositories.GetContents(ctx, g.owner, g.name, path, &github.RepositoryContentGetOptions{Ref: ref})
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		g.mark(nil)
+		return "", nil
+	}
+	g.mark(err)
+	if err != nil {
+		return "", wrap("read a file", err)
+	}
+	if fc == nil {
+		return "", fmt.Errorf("forge: %s at %s is not a file", path, ref)
+	}
+	text, err := fc.GetContent()
+	if err != nil {
+		return "", wrap("decode a file", err)
+	}
+	if text == "" && fc.GetSize() > 0 {
+		return "", fmt.Errorf("forge: %s at %s is %d bytes and not readable through the contents API (%s)", path, ref, fc.GetSize(), fc.GetType())
+	}
+	return text, nil
 }
 
 func wrap(what string, err error) error {

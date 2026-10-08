@@ -6,15 +6,18 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +46,12 @@ const issueJSON = `{"data":{"repository":{"issue":{"number":7,"url":"https://git
  "labels":{"nodes":[{"name":"factory/ready"}]},
  "timelineItems":{"nodes":[{"createdAt":"2026-09-27T09:04:00Z"}]}}}}}`
 
+// The two sides of docs/a.md the Files test reads (task 7.2, R52).
+const (
+	aBase = "see [the guide](docs/old.md).\n"
+	aHead = "see [the guide](docs/new.md).\n"
+)
+
 // R51's orphan scan: one own-repo agent pull request, one fork's, one with no head repository.
 const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
  {"number":31,"headRefName":"agent/3buqdlot","headRepository":{"owner":{"login":"Smana"},"name":"demo"},
@@ -59,24 +68,51 @@ const eventsJSON = `[
 
 const appID = "123456"
 
+// rollupJSON is the merger's one-query read of a head commit (task 7.1, R16): three check runs
+// in three states and one policy-bot commit status whose creator is a Bot.
+const rollupJSON = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
+   {"__typename":"CheckRun","name":"Pre-commit checks","status":"COMPLETED","conclusion":"SUCCESS"},
+   {"__typename":"CheckRun","name":"Kubernetes validation","status":"IN_PROGRESS","conclusion":null},
+   {"__typename":"CheckRun","name":"Security scanning","status":"COMPLETED","conclusion":"FAILURE"},
+   {"__typename":"StatusContext","context":"policy-bot: main","state":"PENDING","creator":{"__typename":"Bot","login":"ogenki-merge-gate"}}
+ ]}}}}]}}}}}`
+
 // fakeGitHub is GitHub for one App installed on Smana/demo: it verifies the App JWT with the
 // current public key, mints installation tokens, and serves the REST and GraphQL calls only to
 // a request carrying the current token.
 type fakeGitHub struct {
-	t     *testing.T
-	srv   *httptest.Server
-	mu    sync.Mutex
-	pub   *rsa.PublicKey
-	token string
-	mints int
-	ttl   time.Duration
-	now   func() time.Time
-	calls []string
-	mint  func(w http.ResponseWriter) bool // overrides the mint reply when it returns true
+	t      *testing.T
+	srv    *httptest.Server
+	mu     sync.Mutex
+	pub    *rsa.PublicKey
+	token  string
+	mints  int
+	ttl    time.Duration
+	now    func() time.Time
+	calls  []string
+	bodies []string                         // the POST /graphql bodies, in order
+	mint   func(w http.ResponseWriter) bool // overrides the mint reply when it returns true
+	// TW4: the scope the next mint must request; every other request gets GitHub's refusal.
+	// perms records each minted body's scope, in order, so a test can pin it per connection.
+	wantPerms map[string]string
+	perms     []map[string]string
+}
+
+func (g *fakeGitHub) setWantPerms(p map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.wantPerms = p
+}
+
+// mintedPerms are the permission maps of the mints served so far, in order.
+func (g *fakeGitHub) mintedPerms() []map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.perms)
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fakeGitHub {
-	g := &fakeGitHub{t: t, pub: pub, ttl: time.Hour, now: now}
+	g := &fakeGitHub{t: t, pub: pub, ttl: time.Hour, now: now, wantPerms: permissions()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/Smana/demo/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !g.appJWT(r) {
@@ -100,22 +136,58 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			Repositories []string          `json:"repositories"`
 			Permissions  map[string]string `json:"permissions"`
 		}
+		g.mu.Lock()
+		want := g.wantPerms
+		g.mu.Unlock()
+		// GitHub 422s a token asking beyond the App's installation scope; so does this.
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Repositories) != 1 || in.Repositories[0] != "demo" ||
-			in.Permissions["contents"] != "read" || in.Permissions["issues"] != "write" || in.Permissions["pull_requests"] != "write" ||
-			len(in.Permissions) != 4 || in.Permissions["metadata"] != "read" {
-			t.Errorf("the token is scoped to one repository and the factory App's permissions: %+v %v", in, err)
+			!maps.Equal(in.Permissions, want) {
+			http.Error(w, `{"message":"Unprocessable Entity"}`, http.StatusUnprocessableEntity)
+			return
 		}
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		if g.mint != nil && g.mint(w) {
 			return
 		}
+		g.perms = append(g.perms, maps.Clone(in.Permissions))
 		g.mints++
 		g.token = "ghs_" + strings.Repeat("x", g.mints)
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": g.token, "expires_at": g.now().Add(g.ttl).Format(time.RFC3339)})
 	})
 	mux.HandleFunc("POST /graphql", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		g.mu.Lock()
+		g.bodies = append(g.bodies, string(b))
+		g.mu.Unlock()
+		// The merger's rollup and mutations (task 7.1), routed before the snapshot tests:
+		// the rollup query also selects pullRequest(number: $number).
+		switch {
+		case strings.Contains(string(b), "statusCheckRollup"):
+			_, _ = io.WriteString(w, rollupJSON)
+			return
+		case strings.Contains(string(b), "mergePullRequest(input"):
+			switch {
+			case strings.Contains(string(b), `"expectedHeadOid":"def456"`):
+				w.WriteHeader(http.StatusConflict) // GitHub checks the head at merge time (R52)
+				_, _ = io.WriteString(w, `{"errors":[{"message":"Head sha does not match expected"}]}`)
+			case strings.Contains(string(b), `"expectedHeadOid":"blocked"`):
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				_, _ = io.WriteString(w, `{"errors":[{"message":"Merge pull request not allowed"}]}`)
+			default:
+				_, _ = io.WriteString(w, `{"data":{"mergePullRequest":{"clientMutationId":null}}}`)
+			}
+			return
+		case strings.Contains(string(b), "revertPullRequest"):
+			_, _ = io.WriteString(w, `{"data":{"revertPullRequest":{"revertPullRequest":{"id":"PR_rev","number":13,"url":"https://github.com/Smana/demo/pull/13"}}}}`)
+			return
+		case strings.Contains(string(b), "enablePullRequestAutoMerge"):
+			_, _ = io.WriteString(w, `{"data":{"enablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		case strings.Contains(string(b), "disablePullRequestAutoMerge"):
+			_, _ = io.WriteString(w, `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		}
 		if strings.Contains(string(b), "pullRequests(") {
 			if !strings.Contains(string(b), `headRefPrefix: \"agent/\"`) || !strings.Contains(string(b), "states: [OPEN]") {
 				g.t.Errorf("the orphan scan lists open agent branches only: %s", b)
@@ -146,10 +218,21 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	mux.HandleFunc("GET /repos/Smana/demo/issues", g.authed(func(w http.ResponseWriter, r *http.Request) {
-		if q := r.URL.Query(); q.Get("labels") != "factory/ready" || q.Get("state") != "open" {
+		q := r.URL.Query()
+		if q.Get("labels") == "factory/revert" {
+			if q.Get("state") != "all" {
+				t.Errorf("revert labels must list closed pull requests too: %v", q)
+			}
+			_, _ = io.WriteString(w, `[{"number":901,"pull_request":{"url":"x"}}]`)
+			return
+		}
+		if q.Get("labels") != "factory/ready" || q.Get("state") != "open" {
 			t.Errorf("query %v", q)
 		}
 		_, _ = io.WriteString(w, `[{"number":7},{"number":12,"pull_request":{"url":"x"}}]`)
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/commits/{sha}/check-runs", g.authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"total_count":1,"check_runs":[{"name":"Pre-commit checks","status":"completed","conclusion":"success"}]}`)
 	}))
 	mux.HandleFunc("GET /repos/Smana/demo/pulls", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("head") != "Smana:agent/3buqdlot" {
@@ -219,6 +302,36 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
 	}))
+	mux.HandleFunc("GET /repos/Smana/demo/compare/{basehead}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("basehead") {
+		case "old...new": // one modified file: both sides have content.
+			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/a.md","status":"modified"}]}`)
+		case "old...mid": // a file over the contents API's megabyte: GitHub lists it without content.
+			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/big.png","status":"modified"}]}`)
+		default: // mid...new: exactly one page, so more changed files are unread.
+			var fs []string
+			for i := range 100 {
+				fs = append(fs, fmt.Sprintf(`{"filename":"f%03d.md","status":"modified"}`, i))
+			}
+			_, _ = io.WriteString(w, `{"files":[`+strings.Join(fs, `,`)+`]}`)
+		}
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/contents/{path...}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		p, ref := r.PathValue("path"), r.URL.Query().Get("ref")
+		switch {
+		case p == "docs/a.md" && (ref == "old" || ref == "new"):
+			text := aBase
+			if ref == "new" {
+				text = aHead
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "a.md", "path": p, "type": "file",
+				"encoding": "base64", "size": len(text), "content": base64.StdEncoding.EncodeToString([]byte(text))})
+		case p == "docs/big.png":
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "big.png", "path": p, "type": "file", "size": 2_000_000})
+		default:
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}
+	}))
 	mux.HandleFunc("GET /rate_limit", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"resources":{}}`)
 	}))
@@ -258,6 +371,14 @@ func (g *fakeGitHub) authed(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// graphqlBodies are the bodies of the GraphQL calls so far, in order, for tests that assert on
+// what was actually sent.
+func (g *fakeGitHub) graphqlBodies() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.bodies)
 }
 
 func newKey(t *testing.T) (*rsa.PrivateKey, []byte) {
@@ -450,6 +571,101 @@ func TestIssueAndLabels(t *testing.T) {
 	}
 	if err := r.g.Ping(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Task 7.1 (R16): the merger reads the head rollup and a commit's check runs, arms squash
+// auto-merge pinned to the decided head, and opens reverts.
+func TestChecksAndMutations(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+
+	c, err := r.g.PullRequestChecks(ctx, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Check{{"Pre-commit checks", "SUCCESS"}, {"Kubernetes validation", "PENDING"}, {"Security scanning", "FAILURE"}}
+	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
+		t.Fatalf("%+v", c.Runs)
+	}
+	if st, by := c.StatusOf("policy-bot: main"); st != "PENDING" || by != "ogenki-merge-gate[bot]" {
+		t.Fatalf("%s %s", st, by)
+	}
+	// Arming stays for the revert path (R52): expectedHeadOid still pins it when a caller gives one.
+	if err := r.g.EnableAutoMerge(ctx, "PR_1", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := r.gh.graphqlBodies()
+	if len(bodies) != 2 { // the rollup query, then the arm
+		t.Fatalf("%d graphql calls", len(bodies))
+	}
+	if !strings.Contains(bodies[1], "SQUASH") || !strings.Contains(bodies[1], `"expectedHeadOid":"abc123"`) {
+		t.Fatalf("squash auto-merge of the decided head only: %s", bodies[1])
+	}
+	rv, err := r.g.RevertPR(ctx, "PR_1", `Revert "docs: fix a link"`, "reverts #12")
+	if err != nil || rv.Number != 13 || rv.NodeID != "PR_rev" {
+		t.Fatalf("%+v %v", rv, err)
+	}
+	runs, err := r.g.CommitChecks(ctx, "abc123")
+	if err != nil || len(runs) != 1 || runs[0].State != "SUCCESS" {
+		t.Fatalf("%+v %v", runs, err)
+	}
+}
+
+// R52: the decision merges now, with expectedHeadOid — GitHub checks the head at merge time, so
+// a 409 is the head moving and a 405 a merge it will not allow as it stands.
+func TestMergeChecksTheHeadAtMergeTime(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if err := r.g.Merge(ctx, "PR_1", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := r.gh.graphqlBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("%d graphql calls", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "mergePullRequest(input") || !strings.Contains(bodies[0], "SQUASH") ||
+		!strings.Contains(bodies[0], `"expectedHeadOid":"abc123"`) {
+		t.Fatalf("squash merge of the decided head only: %s", bodies[0])
+	}
+	if err := r.g.Merge(ctx, "PR_1", "def456"); !errors.Is(err, ErrHeadMoved) {
+		t.Fatalf("a moved head: %v", err)
+	}
+	if err := r.g.Merge(ctx, "PR_1", "blocked"); !errors.Is(err, ErrNotMergeable) {
+		t.Fatalf("a refused merge: %v", err)
+	}
+	if err := r.g.Merge(ctx, "PR_1", ""); err == nil {
+		t.Fatal("a merge without the decided head would merge whatever landed since")
+	}
+}
+
+// §6.4: a maintainer's factory/revert lands on merged pull requests, which are closed, so the
+// forge lists that one label in every state.
+func TestRevertLabelListsClosedPullRequests(t *testing.T) {
+	r := newRig(t)
+	items, err := r.g.Labeled(t.Context(), "factory/revert")
+	if err != nil || len(items) != 1 || !items[0].PullRequest || items[0].Number != 901 {
+		t.Fatalf("%+v %v", items, err)
+	}
+}
+
+// Task 7.2 (R52): Files reads both sides of a changed diff, and refuses a comparison it
+// cannot see whole — a file too large for the contents API, a diff past one page.
+func TestFilesReadsBothSidesOfADiff(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	b, h, err := r.g.Files(ctx, "old", "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b["docs/a.md"] != aBase || h["docs/a.md"] != aHead {
+		t.Fatalf("base %q head %q", b["docs/a.md"], h["docs/a.md"])
+	}
+	if _, _, err := r.g.Files(ctx, "old", "mid"); err == nil || !strings.Contains(err.Error(), "big.png") {
+		t.Errorf("an unfetchable file must be an error, not a skip: %v", err)
+	}
+	if _, _, err := r.g.Files(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
+		t.Errorf("a truncated compare must be an error: %v", err)
 	}
 }
 
@@ -646,4 +862,37 @@ func write(t *testing.T, s string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TW4 (the 7.4 review): the mint body is pinned per connection. The factory connection keeps
+// its App's scope; the merger connection carries the merger profile — checks and statuses read,
+// contents and pull requests write — and a mint asking beyond the App's scope fails, as GitHub
+// refuses it (the fail-loud contract of app.go's permissions()).
+func TestEachConnectionMintsItsOwnScope(t *testing.T) {
+	r := newRig(t) // the factory connection: its mint pins the factory scope
+	r.gh.setWantPerms(MergerPermissions())
+	o := r.opts
+	o.Permissions = MergerPermissions()
+	if _, err := Connect(t.Context(), o); err != nil {
+		t.Fatal(err)
+	}
+	got := r.gh.mintedPerms()
+	if len(got) != 2 {
+		t.Fatalf("two connections, two mints: %d", len(got))
+	}
+	if !maps.Equal(got[0], permissions()) {
+		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
+	}
+	if !maps.Equal(got[1], MergerPermissions()) {
+		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
+	}
+}
+
+func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
+	r := newRig(t)
+	o := r.opts
+	o.Permissions = MergerPermissions() // checks:read is beyond the factory App
+	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
+		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
+	}
 }

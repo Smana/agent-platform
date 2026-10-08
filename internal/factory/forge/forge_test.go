@@ -126,4 +126,32 @@ func TestFakeRecordsWhatTheFactoryDid(t *testing.T) {
 	if p, err := f.PullRequest(ctx, 12); err != nil || p.HeadRef != "agent/3buqdlot" {
 		t.Errorf("%+v %v", p, err)
 	}
+	f.SetFiles(map[string]string{"docs/a.md": "old"}, map[string]string{"docs/a.md": "new"})
+	if b, h, err := f.Files(ctx, "base", "head"); err != nil || b["docs/a.md"] != "old" || h["docs/a.md"] != "new" {
+		t.Errorf("files %v %v %v", b, h, err)
+	}
+}
+
+// The amendment (external review R02, ruling R52): a decision merges with expectedHeadOid, and
+// GitHub checks the head at merge time. The fake must refuse a moved head the same way — and
+// nothing may merge on it.
+func TestFMergeRefusesAMovedHead(t *testing.T) {
+	ctx := t.Context()
+	f := NewFake()
+	f.SetPR(PR{Number: 12, NodeID: "PR_12", State: "OPEN", HeadSHA: "abc"})
+	if err := f.Merge(ctx, "PR_12", "def"); !errors.Is(err, ErrHeadMoved) {
+		t.Fatalf("a moved head: %v", err)
+	}
+	if a := f.Armed(); len(a) != 0 {
+		t.Fatalf("a refused merge is not a merge: %v", a)
+	}
+	if p, err := f.PullRequest(ctx, 12); err != nil || p.State != "OPEN" {
+		t.Fatalf("nothing merged: %+v %v", p, err)
+	}
+	if err := f.Merge(ctx, "PR_12", "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if a := f.Armed(); len(a) != 1 || a[0] != "PR_12 abc" {
+		t.Fatalf("the merge records the decided head: %v", a)
+	}
 }

@@ -34,6 +34,9 @@ import (
 // LabelStop asks the factory to stop the task of the issue or PR carrying it (§6.1).
 const LabelStop = "factory/stop"
 
+// LabelRevert asks the factory to revert the auto-merged task whose PR carries it (§6.4).
+const LabelRevert = "factory/revert"
+
 // maxSnapshot bounds the stored text for etcd (the Task CRD's maxLength); admission refuses
 // anything above caps.maxTextBytes anyway (R6).
 const maxSnapshot = 65536
@@ -133,11 +136,15 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 	}
 }
 
-// Poll is one pass: stop labels first, honoured even with intake paused, then each issue
-// carrying the trigger label, then the orphan scan (R51), which also runs on leader start —
-// this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
+// Poll is one pass: stop labels first, honoured even with intake paused, then reverts (§6.4's
+// rollback path is a maintainer's, not new work), then each issue carrying the trigger label,
+// then the orphan scan (R51), which also runs on leader start — this poll is the first thing
+// Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
 	if err := p.stops(ctx); err != nil {
+		return err
+	}
+	if err := p.reverts(ctx); err != nil {
 		return err
 	}
 	if p.Stopped(ctx) {
@@ -347,6 +354,42 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 			if err := p.Forge.RemoveLabel(ctx, it.Number, LabelStop); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// reverts maps a maintainer's factory/revert on an auto-merged PR to its task (§6.4). Merged
+// PRs are closed, so this lists labelled items in every state.
+func (p *IssuePoller) reverts(ctx context.Context) error {
+	items, err := p.Forge.Labeled(ctx, LabelRevert)
+	if err != nil || len(items) == 0 {
+		return err
+	}
+	var l v1alpha1.TaskList
+	if err := p.Client.List(ctx, &l, client.InNamespace(p.Namespace)); err != nil {
+		return fmt.Errorf("list tasks: %w", err)
+	}
+	for _, it := range items {
+		evs, ok, err := p.labelEvents(ctx, it.Number, LabelRevert)
+		if err != nil || !ok {
+			continue // GitHub has not listed it yet, or its newest events are unread: it waits
+		}
+		if !p.Cfg.IsMaintainer(evs[len(evs)-1].Actor) {
+			continue // labels are intent, and only a maintainer's counts
+		}
+		for i := range l.Items {
+			t := &l.Items[i]
+			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && ref.AutoMerged {
+				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{v1alpha1.AnnotationRevert: "label"}}})
+				obj := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: t.Name, Namespace: t.Namespace}}
+				if err := p.Client.Patch(ctx, obj, client.RawPatch(types.MergePatchType, body)); err != nil {
+					return fmt.Errorf("revert task %s: %w", t.Name, err)
+				}
+			}
+		}
+		if err := p.Forge.RemoveLabel(ctx, it.Number, LabelRevert); err != nil {
+			return err
 		}
 	}
 	return nil

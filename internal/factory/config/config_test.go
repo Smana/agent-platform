@@ -22,11 +22,22 @@ factoryLogin: ogenki-agent-factory[bot]
 agentsLogin: ogenki-agents[bot]
 roomsURL: https://rooms.priv.gcp.ogenki.io
 broker: {url: "https://room-broker.agent-system.svc.cluster.local:8443", caFile: /etc/agent-factory/openbao-ca/ca.crt, tokenFile: /var/run/secrets/agents/rooms/token}
-github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent-factory-github/private_key}
+github: {appIDFile: /etc/agent-factory-github/app_id, privateKeyFile: /etc/agent-factory-github/private_key, mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key}
 poll: {issues: 60s, tasks: 30s, meter: 30s}
 defaults: {template: solo, tier: standard, dataClass: public, predictedClass: review}
 triage: {classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", controlPercent: 10}
-classes: {docs-links: {live: true}, revert: {live: true}, docs: {}, tests: {}, dashboards: {}}
+classes: {docs-links: {shadow: true}, revert: {shadow: true}, docs: {}, tests: {}, dashboards: {}}
+merge:
+  requiredChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Rendered manifest diff 📝", "Check the shell scripts 💻", "Check the documentation links 🔗", "Validate Vector Log Parsing Configuration (vlsingle)", "Validate Vector Log Parsing Configuration (vlcluster)"]
+  verifyChecks: ["Pre-commit checks 🛃", "Security scanning 🔒", "Kubernetes validation ☸", "Check the shell scripts 💻", "Check the documentation links 🔗"]
+  leakScanCheck: "Security scanning 🔒"
+  policyBotLogin: ogenki-merge-gate[bot]
+  mergerLogin: ogenki-agent-merger[bot]
+  autoMergesPerDay: 10
+  fixRuns: 2
+  verifyFor: 30m
+  revertWindow: 168h
+  breaker: {window: 10, maxReverts: 1}
 tiers:
   light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}
   standard: {model: agent-default, runTokens: 1500000, taskTokens: 3000000, runMinutes: 45}
@@ -62,6 +73,9 @@ func TestGoodConfigParses(t *testing.T) {
 	if c.Broker.CAFile != "/etc/agent-factory/openbao-ca/ca.crt" {
 		t.Fatalf("broker.caFile = %q", c.Broker.CAFile)
 	}
+	if c.GitHub.MergerAppIDFile != "/etc/agent-factory-merger/app_id" || c.GitHub.MergerKeyFile != "/etc/agent-factory-merger/private_key" {
+		t.Fatalf("github merger pair: %+v", c.GitHub)
+	}
 	if !c.IsMaintainer("smana") || c.IsMaintainer("someone") {
 		t.Fatal("maintainers match case-insensitively, and only listed logins")
 	}
@@ -77,6 +91,16 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
+	}
+	// §5.1 and §6.4: the arming gate's own block, and the classes held in shadow (R32).
+	if len(c.Merge.RequiredChecks) != 8 || len(c.Merge.VerifyChecks) != 5 ||
+		c.Merge.PolicyBotLogin != "ogenki-merge-gate[bot]" || c.Merge.MergerLogin != "ogenki-agent-merger[bot]" ||
+		c.Merge.AutoMergesPerDay != 10 || c.Merge.FixRuns != 2 ||
+		c.Merge.VerifyFor.Minutes() != 30 || c.Merge.RevertWindow.Hours() != 168 {
+		t.Fatalf("merge: %+v", c.Merge)
+	}
+	if cl := c.Classes["docs-links"]; !cl.Shadow || cl.Live {
+		t.Fatalf("docs-links is shadow until task 10.7, not live: %+v", cl)
 	}
 }
 
@@ -203,20 +227,39 @@ func TestBadConfigsFail(t *testing.T) {
 		"no classifier URL":          {`classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", `, "", "triage.classifierURL is required"},
 		"control percent above 100":  {"controlPercent: 10", "controlPercent: 101", "triage.controlPercent must be 0..100"},
 		"control percent negative":   {"controlPercent: 10", "controlPercent: -1", "triage.controlPercent must be 0..100"},
-		"no docs-links class":        {"classes: {docs-links: {live: true}, revert: {live: true}", "classes: {revert: {live: true}", "class docs-links is required (OD-8)"},
-		"no revert class":            {"classes: {docs-links: {live: true}, revert: {live: true}, ", "classes: {docs-links: {live: true}, ", "class revert is required (OD-8)"},
+		"no docs-links class":        {"classes: {docs-links: {shadow: true}, revert: {shadow: true}", "classes: {revert: {shadow: true}", "class docs-links is required (OD-8)"},
+		"no revert class":            {"classes: {docs-links: {shadow: true}, revert: {shadow: true}, ", "classes: {docs-links: {shadow: true}, ", "class revert is required (OD-8)"},
 		"review declared as a class": {"classes: {docs-links:", "classes: {review: {}, docs-links:", "review is the implicit class of everything else"},
-		"no active tasks":            {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
-		"no concurrent runs":         {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
-		"no tasks per day":           {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
-		"no awaiting human wip":      {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
-		"negative factory daily":     {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
-		"negative human daily":       {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
-		"issues poll not positive":   {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
-		"tasks poll negative":        {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
-		"meter poll not positive":    {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
-		"repository not owner/name":  {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
-		"repository with a path":     {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
+		// R32: a class is decided live or held in shadow, never both.
+		"live and shadow": {"docs-links: {shadow: true}", "docs-links: {live: true, shadow: true}", "class docs-links: live and shadow never together"},
+		// §5.1's arming and §6.4's rollback: the merge block is the gate's own config.
+		"merge without required checks": {"requiredChecks: [\"Pre-commit checks 🛃\", \"Security scanning 🔒\", \"Kubernetes validation ☸\", \"Rendered manifest diff 📝\", \"Check the shell scripts 💻\", \"Check the documentation links 🔗\", \"Validate Vector Log Parsing Configuration (vlsingle)\", \"Validate Vector Log Parsing Configuration (vlcluster)\"]",
+			"requiredChecks: []", "merge.requiredChecks is empty"},
+		"merge without verify checks": {"verifyChecks: [\"Pre-commit checks 🛃\", \"Security scanning 🔒\", \"Kubernetes validation ☸\", \"Check the shell scripts 💻\", \"Check the documentation links 🔗\"]",
+			"verifyChecks: []", "merge.verifyChecks is empty"},
+		// R42 (review G6): the secret scan cannot be dropped from either list silently.
+		"leak scan not required":     {"leakScanCheck: \"Security scanning 🔒\"", "leakScanCheck: \"Trivy\"", "merge.leakScanCheck"},
+		"no leak scan":               {"  leakScanCheck: \"Security scanning 🔒\"\n", "", "merge.leakScanCheck"},
+		"policy bot not a bot":       {"policyBotLogin: ogenki-merge-gate[bot]", "policyBotLogin: ogenki-merge-gate", "merge.policyBotLogin"},
+		"merger not a bot":           {"mergerLogin: ogenki-agent-merger[bot]", "mergerLogin: ogenki-agent-merger", "merge.mergerLogin"},
+		"negative auto merges":       {"autoMergesPerDay: 10", "autoMergesPerDay: -1", "merge.autoMergesPerDay must be 0 or more"},
+		"negative fix runs":          {"fixRuns: 2", "fixRuns: -1", "merge.fixRuns must be 0 or more"},
+		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
+		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
+		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.
+		"breaker never trips":       {"maxReverts: 1}", "maxReverts: 0}", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
+		"breaker window 0":          {"breaker: {window: 10", "breaker: {window: 0", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
+		"no active tasks":           {"activeTasks: 3", "activeTasks: 0", "caps must be positive"},
+		"no concurrent runs":        {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
+		"no tasks per day":          {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
+		"no awaiting human wip":     {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
+		"negative factory daily":    {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
+		"negative human daily":      {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
+		"issues poll not positive":  {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
+		"tasks poll negative":       {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
+		"meter poll not positive":   {"meter: 30s", "meter: 0s", "poll.meter must be positive"},
+		"repository not owner/name": {"repository: Smana/cloud-native-ref", "repository: ../x", `repository "../x" is not owner/name`},
+		"repository with a path":    {"repository: Smana/cloud-native-ref", "repository: Smana/cloud-native-ref/x", "is not owner/name"},
 		// Ruling SC: the broker's :8443 is TLS, verified against the mounted CA.
 		"broker not https":       {`url: "https://room-broker`, `url: "http://room-broker`, "must be an https:// URL"},
 		"broker without host":    {`"https://room-broker.agent-system.svc.cluster.local:8443"`, `"https://"`, `broker.url "https://" must be an https:// URL`},
@@ -238,7 +281,13 @@ func TestBadConfigsFail(t *testing.T) {
 		"rooms URL with a tag":      {"roomsURL: https://rooms.priv.gcp.ogenki.io", "roomsURL: 'https://ro<img>ms'", "roomsURL must be https://<host>"},
 		"no app id file":            {"appIDFile: /etc/agent-factory-github/app_id", "appIDFile: ''", "github.appIDFile is required"},
 		"no private key file":       {"privateKeyFile: /etc/agent-factory-github/private_key", "privateKeyFile: ''", "github.privateKeyFile is required"},
-		"no meter URL":              {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
+		// R16: the merger App's key is both files or neither, and a live or shadow class reaches
+		// for it: such a config without the pair fails its rollout.
+		"a shadow class without the merger key": {", mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key",
+			"", "github.mergerAppIDFile: required by a live or shadow class"},
+		"half a merger key pair": {"mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key",
+			"mergerAppIDFile: /etc/agent-factory-merger/app_id", "github.mergerAppIDFile and github.mergerKeyFile are both set or both empty"},
+		"no meter URL": {"url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428", "url: ''", "meter.url is required"},
 		"no meter query": {`query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'`,
 			"query: ''", "meter.query is required"},
 		// R13: the 429 lookup needs its endpoint and its query.
@@ -253,6 +302,14 @@ func TestBadConfigsFail(t *testing.T) {
 		"api repository not owner/name": {"repositories: [Smana/cloud-native-ref]", "repositories: ['../x']", `api.repository "../x" is not owner/name`},
 		"api without client ids":        {"clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]", "clientIDFiles: []", "api.clientIDFiles is empty"},
 		"api system issuer alone":       {"humanIssuer: https://auth.ogenki.io", "humanIssuer: https://auth.ogenki.io\n  systemIssuer: https://accounts.example", "api.systemIssuer and api.systemJWKS are both set or both empty"},
+		// §1 schedules: the name keys the task, the cron must fire, the class must exist.
+		"schedule name twice":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
+		"schedule name uppercase":     {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},
+		"schedule cron unparsable":    {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 oops\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: cron "0 6 oops" does not parse`},
+		"schedule class undeclared":   {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: ops, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: class "ops" is review or a declared class`},
+		"schedule text empty":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: \"\"}]\ncaps: {activeTasks: 3,", "schedule a: text must be 1..14336 bytes"},
+		"schedule probe unknown":      {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, probe: dependabot-red}]\ncaps: {activeTasks: 3,", `schedule a: probe "dependabot-red" is not renovate-red`},
+		"schedule data class unknown": {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, dataClass: secret}]\ncaps: {activeTasks: 3,", `schedule a: dataClass "secret" is public or internal`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c.from, c.to, 1)
@@ -264,6 +321,45 @@ func TestBadConfigsFail(t *testing.T) {
 				t.Errorf("err = %v, want one naming %q", err, c.err)
 			}
 		})
+	}
+}
+
+// §1: schedules start tasks from config. The block parses, and a trusted entry carries its
+// class, data class and probe.
+func TestSchedules(t *testing.T) {
+	raw := good + `schedules:
+  - {name: link-rot, cron: "0 6 * * 1", class: docs-links, text: Fix broken external links.}
+  - {name: renovate-red, cron: "0 6 * * 1", class: review, text: Fix red Renovate PRs., dataClass: internal, probe: renovate-red}
+`
+	c, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Schedules) != 2 {
+		t.Fatalf("%+v", c.Schedules)
+	}
+	s := c.Schedules[1]
+	if s.Name != "renovate-red" || s.Cron != "0 6 * * 1" || s.Class != "review" || s.DataClass != "internal" || s.Probe != "renovate-red" {
+		t.Fatalf("%+v", s)
+	}
+	if c.Schedules[0].DataClass != "" || c.Schedules[0].Probe != "" {
+		t.Fatalf("an omitted dataClass falls back to the default at use; an omitted probe is none: %+v", c.Schedules[0])
+	}
+}
+
+// R16: the merger pair binds to live or shadow classes only: an all-prediction config needs
+// no merger key, but dropping one half of a configured pair is refused by the pair rule.
+func TestMergerPairFollowsClasses(t *testing.T) {
+	raw := strings.Replace(good, ", mergerAppIDFile: /etc/agent-factory-merger/app_id, mergerKeyFile: /etc/agent-factory-merger/private_key", "", 1)
+	raw = strings.Replace(raw, "classes: {docs-links: {shadow: true}, revert: {shadow: true},", "classes: {docs-links: {}, revert: {},", 1)
+	if raw == good {
+		t.Fatal("the edits did not apply")
+	}
+	if _, err := Parse([]byte(raw)); err != nil {
+		t.Fatalf("no live or shadow class, no pair: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(raw, "classes: {docs-links: {},", "classes: {docs-links: {live: true},", 1))); err == nil {
+		t.Fatal("a live class without the pair is refused")
 	}
 }
 
