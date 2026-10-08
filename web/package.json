@@ -8,7 +8,9 @@
   "scripts": {
     "build": "esbuild src/main.ts --bundle --minify --format=esm --target=es2022 --outfile=../internal/humanapi/ui/dist/app.js && cp src/index.html src/app.css ../internal/humanapi/ui/dist/",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "preview:build": "esbuild preview/preview.ts --bundle --format=esm --target=es2022 --outfile=preview/preview.js",
+    "preview": "npm run preview:build && node preview/serve.mjs"
   },
   "dependencies": {
     "markdown-it": "14.3.2"

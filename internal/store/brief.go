@@ -5,18 +5,19 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 )
 
 // briefSourcesSQL reads the room's latest agent handoff and latest agent
-// review_verdict, each a backward scan of events_brief that stops at its first
-// row. Each branch's predicate implies the index's.
-var briefSourcesSQL = `(SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 AND e.type = 'handoff' AND e.actor_kind = 'agent'
-		ORDER BY e.seq DESC LIMIT 1)
+// review_verdict at or before seq $2, each a backward scan of events_brief that
+// stops at its first row. Each branch's predicate implies the index's.
+var briefSourcesSQL = `(SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 AND e.seq <= $2 AND e.type = 'handoff'
+		AND e.actor_kind = 'agent' ORDER BY e.seq DESC LIMIT 1)
 	UNION ALL
-	(SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 AND e.type = 'message' AND e.actor_kind = 'agent'
+	(SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 AND e.seq <= $2 AND e.type = 'message' AND e.actor_kind = 'agent'
 		AND e.payload->>'kind' = 'review_verdict' ORDER BY e.seq DESC LIMIT 1)
 	ORDER BY seq`
 
@@ -24,7 +25,13 @@ var briefSourcesSQL = `(SELECT ` + cols + ` FROM events e WHERE e.room_id = $1 A
 // room's latest agent handoff and latest agent review_verdict, in seq order
 // (review 4.4 M3 and I3). Only agents wrote them; no window of the log is read.
 func (s *Store) BriefSources(ctx context.Context, roomID string) ([]envelope.Event, error) {
-	rows, err := s.pool.Query(ctx, briefSourcesSQL, roomID)
+	return s.BriefSourcesThrough(ctx, roomID, math.MaxInt64)
+}
+
+// BriefSourcesThrough is BriefSources as the log stood at seq: what a fork at
+// seq bases its run on (§5).
+func (s *Store) BriefSourcesThrough(ctx context.Context, roomID string, seq int64) ([]envelope.Event, error) {
+	rows, err := s.pool.Query(ctx, briefSourcesSQL, roomID, seq)
 	if err != nil {
 		return nil, fmt.Errorf("store: brief sources of room %s: %w", roomID, err)
 	}
