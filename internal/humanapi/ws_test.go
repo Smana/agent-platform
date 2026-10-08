@@ -60,12 +60,20 @@ type memLog struct {
 	queue       []store.Queued
 	queueErr    error
 	sealed      bool
+	approvals   []store.Approval
+	approvalErr error
 }
 
 func (m *memLog) Queue(context.Context, string) ([]store.Queued, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.queue, m.queueErr
+}
+
+func (m *memLog) OpenApprovals(context.Context, string) ([]store.Approval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.approvals, m.approvalErr
 }
 
 func (m *memLog) add(n int) int64 {
@@ -545,7 +553,9 @@ func TestATokenExpiringBeforeTheHelloIsReauth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed(t, c)
+	if code, reason := closed(t, c); code != closeReauth || reason != "reauth" {
+		t.Fatalf("closed %d %q, want %d \"reauth\": the client must re-authenticate", code, reason, closeReauth)
+	}
 	eventually(t, "the drop is counted as reauth", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections_dropped_total{reason="reauth"} 1`)
 	})
@@ -798,6 +808,33 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 	eventually(t, "the connection is uncounted", func() bool {
 		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
 	})
+}
+
+// A shutdown while the handler still waits for the hello says 1001 as well: the
+// hello's read must not tear the socket down under the close frame.
+func TestShutdownBeforeTheHelloSays1001(t *testing.T) {
+	e := setup(t)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- e.srv.Serve(ctx, ln, 5*time.Second) }()
+	c, _, err := connectTo(t, "ws://"+ln.Addr().String()+"/v1/ws?room="+roomID, header("dev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the connection is counted", func() bool {
+		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 1`)
+	})
+	cancel()
+	if code, reason := closed(t, c); code != websocket.StatusGoingAway || reason != "shutdown" {
+		t.Fatalf("closed %d %q", code, reason)
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
 }
 
 // Handlers that outlast the drain are named, not dropped silently: their viewers
@@ -1086,6 +1123,38 @@ func TestSnapshotQueue(t *testing.T) {
 
 	e.log.mu.Lock()
 	e.log.queueErr = errors.New("conn refused")
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if code, reason := closed(t, c); code != websocket.StatusTryAgainLater || reason != dropLogUnavailable {
+		t.Fatalf("closed %v %q", code, reason)
+	}
+}
+
+// Like the queue, the pending approvals come with the state frame: a request far
+// behind the page's tail still shows its card.
+func TestSnapshotApprovals(t *testing.T) {
+	e := setup(t)
+	e.log.add(600)
+	expires := time.Date(2026, 10, 1, 10, 30, 0, 0, time.UTC)
+	e.log.mu.Lock()
+	e.log.approvals = []store.Approval{{ID: "ap1", RoomID: roomID, RunID: "7f3cq2xz", EventID: "e1", CallID: "c1",
+		Class: "forge.pr", State: "pending", Action: []byte(`{"command":"gh pr create"}`), Prompters: []string{"human:own"},
+		RequestedSeq: 3, ExpiresAt: expires.In(time.FixedZone("x", 3600))}}
+	e.log.mu.Unlock()
+	c := dial(t, e, "dev", hello(nil, 0))
+	b, _ := json.Marshal(read(t, c).Snapshot.Approvals)
+	if want := `[{"approvalId":"ap1","runId":"7f3cq2xz","callId":"c1","class":"forge.pr","action":{"command":"gh pr create"},"expiresAt":"2026-10-01T10:30:00Z","seq":3}]`; string(b) != want {
+		t.Fatalf("approvals %s", b)
+	}
+	e.log.mu.Lock()
+	e.log.approvals = nil
+	e.log.mu.Unlock()
+	c = dial(t, e, "dev", hello(nil, 0))
+	if s := read(t, c).Snapshot; s.Approvals == nil || len(s.Approvals) != 0 {
+		t.Fatalf("approvals %#v", s.Approvals)
+	}
+	e.log.mu.Lock()
+	e.log.approvalErr = errors.New("conn refused")
 	e.log.mu.Unlock()
 	c = dial(t, e, "dev", hello(nil, 0))
 	if code, reason := closed(t, c); code != websocket.StatusTryAgainLater || reason != dropLogUnavailable {

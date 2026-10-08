@@ -181,12 +181,20 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		if _, err := s.Enqueue(ctx, q, "human:alice", "queued text"); err != nil {
 			t.Fatal(err)
 		}
+		holdBridge(t, s, id, approvalRun)
+		a := approval("ap-"+id, "e1", "c1", time.Hour)
+		a.RoomID = id
+		d := approvalDraft()
+		d.RoomID = id
+		if _, _, err := s.RequestApproval(ctx, a, d); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.CloseRoom(ctx, "expiredx", "done"); err != nil {
 		t.Fatal(err)
 	}
 	forge(t, super, `UPDATE rooms SET closed_at = now() - interval '2 days' WHERE room_id = 'expiredx'`)
-	var held int // the expired room's events: its append and its close
+	var held int // the expired room's events: its append, queued message, approval request and close
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = 'expiredx'`).Scan(&held); err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +211,8 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		{"a room's driver", `SELECT driver FROM rooms`},
 		{"a queued message's text", `SELECT text FROM queue`},
 		{"a queued message's author", `SELECT author FROM queue`},
+		{"an approval's action", `SELECT action FROM approvals`},
+		{"an approval's prompters", `SELECT prompters FROM approvals`},
 	} {
 		t.Run("refused: "+tc.name, func(t *testing.T) {
 			_, err := r.pool.Exec(ctx, tc.sql)
@@ -221,6 +231,8 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 		{"an expired room's events are countable", `SELECT count(*) FROM events WHERE room_id = 'expiredx'`, held},
 		{"a live room's queue is invisible", `SELECT count(*) FROM queue WHERE room_id = 'openaaaa'`, 0},
 		{"an expired room's queue is countable", `SELECT count(*) FROM queue WHERE room_id = 'expiredx'`, 1},
+		{"a live room's approvals are invisible", `SELECT count(*) FROM approvals WHERE room_id = 'openaaaa'`, 0},
+		{"an expired room's approvals are countable", `SELECT count(*) FROM approvals WHERE room_id = 'expiredx'`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var n int
@@ -234,8 +246,25 @@ func TestRetentionRoleCannotReadTranscripts(t *testing.T) {
 	if pg, ok := errors.AsType[*pgconn.PgError](err); !ok || pg.Code != "23503" {
 		t.Fatalf("deleting queued events before their queue rows: want SQLSTATE 23503, got %v", err)
 	}
+	// Nor before the approvals that reference them.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM queue WHERE room_id = 'expiredx'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM events WHERE room_id = 'expiredx'`)
+	_ = tx.Rollback(ctx)
+	if pg, ok := errors.AsType[*pgconn.PgError](err); !ok || pg.Code != "23503" {
+		t.Fatalf("deleting requested events before their approvals: want SQLSTATE 23503, got %v", err)
+	}
 	if rooms, events, err := r.PurgeExpired(ctx); err != nil || rooms != 1 || events != int64(held) {
 		t.Fatalf("purge under the narrowed role: %d rooms, %d events, %v", rooms, events, err)
+	}
+	var left int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE room_id = 'expiredx'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the purge left %d approvals, %v", left, err)
 	}
 }
 

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { listRooms, RoomLog } from "../src/view";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { nav } from "../src/api";
+import { listRooms, newRoomForm, RoomLog } from "../src/view";
 
 const row = (text: string) => { const p = document.createElement("p"); p.textContent = text; return p; };
 
@@ -49,5 +50,34 @@ describe("listRooms", () => {
     const rows = [{ id: "3kq7x2ma", phase: "", owner: "human:1", driver: "", dataClass: "internal", lastSeq: 4 }];
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
     expect(el.querySelector("a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
+  });
+});
+
+describe("newRoomForm", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // R11: the data class is fixed for the room's life and governs its runs, so the
+  // human chooses it: no default, least of all public.
+  it("sends nothing until a data class is chosen", async () => {
+    vi.spyOn(nav, "go").mockImplementation(() => {});
+    const posts: string[] = [];
+    const get = ((_: string, init: RequestInit) => {
+      posts.push(String(init.body));
+      return Promise.resolve(new Response(JSON.stringify({ id: "3kq7x2ma" }), { status: 201 }));
+    }) as unknown as typeof fetch;
+    const form = newRoomForm(get);
+    const dataClass = form.elements.namedItem("dataClass") as HTMLSelectElement;
+    expect(dataClass.value).toBe("");
+    expect(dataClass.required).toBe(true);
+    expect([dataClass.selectedOptions[0].textContent, dataClass.selectedOptions[0].disabled]).toEqual(["choose a data class", true]);
+    const hint = form.querySelector(".hint")!.textContent;
+    for (const says of [/cannot change/, /model route, the tools and the egress/, /does not change who can read the room/]) expect(hint).toMatch(says);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(form.querySelector(".notice")?.textContent).toBe("Choose a data class first.");
+    dataClass.value = "internal";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(posts).toEqual([JSON.stringify({ dataClass: "internal" })]));
   });
 });
