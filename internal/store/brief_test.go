@@ -3,6 +3,7 @@
 package store
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -54,6 +55,11 @@ func TestBriefSources(t *testing.T) {
 	if !slices.Equal(seqs, []int64{verdict, handoff}) || got[1].Actor.Kind != envelope.ActorAgent || !strings.Contains(string(got[1].Payload), `"new"`) {
 		t.Fatalf("sources %v, want [verdict %d, handoff %d]: %+v", seqs, verdict, handoff, got)
 	}
+	// A fork reads them as they stood at its seq: the commit at the fork point (§5).
+	got, err = s.BriefSourcesThrough(ctx, room, verdict)
+	if err != nil || len(got) != 2 || got[0].Seq != 1 || got[1].Seq != verdict {
+		t.Fatalf("through seq %d: %+v, %v", verdict, got, err)
+	}
 }
 
 // A requested run is pending until it joins, and for 10 minutes at most (review 4.4 I2).
@@ -102,7 +108,8 @@ func TestBriefReadsUseTheirIndex(t *testing.T) {
 		name, sql string
 		args      []any
 	}{
-		{"brief sources", briefSourcesSQL, []any{room}},
+		{"brief sources", briefSourcesSQL, []any{room, int64(math.MaxInt64)}},
+		{"brief sources through a fork point", briefSourcesSQL, []any{room, int64(10000)}},
 		{"pending runs", pendingRunsSQL, []any{room, 600.0}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

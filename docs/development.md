@@ -58,6 +58,21 @@ task ui:test     # tsc and vitest
 task ui:build    # rewrite dist/; commit it with the source
 ```
 
+A room page renders the log twice: the chat view (`web/src/chat.ts` — bubbles, tool rows
+paired by `callId`, timeline markers) and the raw event stream, one toggle apart
+(`web/src/roomview.ts`, remembered in `localStorage`). To read or restyle it without a
+broker, `web/test/fixtures/live-session.jsonl` holds a recorded session and the preview
+serves it statically:
+
+```bash
+npm --prefix web run preview   # http://127.0.0.1:4180/preview/preview.html (?live replays)
+```
+
+The palette is the app-wizard's: `web/src/app.css` carries its design tokens verbatim
+(light first, a `.dark` block), and `web/src/theme.ts` ports its three-mode theme
+(light/dark/system, the `dark` class on `<html>`, the same `app-wizard:theme` storage
+key). Change a token in the wizard, change it here; do not fork the palette.
+
 Room text is untrusted, so there are three rules, all tested in `web/test/render.test.ts`:
 
 - **Parse once, as text.** markdown-it parses with HTML off, and each token becomes a DOM node

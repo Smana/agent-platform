@@ -13,6 +13,7 @@ export interface Snapshot {
   runs?: { id: string; role: string; phase: string }[];
   queue?: { ref: number; author: string; text: string }[];
   sealed?: boolean;
+  approvals?: { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }[];
 }
 export interface Frame { type: string; throughSeq?: number; fromSeq?: number; snapshot?: Snapshot; event?: RoomEvent;
   clientSeq?: number; seq?: number; rejected?: string; result?: unknown }
@@ -65,6 +66,8 @@ export class RoomConnection {
   private openedAt = 0;
   private open = false;
   private pinger?: ReturnType<typeof setInterval>;
+  private retry?: ReturnType<typeof setTimeout>;
+  private stopped = false;
   private readonly socket: (url: string) => SocketLike;
   private readonly random: () => number;
   readonly tracker = new SeqTracker();
@@ -96,13 +99,14 @@ export class RoomConnection {
     ws.onclose = (e) => {
       clearInterval(this.pinger);
       this.open = false;
-      if (this.openedAt === 0) this.h.onRefused?.();
+      if (!this.stopped && this.openedAt === 0) this.h.onRefused?.();
+      if (this.stopped) return; // by onRefused, among others
       if (this.openedAt > 0 && Date.now() - this.openedAt >= settled) this.wait = firstWait;
       // Jitter spreads a replica's viewers when it shuts down (1001) and they all re-dial.
       const delay = Math.min(this.wait + Math.floor(this.wait * 0.25 * this.random()), maxWait);
       this.wait = Math.min(this.wait * 2, maxWait);
       this.h.onStatus(`reconnecting in ${Math.ceil(delay / 1000)} s: ${why(e)}`);
-      setTimeout(() => this.connect(), delay);
+      this.retry = setTimeout(() => this.connect(), delay);
     };
   }
 
@@ -112,6 +116,16 @@ export class RoomConnection {
     this.ws.send(JSON.stringify(frame));
     return true;
   }
+
+  // stop ends the connection for good: no re-dial, a scheduled one included.
+  stop() {
+    this.stopped = true;
+    clearTimeout(this.retry);
+    this.ws?.close();
+  }
+
+  // resync drops the socket: the reconnect's state frame re-reads the room.
+  resync() { this.ws?.close(1000, "membership changed"); }
 
   counters(): Counters { return { last: this.tracker.last, gaps: this.tracker.gaps, duplicates: this.tracker.duplicates }; }
 

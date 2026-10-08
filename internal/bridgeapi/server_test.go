@@ -155,7 +155,7 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 }
 
 // LastAck is the store's: the highest ref the run acknowledged as delivered,
-// interrupted or undeliverable that is a delivery of that run.
+// interrupted, undeliverable or decision_applied that is a delivery of that run.
 func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -167,7 +167,7 @@ func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error)
 			Ref  int64  `json:"ref"`
 		}
 		if e.RunID == runID && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil &&
-			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
+			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable" || p.Kind == "decision_applied") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
 			if _, _, ok := Deliverable(evs[p.Ref-1], runID); ok {
 				last = max(last, p.Ref)
 			}
@@ -190,7 +190,7 @@ func (m *memLog) Deliveries(_ context.Context, roomID, runID string, after, thro
 	return out, nil
 }
 
-func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, _ time.Duration, live func(context.Context, string) bool) (string, bool, error) {
+func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, live func(context.Context, string) bool) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.events[roomID]; !ok {
@@ -1001,6 +1001,41 @@ func TestStreamOutlivesTheReadTimeout(t *testing.T) {
 	<-time.After(4 * srv.Config.ReadTimeout)
 	tick <- time.Now()
 	expectPing(t, sc)
+}
+
+// F10: Go's HTTP/2 server enforces a write deadline as a per-stream timer that
+// resets the stream when it fires, write pending or not. A stream idle past
+// StreamWriteWait, between two pings, must stay open.
+func TestAnIdleHTTP2StreamOutlivesTheWriteWait(t *testing.T) {
+	s, _, w := newServer(t)
+	tick := make(manualTicker, 1)
+	s.Ticker = tick.new
+	s.StreamWriteWait = 50 * time.Millisecond
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	srv := httptest.NewUnstartedServer(s.Routes())
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/bridge/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer run:"+runA)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 || resp.StatusCode != http.StatusOK {
+		t.Fatalf("want an HTTP/2 stream, got %s %d", resp.Proto, resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	expectPing(t, sc)
+	for range 2 {
+		<-time.After(6 * s.StreamWriteWait)
+		tick <- time.Now()
+		expectPing(t, sc)
+	}
 }
 
 // The stream ends with the bridge's token (§4): the bridge re-dials with a fresh one.
