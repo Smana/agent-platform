@@ -355,7 +355,7 @@ live `seq` triggers a range read.
 | `1007` | `failed to unmarshal JSON` | Send each frame as one JSON object |
 | `1001` | `shutdown` | Reconnect: the replica is stopping |
 | `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
-| `1008` | `no such room` | Stop: the caller may no longer read the room (D7, re-checked once per access TTL on an open socket); a re-dial is refused `404` |
+| `1008` | `no such room` | Stop: the caller may no longer read the room (D7, re-checked on every ping against the access cache, so within the TTL plus 30 s); a re-dial is refused `404` |
 | `1013` | `access_unverified` | Reconnect after a backoff: ZITADEL or GitHub could not confirm the caller's access past the cache |
 
 The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a

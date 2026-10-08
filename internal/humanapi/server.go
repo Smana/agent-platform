@@ -105,9 +105,7 @@ type Server struct {
 	// whether they may read a room's repository. Either nil shows rooms to admins only.
 	Identity *ghidentity.Resolver
 	Access   *repoaccess.Checker
-	// RecheckTicker paces an open socket's D7 re-check; nil is a time.Ticker.
-	RecheckTicker func(time.Duration) (<-chan time.Time, func())
-	Logger        *slog.Logger
+	Logger   *slog.Logger
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)

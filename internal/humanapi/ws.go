@@ -191,13 +191,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	defer stopLife()
 
 	// session scopes the connection's clientSeq, its acts' idempotency key.
-	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String()}
-	if !s.Groups.IsAdmin(p) && s.Access != nil {
-		v.recheck = min(s.Access.TTL, maxRecheck)
-		if v.recheck <= 0 {
-			v.recheck = maxRecheck
-		}
-	}
+	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String(),
+		gated: !s.Groups.IsAdmin(p)}
 	reason := v.serve()
 	if reason != dropClientGone {
 		s.dropped(base, reason)
@@ -274,8 +269,8 @@ type viewer struct {
 	id      string
 	session string         // this connection's idempotency scope
 	last    int64          // the last seq written
-	recheck time.Duration  // D7's re-check period; 0 for an admin, who bypasses it
-	wg      sync.WaitGroup // the reader, the pinger and the re-check
+	gated   bool           // D7 is re-checked on every ping; an admin bypasses it
+	wg      sync.WaitGroup // the reader and the pinger
 }
 
 // write sends one frame within WriteWait. A peer that does not take it in time
@@ -353,9 +348,6 @@ func (v *viewer) serve() string {
 	frames := make(chan wire.ClientFrame)
 	v.wg.Go(func() { v.read(frames) })
 	v.wg.Go(v.ping)
-	if v.recheck > 0 {
-		v.wg.Go(v.recheckAccess)
-	}
 	for {
 		select {
 		case <-v.life.Done():
@@ -471,6 +463,7 @@ func refused(err error) bool {
 }
 
 // ping checks the peer every PingEvery; no pong within PongWait ends the connection.
+// On the same beat it re-runs D7 (rulings R17, R21).
 func (v *viewer) ping() {
 	t := time.NewTicker(or(v.s.PingEvery, defaultPingEvery))
 	defer t.Stop()
@@ -479,6 +472,9 @@ func (v *viewer) ping() {
 		case <-v.life.Done():
 			return
 		case <-t.C:
+		}
+		if v.gated && !v.readable() {
+			return
 		}
 		ctx, cancel := context.WithTimeout(v.base, or(v.s.PongWait, defaultPongWait))
 		err := v.c.Ping(ctx)
@@ -495,33 +491,26 @@ func (v *viewer) ping() {
 	}
 }
 
-// recheckAccess re-runs D7 every v.recheck while the connection lives (ruling R17): a revoked
-// reader is cut within the access TTL, and one ZITADEL or GitHub cannot vouch for past the
-// cache is cut rather than streamed to. The Room is the one the connection opened on.
-func (v *viewer) recheckAccess() {
-	tick, stop := v.s.recheckTicker(v.recheck)
-	defer stop()
-	for {
-		select {
-		case <-v.life.Done():
-			return
-		case <-tick:
-		}
-		ctx, cancel := context.WithTimeout(v.life, accessWait)
-		ok, err := v.s.admits(ctx, v.room, v.p)
-		cancel()
-		switch {
-		case v.life.Err() != nil:
-			return // the check failed because the connection ended
-		case err != nil:
-			v.s.log().Warn("room access unverified", "room", v.id, "err", err)
-			v.cancel(errUnverified)
-			return
-		case !ok:
-			v.cancel(errRevoked)
-			return
-		}
+// readable re-runs D7 for the open connection, or ends it. Against the cache, a check costs
+// nothing until its answer is a TTL old, so on the ping's beat a revoked reader is cut within
+// the access TTL plus one ping, and one ZITADEL or GitHub cannot vouch for past the cache is
+// cut rather than streamed to. The Room is the one the connection opened on.
+func (v *viewer) readable() bool {
+	ctx, cancel := context.WithTimeout(v.life, accessWait)
+	ok, err := v.s.admits(ctx, v.room, v.p)
+	cancel()
+	switch {
+	case v.life.Err() != nil:
+		return false // the check failed because the connection ended
+	case err != nil:
+		v.s.log().Warn("room access unverified", "room", v.id, "err", err)
+		v.cancel(errUnverified)
+		return false
+	case !ok:
+		v.cancel(errRevoked)
+		return false
 	}
+	return true
 }
 
 // sendRange writes a sync frame, always (the client takes its seq baseline from

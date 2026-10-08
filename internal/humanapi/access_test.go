@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +45,7 @@ type gitHubWorld struct {
 	now      time.Time
 	ids      []string // a linked Sub's GitHub id is its index + 1
 	links    int      // ZITADEL link reads
+	checks   int      // clock reads: both caches read it on every check, hit or miss
 }
 
 func world(reads map[string][]string, unlinked ...string) *gitHubWorld {
@@ -57,7 +59,15 @@ func world(reads map[string][]string, unlinked ...string) *gitHubWorld {
 func (w *gitHubWorld) clock() time.Time {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.checks++
 	return w.now
+}
+
+// checked is how often the gate's caches have read the clock.
+func (w *gitHubWorld) checked() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.checks
 }
 
 func (w *gitHubWorld) set(fn func()) { w.mu.Lock(); defer w.mu.Unlock(); fn() }
@@ -418,60 +428,90 @@ func TestAForkKeepsItsParentsRepository(t *testing.T) {
 	}
 }
 
-// rechecks hands the open sockets' D7 re-check a tick channel the test drives, and records
-// the periods the connections asked for.
-type rechecks struct {
-	tick chan time.Time
-	mu   sync.Mutex
-	asks []time.Duration
+// pumped reads a socket without pause, as a live page does, so pings are answered; it hands
+// on the frames and records how the broker closed the socket.
+type pumped struct {
+	frames chan wire.ServerFrame
+	done   chan struct{}
+	code   websocket.StatusCode
+	reason string
 }
 
-func (r *rechecks) option() option {
-	r.tick = make(chan time.Time)
-	return func(s *Server, _ *fanout.Hub, _ *hubView) {
-		s.RecheckTicker = func(d time.Duration) (<-chan time.Time, func()) {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.asks = append(r.asks, d)
-			return r.tick, func() {}
+func pump(t *testing.T, c *websocket.Conn) *pumped {
+	p := &pumped{frames: make(chan wire.ServerFrame, 64), done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		for {
+			var f wire.ServerFrame
+			if err := wsjson.Read(t.Context(), c, &f); err != nil {
+				var ce websocket.CloseError
+				if p.code = -1; errors.As(err, &ce) {
+					p.code, p.reason = ce.Code, ce.Reason
+				}
+				return
+			}
+			select {
+			case p.frames <- f:
+			case <-t.Context().Done():
+				return
+			}
 		}
-	}
+	}()
+	return p
 }
 
-// fire ticks the re-check of the one open socket.
-func (r *rechecks) fire(t *testing.T) {
+func (p *pumped) next(t *testing.T) wire.ServerFrame {
 	t.Helper()
 	select {
-	case r.tick <- time.Now():
+	case f := <-p.frames:
+		return f
 	case <-time.After(5 * time.Second):
-		t.Fatal("no re-check runs on the open socket")
+		t.Fatal("no frame")
 	}
+	return wire.ServerFrame{}
 }
 
-func (r *rechecks) asked() []time.Duration {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.asks)
+func (p *pumped) closed(t *testing.T) (websocket.StatusCode, string) {
+	t.Helper()
+	select {
+	case <-p.done:
+		return p.code, p.reason
+	case <-time.After(5 * time.Second):
+		t.Fatal("the socket stays open")
+	}
+	return 0, ""
 }
 
 // openAs connects h to room A and reads it up to the live stream: state, sync, the 10 events.
-func openAs(t *testing.T, e env, h http.Header) *websocket.Conn {
+func openAs(t *testing.T, e env, h http.Header) *pumped {
 	t.Helper()
 	c, _, err := connect(t, e, h)
 	if err != nil {
 		t.Fatal(err)
 	}
 	send(t, c, hello(nil, 0))
-	if f := read(t, c); f.Type != wire.FrameState {
+	p := pump(t, c)
+	if f := p.next(t); f.Type != wire.FrameState {
 		t.Fatalf("got %+v, want the state", f)
 	}
-	read(t, c)
-	events(t, c, 10)
-	return c
+	for range 11 {
+		p.next(t)
+	}
+	return p
 }
 
-// R17: an open socket re-runs the D7 gate once per access TTL, so a revoked reader is cut
-// within it, and a reader GitHub cannot vouch for past the cache is never streamed to.
+func fastPings(s *Server, _ *fanout.Hub, _ *hubView) { s.PingEvery = 10 * time.Millisecond }
+
+// rechecked waits for two more of the socket's re-checks: each reads the clock of both caches.
+func rechecked(t *testing.T, w *gitHubWorld) {
+	t.Helper()
+	from := w.checked()
+	eventually(t, "a re-check on the ping's beat", func() bool { return w.checked() >= from+4 })
+}
+
+// R17, R21: an open socket re-runs the D7 gate on every ping, against the cache, so a revoked
+// reader is cut within the access TTL plus one ping, and a reader GitHub cannot vouch for past
+// the cache is never streamed to.
 func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -484,22 +524,18 @@ func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := world(map[string][]string{"Smana/a": {"dev1"}})
-			r := &rechecks{}
-			e := setup(t, abc(t), w.option(), r.option())
-			c := openAs(t, e, header("dev1"))
+			e := setup(t, abc(t), w.option(), fastPings)
+			p := openAs(t, e, header("dev1"))
+			rechecked(t, w)
 			w.set(func() { tc.change(w); w.now = w.now.Add(4 * time.Minute) })
-			r.fire(t)
+			rechecked(t, w)
 			e.log.add(1)
-			if seqs := events(t, c, 1); seqs[0] != 11 {
-				t.Fatalf("a fresh cached answer must keep the stream: %v", seqs)
+			if f := p.next(t); f.Type != wire.FrameEvent || f.Event.Seq != 11 {
+				t.Fatalf("a fresh cached answer must keep the stream: %+v", f)
 			}
-			w.set(func() { w.now = w.now.Add(time.Minute) })
-			r.fire(t)
-			if code, reason := closed(t, c); code != tc.code || reason != tc.reason {
+			w.set(func() { w.now = w.now.Add(time.Minute) }) // the cached answers are a TTL old
+			if code, reason := p.closed(t); code != tc.code || reason != tc.reason {
 				t.Fatalf("closed %d %q, want %d %q", code, reason, tc.code, tc.reason)
-			}
-			if got := r.asked(); !slices.Equal(got, []time.Duration{5 * time.Minute}) {
-				t.Fatalf("re-check periods %v, want the access TTL", got)
 			}
 			if tc.reason == "no such room" {
 				if code, _ := opens(t, e, roomID, header("dev1")); code != http.StatusNotFound {
@@ -511,18 +547,18 @@ func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 	}
 }
 
-// Admins bypass D7 at connect, and so on an open socket: no re-check runs.
+// Admins bypass D7 at connect, and so on an open socket: the gate is never consulted.
 func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
 	w := world(map[string][]string{})
-	r := &rechecks{}
-	e := setup(t, abc(t), w.option(), r.option())
-	c := openAs(t, e, admin("boss"))
+	e := setup(t, abc(t), w.option(), fastPings)
+	p := openAs(t, e, admin("boss"))
 	w.set(func() { w.down, w.now = true, w.now.Add(time.Hour) })
+	time.Sleep(100 * time.Millisecond) // ten pings
 	e.log.add(1)
-	if seqs := events(t, c, 1); seqs[0] != 11 {
-		t.Fatalf("%v", seqs)
+	if f := p.next(t); f.Type != wire.FrameEvent || f.Event.Seq != 11 {
+		t.Fatalf("%+v", f)
 	}
-	if got := r.asked(); len(got) != 0 {
-		t.Fatalf("an admin's socket asked for re-checks every %v", got)
+	if n := w.checked(); n != 0 {
+		t.Fatalf("an admin's socket consulted the gate's caches %d times", n)
 	}
 }
