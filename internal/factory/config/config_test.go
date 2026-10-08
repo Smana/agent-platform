@@ -55,6 +55,11 @@ api:
   humanIssuer: https://auth.ogenki.io
   humanJWKS: https://auth.ogenki.io/oauth/v2/keys
   clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]
+runlore:
+  listen: ":8080"
+  tokenFile: /etc/agent-factory-intake/token
+  minConfidence: 0.75
+  dailyCap: 5
 meter:
   url: http://vmsingle-victoria-metrics-k8s-stack.observability.svc:8428
   query: 'sum by (ar_agent) (gen_ai_client_token_usage_sum{ar_agent=~"system:serviceaccount:agents:xplane-run-.+", gen_ai_token_type=~"input|output"})'
@@ -89,6 +94,10 @@ func TestGoodConfigParses(t *testing.T) {
 		c.API.HumanIssuer != "https://auth.ogenki.io" || c.API.HumanJWKS != "https://auth.ogenki.io/oauth/v2/keys" {
 		t.Fatalf("api: %+v", c.API)
 	}
+	if c.RunLore.Listen != ":8080" || c.RunLore.TokenFile != "/etc/agent-factory-intake/token" ||
+		c.RunLore.MinConfidence != 0.75 || c.RunLore.DailyCap != 5 {
+		t.Fatalf("runlore: %+v", c.RunLore)
+	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
 	}
@@ -104,18 +113,31 @@ func TestGoodConfigParses(t *testing.T) {
 	}
 }
 
-// OD-10: an omitted budgets block still carries the daily ceilings, unenforced (R3).
+// OD-10: an omitted budgets block still carries the daily ceilings, the principal's unenforced
+// (R3). The task cap is enforced unless the config says shadow (owner, 2026-10-07).
 func TestBudgetDefaults(t *testing.T) {
-	raw := strings.Replace(good, "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n", "", 1)
-	if raw == good {
-		t.Fatal("the edit did not apply")
-	}
-	c, err := Parse([]byte(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Budgets.FactoryDaily != 25_000_000 || c.Budgets.HumanDaily != 5_000_000 || c.Budgets.EnforceTask || c.Budgets.EnforcePrincipal {
-		t.Fatalf("defaults are 25 M and 5 M, both unenforced: %+v", c.Budgets)
+	line := "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n"
+	for name, c := range map[string]struct {
+		with    string
+		enforce bool
+	}{
+		"omitted":             {"", true},
+		"enforceTask omitted": {"budgets: {enforcePrincipal: false}\n", true},
+		"shadow, written":     {line, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := strings.Replace(good, line, c.with, 1)
+			if !strings.Contains(good, line) {
+				t.Fatal("the edit did not apply")
+			}
+			cfg, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b := cfg.Budgets; b.FactoryDaily != 25_000_000 || b.HumanDaily != 5_000_000 || b.EnforceTask != c.enforce || b.EnforcePrincipal {
+				t.Fatalf("defaults are 25 M and 5 M, the principal's unenforced: %+v", b)
+			}
+		})
 	}
 }
 
@@ -180,6 +202,17 @@ func TestGoodVariantsParse(t *testing.T) {
 	}
 }
 
+// Disruption design §4: two automatic resumes per task unless the config says otherwise.
+func TestResumeDefault(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Resume.MaxPerTask != 2 {
+		t.Fatalf("an omitted resume.maxPerTask is 2: %+v", c.Resume)
+	}
+}
+
 // A bad config fails its rollout (§4): unknown keys, caps above the platform's, gaps. Each
 // case names the error its own rule reports, so no rule hides behind another that fires on
 // the same edit (review I2: a rule deleted must fail a test).
@@ -194,6 +227,8 @@ func TestBadConfigsFail(t *testing.T) {
 		// P: the Pending bound is 5..480 minutes; an omitted one defaults to 30.
 		"pending minutes below five": {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 4", "caps.maxPendingMinutes must be 5..480"},
 		"pending minutes above 480":  {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 481", "caps.maxPendingMinutes must be 5..480"},
+		"resumes above five":         {"budgets: {enforceTask", "resume: {maxPerTask: 6}\nbudgets: {enforceTask", "resume.maxPerTask must be 1..5"},
+		"negative resumes":           {"budgets: {enforceTask", "resume: {maxPerTask: -1}\nbudgets: {enforceTask", "resume.maxPerTask must be 1..5"},
 		"unknown role":               {"roles: [implementer]}", "roles: [implementor]}", `template solo: unknown role "implementor"`},
 		"missing tier":               {"  light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}\n", "", "tier light is missing"},
 		"a fourth tier": {"tiers:\n", "tiers:\n  huge: {model: agent-default, runTokens: 1, taskTokens: 1, runMinutes: 1}\n",
@@ -302,6 +337,13 @@ func TestBadConfigsFail(t *testing.T) {
 		"api repository not owner/name": {"repositories: [Smana/cloud-native-ref]", "repositories: ['../x']", `api.repository "../x" is not owner/name`},
 		"api without client ids":        {"clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]", "clientIDFiles: []", "api.clientIDFiles is empty"},
 		"api system issuer alone":       {"humanIssuer: https://auth.ogenki.io", "humanIssuer: https://auth.ogenki.io\n  systemIssuer: https://accounts.example", "api.systemIssuer and api.systemJWKS are both set or both empty"},
+		// FA-8 §1: every replica serves the RunLore intake, so its block is as required as api's.
+		"no runlore listen":       {`listen: ":8080"`, `listen: ''`, "runlore.listen is required"},
+		"no runlore token file":   {"tokenFile: /etc/agent-factory-intake/token", "tokenFile: ''", "runlore.tokenFile is required"},
+		"runlore without a block": {"runlore:\n  listen: \":8080\"\n  tokenFile: /etc/agent-factory-intake/token\n  minConfidence: 0.75\n  dailyCap: 5\n", "", "runlore.listen is required"},
+		"runlore confidence high": {"minConfidence: 0.75", "minConfidence: 1.25", "runlore.minConfidence must be in (0, 1]"},
+		"runlore confidence zero": {"minConfidence: 0.75", "minConfidence: 0", "runlore.minConfidence must be in (0, 1]"},
+		"runlore cap negative":    {"dailyCap: 5", "dailyCap: -1", "runlore.dailyCap must be 0 or more"},
 		// §1 schedules: the name keys the task, the cron must fire, the class must exist.
 		"schedule name twice":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
 		"schedule name uppercase":     {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},

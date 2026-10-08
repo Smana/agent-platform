@@ -36,16 +36,21 @@ func TestTheStopSweepsEveryRun(t *testing.T) {
 		"aaaaaaaa": {ID: "aaaaaaaa", Principal: "system:factory", TaskID: "3buqdlot", Phase: "Running"},
 		"bbbbbbbb": {ID: "bbbbbbbb", Principal: "human:291", Phase: "Running"}, // requested through the API
 		"cccccccc": {ID: "cccccccc", Principal: "human:291", Phase: "Succeeded"},
+		// The reconciler's stop revoked and counted it; its claim still drains (F30).
+		"dddddddd": {ID: "dddddddd", Principal: "system:factory", TaskID: "3buqdlot", Phase: "Running", Revoked: "manual"},
 	}}
 	c := fake.NewClientBuilder().Build()
 	s := &Sweeper{Reader: c, Namespace: "agent-system", Runs: st}
-	if n, err := s.Sweep(context.Background()); n != 0 || err != nil || len(st.runs) != 3 {
+	if n, err := s.Sweep(context.Background()); n != 0 || err != nil || len(st.runs) != 4 {
 		t.Fatal("no stop object: nothing is touched")
 	}
 	_ = c.Create(context.Background(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ConfigMap, Namespace: "agent-system"}})
 	n, err := s.Sweep(context.Background())
 	if err != nil || n != 2 || st.revoked["bbbbbbbb"] != "manual" || st.revoked["aaaaaaaa"] != "manual" {
-		t.Fatalf("every live run, the human's included: %d %v %v", n, st.revoked, err)
+		t.Fatalf("every live run, the human's included, each revoked run counted once: %d %v %v", n, st.revoked, err)
+	}
+	if _, left := st.runs["dddddddd"]; left {
+		t.Fatal("a run already revoked is still deleted, just not counted again")
 	}
 	if _, left := st.runs["cccccccc"]; !left || len(st.runs) != 1 {
 		t.Fatalf("a finished run is left for its record: %v", st.runs)

@@ -170,14 +170,21 @@ func reasons() map[string]string {
 		"stuck":                   "the run showed no activity for 10 minutes",
 		"deadline":                "the run hit its wall-clock limit",
 		"pod_lost":                "the sandbox was lost (spot reclaim or eviction)",
+		"Disrupted":               "the sandbox's node was reclaimed or drained",
+		"PodLost":                 "the sandbox was lost (deleted, or its node disappeared)",
+		"PodFailed":               "the sandbox failed on its own",
+		"resumes_exhausted":       "the sandbox was lost again and the automatic resumes are used up",
+		"resume_budget":           "the sandbox was lost and the task's token budget cannot cover another run",
 		"revoked":                 "the run was stopped by hand",
 		"deleted":                 "the run's claim was deleted",
 		"budget-run":              "the run spent its token budget",
 		"budget-principal":        "the factory's daily token budget is spent",
 		"budget-fleet":            "the agent fleet's daily token budget is spent",
-		"budget-task":             "the task spent its token budget",
+		"budget-task":             "the task's token budget has no room left for another full run",
 		"run_lost":                "the run disappeared",
 		"no_pr":                   "the agent opened no pull request",
+		"no_action":               "the triager found nothing to change",
+		"proposal_ready":          "the triager proposed a change for a maintainer to publish",
 		"merged":                  "the pull request was merged",
 		"pr_closed":               "the pull request was closed",
 		"text_too_long":           "the issue text is longer than the factory accepts (14 KiB)",
@@ -243,6 +250,15 @@ func Started(t *v1alpha1.Task, s runs.Spec, roomsURL string) Event {
 	return Event{Key: "run-" + s.RunID + "-started", Body: body}
 }
 
+// ProposalReady narrates a finished triage on the task's issue: the proposal stays in the room
+// (internal) until a human publishes it (R38).
+func ProposalReady(t *v1alpha1.Task, roomsURL string) Event {
+	return Event{Key: "proposal", Body: fmt.Sprintf("Agent factory task `%s`: the triager proposes a change. Read the "+
+		"proposal in the room, %s/r/%s (tailnet only). If it is safe to publish, open a new issue with the text you "+
+		"approve and label it `factory/ready`; nothing else starts from this finding.",
+		t.Name, strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)}
+}
+
 // Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
 func Revising(t *v1alpha1.Task, reviewer string) Event {
 	return Event{Key: fmt.Sprintf("revise-%d", len(t.Status.Runs)),
@@ -305,6 +321,17 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 			"`changes` verdict, or a review without a verdict, escalates it again."
 	}
 	return Event{Key: fmt.Sprintf("retry-%d", t.Status.Retries), Body: body}
+}
+
+// Resuming says the factory resumes a run its sandbox lost, on its own, n of limit (disruption
+// design §4). A reviewer's or tester's new run uses no review round.
+func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
+	body := fmt.Sprintf("Agent factory task `%s`: run `%s` stopped because %s; resuming automatically (%d/%d).",
+		t.Name, runID, Reason("pod_lost"), n, limit)
+	if role == "reviewer" || role == "tester" {
+		body += " The new review run uses no review round."
+	}
+	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
 }
 
 // PROpened announces the task's pull request.

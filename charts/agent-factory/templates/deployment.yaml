@@ -40,6 +40,7 @@ spec:
           ports:
             - {name: ops, containerPort: 9090, protocol: TCP}
             - {name: api, containerPort: 8443, protocol: TCP}
+            - {name: intake, containerPort: 8080, protocol: TCP}
           startupProbe: {httpGet: {path: /startupz, port: ops}, periodSeconds: 2, failureThreshold: 30}
           livenessProbe: {httpGet: {path: /healthz, port: ops}, periodSeconds: 10}
           readinessProbe: {httpGet: {path: /readyz, port: ops}, periodSeconds: 10}
@@ -56,6 +57,7 @@ spec:
             - {name: merger, mountPath: /etc/agent-factory-merger, readOnly: true}
             - {name: rooms-token, mountPath: /var/run/secrets/agents/rooms, readOnly: true}
             - {name: oidc, mountPath: /etc/agent-factory-oidc, readOnly: true}
+            - {name: intake, mountPath: /etc/agent-factory-intake, readOnly: true}
       volumes:
         - name: config
           configMap: {name: agent-factory-config}
@@ -71,3 +73,7 @@ spec:
               - serviceAccountToken: {audience: {{ .Values.roomsAudience }}, expirationSeconds: 3600, path: token}
         - name: oidc
           secret: {secretName: {{ .Values.oidcSecret }}, defaultMode: 0444}
+        - name: intake
+          # 0440, not the plan's 0400: a 0400 Secret is root-only for uid 65532 — the chart's own
+          # render test refuses it (review C1). Group bit plus fsGroup, as the App keys.
+          secret: {secretName: {{ .Values.intakeSecret }}, defaultMode: 0440}

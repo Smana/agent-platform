@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package intake turns triggers into Tasks (§1). GitHub never redelivers a failed webhook, so the
-// factory polls and exposes no public endpoint: one list call a minute for factory/ready, one for
-// factory/stop, and a few calls per labelled issue.
+// factory polls for labels and exposes no public endpoint: one list call a minute for
+// factory/ready, one for factory/stop, and a few calls per labelled issue. The RunLore intake is
+// the one push endpoint, tailnet-only behind a bearer token (FR-9, FA-8).
 package intake
 
 import (

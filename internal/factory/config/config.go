@@ -41,6 +41,10 @@ const (
 	// numbers first, so the ceilings exist even before an operator writes them down.
 	defaultFactoryDaily = 25_000_000
 	defaultHumanDaily   = 5_000_000
+	// Disruption design §4: how many runs of one task the factory resumes on its own by default,
+	// and the most a config may ask for.
+	defaultResumesPerTask = 2
+	maxResumesPerTask     = 5
 )
 
 // Duration is a time.Duration written as a string such as "30s".
@@ -82,9 +86,11 @@ type Config struct {
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
 	Budgets      Budgets             `json:"budgets"`
+	Resume       Resume              `json:"resume"`
 	Meter        Meter               `json:"meter"`
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
+	RunLore      RunLore             `json:"runlore"`
 	Schedules    []Schedule          `json:"schedules,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
@@ -184,9 +190,10 @@ type Caps struct {
 	ConcurrentRuns int `json:"concurrentRuns"`
 	TasksPerDay    int `json:"tasksPerDay"`
 	MaxTextBytes   int `json:"maxTextBytes"`
-	// How long a run may sit Pending before the task escalates as run_unschedulable (P): no
-	// other layer bounds it — activeDeadlineSeconds counts from the pod's start, and Kueue
-	// queues unadmitted work forever. Defaulted when omitted, never left open.
+	// How long a run that never started may sit Pending before the task escalates as
+	// run_unschedulable (P): no other layer bounds it — activeDeadlineSeconds counts from the
+	// pod's start, and Kueue queues unadmitted work forever. Defaulted when omitted, never left
+	// open.
 	MaxPendingMinutes int `json:"maxPendingMinutes"`
 	// AwaitingHumanWIP bounds the tasks waiting on a human review before the factory queues
 	// more of the review-class work that produces them (§6.2's back-pressure on reviewers).
@@ -194,13 +201,22 @@ type Caps struct {
 	AwaitingHumanWIP int `json:"awaitingHumanWIP"`
 }
 
-// Budgets are the admission-time caps SP3 owns (C5). Enforcement starts false: a week of
-// shadow numbers first (OD-10, R3). The run cap is always enforced by the meter.
+// Budgets are the admission-time caps SP3 owns (C5). The task cap is enforced unless the config
+// writes enforceTask: false (owner, 2026-10-07: a shadow cap let a task run to 3.35 M of its 3 M);
+// the principal's starts false, a week of shadow numbers first (OD-10, R3). The run cap is always
+// enforced by the meter.
 type Budgets struct {
 	EnforceTask      bool  `json:"enforceTask"`
 	EnforcePrincipal bool  `json:"enforcePrincipal"`
 	FactoryDaily     int64 `json:"factoryDaily"`
 	HumanDaily       int64 `json:"humanDaily"`
+}
+
+// Resume bounds the automatic resume of a run lost to its infrastructure (disruption design §4).
+type Resume struct {
+	// MaxPerTask is how many runs of one task the factory resumes on its own; past it the task
+	// escalates as before. Defaulted when omitted.
+	MaxPerTask int `json:"maxPerTask"`
 }
 
 // Meter is where the run meter reads token usage (R12) and the gateway's 429s (R13).
@@ -244,6 +260,14 @@ type API struct {
 	SystemPrincipals map[string]string `json:"systemPrincipals,omitempty"`
 }
 
+// RunLore is the intake of §1: findings become tasks when actionable, 5 a day (OD-9).
+type RunLore struct {
+	Listen        string  `json:"listen"`
+	TokenFile     string  `json:"tokenFile"`
+	MinConfidence float64 `json:"minConfidence"`
+	DailyCap      int     `json:"dailyCap"`
+}
+
 var (
 	repoRE      = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 	hostPortRE  = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
@@ -278,7 +302,7 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(j))
 	dec.DisallowUnknownFields()
-	var c Config
+	c := Config{Budgets: Budgets{EnforceTask: true}} // decoding keeps a default the file omits
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
@@ -290,6 +314,9 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if c.Budgets.HumanDaily == 0 {
 		c.Budgets.HumanDaily = defaultHumanDaily
+	}
+	if c.Resume.MaxPerTask == 0 {
+		c.Resume.MaxPerTask = defaultResumesPerTask
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -482,6 +509,9 @@ func (c *Config) Validate() error {
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
 	}
+	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
+		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)
+	}
 	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
 	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.
 	if len(c.Merge.RequiredChecks) == 0 {
@@ -538,6 +568,20 @@ func (c *Config) Validate() error {
 	}
 	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
 		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")
+	}
+	// §1's RunLore intake (FA-8): every replica serves it, like the API, so its block is as
+	// required as api's. OD-9: the bar is real and the cap is stated; 0 admits nothing.
+	if c.RunLore.Listen == "" {
+		bad("runlore.listen is required")
+	}
+	if c.RunLore.TokenFile == "" {
+		bad("runlore.tokenFile is required")
+	}
+	if c.RunLore.MinConfidence <= 0 || c.RunLore.MinConfidence > 1 {
+		bad("runlore.minConfidence must be in (0, 1] (OD-9)")
+	}
+	if c.RunLore.DailyCap < 0 {
+		bad("runlore.dailyCap must be 0 or more")
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

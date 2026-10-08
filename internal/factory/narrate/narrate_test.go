@@ -453,3 +453,15 @@ func TestRetryingAfterTheRoundsSaysWhatItBuys(t *testing.T) {
 		t.Fatalf("%s", e.Body)
 	}
 }
+
+// Disruption design §4: the issue says the factory resumes on its own, n of the cap.
+func TestResuming(t *testing.T) {
+	e := Resuming(task(), "7f3cq2xz", "implementer", 1, 2)
+	if e.Key != "resume-1" || e.Body != "Agent factory task `3buqdlot`: run `7f3cq2xz` stopped because the sandbox was lost "+
+		"(spot reclaim or eviction); resuming automatically (1/2)." {
+		t.Fatalf("%+v", e)
+	}
+	if r := Resuming(task(), "7f3cq2xz", "reviewer", 2, 2); r.Key == e.Key || !strings.HasSuffix(r.Body, "The new review run uses no review round.") {
+		t.Fatalf("%+v", r)
+	}
+}
