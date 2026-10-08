@@ -242,6 +242,17 @@ func TestRoomctlStatus(t *testing.T) {
 	}
 }
 
+// --mine matches the linked GitHub login on the room's task, not the room's owner.
+func TestRoomctlHelpSaysWhatMineMatches(t *testing.T) {
+	var out strings.Builder
+	if err := (Roomctl{Dir: t.TempDir(), Out: &out}).Run(t.Context(), []string{"help"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "issues you filed or labelled, PRs you authored or review") || strings.Contains(s, "rooms you own") {
+		t.Fatalf("help:\n%s", s)
+	}
+}
+
 func TestRoomctlRoomsFiltersAndHint(t *testing.T) {
 	b := newRoomctlBroker(t)
 	b.access = "unlinked"

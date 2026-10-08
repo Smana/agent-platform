@@ -33,6 +33,9 @@ const roomctlUsage = `usage: roomctl <command>
   token                           print a valid access token, for scripts (task agent:run)
   status <room> [--json] [--after SEQ]   where a room stands: status, what needs you, notes
   rooms [--repo owner/name] [--mine] [--needs-me]
+                                  the rooms you can read. --mine: the tasks of
+                                  issues you filed or labelled, PRs you authored or review.
+                                  --needs-me: an approval you could decide
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
@@ -129,8 +132,8 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 		fs := flag.NewFlagSet("rooms", flag.ContinueOnError)
 		var f roomctl.RoomFilter
 		fs.StringVar(&f.Repo, "repo", "", "only this repository, owner/name")
-		fs.BoolVar(&f.Mine, "mine", false, "only rooms you own")
-		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms waiting on you")
+		fs.BoolVar(&f.Mine, "mine", false, "only the tasks of issues you filed or labelled, PRs you authored or review")
+		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms with an approval you could decide")
 		pos, err := flags(fs, args)
 		if err != nil || len(pos) != 0 {
 			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me]: %w", errors.Join(err, errors.New("no arguments")))
