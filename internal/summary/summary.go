@@ -176,6 +176,10 @@ func foldState(st *State, ev envelope.Event) {
 		if k.Events != nil && st.Sealed == "" {
 			st.Sealed = "Sealed"
 		}
+	case "forked_from":
+		// What came before is the source's log, copied (store.Fork): its task, approvals, verdict
+		// and notes are not the fork's, and its seal, if any, did not close the new room.
+		*st = State{Pending: map[string]Approval{}, LastSeq: st.LastSeq, RoomPhase: "Open"}
 	}
 }
 

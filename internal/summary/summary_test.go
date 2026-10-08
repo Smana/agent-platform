@@ -70,6 +70,47 @@ func TestAddingPagesIsFoldingTheLog(t *testing.T) {
 	}
 }
 
+// A fork's log is its source's prefix, then state_changed{forked_from}. From there the summary is the
+// fork's own: none of the source's task, approvals, verdict or notes, and a closed source's seal does
+// not close the fork. The fork's own facts count again.
+func TestAForkStartsItsSummaryAfresh(t *testing.T) {
+	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
+	factory := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
+	source := []envelope.Event{
+		ev(1, envelope.StateChanged, broker, envelope.StatePayload("room_phase", map[string]any{"phase": "Open"})),
+		ev(2, envelope.StateChanged, factory, envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Implementing",
+			Issue: &envelope.IssueFact{Number: 42, URL: "https://github.com/Smana/cloud-native-ref/issues/42"}})),
+		approvalRequested(3, "01M4A", "git push", time.Now().Add(time.Hour)),
+		ev(4, envelope.Message, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:cf4ato2x", Role: "reviewer"},
+			envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Text: "ok", Delivery: envelope.DeliveryNone, Verdict: "approve"}),
+		note(5, "fixing line 12"),
+		ev(6, envelope.StateChanged, broker, envelope.StatePayload("room_phase", map[string]any{"phase": "Closed", "reason": "done"})),
+	}
+	forked := ev(7, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorHuman, ID: "human:o"},
+		envelope.StatePayload("forked_from", map[string]any{"room": "src", "seq": 6}))
+	s := summary.View(summary.Fold(slices.Concat(source, []envelope.Event{forked})), "r", "u", owner(), 0, time.Now())
+	if s.Status.Phase != "Open" || s.Status.Issue != nil || s.Status.LastVerdict != nil || len(s.NeedsYou) != 0 ||
+		len(s.Notes.Items) != 0 || s.Cursor != "seq:7" {
+		t.Fatalf("the fork shows its source's state: %+v", s)
+	}
+	if kinds := actionKinds(s); !slices.Equal(kinds, []string{"queue"}) {
+		t.Fatalf("actions %v: want the open fork's, and no stop for the source's issue", kinds)
+	}
+	own := ev(8, envelope.StateChanged, factory, envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Queued"}))
+	s = summary.View(summary.Fold(slices.Concat(source, []envelope.Event{forked, own})), "r", "u", owner(), 0, time.Now())
+	if s.Status.Phase != "Queued" {
+		t.Fatalf("phase %q: the fork's own facts count", s.Status.Phase)
+	}
+}
+
+func actionKinds(s summary.Summary) []string {
+	var kinds []string
+	for _, a := range s.Actions {
+		kinds = append(kinds, a.Kind)
+	}
+	return kinds
+}
+
 // A room sealed by MaxEvents ends with state_changed{limit}, not room_phase: both seal.
 func TestTheLimitSealAlsoClosesTheRoom(t *testing.T) {
 	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
