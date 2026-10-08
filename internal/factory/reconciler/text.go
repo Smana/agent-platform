@@ -210,8 +210,7 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 			queuedHow(fence))
 	}
 	b.WriteString("Agents' text quoted from the room's log was sanitised by the factory as an issue is: in code, read " +
-		`&lt; as <, !\[ as ![ and ]\: as ]: again.` + "\n")
-	fmt.Fprintf(&b, "%s\n\n", brief.ProgressInstruction)
+		`&lt; as <, !\[ as ![ and ]\: as ]: again.` + "\n\n")
 	log, _ := brief.Build(t.Status.RoomRef, "implementer", cleanLog(evs, nonce), nil, nonce)
 	b.WriteString(log)
 	if len(queued) == 0 {

@@ -213,8 +213,21 @@ func TestAForkedRoomsBriefAsksForTheForkedFromTrailer(t *testing.T) {
 
 // Task 7: implementers post a progress note at each milestone.
 func TestBuildAsksImplementersForProgressNotes(t *testing.T) {
+	// Test implementer role gets exactly one instruction before the fence
 	b, _ := Build("r", "implementer", nil, nil, "n")
-	if !strings.Contains(b, "room_progress") {
-		t.Fatalf("brief.Build for implementer role lacks room_progress instruction:\n%s", b)
+	if strings.Count(b, "room_progress") != 1 {
+		t.Fatalf("brief.Build for implementer should have exactly one progress instruction, got %d", strings.Count(b, "room_progress"))
+	}
+	fence := "ROOM-DATA-n"
+	fencePos := strings.Index(b, "\n"+fence+"\n")
+	instructionPos := strings.Index(b, "room_progress")
+	if instructionPos < 0 || instructionPos > fencePos {
+		t.Fatalf("progress instruction should appear before the fence, but instruction is at %d, fence at %d", instructionPos, fencePos)
+	}
+
+	// Test reviewer role gets no instruction
+	bReviewer, _ := Build("r", "reviewer", nil, nil, "n")
+	if strings.Contains(bReviewer, "room_progress") {
+		t.Fatalf("brief.Build for reviewer role should not have progress instruction:\n%s", bReviewer)
 	}
 }
