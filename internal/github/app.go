@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package github is the broker's GitHub App client (SP2 design §3, ruling P28). It posts
-// an agent's review verdict as one pull request comment, as SP3's factory App.
+// an agent's review verdict as one pull request comment, as SP3's factory App, and reads
+// who a GitHub user is and what they may read, for room visibility (D7).
 package github
 
 import (
@@ -309,7 +310,8 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	// The App holds the factory's permissions (SP3); this token gets only what a
-	// verdict comment needs, on one repository (ruling P34).
+	// verdict comment needs, on one repository (ruling P34). GitHub adds metadata: read
+	// to every installation token, which is all UserLogin and Permission read.
 	scope := map[string]any{"repositories": []string{repo},
 		"permissions": map[string]string{"pull_requests": "write"}}
 	if err := a.do(ctx, api, http.MethodPost, "app/installations/"+strconv.FormatInt(inst.ID, 10)+"/access_tokens", "",
@@ -346,14 +348,19 @@ func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, err
 	defer unlock()
 	// The body never opens an HTML comment, so it cannot plant another verdict's marker.
 	body = strings.ReplaceAll(body, "<!--", "&lt;!--")
-	url, err := a.comment(ctx, api, m[1], m[2], m[3], marker, body)
+	return a.retry401(m[1], m[2], func() (string, error) { return a.comment(ctx, api, m[1], m[2], m[3], marker, body) })
+}
+
+// retry401 runs call, and once more after a 401: a revoked token, or a rotated key, gets one
+// fresh token and one retry.
+func (a *App) retry401(owner, repo string, call func() (string, error)) (string, error) {
+	out, err := call()
 	var ae *APIError
 	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
-		// A revoked token, or a rotated key: one fresh token, one retry.
-		a.evict(m[1] + "/" + m[2])
-		url, err = a.comment(ctx, api, m[1], m[2], m[3], marker, body)
+		a.evict(owner + "/" + repo)
+		out, err = call()
 	}
-	return url, err
+	return out, err
 }
 
 // UserLogin is the current login of the GitHub user with the numeric id, read with owner/repo's
@@ -370,7 +377,7 @@ func (a *App) UserLogin(ctx context.Context, owner, repo string, id int64) (stri
 	if err != nil {
 		return "", err
 	}
-	lookup := func() (string, error) {
+	return a.retry401(owner, repo, func() (string, error) {
 		tok, _, err := a.installation(ctx, api, owner, repo)
 		if err != nil {
 			return "", err
@@ -385,15 +392,47 @@ func (a *App) UserLogin(ctx context.Context, owner, repo string, id int64) (stri
 			return "", errors.New("github: the user reply has no login")
 		}
 		return out.Login, nil
+	})
+}
+
+// githubLogin is GitHub's login syntax; checked before a login is spliced into an API path.
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// Permission is login's permission on owner/repo as GitHub's collaborator API states it (admin,
+// write, read or none), read with owner/repo's installation token, which metadata: read covers.
+// GitHub's 404, a login it does not know or one with no access, is "none"; any other refusal
+// is an error, never an answer, so the caller fails closed.
+func (a *App) Permission(ctx context.Context, owner, repo, login string) (string, error) {
+	if !validRepo(owner, repo) {
+		return "", ErrNotAPullRequest
 	}
-	login, err := lookup()
-	var ae *APIError
-	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
-		// A revoked token, or a rotated key: one fresh token, one retry.
-		a.evict(owner + "/" + repo)
-		login, err = lookup()
+	if !githubLogin.MatchString(login) {
+		return "", errors.New("github: not a GitHub login")
 	}
-	return login, err
+	api, err := a.api()
+	if err != nil {
+		return "", err
+	}
+	return a.retry401(owner, repo, func() (string, error) {
+		tok, _, err := a.installation(ctx, api, owner, repo)
+		if err != nil {
+			return "", err
+		}
+		var out struct {
+			Permission string `json:"permission"`
+		}
+		err = a.do(ctx, api, http.MethodGet, "repos/"+owner+"/"+repo+"/collaborators/"+login+"/permission", "", tok, nil, &out, maxReply)
+		var ae *APIError
+		switch {
+		case errors.As(err, &ae) && ae.Status == http.StatusNotFound:
+			return "none", nil
+		case err != nil:
+			return "", err
+		case out.Permission == "":
+			return "", errors.New("github: the permission reply has no permission")
+		}
+		return out.Permission, nil
+	})
 }
 
 // evict drops the cached installation token of owner/repo.

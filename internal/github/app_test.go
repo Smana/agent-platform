@@ -62,6 +62,8 @@ type fakeGitHub struct {
 	refused  int               // calls refused with 401
 	current  string            // the last token minted
 	repoOf   map[string]string // the repository each token was minted for
+	perms    map[string]string // a login's permission on cloud-native-ref; absent is GitHub's 404
+	permCode int               // the permission GET's status, when set
 }
 
 // locked runs fn under the fake's lock: the handler runs on the server's goroutines.
@@ -143,6 +145,21 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"login":"octocat","id":583231}`))
 	case r.URL.Path == "/user/999" && strings.HasPrefix(auth, "ghs_installation-"):
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/Smana/cloud-native-ref/collaborators/") &&
+		strings.HasSuffix(r.URL.Path, "/permission") && f.repoOf[auth] == "cloud-native-ref":
+		login := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/Smana/cloud-native-ref/collaborators/"), "/permission")
+		perm, known := f.perms[login]
+		switch {
+		case auth == f.stale:
+			f.refused++
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		case f.permCode != 0:
+			http.Error(w, `{"message":"nope"}`, f.permCode)
+		case !known:
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"permission": perm, "role_name": perm, "user": map[string]string{"login": login}})
+		}
 	default:
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 	}
@@ -784,6 +801,64 @@ func TestUserLoginRefusesUnsafeRepoPaths(t *testing.T) {
 	for _, c := range [][2]string{{"Smana", ".."}, {"Smana", "."}, {"..", "x"}, {"Smana", "a/../../orgs"}, {"", "x"}, {"Smana", ""}} {
 		if _, err := a.UserLogin(context.Background(), c[0], c[1], 583231); !errors.Is(err, ErrNotAPullRequest) {
 			t.Fatalf("%q/%q: %v", c[0], c[1], err)
+		}
+	}
+	if f.requests != 0 {
+		t.Fatalf("%d requests reached GitHub", f.requests)
+	}
+}
+
+// D7: a login's permission on a repository, read with that repository's installation token.
+func TestPermissionReadsTheCollaboratorPermission(t *testing.T) {
+	a, f, _ := app(t)
+	f.locked(func() { f.perms = map[string]string{"octocat": "read", "hubot": "admin", "ghost": "none"} })
+	for login, want := range map[string]string{"octocat": "read", "hubot": "admin", "ghost": "none", "stranger": "none"} {
+		if got, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", login); err != nil || got != want {
+			t.Errorf("%s: %q, %v; want %q (a 404 is none)", login, got, err, want)
+		}
+	}
+	f.locked(func() {
+		if f.tokens != 1 || f.repoOf[f.current] != "cloud-native-ref" {
+			t.Fatalf("%d mints for %v: one token, the repository's", f.tokens, f.repoOf)
+		}
+		f.permCode = http.StatusInternalServerError
+	})
+	if _, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat"); err == nil {
+		t.Fatal("a 5xx must be an error, never an answer")
+	}
+	f.locked(func() { f.permCode = http.StatusForbidden })
+	if _, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat"); err == nil {
+		t.Fatal("a 403 must be an error, never none")
+	}
+}
+
+func TestPermissionRetriesA401Once(t *testing.T) {
+	a, f, _ := app(t)
+	f.locked(func() { f.perms = map[string]string{"octocat": "write"} })
+	if _, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat"); err != nil {
+		t.Fatal(err)
+	}
+	f.locked(func() { f.stale = f.current })
+	if got, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat"); err != nil || got != "write" {
+		t.Fatalf("%q, %v", got, err)
+	}
+	f.locked(func() {
+		if f.tokens != 2 || f.refused != 1 {
+			t.Fatalf("%d mints, %d refused: one fresh token, one retry", f.tokens, f.refused)
+		}
+	})
+}
+
+func TestPermissionRefusesUnsafePaths(t *testing.T) {
+	a, f, _ := app(t)
+	for _, c := range [][3]string{{"Smana", "..", "octocat"}, {"..", "x", "octocat"}, {"Smana", "a/../../orgs", "octocat"}, {"", "x", "octocat"}} {
+		if _, err := a.Permission(t.Context(), c[0], c[1], c[2]); !errors.Is(err, ErrNotAPullRequest) {
+			t.Fatalf("%q/%q: %v", c[0], c[1], err)
+		}
+	}
+	for _, login := range []string{"", "..", "a/b", "-x", "octo cat", "octocat/../../x", strings.Repeat("a", 40)} {
+		if _, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", login); err == nil {
+			t.Fatalf("login %q accepted", login)
 		}
 	}
 	if f.requests != 0 {

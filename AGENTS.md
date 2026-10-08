@@ -209,7 +209,7 @@ Packages that do touch the platform name their seam:
 | `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
 | `internal/factory/runs` | the `AgentRun` claim SP1's XRD accepts: its GVK, namespace and claim prefix (runwatch's), the `agents.ogenki.io/*` labels and annotations, the principal `system:factory` and the Kueue queues `factory` and `interactive`; the reconciler reaches it through its `RunClient` interface only |
 | `internal/factory/config` | every deployment fact is config: repository, maintainers, the App logins, the rooms UI and broker URLs, the broker CA and token paths, the meter's URL and query, tiers and the trace collector. The vocabularies it checks against are constants: SP1's roles, C5's logical model names, the tiers and the Task CRD's template enum |
-| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository) is a constant |
+| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository; GitHub adds `metadata: read`, which the D7 reads use) is a constant |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,
