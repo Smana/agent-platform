@@ -64,7 +64,7 @@ func ZitadelLinks(hc *http.Client, issuer, pat string) func(ctx context.Context,
 		}
 		links := make([]Link, 0, len(out.Result))
 		for _, l := range out.Result {
-			links = append(links, Link{IdPID: l.IDPID, UserID: l.UserID})
+			links = append(links, Link{IDPID: l.IDPID, UserID: l.UserID})
 		}
 		return links, nil
 	}

@@ -32,7 +32,7 @@ func TestZitadelLinksSearchesTheUsersLinks(t *testing.T) {
 	if method != http.MethodPost || path != "/v2/users/u1/links/_search" || auth != "Bearer "+pat || strings.TrimSpace(body) != "{}" {
 		t.Fatalf("request: %s %s %q %q", method, path, auth, body)
 	}
-	if len(links) != 2 || links[0] != (ghidentity.Link{IdPID: "gh-idp", UserID: "583231"}) || links[1].IdPID != "google" {
+	if len(links) != 2 || links[0] != (ghidentity.Link{IDPID: "gh-idp", UserID: "583231"}) || links[1].IDPID != "google" {
 		t.Fatalf("links: %+v", links)
 	}
 }

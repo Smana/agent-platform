@@ -15,13 +15,13 @@ import (
 
 // Link is one of a ZITADEL user's IdP links. UserID is the external id: for GitHub, the numeric
 // user id. The link's userName is deliberately absent; it is stale after a rename.
-type Link struct{ IdPID, UserID string } //nolint:revive // the plan's name, used by the broker wiring
+type Link struct{ IDPID, UserID string }
 
 // Resolver maps a ZITADEL user to a GitHub login.
 type Resolver struct {
 	Links   func(ctx context.Context, zitadelUser string) ([]Link, error)
 	LoginOf func(ctx context.Context, repo string, githubID int64) (string, error)
-	IdPID   string //nolint:revive // the plan's name, used by the broker wiring
+	IDPID   string
 	TTL     time.Duration
 	Now     func() time.Time
 
@@ -41,7 +41,7 @@ const defaultMaxEntries = 10_000
 // Login is sub's current GitHub login, "" when sub has no link to the GitHub IdP. A cached answer
 // stands for TTL; past it a failure is an error and nothing is cached, so the caller fails closed.
 func (r *Resolver) Login(ctx context.Context, sub, repo string) (string, error) {
-	if sub == "" || r.IdPID == "" {
+	if sub == "" || r.IDPID == "" {
 		return "", nil
 	}
 	r.mu.Lock()
@@ -56,7 +56,7 @@ func (r *Resolver) Login(ctx context.Context, sub, repo string) (string, error) 
 	}
 	login := ""
 	for _, l := range links {
-		if l.IdPID != r.IdPID {
+		if l.IDPID != r.IDPID {
 			continue
 		}
 		id, err := strconv.ParseInt(l.UserID, 10, 64)

@@ -13,12 +13,12 @@ import (
 )
 
 func TestLoginFollowsTheGitHubLink(t *testing.T) {
-	r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: 5 * time.Minute, Now: time.Now,
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: 5 * time.Minute, Now: time.Now,
 		Links: func(_ context.Context, user string) ([]ghidentity.Link, error) {
 			if user == "u1" {
-				return []ghidentity.Link{{IdPID: "google-idp", UserID: "1"}, {IdPID: "gh-idp", UserID: "583231"}}, nil
+				return []ghidentity.Link{{IDPID: "google-idp", UserID: "1"}, {IDPID: "gh-idp", UserID: "583231"}}, nil
 			}
-			return []ghidentity.Link{{IdPID: "google-idp", UserID: "2"}}, nil
+			return []ghidentity.Link{{IDPID: "google-idp", UserID: "2"}}, nil
 		},
 		LoginOf: func(_ context.Context, repo string, id int64) (string, error) {
 			if id != 583231 || repo != "Smana/x" {
@@ -35,9 +35,9 @@ func TestLoginFollowsTheGitHubLink(t *testing.T) {
 }
 
 func TestOnlyTheConfiguredIdPCounts(t *testing.T) {
-	r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: time.Minute, Now: time.Now,
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: time.Minute, Now: time.Now,
 		Links: func(context.Context, string) ([]ghidentity.Link, error) {
-			return []ghidentity.Link{{IdPID: "other-oauth-idp", UserID: "583231"}}, nil
+			return []ghidentity.Link{{IDPID: "other-oauth-idp", UserID: "583231"}}, nil
 		},
 		LoginOf: func(context.Context, string, int64) (string, error) { return "octocat", nil }}
 	if got, _ := r.Login(context.Background(), "u1", "Smana/x"); got != "" {
@@ -48,12 +48,12 @@ func TestOnlyTheConfiguredIdPCounts(t *testing.T) {
 func TestLoginFailsClosedPastTheCache(t *testing.T) {
 	now := time.Unix(0, 0)
 	fail := false
-	r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: 5 * time.Minute, Now: func() time.Time { return now },
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: 5 * time.Minute, Now: func() time.Time { return now },
 		Links: func(context.Context, string) ([]ghidentity.Link, error) {
 			if fail {
 				return nil, errors.New("zitadel down")
 			}
-			return []ghidentity.Link{{IdPID: "gh-idp", UserID: "583231"}}, nil
+			return []ghidentity.Link{{IDPID: "gh-idp", UserID: "583231"}}, nil
 		},
 		LoginOf: func(context.Context, string, int64) (string, error) { return "octocat", nil }}
 	if got, _ := r.Login(context.Background(), "u1", "Smana/x"); got != "octocat" {
@@ -72,9 +72,9 @@ func TestLoginFailsClosedPastTheCache(t *testing.T) {
 
 func TestAFailedGitHubLookupIsNotCached(t *testing.T) {
 	calls, down := 0, true
-	r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: time.Minute, Now: time.Now,
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: time.Minute, Now: time.Now,
 		Links: func(context.Context, string) ([]ghidentity.Link, error) {
-			return []ghidentity.Link{{IdPID: "gh-idp", UserID: "583231"}}, nil
+			return []ghidentity.Link{{IDPID: "gh-idp", UserID: "583231"}}, nil
 		},
 		LoginOf: func(context.Context, string, int64) (string, error) {
 			calls++
@@ -94,9 +94,9 @@ func TestAFailedGitHubLookupIsNotCached(t *testing.T) {
 
 func TestANonNumericLinkIdIsAnError(t *testing.T) {
 	for _, id := range []string{"octocat", "", "0", "-5"} {
-		r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: time.Minute, Now: time.Now,
+		r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: time.Minute, Now: time.Now,
 			Links: func(context.Context, string) ([]ghidentity.Link, error) {
-				return []ghidentity.Link{{IdPID: "gh-idp", UserID: id}}, nil
+				return []ghidentity.Link{{IDPID: "gh-idp", UserID: id}}, nil
 			},
 			LoginOf: func(context.Context, string, int64) (string, error) { return "octocat", nil }}
 		if got, err := r.Login(context.Background(), "u1", "Smana/x"); err == nil || got != "" {
@@ -108,7 +108,7 @@ func TestANonNumericLinkIdIsAnError(t *testing.T) {
 func TestTheCacheIsBoundedAndEvictsTheOldest(t *testing.T) {
 	now := time.Unix(0, 0)
 	calls := map[string]int{}
-	r := &ghidentity.Resolver{IdPID: "gh-idp", TTL: time.Hour, Now: func() time.Time { return now },
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: time.Hour, Now: func() time.Time { return now },
 		Links: func(_ context.Context, u string) ([]ghidentity.Link, error) {
 			calls[u]++
 			return nil, nil
