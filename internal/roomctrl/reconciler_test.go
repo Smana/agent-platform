@@ -5,9 +5,11 @@ package roomctrl
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -46,6 +48,13 @@ type fakeStore struct {
 	keys    map[string]bool
 	ensured int
 	ops     *[]string
+	// taskEvents are the room's state_changed events in any order: LastTaskState picks by seq.
+	taskEvents []seqPayload
+}
+
+type seqPayload struct {
+	seq     int64
+	payload json.RawMessage
 }
 
 func newStore(ops *[]string, rooms ...store.RoomState) *fakeStore {
@@ -110,6 +119,19 @@ func (m *fakeStore) CloseRoom(_ context.Context, id, _ string) error {
 }
 
 func (m *fakeStore) PendingApprovals(context.Context, string) (int, error) { return 0, nil }
+
+func (m *fakeStore) LastTaskState(context.Context, string) (json.RawMessage, error) {
+	var best *seqPayload
+	for i := range m.taskEvents {
+		if best == nil || m.taskEvents[i].seq > best.seq {
+			best = &m.taskEvents[i]
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return best.payload, nil
+}
 
 // fakeEnds records the run ends the reconciler writes before a seal.
 type fakeEnds struct{ ops *[]string }
@@ -568,6 +590,48 @@ func TestParseRetention(t *testing.T) {
 			got, err := ParseRetention(c.in)
 			if (err == nil) != c.ok || got != c.want {
 				t.Fatalf("ParseRetention(%q) = %s, %v", c.in, got, err)
+			}
+		})
+	}
+}
+
+func taskEvent(seq int64, f envelope.TaskFacts) seqPayload {
+	return seqPayload{seq, envelope.TaskStatePayload(f)}
+}
+
+func TestTaskStatus(t *testing.T) {
+	first := envelope.TaskFacts{Phase: "AwaitingHuman",
+		Issue: &envelope.IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: "dev1", LabelledBy: "dev1"},
+		PR:    &envelope.PRFact{Number: 1, URL: "https://github.com/o/r/pull/1", Author: "bot", Reviewers: []string{"dev2"}}}
+	later := envelope.TaskFacts{Phase: "Merged", PR: &envelope.PRFact{Number: 1, URL: "https://github.com/o/r/pull/1", Author: "bot"}}
+	prior := &v1alpha1.TaskStatus{Phase: "Planning", IssueAuthor: "kept"}
+	for _, tc := range []struct {
+		name   string
+		events []seqPayload
+		before *v1alpha1.TaskStatus
+		want   *v1alpha1.TaskStatus
+	}{
+		{"the facts become the status", []seqPayload{taskEvent(2, first)}, nil,
+			&v1alpha1.TaskStatus{Phase: "AwaitingHuman", IssueAuthor: "dev1", LabelledBy: "dev1", PRAuthor: "bot", PRReviewers: []string{"dev2"}}},
+		{"the highest seq wins, whatever the order", []seqPayload{taskEvent(9, later), taskEvent(2, first)}, nil,
+			&v1alpha1.TaskStatus{Phase: "Merged", PRAuthor: "bot"}},
+		{"no facts leaves it nil", nil, nil, nil},
+		{"an undecodable payload leaves the last status", []seqPayload{{3, json.RawMessage(`{"kind":"task","phase":7}`)}}, prior, prior},
+		{"another kind leaves the last status", []seqPayload{{3, envelope.StatePayload("run_phase", map[string]any{"phase": "Failed"})}}, prior, prior},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			room := newRoom()
+			room.Status.Task = tc.before
+			c := build(room)
+			ms := newStore(nil)
+			ms.taskEvents = tc.events
+			r := &Reconciler{Client: c, Store: ms, Runs: runwatch.New(), Now: clock(deletedAt)}
+			if _, err := r.Reconcile(t.Context(), request()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := getRoom(t, c)
+			if !reflect.DeepEqual(got.Status.Task, tc.want) {
+				t.Fatalf("status.task = %+v, want %+v", got.Status.Task, tc.want)
 			}
 		})
 	}

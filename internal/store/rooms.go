@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -77,4 +78,20 @@ func (s *Store) PendingApprovals(ctx context.Context, roomID string) (int, error
 		return 0, fmt.Errorf("store: pending approvals of room %s: %w", roomID, err)
 	}
 	return n, nil
+}
+
+// LastTaskState is the payload of the room's highest-seq state_changed{kind:task}, or nil when
+// the factory wrote none. The seq decides, so a late or replayed write cannot win.
+func (s *Store) LastTaskState(ctx context.Context, roomID string) (json.RawMessage, error) {
+	var p json.RawMessage
+	err := s.pool.QueryRow(ctx, `SELECT payload FROM events
+		WHERE room_id = $1 AND type = 'state_changed' AND payload->>'kind' = 'task'
+		ORDER BY seq DESC LIMIT 1`, roomID).Scan(&p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: last task state of room %s: %w", roomID, err)
+	}
+	return p, nil
 }
