@@ -355,10 +355,11 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		roles  []string
 		action policy.Action
 	}{
-		"room_read":    {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Read},
-		"room_post":    {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
-		"room_handoff": {[]string{"implementer", "tester", "triager"}, policy.Chat},
-		"room_verdict": {[]string{"reviewer", "tester"}, policy.Chat},
+		"room_read":     {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Read},
+		"room_post":     {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
+		"room_progress": {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
+		"room_handoff":  {[]string{"implementer", "tester", "triager"}, policy.Chat},
+		"room_verdict":  {[]string{"reviewer", "tester"}, policy.Chat},
 	}
 	got := tools(&memLog{})
 	if len(got) != len(want) {

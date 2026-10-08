@@ -87,7 +87,7 @@ var readOnlyMCP = func() map[string]bool {
 			"tsdb_status", "active_queries", "top_queries"},
 		"mcp-victorialogs": {"documentation", "query", "hits", "facets", "field_names", "field_values", "stats_query",
 			"stats_query_range", "streams", "stream_ids", "stream_field_names", "stream_field_values", "flags"},
-		"room-broker": {"room_read", "room_post", "room_handoff", "room_verdict"},
+		"room-broker": {"room_read", "room_post", "room_progress", "room_handoff", "room_verdict"},
 	} {
 		for _, t := range tools {
 			m[server+"__"+t] = true
