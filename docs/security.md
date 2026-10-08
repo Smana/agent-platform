@@ -24,7 +24,7 @@ The design's threats, with the controls this repository implements and where eac
 | T9 | Cross-site WebSocket hijacking | `Origin` check; oauth2-proxy cookie `SameSite=Strict` | Phase 2 | — |
 | T10 | XSS from LLM output | Markdown rendered with HTML disabled; strict CSP; HttpOnly cookie | Phase 2 | XSS could still act *as* the user through the page |
 | T11 | Denial of service | Size and rate limits; byte budgets per connection; authentication before subscription; gateway budgets bound agent loops | Phase 1 (payload and batch limits), phase 2 onwards (connections, rates) | A tailnet member can load the broker |
-| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential |
+| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential. Its D7 reader PAT reads the whole ZITADEL organization, users and their IdP links included (`ORG_OWNER_VIEWER` is org-wide, if read-only), and the factory App's metadata reads answer any login's permission on the App's repositories |
 
 ## Identities
 
@@ -48,8 +48,18 @@ The allowlist of system callers ships **empty**. SP3's entry,
 clients, so that the broker and the factory can validate them offline. oauth2-proxy keeps them in an
 HttpOnly, `SameSite=Strict` cookie, away from a page that renders LLM output. Two ZITADEL project
 roles, flattened into `groups`, gate access: `agents-admin` (owner and approver everywhere) and
-`agents-member` (watches everywhere, may create rooms). Anyone else is refused at oauth2-proxy and
-again by the broker. Revoking a group takes effect within the hour, when connections re-authenticate.
+`agents-member` (may create rooms, and watches a room only under D7, below). Anyone else is refused
+at oauth2-proxy and again by the broker. Revoking a group takes effect within the hour, when
+connections re-authenticate.
+
+**Room access (D7).** A room is never more visible than its repository. For a member, the broker
+reads the GitHub account linked to their ZITADEL user, never a token claim: a link is added only by
+authenticating at GitHub, while user metadata is writable by machine users. It lists the user's IdP
+links with a read-only machine user's PAT (`ORG_OWNER_VIEWER`), resolves the GitHub link's numeric
+id to the current login, then asks GitHub whether that login can read the room's `repository`, both
+through the factory App's metadata reads. Answers are cached for at most 5 minutes, so an unlinked
+account or a revoked collaborator loses the room within that; past the cache, a check ZITADEL or
+GitHub cannot answer fails closed. A member with no link sees no room. `agents-admin` bypasses it.
 When the broker asks SP3 for a run on a human's behalf (phase 4), it forwards that human's access
 token, never an asserted `sub`, so the factory proves the principal itself (C4).
 
