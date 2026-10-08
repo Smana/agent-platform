@@ -45,7 +45,20 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	return f
 }
 
-func factsHash(f envelope.TaskFacts) string {
+// factsKey is what decides that the room's facts changed. Token usage counts in steps (R12): 10% of
+// the cap, an overrun one step, or 100 k tokens without a cap. Every meter tick would otherwise post
+// facts and write status twice, and a room seals at its event limit. Facts posted carry the exact
+// count.
+func factsKey(f envelope.TaskFacts) string {
+	if b := f.Budget; b != nil {
+		step := *b
+		if step.LimitTokens > 0 {
+			step.UsedTokens = min(step.UsedTokens*10/step.LimitTokens, 10)
+		} else {
+			step.UsedTokens /= 100_000
+		}
+		f.Budget = &step
+	}
 	b, _ := json.Marshal(f) // strings, ints, a time and slices: Marshal cannot fail
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
@@ -57,7 +70,7 @@ func (r *Reconciler) factsDue(t *v1alpha1.Task) bool {
 		return false
 	}
 	l := t.Status.Facts
-	return l == nil || !l.Posted || l.Hash != factsHash(factsOf(t))
+	return l == nil || !l.Posted || l.Hash != factsKey(factsOf(t))
 }
 
 // postFacts writes the task's facts into its room. New facts take roomSeq + 1, persisted before
@@ -70,7 +83,7 @@ func (r *Reconciler) postFacts(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	f := factsOf(t)
-	h := factsHash(f)
+	h := factsKey(f)
 	if l := t.Status.Facts; l == nil || l.Hash != h {
 		prevSeq, prevLedger := t.Status.RoomSeq, t.Status.Facts
 		t.Status.RoomSeq++

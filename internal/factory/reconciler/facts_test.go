@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 )
 
@@ -82,6 +83,62 @@ func TestFactsArePostedOncePerChange(t *testing.T) {
 	// Ruling SK: each seq is the task's before it is posted.
 	if s := stored(t, g.c).Status; s.RoomSeq != 2 || s.Facts == nil || s.Facts.Seq != 2 {
 		t.Fatalf("persisted %d %+v", s.RoomSeq, s.Facts)
+	}
+}
+
+// R12: a meter tick alone never posts. Usage counts in 10% steps of the cap, an overrun is one
+// step, and the facts posted still carry the exact count.
+func TestTokenUsageIsPostedInTenPercentSteps(t *testing.T) {
+	capped := awaiting()
+	capped.Spec.Budget.TaskTokens = 1_000_000 // in the stored spec: a status write reads the spec back
+	g := newRig(t, capped)
+	tk := stored(t, g.c)
+	tk.Status.Usage.Tokens = 100_000
+	if err := g.r.postFacts(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name   string
+		tokens int64
+		phase  string
+		due    bool
+	}{
+		{"a tick inside the step", 199_999, v1alpha1.PhaseAwaitingHuman, false},
+		{"a phase change inside the step", 150_000, v1alpha1.PhaseReviewing, true},
+		{"crossing a step", 200_000, v1alpha1.PhaseAwaitingHuman, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tk.Status.Usage.Tokens, tk.Status.Phase = c.tokens, c.phase
+			if g.r.factsDue(tk) != c.due {
+				t.Fatalf("due %v, want %v", !c.due, c.due)
+			}
+		})
+	}
+	if err := g.r.postFacts(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	if b := g.log.facts[tk.Status.Facts.Seq].Budget; b == nil || b.UsedTokens != 200_000 {
+		t.Fatalf("posted %+v, want the exact 200000", b)
+	}
+	tk.Status.Usage.Tokens = 1_000_000
+	if err := g.r.postFacts(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	if tk.Status.Usage.Tokens = 1_400_000; g.r.factsDue(tk) {
+		t.Fatal("an overrun is one step")
+	}
+}
+
+// Without a cap, usage counts in steps of 100 k tokens.
+func TestUncappedUsageStepsAre100k(t *testing.T) {
+	f := factsOf(awaiting())
+	f.Budget = &envelope.BudgetFact{UsedTokens: 100_000}
+	k := factsKey(f)
+	if f.Budget.UsedTokens = 199_999; factsKey(f) != k {
+		t.Fatal("a tick inside the step changed the key")
+	}
+	if f.Budget.UsedTokens = 200_000; factsKey(f) == k {
+		t.Fatal("crossing a step kept the key")
 	}
 }
 
