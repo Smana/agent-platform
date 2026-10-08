@@ -225,14 +225,35 @@ func named(id string) *unstructured.Unstructured {
 }
 
 // Create validates s, then creates its claim: the CREATE-only values are checked once, here.
+// An AlreadyExists for the same run (R48's replay, checked against the claim's CREATE-only
+// values) is success, not an error: the caller's own first attempt landed.
 func (c Client) Create(ctx context.Context, s Spec) error {
 	if err := s.Validate(); err != nil {
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
 	if err := c.C.Create(ctx, Build(s)); err != nil {
+		if apierrors.IsAlreadyExists(err) && c.replayOf(ctx, s) {
+			return nil
+		}
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
 	return nil
+}
+
+// replayOf reports whether the claim under s's id is this same run. The derived id is the
+// identity (R48), so equality is what only CREATE could have written: start seq and head.
+// Everything else on a live claim is the composition's or the meter's to change.
+func (c Client) replayOf(ctx context.Context, s Spec) bool {
+	u := empty()
+	if err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace, Name: Name(s.RunID)}, u); err != nil {
+		return false
+	}
+	a := u.GetAnnotations()
+	start := ""
+	if s.StartSeq != 0 {
+		start = strconv.FormatInt(s.StartSeq, 10)
+	}
+	return a[AnnStartSeq] == start && a[AnnHead] == s.Head
 }
 
 // validID refuses an id that names no run, before it reaches the API as xplane-run-<id>.

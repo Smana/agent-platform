@@ -1,5 +1,5 @@
 ---
-# Tasks, their rooms, the stop object, leader election (§6.5).
+# Tasks, their rooms, the stop object, the day ledgers (R50), leader election (§6.5).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -15,11 +15,18 @@ rules:
   - apiGroups: [agents.ogenki.io]
     resources: [rooms]
     verbs: [get, list, watch, create]
-  # The stop object only: the cache lists and watches it by a metadata.name field selector.
+  # The stop object: the cache lists and watches it by a metadata.name field selector.
   - apiGroups: [""]
     resources: [configmaps]
     resourceNames: [agent-factory-stop]
     verbs: [get, list, watch]
+  # R50's day ledgers (agent-factory-ledger-<UTC day>): the API reserves a slot through them,
+  # the meter settles spend and prunes old days. Names carry the date, so resourceNames cannot
+  # bound them; the Role's namespace is the bound. The reads are live: the cached watch above
+  # carries a name selector and can never see a ledger (5.2/5.3's caveat, resolved here).
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, delete]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, create, update]
