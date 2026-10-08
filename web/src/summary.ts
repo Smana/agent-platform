@@ -6,6 +6,7 @@
 // the broker omits when empty (omitempty, omitzero) is optional here, and its part is skipped.
 
 import { api } from "./api";
+import type { RoomEvent } from "./conn";
 import { approvalAnchor, el } from "./controls";
 
 export interface Summary {
@@ -37,6 +38,18 @@ export async function fetchSummary(id: string, get: typeof fetch = fetch): Promi
   const s = (await r.json()) as Summary;
   if (s?.apiVersion !== "summary/v1") throw new Error("The summary is in a format this page does not know. Reload the page.");
   return s;
+}
+
+// changesSummary is whether the broker's fold (internal/summary) reads e: only then is the
+// summary refetched, never on a run's chat or tool calls.
+export function changesSummary(e: RoomEvent): boolean {
+  const kind = e.payload?.kind;
+  switch (e.type) {
+    case "state_changed": return kind === "task" || kind === "room_phase" || kind === "limit";
+    case "message": return kind === "progress" || kind === "review_verdict";
+    case "approval_requested": case "approval_decided": return true;
+  }
+  return false;
 }
 
 // Agent-written URLs become a link only when https; anything else stays text.

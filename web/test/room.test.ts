@@ -223,7 +223,9 @@ describe("the room page", () => {
   });
 
   // The summary leads the page; the raw stream is collapsed and shares the one socket.
-  it("leads with the summary, refetched once a second on events, over the one socket", async () => {
+  // Only an event the summary folds refetches it: a busy run's chat and tool calls would
+  // otherwise refetch the whole fold every second (R27).
+  it("leads with the summary, refetched at most once a second on summary events, over the one socket", async () => {
     const sum = { apiVersion: "summary/v1", room: "3kq7x2ma", url: "u", status: { phase: "Open", run: null, budget: null, pr: null, issue: null, lastVerdict: null },
       needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor: "seq:0" };
     const get = vi.fn(async () => new Response(JSON.stringify(sum), { status: 200 })) as unknown as typeof fetch;
@@ -234,7 +236,11 @@ describe("the room page", () => {
     expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
     p.join(snapshot(), 0);
     p.last().recv(event(1, "message", { kind: "chat", text: "a", delivery: "none" }));
-    p.last().recv(event(2, "message", { kind: "chat", text: "b", delivery: "none" }));
+    p.last().recv(event(2, "tool_call", { callId: "c1", tool: "terminal", args: {} }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(get).toHaveBeenCalledTimes(1);
+    p.last().recv(event(3, "message", { kind: "progress", text: "planning", delivery: "none" }));
+    p.last().recv(event(4, "state_changed", { kind: "task", phase: "Implementing" }));
     await vi.advanceTimersByTimeAsync(1000);
     expect(get).toHaveBeenCalledTimes(2);
     expect(p.sockets).toHaveLength(1);
@@ -302,7 +308,6 @@ describe("the room page", () => {
       needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor });
     const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
     const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
-    const chat = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "chat", text: "x", delivery: "none" }));
     const note = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "progress", text: "x", delivery: "none" }));
 
     it("keeps the blocks and adds an error line when a refresh fails", async () => {
@@ -310,7 +315,7 @@ describe("the room page", () => {
       const p = page((async () => replies.shift()!()) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
       p.join(snapshot(), 0);
-      chat(p, 1);
+      note(p, 1);
       await tick();
       expect(p.app.querySelector('.summary [data-block="status"]')!.textContent).toContain("Running");
       const err = p.app.querySelector<HTMLElement>(".summary-error")!;
@@ -322,7 +327,7 @@ describe("the room page", () => {
       const late: ((r: Response) => void)[] = [];
       const p = page((() => new Promise<Response>((r) => late.push(r))) as unknown as typeof fetch);
       p.join(snapshot(), 0);
-      chat(p, 1);
+      note(p, 1);
       await tick(); // request 2 is out beside request 1
       expect(late).toHaveLength(2);
       late[1](ok(sum("Newer", "seq:2")));
@@ -367,7 +372,7 @@ describe("the room page", () => {
       await vi.advanceTimersByTimeAsync(0);
       const first = p.app.querySelector('[data-block="status"]');
       p.join(snapshot(), 0);
-      chat(p, 1);
+      note(p, 1);
       await tick();
       expect(p.app.querySelector('[data-block="status"]')).toBe(first);
     });

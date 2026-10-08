@@ -7,7 +7,7 @@ import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
-import { fetchSummary, focusApproval, renderSummary } from "./summary";
+import { changesSummary, fetchSummary, focusApproval, renderSummary } from "./summary";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -63,8 +63,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const renderHeader = () => {
     if (snap) title.textContent = `${snap.roomId} · ${state.phase} · ${snap.dataClass} · driver ${state.driver} · you: ${snap.you.role}${snap.you.approver ? " (approver)" : ""}`;
   };
-  // The summary loads on mount, then at most once a second while events arrive. A failed
-  // fetch shows its text in the blocks' place and leaves the stream alone.
+  // The summary loads on mount, then at most once a second while events it folds arrive
+  // (R27). A failed fetch shows its text on the error line and leaves the stream alone.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   // Responses can overlap: only one newer than the last rendered one counts, and an
@@ -125,7 +125,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
     onEvent: (e) => {
       views.apply(e);
-      scheduleSummary();
+      if (changesSummary(e)) scheduleSummary();
       state.apply(e);
       renderHeader();
       controls?.refresh();

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fetchSummary, renderSummary, type Summary } from "../src/summary";
+import { changesSummary, fetchSummary, renderSummary, type Summary } from "../src/summary";
 
 const base = (): Summary => ({
   apiVersion: "summary/v1", room: "3kq7x2ma", url: "https://rooms.example/r/3kq7x2ma",
@@ -122,6 +122,29 @@ describe("renderSummary", () => {
     root.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!.click();
     expect(document.activeElement).toBe(approve);
     doc.remove();
+  });
+});
+
+describe("changesSummary", () => {
+  const ev = (type: string, payload: unknown = {}) => ({ v: 1, id: "e", seq: 1, roomId: "r", actor: { kind: "system", id: "s" },
+    type, origin: "broker", ts: "2026-10-08T10:00:00Z", redactions: [], payload });
+  it.each([
+    ["state_changed", { kind: "task" }, true],
+    ["state_changed", { kind: "room_phase" }, true],
+    ["state_changed", { kind: "limit" }, true],
+    ["message", { kind: "progress" }, true],
+    ["message", { kind: "review_verdict" }, true],
+    ["approval_requested", {}, true],
+    ["approval_decided", {}, true],
+    ["state_changed", { kind: "harness_status" }, false],
+    ["state_changed", { kind: "run_phase" }, false],
+    ["message", { kind: "chat" }, false],
+    ["tool_call", {}, false],
+    ["tool_result", {}, false],
+    ["turn", {}, false],
+    ["message", null, false],
+  ] as const)("%s %j: %s", (type, payload, want) => {
+    expect(changesSummary(ev(type, payload))).toBe(want);
   });
 });
 
