@@ -98,8 +98,9 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
 // Why POST /api/rooms refused (docs/api.md).
 const createErrors: Record<number, string> = {
   400: "That data class or repository is not accepted (repository is owner/name).",
+  404: "You cannot read that repository on GitHub, or it does not exist.",
   429: "Too many actions at once. Wait a moment and retry.",
-  503: "Rooms cannot be created right now. Retry.",
+  503: "Rooms cannot be created right now, or your GitHub access cannot be checked. Retry.",
 };
 
 // newRoomForm creates a room owned and driven by the caller, then opens it.
@@ -123,8 +124,10 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   }
   const repository = document.createElement("input");
   repository.name = "repository";
-  repository.placeholder = "owner/name (default: the CRD's)";
+  repository.placeholder = "owner/name";
   repository.setAttribute("aria-label", "repository, owner/name");
+  // D7: who can read the repository on GitHub can read the room, so a room names one.
+  repository.required = true;
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.textContent = "new room";
@@ -134,8 +137,9 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
   hint.className = "hint";
   hint.id = "data-class-hint";
   hint.textContent = "The data class cannot change once the room exists. It sets the model route, the tools and the egress " +
-    "its runs get; it does not change who can read the room.";
+    "its runs get; it does not change who can read the room. The repository does: anyone who can read it on GitHub can.";
   dataClass.setAttribute("aria-describedby", hint.id);
+  repository.setAttribute("aria-describedby", hint.id);
   form.append(dataClass, repository, submit, notice, hint);
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -143,8 +147,11 @@ export function newRoomForm(get: typeof fetch = fetch): HTMLFormElement {
       notice.textContent = "Choose a data class first.";
       return;
     }
-    const body: Record<string, string> = { dataClass: dataClass.value };
-    if (repository.value.trim()) body.repository = repository.value.trim();
+    if (!repository.value.trim()) {
+      notice.textContent = "Name the room's repository first (owner/name).";
+      return;
+    }
+    const body = { dataClass: dataClass.value, repository: repository.value.trim() };
     notice.textContent = "";
     try {
       const r = await api("/api/rooms", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, get);

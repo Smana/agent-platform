@@ -77,7 +77,8 @@ describe("newRoomForm", () => {
     expect(posts).toEqual([]);
     expect(form.querySelector(".notice")?.textContent).toBe("Choose a data class first.");
     dataClass.value = "internal";
+    (form.elements.namedItem("repository") as HTMLInputElement).value = "Smana/a";
     form.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(posts).toEqual([JSON.stringify({ dataClass: "internal" })]));
+    await vi.waitFor(() => expect(posts).toEqual([JSON.stringify({ dataClass: "internal", repository: "Smana/a" })]));
   });
 });

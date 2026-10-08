@@ -35,7 +35,7 @@ describe("api", () => {
 describe("newRoomForm", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  function submit(get: typeof fetch, dataClass = "public", repository = "") {
+  function submit(get: typeof fetch, dataClass = "public", repository = "Smana/a") {
     const form = newRoomForm(get);
     (form.elements.namedItem("dataClass") as HTMLSelectElement).value = dataClass;
     (form.elements.namedItem("repository") as HTMLInputElement).value = repository;
@@ -57,20 +57,25 @@ describe("newRoomForm", () => {
     expect(JSON.parse(String(calls[0][1].body))).toEqual({ dataClass: "internal", repository: "Smana/cloud-native-ref" });
   });
 
-  it("leaves an empty repository to the CRD's default", async () => {
+  // D7: who can read the repository can read the room, so the broker refuses a room without one.
+  it("sends nothing without a repository", async () => {
     vi.spyOn(nav, "go").mockImplementation(() => {});
-    let body = "";
+    const posts: string[] = [];
     const get = ((_: string, init: RequestInit) => {
-      body = String(init.body);
+      posts.push(String(init.body));
       return Promise.resolve(new Response(JSON.stringify({ id: "3kq7x2ma" }), { status: 201 }));
     }) as unknown as typeof fetch;
-    submit(get);
-    await vi.waitFor(() => expect(body).toBe(JSON.stringify({ dataClass: "public" })));
+    const form = submit(get, "public", "  ");
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(form.querySelector(".notice")?.textContent).toMatch(/repository first/);
+    expect((form.elements.namedItem("repository") as HTMLInputElement).required).toBe(true);
   });
 
   it("says why a room was not created", async () => {
     const go = vi.spyOn(nav, "go").mockImplementation(() => {});
-    for (const [status, copy] of [[400, /not accepted/], [429, /too many/i], [503, /cannot be created/], [500, /500/]] as const) {
+    for (const [status, copy] of [[400, /not accepted/], [404, /cannot read that repository/], [429, /too many/i], [503, /cannot be created/],
+      [500, /500/]] as const) {
       const form = submit(answer(status));
       await vi.waitFor(() => expect(form.querySelector(".notice")?.textContent).toMatch(copy));
     }
