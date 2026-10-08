@@ -7,22 +7,39 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
-// frontMatter reads the top-level scalar fields of SKILL.md's YAML front matter.
-func frontMatter(t *testing.T, b []byte) map[string]string {
+// frontMatter parses SKILL.md's front matter with a real YAML loader: a hand-rolled split once
+// hid a ` #` that a strict loader reads as a comment.
+func frontMatter(t *testing.T, b []byte) map[string]any {
 	t.Helper()
 	parts := strings.SplitN(string(b), "---\n", 3)
 	if len(parts) != 3 || parts[0] != "" {
 		t.Fatalf("no front matter in %q", b)
 	}
-	m := map[string]string{}
-	for _, l := range strings.Split(parts[1], "\n") {
-		if k, v, ok := strings.Cut(l, ": "); ok && !strings.HasPrefix(l, " ") {
-			m[k] = v
-		}
+	m := map[string]any{}
+	if err := yaml.Unmarshal([]byte(parts[1]), &m); err != nil {
+		t.Fatalf("front matter is not YAML: %v", err)
 	}
 	return m
+}
+
+func assertSpec(t *testing.T, fm map[string]any) {
+	t.Helper()
+	if fm["name"] != "factory-handoff" {
+		t.Errorf("name = %v, must equal the directory name", fm["name"])
+	}
+	d, _ := fm["description"].(string)
+	if d == "" || len(d) > 1024 {
+		t.Errorf("description length = %d, want 1..1024", len(d))
+	}
+	for _, want := range []string{"anything waiting on me", "#N"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("description lost %q: %q", want, d)
+		}
+	}
 }
 
 func TestInstallWritesTheSkill(t *testing.T) {
@@ -63,16 +80,26 @@ func TestFrontMatterMeetsTheAgentSkillsSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	fm := frontMatter(t, b)
-	if fm["name"] != "factory-handoff" {
-		t.Errorf("name = %q, must equal the directory name", fm["name"])
+	assertSpec(t, fm)
+	// The installed file, version substituted, must stay valid YAML too.
+	got, err := Install(t.TempDir(), "v0.8.0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if d := fm["description"]; d == "" || len(d) > 1024 {
-		t.Errorf("description length = %d, want 1..1024", len(d))
+	inst, err := os.ReadFile(got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifm := frontMatter(t, inst)
+	assertSpec(t, ifm)
+	if v := ifm["metadata"].(map[string]any)["roomctl-version"]; v != "v0.8.0" {
+		t.Errorf("roomctl-version = %v", v)
 	}
 	// Applying the label is the developer's decision (D1): no tool may do it.
+	tools, _ := fm["allowed-tools"].(string)
 	for _, bad := range []string{"gh issue edit", "label", "gh api"} {
-		if strings.Contains(fm["allowed-tools"], bad) {
-			t.Errorf("allowed-tools grants %q: %s", bad, fm["allowed-tools"])
+		if strings.Contains(tools, bad) {
+			t.Errorf("allowed-tools grants %q: %s", bad, tools)
 		}
 	}
 }

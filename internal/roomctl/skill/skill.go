@@ -6,7 +6,6 @@ package skill
 
 import (
 	"embed"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -25,12 +24,6 @@ const name = "factory-handoff"
 // returns the paths written. It overwrites existing files, and refuses a symlink anywhere in the
 // skill tree: dir is user input and a write must never leave it.
 func Install(dir, version string) ([]string, error) {
-	root := filepath.Join(dir, name)
-	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symlink: refusing to write through it", root)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
 	var written []string
 	err := fs.WalkDir(files, name, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

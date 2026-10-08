@@ -1,6 +1,7 @@
 ---
 name: factory-handoff
-description: Hand a side task to the agent factory and follow it. Use when the user says "hand this to the factory", "file this for the factory", "what's the factory doing on #N", or "anything waiting on me in the factory?".
+description: >-
+  Hand a side task to the agent factory and follow it. Use when the user says "hand this to the factory", "file this for the factory", "what's the factory doing on #N", or "anything waiting on me in the factory?".
 compatibility: Requires gh (authenticated) and roomctl (logged in) on PATH
 allowed-tools: Bash(gh issue create:*), Bash(gh issue view:*), Bash(roomctl status:*), Bash(roomctl rooms:*), Bash(roomctl post:*)
 metadata:
