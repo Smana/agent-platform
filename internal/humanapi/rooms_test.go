@@ -39,6 +39,7 @@ func TestCreateRoom(t *testing.T) {
 			return c.Create(ctx, obj, opts...)
 		}}).Build()
 	srv := &Server{Humans: headerAuth{}, Groups: groups, Namespace: namespace, Actor: &Actor{Rooms: rooms}}
+	w0().gate(srv)
 	post := func(user, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/rooms", strings.NewReader(body))
 		if user != "" {
@@ -62,28 +63,27 @@ func TestCreateRoom(t *testing.T) {
 		len(s.Members) != 0 {
 		t.Fatalf("%+v", s)
 	}
-	if rec := post("alice", `{"dataClass":"public"}`); rec.Code != http.StatusCreated {
-		t.Fatalf("the repository is optional (the CRD defaults it): %d", rec.Code)
-	}
-
+	const public = `{"dataClass":"public","repository":"Smana/agent-platform"}`
 	for _, c := range []struct {
 		name, user, body string
 		err              error
 		want             int
 	}{
-		{"not authenticated", "", `{"dataClass":"public"}`, nil, http.StatusUnauthorized},
-		{"not in an agents group", "stranger", `{"dataClass":"public"}`, nil, http.StatusForbidden},
-		{"no data class", "alice", `{}`, nil, http.StatusBadRequest},
-		{"another data class", "alice", `{"dataClass":"secret"}`, nil, http.StatusBadRequest},
+		{"not authenticated", "", public, nil, http.StatusUnauthorized},
+		{"not in an agents group", "stranger", public, nil, http.StatusForbidden},
+		{"no data class", "alice", `{"repository":"Smana/agent-platform"}`, nil, http.StatusBadRequest},
+		{"another data class", "alice", `{"dataClass":"secret","repository":"Smana/agent-platform"}`, nil, http.StatusBadRequest},
+		// D7: a room is its repository's, so it names one.
+		{"no repository", "alice", `{"dataClass":"public"}`, nil, http.StatusBadRequest},
 		{"a malformed repository", "alice", `{"dataClass":"public","repository":"../etc"}`, nil, http.StatusBadRequest},
-		{"an unknown field", "alice", `{"dataClass":"public","driver":"human:mallory"}`, nil, http.StatusBadRequest},
+		{"an unknown field", "alice", `{"dataClass":"public","repository":"Smana/agent-platform","driver":"human:mallory"}`, nil, http.StatusBadRequest},
 		{"not JSON", "alice", `dataClass=public`, nil, http.StatusBadRequest},
 		// Review 4.4 M4: the fake client runs no CRD pattern, so the handler's own check is what refuses it.
-		{"a principal the CRD would refuse", "a b", `{"dataClass":"public"}`, nil, http.StatusBadRequest},
+		{"a principal the CRD would refuse", "a b", public, nil, http.StatusBadRequest},
 		{"too large", "alice", `{"dataClass":"public","repository":"` + strings.Repeat("a", 5<<10) + `"}`, nil, http.StatusBadRequest},
-		{"refused as invalid", "alice", `{"dataClass":"public"}`,
+		{"refused as invalid", "alice", public,
 			apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}, "x", field.ErrorList{}), http.StatusBadRequest},
-		{"the API server is down", "alice", `{"dataClass":"public"}`, errors.New("down"), http.StatusServiceUnavailable},
+		{"the API server is down", "alice", public, errors.New("down"), http.StatusServiceUnavailable},
 	} {
 		createErr = c.err
 		if rec := post(c.user, c.body); rec.Code != c.want {
@@ -94,16 +94,16 @@ func TestCreateRoom(t *testing.T) {
 	// Review 4.4 M4: room creation spends the human's action budget (burst 20).
 	var codes []int
 	for range 21 {
-		codes = append(codes, post("bursty", `{"dataClass":"public"}`).Code)
+		codes = append(codes, post("bursty", public).Code)
 	}
 	if codes[19] != http.StatusCreated || codes[20] != http.StatusTooManyRequests {
 		t.Fatalf("burst: %v", codes)
 	}
-	if rec := post("calm", `{"dataClass":"public"}`); rec.Code != http.StatusCreated {
+	if rec := post("calm", public); rec.Code != http.StatusCreated {
 		t.Fatalf("the budget is per human: %d", rec.Code)
 	}
 	srv.Actor = nil
-	if rec := post("alice", `{"dataClass":"public"}`); rec.Code != http.StatusServiceUnavailable {
+	if rec := post("alice", public); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no actor: %d", rec.Code)
 	}
 }

@@ -156,9 +156,10 @@ func (v hubView) Range(ctx context.Context, room string, after int64, limit int)
 	return out, err
 }
 
-// headerAuth authenticates X-Test-User as human:<user>, an agents-member.
-// X-Test-TTL sets the token's remaining life, X-Test-Kind the principal's kind,
-// X-Test-Forbidden refuses as a foreign Origin would.
+// headerAuth authenticates X-Test-User as human:<user>, an agents-member, whose
+// Sub is <user>. X-Test-TTL sets the token's remaining life, X-Test-Kind the
+// principal's kind, X-Test-Admin adds agents-admin, X-Test-Forbidden refuses as
+// a foreign Origin would.
 type headerAuth struct{}
 
 func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
@@ -172,6 +173,9 @@ func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
 	gs := []string{member}
 	if who == "stranger" {
 		gs = []string{"backend"}
+	}
+	if r.Header.Get("X-Test-Admin") != "" {
+		gs = append(gs, groups.Admin)
 	}
 	ttl := time.Hour
 	if v := r.Header.Get("X-Test-TTL"); v != "" {
@@ -203,7 +207,7 @@ func setup(t *testing.T, opts ...option) env {
 		t.Fatal(err)
 	}
 	room := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: roomID, Namespace: namespace},
-		Spec:   v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public"},
+		Spec:   v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public", Repository: "Smana/agent-platform"},
 		Status: v1alpha1.RoomStatus{Phase: "Active", LastSeq: 10, Driver: "system:factory"}}
 	elsewhere := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: "9zz9zz9z", Namespace: "other"},
 		Spec: v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public"}}
@@ -225,6 +229,7 @@ func setup(t *testing.T, opts ...option) env {
 	srv := &Server{Humans: headerAuth{}, Groups: groups, WebClient: func() string { return "web" },
 		Rooms: fake.NewClientBuilder().WithScheme(s).WithObjects(room, elsewhere).Build(), Namespace: namespace,
 		Log: log, Hub: subs, Runs: runs, Metrics: m}
+	w0().gate(srv) // every member can read every repository, unless an option says otherwise (D7)
 	for _, o := range opts {
 		o(srv, hub, view)
 	}
@@ -449,7 +454,8 @@ func TestRefusedBeforeTheUpgrade(t *testing.T) {
 		{"a foreign Origin at the upgrade (T9)", header("dev", "Origin", "https://evil.example"), nil, http.StatusForbidden},
 		{"an opaque Origin at the upgrade", header("dev", "Origin", "null"), nil, http.StatusForbidden},
 		{"a user outside the agents groups", header("stranger"), nil, http.StatusForbidden},
-		{"a principal of no known kind may not read", header("dev", "X-Test-Kind", ""), nil, http.StatusForbidden},
+		// D7: a room the caller may not read answers like a missing one, not 403.
+		{"a principal of no known kind may not read", header("dev", "X-Test-Kind", ""), nil, http.StatusNotFound},
 		{"the log is unavailable", header("dev"), func(m *memLog) { m.roomErr = errors.New("down") }, http.StatusServiceUnavailable},
 		{"the room has no log row", header("dev"), func(m *memLog) { m.roomErr = store.ErrNoRoom }, http.StatusNotFound},
 	}

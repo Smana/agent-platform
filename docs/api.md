@@ -302,6 +302,7 @@ both from oauth2-proxy.
 | ID token | Issuer is the identity provider, audience holds the `rooms-proxy` client id, not expired |
 | Access token | Same `sub`; issued for `rooms-proxy`. A web session requires it to differ from the ID token (review M16) |
 | Groups | `agents-admin` or `agents-member`, else `403` |
+| Room access (D7) | `agents-admin` sees every room. Anyone else sees a room only if GitHub lets the login linked to their ZITADEL user read the room's `repository`; a room with none is admins-only. Answers are cached for at most 5 minutes; past that, a check ZITADEL or GitHub cannot answer fails closed. A room you may not see answers exactly like a missing one |
 | `Origin` | Must match the room host: no cross-site WebSocket (T9) |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |
 
@@ -314,9 +315,9 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | Method and path | Does | Phase / PR |
 |---|---|---|
 | `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log. A `401` from the API, or one behind a refused WebSocket upgrade, sends the page to `/oauth2/start?rd=<the page>` | 2 / AP-2 |
-| `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
+| `GET /api/rooms` | One row per room the caller may read (room access, then their role): id, phase, owner, driver, data class, last `seq`, and the caller's own role. A room whose access cannot be verified is left out, with no error | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
-| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
+| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member, on a `repository` they can read (room access). `400` for another data class, a missing or malformed repository, an unknown field or a principal the Room CRD would refuse, `404` for a repository the caller cannot read, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created, or `access_unverified` when the caller's access cannot be checked. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
 | `GET /api/roomctl` | `{url, issuer, clientID, projectID}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`. `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` (ruling AS) | 6 / AP-6 |
 
 ### `GET /v1/ws`
@@ -324,10 +325,10 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | Status before upgrade | When |
 |---|---|
 | `401` | Not authenticated, or the token is already past its expiry |
-| `403` | A foreign `Origin` (T9); not in an agents group; not allowed to read this room (`not_permitted`) |
-| `404` | No such room |
+| `403` | A foreign `Origin` (T9); not in an agents group |
+| `404` | No such room, or one the caller may not read: the same `no such room` (D7) |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica, ruling P22) |
-| `503` | The log is unavailable |
+| `503` | The log is unavailable; `access_unverified`: ZITADEL or GitHub cannot confirm the caller's access past the cache |
 
 One JSON object per text frame (Appendix B).
 

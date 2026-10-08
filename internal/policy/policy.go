@@ -142,6 +142,12 @@ func (g Groups) Admitted(p authn.Principal) bool {
 	return in(p, g.Admin) || in(p, g.Member)
 }
 
+// IsAdmin reports whether p is a human in the admin group, who sees every room whatever its
+// repository's permissions say (D7).
+func (g Groups) IsAdmin(p authn.Principal) bool {
+	return p.Kind == envelope.ActorHuman && in(p, g.Admin)
+}
+
 // Resolve derives p's standing in one room from its groups and the Room's spec. driver
 // is the current driver-token holder; webUI is whether p came through the web client.
 func (g Groups) Resolve(room *v1alpha1.Room, p authn.Principal, driver string, webUI bool) Subject {

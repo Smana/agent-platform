@@ -3,7 +3,8 @@
 // Package humanapi is the broker's human listener, :8080, reached only through
 // oauth2-proxy (§3): the UI, the room list, and one WebSocket per open room.
 // Every API and WebSocket request is authenticated and admitted by group first;
-// a room's reads then go through policy.Allowed. The UI's static files are not:
+// a room's reads then go through admits (D7: the caller can read the room's
+// repository on GitHub) and policy.Allowed. The UI's static files are not:
 // oauth2-proxy fronts the listener. Live events come from the fan-out hub.
 package humanapi
 
@@ -28,8 +29,10 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/ghidentity"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
 )
@@ -98,7 +101,11 @@ type Server struct {
 	Metrics       *metrics.Set
 	UI            fs.FS  // Task 2.5; nil serves 404
 	Actor         *Actor // serves act frames (phase 4); nil refuses every one
-	Logger        *slog.Logger
+	// Identity and Access are D7's GitHub check: who the caller is on GitHub, and
+	// whether they may read a room's repository. Either nil shows rooms to admins only.
+	Identity *ghidentity.Resolver
+	Access   *repoaccess.Checker
+	Logger   *slog.Logger
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)

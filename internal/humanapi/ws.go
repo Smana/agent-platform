@@ -145,15 +145,16 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("room")
-	room, st, ok := s.lookup(w, r, id)
+	room, st, ok := s.lookup(w, r, id, p)
 	if !ok {
 		return
 	}
 	// The Read gate only: serve resolves the snapshot's standing again against
-	// the mark it reads after subscribing, so the two agree.
+	// the mark it reads after subscribing, so the two agree. A room the caller
+	// may not read is as missing as one that does not exist (D7).
 	sub, _ := s.you(room, p, st.Driver)
 	if !policy.Allowed(sub, policy.Read) {
-		http.Error(w, wire.ReasonNotPermitted, http.StatusForbidden)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return
 	}
 	if !s.acquire(p.ID, id) {
@@ -209,9 +210,12 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	v.wg.Wait()
 }
 
-// lookup reads the room and its log row before the upgrade, within routeTimeout,
-// or writes the refusal.
-func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1alpha1.Room, store.RoomState, bool) {
+// noSuchRoom answers a missing room and one the caller may not read alike (D7).
+const noSuchRoom = "no such room"
+
+// lookup reads the room, checks that p may see it (D7), then reads its log row,
+// before the upgrade and within routeTimeout, or writes the refusal.
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string, p authn.Principal) (*v1alpha1.Room, store.RoomState, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
 	room, found, err := s.room(ctx, id)
@@ -220,12 +224,25 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1a
 		return nil, store.RoomState{}, false
 	}
 	if !found {
-		http.Error(w, "no such room", http.StatusNotFound)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
+		return nil, store.RoomState{}, false
+	}
+	// Before the log: a log error must not tell an unreadable room from a missing one.
+	actx, acancel := context.WithTimeout(ctx, accessWait)
+	ok, err := s.admits(actx, room, p)
+	acancel()
+	if err != nil {
+		s.log().Warn("room access unverified", "room", id, "err", err)
+		http.Error(w, reasonAccessUnverified, http.StatusServiceUnavailable)
+		return nil, store.RoomState{}, false
+	}
+	if !ok {
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return nil, store.RoomState{}, false
 	}
 	st, err := s.Log.Room(ctx, id)
 	if errors.Is(err, store.ErrNoRoom) {
-		http.Error(w, "no such room", http.StatusNotFound)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return nil, store.RoomState{}, false
 	}
 	if err != nil {

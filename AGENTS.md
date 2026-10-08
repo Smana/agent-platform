@@ -169,6 +169,7 @@ flowchart LR
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
 | Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
+| Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed | ✓ |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |

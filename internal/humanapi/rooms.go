@@ -43,9 +43,9 @@ func (s *Server) you(room *v1alpha1.Room, p authn.Principal, driver string) (pol
 var repositoryRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 
 // createRoom is POST /api/rooms: an agents member creates a room, owned and
-// driven by them (§1 Groups). A state-changing POST on a cookie session:
-// oauth2-proxy's SameSite=Strict cookie and the Origin check (T9) stop a
-// cross-site form posting it.
+// driven by them (§1 Groups), on a repository they can read (D7). A
+// state-changing POST on a cookie session: oauth2-proxy's SameSite=Strict
+// cookie and the Origin check (T9) stop a cross-site form posting it.
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.principal(w, r)
 	if !ok {
@@ -58,7 +58,7 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&in) != nil || (in.DataClass != "public" && in.DataClass != "internal") ||
-		(in.Repository != "" && !repositoryRE.MatchString(in.Repository)) || !memberPrincipal.MatchString(p.ID) {
+		!repositoryRE.MatchString(in.Repository) || !memberPrincipal.MatchString(p.ID) {
 		http.Error(w, "dataClass is public or internal; repository is owner/name", http.StatusBadRequest)
 		return
 	}
@@ -80,6 +80,18 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	// No retention: the CRD's default applies (OD-17).
 	room := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: runrequest.NewID(), Namespace: s.Namespace},
 		Spec: v1alpha1.RoomSpec{Owner: p.ID, Driver: p.ID, DataClass: in.DataClass, Repository: in.Repository}}
+	actx, acancel := context.WithTimeout(ctx, accessWait)
+	ok, err := s.admits(actx, room, p)
+	acancel()
+	if err != nil {
+		s.log().Warn("room access unverified", "repository", in.Repository, "err", err)
+		http.Error(w, reasonAccessUnverified, http.StatusServiceUnavailable)
+		return
+	}
+	if !ok {
+		http.Error(w, "no such repository", http.StatusNotFound)
+		return
+	}
 	if err := s.Actor.Rooms.Create(ctx, room); err != nil {
 		code := http.StatusServiceUnavailable
 		if apierrors.IsInvalid(err) {
@@ -126,7 +138,9 @@ type roomRow struct {
 }
 
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
-// (agents-member reads all, §1 Groups), from the Room CRs' projected status.
+// (D7, then §1 Groups), from the Room CRs' projected status. A room whose access
+// cannot be verified is left out like an unreadable one: neither the count nor
+// an error may tell that it exists.
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.principal(w, r)
 	if !ok {
@@ -139,9 +153,26 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	actx, acancel := context.WithTimeout(ctx, accessWait)
+	defer acancel()
+	// admits depends on the repository alone, and a failed check is not cached: once per
+	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
+	admitted := map[string]bool{}
 	out := []roomRow{}
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
+		repo := room.Spec.Repository
+		ok, seen := admitted[repo]
+		if !seen {
+			var err error
+			if ok, err = s.admits(actx, room, p); err != nil {
+				s.log().Warn("room access unverified", "repository", repo, "err", err)
+			}
+			admitted[repo] = ok
+		}
+		if !ok {
+			continue
+		}
 		sub, you := s.you(room, p, room.Status.Driver)
 		if !policy.Allowed(sub, policy.Read) {
 			continue
