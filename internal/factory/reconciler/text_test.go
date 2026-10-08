@@ -387,3 +387,45 @@ func TestFitQuotedIsTheLongestPrefixThatFits(t *testing.T) {
 		}
 	}
 }
+
+// Task 7: implementers post a progress note at each milestone.
+func TestFirstBriefAsksForProgressNotes(t *testing.T) {
+	// Test untrusted source
+	b := FirstBrief(issueTask("3buqdlot", 7, "fix it"), "n0nce234")
+	if strings.Count(b, "room_progress") != 1 {
+		t.Fatalf("FirstBrief should have exactly one progress instruction, got %d", strings.Count(b, "room_progress"))
+	}
+	fence := "TASK-DATA-n0nce234"
+	fencePos := strings.Index(b, "\n"+fence+"\n")
+	instructionPos := strings.Index(b, "room_progress")
+	if instructionPos < 0 || instructionPos > fencePos {
+		t.Fatalf("progress instruction should appear before the fence at position %d, but instruction is at %d", fencePos, instructionPos)
+	}
+
+	// Test trusted source
+	tk := issueTask("3buqdlot", 0, "rotate the certificates")
+	tk.Spec.Source.Trust = "trusted"
+	bTrusted := FirstBrief(tk, "n0nce234")
+	if strings.Count(bTrusted, "room_progress") != 1 {
+		t.Fatalf("FirstBrief (trusted) should have exactly one progress instruction, got %d", strings.Count(bTrusted, "room_progress"))
+	}
+	fencePosTrusted := strings.Index(bTrusted, "\n"+fence+"\n")
+	instructionPosTrusted := strings.Index(bTrusted, "room_progress")
+	if instructionPosTrusted < 0 || instructionPosTrusted > fencePosTrusted {
+		t.Fatalf("progress instruction should appear before the fence in trusted brief, but instruction is at %d, fence at %d", instructionPosTrusted, fencePosTrusted)
+	}
+}
+
+// Task 7: implementers post a progress note at each milestone.
+func TestReviseBriefAsksForProgressNotes(t *testing.T) {
+	b, _ := ReviseBrief(reviseTask(), nil, nil, "n0nce234")
+	if strings.Count(b, "room_progress") != 1 {
+		t.Fatalf("ReviseBrief should have exactly one progress instruction, got %d", strings.Count(b, "room_progress"))
+	}
+	fence := "ROOM-DATA-n0nce234"
+	fencePos := strings.Index(b, "\n"+fence+"\n")
+	instructionPos := strings.Index(b, "room_progress")
+	if instructionPos < 0 || instructionPos > fencePos {
+		t.Fatalf("progress instruction should appear before the fence, but instruction is at %d, fence at %d", instructionPos, fencePos)
+	}
+}

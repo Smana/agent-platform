@@ -71,6 +71,55 @@ func (s *Server) roomEvents(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]any{"events": evs, "lastSeq": st.LastSeq})
 }
 
+// roomTask: POST /v1/rooms/{id}/task, system:* only. The factory's structured task facts,
+// stored as state_changed{kind:task} so the room summary needs nothing but the room log.
+// Replays are keyed on (principal, clientSeq) under its own OriginClient, <principal>:task,
+// apart from roomMessage's.
+func (s *Server) roomTask(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.systemAuth(w, r)
+	if !ok {
+		return
+	}
+	release, ok := s.admit(w, p.ID)
+	if !ok {
+		return
+	}
+	defer release()
+	id := r.PathValue("id")
+	if !envelope.ValidID(id) {
+		fail(w, http.StatusBadRequest, wire.ReasonBadRoom)
+		return
+	}
+	var in struct {
+		ClientSeq int64              `json:"clientSeq"`
+		Facts     envelope.TaskFacts `json:"facts"`
+	}
+	if err := decodeStrict(r.Body, &in); err != nil || in.ClientSeq <= 0 || in.Facts.Validate() != nil {
+		fail(w, http.StatusBadRequest, wire.ReasonBadMessage)
+		return
+	}
+	payload, rules, err := s.Redactor.Payload(r.Context(), envelope.TaskStatePayload(in.Facts))
+	if err != nil {
+		s.log().Warn("task facts not redacted in time", "room", id, "principal", p.ID, "err", err)
+		fail(w, http.StatusServiceUnavailable, wire.ReasonTimedOut)
+		return
+	}
+	// Its own OriginClient: a facts clientSeq never collides with a task_state message's.
+	ev, dup, err := s.Log.Append(r.Context(), envelope.Draft{RoomID: id,
+		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: p.ID}, Type: envelope.StateChanged,
+		Origin: envelope.OriginClient, OriginClient: p.ID + ":task", OriginSeq: in.ClientSeq,
+		Redactions: rules, Payload: payload})
+	if err != nil {
+		s.logFailure(w, err, "append task facts", "room", id, "principal", p.ID)
+		return
+	}
+	code := http.StatusOK
+	if !dup {
+		code = http.StatusCreated
+	}
+	reply(w, code, map[string]int64{"seq": ev.Seq})
+}
+
 // roomMessage: POST /v1/rooms/{id}/messages, system:* only, reserved kind task_state
 // (C4). 201 for a new event, 200 for a replayed clientSeq; both carry its seq.
 // A replay is keyed on (principal, clientSeq) alone: a different body under a

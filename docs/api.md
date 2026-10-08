@@ -47,6 +47,7 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
 | `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 |
 | `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 |
+| `POST /v1/rooms/{id}/task` | System | Appends the task's facts, `state_changed{kind: task}` | Local-first UX |
 | `POST /v1/rooms/{id}/queue` | System | Queues a chat message for the room's next run | SP3 (R9) |
 | `GET /v1/rooms/{id}/queue` | System | Lists the messages still queued | SP3 (R9) |
 | `POST /v1/rooms/{id}/queue/consume` | System | Marks queued messages consumed by a run | SP3 (R9) |
@@ -232,6 +233,27 @@ never reuses a `clientSeq` for another message.
 | `429` | `rate_limited` | Over the principal's limits |
 | `503` | `log_unavailable`, `timed_out` | The database refused it, or the request ran out of time |
 
+### `POST /v1/rooms/{id}/task`
+
+For system callers: the factory's facts about the room's task, stored as
+[`state_changed{kind: task}`](event-envelope.md#state_changed-kinds) so the
+[summary](#get-apiroomsidsummary) reads the room log alone. Request, at most 32 KiB:
+
+```json
+{"clientSeq": 7, "facts": {"phase": "Implementing", "run": {"id": "cf4ato2x", "role": "implementer"},
+  "budget": {"usedTokens": 189093, "limitTokens": 1500000},
+  "issue": {"number": 42, "url": "https://github.com/Smana/cloud-native-ref/issues/42"}}}
+```
+
+`facts.phase` is required, token counts are not negative, and `issue.url` and `pr.url` are
+github.com issue and pull request URLs. The facts are redacted. Response `201`: `{"seq": 1845}`.
+Replays are keyed as for `/messages`, `(principal, clientSeq)`, but under the origin
+`<principal>:task`: the two `clientSeq` spaces never collide. Refusals as for `/messages`; facts
+that do not validate are `400 bad_message`.
+
+A broker older than the route (v0.7) answers a plain-text `404`. The factory takes that as a wait,
+warns once, and keeps the facts due until the broker serves the route: upgrade the broker first.
+
 ### The queue routes
 
 For system callers (SP3 ruling R9): the factory turns a maintainer's GitHub review into a queued
@@ -302,6 +324,7 @@ both from oauth2-proxy.
 | ID token | Issuer is the identity provider, audience holds the `rooms-proxy` client id, not expired |
 | Access token | Same `sub`; issued for `rooms-proxy`. A web session requires it to differ from the ID token (review M16) |
 | Groups | `agents-admin` or `agents-member`, else `403` |
+| Room access (D7) | `agents-admin` sees every room. Anyone else sees a room only if GitHub lets the login linked to their ZITADEL user read the room's `repository`; a room with none is admins-only. Answers are cached for at most 5 minutes; past that, a check ZITADEL or GitHub cannot answer fails closed. A room you may not see answers exactly like a missing one |
 | `Origin` | Must match the room host: no cross-site WebSocket (T9) |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |
 
@@ -314,20 +337,47 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | Method and path | Does | Phase / PR |
 |---|---|---|
 | `GET /`, `GET /r/{id}`, `GET /assets/{file}` | The embedded UI, under a strict Content Security Policy. A room's page keeps its newest 5 000 events; older ones leave the page, never the log. A `401` from the API, or one behind a refused WebSocket upgrade, sends the page to `/oauth2/start?rd=<the page>` | 2 / AP-2 |
-| `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
+| `GET /api/rooms` | One row per room the caller may read (room access, then their role): id, phase, owner, driver, data class, last `seq`, `repository`, `needsMe` (an approval is pending that the caller could decide in the web UI), and the caller's own role. A room whose access cannot be verified is left out, with no error. The `X-Rooms-Access` header says why a list may be short, about the caller only: `unlinked` (not an admin, and no GitHub link on their ZITADEL user), `unverified` (a check failed past the cache, or none is configured), else `ok`. Filters, applied after the access and role checks so none reveals an unreadable room: `?repo=owner/name`; `?mine=1`, rooms whose task's issue the caller filed or labelled or whose PR they authored or review, matched on their linked GitHub login; `?needs_me=1`, rows with `needsMe` | 2 / AP-2; filters local-first UX |
+| `GET /api/rooms/{id}/summary` | The room's [`summary/v1`](#get-apiroomsidsummary): status, what needs the caller, what they can do, the agents' notes | Local-first UX |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
-| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
+| `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member, on a `repository` they can read (room access). `400` for another data class, a missing or malformed repository, an unknown field or a principal the Room CRD would refuse, `404` for a repository the caller cannot read or the factory App cannot see (missing, or the App not installed), `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created, or `access_unverified` when the caller's access cannot be checked. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
 | `GET /api/roomctl` | `{url, issuer, clientID, projectID}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`. `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` (ruling AS) | 6 / AP-6 |
+
+### `GET /api/rooms/{id}/summary`
+
+The room's top layer, folded from its log, which the room page and `roomctl status` render. It is a
+room read: the same room access and role check as `GET /v1/ws`. Query: `after=N` (default `0`)
+keeps only the notes after `seq` N; pass back the number of the previous answer's `cursor`.
+
+| Status | When |
+|---|---|
+| `200` | The summary below |
+| `400` | `after` is not a non-negative integer |
+| `404` | No such room, or one the caller may not read: the same `no such room` (D7) |
+| `503` | `access_unverified`: ZITADEL or GitHub cannot confirm the caller's access past the cache; or the rooms or the log are unavailable. Retry |
+
+| Field | Holds |
+|---|---|
+| `apiVersion` | `summary/v1`, the contract both renderers check |
+| `room`, `url` | The room id and its page |
+| `status` | `phase`: the task's, else the room's, and `Closed` or `Sealed` once the log is sealed. `run`, `budget`, `pr`, `issue`, `lastVerdict`: the factory's latest facts and the latest review verdict, each `null` when absent. Empty fields inside them are left out, such as a PR's `reviewers` before anyone reviews |
+| `needsYou` | `[{kind: approval, id, what, deadline, url}]`: the pending approvals the caller could decide in the web UI. Each carries a link to its card in the room, never a command (ruling P18) |
+| `actions` | What the caller may do now, by their standing: `queue` and `stop` carry a `cli` line; `steer`, for the driver, carries none, since `roomctl` never steers |
+| `notes` | `{untrusted: true, items: [{at, run, text}]}`: the last 20 progress notes after `after`. `untrusted` is always `true`: they are the agents' claims, rendered as text |
+| `cursor` | `seq:N`, the last `seq` folded |
+
+A sealed room has no `needsYou` and no `actions`. A fork's summary starts at its `forked_from`: the
+source's task, approvals, verdict and notes are not the fork's.
 
 ### `GET /v1/ws`
 
 | Status before upgrade | When |
 |---|---|
 | `401` | Not authenticated, or the token is already past its expiry |
-| `403` | A foreign `Origin` (T9); not in an agents group; not allowed to read this room (`not_permitted`) |
-| `404` | No such room |
+| `403` | A foreign `Origin` (T9); not in an agents group |
+| `404` | No such room, or one the caller may not read: the same `no such room` (D7) |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica, ruling P22) |
-| `503` | The log is unavailable |
+| `503` | The log is unavailable; `access_unverified`: ZITADEL or GitHub cannot confirm the caller's access past the cache |
 
 One JSON object per text frame (Appendix B).
 
@@ -354,6 +404,8 @@ live `seq` triggers a range read.
 | `1007` | `failed to unmarshal JSON` | Send each frame as one JSON object |
 | `1001` | `shutdown` | Reconnect: the replica is stopping |
 | `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
+| `1008` | `no such room` | Stop: the caller may no longer read the room (D7, re-checked on every ping against the access cache, so within the TTL plus 30 s); a re-dial is refused `404` |
+| `1013` | `access_unverified` | Reconnect after a backoff: ZITADEL or GitHub could not confirm the caller's access past the cache |
 
 The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
 close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with
@@ -421,6 +473,7 @@ appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 |---|---|---|---|---|
 | `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted, at most 1 MiB of payload a reply and 500 events scanned. Pass `lastSeq` as the next `sinceSeq` | nothing |
 | `room_post` | all | `text`, 1–16 384 bytes | `{seq}` | `message{kind: chat}`, delivered to nobody |
+| `room_progress` | all | `text`, one line of 1–280 characters; one note a minute per run per broker replica, on top of the call limit | `{seq}` | `message{kind: progress}`, delivered to nobody; a refused note over the minute answers `rate_limited: one progress note a minute` |
 | `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (lowercase hex, 7–40) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch}`; `fromRole` and `branch` from the `AgentRun` |
 | `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |
 

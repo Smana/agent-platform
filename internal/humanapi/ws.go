@@ -58,6 +58,8 @@ var (
 	errClientGone   = errors.New(dropClientGone)
 	errShutdown     = errors.New(dropShutdown)
 	errLog          = errors.New(dropLogUnavailable)
+	errRevoked      = errors.New(dropRevoked)
+	errUnverified   = errors.New(dropUnverified)
 )
 
 func or(d, def time.Duration) time.Duration {
@@ -145,15 +147,16 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("room")
-	room, st, ok := s.lookup(w, r, id)
+	room, st, ok := s.lookup(w, r, id, p)
 	if !ok {
 		return
 	}
 	// The Read gate only: serve resolves the snapshot's standing again against
-	// the mark it reads after subscribing, so the two agree.
+	// the mark it reads after subscribing, so the two agree. A room the caller
+	// may not read is as missing as one that does not exist (D7).
 	sub, _ := s.you(room, p, st.Driver)
 	if !policy.Allowed(sub, policy.Read) {
-		http.Error(w, wire.ReasonNotPermitted, http.StatusForbidden)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return
 	}
 	if !s.acquire(p.ID, id) {
@@ -188,7 +191,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	defer stopLife()
 
 	// session scopes the connection's clientSeq, its acts' idempotency key.
-	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String()}
+	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String(),
+		gated: !s.Groups.IsAdmin(p)}
 	reason := v.serve()
 	if reason != dropClientGone {
 		s.dropped(base, reason)
@@ -200,8 +204,10 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusGoingAway, reason)
 	case dropSlowConsumer:
 		_ = c.Close(websocket.StatusPolicyViolation, reason+": resume from afterSeq")
-	case dropLogUnavailable:
+	case dropLogUnavailable, dropUnverified:
 		_ = c.Close(websocket.StatusTryAgainLater, reason)
+	case dropRevoked: // what a new connection to the room is now answered
+		_ = c.Close(websocket.StatusPolicyViolation, noSuchRoom)
 	}
 	// The hello's read and the reader return once the socket is closed, the pinger with the life.
 	_ = c.CloseNow()
@@ -209,9 +215,12 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	v.wg.Wait()
 }
 
-// lookup reads the room and its log row before the upgrade, within routeTimeout,
-// or writes the refusal.
-func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1alpha1.Room, store.RoomState, bool) {
+// noSuchRoom answers a missing room and one the caller may not read alike (D7).
+const noSuchRoom = "no such room"
+
+// lookup reads the room, checks that p may see it (D7), then reads its log row,
+// before the upgrade and within routeTimeout, or writes the refusal.
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string, p authn.Principal) (*v1alpha1.Room, store.RoomState, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
 	room, found, err := s.room(ctx, id)
@@ -220,12 +229,25 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string) (*v1a
 		return nil, store.RoomState{}, false
 	}
 	if !found {
-		http.Error(w, "no such room", http.StatusNotFound)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
+		return nil, store.RoomState{}, false
+	}
+	// Before the log: a log error must not tell an unreadable room from a missing one.
+	actx, acancel := context.WithTimeout(ctx, accessWait)
+	ok, err := s.admits(actx, room, p)
+	acancel()
+	if err != nil {
+		s.log().Warn("room access unverified", "room", id, "err", err)
+		http.Error(w, reasonAccessUnverified, http.StatusServiceUnavailable)
+		return nil, store.RoomState{}, false
+	}
+	if !ok {
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return nil, store.RoomState{}, false
 	}
 	st, err := s.Log.Room(ctx, id)
 	if errors.Is(err, store.ErrNoRoom) {
-		http.Error(w, "no such room", http.StatusNotFound)
+		http.Error(w, noSuchRoom, http.StatusNotFound)
 		return nil, store.RoomState{}, false
 	}
 	if err != nil {
@@ -247,6 +269,7 @@ type viewer struct {
 	id      string
 	session string         // this connection's idempotency scope
 	last    int64          // the last seq written
+	gated   bool           // D7 is re-checked on every ping; an admin bypasses it
 	wg      sync.WaitGroup // the reader and the pinger
 }
 
@@ -403,7 +426,7 @@ func (v *viewer) ended() string {
 	if errors.Is(cause, context.DeadlineExceeded) {
 		return dropReauth
 	}
-	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol} {
+	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol, errRevoked, errUnverified} {
 		if errors.Is(cause, e) {
 			return e.Error()
 		}
@@ -440,6 +463,7 @@ func refused(err error) bool {
 }
 
 // ping checks the peer every PingEvery; no pong within PongWait ends the connection.
+// On the same beat it re-runs D7 (rulings R17, R21).
 func (v *viewer) ping() {
 	t := time.NewTicker(or(v.s.PingEvery, defaultPingEvery))
 	defer t.Stop()
@@ -448,6 +472,9 @@ func (v *viewer) ping() {
 		case <-v.life.Done():
 			return
 		case <-t.C:
+		}
+		if v.gated && !v.readable() {
+			return
 		}
 		ctx, cancel := context.WithTimeout(v.base, or(v.s.PongWait, defaultPongWait))
 		err := v.c.Ping(ctx)
@@ -462,6 +489,28 @@ func (v *viewer) ping() {
 			cancel()
 		}
 	}
+}
+
+// readable re-runs D7 for the open connection, or ends it. Against the cache, a check costs
+// nothing until its answer is a TTL old, so on the ping's beat a revoked reader is cut within
+// the access TTL plus one ping, and one ZITADEL or GitHub cannot vouch for past the cache is
+// cut rather than streamed to. The Room is the one the connection opened on.
+func (v *viewer) readable() bool {
+	ctx, cancel := context.WithTimeout(v.life, accessWait)
+	ok, err := v.s.admits(ctx, v.room, v.p)
+	cancel()
+	switch {
+	case v.life.Err() != nil:
+		return false // the check failed because the connection ended
+	case err != nil:
+		v.s.log().Warn("room access unverified", "room", v.id, "err", err)
+		v.cancel(errUnverified)
+		return false
+	case !ok:
+		v.cancel(errRevoked)
+		return false
+	}
+	return true
 }
 
 // sendRange writes a sync frame, always (the client takes its seq baseline from

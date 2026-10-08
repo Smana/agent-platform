@@ -150,6 +150,7 @@ flowchart LR
 | Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ |
 | Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | ✓ |
+| Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it | ✓ |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | ✓ |
 | Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |
@@ -169,6 +170,8 @@ flowchart LR
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
 | Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
+| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render | ✓ |
+| Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed | ✓ |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
 | Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
@@ -209,7 +212,7 @@ Packages that do touch the platform name their seam:
 | `internal/bridge` | the OpenHands agent-server loopback API and its event kinds; a harness adapter interface would replace them for another harness |
 | `internal/factory/runs` | the `AgentRun` claim SP1's XRD accepts: its GVK, namespace and claim prefix (runwatch's), the `agents.ogenki.io/*` labels and annotations, the principal `system:factory` and the Kueue queues `factory` and `interactive`; the reconciler reaches it through its `RunClient` interface only |
 | `internal/factory/config` | every deployment fact is config: repository, maintainers, the App logins, the rooms UI and broker URLs, the broker CA and token paths, the meter's URL and query, tiers and the trace collector. The vocabularies it checks against are constants: SP1's roles, C5's logical model names, the tiers and the Task CRD's template enum |
-| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository) is a constant |
+| `internal/github` | GitHub's REST API and App auth; the API URL and the App's key directory are the caller's, the token scope (`pull_requests: write`, one repository; GitHub adds `metadata: read`, which the D7 reads use) is a constant |
 
 Why: the project may go platform-agnostic after the phase-7 UX sign-off, decided if 2 of 4 hold
 — daily use, AHP 1.0 still leaving identity and audit out, a second harness or runtime needed,

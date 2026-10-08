@@ -98,6 +98,11 @@ spec:
                   one (R28).
                 minimum: 0
                 type: integer
+              issueAuthor:
+                description: The issue's author on GitHub, for the room list's "mine"
+                  filter.
+                maxLength: 64
+                type: string
               predictedClass:
                 description: 'Intent, not authority: it picks team and budget; only
                   policy-bot merges (§2).'
@@ -231,6 +236,23 @@ spec:
                   resets with a new one (§6.4).'
                 maxLength: 64
                 type: string
+              facts:
+                description: 'The task facts last written to the room: their seq comes
+                  from the roomSeq ledger (ruling SK).'
+                properties:
+                  hash:
+                    maxLength: 16
+                    type: string
+                  posted:
+                    type: boolean
+                  seq:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - hash
+                - seq
+                type: object
               fixRuns:
                 format: int32
                 type: integer
@@ -335,6 +357,9 @@ spec:
                   armedAt:
                     format: date-time
                     type: string
+                  author:
+                    maxLength: 64
+                    type: string
                   autoMerged:
                     type: boolean
                   headSHA:
@@ -356,6 +381,13 @@ spec:
                     type: integer
                   revertNumber:
                     type: integer
+                  reviewers:
+                    description: Everyone who has submitted a review, oldest first.
+                    items:
+                      maxLength: 64
+                      type: string
+                    maxItems: 16
+                    type: array
                   url:
                     maxLength: 2048
                     type: string
@@ -384,9 +416,9 @@ spec:
                 type: string
               roomSeq:
                 description: |-
-                  The last clientSeq the task took for a task_state message in its room (ruling SK). The
-                  broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
-                  narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
+                  The last clientSeq the task took for a task_state message or its facts in its room (ruling
+                  SK). The broker keeps one message per clientSeq, so the ledger is its own field, never trimmed
+                  like narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
                 format: int64
                 minimum: 0
                 type: integer

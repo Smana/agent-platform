@@ -6,6 +6,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -42,6 +44,38 @@ type HumanConfig struct {
 	ProjectIDFile       string       `json:"projectIDFile"`                 // a human token's aud must hold it (Ruling AS)
 	Origin              string       `json:"origin"`
 	Groups              GroupsConfig `json:"groups"`
+	// Access turns on D7: a member sees a room only if they can read its repository
+	// on GitHub. Unset, rooms are visible to admins only, never to every member.
+	Access *AccessConfig `json:"access,omitempty"`
+}
+
+// AccessConfig is D7's GitHub check. ReaderFile is the ZITADEL link reader's mounted
+// secret, JSON {"pat", "tokenId", "githubIdpId"}, read at use: ZITADEL at the human
+// issuer resolves a member to their linked GitHub id. TTL caches each answer.
+type AccessConfig struct {
+	ReaderFile string   `json:"readerFile"`
+	TTL        Duration `json:"ttl,omitempty"`
+}
+
+// MaxAccessTTL is the longest a GitHub access answer is trusted, and the default: a
+// revoked read must lapse within it (D7).
+const MaxAccessTTL = 5 * time.Minute
+
+// Duration is a time.Duration written as a string such as "90s".
+type Duration struct{ time.Duration }
+
+// UnmarshalJSON parses a Go duration string; a bare number is refused, since its unit is a guess.
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("a duration is a string such as \"90s\": %w", err)
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("duration %q: %w", s, err)
+	}
+	d.Duration = v
+	return nil
 }
 
 // GroupsConfig names the IdP's two agent groups, which feed policy.Groups. They
@@ -93,6 +127,9 @@ func (c *Config) ApplyDefaults() {
 	if c.TLS.KeyFile == "" {
 		c.TLS.KeyFile = DefaultKeyFile
 	}
+	if a := c.Human.Access; a != nil && a.TTL.Duration == 0 {
+		a.TTL.Duration = MaxAccessTTL
+	}
 }
 
 // Validate reports every problem at once. The run issuers' patterns compile here,
@@ -139,6 +176,18 @@ func (h HumanConfig) validate() []error {
 	}
 	if h.Groups.Admin != "" && h.Groups.Admin == h.Groups.Member {
 		errs = append(errs, errors.New("human.groups: admin and member must differ"))
+	}
+	if a := h.Access; a != nil {
+		if a.ReaderFile == "" {
+			errs = append(errs, errors.New("human.access.readerFile: is required"))
+		}
+		if a.TTL.Duration <= 0 || a.TTL.Duration > MaxAccessTTL {
+			errs = append(errs, fmt.Errorf("human.access.ttl: must be above 0 and at most %s (D7)", MaxAccessTTL))
+		}
+		// The reader's PAT is sent to the issuer: never in clear, never with userinfo.
+		if u, err := url.Parse(h.Issuer); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			errs = append(errs, errors.New("human.issuer: must be https://host when human.access is set"))
+		}
 	}
 	return errs
 }

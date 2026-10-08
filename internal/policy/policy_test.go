@@ -167,3 +167,24 @@ func TestAdmitted(t *testing.T) {
 		})
 	}
 }
+
+// D7: the admin group sees every room, whatever GitHub says; nobody else bypasses.
+func TestIsAdmin(t *testing.T) {
+	g := Groups{Admin: adminGroup, Member: memberGroup}
+	for _, c := range []struct {
+		name   string
+		groups Groups
+		p      authn.Principal
+		want   bool
+	}{
+		{"an admin", g, authn.Principal{Kind: envelope.ActorHuman, Groups: []string{"backend", adminGroup}}, true},
+		{"a member", g, authn.Principal{Kind: envelope.ActorHuman, Groups: []string{memberGroup}}, false},
+		{"no group", g, authn.Principal{Kind: envelope.ActorHuman}, false},
+		{"an unset admin group never matches an empty claim", Groups{}, authn.Principal{Kind: envelope.ActorHuman, Groups: []string{""}}, false},
+		{"an agent carrying the group name", g, authn.Principal{Kind: envelope.ActorAgent, Groups: []string{adminGroup}}, false},
+	} {
+		if got := c.groups.IsAdmin(c.p); got != c.want {
+			t.Errorf("%s: IsAdmin = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

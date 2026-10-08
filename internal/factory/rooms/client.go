@@ -43,6 +43,7 @@ const (
 
 	eventsRoute   = "/v1/rooms/{id}/events"
 	messagesRoute = "/v1/rooms/{id}/messages"
+	taskRoute     = "/v1/rooms/{id}/task"
 	queueRoute    = "/v1/rooms/{id}/queue"
 	consumeRoute  = "/v1/rooms/{id}/queue/consume"
 
@@ -68,22 +69,31 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("broker: %d %s", e.Status, e.Reason) }
 
-// The two refusals callers branch on, matched by errors.Is against an *APIError.
+// The refusals callers branch on, matched by errors.Is against an *APIError.
 var (
 	// ErrNoRoom is 404 no_room: the broker has not made the room's log yet. Retry later.
 	ErrNoRoom = errors.New("rooms: the broker has no log for the room yet")
 	// ErrNotPermitted is 403 not_permitted: the broker's systemPrincipals does not list the
 	// factory. Expected until FR-1 enables the entry (SP2 M9); a config fix, not a retry.
 	ErrNotPermitted = errors.New("rooms: the broker does not allow system:factory")
+	// ErrSealed is 410 sealed: the room was closed, and its log takes no event again.
+	ErrSealed = errors.New("rooms: the room's log is sealed")
+	// ErrNoRoute is a 404 or 405 with no reason: the broker's mux does not serve the route, so the
+	// broker is older than the factory (a v0.7 broker has no task route). An upgrade, not a retry.
+	ErrNoRoute = errors.New("rooms: the broker does not serve this route yet")
 )
 
-// Is matches ErrNoRoom and ErrNotPermitted.
+// Is matches ErrNoRoom, ErrNotPermitted, ErrSealed and ErrNoRoute.
 func (e *APIError) Is(target error) bool {
 	switch target {
+	case ErrNoRoute:
+		return e.Reason == "" && (e.Status == http.StatusNotFound || e.Status == http.StatusMethodNotAllowed)
 	case ErrNoRoom:
 		return e.Reason == wire.ReasonNoRoom
 	case ErrNotPermitted:
 		return e.Reason == wire.ReasonNotPermitted
+	case ErrSealed:
+		return e.Reason == wire.ReasonSealed
 	}
 	return false
 }
@@ -216,6 +226,28 @@ func (c *Client) TaskState(ctx context.Context, room, text string, clientSeq int
 		Seq int64 `json:"seq"`
 	}
 	return c.do(ctx, http.MethodPost, messagesRoute, room, "", in, maxReplyOverhead, &out)
+}
+
+// TaskFacts posts the task's structured facts (state_changed{kind:task}), system:* only. Replays
+// are keyed on (room, principal, clientSeq): each distinct snapshot needs its own clientSeq.
+func (c *Client) TaskFacts(ctx context.Context, room string, f envelope.TaskFacts, clientSeq int64) error {
+	switch {
+	case !envelope.ValidID(room):
+		return fmt.Errorf("rooms: %q is not a C2 room id", room)
+	case clientSeq < 1:
+		return fmt.Errorf("rooms: clientSeq %d is not positive", clientSeq)
+	}
+	if err := f.Validate(); err != nil {
+		return err
+	}
+	in := struct {
+		ClientSeq int64              `json:"clientSeq"`
+		Facts     envelope.TaskFacts `json:"facts"`
+	}{clientSeq, f}
+	var out struct {
+		Seq int64 `json:"seq"`
+	}
+	return c.do(ctx, http.MethodPost, taskRoute, room, "", in, maxReplyOverhead, &out)
 }
 
 // Queued is one live message of the room's FIFO queue (SP2 §2); Ref is its seq in the room.

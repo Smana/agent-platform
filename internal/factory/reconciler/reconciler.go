@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -41,7 +42,8 @@ type RunClient interface {
 }
 
 // RoomLog is the broker's system API as the reconciler uses it (rooms.Client): the room's log
-// from afterSeq with its resume cursor, its current seq, the room's queue, and task_state messages.
+// from afterSeq with its resume cursor, its current seq, the room's queue, task_state messages and
+// the task's facts.
 type RoomLog interface {
 	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
 	LastSeq(ctx context.Context, room string) (int64, error)
@@ -49,6 +51,7 @@ type RoomLog interface {
 	Queue(ctx context.Context, room string) ([]rooms.Queued, error)
 	Consume(ctx context.Context, room string, refs []int64, runID string) error
 	TaskState(ctx context.Context, room, text string, clientSeq int64) error
+	TaskFacts(ctx context.Context, room string, f envelope.TaskFacts, clientSeq int64) error
 }
 
 // taskForge is the part of the forge the reconciler uses, as the factory App.
@@ -113,6 +116,8 @@ type Reconciler struct {
 	Nonce     func() string
 	Log       *slog.Logger
 	Trace     tracing.Sink // nil: tracing off (R46)
+
+	oldBroker sync.Once // the broker serves no task route: said once per process
 }
 
 // SetupWithManager watches Tasks and the AgentRuns that carry a task label.
@@ -142,7 +147,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
 	// its action, even after the task itself has ended.
 	revertWait := r.revertable(&t) || r.revertPending(&t)
-	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) {
+	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) {
 		return ctrl.Result{}, nil
 	}
 	before := t.Status.DeepCopy()
@@ -165,12 +170,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			f(ctx)
 		}
 	}
-	// Only a written outbox is posted (review M-a), and only a written end exports the task's span:
-	// a write that conflicts posts and exports nothing, and its replay may take another path. The
-	// second write records what was posted and exported.
-	if len(t.Status.Outbox) > 0 || r.spanDue(&t) {
+	// Only a written outbox is posted (review M-a), only written facts reach the room, and only a
+	// written end exports the task's span: a write that conflicts posts and exports nothing, and its
+	// replay may take another path. The second write records what was posted and exported. Facts
+	// are advisory: a failed post is returned for a retry, and no phase waits on it.
+	if len(t.Status.Outbox) > 0 || r.spanDue(&t) || r.factsDue(&t) {
 		queued := t.Status.DeepCopy()
 		err = errors.Join(err, r.drain(ctx, &t))
+		err = errors.Join(err, r.postFacts(ctx, &t))
 		r.endTrace(ctx, &t)
 		if !equality.Semantic.DeepEqual(*queued, t.Status) {
 			if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {

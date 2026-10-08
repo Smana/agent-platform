@@ -359,6 +359,7 @@ func (g *GitHub) Issue(ctx context.Context, number int) (Issue, error) {
 				Title        string
 				Body         string
 				State        string
+				Author       *actor
 				LastEditedAt *githubv4.DateTime
 				Labels       struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 50)"`
 				Renames      struct {
@@ -379,7 +380,7 @@ func (g *GitHub) Issue(ctx context.Context, number int) (Issue, error) {
 		return Issue{}, wrap("read an issue", err)
 	}
 	i := q.Repository.Issue
-	out := Issue{Number: i.Number, URL: i.URL, Title: i.Title, Body: i.Body, State: i.State}
+	out := Issue{Number: i.Number, URL: i.URL, Title: i.Title, Body: i.Body, State: i.State, Author: i.Author.login()}
 	if i.LastEditedAt != nil {
 		out.LastEditedAt = i.LastEditedAt.Time
 	}

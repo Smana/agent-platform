@@ -102,6 +102,17 @@ func newBroker(t *testing.T, n int) (*broker, *httptest.Server) {
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"seq":9}`)
 	})
+	mux.HandleFunc("POST /v1/rooms/{id}/task", func(w http.ResponseWriter, r *http.Request) {
+		if b.refuse(w, r) {
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		b.mu.Lock()
+		b.bodies = append(b.bodies, string(raw))
+		b.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"seq":10}`)
+	})
 	mux.HandleFunc("POST /v1/rooms/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
 		if b.refuse(w, r) {
 			return
@@ -293,9 +304,11 @@ func TestTheBrokersRefusalIsTyped(t *testing.T) {
 			if !errors.As(err, &api) || api.Status != c.code || api.Reason != c.reason {
 				t.Fatalf("task_state: %v", err)
 			}
-			// Callers branch on these two: no_room is a retry, not_permitted the missing FR-1 entry.
+			// Callers branch on these three: no_room is a retry, not_permitted the missing FR-1 entry,
+			// sealed a room that takes no event again.
 			if errors.Is(err, ErrNoRoom) != (c.reason == wire.ReasonNoRoom) ||
-				errors.Is(err, ErrNotPermitted) != (c.reason == wire.ReasonNotPermitted) {
+				errors.Is(err, ErrNotPermitted) != (c.reason == wire.ReasonNotPermitted) ||
+				errors.Is(err, ErrSealed) != (c.reason == wire.ReasonSealed) {
 				t.Fatalf("errors.Is: %v", err)
 			}
 		})
@@ -561,6 +574,63 @@ func TestQueueCallsRefuseWhatTheBrokerWould(t *testing.T) {
 				t.Fatal("sent")
 			}
 		})
+	}
+	if len(r.b.auth) != 0 {
+		t.Fatalf("%d requests reached the broker", len(r.b.auth))
+	}
+}
+
+func TestTaskFactsPostsToTheTaskRoute(t *testing.T) {
+	r := newRig(t, 0)
+	f := envelope.TaskFacts{Phase: "Implementing", Run: &envelope.RunFact{ID: "cf4ato2x", Role: "implementer"}}
+	// The fake mounts only POST /v1/rooms/{id}/task for this body, so a wrong path fails the call.
+	if err := r.c.TaskFacts(t.Context(), "3buqdlot", f, 7); err != nil {
+		t.Fatal(err)
+	}
+	if body := r.b.bodies[len(r.b.bodies)-1]; body != `{"clientSeq":7,"facts":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"}}}` {
+		t.Fatalf("body %s", body)
+	}
+}
+
+// A broker older than the factory serves no task route (v0.7): its mux answers a plain-text 404, or a
+// 405 when the path has another method's route, with no wire reason. A broker's own no_room is not it.
+func TestAnUnservedRouteIsErrNoRoute(t *testing.T) {
+	f := envelope.TaskFacts{Phase: "Queued"}
+	served := newRig(t, 0)
+	served.b.fail["/v1/rooms/3buqdlot/task"], served.b.reason = http.StatusNotFound, wire.ReasonNoRoom
+	if err := served.c.TaskFacts(t.Context(), "3buqdlot", f, 1); !errors.Is(err, ErrNoRoom) || errors.Is(err, ErrNoRoute) {
+		t.Fatalf("no_room: %v", err)
+	}
+	for name, mux := range map[string]*http.ServeMux{"404": http.NewServeMux(), "405": http.NewServeMux()} {
+		if name == "405" {
+			mux.HandleFunc("GET /v1/rooms/{id}/task", func(http.ResponseWriter, *http.Request) {})
+		}
+		srv := httptest.NewTLSServer(mux)
+		t.Cleanup(srv.Close)
+		roots := x509.NewCertPool()
+		roots.AddCert(srv.Certificate())
+		c, err := New(srv.URL, served.tok, httpx.New(5*time.Second, roots), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = c.TaskFacts(t.Context(), "3buqdlot", f, 1)
+		if !errors.Is(err, ErrNoRoute) || errors.Is(err, ErrNoRoom) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestTaskFactsRefusesBeforeARequest(t *testing.T) {
+	r := newRig(t, 0)
+	ok := envelope.TaskFacts{Phase: "Queued"}
+	for name, err := range map[string]error{
+		"a bad room":       r.c.TaskFacts(t.Context(), "3BUQDLOT", ok, 1),
+		"a zero clientSeq": r.c.TaskFacts(t.Context(), "3buqdlot", ok, 0),
+		"no phase":         r.c.TaskFacts(t.Context(), "3buqdlot", envelope.TaskFacts{}, 1),
+	} {
+		if err == nil {
+			t.Errorf("%s: sent", name)
+		}
 	}
 	if len(r.b.auth) != 0 {
 		t.Fatalf("%d requests reached the broker", len(r.b.auth))

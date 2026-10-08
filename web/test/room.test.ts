@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
 import { mountRoom } from "../src/room";
@@ -81,9 +83,12 @@ describe("the room page", () => {
   // the list reads a replica's informer cache, which may lag the POST (review I2): the
   // page stops only after three absent answers in a row, each a backoff apart.
   const listed = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  // The summary fetch is not a list call: it gets a 503 and is not counted.
+  const noSummary = Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
   const lists = (...script: string[][]) => {
     const calls: number[] = [];
-    const get = (() => {
+    const get = ((url: string) => {
+      if (url.includes("/summary")) return noSummary;
       calls.push(calls.length);
       return listed(script[Math.min(calls.length - 1, script.length - 1)].map((id) => ({ id })));
     }) as unknown as typeof fetch;
@@ -116,7 +121,8 @@ describe("the room page", () => {
   it("stops a re-dial already under way", async () => {
     let answer!: (r: unknown) => void;
     let asked = 0;
-    const p = page((() => {
+    const p = page(((url: string) => {
+      if (url.includes("/summary")) return noSummary;
       asked++;
       return asked < 3 ? listed([]) : new Promise((r) => { answer = r; });
     }) as unknown as typeof fetch);
@@ -214,5 +220,161 @@ describe("the room page", () => {
   it("announces its notices politely (R10)", () => {
     const notice = page().app.querySelector("footer .notice")!;
     expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+  });
+
+  // The summary leads the page; the raw stream is collapsed and shares the one socket.
+  // Only an event the summary folds refetches it: a busy run's chat and tool calls would
+  // otherwise refetch the whole fold every second (R27).
+  it("leads with the summary, refetched at most once a second on summary events, over the one socket", async () => {
+    const sum = { apiVersion: "summary/v1", room: "3kq7x2ma", url: "u", status: { phase: "Open", run: null, budget: null, pr: null, issue: null, lastVerdict: null },
+      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor: "seq:0" };
+    const get = vi.fn(async () => new Response(JSON.stringify(sum), { status: 200 })) as unknown as typeof fetch;
+    const p = page(get);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(p.app.querySelector('.summary [data-block="status"]')).not.toBeNull();
+    expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "a", delivery: "none" }));
+    p.last().recv(event(2, "tool_call", { callId: "c1", tool: "terminal", args: {} }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(get).toHaveBeenCalledTimes(1);
+    p.last().recv(event(3, "message", { kind: "progress", text: "planning", delivery: "none" }));
+    p.last().recv(event(4, "state_changed", { kind: "task", phase: "Implementing" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(p.sockets).toHaveLength(1);
+  });
+
+  it("shows the summary's error and keeps the stream when the fetch fails", async () => {
+    const get = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    const p = page(get);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.app.querySelector(".summary")!.textContent).toMatch(/cannot be verified/);
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "still here", delivery: "none" }));
+    expect(p.app.querySelector(".view-chat")!.textContent).toContain("still here");
+  });
+
+  // R23: only the raw log is collapsed; chat and composer stay in view.
+  it("keeps the chat and the composer visible with the raw events closed", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
+    expect(p.app.querySelector("details.raw-events .view-chat")).toBeNull();
+    expect(p.app.querySelector("details.raw-events")!.contains(p.app.querySelector('textarea[name="text"]'))).toBe(false);
+    expect(p.app.querySelector<HTMLElement>("section.controls")!.hidden).toBe(false);
+    expect(p.app.querySelector<HTMLElement>(".composer")!.hidden).toBe(false);
+  });
+
+  // R24: the broker's link is <room>#<approvalId>; it lands on that approval's card.
+  describe("the broker's approval link", () => {
+    const requested = (seq: number, id: string) => event(seq, "approval_requested", { approvalId: id, callId: "c1", class: "forge.pr",
+      action: {}, expiresAt: "2099-01-01T00:00:00Z" });
+    afterEach(() => { location.hash = ""; });
+
+    it("focuses the Approve button of the approval the hash names", () => {
+      location.hash = "#01M4A";
+      const p = page();
+      document.body.append(p.app);
+      p.join(snapshot({ approver: true }), 0, requested(1, "01M4A"));
+      expect(document.activeElement).toBe(p.app.querySelector("#approval-01M4A [data-act=approve]"));
+      p.app.remove();
+    });
+
+    it("follows a later hashchange", () => {
+      const p = page();
+      document.body.append(p.app);
+      p.join(snapshot({ approver: true }), 0, requested(1, "AAA"), requested(2, "BBB"));
+      location.hash = "#BBB";
+      window.dispatchEvent(new Event("hashchange"));
+      expect(document.activeElement).toBe(p.app.querySelector("#approval-BBB [data-act=approve]"));
+      p.app.remove();
+    });
+
+    it("does nothing, and does not throw, for a non-approver", () => {
+      location.hash = "#01M4A";
+      const p = page();
+      document.body.append(p.app);
+      expect(() => p.join(snapshot({ role: "watcher" }), 0, requested(1, "01M4A"))).not.toThrow();
+      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      p.app.remove();
+    });
+  });
+
+  describe("summary refresh", () => {
+    const sum = (phase: string, cursor: string) => ({ apiVersion: "summary/v1", room: "3kq7x2ma", url: "u",
+      status: { phase, run: null, budget: null, pr: null, issue: null, lastVerdict: null },
+      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor });
+    const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
+    const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
+    const note = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "progress", text: "x", delivery: "none" }));
+
+    it("keeps the blocks and adds an error line when a refresh fails", async () => {
+      const replies = [() => ok(sum("Running", "seq:1")), () => new Response("", { status: 503 })];
+      const p = page((async () => replies.shift()!()) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      p.join(snapshot(), 0);
+      note(p, 1);
+      await tick();
+      expect(p.app.querySelector('.summary [data-block="status"]')!.textContent).toContain("Running");
+      const err = p.app.querySelector<HTMLElement>(".summary-error")!;
+      expect(err.hidden).toBe(false);
+      expect(err.textContent).toMatch(/cannot be verified/);
+    });
+
+    it("drops a response older than the one already rendered", async () => {
+      const late: ((r: Response) => void)[] = [];
+      const p = page((() => new Promise<Response>((r) => late.push(r))) as unknown as typeof fetch);
+      p.join(snapshot(), 0);
+      note(p, 1);
+      await tick(); // request 2 is out beside request 1
+      expect(late).toHaveLength(2);
+      late[1](ok(sum("Newer", "seq:2")));
+      await vi.advanceTimersByTimeAsync(0);
+      late[0](ok(sum("Older", "seq:1")));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')!.textContent).toContain("Newer");
+    });
+
+    // C1: the broker omits a PR's reviewers until someone reviews (omitempty).
+    it("renders the broker's own golden summary", async () => {
+      const { want } = JSON.parse(readFileSync(join(__dirname, "../../internal/summary/testdata/normal.json"), "utf8"));
+      const p = page((async () => ok(want)) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("#2239");
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
+    });
+
+    // The getter stands in for a render that fails once: the page says so, and the next refresh
+    // renders the same summary instead of taking it as already shown.
+    it("retries a summary whose render failed, and says it failed", async () => {
+      let reads = 0;
+      const body = { ...sum("Running", "seq:1") } as Record<string, unknown>;
+      const status = body.status;
+      Object.defineProperty(body, "status", { enumerable: true, get: () => {
+        if (++reads === 2) throw new Error("render failed");
+        return status;
+      } });
+      const p = page((async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')).toBeNull();
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(false);
+      p.join(snapshot(), 0);
+      note(p, 1);
+      await tick();
+      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("Running");
+      expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
+    });
+
+    it("does not rebuild the blocks when the summary is unchanged", async () => {
+      const p = page((async () => ok(sum("Running", "seq:1"))) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      const first = p.app.querySelector('[data-block="status"]');
+      p.join(snapshot(), 0);
+      note(p, 1);
+      await tick();
+      expect(p.app.querySelector('[data-block="status"]')).toBe(first);
+    });
   });
 });

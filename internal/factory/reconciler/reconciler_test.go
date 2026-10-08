@@ -89,17 +89,43 @@ func (f *fakeRuns) set(id, phase string) { r := f.runs[id]; r.Phase = phase; f.r
 // fakeLog is the room's log as the broker serves it: a run's end is the broker's run_phase, and
 // EventsSince reads at most 10,000 events, returning the last seq it read. Its queue is the
 // broker's: a row's Ref is a room seq, a clientSeq is deduped per stream, and only rows still
-// queued are listed. task_state messages are kept apart, one per clientSeq, so no seq moves.
+// queued are listed. task_state messages and task facts are kept apart, one per clientSeq, so no
+// seq moves.
 type fakeLog struct {
-	evs      []envelope.Event
-	queue    []rooms.Queued
-	keys     map[string]int64 // stream/clientSeq → Ref
-	nextRef  int64
-	consumed map[int64]string
-	states   map[int64]string
-	noRoom   bool // the broker has no log for the room yet
-	noPermit bool // the broker does not allow system:factory yet (FR-1)
-	read     int  // events EventsSince returned, all calls
+	evs       []envelope.Event
+	queue     []rooms.Queued
+	keys      map[string]int64 // stream/clientSeq → Ref
+	nextRef   int64
+	consumed  map[int64]string
+	states    map[int64]string
+	facts     map[int64]envelope.TaskFacts
+	factsSeqs []int64 // every TaskFacts call's clientSeq, in order, refused ones included
+	failFacts error   // TaskFacts' answer while set
+	noRoom    bool    // the broker has no log for the room yet
+	noPermit  bool    // the broker does not allow system:factory yet (FR-1)
+	read      int     // events EventsSince returned, all calls
+}
+
+func (l *fakeLog) TaskFacts(_ context.Context, _ string, f envelope.TaskFacts, clientSeq int64) error {
+	l.factsSeqs = append(l.factsSeqs, clientSeq)
+	switch {
+	case l.failFacts != nil:
+		return l.failFacts
+	case l.noRoom:
+		return &rooms.APIError{Status: 404, Reason: "no_room"}
+	case l.noPermit:
+		return &rooms.APIError{Status: 403, Reason: "not_permitted"}
+	}
+	if err := f.Validate(); err != nil { // rooms.Client refuses invalid facts before sending them
+		return err
+	}
+	if l.facts == nil {
+		l.facts = map[int64]envelope.TaskFacts{}
+	}
+	if _, ok := l.facts[clientSeq]; !ok {
+		l.facts[clientSeq] = f
+	}
+	return nil
 }
 
 func (l *fakeLog) TaskState(_ context.Context, _, text string, clientSeq int64) error {

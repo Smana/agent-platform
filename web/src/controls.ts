@@ -23,6 +23,10 @@ const rejections: Record<string, string> = {
   too_large: "Forking here copies over 5,000 events or 32 MiB. Fork from an earlier message.",
 };
 
+// The element id of an approval's card: the room page's summary links here instead of
+// offering a second way to decide.
+export const approvalAnchor = (approvalId: string) => `approval-${approvalId}`;
+
 export function rejection(reason: string): string {
   return rejections[reason] ?? `Refused: ${reason}`;
 }
@@ -161,6 +165,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const canDecide = () => !state.sealed && (you.approver || isOwner()); // else the broker answers sealed or not_permitted
   const renderApprovals = () => approvalRows(state.approvals().map((a) => ({ key: a.approvalId, sig: String(canDecide()), build: () => {
     const li = approvalCard(a, "li");
+    li.id = approvalAnchor(a.approvalId);
     if (!canDecide()) return li;
     const reason = named(el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" }), "reason for the decision (optional)");
     const decide = (decision: string) => () => {

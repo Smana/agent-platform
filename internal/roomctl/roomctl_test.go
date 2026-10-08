@@ -210,6 +210,8 @@ type broker struct {
 	hellos []wire.ClientFrame
 	acts   []json.RawMessage
 	tokens []string
+	query  []string // the raw queries of the room list and the summary
+	access string   // the X-Rooms-Access value the room list sends
 	// conn serves the n-th connection after its hello; nil serves state, then acks.
 	conn func(n int, ctx context.Context, c *websocket.Conn)
 }
@@ -223,8 +225,28 @@ func newBroker(t *testing.T) *broker {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","phase":"Active","owner":"human:own","driver":"human:own","dataClass":"public",` +
+		b.mu.Lock()
+		b.query = append(b.query, r.URL.RawQuery)
+		access := b.access
+		b.mu.Unlock()
+		if access != "" {
+			w.Header().Set("X-Rooms-Access", access)
+		}
+		_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","repository":"Smana/a","needsMe":true,"phase":"Active","owner":"human:own","driver":"human:own","dataClass":"public",` +
 			`"lastSeq":42,"you":{"principal":"human:dev","role":"watcher","approver":false,"driver":false,"webUI":false}}]`))
+	})
+	mux.HandleFunc("GET /api/rooms/{id}/summary", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		b.query = append(b.query, r.URL.RawQuery)
+		b.mu.Unlock()
+		switch r.PathValue("id") {
+		case "gone":
+			http.Error(w, "no such room", http.StatusNotFound)
+		case "down":
+			http.Error(w, "room log unreadable", http.StatusServiceUnavailable)
+		default:
+			_, _ = w.Write([]byte(summaryBody))
+		}
 	})
 	mux.HandleFunc("GET /v1/ws", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
@@ -275,16 +297,16 @@ func fixed(context.Context) (string, error) { return "tok", nil }
 func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 	b := newBroker(t)
 	var out strings.Builder
-	if err := b.client(fixed).Rooms(t.Context(), &out); err != nil {
+	if err := b.client(fixed).Rooms(t.Context(), &out, RoomFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "PHASE", "EVENTS", "OWNER", "YOU"}) ||
-		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Active", "42", "human:own", "watcher"}) {
+	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "PHASE", "EVENTS", "OWNER", "YOU"}) ||
+		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "Active", "42", "human:own", "watcher"}) {
 		t.Fatalf("%q", lines)
 	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })
-	if err := bad.Rooms(t.Context(), &out); err == nil || !strings.Contains(err.Error(), "roomctl login") {
+	if err := bad.Rooms(t.Context(), &out, RoomFilter{}); err == nil || !strings.Contains(err.Error(), "roomctl login") {
 		t.Fatalf("a refused token: %v", err)
 	}
 }
@@ -421,5 +443,121 @@ func TestWatchStopsWhereRetryingCannotHelp(t *testing.T) {
 				t.Fatalf("%v after %d dials", err, len(b.hellos))
 			}
 		})
+	}
+}
+
+const summaryBody = `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm",` +
+	`"status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},"budget":{"usedTokens":189093,"limitTokens":1500000},` +
+	`"pr":{"number":2239,"url":"https://github.com/Smana/a/pull/2239"},"issue":null,"lastVerdict":{"by":"reviewer","verdict":"changes_requested\u001b[31m","at":"2026-10-08T19:00:00Z"}},` +
+	`"needsYou":[{"kind":"approval","id":"01M4","what":"git push to agent/26zfnuxm","deadline":"2026-10-08T14:00:00Z","url":"https://rooms.example/r/26zfnuxm#01M4"}],` +
+	`"actions":[{"kind":"queue","what":"queue a message","cli":"roomctl post 26zfnuxm --queue <text>"},{"kind":"steer","what":"steer the run"}],` +
+	`"notes":{"untrusted":true,"items":[{"at":"2026-10-08T19:14:00Z","run":"cf4ato2x","text":"found both versions\u001b[2J on line 12-13, fixing"}]},"cursor":"seq:142"}`
+
+func TestSummaryIsTheBrokersBodyUnchanged(t *testing.T) {
+	b := newBroker(t)
+	raw, err := b.client(fixed).Summary(t.Context(), "26zfnuxm", 7)
+	if err != nil || string(raw) != summaryBody {
+		t.Fatalf("%s %v", raw, err)
+	}
+	if got := b.query[len(b.query)-1]; got != "after=7" {
+		t.Fatalf("query %q", got)
+	}
+}
+
+func TestSummaryRefusals(t *testing.T) {
+	b := newBroker(t)
+	for room, want := range map[string]string{"gone": "no such room (or you cannot read it)", "down": "room unavailable"} {
+		if _, err := b.client(fixed).Summary(t.Context(), room, 0); err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "\n") {
+			t.Fatalf("%s: %v", room, err)
+		}
+	}
+}
+
+func TestRenderSummary(t *testing.T) {
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(summaryBody), time.Date(2026, 10, 8, 19, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	want := `phase: Implementing  run: cf4ato2x (implementer)  budget: 189093/1500000
+PR #2239 https://github.com/Smana/a/pull/2239
+last verdict: reviewer changes_requested[31m
+needs you: approve "git push to agent/26zfnuxm" by 14:00 UTC → https://rooms.example/r/26zfnuxm#01M4
+actions:
+  queue a message: roomctl post 26zfnuxm --queue <text>
+  steer the run
+notes (the agents' claims):
+  19:14 UTC cf4ato2x  found both versions[2J on line 12-13, fixing
+cursor: seq:142
+`
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+	if strings.ContainsRune(out.String(), 0x1b) || strings.Contains(out.String(), "roomctl approve") {
+		t.Fatal("escape or approve command")
+	}
+}
+
+// The skill reports "needs you: none" as the spec words it, and the task's issue is part of its status.
+func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
+	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued",` +
+		`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],` +
+		`"notes":{"untrusted":true,"items":[]},"cursor":"seq:3"}`
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(body), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := "phase: Queued\nissue #42 https://github.com/Smana/a/issues/42\nneeds you: none\ncursor: seq:3\n"
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+// A time not of today (UTC) carries its date: "by 14:00" read the next morning is a deadline long gone.
+func TestRenderSummaryDatesAnotherDay(t *testing.T) {
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(summaryBody), time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"by 2026-10-08T14:00:00Z →", "  2026-10-08T19:14:00Z cf4ato2x"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("no %q in:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRoomsFilterAndAccessHint(t *testing.T) {
+	b := newBroker(t)
+	c := b.client(fixed)
+	c.Issuer = "https://auth.example"
+	for _, tc := range []struct{ access, hint string }{
+		{"ok", ""}, {"", ""},
+		{"unlinked", "no linked GitHub identity"},
+		{"unverified", "could not be verified"},
+	} {
+		b.access = tc.access
+		var out, errOut strings.Builder
+		c.Err = &errOut
+		if err := c.Rooms(t.Context(), &out, RoomFilter{Repo: "Smana/a", NeedsMe: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := b.query[len(b.query)-1]; got != "needs_me=1&repo=Smana%2Fa" {
+			t.Fatalf("query %q", got)
+		}
+		if !strings.Contains(out.String(), "REPO") || strings.Contains(out.String(), "verified") {
+			t.Fatalf("stdout %q", out.String())
+		}
+		if tc.hint == "" && errOut.Len() != 0 || !strings.Contains(errOut.String(), tc.hint) {
+			t.Fatalf("%q: stderr %q", tc.access, errOut.String())
+		}
+		if tc.access == "unlinked" && !strings.Contains(errOut.String(), "https://auth.example") {
+			t.Fatalf("unlinked names the issuer: %q", errOut.String())
+		}
+		// Unlinked is never an admin (admins bypass D7): they see no room at all.
+		if tc.access == "unlinked" && (!strings.Contains(errOut.String(), "no room is listed") || strings.Contains(errOut.String(), "admins")) {
+			t.Fatalf("unlinked says what they see: %q", errOut.String())
+		}
+		if tc.access == "unverified" && strings.Contains(errOut.String(), "retry") {
+			t.Fatalf("unverified promises a retry: %q", errOut.String())
+		}
 	}
 }

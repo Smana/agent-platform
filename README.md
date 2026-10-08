@@ -54,17 +54,19 @@ Later phases add the driver/steering channel (4), approvals (5) and forking with
 | `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/room-broker` |
 | `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
 | `agent-factory` | SP3's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/agent-factory` | `ghcr.io/smana/agent-factory` |
-| `roomctl` | A developer's CLI: list, watch, post, queue and fork rooms; `roomctl token` for scripts. Never steers or approves (ruling P18) | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
+| `roomctl` | A developer's CLI: list, follow, post, queue and fork rooms; `roomctl skill install` writes the factory-handoff Agent Skill for local coding agents; `roomctl token` for scripts. Never steers or approves (ruling P18) | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
 
 Both images are multi-arch (`linux/amd64`, `linux/arm64`), static binaries on distroless `nonroot`.
 
 ```bash
 roomctl configure --url … --issuer … --client-id … --project-id …   # the room list's "CLI setup" has the line
 roomctl login                                                        # device flow, in any browser
-roomctl rooms
+roomctl rooms --needs-me                                             # also --repo owner/name, --mine
+roomctl status 3kq7x2ma                                              # phase, needs you, notes; --json, --after seq:N
 roomctl watch 3kq7x2ma
 roomctl post 3kq7x2ma --queue "address L42"
 roomctl fork 3kq7x2ma --at 42 --role implementer --egress pypi --note "try uv"
+roomctl skill install                                                # .agents/skills/factory-handoff in this repo
 ```
 
 ## Releases

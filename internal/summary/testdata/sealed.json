@@ -1,0 +1,30 @@
+{
+  "events": [
+    {"v":1,"id":"e1","seq":1,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:room-broker"},"type":"state_changed","origin":"broker","ts":"2026-10-07T18:00:00Z","redactions":[],
+     "payload":{"kind":"room_phase","phase":"Open","owner":"human:own"}},
+    {"v":1,"id":"e2","seq":2,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:factory"},"type":"state_changed","origin":"broker","ts":"2026-10-07T18:01:00Z","redactions":[],
+     "payload":{"kind":"task","phase":"Merged","issue":{"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
+       "pr":{"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"}}},
+    {"v":1,"id":"e3","seq":3,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"system","id":"system:policy"},"type":"approval_requested","origin":"broker","ts":"2026-10-07T18:10:00Z","redactions":[],
+     "payload":{"approvalId":"01M4A","callId":"c1","class":"forge.pr","action":{"command":"git push"},"expiresAt":"2026-10-07T20:00:00Z"}},
+    {"v":1,"id":"e4","seq":4,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:room-broker"},"type":"state_changed","origin":"broker","ts":"2026-10-07T18:20:00Z","redactions":[],
+     "payload":{"kind":"room_phase","phase":"Closed","reason":"closed by human:own"}}
+  ],
+  "viewer": {"role": "owner", "approver": true, "driver": true, "webUI": true},
+  "now": "2026-10-07T18:30:00Z",
+  "want": {
+    "apiVersion": "summary/v1",
+    "room": "26zfnuxm",
+    "url": "https://rooms.example/r/26zfnuxm",
+    "status": {
+      "phase": "Closed", "run": null, "budget": null,
+      "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},
+      "issue": {"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
+      "lastVerdict": null
+    },
+    "needsYou": [],
+    "actions": [],
+    "notes": {"untrusted": true, "items": []},
+    "cursor": "seq:4"
+  }
+}

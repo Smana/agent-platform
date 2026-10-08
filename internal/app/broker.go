@@ -177,7 +177,8 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	api.Hub, api.LastAck = hub, st.LastAck // the stream's deliveries (phase 4)
-	humans, err := humanSide(cfg, a.humans, mgr.GetClient(), ns, logStore, red, hub, rw.watch, mgr.Add, m, log)
+	humans, err := humanSide(cfg, a.humans, mgr.GetClient(), ns, logStore, red, hub, rw.watch, accessApp(getenv("ROOMS_GITHUB_APP_DIR")),
+		mgr.Add, m, log)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}

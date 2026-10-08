@@ -32,7 +32,7 @@ function skeleton(): { views: Views; counters: HTMLElement; status: HTMLElement;
   status.className = "status";
   foot.append(counters, status);
   app.replaceChildren(header, main, foot);
-  return { views: mountViews(main, header), counters, status, foot };
+  return { views: mountViews(main), counters, status, foot };
 }
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));

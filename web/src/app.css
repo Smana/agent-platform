@@ -135,7 +135,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
 header button { background: transparent; color: var(--brand-navy-foreground); }
-.view-toggle, .theme-toggle { margin-left: auto; font-size: 12px; }
+.theme-toggle { margin-left: auto; font-size: 12px; }
 .theme-toggle { margin-left: 0; }
 
 /* Chat view */
@@ -267,6 +267,19 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .cli-setup { padding: 0 16px 8px; }
 .new-room .hint { flex-basis: 100%; color: var(--muted-foreground); font-size: 12px; }
 .gone { padding: 16px; }
+
+/* Room page lead: status, needs you, actions, notes. Wraps at phone width, never scrolls sideways. */
+.summary { padding: 8px 16px; display: grid; gap: 8px; max-width: 100%; overflow-wrap: anywhere; }
+.summary-block { border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; background: var(--card); color: var(--card-foreground); }
+.summary-block h2 { margin: 0 0 4px; font-size: 1em; }
+.summary-block p { margin: 2px 0; }
+.summary-block ul { margin: 0; padding-left: 18px; }
+.summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
+.summary-needs-you { border-color: var(--warning); }
+.summary-error { color: var(--destructive); margin: 0; }
+.summary .hint { color: var(--muted-foreground); font-size: 12px; }
+.raw-events { margin-top: 8px; }
+.raw-events > summary { cursor: pointer; padding: 4px 0; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

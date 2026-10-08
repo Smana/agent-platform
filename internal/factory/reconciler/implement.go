@@ -499,6 +499,7 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 		return err
 	}
 	t.Status.PullRequest = &v1alpha1.PullRequestRef{Number: pr.Number, URL: pr.URL, NodeID: pr.NodeID, HeadSHA: pr.HeadSHA}
+	notePR(t.Status.PullRequest, pr)
 	if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnPullRequest: pr.URL}); err != nil {
 		return err
 	}
@@ -512,7 +513,7 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 }
 
 func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error {
-	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+	pr, err := r.readPR(ctx, t)
 	if err != nil {
 		return err
 	}

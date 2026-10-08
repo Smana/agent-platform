@@ -838,6 +838,63 @@ func TestLogFailuresMapToStatus(t *testing.T) {
 	}
 }
 
+func TestTaskFactsAppendAStateChanged(t *testing.T) {
+	s, log, _ := newServer(t)
+	h := s.Routes()
+	path := "/v1/rooms/" + room + "/task"
+	body := []byte(`{"clientSeq":7,"facts":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"}}}`)
+	rec := call(t, h, http.MethodPost, path, "sys:"+factory, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code %d: %s", rec.Code, rec.Body)
+	}
+	evs, _ := log.Range(t.Context(), room, 0, 10)
+	if len(evs) != 1 || evs[0].Type != envelope.StateChanged || evs[0].Actor.Kind != envelope.ActorSystem {
+		t.Fatalf("events %+v", evs)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(evs[0].Payload, &p); err != nil || p["kind"] != "task" || p["phase"] != "Implementing" {
+		t.Fatalf("payload %s: %v", evs[0].Payload, err)
+	}
+	if rec := call(t, h, http.MethodPost, path, "sys:"+factory, body); rec.Code != http.StatusOK {
+		t.Fatalf("replay code %d", rec.Code)
+	}
+	// Its own origin client: a task_state message with the same clientSeq is not a replay of the facts.
+	msg := map[string]any{"kind": "task_state", "text": "x", "clientSeq": 7}
+	if rec := call(t, h, http.MethodPost, "/v1/rooms/"+room+"/messages", "sys:"+factory, msg); rec.Code != http.StatusCreated {
+		t.Fatalf("message after facts: %d", rec.Code)
+	}
+}
+
+func TestTaskFactsRefuseBadRequests(t *testing.T) {
+	s, _, _ := newServer(t)
+	h := s.Routes()
+	for _, body := range []string{
+		`{"clientSeq":1,"facts":{}}`,
+		`{"clientSeq":0,"facts":{"phase":"Queued"}}`,
+		`{"clientSeq":1,"facts":{"phase":"Queued","pr":{"number":1,"url":"https://evil.example/pull/1"}}}`,
+		`{"clientSeq":1,"facts":{"phase":"Queued"},"extra":true}`,
+	} {
+		rec := call(t, h, http.MethodPost, "/v1/rooms/"+room+"/task", "sys:"+factory, []byte(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: code %d", body, rec.Code)
+		}
+	}
+	for name, c := range map[string]struct {
+		path, token string
+		code        int
+	}{
+		"a bad room":  {"/v1/rooms/NOPE/task", "sys:" + factory, http.StatusBadRequest},
+		"a run token": {"/v1/rooms/" + room + "/task", "run:" + runA, http.StatusUnauthorized},
+		"an unlisted": {"/v1/rooms/" + room + "/task", "sys:forbidden", http.StatusForbidden},
+		"no room log": {"/v1/rooms/zzzzzzzz/task", "sys:" + factory, http.StatusNotFound},
+	} {
+		rec := call(t, h, http.MethodPost, c.path, c.token, []byte(`{"clientSeq":1,"facts":{"phase":"Queued"}}`))
+		if rec.Code != c.code {
+			t.Errorf("%s: code %d, want %d", name, rec.Code, c.code)
+		}
+	}
+}
+
 func TestSystemAPI(t *testing.T) {
 	s, _, w := newServer(t)
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))

@@ -6,9 +6,12 @@ package roomctrl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,6 +46,9 @@ type Store interface {
 	Room(ctx context.Context, id string) (store.RoomState, error)
 	CloseRoom(ctx context.Context, id, reason string) error
 	PendingApprovals(ctx context.Context, roomID string) (int, error)
+	// LastTaskState is the payload of the room's highest-seq state_changed{kind:task} above
+	// after, or nil.
+	LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error)
 }
 
 // runIndex is the one watcher method the reconciler reads; *runwatch.Watcher has it.
@@ -120,6 +126,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	want := v1alpha1.RoomStatus{Phase: Phase(st, r.Runs.InRoom(room.Name), pending, r.now()),
 		LastSeq: st.LastSeq, Driver: st.Driver, DriverEpoch: st.DriverEpoch,
 		PendingApprovals: clampInt32(pending), ObservedGeneration: room.Generation}
+	if want.Task, err = r.taskStatus(ctx, &room); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.patchStatus(ctx, &room, want); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -127,6 +136,48 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.Observe(room.Name, want, st.LastEventAt)
 	}
 	return ctrl.Result{RequeueAfter: resync}, nil
+}
+
+// ForkedFrom annotates a forked Room with <source room>@<seq>: where its log's copied prefix
+// ends, and its state_changed{forked_from} follows.
+const ForkedFrom = "agents.ogenki.io/forked-from"
+
+// ForkSeq is the last seq a forked room copied from its source, or 0 for a room that is no fork.
+func ForkSeq(room *v1alpha1.Room) int64 {
+	_, at, ok := strings.Cut(room.Annotations[ForkedFrom], "@")
+	seq, err := strconv.ParseInt(at, 10, 64)
+	if !ok || err != nil || seq < 0 {
+		return 0
+	}
+	return seq
+}
+
+// taskStatus projects the last task facts, a fork's from after its fork point only: the copied
+// prefix holds its source's task. A payload that does not decode keeps the status already
+// written: a bad event must not blank what the room list filters on.
+func (r *Reconciler) taskStatus(ctx context.Context, room *v1alpha1.Room) (*v1alpha1.TaskStatus, error) {
+	raw, err := r.Store.LastTaskState(ctx, room.Name, ForkSeq(room))
+	if err != nil {
+		return nil, fmt.Errorf("roomctrl: task facts of room %s: %w", room.Name, err)
+	}
+	if raw == nil {
+		return room.Status.Task, nil
+	}
+	var f struct {
+		Kind string `json:"kind"`
+		envelope.TaskFacts
+	}
+	if json.Unmarshal(raw, &f) != nil || f.Kind != "task" {
+		return room.Status.Task, nil
+	}
+	t := &v1alpha1.TaskStatus{Phase: f.Phase}
+	if f.Issue != nil {
+		t.IssueAuthor, t.LabelledBy = f.Issue.Author, f.Issue.LabelledBy
+	}
+	if f.PR != nil {
+		t.PRAuthor, t.PRReviewers = f.PR.Author, f.PR.Reviewers
+	}
+	return t, nil
 }
 
 // open inserts the room's row and appends its seq-1 Open event, both idempotent:

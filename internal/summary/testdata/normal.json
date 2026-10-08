@@ -1,0 +1,45 @@
+{
+  "events": [
+    {"v":1,"id":"e1","seq":1,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:room-broker"},"type":"state_changed","origin":"broker","ts":"2026-10-07T18:00:00Z","redactions":[],
+     "payload":{"kind":"room_phase","phase":"Open","owner":"human:own"}},
+    {"v":1,"id":"e2","seq":2,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"agent","id":"agent:cf4ato2x","role":"reviewer"},"type":"message","origin":"harness","ts":"2026-10-07T18:49:00Z","redactions":[],
+     "payload":{"kind":"review_verdict","text":"looks right","delivery":"none","verdict":"approved"}},
+    {"v":1,"id":"e3","seq":3,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:factory"},"type":"state_changed","origin":"broker","ts":"2026-10-07T19:11:42Z","redactions":[],
+     "payload":{"kind":"task","phase":"Implementing",
+       "run":{"id":"cf4ato2x","role":"implementer","trigger":"human","startedAt":"2026-10-07T19:11:42Z"},
+       "budget":{"usedTokens":189093,"limitTokens":1500000},
+       "issue":{"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
+       "pr":{"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"}}},
+    {"v":1,"id":"e4","seq":4,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"agent","id":"agent:cf4ato2x","role":"implementer"},"type":"message","origin":"harness","ts":"2026-10-07T19:12:10Z","redactions":[],
+     "payload":{"kind":"progress","text":"found both versions on line 12-13, fixing","delivery":"none"}},
+    {"v":1,"id":"e5","seq":5,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"system","id":"system:policy"},"type":"approval_requested","origin":"broker","ts":"2026-10-07T19:15:00Z","redactions":[],
+     "payload":{"approvalId":"01M4A","callId":"c1","class":"forge.pr","action":{"command":"git push to agent/26zfnuxm"},"expiresAt":"2026-10-07T19:45:00Z"}}
+  ],
+  "viewer": {"role": "owner", "approver": true, "driver": true, "webUI": true},
+  "now": "2026-10-07T19:30:00Z",
+  "want": {
+    "apiVersion": "summary/v1",
+    "room": "26zfnuxm",
+    "url": "https://rooms.example/r/26zfnuxm",
+    "status": {
+      "phase": "Implementing",
+      "run": {"id":"cf4ato2x","role":"implementer","trigger":"human","startedAt":"2026-10-07T19:11:42Z"},
+      "budget": {"usedTokens":189093,"limitTokens":1500000},
+      "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},
+      "issue": {"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
+      "lastVerdict": {"by":"reviewer","verdict":"approved","at":"2026-10-07T18:49:00Z"}
+    },
+    "needsYou": [
+      {"kind":"approval","id":"01M4A","what":"git push to agent/26zfnuxm","deadline":"2026-10-07T19:45:00Z","url":"https://rooms.example/r/26zfnuxm#01M4A"}
+    ],
+    "actions": [
+      {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"},
+      {"kind":"steer","what":"steer the running agent"},
+      {"kind":"stop","what":"stop this task","cli":"gh issue edit 42 --add-label factory/stop"}
+    ],
+    "notes": {"untrusted": true, "items": [
+      {"at":"2026-10-07T19:12:10Z","run":"cf4ato2x","text":"found both versions on line 12-13, fixing"}
+    ]},
+    "cursor": "seq:5"
+  }
+}

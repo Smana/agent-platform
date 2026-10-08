@@ -95,6 +95,11 @@ type argError string
 
 func (e argError) Error() string { return string(e) }
 
+// rateError is a tool's own limit, shown to the model as is, beside the server's one call a second.
+type rateError string
+
+func (e rateError) Error() string { return string(e) }
+
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -313,10 +318,14 @@ func (s *Server) call(ctx context.Context, w http.ResponseWriter, req request, r
 // argument refusal is quoted: a database error's text can echo a value.
 func (s *Server) failure(ctx context.Context, tool string, run runwatch.Run, err error) string {
 	var bad argError
+	var slow rateError
 	switch {
 	case errors.As(err, &bad):
 		s.reject(ctx, "invalid_arguments")
 		return "invalid_arguments: " + bad.Error()
+	case errors.As(err, &slow):
+		s.reject(ctx, "rate_limited")
+		return "rate_limited: " + slow.Error()
 	case errors.Is(err, store.ErrSealed):
 		return "room_sealed: the room is closed to new events"
 	case errors.Is(err, store.ErrNoRoom):

@@ -82,21 +82,24 @@ func TestHumanSide(t *testing.T) {
 	hub := fanout.New(fakeRoomLog{}, nil, log)
 	var added []manager.Runnable
 	add := func(r manager.Runnable) error { added = append(added, r); return nil }
-	s, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, add, m, log)
+	s, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, nil, add, m, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Actor == nil || s.Actor.Redactor != red || s.Actor.Requester != (runrequest.Manifest{}) || s.Namespace != "agent-system" {
 		t.Fatalf("server %+v, actor %+v", s, s.Actor)
 	}
+	if s.Identity != nil || s.Access != nil {
+		t.Fatal("no human.access: rooms must stay admins-only, without a GitHub check")
+	}
 	if l, ok := added[0].(*leaderLoop); len(added) != 1 || !ok || l.every != leaseEvery {
 		t.Fatalf("the lease sweep is not on the leader: %v", added)
 	}
-	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, nil, hub, fakeRuns{}, add, m, log); err == nil {
+	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, nil, hub, fakeRuns{}, nil, add, m, log); err == nil {
 		t.Fatal("no redactor must stop start-up")
 	}
 	refuse := func(manager.Runnable) error { return errors.New("manager started") }
-	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, refuse, m, log); err == nil {
+	if _, err := humanSide(cfg, humans, rooms, "agent-system", &fakeActLog{}, red, hub, fakeRuns{}, nil, refuse, m, log); err == nil {
 		t.Fatal("a lease sweep the manager refused must stop start-up")
 	}
 }

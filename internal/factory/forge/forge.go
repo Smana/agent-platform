@@ -67,6 +67,7 @@ type Issue struct {
 	Title        string
 	Body         string
 	State        string // OPEN | CLOSED
+	Author       string // a bot's with "[bot]", as REST writes it
 	Labels       []string
 	LastEditedAt time.Time // the body's last edit; zero when never edited
 	// The last title rename (a RenamedTitleEvent): lastEditedAt does not cover the title,

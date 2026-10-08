@@ -116,6 +116,29 @@ type RoomStatus struct {
 	PendingApprovals int32  `json:"pendingApprovals,omitempty"`
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +optional
+	Task *TaskStatus `json:"task,omitempty"`
+}
+
+// TaskStatus is the last task facts the factory wrote into the room, projected so the room list
+// can filter on them without reading every room's log.
+type TaskStatus struct {
+	// +kubebuilder:validation:MaxLength=32
+	// +optional
+	Phase string `json:"phase,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	IssueAuthor string `json:"issueAuthor,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	LabelledBy string `json:"labelledBy,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	PRAuthor string `json:"prAuthor,omitempty"`
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=64
+	// +optional
+	PRReviewers []string `json:"prReviewers,omitempty"`
 }
 
 func addKnownTypes(scheme *runtime.Scheme) error {

@@ -147,7 +147,7 @@ func (r *Reconciler) reviewing(ctx context.Context, t *v1alpha1.Task) error {
 	if v.Verdict == "approve" {
 		// A pull request merged or closed meanwhile ends the task through ready's AwaitingCI, or
 		// the next Queued's lateReviews.
-		pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+		pr, err := r.readPR(ctx, t)
 		if err != nil {
 			return err
 		}
