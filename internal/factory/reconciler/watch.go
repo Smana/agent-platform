@@ -41,7 +41,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		return r.implementerSpec(t, FirstBrief(t, r.Nonce())), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
-	evs, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
+	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, current(t).StartSeq, briefEvent)
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
@@ -57,13 +57,15 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 const maxTailReads = 10
 
 // roomTail pages room's log after afterSeq to its end, keeping only the events keep selects. A
-// single EventsSince stops at 10,000 events, so it would miss the newest of a long room.
-func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, error) {
+// single EventsSince stops at 10,000 events, so it would miss the newest of a long room. complete
+// is false when it stopped at maxTailReads before reading the end: whatever it returns may not
+// hold the newest events.
+func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, bool, error) {
 	var out []envelope.Event
 	for range maxTailReads {
 		evs, cursor, err := r.Rooms.EventsSince(ctx, room, after)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, e := range evs {
 			if keep(e) {
@@ -71,16 +73,21 @@ func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, kee
 			}
 		}
 		if len(evs) == 0 || cursor <= after {
-			return out, nil
+			return out, true, nil
 		}
 		after = cursor
 	}
 	r.log().Warn("room log longer than the factory reads", "room", room, "after", after)
-	return out, nil
+	return out, false, nil
 }
 
-// briefEvent is what brief.Build quotes from a room's log: handoffs and review verdicts.
+// briefEvent is what brief.Build quotes from a room's log: handoffs and review verdicts that a run
+// recorded itself with its room tools, as the broker stamped them (ruling TB): the run's own
+// agent:<run> actor, by the client origin.
 func briefEvent(e envelope.Event) bool {
+	if e.Origin != envelope.OriginClient || e.Actor.Kind != envelope.ActorAgent || e.Actor.ID != "agent:"+e.RunID {
+		return false
+	}
 	if e.Type == envelope.Handoff {
 		return true
 	}
@@ -90,22 +97,29 @@ func briefEvent(e envelope.Event) bool {
 	return e.Type == envelope.Message && json.Unmarshal(e.Payload, &p) == nil && p.Kind == envelope.KindReviewVerdict
 }
 
-// lateReviews re-reads the pull request just before a revision starts. A maintainer's review
-// submitted while the task waited in Queued joins this run: after it, the run's start would put
-// the review before "since" for good. A dismissed review is skipped like any non-CHANGES_REQUESTED
-// one. A pull request merged or closed meanwhile is not revised: the task goes back to
-// AwaitingHuman, which ends it (done is true).
-func (r *Reconciler) lateReviews(ctx context.Context, t *v1alpha1.Task) (bool, error) {
+// lateReviews re-reads the pull request just before a run starts. A maintainer's review submitted
+// while the task waited in Queued joins this run: after it, the run's start would put the review
+// before "since" for good. A dismissed review is skipped like any non-CHANGES_REQUESTED one. Such a
+// review wins over a queued verifier: the revision runs instead, and goes back to the maintainer
+// (Δ5), so the review is never marked handled behind a verifier that cannot act on it. A pull
+// request merged or closed meanwhile is not run on: the task goes back to AwaitingHuman, which
+// ends it (done is true). pr is the pull request as read, for the run to start on.
+func (r *Reconciler) lateReviews(ctx context.Context, t *v1alpha1.Task) (forge.PR, bool, error) {
 	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
 	if err != nil {
-		return false, err
+		return pr, false, err
 	}
 	if pr.State != "OPEN" {
-		t.Status.NextTrigger = ""
+		t.Status.NextTrigger, t.Status.NextRole = "", ""
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
-		return true, nil
+		return pr, true, nil
 	}
-	return false, r.queueReviews(ctx, t, pr, r.changesRequested(t, pr))
+	rvs := r.changesRequested(t, pr)
+	if len(rvs) > 0 && t.Status.NextRole != "" {
+		t.Status.NextRole = ""
+		return pr, false, r.revise(ctx, t, pr, rvs)
+	}
+	return pr, false, r.queueReviews(ctx, t, pr, rvs)
 }
 
 // changesRequested are the maintainers' "Request changes" reviews on the task's own pull request
@@ -223,7 +237,8 @@ func commandLine(body, verb string) bool {
 // escalated waits for a maintainer (§6.3): a pull request merged or closed meanwhile ends the
 // task; a /factory retry sends it back for a fresh run, through Queued and its caps. The command
 // is marked handled in the same status write as the move, and no run is created here, so a replay
-// after a lost write repeats the move, and queued's adopt never starts a second run.
+// after a lost write repeats the move; the next run's deterministic id (R48) keeps a replay from
+// ever starting a second one.
 func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 	var pr forge.PR
 	if t.Status.PullRequest != nil {
@@ -240,6 +255,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	markHandled(t, c.ID)
+	after := t.Status.Reason
 	t.Status.Retries++
 	t.Status.NextTrigger = "retry"
 	record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "retry") })
@@ -248,7 +264,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		next = v1alpha1.PhaseTriaged
 	}
 	r.to(t, next, "")
-	narrateLater(t, narrate.Retrying(t, c.Author))
+	narrateLater(t, narrate.Retrying(t, c.Author, after))
 	return nil
 }
 

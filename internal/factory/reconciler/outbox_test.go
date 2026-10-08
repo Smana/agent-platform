@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -89,9 +90,15 @@ func TestTheEndIsPostedOnceAfterAnOutage(t *testing.T) {
 		t.Fatalf("the phase and its narration are written together: %s %+v", tk.Status.Phase, tk.Status.Outbox)
 	}
 	ff.down = false
-	for range 3 {
-		res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
-		if err != nil || res.RequeueAfter != 0 {
+	res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
+	if err != nil || res.RequeueAfter != g.r.settleWindow() {
+		t.Fatalf("drained, but requeued for its settle: %v %v", err, res)
+	}
+	// Past the settle window the usage settles and TaskTokens is recorded once; after that the
+	// ended task is left alone again.
+	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+	for range 2 {
+		if res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err != nil || res.RequeueAfter != 0 {
 			t.Fatalf("%v %v", err, res)
 		}
 	}
@@ -99,8 +106,8 @@ func TestTheEndIsPostedOnceAfterAnOutage(t *testing.T) {
 	if n := strings.Count(strings.Join(g.f.Comments(7), "\n"), "was stopped"); n != 1 || len(tk.Status.Outbox) != 0 {
 		t.Fatalf("%d end comments, outbox %+v", n, tk.Status.Outbox)
 	}
-	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens standard solo review" {
-		t.Fatalf("an ended task is drained, never stepped again: %q", g.metrics.recorded)
+	if strings.Join(g.metrics.recorded, "|") != "intervention stop|task_tokens 0 standard solo review" {
+		t.Fatalf("an ended task is drained, then settled once: %q", g.metrics.recorded)
 	}
 }
 
@@ -157,8 +164,8 @@ func TestNothingIsPostedBeforeItsTransitionIsWritten(t *testing.T) {
 	g := newRig(t)
 	g.c, g.r.Client = c, c
 	g.reconcile(t, "3buqdlot", 3)
-	g.runs.set("7f3cq2xz", "Succeeded")
-	g.log.end("7f3cq2xz", "Succeeded", "agent_finished")
+	g.runs.set(rid(0), "Succeeded")
+	g.log.end(rid(0), "Succeeded", "agent_finished")
 	conflict = true
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the conflict is returned")

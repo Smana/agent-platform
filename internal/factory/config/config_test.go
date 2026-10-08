@@ -54,6 +54,9 @@ func TestGoodConfigParses(t *testing.T) {
 	if !c.IsMaintainer("smana") || c.IsMaintainer("someone") {
 		t.Fatal("maintainers match case-insensitively, and only listed logins")
 	}
+	if c.Caps.MaxPendingMinutes != 30 {
+		t.Fatalf("an omitted Pending bound defaults to 30 (P): %d", c.Caps.MaxPendingMinutes)
+	}
 	if len(c.Hash) != 64 {
 		t.Fatal("the config hash stamps each task (breaker)")
 	}
@@ -101,6 +104,9 @@ func TestGoodVariantsParse(t *testing.T) {
 	for name, c := range map[string][2]string{
 		"internal data":        {"dataClass: public", "dataClass: internal"},
 		"implementer anywhere": {"pair: {roles: [implementer, reviewer]", "pair: {roles: [reviewer, implementer]"},
+		// P: an explicit Pending bound, inside 5..480.
+		"an explicit pending bound": {"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336}",
+			"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, maxPendingMinutes: 20}"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := strings.Replace(good, c[0], c[1], 1)
@@ -125,8 +131,11 @@ func TestBadConfigsFail(t *testing.T) {
 		"task below run tokens": {"taskTokens: 600000,", "taskTokens: 200000,", "tier light: taskTokens below runTokens"},
 		"text above the XRD":    {"maxTextBytes: 14336", "maxTextBytes: 32768", "caps.maxTextBytes must be 1..14336"},
 		"text below one byte":   {"maxTextBytes: 14336", "maxTextBytes: 0", "caps.maxTextBytes must be 1..14336"},
-		"unknown role":          {"roles: [implementer]}", "roles: [implementor]}", `template solo: unknown role "implementor"`},
-		"missing tier":          {"  light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}\n", "", "tier light is missing"},
+		// P: the Pending bound is 5..480 minutes; an omitted one defaults to 30.
+		"pending minutes below five": {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 4", "caps.maxPendingMinutes must be 5..480"},
+		"pending minutes above 480":  {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 481", "caps.maxPendingMinutes must be 5..480"},
+		"unknown role":               {"roles: [implementer]}", "roles: [implementor]}", `template solo: unknown role "implementor"`},
+		"missing tier":               {"  light:    {model: agent-default, runTokens: 300000,  taskTokens: 600000,  runMinutes: 20}\n", "", "tier light is missing"},
 		"a fourth tier": {"tiers:\n", "tiers:\n  huge: {model: agent-default, runTokens: 1, taskTokens: 1, runMinutes: 1}\n",
 			"tiers are exactly light, standard and frontier"},
 		"minutes above 480":     {"runMinutes: 90", "runMinutes: 600", "tier frontier: runMinutes must be 1..480"},

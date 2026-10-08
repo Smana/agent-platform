@@ -258,6 +258,14 @@ spec:
                 maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
+              nextRole:
+                description: |-
+                  The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
+                  there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
+                enum:
+                - reviewer
+                - tester
+                type: string
               nextTrigger:
                 description: |-
                   The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and
@@ -385,6 +393,12 @@ spec:
                     finished:
                       format: date-time
                       type: string
+                    headSHA:
+                      description: |-
+                        The pull request's head a reviewer or tester run was given: its approve counts for that
+                        commit only, and only while the head has not moved.
+                      maxLength: 64
+                      type: string
                     id:
                       maxLength: 8
                       pattern: ^[a-z2-7]{8}$
@@ -478,6 +492,11 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              usageSettled:
+                description: |-
+                  The task's usage has settled (R49): the meter's late readings have had their window, and
+                  the total is final. Written once, with the one TaskTokens the settle records.
+                type: boolean
               verdict:
                 description: 'The effective verdict of the last review: approve, changes
                   or none.'
@@ -488,6 +507,9 @@ spec:
             - message: 'a task''s trace is never removed: its runs are parented on
                 it'
               rule: '!has(oldSelf.trace) || has(self.trace)'
+            - message: settled usage stays settled
+              rule: '!has(oldSelf.usageSettled) || !oldSelf.usageSettled || (has(self.usageSettled)
+                && self.usageSettled)'
         required:
         - spec
         type: object

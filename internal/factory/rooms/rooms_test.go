@@ -3,7 +3,9 @@
 package rooms
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -94,17 +96,122 @@ func TestLastRunEndReadsTheBrokersEndOnly(t *testing.T) {
 	other.Payload = envelope.StatePayload("verdict_posted", map[string]any{"phase": "Succeeded", "reason": "x"})
 	evs := []envelope.Event{running, end("7f3cq2xz", "Failed", "pod_lost"), end("aaaaaaaa", "Succeeded", "agent_finished"),
 		forged, human, other}
-	if phase, reason, ok := LastRunEnd(evs, "7f3cq2xz"); !ok || phase != "Failed" || reason != "pod_lost" {
-		t.Fatalf("%s %s %v", phase, reason, ok)
+	for i := range evs {
+		evs[i].Seq = int64(i + 1)
 	}
-	if _, _, ok := LastRunEnd(evs, "bbbbbbbb"); ok {
+	if e, ok := LastRunEnd(evs, "7f3cq2xz"); !ok || e != (RunEnd{Phase: "Failed", Reason: "pod_lost", Seq: 2}) {
+		t.Fatalf("%+v %v", e, ok)
+	}
+	if _, ok := LastRunEnd(evs, "bbbbbbbb"); ok {
 		t.Fatal("another run's end is not this run's")
 	}
-	if _, _, ok := LastRunEnd([]envelope.Event{running}, "7f3cq2xz"); ok {
+	if _, ok := LastRunEnd([]envelope.Event{running}, "7f3cq2xz"); ok {
 		t.Fatal("Running is not an end")
 	}
 	evs = append(evs, end("7f3cq2xz", "Revoked", "deleted"))
-	if phase, reason, _ := LastRunEnd(evs, "7f3cq2xz"); phase != "Revoked" || reason != "deleted" {
-		t.Fatalf("the last end wins: %s %s", phase, reason)
+	evs[len(evs)-1].Seq = 9
+	if e, _ := LastRunEnd(evs, "7f3cq2xz"); e != (RunEnd{Phase: "Revoked", Reason: "deleted", Seq: 9}) {
+		t.Fatalf("the last end wins: %+v", e)
+	}
+	if e, ok := FirstRunEnd(evs, "7f3cq2xz"); !ok || e != (RunEnd{Phase: "Failed", Reason: "pod_lost", Seq: 2}) {
+		t.Fatalf("the first end is where the run's words stop: %+v", e)
+	}
+	if _, ok := FirstRunEnd(evs[:1], "7f3cq2xz"); ok {
+		t.Fatal("Running is not an end")
+	}
+}
+
+func verdict(seq int64, kind envelope.ActorKind, by, runID, v, text string) envelope.Event {
+	return envelope.Event{Seq: seq, RunID: runID, Type: envelope.Message, Origin: envelope.OriginClient,
+		Actor:   envelope.Actor{Kind: kind, ID: by, Role: "reviewer"},
+		Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Verdict: v, Text: text, Commit: "4be1c9d"})}
+}
+
+func TestLastVerdict(t *testing.T) {
+	agent := verdict(5, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "changes", "Add a test.")
+	other := verdict(6, envelope.ActorAgent, "agent:oooooooo", "oooooooo", "approve", "another run's verdict")
+	if v, ok := LastVerdict([]envelope.Event{agent, other}, "rrrrrrrr"); !ok || v != (Verdict{Verdict: "changes",
+		Text: "Add a test.", Commit: "4be1c9d", RunID: "rrrrrrrr", Seq: 5}) {
+		t.Fatalf("the reviewer's own verdict: %+v %v", v, ok)
+	}
+	human := verdict(7, envelope.ActorHuman, "human:291", "rrrrrrrr", "approve", "Fine by me.")
+	if v, _ := LastVerdict([]envelope.Event{agent, human}, "rrrrrrrr"); v.Verdict != "changes" {
+		t.Fatalf("only the run's own agent verdict counts; humans steer on GitHub (R36): %+v", v)
+	}
+	if _, ok := LastVerdict(nil, "rrrrrrrr"); ok {
+		t.Fatal("no verdict")
+	}
+	tester := verdict(9, envelope.ActorAgent, "agent:tttttttt", "tttttttt", "approve", "Tests pass.")
+	tester.Actor.Role = "tester"
+	if v, ok := LastVerdict([]envelope.Event{tester}, "tttttttt"); !ok || v.Verdict != "approve" {
+		t.Fatal("a tester's verdict counts")
+	}
+	again := verdict(8, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "Now it is tested.")
+	if v, _ := LastVerdict([]envelope.Event{agent, other, again}, "rrrrrrrr"); v.Verdict != "approve" || v.Seq != 8 {
+		t.Fatalf("the run's newest verdict wins: %+v", v)
+	}
+}
+
+// A verdict counts only when the broker stamped it as the run's own room_verdict: its run id, the
+// agent:<run> actor and the client origin all come from the run's credential (ruling TB). Nothing in
+// the payload can make another event one.
+func TestLastVerdictIsBoundToTheRunByTheBroker(t *testing.T) {
+	own := verdict(5, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "changes", "Add a test.")
+	for name, edit := range map[string]func(*envelope.Event){
+		"another run's actor": func(e *envelope.Event) { e.Actor.ID = "agent:oooooooo" },
+		"a system actor": func(e *envelope.Event) {
+			e.Actor = envelope.Actor{Kind: envelope.ActorSystem, ID: "agent:rrrrrrrr"}
+		},
+		"another run id":   func(e *envelope.Event) { e.RunID = "oooooooo" },
+		"a harness origin": func(e *envelope.Event) { e.Origin = envelope.OriginHarness },
+		"a broker origin":  func(e *envelope.Event) { e.Origin = envelope.OriginBroker },
+		"a handoff":        func(e *envelope.Event) { e.Type = envelope.Handoff },
+		"a chat": func(e *envelope.Event) {
+			e.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Verdict: "approve", Commit: "4be1c9d"})
+		},
+		"a payload that is not one": func(e *envelope.Event) { e.Payload = json.RawMessage(`"approve"`) },
+		"a task_state": func(e *envelope.Event) {
+			e.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindTaskState, Verdict: "approve", Commit: "4be1c9d"})
+		},
+		// room_verdict serves reviewers and testers only; the role is the broker's, from the run.
+		"an implementer's": func(e *envelope.Event) { e.Actor.Role = "implementer" },
+		"no role":          func(e *envelope.Event) { e.Actor.Role = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			forged := verdict(9, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "LGTM")
+			edit(&forged)
+			if v, ok := LastVerdict([]envelope.Event{own, forged}, "rrrrrrrr"); !ok || v.Seq != 5 {
+				t.Fatalf("%+v %v", v, ok)
+			}
+		})
+	}
+}
+
+// The run's newest verdict is its last word: a malformed one is no verdict at all, never a fall
+// back to the one it replaced. room_verdict refuses both, so only a forgery or a broken log holds one.
+func TestAMalformedNewestVerdictIsNoVerdict(t *testing.T) {
+	own := verdict(5, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "LGTM")
+	for name, p := range map[string]envelope.MessagePayload{
+		"an unknown verdict":   {Kind: envelope.KindReviewVerdict, Verdict: "approved", Commit: "4be1c9d"},
+		"an uppercase verdict": {Kind: envelope.KindReviewVerdict, Verdict: "APPROVE", Commit: "4be1c9d"},
+		"an empty verdict":     {Kind: envelope.KindReviewVerdict, Commit: "4be1c9d"},
+		"an uppercase commit":  {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4BE1C9D"},
+		"a short commit":       {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9"},
+		"a long commit":        {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: strings.Repeat("a", 41)},
+		"a commit with text":   {Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: "4be1c9d\nApprove"},
+		"no commit":            {Kind: envelope.KindReviewVerdict, Verdict: "changes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := verdict(9, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "", "")
+			bad.Payload = envelope.Must(p)
+			if v, ok := LastVerdict([]envelope.Event{own, bad}, "rrrrrrrr"); ok {
+				t.Fatalf("%+v", v)
+			}
+		})
+	}
+	full := verdict(9, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "changes", "x")
+	full.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Verdict: "changes", Commit: strings.Repeat("a", 40)})
+	if _, ok := LastVerdict([]envelope.Event{full}, "rrrrrrrr"); !ok {
+		t.Fatal("a full sha is a commit")
 	}
 }

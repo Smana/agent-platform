@@ -143,8 +143,17 @@ func TestTaskCRDKeepsTheTraceIds(t *testing.T) {
 		t.Errorf("status.trace rules %v", tr.XValidations)
 	}
 	status := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
-	if len(status.XValidations) != 1 || status.XValidations[0].Rule != "!has(oldSelf.trace) || has(self.trace)" {
+	statusRules := map[string]bool{}
+	for _, v := range status.XValidations {
+		statusRules[v.Rule] = true
+	}
+	if len(status.XValidations) != 2 || !statusRules["!has(oldSelf.trace) || has(self.trace)"] {
 		t.Errorf("status rules %v: a trace is never removed (review M3)", status.XValidations)
+	}
+	// R49: settled usage stays settled. The omitempty bool needs the has() guards: absent in the
+	// old object is not false, and absent in the new one is not true.
+	if !statusRules["!has(oldSelf.usageSettled) || !oldSelf.usageSettled || (has(self.usageSettled) && self.usageSettled)"] {
+		t.Errorf("status rules %v: settled usage stays settled", status.XValidations)
 	}
 	for field, want := range map[string]string{"traceID": `^[0-9a-f]{32}$`, "spanID": `^[0-9a-f]{16}$`} {
 		p := tr.Properties[field]

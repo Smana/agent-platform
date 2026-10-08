@@ -21,6 +21,16 @@ type Item struct {
 	PullRequest bool
 }
 
+// AgentPull is one open pull request from an `agent/` branch, as the orphan scan reads it (R51):
+// the head branch, its labels, and whether that branch is this repository's own — a fork's never
+// is, so its pull requests are never the factory's to judge.
+type AgentPull struct {
+	Number  int
+	HeadRef string
+	Labels  []string
+	Fork    bool
+}
+
 // LabelEvent is one time a label was added, and by whom (R4: only maintainers' count).
 type LabelEvent struct {
 	Actor string

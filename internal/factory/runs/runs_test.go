@@ -97,6 +97,30 @@ func TestBuildCarriesTheTaskURLAnnotation(t *testing.T) {
 	}
 }
 
+// R48: the room's lastSeq at the run's creation and a verifier's head ride the claim, so a
+// replay that finds it records what the run was given, never what it would give one now. A
+// start seq of 0 — an empty room — is the absent annotation's own value.
+func TestBuildCarriesTheStartSeqAndHead(t *testing.T) {
+	s := spec()
+	s.StartSeq, s.Head = 1202, "4be1c9d0a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	u := Build(s)
+	if u.GetAnnotations()[AnnStartSeq] != "1202" || u.GetAnnotations()[AnnHead] != s.Head {
+		t.Fatalf("%v", u.GetAnnotations())
+	}
+	r, ok := FromUnstructured(u)
+	if !ok || r.StartSeq != 1202 || r.Head != s.Head {
+		t.Fatalf("read back: %+v", r)
+	}
+	u = Build(spec())
+	if _, ok := u.GetAnnotations()[AnnStartSeq]; ok {
+		t.Error("an empty room's lastSeq is 0, the absent annotation's own value")
+	}
+	r, _ = FromUnstructured(u)
+	if r.StartSeq != 0 || r.Head != "" {
+		t.Fatalf("an absent annotation reads back as zero values: %+v", r)
+	}
+}
+
 // Review I4: the task URL becomes the harness footer's `Agent-Task: <URL>`, so a newline in it
 // would forge trailers, Agent-Run included. Create refuses every value it cannot vouch for, at
 // CREATE, before the claim exists; so do the other CREATE-only values.
@@ -182,7 +206,7 @@ func TestAnnotateRefusesTheCreateOnlyKeys(t *testing.T) {
 	if err := c.Create(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{AnnTaskURL, AnnTraceparent} {
+	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead} {
 		if err := c.Annotate(t.Context(), s.RunID, map[string]string{key: "https://github.com/Smana/cloud-native-ref/issues/1"}); err == nil {
 			t.Errorf("%s was patched", key)
 		}

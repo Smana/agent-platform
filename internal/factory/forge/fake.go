@@ -16,19 +16,20 @@ import (
 type Fake struct {
 	Now func() time.Time
 
-	mu       sync.Mutex
-	labeled  map[string][]Item
-	events   map[int][]LabelEvent
-	issues   map[int]Issue
-	prs      map[int]PR
-	branches map[string]int
-	comments map[int][]Comment
-	added    map[int][]string
-	removed  map[int][]string
-	cut      map[int]bool
-	closed   map[int]bool
-	calls    []string
-	nextID   int64
+	mu         sync.Mutex
+	labeled    map[string][]Item
+	events     map[int][]LabelEvent
+	issues     map[int]Issue
+	prs        map[int]PR
+	branches   map[string]int
+	comments   map[int][]Comment
+	added      map[int][]string
+	removed    map[int][]string
+	cut        map[int]bool
+	closed     map[int]bool
+	agentPulls []AgentPull
+	calls      []string
+	nextID     int64
 }
 
 // NewFake returns an empty Fake.
@@ -71,6 +72,20 @@ func (f *Fake) SetBranch(branch string, n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.branches[branch] = n
+}
+
+// SetAgentPulls sets the open agent-branch pull requests AgentPulls returns (R51's orphan scan).
+func (f *Fake) SetAgentPulls(ps ...AgentPull) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agentPulls = slices.Clone(ps)
+}
+
+// AgentPulls implements the forge's AgentPulls.
+func (f *Fake) AgentPulls(context.Context) ([]AgentPull, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.agentPulls), nil
 }
 
 // Comments are the bodies posted on n, oldest first.
@@ -159,12 +174,18 @@ func (f *Fake) RecentComments(_ context.Context, n int) ([]Comment, error) {
 	return slices.Clone(f.comments[n]), nil
 }
 
-// AddLabels implements the forge's AddLabels.
+// AddLabels implements the forge's AddLabels, and the labels show on the stored agent pulls, as
+// they do on GitHub — a scan that re-reads what an earlier one labelled.
 func (f *Fake) AddLabels(_ context.Context, n int, labels ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.added[n] = append(f.added[n], labels...)
 	f.calls = append(f.calls, fmt.Sprintf("add-labels %d %s", n, strings.Join(labels, ",")))
+	for i := range f.agentPulls {
+		if f.agentPulls[i].Number == n {
+			f.agentPulls[i].Labels = append(f.agentPulls[i].Labels, labels...)
+		}
+	}
 	return nil
 }
 

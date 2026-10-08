@@ -43,6 +43,10 @@ const (
 	AnnTraceparent   = "agents.ogenki.io/traceparent" // W3C, set at CREATE; the composition hands it to the harness (R46)
 	LabelTier        = "agents.ogenki.io/tier"        // fixed per run, never re-routed within it (R47)
 	AnnTaskURL       = "agents.ogenki.io/task-url"    // set at CREATE; the harness footer's Agent-Task for a text task (SF)
+	// Both set at CREATE only (R48), so a replay that finds the claim reads back what its run was
+	// given, never what the replay would give a run now.
+	AnnStartSeq = "agents.ogenki.io/start-seq" // the room's lastSeq when the run was created
+	AnnHead     = "agents.ogenki.io/head"      // the pull request head a verifier was given
 
 	namePrefix = runwatch.ClaimPrefix
 )
@@ -58,11 +62,12 @@ func Scheme(s *runtime.Scheme) {
 
 // Spec is what the factory decides about one run. TaskText and TaskURL are exclusive, as the
 // XRD's CEL requires: a URL wins. SourceURL is the GitHub issue or PR the task narrates on
-// (R28), and is written as AnnTaskURL whatever the task field holds.
+// (R28), and is written as AnnTaskURL whatever the task field holds. StartSeq and Head are the
+// CREATE-only annotations' sources (R48).
 type Spec struct {
 	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue, Traceparent, Tier string
-	SourceURL                                                                                                                           string
-	MaxTokens, MaxMinutes                                                                                                               int64
+	SourceURL, Head                                                                                                                     string
+	MaxTokens, MaxMinutes, StartSeq                                                                                                     int64
 	EgressProfiles                                                                                                                      []string
 }
 
@@ -142,13 +147,20 @@ func Build(s Spec) *unstructured.Unstructured {
 		labels[LabelTier] = s.Tier
 	}
 	u.SetLabels(labels)
-	// Both are written at CREATE only: the phase-5 patch limit never has to admit them.
+	// All are written at CREATE only: the phase-5 patch limit never has to admit them.
 	ann := map[string]string{}
 	if s.Traceparent != "" {
 		ann[AnnTraceparent] = s.Traceparent
 	}
 	if s.SourceURL != "" {
 		ann[AnnTaskURL] = s.SourceURL
+	}
+	// A start seq of 0 is an empty room's lastSeq, and 0 is what an absent annotation reads back.
+	if s.StartSeq != 0 {
+		ann[AnnStartSeq] = strconv.FormatInt(s.StartSeq, 10)
+	}
+	if s.Head != "" {
+		ann[AnnHead] = s.Head
 	}
 	if len(ann) > 0 {
 		u.SetAnnotations(ann)
@@ -162,7 +174,8 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 // Run is the part of a claim the factory reads back.
 type Run struct {
 	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef string
-	Tokens, MaxTokens                                                                 int64
+	Head                                                                              string
+	Tokens, MaxTokens, StartSeq                                                       int64
 	Created, Finished                                                                 time.Time
 }
 
@@ -177,7 +190,11 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	r := Run{ID: id, TaskID: u.GetLabels()[LabelTask], Created: u.GetCreationTimestamp().Time,
 		Role: str("spec", "role"), Principal: str("spec", "principal"), Branch: str("spec", "branch"),
 		RoomRef: str("spec", "roomRef"), Phase: str("status", "phase"), Reason: str("status", "reason"),
-		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked]}
+		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead]}
+	// The CREATE-only start seq (R48): absent means the room was empty when the run was created.
+	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnStartSeq], 10, 64); err == nil {
+		r.StartSeq = v
+	}
 	r.MaxTokens, _, _ = unstructured.NestedInt64(u.Object, "spec", "budget", "maxTokens")
 	// The annotation is the run's monotonic high-water mark (R12); status is the fallback.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnUsage], 10, 64); err == nil {
@@ -266,7 +283,7 @@ func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) e
 	if err := validID("annotate", id); err != nil {
 		return err
 	}
-	for _, k := range []string{AnnTaskURL, AnnTraceparent} {
+	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead} {
 		if _, ok := kv[k]; ok {
 			return fmt.Errorf("annotate run %s: %s is set at CREATE only", id, k)
 		}
