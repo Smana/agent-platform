@@ -3,8 +3,12 @@
 package reconciler
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -178,6 +182,27 @@ func TestARefusedFactsPostWaits(t *testing.T) {
 				t.Fatalf("due %v, ledger %+v", g.r.factsDue(tk), tk.Status.Facts)
 			}
 		})
+	}
+}
+
+// A v0.7 broker serves no task route: a reasonless 404 or 405 is a wait, said once per process, never
+// an error that holds every task in backoff (ruling R28).
+func TestAnOlderBrokersMissingRouteWaitsAndSaysSoOnce(t *testing.T) {
+	var logs bytes.Buffer
+	g := newRig(t, awaiting())
+	g.r.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotFound} {
+		tk := stored(t, g.c)
+		g.log.failFacts = &rooms.APIError{Status: status}
+		if err := g.r.postFacts(t.Context(), tk); err != nil {
+			t.Fatalf("%d: %v", status, err)
+		}
+		if !g.r.factsDue(tk) {
+			t.Fatalf("%d: the facts are no longer due", status)
+		}
+	}
+	if n := strings.Count(logs.String(), "msg="); n != 1 {
+		t.Fatalf("%d log lines, want 1:\n%s", n, logs.String())
 	}
 }
 

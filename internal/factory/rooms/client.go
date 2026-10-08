@@ -78,11 +78,16 @@ var (
 	ErrNotPermitted = errors.New("rooms: the broker does not allow system:factory")
 	// ErrSealed is 410 sealed: the room was closed, and its log takes no event again.
 	ErrSealed = errors.New("rooms: the room's log is sealed")
+	// ErrNoRoute is a 404 or 405 with no reason: the broker's mux does not serve the route, so the
+	// broker is older than the factory (a v0.7 broker has no task route). An upgrade, not a retry.
+	ErrNoRoute = errors.New("rooms: the broker does not serve this route yet")
 )
 
-// Is matches ErrNoRoom, ErrNotPermitted and ErrSealed.
+// Is matches ErrNoRoom, ErrNotPermitted, ErrSealed and ErrNoRoute.
 func (e *APIError) Is(target error) bool {
 	switch target {
+	case ErrNoRoute:
+		return e.Reason == "" && (e.Status == http.StatusNotFound || e.Status == http.StatusMethodNotAllowed)
 	case ErrNoRoom:
 		return e.Reason == wire.ReasonNoRoom
 	case ErrNotPermitted:

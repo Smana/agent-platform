@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -115,6 +116,8 @@ type Reconciler struct {
 	Nonce     func() string
 	Log       *slog.Logger
 	Trace     tracing.Sink // nil: tracing off (R46)
+
+	oldBroker sync.Once // the broker serves no task route: said once per process
 }
 
 // SetupWithManager watches Tasks and the AgentRuns that carry a task label.

@@ -95,6 +95,12 @@ func (r *Reconciler) postFacts(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	err := r.Rooms.TaskFacts(ctx, t.Status.RoomRef, f, t.Status.Facts.Seq)
 	switch {
+	case errors.Is(err, rooms.ErrNoRoute):
+		// A broker older than the factory (R28): every task would say so on every reconcile.
+		r.oldBroker.Do(func() {
+			r.log().Warn("task facts wait for a broker that serves them: upgrade the broker", "err", err)
+		})
+		return nil
 	case errors.Is(err, rooms.ErrNoRoom), errors.Is(err, rooms.ErrNotPermitted), errors.Is(err, rooms.ErrSealed):
 		r.log().Info("task facts wait for the broker", "task.id", t.Name, "seq", t.Status.Facts.Seq, "err", err)
 		return nil

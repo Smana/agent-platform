@@ -592,6 +592,34 @@ func TestTaskFactsPostsToTheTaskRoute(t *testing.T) {
 	}
 }
 
+// A broker older than the factory serves no task route (v0.7): its mux answers a plain-text 404, or a
+// 405 when the path has another method's route, with no wire reason. A broker's own no_room is not it.
+func TestAnUnservedRouteIsErrNoRoute(t *testing.T) {
+	f := envelope.TaskFacts{Phase: "Queued"}
+	served := newRig(t, 0)
+	served.b.fail["/v1/rooms/3buqdlot/task"], served.b.reason = http.StatusNotFound, wire.ReasonNoRoom
+	if err := served.c.TaskFacts(t.Context(), "3buqdlot", f, 1); !errors.Is(err, ErrNoRoom) || errors.Is(err, ErrNoRoute) {
+		t.Fatalf("no_room: %v", err)
+	}
+	for name, mux := range map[string]*http.ServeMux{"404": http.NewServeMux(), "405": http.NewServeMux()} {
+		if name == "405" {
+			mux.HandleFunc("GET /v1/rooms/{id}/task", func(http.ResponseWriter, *http.Request) {})
+		}
+		srv := httptest.NewTLSServer(mux)
+		t.Cleanup(srv.Close)
+		roots := x509.NewCertPool()
+		roots.AddCert(srv.Certificate())
+		c, err := New(srv.URL, served.tok, httpx.New(5*time.Second, roots), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = c.TaskFacts(t.Context(), "3buqdlot", f, 1)
+		if !errors.Is(err, ErrNoRoute) || errors.Is(err, ErrNoRoom) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestTaskFactsRefusesBeforeARequest(t *testing.T) {
 	r := newRig(t, 0)
 	ok := envelope.TaskFacts{Phase: "Queued"}
