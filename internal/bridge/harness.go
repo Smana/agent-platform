@@ -227,10 +227,17 @@ type Cursor struct {
 // Next returns the events after c, at most MaxPages pages of them. On error it
 // returns what it read so far and the cursor advanced over exactly those.
 func (h *Harness) Next(ctx context.Context, c Cursor) ([]RawEvent, Cursor, error) {
-	var out []RawEvent
-	c, err := h.walk(ctx, c, max(h.MaxPages, 1), func(Cursor) bool { return false },
-		func(e RawEvent) { out = append(out, e) })
+	out, c, _, err := h.next(ctx, c)
 	return out, c, err
+}
+
+// next is Next, and whether the walk ended at the log's end: the confirmation
+// loop answers only once it has seen every action the harness wrote.
+func (h *Harness) next(ctx context.Context, c Cursor) ([]RawEvent, Cursor, bool, error) {
+	var out []RawEvent
+	c, end, err := h.walk(ctx, c, max(h.MaxPages, 1), func(Cursor) bool { return false },
+		func(e RawEvent) { out = append(out, e) })
+	return out, c, end, err
 }
 
 // Skip positions a fresh cursor after the first n events (a restarted bridge).
@@ -238,21 +245,28 @@ func (h *Harness) Next(ctx context.Context, c Cursor) ([]RawEvent, Cursor, error
 // events, only their ids (for the no-progress and duplicate checks), so it
 // reads as many pages as it takes.
 func (h *Harness) Skip(ctx context.Context, n int64) (Cursor, error) {
+	return h.skip(ctx, n, func(RawEvent) {})
+}
+
+// skip is Skip, handing each event it passes over to take.
+func (h *Harness) skip(ctx context.Context, n int64, take func(RawEvent)) (Cursor, error) {
 	if n <= 0 {
 		return Cursor{}, nil
 	}
-	return h.walk(ctx, Cursor{}, math.MaxInt, func(c Cursor) bool { return c.Count >= n }, func(RawEvent) {})
+	c, _, err := h.walk(ctx, Cursor{}, math.MaxInt, func(c Cursor) bool { return c.Count >= n }, take)
+	return c, err
 }
 
 // walk reads the events after c page by page and hands each to take, until the
-// log ends, maxPages pages returned events, or full holds. A page that returns
-// nothing new (the cursor's own event and the ones it passes over, as a page
-// halved to one event is) does not count: counting it would stall the cursor
-// there forever. It stops on a page that cannot move it forward: an empty one,
-// or one whose next page was already asked for or returned.
+// log ends (end reports it), maxPages pages returned events, or full holds. A
+// page that returns nothing new (the cursor's own event and the ones it passes
+// over, as a page halved to one event is) does not count: counting it would
+// stall the cursor there forever. It stops on a page that cannot move it
+// forward: an empty one, or one whose next page was already asked for or
+// returned.
 func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cursor) bool,
 	take func(RawEvent),
-) (Cursor, error) {
+) (_ Cursor, end bool, _ error) {
 	page, pass := c.LastID, c.Unkeyed
 	asked, seen := map[string]bool{}, map[string]bool{c.LastID: true}
 	for first, pages := true, 0; ; first = false {
@@ -261,11 +275,11 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 		// error returned.
 		evs, next, err := h.Page(ctx, page)
 		if err != nil && len(evs) == 0 {
-			return c, err
+			return c, false, err
 		}
 		if first && c.LastID != "" {
 			if len(evs) == 0 || evs[0].ID != c.LastID {
-				return c, ErrCursorLost
+				return c, false, ErrCursorLost
 			}
 			evs = evs[1:] // page_id is inclusive
 		}
@@ -277,16 +291,16 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 				// Returned by an earlier walk, and Malformed by construction; a
 				// well-formed event here arrived out of order and would be lost.
 				if !e.Malformed {
-					return c, ErrCursorLost
+					return c, false, ErrCursorLost
 				}
 				pass--
 				continue
 			}
 			if full(c) {
-				return c, nil
+				return c, false, nil
 			}
 			if !e.Malformed && seen[e.ID] {
-				return c, ErrCursorLost // sent again: taking it would duplicate it
+				return c, false, ErrCursorLost // sent again: taking it would duplicate it
 			}
 			take(e)
 			c.Count++
@@ -298,22 +312,33 @@ func (h *Harness) walk(ctx context.Context, c Cursor, maxPages int, full func(Cu
 			seen[e.ID] = true
 		}
 		if err != nil || next == "" || pages >= maxPages || full(c) || asked[next] || seen[next] {
-			return c, err
+			return c, err == nil && next == "", err
 		}
 		page = next
 	}
 }
 
 // Send injects a message the agent consumes at its next step (steering, §2).
-func (h *Harness) Send(ctx context.Context, text string) error {
+func (h *Harness) Send(ctx context.Context, text string) error { return h.Message(ctx, text, true) }
+
+// Message appends a user message, and with run starts the conversation. A run
+// on a conversation waiting for a confirmation confirms every pending action,
+// so the confirmation loop sends with run false (Confirmer.Gate).
+func (h *Harness) Message(ctx context.Context, text string, run bool) error {
 	return h.do(ctx, http.MethodPost, "/events", map[string]any{"role": "user",
-		"content": []map[string]string{{"type": "text", "text": text}}, "run": true}, nil)
+		"content": []map[string]string{{"type": "text", "text": text}}, "run": run}, nil)
 }
 
 // Respond answers the action the conversation is waiting to have confirmed.
 func (h *Harness) Respond(ctx context.Context, accept bool, reason string) error {
 	return h.do(ctx, http.MethodPost, "/events/respond_to_confirmation",
 		map[string]any{"accept": accept, "reason": reason}, nil)
+}
+
+// Run resumes the conversation: after a rejected confirmation OpenHands sets
+// it idle and does not run on its own. A 409 means a run is in progress.
+func (h *Harness) Run(ctx context.Context) error {
+	return h.do(ctx, http.MethodPost, "/run", nil, nil)
 }
 
 // Interrupt stops the agent's current step.

@@ -24,7 +24,7 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Verdict** | A reviewer's or tester's `approve` or `changes`, recorded as `message{kind: review_verdict}`. The broker also posts it on the pull request as one comment | The log; the PR | AP-3 |
 | **Brief** | The fenced, bounded text the next run starts from: the last handoff and verdict, plus the queued messages, quoted as untrusted data | Built by the broker | Planned, phase 4 / AP-4 |
 | **Approval** | A human decision on a pending harness action. Oversight, not a security boundary: a run's capabilities are fixed at creation. The first valid decision wins | `approval_requested`, `approval_decided` | Planned, phase 5 / AP-5 |
-| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it | New `Room`; `state_changed{forked_from}` | Planned, phase 6 / AP-6 |
+| **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it | New `Room` annotated `agents.ogenki.io/forked-from: <room>@<seq>`; `state_changed{forked_from}` | Phase 6 / AP-6 |
 | **Envelope** | The frozen C4 v1 shape of every log entry: `v, id, seq, roomId, runId, actor, type, causedBy, origin, ts, redactions, payload` | [Event envelope](event-envelope.md) | AP-1 |
 | **seq** | The per-room sequence number: gapless from 1, assigned by the broker under the room's row lock | `events.seq`, `rooms.last_seq` | AP-1 |
 | **Origin** | Who produced an event: `harness` (mirrored from a run), `client` (a human, a system caller, a room tool) or `broker` | Every event | AP-1 |
@@ -35,7 +35,7 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Data class** | `public` or `internal` (C3): which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary. Fixed at creation (ruling TD) | `Room.spec.dataClass` | AP-1 (the field); the verdict rule AP-3 |
 | **Tier** | A logical model name on the agent gateway: `tier-light`, `tier-standard`, `tier-frontier` (C5), chosen once per task by SP3's classifier (C7). Rooms do not carry or change it: escalating a task means a new run, never a switch inside one | `AgentRun.spec.model` | Owned by SP4 |
 | **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker | AP-1 |
-| **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation (ruling P15). That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` | AP-1 |
+| **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `room_busy` (the room refused the run, which never started: F15), `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation (ruling P15). That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` | AP-1 |
 
 ## The Room CRD
 

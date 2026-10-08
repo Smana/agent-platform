@@ -62,6 +62,9 @@ type leaderLoop struct {
 	active *atomic.Bool
 	// ticker paces the job; nil means a time.Ticker.
 	ticker func(d time.Duration) (c <-chan time.Time, stop func())
+	// done, when set, runs once this replica stops leading: a gauge only the
+	// leader sets must not keep a former leader's value.
+	done func()
 }
 
 // Start runs the job on every tick until ctx ends, which is when this replica
@@ -69,6 +72,9 @@ type leaderLoop struct {
 func (l *leaderLoop) Start(ctx context.Context) error {
 	l.active.Store(true)
 	defer l.active.Store(false)
+	if l.done != nil {
+		defer l.done()
+	}
 	tick, stop := newTicker(l.ticker, l.every)
 	defer stop()
 	for {

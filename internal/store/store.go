@@ -38,6 +38,11 @@ type Store struct {
 	pool      *pgxpool.Pool
 	MaxEvents int64
 	MaxBytes  int64
+	// MaxForkEvents and MaxForkBytes cap a fork's prefix. The copy is one
+	// transaction inside an act's 15 s, and its time grows faster than its
+	// length: 5,000 events took 2.5 s on a local Postgres, 20,000 took 28.6 s.
+	MaxForkEvents int64
+	MaxForkBytes  int64
 	// Now stamps event timestamps. Lease freshness and close dates use the
 	// database's now() instead: one clock for every broker replica.
 	Now func() time.Time
@@ -75,7 +80,7 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: connect: %w", err)
 	}
-	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, Now: time.Now, ListenPing: 30 * time.Second}, nil
+	return &Store{pool: pool, MaxEvents: 100_000, MaxBytes: 256 << 20, MaxForkEvents: 5_000, MaxForkBytes: 32 << 20, Now: time.Now, ListenPing: 30 * time.Second}, nil
 }
 
 // Close releases the pool.

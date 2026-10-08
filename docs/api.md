@@ -69,7 +69,7 @@ and is empty before.
 | `403` | `run_not_live` | The run is terminal, revoked, deleted, or not yet in the watch |
 | `403` | `run_has_no_room` | The run has no `roomRef` |
 | `429` | `rate_limited` | Over the run's limits, shared with its batches |
-| `409` | `room_busy` | Another run holds the room's lease: it is live and was seen within 2 minutes (ruling P17). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
+| `409` | `room_busy` | Another run holds the room's lease, and its run is live (rulings P17, SBB). The broker also appends `state_changed{kind: limit, reason: concurrent_run}` |
 | `503` | `no_room` | The room's row does not exist yet: its `Room` has not been reconciled |
 | `503` | `log_unavailable` | The database is unreachable |
 
@@ -159,19 +159,34 @@ the harness. The log may then show `delivered` for a message never injected.
 
 Errors before the stream opens are those of `hello`.
 
-### `POST /v1/bridge/approvals` (planned, phase 5 / AP-5)
+### `POST /v1/bridge/approvals` (phase 5 / AP-5)
 
-Request, at most 64 KiB: `{"callId": "call_97", "class": "forge.pr", "action": {…}}`. `class` is one
-of `forge.push`, `forge.pr`, `forge.other`, `mcp.write`, `shell.high`. The action is redacted and
-stored as the approval card shows it (T3). Response `200`: `{"approvalId": "…", "expiresAt": "…"}`.
-The expiry is 30 minutes for an `attended` room, the room's `approvals.ttl` (default `4h`) for an
-`unattended` one. The request is idempotent per `(room, run, callId)`.
+Request, at most 64 KiB: `{"eventId": "e42", "callId": "call_97", "class": "forge.pr", "action": {…}}`.
+`eventId` is the harness ActionEvent's id. `class` is one of `forge.push`, `forge.pr`, `forge.other`,
+`mcp.write`, `shell.high`. The action is redacted and stored as the approval card shows it (T3).
+Response `200`: `{"approvalId": "…", "expiresAt": "…"}`, with `expiresAt` always set: 30 minutes for
+an `attended` room, the room's `approvals.ttl` (default `4h`) for an `unattended` one. The request is
+idempotent per `(room, run, eventId)`, never per `callId`: a model provider may reuse a tool call id,
+and the bridge rejects a step whose ack names an approval it already spent. The request is fenced on
+the room's bridge lease, like the run's other appends, and recorded as `approval_requested`. It names
+the run's prompters for four-eyes: whoever requested the run (and its `spec.principal`), steered it,
+or wrote a queued message its brief consumed or that was promoted to it.
+
+An approval whose `callId` already has a `tool_result` in the log after its request (the harness ran
+or rejected the call), or whose run has left the room since (the broker's `participant{left}`), is
+closed as `superseded`, never left for an approver: by the leader's sweep every 30 s, or at once when
+an approver decides it. A superseded decision is never sent to the
+bridge. An expiry is decided `allow: false` with `reason: "expired"`, within 30 s of `expiresAt`.
 
 | Status | `error` | When |
 |---|---|---|
-| `400` | `bad_approval` | Not JSON, no `callId`, or an unknown class |
-| `400` | `bad_action` | The action is not a JSON document |
-| `503` | `log_unavailable` | The database refused it |
+| `400` | `bad_approval` | Not JSON, an unknown field, no `eventId` or `callId` (or one over 256 bytes), or an unknown class |
+| `400` | `bad_action` | The action is not a JSON object, its keys collide once redacted, or it is over 63 KiB redacted |
+| `401`, `403` | as for `hello` | |
+| `409` | `lease_lost` | Another run holds the room's bridge lease |
+| `410` | `sealed` | The room is sealed |
+| `429` | `rate_limited` | Over the run's limits |
+| `503` | `log_unavailable`, `timed_out` | The log or the run's prompters could not be read or written |
 
 ### `GET /v1/rooms/{id}/events`
 
@@ -267,6 +282,15 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness (ruling P6). It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
+It also serves `GET /admission`, read by `room-bridge gate` on loopback (F15):
+
+| Status | Body | When |
+|---|---|---|
+| `503` | `pending` | No hello has been decided yet: the broker is unreachable, or another run's live run has held the room for less than 3 minutes |
+| `200` | `admitted` | The bridge holds the room's lease. The gate exits 0 and the harness starts |
+| `409` | `room_busy` or `sealed` | The run will never hold the room. The gate exits 1, which fails the pod before the harness runs |
+| `403` | `loopback only` | The request came from outside the pod |
+
 ## `:8080` — human API (phase 2 / AP-2)
 
 Reached only through oauth2-proxy on `rooms.<private domain>`. Every request carries the human's
@@ -293,7 +317,7 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /api/rooms` | One row per room the caller may read: id, phase, owner, driver, data class, last `seq`, and the caller's own role | 2 / AP-2 |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket | 2 / AP-2 |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member. `repository` is optional (the CRD defaults it); `400` for another data class, a malformed repository, an unknown field or a principal the Room CRD would refuse, `429` past the caller's action budget (10/s, burst 20, shared with acts), `503` when the Room cannot be created. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post (T9) | 4 / AP-4 |
-| `GET /api/roomctl` | `{url, issuer, clientID}` for the UI's CLI setup page | 6 / AP-6 |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`. `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID` (ruling AS) | 6 / AP-6 |
 
 ### `GET /v1/ws`
 
@@ -312,7 +336,7 @@ One JSON object per text frame (Appendix B).
 | client → broker | `hello` | `roomId`, `afterSeq?` (clamped to the mark: the `sync` frame sets the baseline) or `tail?` (default: the last 500 events). Must be the first frame, else the socket closes `1008 hello first` |
 | client → broker | `act` | `clientSeq`, `action`, `driverEpoch?` (phase 4 onwards; until then every act is acked `rejected: not_permitted`) |
 | client → broker | `ping` | Every 30 s |
-| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it) |
+| broker → client | `state` | `throughSeq`, `snapshot: {roomId, phase, driver, driverEpoch, dataClass, you, runs, queue, sealed}`. `queue` is the messages still queued for the next run, `[{ref, author, text}]` (redacted), read just after the mark: apply events past `throughSeq` over it. `sealed` is the log's seal at the mark (`phase` follows the Room and lags it). `approvals` is the pending approvals, `[{approvalId, runId, callId, class, action, expiresAt, seq}]`, read like `queue`: a card per approval, however far behind the tail its request is |
 | broker → client | `sync` | `fromSeq`, `throughSeq`: the range that follows from the log |
 | broker → client | `event` | One C4 envelope |
 | broker → client | `ack` | `clientSeq`, then `seq` or `rejected`, and `result` for actions that return data |
@@ -346,14 +370,14 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `start_run` | `role` (`implementer`, `reviewer`, `tester`, `triager`), `prUrl?` (reviewer only, a pull request of the room's repository), `egressProfiles?` (at most 8 names) | Driver, owner. A reviewer's task is its PR, else the one the latest agent handoff or review verdict names (ruling P24); any other role's is the fenced brief of the latest agent handoff and verdict, which consumes the queued messages it quotes. Recorded as `state_changed{run_requested}`, with the reviewer's `taskUrl`. Before SP3 the ack's `result` is the rendered `AgentRun` for the owner to apply (ruling P14). A replayed `clientSeq` acks the record without it; one retried after a failed record (`log_unavailable`) asks for the same run under the same idempotency key, so it never creates a second one ([integration](integration.md)) | 4 |
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first | 4 |
 | `close` | `reason?` | Owner | 4 |
-| `decide` | `approvalId`, `decision: approved \| denied`, `reason` | Approver, owner | 5 |
-| `fork` | `seq`, `note`, `role?`, `prUrl?`, `egressProfiles?` | Watcher and up; also from `roomctl` | 6 |
+| `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, an expiry or a supersede included). With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision | 5 |
+| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`. A sealed room forks only for its owner or an `agents-admin` (`sealed`). A new room owned and driven by the forker, with the source's data class, repository and retention and none of its members. Its approvals are the source's for the source's owners (owner, owner members, `agents-admin`); anyone else gets, class by class, the stricter of the source's and a new room's (`attended`), so an `unattended` or `allow` override never carries over to a watcher: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica | 6 |
 
 | `rejected` | Meaning |
 |---|---|
 | `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run |
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
-| `rate_limited` | Over 10 actions per second (burst 20), per replica |
+| `rate_limited` | Over 10 actions per second (burst 20), or over 3 forks at once then one a minute; per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |
 | `room_busy` | A run is already running; or a run was requested in the last 10 minutes and has not joined yet, and the broker does not know it ended (a claim not applied, or a factory run not seen yet). Two replicas answering a `start_run` in the same instant can both pass this check until SP3's factory refuses a second pending run per room |
 | `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
@@ -361,9 +385,10 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `factory_unavailable` | The run could not be requested: no requester, or the factory failed or answered no run id. Retry |
 | `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
 | `not_queued` | The queued message was already delivered or removed |
-| `sealed` | The room's log is sealed. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
+| `sealed` | The room's log is sealed; a fork of it by anyone but its owner or an `agents-admin` too. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
 | `conflict` | The Room changed under an `invite`: retry |
 | `log_unavailable` | The log or the Room could not be read or written: retry |
+| `too_large` | A fork's prefix over 5,000 events or 32 MiB: fork at an earlier `seq` |
 | `already_decided` | Another approver decided first (phase 5) |
 | `four_eyes` | The room requires an approver who did not prompt the turn (OD-16, phase 5) |
 
