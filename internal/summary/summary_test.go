@@ -40,14 +40,20 @@ func TestFoldGolden(t *testing.T) {
 
 // A room sealed by MaxEvents ends with state_changed{limit}, not room_phase: both seal.
 func TestTheLimitSealAlsoClosesTheRoom(t *testing.T) {
+	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
 	evs := []envelope.Event{
+		ev(2, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"},
+			envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Implementing",
+				Issue: &envelope.IssueFact{Number: 42, URL: "https://github.com/Smana/cloud-native-ref/issues/42"}})),
 		approvalRequested(5, "01M4A", "git push", time.Now().Add(time.Hour)),
-		ev(6, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
-			envelope.StatePayload("limit", map[string]any{"events": 10000, "bytes": 1})),
+		ev(6, envelope.StateChanged, broker, envelope.StatePayload("limit", map[string]any{"events": 10000, "bytes": 1})),
 	}
 	s := summary.View(summary.Fold(evs), "r", "u", owner(), 0, time.Now())
 	if len(s.NeedsYou) != 0 || len(s.Actions) != 0 {
 		t.Fatalf("a sealed room offers needs %+v / actions %+v", s.NeedsYou, s.Actions)
+	}
+	if s.Status.Phase != "Sealed" || s.Status.Issue == nil || s.Status.Issue.Number != 42 {
+		t.Fatalf("status %+v: wants phase Sealed and the task's issue kept", s.Status)
 	}
 }
 

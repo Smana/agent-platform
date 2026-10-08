@@ -35,7 +35,7 @@ type State struct {
 	Verdict   *Verdict
 	Pending   map[string]Approval // approval id -> still open
 	Notes     []Note              // oldest first, the last maxNotes
-	Sealed    bool
+	Sealed    string              // "" while open; "Closed" (CloseRoom) or "Sealed" (MaxEvents)
 	LastSeq   int64
 	RoomPhase string
 }
@@ -158,11 +158,15 @@ func foldState(st *State, ev envelope.Event) {
 	case "room_phase":
 		st.RoomPhase = k.Phase
 		// store.CloseRoom seals with room_phase{Closed}.
-		st.Sealed = st.Sealed || k.Phase == "Closed"
+		if k.Phase == "Closed" {
+			st.Sealed = "Closed"
+		}
 	case "limit":
 		// The MaxEvents seal appends limit{events, bytes}; a concurrent-run refusal is also kind
 		// "limit" (reason, running) but seals nothing.
-		st.Sealed = st.Sealed || k.Events != nil
+		if k.Events != nil && st.Sealed == "" {
+			st.Sealed = "Sealed"
+		}
 	}
 }
 
@@ -198,8 +202,9 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 			s.Notes.Items = append(s.Notes.Items, n)
 		}
 	}
-	if st.Sealed {
-		return s // read-only: no needs, no actions
+	if st.Sealed != "" {
+		s.Status.Phase = st.Sealed // the sealed room refuses new facts, so the last task phase would be stale
+		return s                   // read-only: no needs, no actions
 	}
 	// Deciding happens in the web UI: judge "could decide" as the web UI would, so a CLI caller
 	// still learns an approval is needed, with a link and no command (D4).

@@ -17,7 +17,7 @@
     "room": "26zfnuxm",
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
-      "phase": "Merged", "run": null, "budget": null,
+      "phase": "Closed", "run": null, "budget": null,
       "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},
       "issue": {"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
       "lastVerdict": null
