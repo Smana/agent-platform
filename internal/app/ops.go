@@ -16,9 +16,10 @@ import (
 const probeTimeout = 2 * time.Second
 
 // opsHandler serves :9090: /metrics, /healthz (the process answers), /readyz
-// (not draining, PostgreSQL answers and the run watch holds every run) and
-// /startupz (the schema is migrated, so a pod waits for Atlas instead of
-// crash-looping).
+// (not draining, the dependency answers and the watch has synced) and /startupz.
+// The broker's dependency is PostgreSQL and its startup the migrated schema, so a
+// pod waits for Atlas instead of crash-looping; the factory's are GitHub and the
+// parsed config (factoryOps).
 func opsHandler(ping func(context.Context) error, schemaReady func(context.Context) (bool, error),
 	synced func(context.Context) bool, draining func() bool, metrics http.Handler,
 ) http.Handler {
@@ -35,11 +36,11 @@ func opsHandler(ping func(context.Context) error, schemaReady func(context.Conte
 		ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 		defer cancel()
 		if err := ping(ctx); err != nil {
-			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
+			http.Error(w, "dependency unreachable", http.StatusServiceUnavailable)
 			return
 		}
 		if !synced(ctx) {
-			http.Error(w, "run watch not synced", http.StatusServiceUnavailable)
+			http.Error(w, "watch not synced", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte("ready\n"))
@@ -48,7 +49,7 @@ func opsHandler(ping func(context.Context) error, schemaReady func(context.Conte
 		ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
 		defer cancel()
 		if ok, err := schemaReady(ctx); err != nil || !ok {
-			http.Error(w, "schema not migrated", http.StatusServiceUnavailable)
+			http.Error(w, "not started", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte("started\n"))

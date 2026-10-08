@@ -212,7 +212,7 @@ func setup(t *testing.T, opts ...option) env {
 	view := &hubView{memLog: log}
 	hub := fanout.New(view, nil, nil)
 	hub.PollEvery = 20 * time.Millisecond
-	exp, err := metrics.NewExporter("test")
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

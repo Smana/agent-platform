@@ -45,7 +45,7 @@ func TestRoomMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exp, err := metrics.NewExporter("test")
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

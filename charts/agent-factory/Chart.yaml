@@ -1,0 +1,7 @@
+apiVersion: v2
+name: agent-factory
+description: SP3's orchestrator for the Agent Factory (Smana/cloud-native-ref). Tasks, triggers, run meter.
+type: application
+# Set by `helm package --version` from the tag (release) or the PR pre-release (R20).
+version: 0.0.0
+appVersion: "0.0.0"
