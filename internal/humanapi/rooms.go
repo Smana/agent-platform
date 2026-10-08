@@ -140,7 +140,7 @@ type roomRow struct {
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
 // (D7, then §1 Groups), from the Room CRs' projected status. A room whose access
 // cannot be verified is left out like an unreadable one: neither the count nor
-// an error may tell that it exists.
+// an error may tell that it exists. X-Rooms-Access says why, about the caller.
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.principal(w, r)
 	if !ok {
@@ -155,20 +155,31 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	actx, acancel := context.WithTimeout(ctx, accessWait)
 	defer acancel()
-	// admits depends on the repository alone, and a failed check is not cached: once per
+	access := accessOK
+	if !s.Groups.IsAdmin(p) && (s.Access == nil || s.Identity == nil) {
+		access = accessUnverified
+	}
+	// The gate depends on the repository alone, and a failed check is not cached: once per
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
-	admitted := map[string]bool{}
+	readable := map[string]bool{}
 	out := []roomRow{}
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
 		repo := room.Spec.Repository
-		ok, seen := admitted[repo]
+		ok, seen := readable[repo]
 		if !seen {
-			var err error
-			if ok, err = s.admits(actx, room, p); err != nil {
+			v, err := s.gate(actx, room, p)
+			switch {
+			case v == unlinked:
+				access = accessUnlinked // the hint that helps: no check can pass until they link
+			case err != nil:
 				s.log().Warn("room access unverified", "repository", repo, "err", err)
+				if access == accessOK {
+					access = accessUnverified
+				}
 			}
-			admitted[repo] = ok
+			ok = v == admitted
+			readable[repo] = ok
 		}
 		if !ok {
 			continue
@@ -180,5 +191,6 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		out = append(out, roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
 			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, You: you})
 	}
+	w.Header().Set(accessHeader, access)
 	writeJSON(w, out)
 }

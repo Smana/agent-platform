@@ -174,6 +174,25 @@ func listed(t *testing.T, e env, h http.Header) []string {
 	return ids
 }
 
+// accessOf is the X-Rooms-Access header GET /api/rooms gives h (ruling R21).
+func accessOf(t *testing.T, e env, h http.Header) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header = h
+	r, err := e.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/rooms: %d", r.StatusCode)
+	}
+	return r.Header.Get("X-Rooms-Access")
+}
+
 // opens reports the status of a WebSocket upgrade to room, and its plain-text refusal; the
 // handler refuses before the upgrade, so a plain GET carries the same answer.
 func opens(t *testing.T, e env, room string, h http.Header) (int, string) {
@@ -198,16 +217,20 @@ func TestRoomVisibilityFollowsGitHub(t *testing.T) {
 		name   string
 		h      http.Header
 		listed []string
+		access string // X-Rooms-Access: about the caller, never a room
 		open   map[string]bool
 	}{
-		{"a member who can read Smana/a", header("dev1"), []string{roomID}, map[string]bool{roomID: true, roomB: false, roomC: false}},
-		{"a member who can read neither", header("dev2"), []string{}, map[string]bool{roomID: false, roomB: false, roomC: false}},
-		{"a member with no GitHub link", header("nolink"), []string{}, map[string]bool{roomID: false, roomB: false, roomC: false}},
-		{"an admin, with no GitHub link", admin("nolink"), []string{roomID, roomB, roomC}, map[string]bool{roomID: true, roomB: true, roomC: true}},
+		{"a member who can read Smana/a", header("dev1"), []string{roomID}, "ok", map[string]bool{roomID: true, roomB: false, roomC: false}},
+		{"a member who can read neither", header("dev2"), []string{}, "ok", map[string]bool{roomID: false, roomB: false, roomC: false}},
+		{"a member with no GitHub link", header("nolink"), []string{}, "unlinked", map[string]bool{roomID: false, roomB: false, roomC: false}},
+		{"an admin, with no GitHub link", admin("nolink"), []string{roomID, roomB, roomC}, "ok", map[string]bool{roomID: true, roomB: true, roomC: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := listed(t, e, tc.h); !slices.Equal(got, tc.listed) {
 				t.Errorf("lists %v, want %v", got, tc.listed)
+			}
+			if got := accessOf(t, e, tc.h); got != tc.access {
+				t.Errorf("X-Rooms-Access %q, want %q", got, tc.access)
 			}
 			for room, ok := range tc.open {
 				code, body := opens(t, e, room, tc.h)
@@ -237,6 +260,10 @@ func TestNoAccessCheckIsAdminsOnly(t *testing.T) {
 	if got := listed(t, e, admin("boss")); len(got) != 3 {
 		t.Fatalf("an admin lists %v", got)
 	}
+	// Nothing can vouch for a member: they learn it, an admin does not need to.
+	if got, admins := accessOf(t, e, header("dev1")), accessOf(t, e, admin("boss")); got != "unverified" || admins != "ok" {
+		t.Fatalf("X-Rooms-Access: member %q, admin %q", got, admins)
+	}
 	e = setup(t, abc(t), w0().option(), func(s *Server, _ *fanout.Hub, _ *hubView) { s.Access = nil })
 	if got := listed(t, e, header("dev1")); len(got) != 0 {
 		t.Fatalf("without the permission check a member lists %v", got)
@@ -262,6 +289,9 @@ func TestAccessFailsClosedPastTheCache(t *testing.T) {
 	if got := listed(t, e, header("dev1")); !slices.Equal(got, []string{roomID}) {
 		t.Fatalf("a fresh cache must stand: %v", got)
 	}
+	if got := accessOf(t, e, header("dev1")); got != "ok" {
+		t.Fatalf("a fresh cache: X-Rooms-Access %q", got)
+	}
 	if code, _ := opens(t, e, roomID, header("dev1")); code != http.StatusSwitchingProtocols {
 		t.Fatalf("a fresh cache must stand: %d", code)
 	}
@@ -269,11 +299,18 @@ func TestAccessFailsClosedPastTheCache(t *testing.T) {
 	if code, body := get(t, e, "/api/rooms", header("dev1")); code != http.StatusOK || strings.TrimSpace(body) != "[]" {
 		t.Fatalf("past the cache: %d %s", code, body)
 	}
+	// The caller learns their access could not be checked; which rooms it hid, they do not.
+	if got := accessOf(t, e, header("dev1")); got != "unverified" {
+		t.Fatalf("past the cache: X-Rooms-Access %q", got)
+	}
 	if code, body := opens(t, e, roomID, header("dev1")); code != http.StatusServiceUnavailable || body != "access_unverified\n" {
 		t.Fatalf("past the cache: %d %q", code, body)
 	}
 	if got := listed(t, e, admin("boss")); len(got) != 3 {
 		t.Fatalf("an admin needs no GitHub: %v", got)
+	}
+	if got := accessOf(t, e, admin("boss")); got != "ok" {
+		t.Fatalf("an admin needs no GitHub: X-Rooms-Access %q", got)
 	}
 	if code, _ := opens(t, e, roomB, admin("boss")); code != http.StatusSwitchingProtocols {
 		t.Fatalf("an admin needs no GitHub: %d", code)
@@ -359,6 +396,9 @@ func TestARoomWhoseRepositoryTheAppLostIsMissing(t *testing.T) {
 	// The list checks A first, with the login not yet cached: the LoginOf path.
 	if got := listed(t, e, header("dev1")); !slices.Equal(got, []string{roomB}) {
 		t.Fatalf("lists %v", got)
+	}
+	if got := accessOf(t, e, header("dev1")); got != "ok" {
+		t.Fatalf("a repository the App lost is an answer, not an outage: X-Rooms-Access %q", got)
 	}
 	// The login is cached now: the permission path.
 	if code, body := opens(t, e, roomID, header("dev1")); code != http.StatusNotFound || body != "no such room\n" {
