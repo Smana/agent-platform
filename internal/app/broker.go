@@ -170,6 +170,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	api.Queue = logStore // the system queue routes (SP3 R9)
 	rw.watch.OnGone(api.Drop)
 	hub, err := fanoutHub(st, st, m, log)
 	if err != nil {

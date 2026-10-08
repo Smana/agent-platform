@@ -47,6 +47,9 @@ that ends, is revoked or is deleted has its streams cut on the watch event.
 | `POST /v1/bridge/approvals` | Bridge | Asks for a human decision on a pending action | 5 / AP-5 |
 | `GET /v1/rooms/{id}/events` | System | Reads a room's log | AP-1 |
 | `POST /v1/rooms/{id}/messages` | System | Appends `message{kind: task_state}` | AP-1 |
+| `POST /v1/rooms/{id}/queue` | System | Queues a chat message for the room's next run | SP3 (R9) |
+| `GET /v1/rooms/{id}/queue` | System | Lists the messages still queued | SP3 (R9) |
+| `POST /v1/rooms/{id}/queue/consume` | System | Marks queued messages consumed by a run | SP3 (R9) |
 
 ### `POST /v1/bridge/hello`
 
@@ -228,6 +231,42 @@ never reuses a `clientSeq` for another message.
 | `410` | `sealed` | The room is sealed |
 | `429` | `rate_limited` | Over the principal's limits |
 | `503` | `log_unavailable`, `timed_out` | The database refused it, or the request ran out of time |
+
+### The queue routes
+
+For system callers (SP3 ruling R9): the factory turns a maintainer's GitHub review into a queued
+message, and consumes it once a run's brief quotes it. Every route answers `501 no_queue` on a broker
+built without a queue store, and otherwise refuses as the routes above do: `400 bad_room`,
+`401`, `403`, `404 no_room`, `410 sealed`, `429`, `503 log_unavailable`.
+
+`POST /v1/rooms/{id}/queue`, at most 32 KiB:
+
+```json
+{"text": "GitHub review by @Smana: use the relative link", "clientSeq": 901, "stream": "review"}
+```
+
+The text is redacted and stored as `message{kind: chat, delivery: queued}`, the caller its actor and
+`<principal>:queue:<stream>` its origin. `stream` is `[a-z]{1,16}`, default `default`: each source
+keeps its own `clientSeq` space, apart from the caller's `task_state` messages. Response `201`:
+`{"seq": 1844}`. Replaying the stream's highest `clientSeq` answers `200 {"duplicate": true}`.
+A lower `clientSeq` need not be a replay, since GitHub review ids follow creation order, not
+submission order. It is stored as a new message, unless its exact key is already stored: then the
+answer is `201` with the stored `seq`. Two identical requests racing can both answer `201` with
+the same `seq`. Either way, nothing is stored twice.
+
+`GET /v1/rooms/{id}/queue` answers `200 {"queued": [{"ref": 1844, "author": "system:factory",
+"text": "…"}]}`, oldest first; `ref` is the queued message's `seq`.
+
+`POST /v1/rooms/{id}/queue/consume` `{"refs": [1844], "runId": "7f3cq2xz"}` moves each ref still
+queued to `consumed` by that run and answers `200 {"consumed": n}`, the refs this call moved. A ref
+already consumed, promoted, removed or never queued is skipped, so a retry is safe.
+
+| Status | `error` | When |
+|---|---|---|
+| `400` | `bad_message` | No text, text over 16 KiB, `clientSeq` ≤ 0, or a malformed body |
+| `400` | `bad_stream` | A `stream` that is not `[a-z]{1,16}` |
+| `400` | `bad_consume` | A `runId` that is not a C2 id, more than 100 refs, or a malformed body |
+| `501` | `no_queue` | No queue store wired |
 
 ## `:9090` — probes and metrics
 

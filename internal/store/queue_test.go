@@ -71,6 +71,35 @@ func TestSetQueuedInASealedRoom(t *testing.T) {
 	}
 }
 
+// SP3 R9: a system caller's queued message, as the broker's queue route builds it,
+// passes queue_is_its_event, keeps its stream's cursor and is consumed once.
+func TestASystemCallerQueuesAndConsumes(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	d := queuedDraft(901, "use the relative link")
+	d.Actor = envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
+	d.OriginClient = "system:factory:queue:review"
+	ev, err := s.Enqueue(ctx, d, "system:factory", "use the relative link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := s.Cursor(ctx, room, d.OriginClient); err != nil || cur != 901 {
+		t.Fatalf("cursor %d, %v", cur, err)
+	}
+	if got, err := s.Queue(ctx, room); err != nil || len(got) != 1 || got[0].Ref != ev.Seq || got[0].Author != "system:factory" {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	if err := s.SetQueued(ctx, room, ev.Seq, "consumed", "aaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetQueued(ctx, room, ev.Seq, "consumed", "aaaaaaaa"); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("consumed twice: %v", err)
+	}
+	if got, err := s.Queue(ctx, room); err != nil || len(got) != 0 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
 // §2: a driver-only append applies only while its sender holds the token at the
 // epoch it decided on, checked under the row lock.
 func TestAppendAsDriverIsFenced(t *testing.T) {

@@ -107,9 +107,22 @@ log. The log keeps its own retention clock after the CR is gone.
 | Actor | Creates | Reads | Writes into the log |
 |---|---|---|---|
 | Owner, before SP3 | `Room` CRs with `kubectl`; runs with `task agent:run -- --room` | SQL; the system API | nothing directly |
-| SP3's factory | `Room` CRs and every `AgentRun` (C3: the only creator) | `GET /v1/rooms/{id}/events` | `message{kind: task_state}` |
+| SP3's factory | `Room` CRs and every `AgentRun` (C3: the only creator) | `GET /v1/rooms/{id}/events`, `GET /v1/rooms/{id}/queue` | `message{kind: task_state}`, the task's snapshot first; a maintainer's review as a queued `chat` (`POST /v1/rooms/{id}/queue`, stream `review`), consumed by the run whose brief quoted it |
 | A run | nothing | `room_read` (phase 3) | its harness events through the bridge; `room_post`, `room_handoff`, `room_verdict` (phase 3) |
 | A human | rooms from the UI (phase 4), forks (phase 6) | the web UI (phase 2), `roomctl` (phase 6) | messages, driver actions, decisions (phases 4–6) |
 | The broker | the `Room`s a human asks for, new or forked (phases 4, 6); **never** an `AgentRun` | everything | room and run lifecycle, seals, limits, verdict outcomes |
+
+A maintainer's review reaches the next run once queued: the factory re-reads the pull request
+just before that run starts, so a review submitted while the task waits joins it, and a review
+already dismissed is skipped. A review dismissed after it was queued still drives that run, since
+the system API cannot remove a queued message.
+
+The factory's other human inputs (§6.3):
+
+| Input | Effect |
+|---|---|
+| A maintainer's comment with `/factory retry` alone on a line outside a code fence, on an escalated task's issue or pull request | A fresh run, through `Queued` and its caps, within 5 minutes (escalated tasks are polled every 5 minutes). Edited comments, and anyone else's, are ignored without an answer |
+| No maintainer activity on an `AwaitingHuman` pull request for 48 h: no review, no comment on it or on the issue, no push without an `Agent-Run` trailer | One reminder mentioning the maintainers, for each quiet spell. A spell never restarts earlier than one already reminded |
+| The same for 14 days, at least 24 h after that reminder, and the latest maintainer review is not an approval | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`). An approved pull request is never closed. A refused close takes the label off again |
 
 The full permission matrix is in [Security](security.md#authorization).

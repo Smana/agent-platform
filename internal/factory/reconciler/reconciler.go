@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -39,9 +40,15 @@ type RunClient interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// RoomLog reads a room's log from afterSeq, returning the resume cursor (rooms.Client).
+// RoomLog is the broker's system API as the reconciler uses it (rooms.Client): the room's log
+// from afterSeq with its resume cursor, the room's queue, and task_state messages.
 type RoomLog interface {
 	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
+	Events(ctx context.Context, room string, afterSeq int64, limit int) ([]envelope.Event, int64, error)
+	Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error
+	Queue(ctx context.Context, room string) ([]rooms.Queued, error)
+	Consume(ctx context.Context, room string, refs []int64, runID string) error
+	TaskState(ctx context.Context, room, text string, clientSeq int64) error
 }
 
 // taskForge is the part of the forge the reconciler uses, as the factory App.
@@ -51,6 +58,8 @@ type taskForge interface {
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	PullRequestForBranch(ctx context.Context, branch string) (int, error)
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
+	ClosePR(ctx context.Context, number int) error
+	RemoveLabel(ctx context.Context, number int, label string) error
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -69,6 +78,19 @@ const (
 	spanRetry  = 15 * time.Minute
 	spanGiveUp = 24 * time.Hour
 )
+
+// A pull request no maintainer has touched for RemindAfter gets a reminder, and is closed with
+// factory/stale after StaleAfter (§6.3), never sooner than reminderNotice after that reminder.
+const (
+	RemindAfter    = 48 * time.Hour
+	StaleAfter     = 14 * 24 * time.Hour
+	reminderNotice = 24 * time.Hour
+)
+
+// escalatedPoll is how often an escalated task is reconciled. It waits only for a maintainer's
+// /factory retry or the end of its pull request, which nothing bounds in number (§6.3 gives
+// Escalated no timeout), and each poll costs GitHub calls the whole factory shares.
+const escalatedPoll = 5 * time.Minute
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
 // every change of one of its AgentRuns; one worker, so the caps are counted without a race
@@ -154,6 +176,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil || v1alpha1.TerminalPhase(t.Status.Phase) {
 		return ctrl.Result{}, err
 	}
+	if t.Status.Phase == v1alpha1.PhaseEscalated {
+		return ctrl.Result{RequeueAfter: escalatedPoll}, nil
+	}
 	return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
 }
 
@@ -176,6 +201,8 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.implementing(ctx, t)
 	case v1alpha1.PhaseAwaitingHuman:
 		return r.awaitingHuman(ctx, t)
+	case v1alpha1.PhaseEscalated:
+		return r.escalated(ctx, t)
 	}
 	return nil
 }
@@ -263,11 +290,13 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 }
 
 // narrateLater queues e in the task's outbox (ruling SO), written with the transition that caused it,
-// so an outage never loses it: drain posts it, now or on a later reconcile. A key queued twice is
-// posted once: Post skips a key already in status.narrated.
+// so an outage never loses it: drain posts it, now or on a later reconcile. A key already queued
+// or posted is not queued again, so a timer that re-fires every poll (the reminder) writes no
+// status; Post would skip it anyway.
 func narrateLater(t *v1alpha1.Task, e narrate.Event) {
 	n := target(t)
-	if n == 0 {
+	if n == 0 || slices.Contains(t.Status.Narrated, e.Key) ||
+		slices.ContainsFunc(t.Status.Outbox, func(o v1alpha1.Narration) bool { return o.Key == e.Key }) {
 		return
 	}
 	t.Status.Outbox = append(t.Status.Outbox, v1alpha1.Narration{Key: e.Key, Number: n, Body: e.Body})
@@ -433,5 +462,39 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Reason = why
 		return nil
 	}
-	return r.startRun(ctx, t, r.implementerSpec(t, FirstBrief(t, r.Nonce())), "initial")
+	if len(t.Status.Runs) == 0 {
+		// The snapshot, once, in the room of record: later runs read it there, never the live
+		// issue (§1, T1). Its clientSeq is the task's room ledger (ruling SK), so a retry reposts
+		// the same seq, which the broker keeps once. A room the broker has no log for yet waits.
+		err := narrate.Room(ctx, r.Rooms, t, "snapshot", SnapshotMessage(t, r.Nonce()),
+			func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) })
+		switch {
+		case errors.Is(err, rooms.ErrNoRoom):
+			t.Status.Reason = "waiting_room_log"
+			return nil
+		case errors.Is(err, rooms.ErrNotPermitted): // FR-1 not enabled yet: visible, and retried with backoff
+			t.Status.Reason = "waiting_broker_permission"
+			return err
+		case err != nil:
+			return err
+		}
+	}
+	if t.Status.PullRequest != nil && len(t.Status.Runs) > 0 {
+		if done, err := r.lateReviews(ctx, t); err != nil || done {
+			return err
+		}
+	}
+	s, refs, trigger, err := r.nextImplementer(ctx, t)
+	if err != nil {
+		return err
+	}
+	if err := r.startRun(ctx, t, s, trigger); err != nil {
+		return err
+	}
+	// Consumed once the run exists, and only what its brief quoted (F-A). A failure only means
+	// the next brief repeats them.
+	if err := r.Rooms.Consume(ctx, t.Status.RoomRef, refs, current(t).ID); err != nil {
+		r.log().Warn("queue consume failed", "task", t.Name, "err", err)
+	}
+	return nil
 }

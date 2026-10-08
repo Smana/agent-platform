@@ -209,7 +209,8 @@ func (g *GitHub) RecentComments(ctx context.Context, number int) ([]Comment, err
 	out := make([]Comment, 0, len(cs))
 	for i := len(cs) - 1; i >= 0; i-- {
 		c := cs[i]
-		out = append(out, Comment{ID: c.GetID(), Author: c.GetUser().GetLogin(), Body: c.GetBody(), At: c.GetCreatedAt().Time})
+		out = append(out, Comment{ID: c.GetID(), Author: c.GetUser().GetLogin(), Body: c.GetBody(), At: c.GetCreatedAt().Time,
+			Edited: c.GetUpdatedAt().After(c.GetCreatedAt().Time)})
 	}
 	return out, nil
 }
@@ -230,6 +231,13 @@ func (g *GitHub) RemoveLabel(ctx context.Context, number int, label string) erro
 	}
 	g.mark(err)
 	return wrap("remove a label", err)
+}
+
+// ClosePR closes a pull request without merging it (§6.3's stale close).
+func (g *GitHub) ClosePR(ctx context.Context, number int) error {
+	_, _, err := g.rest.PullRequests.Edit(ctx, g.owner, g.name, number, &github.PullRequest{State: new("closed")})
+	g.mark(err)
+	return wrap("close a pull request", err)
 }
 
 // PullRequestForBranch is the newest pull request from branch in the repository, 0 when none.
@@ -353,15 +361,19 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				} `graphql:"reviews(last: 20)"`
 				Comments struct {
 					Nodes []struct {
-						DatabaseID int64 `graphql:"databaseId"`
-						Body       string
-						CreatedAt  githubv4.DateTime
-						Author     *actor
+						DatabaseID   int64 `graphql:"databaseId"`
+						Body         string
+						CreatedAt    githubv4.DateTime
+						LastEditedAt *githubv4.DateTime
+						Author       *actor
 					}
 				} `graphql:"comments(last: 30)"`
 				Commits struct {
 					Nodes []struct {
-						Commit struct{ Message string }
+						Commit struct {
+							Message       string
+							CommittedDate githubv4.DateTime
+						}
 					}
 				} `graphql:"commits(last: 1)"`
 			} `graphql:"pullRequest(number: $number)"`
@@ -400,10 +412,11 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		out.Reviews = append(out.Reviews, rv)
 	}
 	for _, c := range p.Comments.Nodes {
-		out.Comments = append(out.Comments, Comment{ID: c.DatabaseID, Author: c.Author.login(), Body: c.Body, At: c.CreatedAt.Time})
+		out.Comments = append(out.Comments, Comment{ID: c.DatabaseID, Author: c.Author.login(), Body: c.Body, At: c.CreatedAt.Time,
+			Edited: c.LastEditedAt != nil})
 	}
 	if len(p.Commits.Nodes) == 1 {
-		out.HeadMessage = p.Commits.Nodes[0].Commit.Message
+		out.HeadMessage, out.HeadCommittedAt = p.Commits.Nodes[0].Commit.Message, p.Commits.Nodes[0].Commit.CommittedDate.Time
 	}
 	return out, nil
 }

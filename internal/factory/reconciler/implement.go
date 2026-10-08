@@ -5,6 +5,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -38,8 +41,16 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	}
 	live := 0
 	for _, x := range all {
-		if x.Principal == runs.PrincipalFactory && !runs.Terminal(x.Phase) {
+		if runs.Terminal(x.Phase) {
+			continue
+		}
+		if x.Principal == runs.PrincipalFactory {
 			live++
+		}
+		// One live run per room (C3: a room's runs share its branch). The task's own was adopted
+		// before; anyone else's, a run a human started in the room, is waited for.
+		if x.RoomRef == t.Status.RoomRef && x.TaskID != t.Name {
+			return false, "waiting_room_busy", nil
 		}
 	}
 	if live >= r.Cfg.Caps.ConcurrentRuns {
@@ -67,7 +78,8 @@ func (r *Reconciler) adopt(ctx context.Context, t *v1alpha1.Task) (bool, error) 
 			continue
 		}
 		now := metav1.NewTime(r.Now())
-		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: "initial", Started: &now})
+		t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: nextTrigger(t), Started: &now})
+		t.Status.NextTrigger = ""
 		r.to(t, phaseFor(x.Role), "adopted")
 		return true, nil
 	}
@@ -116,13 +128,20 @@ func traceparent(t *v1alpha1.Task) string {
 }
 
 func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec, trigger string) error {
+	// The room's lastSeq before the run: its handoff, verdict and end are read after it, never
+	// from the start of a long room (EventsSince stops at 10,000 events).
+	_, last, err := r.Rooms.Events(ctx, t.Status.RoomRef, 0, 1)
+	if err != nil {
+		return err
+	}
 	s.RunID = r.NewRunID()
 	if err := r.Runs.Create(ctx, s); err != nil {
 		return err
 	}
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
-		Round: t.Status.ReviewRounds, Started: &now})
+		Round: t.Status.ReviewRounds, StartSeq: last, Started: &now})
+	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
 	return nil
@@ -152,7 +171,9 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 // roomReason is the broker's end reason for the task's current run, if the room has it.
 func (r *Reconciler) roomReason(ctx context.Context, t *v1alpha1.Task) (string, bool) {
 	cur := current(t)
-	evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, cur.StartSeq)
+	evs, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
+		return e.Type == envelope.StateChanged && e.RunID == cur.ID
+	})
 	if err != nil {
 		r.log().Warn("room log unreadable", "task", t.Name, "err", err)
 		return "", false
@@ -250,16 +271,33 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	if err != nil {
 		return err
 	}
+	if r.prEnded(ctx, t, pr) {
+		return nil
+	}
+	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
+		return r.revise(ctx, t, pr, rvs)
+	}
+	return r.remind(ctx, t, pr)
+}
+
+// prEnded ends the task when its pull request was merged or closed. A closed one carrying
+// factory/stale was the stale close's (remind): its replay after a lost status write still says so.
+func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR) bool {
+	class := t.Spec.PredictedClass
 	switch pr.State {
 	case "MERGED":
 		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
-		class := t.Spec.PredictedClass
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
-		return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
+		_ = r.end(ctx, t, v1alpha1.PhaseDone, "merged")
+		return true
 	case "CLOSED":
-		class := t.Spec.PredictedClass
+		reason := "pr_closed"
+		if slices.Contains(pr.Labels, labelStale) {
+			reason = "stale"
+		}
 		record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "closed") })
-		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
+		_ = r.end(ctx, t, v1alpha1.PhaseClosed, reason)
+		return true
 	}
-	return nil
+	return false
 }

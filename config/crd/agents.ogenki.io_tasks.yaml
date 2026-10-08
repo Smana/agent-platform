@@ -258,6 +258,17 @@ spec:
                 maxItems: 512
                 type: array
                 x-kubernetes-list-type: set
+              nextTrigger:
+                description: |-
+                  The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and
+                  cleared once that run exists.
+                enum:
+                - initial
+                - review
+                - human
+                - ci
+                - retry
+                type: string
               outbox:
                 description: |-
                   Comments the task owes its issue or PR (ruling SO): written with the transition that caused

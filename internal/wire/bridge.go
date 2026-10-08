@@ -78,7 +78,10 @@ const (
 	ReasonBadItem         = "bad_item"          // 400: an item a bridge may not push (review M5), or keys spelled two ways
 	ReasonBadPayload      = "bad_payload"       // 400: a payload that is not a JSON object
 	ReasonBadRoom         = "bad_room"          // 400: not a C2 room id
-	ReasonBadMessage      = "bad_message"       // 400: not a task_state message
+	ReasonBadMessage      = "bad_message"       // 400: not a task_state message, or not a message to queue
+	ReasonBadStream       = "bad_stream"        // 400: a queue stream that is not [a-z]{1,16}
+	ReasonBadConsume      = "bad_consume"       // 400: a consume without a C2 run id, or over 100 refs
+	ReasonNoQueue         = "no_queue"          // 501: this broker serves no queue routes
 	ReasonBadApproval     = "bad_approval"      // 400: not an approval request: no eventId or callId, or an unknown class
 	ReasonBadAction       = "bad_action"        // 400: an approval's action that is not a JSON object, or over the cap
 	ReasonNoRoom          = "no_room"           // 404 (system API) or 503 (hello, before the Room's first reconcile)

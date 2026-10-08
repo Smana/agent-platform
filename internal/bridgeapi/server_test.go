@@ -1086,6 +1086,8 @@ func TestEachPrincipalIsRateLimited(t *testing.T) {
 		{"a system read", http.MethodGet, "/v1/rooms/" + room + "/events", "sys:" + factory, func(int) any { return nil }},
 		{"a system write", http.MethodPost, "/v1/rooms/" + room + "/messages", "sys:" + factory,
 			func(n int) any { return map[string]any{"kind": "task_state", "text": "x", "clientSeq": n} }},
+		{"a system queue write", http.MethodPost, "/v1/rooms/" + room + "/queue", "sys:" + factory,
+			func(n int) any { return map[string]any{"text": "x", "clientSeq": n} }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1093,6 +1095,7 @@ func TestEachPrincipalIsRateLimited(t *testing.T) {
 			now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 			s.Now = func() time.Time { return now }
 			s.Limits = Limits{Rate: 1, Burst: 2, InFlight: 4}
+			s.Queue = newMemQueue()
 			w.Upsert(t.Context(), agentRun(runA, room, "Running"))
 			h := s.Routes()
 			hello(t, h, runA)

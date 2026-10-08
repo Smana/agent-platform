@@ -49,8 +49,12 @@ func TestEndedExplainsTheReason(t *testing.T) {
 	tk.Status.Usage.Tokens = 1_600_000
 	e := Ended(tk, v1alpha1.PhaseEscalated, "budget-run")
 	if !strings.Contains(e.Body, "needs a maintainer: the run spent its token budget.") || !strings.Contains(e.Body, "1.6 M") ||
-		!strings.Contains(e.Body, "Re-apply `factory/ready`") {
+		!strings.Contains(e.Body, "Comment `/factory retry` on this issue to run it again (a maintainer only)") {
 		t.Fatal(e.Body)
+	}
+	if s := Ended(tk, v1alpha1.PhaseClosed, "stale"); !strings.Contains(s.Body,
+		"was closed: the pull request had no maintainer activity (a review, a comment or a push) for 14 days.") {
+		t.Fatal(s.Body)
 	}
 	if Ended(tk, v1alpha1.PhaseEscalated, "pod_lost").Key == Ended(tk, v1alpha1.PhaseDone, "merged").Key {
 		t.Fatal("each ending has its own key")
@@ -61,6 +65,52 @@ func TestEndedExplainsTheReason(t *testing.T) {
 	}
 	if r := Ended(tk, v1alpha1.PhaseReverted, "main_red"); strings.Contains(r.Body, "Merged by") {
 		t.Fatalf("only a done task credits its merger: %s", r.Body)
+	}
+}
+
+// The reminder mentions every maintainer, once per quiet spell of each AwaitingHuman stay; a
+// retry is narrated once per retry.
+func TestReminderAndRetrying(t *testing.T) {
+	tk := task()
+	spell := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	e := Reminder(tk, []string{"Smana", "alice"}, spell, false)
+	if !strings.HasPrefix(e.Body, "@Smana @alice: the pull request of agent factory task `3buqdlot` has had no maintainer activity for 48 hours.") ||
+		!strings.Contains(e.Body, "closes itself after 14 days") || !strings.Contains(e.Body, "or a push to its branch keeps it open") {
+		t.Fatal(e.Body)
+	}
+	if a := Reminder(tk, []string{"Smana"}, spell, true); a.Key != e.Key || !strings.Contains(a.Body, "is approved and has waited 48 hours for a merge") ||
+		strings.Contains(a.Body, "closes itself") {
+		t.Fatalf("an approved pull request is never closed: %+v", a)
+	}
+	if e.Key == Reminder(tk, nil, spell.Add(time.Hour), false).Key {
+		t.Fatal("a new quiet spell has its own reminder")
+	}
+	tk.Status.Runs = append(tk.Status.Runs, v1alpha1.RunRecord{ID: "aaaaaaaa"})
+	if e.Key == Reminder(tk, nil, spell, false).Key {
+		t.Fatal("a new AwaitingHuman stay has its own reminder")
+	}
+	// RemindedSince: the latest spell of this stay, posted or still queued; another stay's is not.
+	tk.Status.Narrated = []string{"remind-0-9999999999", "remind-1-100", "remind-1-junk", "remind-11-900"}
+	tk.Status.Outbox = []v1alpha1.Narration{{Key: "remind-1-300", Number: 7}}
+	if at, ok := RemindedSince(tk); !ok || at.Unix() != 300 {
+		t.Fatalf("%v %v", at, ok)
+	}
+	tk.Status.Outbox = nil
+	if at, ok := RemindedSince(tk); !ok || at.Unix() != 100 {
+		t.Fatalf("%v %v", at, ok)
+	}
+	tk.Status.Narrated = []string{"remind-0-100"}
+	if _, ok := RemindedSince(tk); ok {
+		t.Fatal("another stay's reminder")
+	}
+	tk.Status.Retries = 1
+	r := Retrying(tk, "Smana")
+	if r.Body != "Agent factory task `3buqdlot` is retrying, as @Smana asked." {
+		t.Fatal(r.Body)
+	}
+	tk.Status.Retries = 2
+	if r.Key == Retrying(tk, "Smana").Key {
+		t.Fatal("each retry is narrated")
 	}
 }
 
