@@ -31,6 +31,17 @@ describe("renderSummary", () => {
     expect(r.querySelector('[data-block="status"]')?.textContent).toContain("1200 / 50000");
   });
 
+  it("renders a sealed room: Sealed phase and the empty actions state", () => {
+    const s = base();
+    s.status.phase = "Sealed";
+    s.needsYou = [];
+    s.actions = [];
+    const r = render(s);
+    expect(r.querySelector('[data-block="status"]')?.textContent).toContain("Phase: Sealed");
+    expect(r.querySelector('[data-block="actions"]')?.textContent).toContain("Nothing here beyond reading.");
+    expect(r.querySelector('[data-block="needs-you"]')).toBeNull();
+  });
+
   it("omits Needs you when nothing needs you", () => {
     const s = base();
     s.needsYou = [];

@@ -293,4 +293,50 @@ describe("the room page", () => {
       p.app.remove();
     });
   });
+
+  describe("summary refresh", () => {
+    const sum = (phase: string, cursor: string) => ({ apiVersion: "summary/v1", room: "3kq7x2ma", url: "u",
+      status: { phase, run: null, budget: null, pr: null, issue: null, lastVerdict: null },
+      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor });
+    const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
+    const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
+    const chat = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "chat", text: "x", delivery: "none" }));
+
+    it("keeps the blocks and adds an error line when a refresh fails", async () => {
+      const replies = [() => ok(sum("Running", "seq:1")), () => new Response("", { status: 503 })];
+      const p = page((async () => replies.shift()!()) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      p.join(snapshot(), 0);
+      chat(p, 1);
+      await tick();
+      expect(p.app.querySelector('.summary [data-block="status"]')!.textContent).toContain("Running");
+      const err = p.app.querySelector<HTMLElement>(".summary-error")!;
+      expect(err.hidden).toBe(false);
+      expect(err.textContent).toMatch(/cannot be verified/);
+    });
+
+    it("drops a response older than the one already rendered", async () => {
+      const late: ((r: Response) => void)[] = [];
+      const p = page((() => new Promise<Response>((r) => late.push(r))) as unknown as typeof fetch);
+      p.join(snapshot(), 0);
+      chat(p, 1);
+      await tick(); // request 2 is out beside request 1
+      expect(late).toHaveLength(2);
+      late[1](ok(sum("Newer", "seq:2")));
+      await vi.advanceTimersByTimeAsync(0);
+      late[0](ok(sum("Older", "seq:1")));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(p.app.querySelector('[data-block="status"]')!.textContent).toContain("Newer");
+    });
+
+    it("does not rebuild the blocks when the summary is unchanged", async () => {
+      const p = page((async () => ok(sum("Running", "seq:1"))) as unknown as typeof fetch);
+      await vi.advanceTimersByTimeAsync(0);
+      const first = p.app.querySelector('[data-block="status"]');
+      p.join(snapshot(), 0);
+      chat(p, 1);
+      await tick();
+      expect(p.app.querySelector('[data-block="status"]')).toBe(first);
+    });
+  });
 });

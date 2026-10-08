@@ -22,7 +22,14 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   header.append(title);
   const lead = document.createElement("section");
   lead.className = "summary";
-  lead.setAttribute("aria-live", "polite");
+  // The blocks and the error line are separate, so a failed refresh adds a line and
+  // keeps what the page already shows. No aria-live: a rebuild would re-read every block.
+  const blocks = document.createElement("div");
+  const summaryError = document.createElement("p");
+  summaryError.className = "summary-error";
+  summaryError.setAttribute("role", "status");
+  summaryError.hidden = true;
+  lead.append(blocks, summaryError);
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
@@ -60,10 +67,27 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   // fetch shows its text in the blocks' place and leaves the stream alone.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  // Responses can overlap: only one newer than the last rendered one counts, and an
+  // unchanged summary is not rebuilt (it would drop the focus on a link in it).
+  let requested = 0;
+  let rendered = 0;
+  let shown = "";
   const loadSummary = () => {
     refreshTimer = undefined;
-    fetchSummary(id, o.get).then((sum) => { if (!stopped) renderSummary(lead, sum); },
-      (e) => { if (!stopped) lead.textContent = e instanceof Error ? e.message : String(e); });
+    const n = ++requested;
+    fetchSummary(id, o.get).then((sum) => {
+      if (stopped || n < rendered) return;
+      rendered = n;
+      summaryError.hidden = true;
+      const key = JSON.stringify(sum);
+      if (key === shown) return;
+      shown = key;
+      renderSummary(blocks, sum);
+    }, (e) => {
+      if (stopped || n < rendered) return;
+      summaryError.textContent = e instanceof Error ? e.message : String(e);
+      summaryError.hidden = false;
+    });
   };
   const scheduleSummary = () => { refreshTimer ??= setTimeout(loadSummary, 1000); };
   // The broker's link is <room>#<approvalId> (roomctl status, the summary's needsYou url).
