@@ -304,9 +304,11 @@ func TestTheBrokersRefusalIsTyped(t *testing.T) {
 			if !errors.As(err, &api) || api.Status != c.code || api.Reason != c.reason {
 				t.Fatalf("task_state: %v", err)
 			}
-			// Callers branch on these two: no_room is a retry, not_permitted the missing FR-1 entry.
+			// Callers branch on these three: no_room is a retry, not_permitted the missing FR-1 entry,
+			// sealed a room that takes no event again.
 			if errors.Is(err, ErrNoRoom) != (c.reason == wire.ReasonNoRoom) ||
-				errors.Is(err, ErrNotPermitted) != (c.reason == wire.ReasonNotPermitted) {
+				errors.Is(err, ErrNotPermitted) != (c.reason == wire.ReasonNotPermitted) ||
+				errors.Is(err, ErrSealed) != (c.reason == wire.ReasonSealed) {
 				t.Fatalf("errors.Is: %v", err)
 			}
 		})
