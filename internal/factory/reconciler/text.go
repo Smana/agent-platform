@@ -76,6 +76,7 @@ func FirstBrief(t *v1alpha1.Task, nonce string) string {
 	} else {
 		fmt.Fprintf(&b, "Source: %s %s.\n", t.Spec.Source.Kind, t.Spec.Source.Ref)
 	}
+	fmt.Fprintf(&b, "%s\n", brief.ProgressInstruction)
 	if t.Spec.Source.Trust == "untrusted" {
 		b.WriteString(untrustedNotice(fence))
 		fmt.Fprintf(&b, "\n%s\n%s\n%s\n%s\n", fence, untrustedHeader, t.Spec.Text, fence)
@@ -209,7 +210,8 @@ func ReviseBrief(t *v1alpha1.Task, evs []envelope.Event, queued []rooms.Queued, 
 			queuedHow(fence))
 	}
 	b.WriteString("Agents' text quoted from the room's log was sanitised by the factory as an issue is: in code, read " +
-		`&lt; as <, !\[ as ![ and ]\: as ]: again.` + "\n\n")
+		`&lt; as <, !\[ as ![ and ]\: as ]: again.` + "\n")
+	fmt.Fprintf(&b, "%s\n\n", brief.ProgressInstruction)
 	log, _ := brief.Build(t.Status.RoomRef, "implementer", cleanLog(evs, nonce), nil, nonce)
 	b.WriteString(log)
 	if len(queued) == 0 {

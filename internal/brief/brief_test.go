@@ -210,3 +210,11 @@ func TestAForkedRoomsBriefAsksForTheForkedFromTrailer(t *testing.T) {
 		})
 	}
 }
+
+// Task 7: implementers post a progress note at each milestone.
+func TestBuildAsksImplementersForProgressNotes(t *testing.T) {
+	b, _ := Build("r", "implementer", nil, nil, "n")
+	if !strings.Contains(b, "room_progress") {
+		t.Fatalf("brief.Build for implementer role lacks room_progress instruction:\n%s", b)
+	}
+}

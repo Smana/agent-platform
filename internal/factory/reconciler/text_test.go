@@ -387,3 +387,19 @@ func TestFitQuotedIsTheLongestPrefixThatFits(t *testing.T) {
 		}
 	}
 }
+
+// Task 7: implementers post a progress note at each milestone.
+func TestFirstBriefAsksForProgressNotes(t *testing.T) {
+	b := FirstBrief(issueTask("3buqdlot", 7, "fix it"), "n0nce234")
+	if !strings.Contains(b, "room_progress") {
+		t.Fatalf("FirstBrief lacks room_progress instruction:\n%s", b)
+	}
+}
+
+// Task 7: implementers post a progress note at each milestone.
+func TestReviseBriefAsksForProgressNotes(t *testing.T) {
+	b, _ := ReviseBrief(reviseTask(), nil, nil, "n0nce234")
+	if !strings.Contains(b, "room_progress") {
+		t.Fatalf("ReviseBrief lacks room_progress instruction:\n%s", b)
+	}
+}
