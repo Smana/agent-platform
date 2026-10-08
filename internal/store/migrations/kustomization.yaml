@@ -11,6 +11,8 @@ configMapGenerator:
       - ./20261001120000_driver_queue.sql
       - ./20261001130000_delivery_indexes.sql
       - ./20261001140000_brief_index.sql
+      - ./20261005120000_approvals.sql
+      - ./20261005130000_approval_indexes.sql
       - atlas.sum
     options:
       disableNameSuffixHash: true

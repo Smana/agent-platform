@@ -79,8 +79,9 @@ func (h *Humans) Authenticate(r *http.Request) (Principal, error) {
 	if err != nil {
 		return Principal{}, err
 	}
-	// roomctl sends its own access token as the bearer (phase 6).
-	if cli := h.roomctl(); cli != "" {
+	// roomctl sends its own access token as the bearer (phase 6). An id equal to
+	// the web UI's would make that bearer a web session (review M5).
+	if cli := h.roomctl(); cli != "" && cli != h.web() {
 		if ac, err := h.VerifyHumanAccess(r.Context(), raw); err == nil && ac.ClientID == cli {
 			return Principal{Kind: envelope.ActorHuman, ID: "human:" + ac.Subject, Sub: ac.Subject, Groups: ac.GroupNames(),
 				ClientID: cli, Expiry: ac.ExpiresAt.Time, AccessToken: raw}, nil

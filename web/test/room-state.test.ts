@@ -59,6 +59,23 @@ describe("RoomState", () => {
       expect(t.sealed).toBe(true);
     }
   });
+  // R10: the header shows the room's phase. Active, Idle and AwaitingHuman never reach
+  // the log (roomctrl derives them), so at or below the mark only the seal moves it: a
+  // replayed room_phase{Open}, in most tails, must not undo the state frame's Active.
+  it("follows the room's phase", () => {
+    const s = new RoomState();
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Active" }, 40);
+    expect(s.phase).toBe("Active");
+    s.apply(ev(1, "state_changed", { kind: "room_phase", phase: "Open" })); // the replayed tail
+    expect(s.phase).toBe("Active");
+    s.apply(ev(39, "state_changed", { kind: "room_phase", phase: "Closed" })); // the Room lags the seal
+    expect(s.phase).toBe("Closed");
+    s.reset({ driver: "human:a", driverEpoch: 1, phase: "Open" }, 40);
+    s.apply(ev(41, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    expect(s.phase).toBe("Closed");
+    s.apply(ev(42, "state_changed", { kind: "run_phase", phase: "Failed" })); // a run's, not the room's
+    expect(s.phase).toBe("Closed");
+  });
   it("follows the driver token", () => {
     const s = new RoomState("system:factory", 7);
     s.apply(ev(1, "driver", { from: "system:factory", to: "human:a", epoch: 8, reason: "requested" }));
@@ -69,5 +86,23 @@ describe("RoomState", () => {
     const s = new RoomState("human:b", 9);
     s.apply(ev(1, "driver", { from: "system:factory", to: "human:a", epoch: 8, reason: "requested" }));
     expect([s.driver, s.driverEpoch]).toEqual(["human:b", 9]);
+  });
+  // §6: a card per pending approval, from the state frame, then the log past its mark.
+  it("keeps the pending approvals", () => {
+    const req = (seq: number, id: string) => ({ ...ev(seq, "approval_requested",
+      { approvalId: id, callId: "c" + seq, class: "forge.pr", action: { command: "gh pr create" }, expiresAt: "2026-10-01T10:30:00Z" }), runId: "7f3cq2xz" });
+    const s = new RoomState();
+    s.reset({ driver: "system:factory", driverEpoch: 0, approvals: [{ approvalId: "old", runId: "7f3cq2xz", callId: "c1",
+      class: "shell.high", action: {}, expiresAt: "2026-10-01T10:00:00Z", seq: 2 }] }, 600);
+    s.apply(req(2, "old")); // the replay resends what the snapshot holds
+    s.apply(req(500, "decided-before-the-mark")); // at or below the mark the snapshot decides
+    s.apply(req(601, "new"));
+    expect(s.approvals().map((a) => a.approvalId)).toEqual(["old", "new"]);
+    expect(s.approvals()[1]).toEqual({ approvalId: "new", runId: "7f3cq2xz", callId: "c601", class: "forge.pr",
+      action: { command: "gh pr create" }, expiresAt: "2026-10-01T10:30:00Z", seq: 601 });
+    s.apply(ev(602, "approval_decided", { approvalId: "old", decision: "expired" }));
+    expect(s.approvals().map((a) => a.approvalId)).toEqual(["new"]);
+    s.reset({ driver: "system:factory", driverEpoch: 0 }, 700);
+    expect(s.approvals()).toEqual([]);
   });
 });
