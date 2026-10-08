@@ -778,3 +778,15 @@ func TestUserLoginResolvesAnIDToTheCurrentLogin(t *testing.T) {
 		t.Fatal("a non-positive id must be refused")
 	}
 }
+
+func TestUserLoginRefusesUnsafeRepoPaths(t *testing.T) {
+	a, f, _ := app(t)
+	for _, c := range [][2]string{{"Smana", ".."}, {"Smana", "."}, {"..", "x"}, {"Smana", "a/../../orgs"}, {"", "x"}, {"Smana", ""}} {
+		if _, err := a.UserLogin(context.Background(), c[0], c[1], 583231); !errors.Is(err, ErrNotAPullRequest) {
+			t.Fatalf("%q/%q: %v", c[0], c[1], err)
+		}
+	}
+	if f.requests != 0 {
+		t.Fatalf("%d requests reached GitHub", f.requests)
+	}
+}

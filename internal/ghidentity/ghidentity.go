@@ -54,19 +54,27 @@ func (r *Resolver) Login(ctx context.Context, sub, repo string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("ghidentity: cannot read %s's links: %w", sub, err)
 	}
-	login := ""
+	// ZITADEL does not order the links or limit a user to one per IdP, so every match counts and
+	// two distinct ids are ambiguous: fail closed rather than pick one.
+	var id int64
 	for _, l := range links {
 		if l.IDPID != r.IDPID {
 			continue
 		}
-		id, err := strconv.ParseInt(l.UserID, 10, 64)
-		if err != nil || id <= 0 {
+		n, err := strconv.ParseInt(l.UserID, 10, 64)
+		if err != nil || n <= 0 {
 			return "", fmt.Errorf("ghidentity: GitHub link of %s holds %q, not a numeric id", sub, l.UserID)
 		}
+		if id != 0 && n != id {
+			return "", fmt.Errorf("ghidentity: %s has several GitHub links", sub)
+		}
+		id = n
+	}
+	login := ""
+	if id != 0 {
 		if login, err = r.LoginOf(ctx, repo, id); err != nil {
 			return "", fmt.Errorf("ghidentity: cannot resolve GitHub id %d: %w", id, err)
 		}
-		break
 	}
 	r.put(sub, entry{login: login, at: r.Now()})
 	return login, nil

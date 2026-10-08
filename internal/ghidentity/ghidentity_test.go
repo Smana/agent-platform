@@ -129,3 +129,20 @@ func TestTheCacheIsBoundedAndEvictsTheOldest(t *testing.T) {
 		t.Fatalf("lookups: %v", calls)
 	}
 }
+
+func TestSeveralGitHubLinksFailClosed(t *testing.T) {
+	links := []ghidentity.Link{{IDPID: "gh-idp", UserID: "1"}, {IDPID: "gh-idp", UserID: "2"}}
+	r := &ghidentity.Resolver{IDPID: "gh-idp", TTL: time.Minute, Now: time.Now,
+		Links:   func(context.Context, string) ([]ghidentity.Link, error) { return links, nil },
+		LoginOf: func(context.Context, string, int64) (string, error) { return "octocat", nil }}
+	if got, err := r.Login(context.Background(), "u1", "Smana/x"); err == nil || got != "" {
+		t.Fatalf("ambiguous links: %q %v", got, err)
+	}
+	if ghidentity.Len(r) != 0 {
+		t.Fatal("an ambiguous answer was cached")
+	}
+	links = []ghidentity.Link{{IDPID: "gh-idp", UserID: "1"}, {IDPID: "gh-idp", UserID: "1"}}
+	if got, err := r.Login(context.Background(), "u1", "Smana/x"); err != nil || got != "octocat" {
+		t.Fatalf("a repeated identical link is not ambiguous: %q %v", got, err)
+	}
+}

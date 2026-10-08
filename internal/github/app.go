@@ -64,6 +64,17 @@ func Permanent(err error) bool {
 
 var prURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$`)
 
+var (
+	ownerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	repoName  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+// validRepo reports whether owner/repo can be spliced into an API path: dot segments would be
+// cleaned by JoinPath into another endpoint.
+func validRepo(owner, repo string) bool {
+	return ownerName.MatchString(owner) && repoName.MatchString(repo) && repo != "." && repo != ".."
+}
+
 // APIError is a GitHub answer outside 2xx. It names the status and path only:
 // a reply body can quote a credential. RateLimited marks a 403 or 429 that is
 // GitHub's primary or secondary rate limit, and RetryAfter is when it lifts,
@@ -321,7 +332,7 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 // Calls for one marker run one at a time; other markers are not held up.
 func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, error) {
 	m := prURL.FindStringSubmatch(pr)
-	if m == nil || m[2] == "." || m[2] == ".." {
+	if m == nil || !validRepo(m[1], m[2]) {
 		return "", ErrNotAPullRequest
 	}
 	api, err := a.api()
@@ -351,6 +362,9 @@ func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, err
 func (a *App) UserLogin(ctx context.Context, owner, repo string, id int64) (string, error) {
 	if id <= 0 {
 		return "", errors.New("github: not a GitHub user id")
+	}
+	if !validRepo(owner, repo) {
+		return "", ErrNotAPullRequest
 	}
 	api, err := a.api()
 	if err != nil {
