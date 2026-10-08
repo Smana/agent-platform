@@ -41,19 +41,26 @@ type humanLog interface {
 }
 
 // humanSide is :8080 over the broker's parts: the actor serving acts, the
-// server, and the leader's lease sweep, added through add. One call carries the
-// parts, so a missing one fails start-up (review 4.4 M2).
+// server with D7's GitHub check through gh (nil without the factory App), and
+// the leader's lease sweep, added through add. One call carries the parts, so a
+// missing one fails start-up (review 4.4 M2).
 func humanSide(cfg config.Config, humans *authn.Humans, rooms client.Client, ns string, roomLog humanLog, red humanapi.Redactor,
-	hub humanapi.Hub, runs humanapi.Runs, add func(manager.Runnable) error, m *metrics.Set, log *slog.Logger,
+	hub humanapi.Hub, runs humanapi.Runs, gh gitHubUsers, add func(manager.Runnable) error, m *metrics.Set, log *slog.Logger,
 ) (*humanapi.Server, error) {
 	actor, err := humanActor(cfg.Human, roomLog, red, runs, rooms, runRequester(cfg.FactoryURL), m)
+	if err != nil {
+		return nil, err
+	}
+	identity, access, err := roomAccess(cfg.Human, gh, httpx.New(zitadelTimeout, nil), time.Now)
 	if err != nil {
 		return nil, err
 	}
 	if err := add(leaseLoop(roomLog, log, nil)); err != nil {
 		return nil, fmt.Errorf("driver lease: %w", err)
 	}
-	return humanServer(cfg, humans, rooms, ns, roomLog, hub, runs, actor, m, log), nil
+	s := humanServer(cfg, humans, rooms, ns, roomLog, hub, runs, actor, m, log)
+	s.Identity, s.Access = identity, access
+	return s, nil
 }
 
 // humanActor serves humans' acts on :8080 over the broker's parts: the same

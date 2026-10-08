@@ -99,6 +99,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `systemIssuer` | `{issuer, jwksURL}` for `rooms-system` tokens | 1 |
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build (Ruling AS-a); the group names are literals | 2, 6 |
+| `human.access` | `{readerFile, ttl}`: room visibility follows GitHub (D7). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms | local-first UX |
 | `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 
@@ -109,7 +110,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `POD_NAMESPACE` | Where Rooms and the leader lease live | 1 |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally | 1 |
 | `ROOMS_MCP_KEY` | The key the MCPRoute injects. Unset: `:8090` refuses every call | 3 |
-| `ROOMS_GITHUB_APP_DIR` | The factory App's key volume (`app_id`, `private_key`; P31: optional, `defaultMode: 0440` with the pod's `fsGroup`). Unset: no verdict is posted. Set but empty: verdicts wait, up to 24 h, for the key | 3 |
+| `ROOMS_GITHUB_APP_DIR` | The factory App's key volume (`app_id`, `private_key`; P31: optional, `defaultMode: 0440` with the pod's `fsGroup`). Unset: no verdict is posted. Set but empty: verdicts wait, up to 24 h, for the key, and room access checks fail closed. D7 reads `GET /user/{id}` and `GET /repos/{o}/{r}/collaborators/{login}/permission` with it (`metadata: read`) | 3, local-first UX |
 
 ### The bridge's environment
 

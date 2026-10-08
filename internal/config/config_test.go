@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const valid = `
@@ -57,6 +58,26 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// access is the human.access block, appended to valid.
+const access = "  access:\n    readerFile: /etc/room-broker/zitadel-reader/reader.json\n"
+
+// D7: human.access turns the GitHub check on. Absent, it stays nil, and rooms are admins-only.
+func TestLoadAccess(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil || c.Human.Access != nil {
+		t.Fatalf("no access block: %+v, %v", c.Human.Access, err)
+	}
+	c, err = Load(write(t, valid+access))
+	if err != nil || c.Human.Access == nil || c.Human.Access.ReaderFile != "/etc/room-broker/zitadel-reader/reader.json" ||
+		c.Human.Access.TTL.Duration != 5*time.Minute {
+		t.Fatalf("the TTL defaults to 5m: %+v, %v", c.Human.Access, err)
+	}
+	c, err = Load(write(t, valid+access+"    ttl: 90s\n"))
+	if err != nil || c.Human.Access.TTL.Duration != 90*time.Second {
+		t.Fatalf("%+v, %v", c.Human.Access, err)
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	replace := func(old, repl string) string { return strings.Replace(valid, old, repl, 1) }
 	for _, c := range []struct {
@@ -86,6 +107,13 @@ func TestLoadRefuses(t *testing.T) {
 		{"no admin group", replace("    admin: agents-admin\n", ""), "human.groups.admin"},
 		{"no member group", replace("    member: agents-member\n", ""), "human.groups.member"},
 		{"one group for both", replace("member: agents-member", "member: agents-admin"), "human.groups"},
+		// D7: a revoked read lags by the cache at most.
+		{"an access TTL over 5 minutes", valid + access + "    ttl: 6m\n", "human.access.ttl"},
+		{"a negative access TTL", valid + access + "    ttl: -1m\n", "human.access.ttl"},
+		{"an access TTL without its unit", valid + access + "    ttl: 300\n", "duration"},
+		{"no reader file", valid + "  access:\n    ttl: 5m\n", "human.access.readerFile"},
+		{"the reader's PAT over plain http", strings.Replace(valid, "  issuer: https://auth.example.test\n", "  issuer: http://auth.example.test\n", 1) + access,
+			"human.issuer"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := Load(write(t, c.body))
