@@ -73,7 +73,8 @@ func (s *Server) roomEvents(w http.ResponseWriter, r *http.Request) {
 
 // roomTask: POST /v1/rooms/{id}/task, system:* only. The factory's structured task facts,
 // stored as state_changed{kind:task} so the room summary needs nothing but the room log.
-// Replays are keyed on (principal, clientSeq), exactly as roomMessage.
+// Replays are keyed on (principal, clientSeq) under its own OriginClient, <principal>:task,
+// apart from roomMessage's.
 func (s *Server) roomTask(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.systemAuth(w, r)
 	if !ok {
