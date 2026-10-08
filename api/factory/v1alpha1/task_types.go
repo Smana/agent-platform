@@ -328,6 +328,14 @@ type PullRequestRef struct {
 	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
 	// +optional
 	RevertNumber int `json:"revertNumber,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Author string `json:"author,omitempty"`
+	// Everyone who has submitted a review, oldest first.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=64
+	// +optional
+	Reviewers []string `json:"reviewers,omitempty"`
 }
 
 // Usage is the task's token spend.

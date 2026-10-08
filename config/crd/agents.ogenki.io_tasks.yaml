@@ -340,6 +340,9 @@ spec:
                   armedAt:
                     format: date-time
                     type: string
+                  author:
+                    maxLength: 64
+                    type: string
                   autoMerged:
                     type: boolean
                   headSHA:
@@ -361,6 +364,13 @@ spec:
                     type: integer
                   revertNumber:
                     type: integer
+                  reviewers:
+                    description: Everyone who has submitted a review, oldest first.
+                    items:
+                      maxLength: 64
+                      type: string
+                    maxItems: 16
+                    type: array
                   url:
                     maxLength: 2048
                     type: string

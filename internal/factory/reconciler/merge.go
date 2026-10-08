@@ -25,7 +25,7 @@ import (
 // here as it is in AwaitingHuman (Δ5): the gate's wait must not silence a review.
 func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	n := t.Status.PullRequest.Number
-	pr, err := r.Forge.PullRequest(ctx, n)
+	pr, err := r.readPR(ctx, t)
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c
 // either landed or did not — so there is no disarm path: an open pull request whose head moved
 // never merged, and the new head is decided again from AwaitingCI.
 func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
-	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+	pr, err := r.readPR(ctx, t)
 	if err != nil {
 		return err
 	}

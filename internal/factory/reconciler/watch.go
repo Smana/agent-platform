@@ -20,6 +20,9 @@ import (
 // maxHandled is the CRD's cap on status.handled.
 const maxHandled = 512
 
+// maxReviewers is the CRD's cap on status.pullRequest.reviewers.
+const maxReviewers = 16
+
 // nextTrigger is why the next implementer run exists: what sent the task back to Queued, else
 // initial for its first run and retry for any later one.
 func nextTrigger(t *v1alpha1.Task) string {
@@ -130,6 +133,28 @@ func briefEvent(e envelope.Event) bool {
 	return e.Type == envelope.Message && json.Unmarshal(e.Payload, &p) == nil && p.Kind == envelope.KindReviewVerdict
 }
 
+// readPR reads the task's pull request, and keeps who wrote and who reviewed it for the room's facts.
+func (r *Reconciler) readPR(ctx context.Context, t *v1alpha1.Task) (forge.PR, error) {
+	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+	if err != nil {
+		return pr, err
+	}
+	notePR(t.Status.PullRequest, pr)
+	return pr, nil
+}
+
+// notePR copies pr's author and reviewers into ref: each reviewer once, oldest first, the first
+// maxReviewers.
+func notePR(ref *v1alpha1.PullRequestRef, pr forge.PR) {
+	var rvs []string
+	for _, rv := range pr.Reviews {
+		if rv.Author != "" && len(rvs) < maxReviewers && !slices.Contains(rvs, rv.Author) {
+			rvs = append(rvs, rv.Author)
+		}
+	}
+	ref.Author, ref.Reviewers = pr.Author, rvs
+}
+
 // lateReviews re-reads the pull request just before a run starts. A maintainer's review submitted
 // while the task waited in Queued joins this run: after it, the run's start would put the review
 // before "since" for good. A dismissed review is skipped like any non-CHANGES_REQUESTED one. Such a
@@ -138,7 +163,7 @@ func briefEvent(e envelope.Event) bool {
 // request merged or closed meanwhile is not run on: the task goes back to AwaitingHuman, which
 // ends it (done is true). pr is the pull request as read, for the run to start on.
 func (r *Reconciler) lateReviews(ctx context.Context, t *v1alpha1.Task) (forge.PR, bool, error) {
-	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+	pr, err := r.readPR(ctx, t)
 	if err != nil {
 		return pr, false, err
 	}
@@ -280,7 +305,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 	var pr forge.PR
 	if t.Status.PullRequest != nil {
 		var err error
-		if pr, err = r.Forge.PullRequest(ctx, t.Status.PullRequest.Number); err != nil {
+		if pr, err = r.readPR(ctx, t); err != nil {
 			return err
 		}
 		if r.prEnded(ctx, t, pr) {

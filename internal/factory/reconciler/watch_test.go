@@ -205,6 +205,29 @@ func TestARevisionIsStartedOnceThroughALostWrite(t *testing.T) {
 	}
 }
 
+// The room's facts name the pull request's author and its reviewers: each once, oldest first, at
+// most the CRD's 16, wherever the task reads its pull request.
+func TestThePullRequestKeepsItsAuthorAndReviewers(t *testing.T) {
+	g := newRig(t, awaiting(), roomOf("3buqdlot"))
+	rv := func(id int64, author, state string) forge.Review {
+		return forge.Review{ID: id, Author: author, State: state, At: now.Add(-time.Duration(30-id) * time.Minute)}
+	}
+	pr := pr12(rv(1, "alice", "COMMENTED"), rv(2, "Smana", "APPROVED"), rv(3, "alice", "COMMENTED"), rv(4, "", "COMMENTED"))
+	pr.Author = "ogenki-agent-factory[bot]"
+	g.f.SetPR(pr)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if ref := tk.Status.PullRequest; ref.Author != "ogenki-agent-factory[bot]" || !slices.Equal(ref.Reviewers, []string{"alice", "Smana"}) {
+		t.Fatalf("%+v", ref)
+	}
+	for i := range 20 {
+		pr.Reviews = append(pr.Reviews, rv(int64(10+i), fmt.Sprintf("dev%d", i), "COMMENTED"))
+	}
+	g.f.SetPR(pr)
+	if ref := g.reconcile(t, "3buqdlot", 1).Status.PullRequest; len(ref.Reviewers) != 16 || ref.Reviewers[2] != "dev0" {
+		t.Fatalf("%v", ref.Reviewers)
+	}
+}
+
 // Handled is capped at the CRD's 512, dropping the oldest ids.
 func TestHandledKeepsTheNewest(t *testing.T) {
 	tk := awaiting()
