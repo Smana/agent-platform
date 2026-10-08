@@ -276,15 +276,13 @@ func TestABlackHoledCollectorNeverStallsTheWorker(t *testing.T) {
 // Review M1: delivery is at least once. A 409 on the write that records Exported re-exports the
 // identical span on the replay; the collector keeps one per span id.
 func TestTheSpanIsExportedAtLeastOnce(t *testing.T) {
-	armed, n := false, 0
+	armed := false
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).
 		WithObjects(issueTask("3buqdlot", 7, "x")).
 		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
-			if armed {
-				n++
-				if n == 2 {
-					return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
-				}
+			if tk, ok := o.(*v1alpha1.Task); ok && armed && tk.Status.Trace != nil && tk.Status.Trace.Exported {
+				armed = false
+				return apierrors.NewConflict(schema.GroupResource{Resource: "tasks"}, o.GetName(), errors.New("stale"))
 			}
 			return cl.SubResource(sub).Update(ctx, o, opts...)
 		}}).Build()

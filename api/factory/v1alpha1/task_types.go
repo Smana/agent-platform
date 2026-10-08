@@ -176,13 +176,16 @@ type TaskStatus struct {
 	// +kubebuilder:validation:MaxItems=16
 	// +optional
 	Outbox []Narration `json:"outbox,omitempty"`
-	// The last clientSeq the task took for a task_state message in its room (ruling SK). The
-	// broker keeps one message per clientSeq, so the ledger is its own field, never trimmed like
-	// narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
+	// The last clientSeq the task took for a task_state message or its facts in its room (ruling
+	// SK). The broker keeps one message per clientSeq, so the ledger is its own field, never trimmed
+	// like narrated, and only rises: the next message is roomSeq + 1, persisted before it is posted.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="roomSeq never goes down: the broker would drop a reused clientSeq"
 	// +optional
 	RoomSeq int64 `json:"roomSeq,omitempty"`
+	// The task facts last written to the room: their seq comes from the roomSeq ledger (ruling SK).
+	// +optional
+	Facts *FactsLedger `json:"facts,omitempty"`
 	// The trigger of the next implementer run, set when the task goes back to Queued (Δ5) and
 	// cleared once that run exists.
 	// +kubebuilder:validation:Enum=initial;review;human;ci;retry;resume
@@ -208,6 +211,16 @@ type TaskStatus struct {
 	// The task's root span (R46): minted at acceptance, exported once when the task ends.
 	// +optional
 	Trace *TraceRef `json:"trace,omitempty"`
+}
+
+// FactsLedger is which facts a room seq carries, and whether the broker has them.
+type FactsLedger struct {
+	// +kubebuilder:validation:Minimum=1
+	Seq int64 `json:"seq"`
+	// +kubebuilder:validation:MaxLength=16
+	Hash string `json:"hash"`
+	// +optional
+	Posted bool `json:"posted,omitempty"`
 }
 
 // TraceRef names the task's root span; the factory exports it from these ids at the end (R46).
