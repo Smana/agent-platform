@@ -105,7 +105,9 @@ type Server struct {
 	// whether they may read a room's repository. Either nil shows rooms to admins only.
 	Identity *ghidentity.Resolver
 	Access   *repoaccess.Checker
-	Logger   *slog.Logger
+	// RecheckTicker paces an open socket's D7 re-check; nil is a time.Ticker.
+	RecheckTicker func(time.Duration) (<-chan time.Time, func())
+	Logger        *slog.Logger
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)
@@ -256,7 +258,9 @@ const (
 	dropPingTimeout    = "ping_timeout"
 	dropShutdown       = "shutdown"
 	dropLogUnavailable = "log_unavailable"
-	dropProtocol       = "protocol" // a frame the client must not send (1007, 1008 hello first, 1009), or no hello
+	dropProtocol       = "protocol"             // a frame the client must not send (1007, 1008 hello first, 1009), or no hello
+	dropRevoked        = "access_revoked"       // D7's re-check: the caller may no longer read the room
+	dropUnverified     = reasonAccessUnverified // D7's re-check: ZITADEL or GitHub cannot answer past the cache
 	// dropClientGone is the peer leaving: not a drop, so never counted.
 	dropClientGone = "client_gone"
 )

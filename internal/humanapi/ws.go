@@ -58,6 +58,8 @@ var (
 	errClientGone   = errors.New(dropClientGone)
 	errShutdown     = errors.New(dropShutdown)
 	errLog          = errors.New(dropLogUnavailable)
+	errRevoked      = errors.New(dropRevoked)
+	errUnverified   = errors.New(dropUnverified)
 )
 
 func or(d, def time.Duration) time.Duration {
@@ -190,6 +192,12 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 
 	// session scopes the connection's clientSeq, its acts' idempotency key.
 	v := &viewer{s: s, c: c, base: base, life: life, cancel: cancel, p: p, room: room, id: id, session: ulid.Make().String()}
+	if !s.Groups.IsAdmin(p) && s.Access != nil {
+		v.recheck = min(s.Access.TTL, maxRecheck)
+		if v.recheck <= 0 {
+			v.recheck = maxRecheck
+		}
+	}
 	reason := v.serve()
 	if reason != dropClientGone {
 		s.dropped(base, reason)
@@ -201,8 +209,10 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusGoingAway, reason)
 	case dropSlowConsumer:
 		_ = c.Close(websocket.StatusPolicyViolation, reason+": resume from afterSeq")
-	case dropLogUnavailable:
+	case dropLogUnavailable, dropUnverified:
 		_ = c.Close(websocket.StatusTryAgainLater, reason)
+	case dropRevoked: // what a new connection to the room is now answered
+		_ = c.Close(websocket.StatusPolicyViolation, noSuchRoom)
 	}
 	// The hello's read and the reader return once the socket is closed, the pinger with the life.
 	_ = c.CloseNow()
@@ -264,7 +274,8 @@ type viewer struct {
 	id      string
 	session string         // this connection's idempotency scope
 	last    int64          // the last seq written
-	wg      sync.WaitGroup // the reader and the pinger
+	recheck time.Duration  // D7's re-check period; 0 for an admin, who bypasses it
+	wg      sync.WaitGroup // the reader, the pinger and the re-check
 }
 
 // write sends one frame within WriteWait. A peer that does not take it in time
@@ -342,6 +353,9 @@ func (v *viewer) serve() string {
 	frames := make(chan wire.ClientFrame)
 	v.wg.Go(func() { v.read(frames) })
 	v.wg.Go(v.ping)
+	if v.recheck > 0 {
+		v.wg.Go(v.recheckAccess)
+	}
 	for {
 		select {
 		case <-v.life.Done():
@@ -420,7 +434,7 @@ func (v *viewer) ended() string {
 	if errors.Is(cause, context.DeadlineExceeded) {
 		return dropReauth
 	}
-	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol} {
+	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol, errRevoked, errUnverified} {
 		if errors.Is(cause, e) {
 			return e.Error()
 		}
@@ -477,6 +491,35 @@ func (v *viewer) ping() {
 			ctx, cancel := context.WithTimeout(v.life, or(v.s.PongWait, defaultPongWait))
 			_ = v.s.Actor.Log.DriverSeen(ctx, v.id, v.p.ID, false)
 			cancel()
+		}
+	}
+}
+
+// recheckAccess re-runs D7 every v.recheck while the connection lives (ruling R17): a revoked
+// reader is cut within the access TTL, and one ZITADEL or GitHub cannot vouch for past the
+// cache is cut rather than streamed to. The Room is the one the connection opened on.
+func (v *viewer) recheckAccess() {
+	tick, stop := v.s.recheckTicker(v.recheck)
+	defer stop()
+	for {
+		select {
+		case <-v.life.Done():
+			return
+		case <-tick:
+		}
+		ctx, cancel := context.WithTimeout(v.life, accessWait)
+		ok, err := v.s.admits(ctx, v.room, v.p)
+		cancel()
+		switch {
+		case v.life.Err() != nil:
+			return // the check failed because the connection ended
+		case err != nil:
+			v.s.log().Warn("room access unverified", "room", v.id, "err", err)
+			v.cancel(errUnverified)
+			return
+		case !ok:
+			v.cancel(errRevoked)
+			return
 		}
 	}
 }

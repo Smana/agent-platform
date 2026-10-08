@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/ghidentity"
 	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // gitHubWorld is the D7 gate the tests run under: each principal's Sub is linked to the GitHub
@@ -341,5 +343,114 @@ func TestAForkKeepsItsParentsRepository(t *testing.T) {
 	room.Spec.Repository = "Smana/a"
 	if s := forkedSpec(t, a, room, forkAs(a, room, "human:bob", false, Action{Seq: 2})); s.Repository != "Smana/a" {
 		t.Fatalf("the fork's repository is %q", s.Repository)
+	}
+}
+
+// rechecks hands the open sockets' D7 re-check a tick channel the test drives, and records
+// the periods the connections asked for.
+type rechecks struct {
+	tick chan time.Time
+	mu   sync.Mutex
+	asks []time.Duration
+}
+
+func (r *rechecks) option() option {
+	r.tick = make(chan time.Time)
+	return func(s *Server, _ *fanout.Hub, _ *hubView) {
+		s.RecheckTicker = func(d time.Duration) (<-chan time.Time, func()) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.asks = append(r.asks, d)
+			return r.tick, func() {}
+		}
+	}
+}
+
+// fire ticks the re-check of the one open socket.
+func (r *rechecks) fire(t *testing.T) {
+	t.Helper()
+	select {
+	case r.tick <- time.Now():
+	case <-time.After(5 * time.Second):
+		t.Fatal("no re-check runs on the open socket")
+	}
+}
+
+func (r *rechecks) asked() []time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.asks)
+}
+
+// openAs connects h to room A and reads it up to the live stream: state, sync, the 10 events.
+func openAs(t *testing.T, e env, h http.Header) *websocket.Conn {
+	t.Helper()
+	c, _, err := connect(t, e, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	send(t, c, hello(nil, 0))
+	if f := read(t, c); f.Type != wire.FrameState {
+		t.Fatalf("got %+v, want the state", f)
+	}
+	read(t, c)
+	events(t, c, 10)
+	return c
+}
+
+// R17: an open socket re-runs the D7 gate once per access TTL, so a revoked reader is cut
+// within it, and a reader GitHub cannot vouch for past the cache is never streamed to.
+func TestAnOpenSocketFollowsGitHub(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(w *gitHubWorld)
+		code   websocket.StatusCode
+		reason string
+	}{
+		{"read revoked", func(w *gitHubWorld) { w.reads = map[string][]string{"Smana/a": {}} }, websocket.StatusPolicyViolation, "no such room"},
+		{"GitHub down", func(w *gitHubWorld) { w.down = true }, websocket.StatusTryAgainLater, "access_unverified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := world(map[string][]string{"Smana/a": {"dev1"}})
+			r := &rechecks{}
+			e := setup(t, abc(t), w.option(), r.option())
+			c := openAs(t, e, header("dev1"))
+			w.set(func() { tc.change(w); w.now = w.now.Add(4 * time.Minute) })
+			r.fire(t)
+			e.log.add(1)
+			if seqs := events(t, c, 1); seqs[0] != 11 {
+				t.Fatalf("a fresh cached answer must keep the stream: %v", seqs)
+			}
+			w.set(func() { w.now = w.now.Add(time.Minute) })
+			r.fire(t)
+			if code, reason := closed(t, c); code != tc.code || reason != tc.reason {
+				t.Fatalf("closed %d %q, want %d %q", code, reason, tc.code, tc.reason)
+			}
+			if got := r.asked(); !slices.Equal(got, []time.Duration{5 * time.Minute}) {
+				t.Fatalf("re-check periods %v, want the access TTL", got)
+			}
+			if tc.reason == "no such room" {
+				if code, _ := opens(t, e, roomID, header("dev1")); code != http.StatusNotFound {
+					t.Fatalf("a re-dial: %d, want 404", code)
+				}
+			}
+			eventually(t, "the socket's goroutines end", func() bool { return e.srv.open() == 0 })
+		})
+	}
+}
+
+// Admins bypass D7 at connect, and so on an open socket: no re-check runs.
+func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
+	w := world(map[string][]string{})
+	r := &rechecks{}
+	e := setup(t, abc(t), w.option(), r.option())
+	c := openAs(t, e, admin("boss"))
+	w.set(func() { w.down, w.now = true, w.now.Add(time.Hour) })
+	e.log.add(1)
+	if seqs := events(t, c, 1); seqs[0] != 11 {
+		t.Fatalf("%v", seqs)
+	}
+	if got := r.asked(); len(got) != 0 {
+		t.Fatalf("an admin's socket asked for re-checks every %v", got)
 	}
 }

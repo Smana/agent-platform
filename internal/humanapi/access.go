@@ -14,6 +14,19 @@ import (
 // leaves time to write the refusal.
 const accessWait = 10 * time.Second
 
+// maxRecheck caps an open socket's D7 re-check period at D7's longest cache, whatever the
+// checker's TTL.
+const maxRecheck = 5 * time.Minute
+
+// recheckTicker paces an open socket's re-check: RecheckTicker, else a time.Ticker.
+func (s *Server) recheckTicker(d time.Duration) (<-chan time.Time, func()) {
+	if s.RecheckTicker != nil {
+		return s.RecheckTicker(d)
+	}
+	t := time.NewTicker(d)
+	return t.C, t.Stop
+}
+
 // reasonAccessUnverified is the 503 when ZITADEL or GitHub cannot answer past the cache. It never
 // names the repository: the caller may not be allowed to know which one the room is on.
 const reasonAccessUnverified = "access_unverified"
