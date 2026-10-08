@@ -101,15 +101,25 @@ type Summary struct {
 	Cursor string `json:"cursor"`
 }
 
-// Fold reads events in seq order. Unknown kinds are ignored, so an older broker's summary of a
-// newer log stays well formed.
+// Fold is the state of a whole log; Add folds the same log a page at a time.
 func Fold(evs []envelope.Event) State {
-	st := State{Pending: map[string]Approval{}}
+	var st State
+	st.Add(evs)
+	return st
+}
+
+// Add folds the next events, in seq order, into st. A reader that adds each page of the log and
+// drops it holds one page and the state, however long the log. Unknown kinds are ignored, so an
+// older broker's summary of a newer log stays well formed.
+func (st *State) Add(evs []envelope.Event) {
+	if st.Pending == nil {
+		st.Pending = map[string]Approval{}
+	}
 	for _, ev := range evs {
 		st.LastSeq = max(st.LastSeq, ev.Seq)
 		switch ev.Type {
 		case envelope.StateChanged:
-			foldState(&st, ev)
+			foldState(st, ev)
 		case envelope.ApprovalRequested:
 			var a envelope.ApprovalRequestedPayload
 			if json.Unmarshal(ev.Payload, &a) == nil {
@@ -136,7 +146,6 @@ func Fold(evs []envelope.Event) State {
 			}
 		}
 	}
-	return st
 }
 
 func foldState(st *State, ev envelope.Event) {

@@ -4,8 +4,10 @@ package summary_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"github.com/Smana/agent-platform/internal/summary"
 )
 
+var goldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts"}
+
 func TestFoldGolden(t *testing.T) {
-	for _, name := range []string{"normal", "resumed", "expired_approval", "sealed", "no_facts"} {
+	for _, name := range goldens {
 		t.Run(name, func(t *testing.T) {
 			var tc struct {
 				Events []envelope.Event `json:"events"`
@@ -35,6 +39,34 @@ func TestFoldGolden(t *testing.T) {
 			got := summary.View(summary.Fold(tc.Events), "26zfnuxm", "https://rooms.example/r/26zfnuxm", v, 0, tc.Now)
 			assertJSONEqual(t, tc.Want, got)
 		})
+	}
+}
+
+// The summary route folds the log a page at a time and drops each page, so its memory is one page:
+// every split of a log folds to the state of the whole log.
+func TestAddingPagesIsFoldingTheLog(t *testing.T) {
+	logs := map[string][]envelope.Event{}
+	for _, name := range goldens {
+		var tc struct {
+			Events []envelope.Event `json:"events"`
+		}
+		readJSON(t, "testdata/"+name+".json", &tc)
+		logs[name] = tc.Events
+	}
+	for i := int64(1); i <= 50; i++ { // past the notes' window, so it slides across pages
+		logs["notes"] = append(logs["notes"], note(i, fmt.Sprint("n", i)))
+	}
+	for name, evs := range logs {
+		want := summary.Fold(evs)
+		for size := 1; size <= len(evs); size++ {
+			var st summary.State
+			for page := range slices.Chunk(evs, size) {
+				st.Add(page)
+			}
+			if !reflect.DeepEqual(st, want) {
+				t.Fatalf("%s in pages of %d:\ngot  %+v\nwant %+v", name, size, st, want)
+			}
+		}
 	}
 }
 

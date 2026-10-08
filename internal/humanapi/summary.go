@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/summary"
 )
@@ -41,8 +40,8 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
-	// A room seals at MaxEvents, which bounds this read.
-	var evs []envelope.Event
+	// Each page is folded, then dropped: the read holds one page, whatever the log's length.
+	var fold summary.State
 	for last := int64(0); ; {
 		page, err := s.Log.Range(ctx, id, last, pageSize)
 		if err != nil {
@@ -50,11 +49,11 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "room log unreadable", http.StatusServiceUnavailable)
 			return
 		}
-		evs = append(evs, page...)
+		fold.Add(page)
 		if len(page) < pageSize {
 			break
 		}
 		last = page[len(page)-1].Seq
 	}
-	writeJSON(w, summary.View(summary.Fold(evs), id, s.PublicURL+"/r/"+id, sub, after, time.Now()))
+	writeJSON(w, summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, time.Now()))
 }
