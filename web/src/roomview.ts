@@ -1,58 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The chat/raw switch: two containers under main, one hidden, both fed on every
-// event so the toggle is instant and the debug view is never stale. The choice
-// survives a reload in storage.
+// The chat sits in main; the raw event stream sits below it in a <details> closed by
+// default, so the page leads with the conversation and the summary, not the noise.
+// Both are fed on every event, so opening the raw log is instant and never stale.
 
 import { ChatView } from "./chat";
 import type { RoomEvent } from "./conn";
 import { renderEvent } from "./render";
 import { RoomLog } from "./view";
 
-export type Mode = "chat" | "raw";
-
-const key = "room-view";
-
 export interface Views {
   apply(ev: RoomEvent): void;
 }
 
-// mountViews fills main with the chat and raw containers and adds the toggle to
-// bar. store is a parameter so tests drive it; a throwing Storage (private
-// mode) only loses persistence. fork, when set, puts "fork here" on chat rows.
-export function mountViews(main: HTMLElement, bar: HTMLElement, store: Storage = localStorage,
-  fork?: (seq: number) => void): Views {
+// mountViews fills main with the chat and the collapsed raw log. fork, when set,
+// puts "fork here" on chat rows.
+export function mountViews(main: HTMLElement, fork?: (seq: number) => void): Views {
   const chatEl = document.createElement("div");
   chatEl.className = "view-chat";
   const rawEl = document.createElement("div");
   rawEl.className = "view-raw";
-  main.replaceChildren(chatEl, rawEl);
+  const details = document.createElement("details");
+  details.className = "raw-events";
+  const title = document.createElement("summary");
+  title.textContent = "Raw events";
+  details.append(title, rawEl);
+  main.replaceChildren(chatEl, details);
 
   const chat = new ChatView(chatEl, undefined, fork);
   const raw = new RoomLog(rawEl);
-
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "view-toggle";
-  bar.append(btn);
-
-  let mode: Mode = "chat";
-  try {
-    if (store.getItem(key) === "raw") mode = "raw";
-  } catch { /* no storage: the default holds */ }
-
-  const show = () => {
-    chatEl.hidden = mode !== "chat";
-    rawEl.hidden = mode !== "raw";
-    btn.textContent = mode === "chat" ? "⇄ raw" : "⇄ chat";
-    btn.title = mode === "chat" ? "Show the raw event stream" : "Show the chat view";
-  };
-  btn.onclick = () => {
-    mode = mode === "chat" ? "raw" : "chat";
-    try { store.setItem(key, mode); } catch { /* no storage: the switch still works */ }
-    show();
-  };
-  show();
 
   return {
     apply(ev: RoomEvent) {

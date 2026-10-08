@@ -75,18 +75,22 @@ function statusBlock(st: Summary["status"]): HTMLElement {
   return block("status", "Status", ...rows);
 }
 
+// focusApproval reveals the existing approval card for id and focuses its Approve
+// button. False when there is no card (a non-approver has none, or it is decided).
+export function focusApproval(id: string): boolean {
+  const card = document.getElementById(approvalAnchor(id));
+  if (!card) return false;
+  card.scrollIntoView?.({ block: "center" });
+  (card.querySelector<HTMLElement>('button[data-act="approve"]') ?? card.querySelector<HTMLElement>("button, input"))?.focus();
+  return true;
+}
+
 function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
   const ul = el("ul");
   for (const n of items) {
     const a = el("a", { href: `#${approvalAnchor(n.id)}`, textContent: "Review and decide" });
     // Reveal the existing approval card; the page keeps one decide path.
-    a.onclick = (e) => {
-      const card = document.getElementById(approvalAnchor(n.id));
-      if (!card) return;
-      e.preventDefault();
-      card.scrollIntoView?.({ block: "center" });
-      card.querySelector<HTMLElement>('button[data-act="approve"]')?.focus() ?? card.querySelector<HTMLElement>("button, input")?.focus();
-    };
+    a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };
     const li = el("li");
     li.append(`Approval: ${n.what} · decide by ${when(n.deadline)} · `, a);
     ul.append(li);

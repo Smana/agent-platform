@@ -7,7 +7,7 @@ import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
-import { fetchSummary, renderSummary } from "./summary";
+import { fetchSummary, focusApproval, renderSummary } from "./summary";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -24,12 +24,6 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   lead.className = "summary";
   lead.setAttribute("aria-live", "polite");
   const main = document.createElement("main");
-  // The raw stream stays one click away, collapsed: the summary above answers "where are we".
-  const raw = document.createElement("details");
-  raw.className = "raw-events";
-  const rawTitle = document.createElement("summary");
-  rawTitle.textContent = "Raw events";
-  raw.append(rawTitle, main);
   const section = document.createElement("section");
   section.className = "controls";
   const forkPanel = document.createElement("section");
@@ -42,8 +36,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const status = document.createElement("span");
   status.className = "status";
   footer.append(counters, notice, status);
-  app.replaceChildren(header, lead, raw, section, forkPanel, footer);
-  const views = mountViews(main, header, localStorage, (seq) => fork.open(seq));
+  app.replaceChildren(header, lead, main, section, forkPanel, footer);
+  const views = mountViews(main, (seq) => fork.open(seq));
   mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -72,6 +66,18 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       (e) => { if (!stopped) lead.textContent = e instanceof Error ? e.message : String(e); });
   };
   const scheduleSummary = () => { refreshTimer ??= setTimeout(loadSummary, 1000); };
+  // The broker's link is <room>#<approvalId> (roomctl status, the summary's needsYou url).
+  // The card appears once the replay delivers its request, so the landing is retried on
+  // each controls refresh until it lands. A non-approver has no card: nothing happens.
+  let landed = false;
+  const land = () => {
+    if (landed) return;
+    let id = "";
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch { return; }
+    if (id) landed = focusApproval(id.replace(/^approval-/, ""));
+  };
+  const onHash = () => { landed = false; land(); };
+  addEventListener("hashchange", onHash);
   const conn = new RoomConnection(id, {
     // A state frame comes on every (re)connect: an invite may have changed the role.
     onState: (s: Snapshot, throughSeq: number) => {
@@ -88,6 +94,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       if (you && controls) Object.assign(you, s.you);
       else controls = mountControls(section, sender, state, (you = { ...s.you }), say);
       controls.refresh();
+      land();
     },
     onEvent: (e) => {
       views.apply(e);
@@ -95,6 +102,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       state.apply(e);
       renderHeader();
       controls?.refresh();
+      land();
       // A membership change naming you: the page projects none (R10). The reconnect's
       // state frame re-resolves you, and the broker re-checks every act anyway.
       if (e.type === "participant" && e.seq > mark && e.payload?.principal === snap?.you.principal) conn.resync();
@@ -121,6 +129,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       if (++absent < 3) return;
       conn.stop();
       stopped = true;
+      removeEventListener("hashchange", onHash);
       clearTimeout(refreshTimer);
       const back = document.createElement("a");
       back.href = "/";

@@ -277,7 +277,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
 .summary-needs-you { border-color: var(--warning); }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
-.raw-events { padding: 0 16px; }
+.raw-events { margin-top: 8px; }
 .raw-events > summary { cursor: pointer; padding: 4px 0; }
 
 @media (prefers-reduced-motion: reduce) {

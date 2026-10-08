@@ -247,4 +247,50 @@ describe("the room page", () => {
     p.last().recv(event(1, "message", { kind: "chat", text: "still here", delivery: "none" }));
     expect(p.app.querySelector(".view-chat")!.textContent).toContain("still here");
   });
+
+  // R23: only the raw log is collapsed; chat and composer stay in view.
+  it("keeps the chat and the composer visible with the raw events closed", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
+    expect(p.app.querySelector("details.raw-events .view-chat")).toBeNull();
+    expect(p.app.querySelector("details.raw-events")!.contains(p.app.querySelector('textarea[name="text"]'))).toBe(false);
+    expect(p.app.querySelector<HTMLElement>("section.controls")!.hidden).toBe(false);
+    expect(p.app.querySelector<HTMLElement>(".composer")!.hidden).toBe(false);
+  });
+
+  // R24: the broker's link is <room>#<approvalId>; it lands on that approval's card.
+  describe("the broker's approval link", () => {
+    const requested = (seq: number, id: string) => event(seq, "approval_requested", { approvalId: id, callId: "c1", class: "forge.pr",
+      action: {}, expiresAt: "2099-01-01T00:00:00Z" });
+    afterEach(() => { location.hash = ""; });
+
+    it("focuses the Approve button of the approval the hash names", () => {
+      location.hash = "#01M4A";
+      const p = page();
+      document.body.append(p.app);
+      p.join(snapshot({ approver: true }), 0, requested(1, "01M4A"));
+      expect(document.activeElement).toBe(p.app.querySelector("#approval-01M4A [data-act=approve]"));
+      p.app.remove();
+    });
+
+    it("follows a later hashchange", () => {
+      const p = page();
+      document.body.append(p.app);
+      p.join(snapshot({ approver: true }), 0, requested(1, "AAA"), requested(2, "BBB"));
+      location.hash = "#BBB";
+      window.dispatchEvent(new Event("hashchange"));
+      expect(document.activeElement).toBe(p.app.querySelector("#approval-BBB [data-act=approve]"));
+      p.app.remove();
+    });
+
+    it("does nothing, and does not throw, for a non-approver", () => {
+      location.hash = "#01M4A";
+      const p = page();
+      document.body.append(p.app);
+      expect(() => p.join(snapshot({ role: "watcher" }), 0, requested(1, "01M4A"))).not.toThrow();
+      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      p.app.remove();
+    });
+  });
 });

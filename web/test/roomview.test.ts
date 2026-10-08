@@ -1,52 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { mountViews } from "../src/roomview";
 
-function store(init: Record<string, string> = {}) {
-  const data = new Map(Object.entries(init));
-  return {
-    getItem: (k: string) => data.get(k) ?? null,
-    setItem: (k: string, v: string) => void data.set(k, v),
-    data,
-  };
-}
-
-function mount(stored?: Record<string, string>) {
+function mount() {
   const main = document.createElement("main");
-  const bar = document.createElement("header");
-  const s = store(stored);
-  const views = mountViews(main, bar, s as unknown as Storage);
-  return { main, bar, s, views };
+  const views = mountViews(main);
+  return { main, views };
 }
 
 describe("mountViews", () => {
-  it("defaults to the chat view, the raw one hidden", () => {
+  it("shows the chat and keeps the raw log in a closed details", () => {
     const { main } = mount();
-    const chat = main.querySelector<HTMLElement>(".view-chat")!;
-    const raw = main.querySelector<HTMLElement>(".view-raw")!;
-    expect(chat.hidden).toBe(false);
-    expect(raw.hidden).toBe(true);
-  });
-  it("switches on the button and remembers", () => {
-    const { main, bar, s } = mount();
-    const chat = main.querySelector<HTMLElement>(".view-chat")!;
-    const raw = main.querySelector<HTMLElement>(".view-raw")!;
-    const btn = bar.querySelector<HTMLButtonElement>("button.view-toggle")!;
-    btn.click();
-    expect(chat.hidden).toBe(true);
-    expect(raw.hidden).toBe(false);
-    expect(s.data.get("room-view")).toBe("raw");
-    btn.click();
-    expect(chat.hidden).toBe(false);
-    expect(s.data.get("room-view")).toBe("chat");
-  });
-  it("honours a stored raw preference", () => {
-    const { main } = mount({ "room-view": "raw" });
-    expect(main.querySelector<HTMLElement>(".view-chat")!.hidden).toBe(true);
-    expect(main.querySelector<HTMLElement>(".view-raw")!.hidden).toBe(false);
-  });
-  it("ignores a stored value it does not know", () => {
-    const { main } = mount({ "room-view": "mosaic" });
     expect(main.querySelector<HTMLElement>(".view-chat")!.hidden).toBe(false);
+    const d = main.querySelector<HTMLDetailsElement>("details.raw-events")!;
+    expect(d.open).toBe(false);
+    expect(d.querySelector("summary")!.textContent).toBe("Raw events");
+    expect(d.querySelector(".view-raw")).not.toBeNull();
   });
   it("routes events into both views", () => {
     const { main, views } = mount();
