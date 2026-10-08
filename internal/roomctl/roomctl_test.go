@@ -524,6 +524,10 @@ func TestRoomsFilterAndAccessHint(t *testing.T) {
 		if tc.access == "unlinked" && !strings.Contains(errOut.String(), "https://auth.example") {
 			t.Fatalf("unlinked names the issuer: %q", errOut.String())
 		}
+		// Unlinked is never an admin (admins bypass D7): they see no room at all.
+		if tc.access == "unlinked" && (!strings.Contains(errOut.String(), "no room is listed") || strings.Contains(errOut.String(), "admins")) {
+			t.Fatalf("unlinked says what they see: %q", errOut.String())
+		}
 		if tc.access == "unverified" && strings.Contains(errOut.String(), "retry") {
 			t.Fatalf("unverified promises a retry: %q", errOut.String())
 		}

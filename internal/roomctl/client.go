@@ -155,7 +155,7 @@ func (c Client) hint(access string) {
 	var msg string
 	switch access {
 	case "unlinked":
-		msg = "hint: your ZITADEL account has no linked GitHub identity, so only the rooms readable to admins are listed. " +
+		msg = "hint: your ZITADEL account has no linked GitHub identity, so no room is listed: you see a room only if GitHub lets you read its repository. " +
 			"Link it once: sign in at " + printable(c.Issuer) + ", choose GitHub and \"link\", then sign in with GitHub once."
 	case "unverified":
 		msg = "hint: room access could not be verified (the GitHub or ZITADEL check failed, or the broker has no access check configured), so this list may be incomplete."
