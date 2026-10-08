@@ -83,14 +83,15 @@ func (s *Store) PendingApprovals(ctx context.Context, roomID string) (int, error
 // lastTaskStateSQL's predicate is the events_task_facts index's, verbatim: the partial index
 // only serves a query that implies it.
 const lastTaskStateSQL = `SELECT payload FROM events
-	WHERE room_id = $1 AND type = 'state_changed' AND payload->>'kind' = 'task'
+	WHERE room_id = $1 AND type = 'state_changed' AND payload->>'kind' = 'task' AND seq > $2
 	ORDER BY seq DESC LIMIT 1`
 
-// LastTaskState is the payload of the room's highest-seq state_changed{kind:task}, or nil when
-// the factory wrote none. The seq decides, so a late or replayed write cannot win.
-func (s *Store) LastTaskState(ctx context.Context, roomID string) (json.RawMessage, error) {
+// LastTaskState is the payload of the room's highest-seq state_changed{kind:task} above seq
+// after, or nil when the factory wrote none there. The seq decides, so a late or replayed write
+// cannot win. A fork passes its fork point: the facts at or below it are its source's.
+func (s *Store) LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error) {
 	var p json.RawMessage
-	err := s.pool.QueryRow(ctx, lastTaskStateSQL, roomID).Scan(&p)
+	err := s.pool.QueryRow(ctx, lastTaskStateSQL, roomID, after).Scan(&p)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

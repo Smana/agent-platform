@@ -120,10 +120,10 @@ func (m *fakeStore) CloseRoom(_ context.Context, id, _ string) error {
 
 func (m *fakeStore) PendingApprovals(context.Context, string) (int, error) { return 0, nil }
 
-func (m *fakeStore) LastTaskState(context.Context, string) (json.RawMessage, error) {
+func (m *fakeStore) LastTaskState(_ context.Context, _ string, after int64) (json.RawMessage, error) {
 	var best *seqPayload
 	for i := range m.taskEvents {
-		if best == nil || m.taskEvents[i].seq > best.seq {
+		if m.taskEvents[i].seq > after && (best == nil || m.taskEvents[i].seq > best.seq) {
 			best = &m.taskEvents[i]
 		}
 	}
@@ -634,6 +634,48 @@ func TestTaskStatus(t *testing.T) {
 				t.Fatalf("status.task = %+v, want %+v", got.Status.Task, tc.want)
 			}
 		})
+	}
+}
+
+// A fork copies its source's log, task facts included: the room list's --mine and phase must not
+// read the source's task off the fork. Its own facts, after the fork point, count.
+func TestAForkProjectsOnlyItsOwnFacts(t *testing.T) {
+	source := envelope.TaskFacts{Phase: "AwaitingHuman",
+		Issue: &envelope.IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: "dev1"}}
+	own := envelope.TaskFacts{Phase: "Queued"}
+	for _, tc := range []struct {
+		name   string
+		events []seqPayload
+		want   *v1alpha1.TaskStatus
+	}{
+		{"the source's facts are not the fork's", []seqPayload{taskEvent(3, source), taskEvent(5, source)}, nil},
+		{"the fork's own facts count", []seqPayload{taskEvent(3, source), taskEvent(7, own)}, &v1alpha1.TaskStatus{Phase: "Queued"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			room := newRoom()
+			room.Annotations = map[string]string{ForkedFrom: "src0abcd@5"}
+			c := build(room)
+			ms := newStore(nil)
+			ms.taskEvents = tc.events
+			r := &Reconciler{Client: c, Store: ms, Runs: runwatch.New(), Now: clock(deletedAt)}
+			if _, err := r.Reconcile(t.Context(), request()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := getRoom(t, c)
+			if !reflect.DeepEqual(got.Status.Task, tc.want) {
+				t.Fatalf("status.task = %+v, want %+v", got.Status.Task, tc.want)
+			}
+		})
+	}
+}
+
+func TestForkSeq(t *testing.T) {
+	for in, want := range map[string]int64{"": 0, "src0abcd@5": 5, "src0abcd": 0, "src0abcd@x": 0, "src0abcd@-3": 0} {
+		room := newRoom()
+		room.Annotations = map[string]string{ForkedFrom: in}
+		if got := ForkSeq(room); got != want {
+			t.Errorf("ForkSeq(%q) = %d, want %d", in, got, want)
+		}
 	}
 }
 

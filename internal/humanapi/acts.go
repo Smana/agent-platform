@@ -612,9 +612,9 @@ func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.
 	return ev, res.Manifest, ""
 }
 
-// ForkedFrom annotates a forked Room with <source room>@<seq>: where its log's
-// copied prefix ends, and its state_changed{forked_from} follows.
-const ForkedFrom = "agents.ogenki.io/forked-from"
+// ForkedFrom annotates a forked Room with <source room>@<seq>; roomctrl owns it, since the
+// Room's task status must skip the copied prefix.
+const ForkedFrom = roomctrl.ForkedFrom
 
 // maxNote bounds a fork's note, which its forked_from event carries.
 const maxNote = 1 << 10
@@ -698,9 +698,8 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v
 // prefix its annotation names, for the brief's Forked-from line; nothing for
 // any other room. One read by seq, never a scan of the log.
 func (a *Actor) forkPoint(ctx context.Context, room *v1alpha1.Room) ([]envelope.Event, error) {
-	_, at, ok := strings.Cut(room.Annotations[ForkedFrom], "@")
-	seq, err := strconv.ParseInt(at, 10, 64)
-	if !ok || err != nil {
+	seq := roomctrl.ForkSeq(room)
+	if seq == 0 {
 		return nil, nil
 	}
 	return a.Log.Range(ctx, room.Name, seq, 1)
