@@ -242,6 +242,25 @@ func TestRoomctlStatus(t *testing.T) {
 	}
 }
 
+// --after takes the summary's cursor as printed, seq:N, or the bare seq.
+func TestRoomctlStatusAfterTakesTheCursor(t *testing.T) {
+	b := newRoomctlBroker(t)
+	r, _ := configured(t, b)
+	for _, after := range []string{"seq:142", "142"} {
+		if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--after", after}); err != nil {
+			t.Fatal(err)
+		}
+		if b.query != "/api/rooms/26zfnuxm/summary?after=142" {
+			t.Fatalf("--after %s: query %q", after, b.query)
+		}
+	}
+	for _, bad := range []string{"seq:", "seq:-1", "-1", "142x", "cursor:142"} {
+		if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--after", bad}); err == nil {
+			t.Errorf("--after %q accepted", bad)
+		}
+	}
+}
+
 // --mine matches the linked GitHub login on the room's task, not the room's owner.
 func TestRoomctlHelpSaysWhatMineMatches(t *testing.T) {
 	var out strings.Builder

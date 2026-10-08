@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ const roomctlUsage = `usage: roomctl <command>
                                   the values are on the room list's CLI setup view
   login                           sign in with the device flow
   token                           print a valid access token, for scripts (task agent:run)
-  status <room> [--json] [--after SEQ]   where a room stands: status, what needs you, notes
+  status <room> [--json] [--after seq:N] where a room stands: status, what needs you, notes
   rooms [--repo owner/name] [--mine] [--needs-me]
                                   the rooms you can read. --mine: the tasks of
                                   issues you filed or labelled, PRs you authored or review.
@@ -196,12 +197,14 @@ func (r Roomctl) skill(args []string) error {
 func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "print the broker's summary/v1 as is")
-	after := fs.Int64("after", 0, "only notes after this seq")
+	cursor := fs.String("after", "0", "only notes after this cursor: the summary's seq:N, or N")
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) != 1 || *after < 0 {
-		return fmt.Errorf("status <room> [--json] [--after SEQ]: %w", errors.Join(err, errors.New("one room")))
+	// The summary prints its cursor as seq:N, so the next call can pass it back as is.
+	after, aerr := strconv.ParseInt(strings.TrimPrefix(*cursor, "seq:"), 10, 64)
+	if err != nil || len(pos) != 1 || aerr != nil || after < 0 {
+		return fmt.Errorf("status <room> [--json] [--after seq:N]: %w", errors.Join(err, errors.New("one room, and a cursor of seq:N or N")))
 	}
-	raw, err := c.Summary(ctx, pos[0], *after)
+	raw, err := c.Summary(ctx, pos[0], after)
 	if err != nil {
 		return err
 	}
