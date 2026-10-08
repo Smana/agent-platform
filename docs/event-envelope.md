@@ -62,7 +62,7 @@ Agent-originated events are **untrusted content attributed to that agent** (C4).
 | `origin` | Meaning | Examples |
 |---|---|---|
 | `harness` | Mirrored from a run's harness by its bridge | `message`, `tool_call`, `tool_result`, `turn`, `state_changed{harness_status}` |
-| `client` | Written by a participant through an API | A system caller's `task_state`; a human's message (phase 4); a room tool's handoff or verdict (phase 3) |
+| `client` | Written by a participant through an API | A system caller's `task_state` and task facts; a human's message (phase 4); a room tool's handoff, verdict or progress note (phase 3) |
 | `broker` | Written by the broker itself | `room_phase`, `run_phase`, `participant`, the seal, `limit`, verdict outcomes |
 
 ## Idempotency
@@ -76,6 +76,7 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | `agent:<runId>` | Item key of the harness event: event *i* owns `4i … 4i+3` | The bridge, harness events | AP-1 |
 | `agent:<runId>:status` | A counter of status transitions | The bridge, status tracker | AP-1 |
 | `system:<name>` | The caller's `clientSeq` | The system API | AP-1 |
+| `system:<name>:task` | The caller's `clientSeq` | The system API's task facts | Local-first UX |
 | `broker:room` | `1` | The Room controller, `room_phase: Open` | AP-1 |
 | `broker:run:<runId>` | `1` joined, `2` running, `3` ended, `4` left | The leader's run events | AP-1 |
 | `broker:seal` | `1` | The seal | AP-1 |
@@ -107,7 +108,7 @@ From the design's Appendix A, with the plan's additive fields.
 
 | `type` | Payload | Written by | Status |
 |---|---|---|---|
-| `message` | `{kind: chat \| review_verdict \| task_state, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive, phase 3, P29). SP3 defines `task_state`'s text | Harness (chat), system callers (`task_state`), room tools and humans | `chat` and `task_state` AP-1; `review_verdict` phase 3; `queued`, `steering` phase 4 |
+| `message` | `{kind: chat \| review_verdict \| task_state \| progress, text, to[], delivery: none \| queued \| steering}`. `review_verdict` adds `{verdict: approve \| changes, commit}`, and `pullRequest` (additive, phase 3, P29). SP3 defines `task_state`'s text. `progress` is a run's one-line note for the humans following the room, at most 280 characters, delivered to nobody: the agent's claim, rendered as text | Harness (chat), system callers (`task_state`), room tools (`progress` through `room_progress` only) and humans | `chat` and `task_state` AP-1; `review_verdict` phase 3; `queued`, `steering` phase 4; `progress` local-first UX |
 | `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 |
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 |
@@ -136,6 +137,7 @@ From the design's Appendix A, with the plan's additive fields.
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
 | `run_requested` | `role`, `runId`, `via: manifest \| factory`, `baseRef`, `taskUrl` (a reviewer's PR), `consumed`: the refs of the queued messages its brief quoted, moved to `consumed` in the same transaction | Broker, on a human's `start_run` | AP-4 (Task 4.4) |
 | `policy_decision`, `decision_applied` | `callId`, `class`, `decision` (`allow` or `deny`, the bridge's local verdict; a `human` class shows as `approval_requested` instead); or `ref`, `runId`: an approver's decision the bridge answered the harness with | Bridge | AP-5 (Task 5.2) |
+| `task` | `phase`, `reason?`, `run?{id, role, trigger?, startedAt?}`, `budget?{usedTokens, limitTokens}`, `issue?{number, url, author?, labelledBy?}`, `pr?{number, url, author?, reviewers?}`: the factory's facts about the room's task, which the room summary and the Room's `status.task` read. The latest by `seq` wins; a fork reads only its own, after `forked_from` | SP3's factory, through the system route `POST /v1/rooms/{id}/task`: no bridge, room tool or human can write it | Local-first UX |
 | `forked_from` | `room`, `seq`, `commit?` (the latest agent commit at or before `seq`: the fork's first `baseRef`, and its PRs' `Forked-from: agent/<room>@<commit>`), `note?` (redacted) | The forker, a human | Phase 6 |
 | `commit` | — | — | Listed in Appendix A; no plan task writes it yet |
 
