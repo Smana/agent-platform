@@ -48,8 +48,14 @@ func RenderSummary(w io.Writer, raw []byte, now time.Time) error {
 	if p := s.Status.PR; p != nil {
 		fmt.Fprintf(&b, "PR #%d %s\n", p.Number, oneLine(p.URL))
 	}
+	if i := s.Status.Issue; i != nil {
+		fmt.Fprintf(&b, "issue #%d %s\n", i.Number, oneLine(i.URL))
+	}
 	if v := s.Status.LastVerdict; v != nil {
 		fmt.Fprintf(&b, "last verdict: %s %s\n", oneLine(v.By), oneLine(v.Verdict))
+	}
+	if len(s.NeedsYou) == 0 {
+		b.WriteString("needs you: none\n")
 	}
 	for _, n := range s.NeedsYou {
 		by := ""

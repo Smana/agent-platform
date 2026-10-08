@@ -497,6 +497,21 @@ cursor: seq:142
 	}
 }
 
+// The skill reports "needs you: none" as the spec words it, and the task's issue is part of its status.
+func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
+	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued",` +
+		`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],` +
+		`"notes":{"untrusted":true,"items":[]},"cursor":"seq:3"}`
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(body), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := "phase: Queued\nissue #42 https://github.com/Smana/a/issues/42\nneeds you: none\ncursor: seq:3\n"
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // A time not of today (UTC) carries its date: "by 14:00" read the next morning is a deadline long gone.
 func TestRenderSummaryDatesAnotherDay(t *testing.T) {
 	var out strings.Builder
