@@ -82,7 +82,8 @@ nothing and consumes no `seq`, so retries, restarts and a new leader never dupli
 | `broker:busy:<runId>` | `1` | The `concurrent_run` limit event | AP-1 |
 | `human:<sub>` | The browser's `clientSeq` | Human actions | Planned, phase 4 |
 | `agent:<runId>:tools` | Unix nanoseconds (ruling P26: MCP has no retry key) | Room tools | AP-3 |
-| `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, callId)` | The bridge's approval requests | Planned, phase 5 |
+| `agent:<runId>:approvals` | Unix nanoseconds; the approval itself is unique per `(room, run, eventId)` | The bridge's approval requests | AP-5 |
+| `broker:approval:<approvalId>` | `1` | The broker's close of an approval: expired or superseded | AP-5 |
 | `broker:verdicts` | The verdict's `seq` | The verdict poster's outcome | AP-3 |
 
 ## Limits
@@ -110,8 +111,8 @@ From the design's Appendix A, with the plan's additive fields.
 | `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker | AP-1 |
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge | AP-1; `class` and `decidedBy` from phase 5 |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge | AP-1 |
-| `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | Planned, phase 5 |
-| `approval_decided` | `{approvalId, decision: approved \| denied \| expired, reason}` | A human, `system:policy`, or the expiry sweeper | Planned, phase 5 |
+| `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge | AP-5 |
+| `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, or its run has ended, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede | AP-5 |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker | Runs AP-1; humans phase 2 |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker | Store AP-4 (Task 4.1); written by human actions from Task 4.2 |
 | `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` | AP-3 |
@@ -134,8 +135,8 @@ From the design's Appendix A, with the plan's additive fields.
 | `undeliverable` | `ref`, `runId`, `code`: the harness refused the delivery for good, with that HTTP status; the stream goes on past it | Bridge | AP-4 (Task 4.3) |
 | `queued_removed` | `ref` | Broker | Planned, phase 4 |
 | `run_requested` | `role`, `runId`, `via: manifest \| factory`, `baseRef`, `taskUrl` (a reviewer's PR), `consumed`: the refs of the queued messages its brief quoted, moved to `consumed` in the same transaction | Broker, on a human's `start_run` | AP-4 (Task 4.4) |
-| `policy_decision`, `decision_applied` | `callId`, `class`, `decision`; or `ref`, `runId` | Bridge | Planned, phase 5 |
-| `forked_from` | `room`, `seq`, `note` | Broker | Planned, phase 6 |
+| `policy_decision`, `decision_applied` | `callId`, `class`, `decision` (`allow` or `deny`, the bridge's local verdict; a `human` class shows as `approval_requested` instead); or `ref`, `runId`: an approver's decision the bridge answered the harness with | Bridge | AP-5 (Task 5.2) |
+| `forked_from` | `room`, `seq`, `commit?` (the latest agent commit at or before `seq`: the fork's first `baseRef`, and its PRs' `Forked-from: agent/<room>@<commit>`), `note?` (redacted) | The forker, a human | Phase 6 |
 | `commit` | — | — | Listed in Appendix A; no plan task writes it yet |
 
 A bridge may push only `message{kind: chat, delivery: none}`, `turn`, `tool_call`, `tool_result`, and

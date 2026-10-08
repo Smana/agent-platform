@@ -230,6 +230,20 @@ func TestHumansAuthenticate(t *testing.T) {
 			t.Fatalf("expiry %v, %v", p.Expiry, err)
 		}
 	})
+	// A misconfiguration that mounts the web UI's id as roomctl's must not let a
+	// bearer pass as a web session, which may steer and decide (ruling P18).
+	t.Run("a roomctl client id equal to the web UI's (review M5)", func(t *testing.T) {
+		same := s.humans(project, webClient)
+		bearer := s.accessToken(t, "2918", web, webClient, []string{"agents-member"}, time.Hour)
+		if p, err := same.Authenticate(request(t, bearer)); !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("a bearer: got %+v, %v", p, err)
+		}
+		r := request(t, id)
+		r.Header.Set(ForwardedAccessHeader, access)
+		if p, err := same.Authenticate(r); err != nil || p.ClientID != webClient {
+			t.Fatalf("the web session still signs in: %+v, %v", p, err)
+		}
+	})
 	t.Run("a refusal never echoes a client id or the subject", func(t *testing.T) {
 		r := request(t, s.humanToken(t, "2918", []string{"other-app", project}, "other-app", nil, time.Hour))
 		_, err := h.Authenticate(r)

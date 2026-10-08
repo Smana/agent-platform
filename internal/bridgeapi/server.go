@@ -31,11 +31,6 @@ import (
 )
 
 const (
-	// A bridge seen within this window holds its room's lease (ruling P17, kept in
-	// the store: review I7). It pushes at least every 30 s, an empty batch when its
-	// run is quiet, so two minutes of silence means gone.
-	connectedWindow = 2 * time.Minute
-
 	// Request bounds. A bridge sends at most 100 items per batch (Task 1.11).
 	maxBatchBytes   = 2 << 20
 	maxBatchItems   = 500
@@ -48,7 +43,8 @@ const (
 	defaultPing   = 30 * time.Second
 	maxStreamLife = time.Hour
 	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
-	// reading cannot pin a handler until its token expires.
+	// reading cannot pin a handler until its token expires. It is armed only
+	// while a write and its flush are under way.
 	defaultStreamWriteWait = 10 * time.Second
 
 	brokerActor = "system:room-broker"
@@ -75,7 +71,7 @@ type Log interface {
 	Deliveries(ctx context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error)
 	Cursor(ctx context.Context, roomID, originClient string) (int64, error)
 	Room(ctx context.Context, id string) (store.RoomState, error)
-	ClaimBridge(ctx context.Context, roomID, runID string, stale time.Duration, live func(ctx context.Context, runID string) bool) (string, bool, error)
+	ClaimBridge(ctx context.Context, roomID, runID string, live func(ctx context.Context, runID string) bool) (string, bool, error)
 	TouchBridge(ctx context.Context, roomID, runID string) (held bool, err error)
 }
 
@@ -104,8 +100,11 @@ type Server struct {
 	Runs     Authenticator
 	Systems  Authenticator
 	Watch    Liveness
-	// RoomPolicy, when set, is the room's approval policy handed out at hello (phase 5).
+	// RoomPolicy, when set, is the room's approval policy handed out at hello and
+	// read for each approval's deadline (phase 5); unset means attended.
 	RoomPolicy func(roomID string) wire.ApprovalPolicy
+	// Approvals records approval requests (phase 5); unset answers 503.
+	Approvals Approvals
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
@@ -137,6 +136,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/bridge/hello", s.bounded(0, s.hello))
 	mux.HandleFunc("POST /v1/bridge/events", s.bounded(maxBatchBytes, s.events))
 	mux.HandleFunc("GET /v1/bridge/stream", s.stream)
+	mux.HandleFunc("POST /v1/bridge/approvals", s.bounded(maxApprovalBytes, s.approval))
 	mux.HandleFunc("GET /v1/rooms/{id}/events", s.bounded(0, s.roomEvents))
 	mux.HandleFunc("POST /v1/rooms/{id}/messages", s.bounded(maxMessageBytes, s.roomMessage))
 	mux.HandleFunc("POST /v1/rooms/{id}/queue", s.bounded(maxMessageBytes, s.queueRoute(s.enqueue)))
@@ -292,8 +292,8 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	ctx := r.Context()
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
-	// agrees (review I7). A holder still live and seen within connectedWindow keeps it.
-	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, connectedWindow, func(_ context.Context, id string) bool {
+	// agrees (review I7). A holder keeps it while its run is live (ruling SBB).
+	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, func(_ context.Context, id string) bool {
 		_, live := s.Watch.Live(id)
 		return live
 	})
@@ -309,7 +309,7 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	if !took {
 		_, _, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
 			Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: brokerActor}, Type: envelope.StateChanged,
-			Origin: envelope.OriginBroker, OriginClient: "broker:busy:" + run.ID, OriginSeq: 1,
+			Origin: envelope.OriginBroker, OriginClient: runwatch.BusyScope + run.ID, OriginSeq: 1,
 			Payload: envelope.StatePayload("limit", map[string]any{"reason": "concurrent_run", "running": holder})})
 		if err != nil {
 			s.log().Warn("record a concurrent run", "room", run.Room, "run", run.ID, errAttr(err))
@@ -574,6 +574,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		if err := rc.Flush(); err != nil {
 			return
 		}
+		// Disarmed between writes (F10): Go's HTTP/2 server runs the deadline as a
+		// per-stream timer and resets the stream when it fires, even with no write
+		// pending, so an armed deadline would end every stream idle past it.
+		_ = rc.SetWriteDeadline(time.Time{})
 		select {
 		case <-ctx.Done():
 			return

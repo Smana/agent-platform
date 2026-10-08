@@ -149,22 +149,27 @@ func (s *Store) LapsedDrivers(ctx context.Context) ([]RoomState, error) {
 }
 
 // deliverableTo is the SQL form of bridgeapi.Deliverable for the run named by the
-// parameter %[1]s: a steering message addressed to it, or an interrupt of it. Its
-// shape must imply the events_deliveries index's predicate, or the index is unused.
+// parameter %[1]s: a steering message addressed to it, an interrupt of it, or a
+// decision on one of its approvals that the bridge acts on (a superseded one it
+// never waits for). Each arm must imply its index's predicate, events_deliveries
+// or events_decisions, or the index is unused.
 const deliverableTo = `((e.type = 'message' AND e.payload->>'delivery' = 'steering' AND e.payload->'to' ? ('agent:' || %[1]s))
-	OR (e.type = 'state_changed' AND e.payload->>'kind' = 'interrupt' AND e.payload->>'runId' = %[1]s))`
+	OR (e.type = 'state_changed' AND e.payload->>'kind' = 'interrupt' AND e.payload->>'runId' = %[1]s)
+	OR (e.type = 'approval_decided' AND e.run_id = %[1]s AND e.payload->>'decision' IN ('approved', 'denied', 'expired')))`
 
-// lastAckSQL reads the run's acknowledgements through events_acks, and counts a
-// ref only if it is a deliverable event of that run: an ack is the bridge's claim
-// (design T6), and a forged ref past every delivery skips nothing.
+// lastAckSQL reads the run's acknowledgements through events_acks and
+// events_decision_acks, one OR arm each, and counts a ref only if it is a
+// deliverable event of that run: an ack is the bridge's claim (design T6), and a
+// forged ref past every delivery skips nothing.
 var lastAckSQL = `SELECT coalesce(max(e.seq), 0) FROM events a JOIN events e
 	ON e.room_id = a.room_id AND e.seq = CASE WHEN a.payload->>'ref' ~ '^[0-9]{1,18}$' THEN (a.payload->>'ref')::bigint END
 	WHERE a.room_id = $1 AND a.run_id = $2 AND a.type = 'state_changed'
-	AND a.payload->>'kind' IN ('delivered', 'interrupted', 'undeliverable') AND ` + fmt.Sprintf(deliverableTo, "$2")
+	AND (a.payload->>'kind' IN ('delivered', 'interrupted', 'undeliverable') OR a.payload->>'kind' = 'decision_applied')
+	AND ` + fmt.Sprintf(deliverableTo, "$2")
 
 // LastAck is where a bridge's deliveries resume: the highest ref the run's bridge
-// acknowledged as delivered, interrupted or undeliverable, 0 if none. A ref that
-// is not a seq, or not a delivery of this run, is skipped.
+// acknowledged as delivered, interrupted, undeliverable or decision_applied, 0 if
+// none. A ref that is not a seq, or not a delivery of this run, is skipped.
 func (s *Store) LastAck(ctx context.Context, roomID, runID string) (int64, error) {
 	var ref int64
 	err := s.pool.QueryRow(ctx, lastAckSQL, roomID, runID).Scan(&ref)

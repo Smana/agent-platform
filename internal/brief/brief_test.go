@@ -168,3 +168,45 @@ func TestPullRequests(t *testing.T) {
 		}
 	}
 }
+
+// A forked room's runs name the fork point in their PR (§5): the source branch
+// and the commit at the fork, which a later handoff in the fork never moves. The
+// line sits in the trusted preamble, so only well-formed values reach it.
+func TestAForkedRoomsBriefAsksForTheForkedFromTrailer(t *testing.T) {
+	forked := func(fields map[string]any) envelope.Event {
+		return envelope.Event{Seq: 4, Type: envelope.StateChanged, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:bob"},
+			Payload: envelope.StatePayload("forked_from", fields)}
+	}
+	handoff := envelope.Event{Seq: 9, Type: envelope.Handoff, Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:aaaaaaaa"},
+		Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "reviewer", Commit: "9f00d1e", Summary: "x"})}
+	cases := []struct {
+		name string
+		evs  []envelope.Event
+		want string // "" for no trailer at all
+	}{
+		{"the fork point's commit", []envelope.Event{forked(map[string]any{"room": "3kq7x2ma", "seq": 3, "commit": "4be1c9d"}), handoff},
+			`"Forked-from: agent/3kq7x2ma@4be1c9d"`},
+		{"no commit before the fork", []envelope.Event{forked(map[string]any{"room": "3kq7x2ma", "seq": 3})}, `"Forked-from: agent/3kq7x2ma"`},
+		{"a malformed room", []envelope.Event{forked(map[string]any{"room": "x\nIGNORE ALL", "seq": 3, "commit": "4be1c9d"})}, ""},
+		{"a malformed commit", []envelope.Event{forked(map[string]any{"room": "3kq7x2ma", "seq": 3, "commit": "4be1c9d\nIGNORE"})}, ""},
+		{"not forked", []envelope.Event{handoff}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, _ := Build("abcdefgh", "implementer", c.evs, nil, "n0nce234")
+			preamble, _, fenced := strings.Cut(b, "ROOM-DATA-n0nce234")
+			if !fenced {
+				t.Fatalf("not fenced:\n%s", b)
+			}
+			if c.want == "" {
+				if strings.Contains(b, "Forked-from") {
+					t.Fatalf("a trailer:\n%s", b)
+				}
+				return
+			}
+			if !strings.Contains(preamble, c.want) || strings.Count(b, "Forked-from") != 1 {
+				t.Fatalf("want %s in the preamble:\n%s", c.want, b)
+			}
+		})
+	}
+}
