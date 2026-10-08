@@ -4,10 +4,12 @@ package humanapi
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
 // accessWait bounds one request's GitHub checks inside routeTimeout, so a slow GitHub still
@@ -34,7 +36,7 @@ const reasonAccessUnverified = "access_unverified"
 // admits applies D7 before any standing rule: an admin sees every room; anyone else sees a room
 // only if they can read its repository on GitHub. A room without a repository is admins-only, as
 // is every room while the GitHub check is not wired. An error means the check could not be made,
-// and the caller fails closed.
+// and the caller fails closed. A repository the App cannot see is unreadable, not an error.
 func (s *Server) admits(ctx context.Context, room *v1alpha1.Room, p authn.Principal) (bool, error) {
 	if s.Groups.IsAdmin(p) {
 		return true, nil
@@ -43,6 +45,9 @@ func (s *Server) admits(ctx context.Context, room *v1alpha1.Room, p authn.Princi
 		return false, nil
 	}
 	login, err := s.Identity.Login(ctx, p.Sub, room.Spec.Repository)
+	if errors.Is(err, repoaccess.ErrNoRepository) {
+		return false, nil
+	}
 	if err != nil || login == "" {
 		return false, err
 	}

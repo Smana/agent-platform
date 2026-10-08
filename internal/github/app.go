@@ -51,6 +51,10 @@ var ErrTooManyComments = errors.New("github: too many comments to search for the
 // ErrNotAPullRequest reports a URL that is not a GitHub pull request's.
 var ErrNotAPullRequest = errors.New("github: not a GitHub pull request URL")
 
+// ErrNoInstallation reports a repository GitHub knows no installation of the App on: it does
+// not exist, or the App is not installed there. It wraps GitHub's 404, which stays permanent.
+var ErrNoInstallation = errors.New("github: the App is not installed on the repository, or it does not exist")
+
 // Permanent reports an error a retry cannot heal: GitHub's 4xx other than a
 // rate limit or a 401, a URL that names no pull request, or one too long to
 // search. A key that cannot be read, that is no App id's, or that GitHub
@@ -303,6 +307,10 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 		ID int64 `json:"id"`
 	}
 	if err := a.do(ctx, api, http.MethodGet, "repos/"+owner+"/"+repo+"/installation", "", appJWT, nil, &inst, maxReply); err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+			err = fmt.Errorf("%w: %w", ErrNoInstallation, err)
+		}
 		return "", "", err
 	}
 	var out struct {

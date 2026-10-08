@@ -52,9 +52,24 @@ func roomAccess(h config.HumanConfig, gh gitHubUsers, zitadel *http.Client, now 
 	id := &ghidentity.Resolver{IDPID: githubIDP, TTL: ttl, Now: now, Links: readerLinks(zitadel, h.Issuer, h.Access.ReaderFile),
 		LoginOf: func(ctx context.Context, repo string, id int64) (string, error) {
 			owner, name, _ := strings.Cut(repo, "/")
-			return gh.UserLogin(ctx, owner, name, id)
+			login, err := gh.UserLogin(ctx, owner, name, id)
+			return login, unseen(err)
 		}}
-	return id, &repoaccess.Checker{Perm: gh.Permission, TTL: ttl, Now: now}, nil
+	perm := func(ctx context.Context, owner, repo, login string) (string, error) {
+		p, err := gh.Permission(ctx, owner, repo, login)
+		return p, unseen(err)
+	}
+	return id, &repoaccess.Checker{Perm: perm, TTL: ttl, Now: now}, nil
+}
+
+// unseen marks a repository the App cannot see, or cannot name in a path, as one nobody reads
+// through it (repoaccess.ErrNoRepository): a typo or an uninstalled repository is a 404, never a
+// 503 that a retry would not heal.
+func unseen(err error) error {
+	if errors.Is(err, github.ErrNoInstallation) || errors.Is(err, github.ErrNotAPullRequest) {
+		return fmt.Errorf("%w: %w", repoaccess.ErrNoRepository, err)
+	}
+	return err
 }
 
 // githubIDP names the GitHub IdP inside the resolver. ZITADEL mints its real id anew on every

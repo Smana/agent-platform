@@ -832,6 +832,25 @@ func TestPermissionReadsTheCollaboratorPermission(t *testing.T) {
 	}
 }
 
+// A repository the App is not installed on, or that does not exist, is ErrNoInstallation on
+// both D7 reads: the caller can tell it from GitHub failing. It stays a permanent APIError.
+func TestD7ReadsNameARepositoryTheAppCannotSee(t *testing.T) {
+	a, f, _ := app(t)
+	f.locked(func() { f.missing = true; f.perms = map[string]string{"octocat": "read"} })
+	_, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat")
+	var ae *APIError
+	if !errors.Is(err, ErrNoInstallation) || !errors.As(err, &ae) || !Permanent(err) {
+		t.Fatalf("Permission: %v", err)
+	}
+	if _, err := a.UserLogin(t.Context(), "Smana", "cloud-native-ref", 583231); !errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("UserLogin: %v", err)
+	}
+	f.locked(func() { f.missing, f.permCode = false, http.StatusInternalServerError })
+	if _, err := a.Permission(t.Context(), "Smana", "cloud-native-ref", "octocat"); err == nil || errors.Is(err, ErrNoInstallation) {
+		t.Fatalf("a 5xx is GitHub failing, not a missing repository: %v", err)
+	}
+}
+
 func TestPermissionRetriesA401Once(t *testing.T) {
 	a, f, _ := app(t)
 	f.locked(func() { f.perms = map[string]string{"octocat": "write"} })

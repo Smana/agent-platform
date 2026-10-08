@@ -5,6 +5,7 @@ package repoaccess_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -95,6 +96,25 @@ func TestCanReadRefreshesAndKeysByRepoAndLogin(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	if ok, err := c.CanRead(ctx, "Smana/x", "dev1"); ok || err != nil {
 		t.Fatalf("a revoked read must lapse with the cache: %v %v", ok, err)
+	}
+}
+
+// A repository the App cannot see (missing, or the App not installed) is unreadable, not
+// unverifiable: a retry cannot help, so it is an answer, cached like one.
+func TestARepositoryTheAppCannotSeeIsUnreadable(t *testing.T) {
+	asked := 0
+	c := &repoaccess.Checker{TTL: 5 * time.Minute, Now: time.Now,
+		Perm: func(context.Context, string, string, string) (string, error) {
+			asked++
+			return "", fmt.Errorf("github: %w", repoaccess.ErrNoRepository)
+		}}
+	for range 2 {
+		if ok, err := c.CanRead(context.Background(), "Smana/typo", "dev1"); ok || err != nil {
+			t.Fatalf("%v, %v; want false, nil", ok, err)
+		}
+	}
+	if asked != 1 {
+		t.Fatalf("GitHub asked %d times: the answer is cached", asked)
 	}
 }
 

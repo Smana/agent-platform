@@ -6,6 +6,7 @@ package repoaccess
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +29,11 @@ type entry struct {
 	read bool
 	at   time.Time
 }
+
+// ErrNoRepository is a Perm (or login lookup) failure meaning the repository does not exist for
+// the App asking: missing, or the App is not installed on it. It is an answer, not an outage: the
+// login cannot read it, and no retry will change that.
+var ErrNoRepository = errors.New("repoaccess: no such repository for the App")
 
 // defaultMaxEntries bounds the cache; when it is full the oldest entry is dropped.
 const defaultMaxEntries = 10_000
@@ -52,6 +58,9 @@ func (c *Checker) CanRead(ctx context.Context, repository, login string) (bool, 
 		return e.read, nil
 	}
 	perm, err := c.Perm(ctx, owner, repo, login)
+	if errors.Is(err, ErrNoRepository) {
+		perm, err = "none", nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("repoaccess: cannot verify %s's access to %s: %w", login, repository, err)
 	}

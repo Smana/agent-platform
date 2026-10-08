@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,9 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/github"
 	"github.com/Smana/agent-platform/internal/redact"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
 // fakeZitadel serves one user's IdP links to the bearer of pat only, like ZITADEL's v2 API.
@@ -55,10 +58,25 @@ type fakeGitHubUsers struct {
 	repos []string // the owner/repo each UserLogin read through
 }
 
+// unseenBy is what the App answers for a repository it cannot see: Smana/gone is not installed,
+// Smana/.. cannot be named in a path.
+func unseenBy(owner, repo string) error {
+	switch owner + "/" + repo {
+	case "Smana/gone":
+		return fmt.Errorf("github: %w", github.ErrNoInstallation)
+	case "Smana/..":
+		return github.ErrNotAPullRequest
+	}
+	return nil
+}
+
 func (g *fakeGitHubUsers) UserLogin(_ context.Context, owner, repo string, id int64) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.repos = append(g.repos, owner+"/"+repo)
+	if err := unseenBy(owner, repo); err != nil {
+		return "", err
+	}
 	if id != 583231 {
 		return "", errors.New("unknown id")
 	}
@@ -66,6 +84,9 @@ func (g *fakeGitHubUsers) UserLogin(_ context.Context, owner, repo string, id in
 }
 
 func (g *fakeGitHubUsers) Permission(_ context.Context, owner, repo, login string) (string, error) {
+	if err := unseenBy(owner, repo); err != nil {
+		return "", err
+	}
 	if owner+"/"+repo == "Smana/a" && login == "octocat" {
 		return "read", nil
 	}
@@ -136,6 +157,30 @@ func TestRoomAccess(t *testing.T) {
 	_ = os.Remove(reader)
 	if _, err := id.Login(ctx, "u1", "Smana/a"); err == nil {
 		t.Fatal("a missing reader secret must fail closed")
+	}
+}
+
+// A repository the App cannot see is one the caller cannot read, on both reads: the gate answers
+// 404 for it, never a retryable 503.
+func TestRoomAccessReadsAnUnseenRepositoryAsUnreadable(t *testing.T) {
+	z := &fakeZitadel{}
+	z.set("pat-1", `[{"idpId":"idp-gh","userId":"583231"}]`)
+	srv := httptest.NewTLSServer(z)
+	t.Cleanup(srv.Close)
+	reader := filepath.Join(t.TempDir(), "reader.json")
+	writeReader(t, reader, "pat-1", "idp-gh")
+	h := config.HumanConfig{Issuer: srv.URL, Access: &config.AccessConfig{ReaderFile: reader, TTL: config.Duration{Duration: time.Minute}}}
+	id, acc, err := roomAccess(h, &fakeGitHubUsers{}, srv.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{"Smana/gone", "Smana/.."} {
+		if _, err := id.Login(t.Context(), "u1", repo); !errors.Is(err, repoaccess.ErrNoRepository) {
+			t.Errorf("Login through %s: %v", repo, err)
+		}
+		if ok, err := acc.CanRead(t.Context(), repo, "octocat"); ok || err != nil {
+			t.Errorf("CanRead %s: %v, %v; want false, nil", repo, ok, err)
+		}
 	}
 }
 

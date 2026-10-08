@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,12 +32,14 @@ import (
 
 // gitHubWorld is the D7 gate the tests run under: each principal's Sub is linked to the GitHub
 // login of the same name, except the unlinked ones, and reads lists the logins that may read
-// each repository; a nil reads lets every login read everything. down fails ZITADEL and GitHub
-// alike, as an outage past the cache would.
+// each repository; a nil reads lets every login read everything. unseen repositories are ones
+// the App cannot see (missing, or not installed). down fails ZITADEL and GitHub alike, as an
+// outage past the cache would.
 type gitHubWorld struct {
 	mu       sync.Mutex
 	reads    map[string][]string
 	unlinked map[string]bool
+	unseen   map[string]bool
 	down     bool
 	now      time.Time
 	ids      []string // a linked Sub's GitHub id is its index + 1
@@ -78,11 +81,14 @@ func (w *gitHubWorld) gate(s *Server) {
 			}
 			return []ghidentity.Link{{IDPID: "github-idp", UserID: strconv.Itoa(i + 1)}}, nil
 		},
-		LoginOf: func(_ context.Context, _ string, id int64) (string, error) {
+		LoginOf: func(_ context.Context, repo string, id int64) (string, error) {
 			w.mu.Lock()
 			defer w.mu.Unlock()
 			if w.down {
 				return "", errors.New("github down")
+			}
+			if w.unseen[repo] {
+				return "", fmt.Errorf("installation: %w", repoaccess.ErrNoRepository)
 			}
 			return w.ids[id-1], nil
 		}}
@@ -92,6 +98,9 @@ func (w *gitHubWorld) gate(s *Server) {
 			defer w.mu.Unlock()
 			if w.down {
 				return "", errors.New("github down")
+			}
+			if w.unseen[owner+"/"+repo] {
+				return "", fmt.Errorf("installation: %w", repoaccess.ErrNoRepository)
 			}
 			if w.reads == nil || slices.Contains(w.reads[owner+"/"+repo], login) {
 				return "read", nil
@@ -292,6 +301,7 @@ func TestAListChecksEachRepositoryOnce(t *testing.T) {
 // missing room.
 func TestCreateRoomNeedsAReadableRepository(t *testing.T) {
 	w := world(map[string][]string{"Smana/a": {"dev1"}}, "nolink")
+	w.unseen = map[string]bool{"Smana/typo": true}
 	srv := &Server{Humans: headerAuth{}, Groups: groups, Namespace: namespace, Actor: &Actor{Rooms: roomClient(t)}}
 	w.gate(srv)
 	post := func(h http.Header, body string) (int, string) {
@@ -315,6 +325,9 @@ func TestCreateRoomNeedsAReadableRepository(t *testing.T) {
 		{"a repository the member reads", header("dev1"), `{"dataClass":"public","repository":"Smana/a"}`, http.StatusCreated},
 		{"a repository the member cannot read", header("dev1"), `{"dataClass":"public","repository":"Smana/b"}`, http.StatusNotFound},
 		{"a member with no GitHub link", header("nolink"), `{"dataClass":"public","repository":"Smana/a"}`, http.StatusNotFound},
+		// A typo is not a retry: unknown to the App is unreadable, never 503.
+		{"an unknown repository", header("dev1"), `{"dataClass":"public","repository":"Smana/typo"}`, http.StatusNotFound},
+		{"an unknown repository, the login not cached yet", header("dev3"), `{"dataClass":"public","repository":"Smana/typo"}`, http.StatusNotFound},
 		{"an admin, any repository", admin("boss"), `{"dataClass":"public","repository":"Smana/b"}`, http.StatusCreated},
 		{"an admin still names one", admin("boss"), `{"dataClass":"public"}`, http.StatusBadRequest},
 	} {
@@ -334,6 +347,25 @@ func TestCreateRoomNeedsAReadableRepository(t *testing.T) {
 		if r.Spec.Repository == "" {
 			t.Fatalf("a room without its repository: %+v", r.Spec)
 		}
+	}
+}
+
+// A room whose repository the App can no longer see (uninstalled, renamed, deleted) is as missing
+// as any unreadable room: 404 and absent from the list, never 503 or an "unverified" caller.
+func TestARoomWhoseRepositoryTheAppLostIsMissing(t *testing.T) {
+	w := world(map[string][]string{"Smana/a": {"dev1"}, "Smana/b": {"dev1"}})
+	w.unseen = map[string]bool{"Smana/a": true}
+	e := setup(t, abc(t), w.option())
+	// The list checks A first, with the login not yet cached: the LoginOf path.
+	if got := listed(t, e, header("dev1")); !slices.Equal(got, []string{roomB}) {
+		t.Fatalf("lists %v", got)
+	}
+	// The login is cached now: the permission path.
+	if code, body := opens(t, e, roomID, header("dev1")); code != http.StatusNotFound || body != "no such room\n" {
+		t.Fatalf("%d %q, want 404", code, body)
+	}
+	if code, _ := opens(t, e, roomB, header("dev1")); code != http.StatusSwitchingProtocols {
+		t.Fatalf("room B: %d", code)
 	}
 }
 
