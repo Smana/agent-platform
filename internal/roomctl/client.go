@@ -11,6 +11,9 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -37,6 +40,28 @@ type Client struct {
 	HC      *http.Client                          // httpx: the room list
 	Stream  *http.Client                          // httpx with no whole-exchange timeout: the WebSocket
 	Backoff time.Duration                         // the first wait before a reconnect; zero is a second
+	Issuer  string                                // the ZITADEL issuer, named in the unlinked hint
+	Err     io.Writer                             // hints for the developer; nil is stderr
+}
+
+// RoomFilter narrows the room list; the broker applies it.
+type RoomFilter struct {
+	Repo          string // owner/name
+	Mine, NeedsMe bool
+}
+
+func (f RoomFilter) query() string {
+	q := url.Values{}
+	if f.Repo != "" {
+		q.Set("repo", f.Repo)
+	}
+	if f.Mine {
+		q.Set("mine", "1")
+	}
+	if f.NeedsMe {
+		q.Set("needs_me", "1")
+	}
+	return q.Encode()
 }
 
 // Refusal is the broker refusing a request before any room data: retrying
@@ -73,13 +98,14 @@ func (c Client) header(ctx context.Context) (http.Header, error) {
 	return h, nil
 }
 
-// Rooms prints one row per room the developer may read.
-func (c Client) Rooms(ctx context.Context, out io.Writer) error {
+// Rooms prints one row per room the developer may read, then a hint on stderr
+// when the broker says why the list may be short (X-Rooms-Access, ruling R21).
+func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
 	h, err := c.header(ctx)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/api/rooms", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/api/rooms"+withQuery(f.query()), nil)
 	if err != nil {
 		return err
 	}
@@ -97,19 +123,90 @@ func (c Client) Rooms(ctx context.Context, out io.Writer) error {
 		return fmt.Errorf("rooms: %w", err)
 	}
 	var rows []struct {
-		ID, Phase, Owner string
-		LastSeq          int64
-		You              struct{ Role string }
+		ID, Repository, Phase, Owner string
+		LastSeq                      int64
+		You                          struct{ Role string }
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return fmt.Errorf("rooms: %w", err)
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ROOM\tPHASE\tEVENTS\tOWNER\tYOU")
+	_, _ = fmt.Fprintln(tw, "ROOM\tREPO\tPHASE\tEVENTS\tOWNER\tYOU")
 	for _, r := range rows {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n", printable(r.ID), printable(r.Phase), r.LastSeq, printable(r.Owner), printable(r.You.Role))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", printable(r.ID), printable(r.Repository), printable(r.Phase), r.LastSeq, printable(r.Owner), printable(r.You.Role))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	c.hint(resp.Header.Get("X-Rooms-Access"))
+	return nil
+}
+
+func withQuery(q string) string {
+	if q == "" {
+		return ""
+	}
+	return "?" + q
+}
+
+// hint says why the list may be short. It never promises a retry: an
+// unverified check can be a missing configuration.
+func (c Client) hint(access string) {
+	var msg string
+	switch access {
+	case "unlinked":
+		msg = "hint: your ZITADEL account has no linked GitHub identity, so only the rooms readable to admins are listed. " +
+			"Link it once: sign in at " + printable(c.Issuer) + ", choose GitHub and \"link\", then sign in with GitHub once."
+	case "unverified":
+		msg = "hint: room access could not be verified (the GitHub or ZITADEL check failed, or the broker has no access check configured), so this list may be incomplete."
+	default:
+		return
+	}
+	w := c.Err
+	if w == nil {
+		w = os.Stderr
+	}
+	_, _ = fmt.Fprintln(w, msg)
+}
+
+// Summary is GET /api/rooms/{id}/summary, the broker's summary/v1 body as sent.
+func (c Client) Summary(ctx context.Context, room string, after int64) (json.RawMessage, error) {
+	h, err := c.header(ctx)
+	if err != nil {
+		return nil, err
+	}
+	u := c.URL + "/api/rooms/" + url.PathEscape(room) + "/summary"
+	if after > 0 {
+		u += "?after=" + strconv.FormatInt(after, 10)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = h
+	resp, err := c.HC.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, errors.New("status: no such room (or you cannot read it)")
+	case http.StatusServiceUnavailable:
+		body, _ := httpx.ReadBody(resp.Body, 1<<10)
+		if strings.Contains(string(body), "access_unverified") {
+			return nil, errors.New("status: room access cannot be verified right now")
+		}
+		return nil, errors.New("status: room unavailable")
+	default:
+		return nil, &Refusal{Op: "status", Code: resp.StatusCode}
+	}
+	body, err := httpx.ReadBody(resp.Body, maxRoomsBody)
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	return body, nil
 }
 
 // dial opens the room's WebSocket and says hello.

@@ -29,7 +29,8 @@ const roomctlUsage = `usage: roomctl <command>
                                   the values are on the room list's CLI setup view
   login                           sign in with the device flow
   token                           print a valid access token, for scripts (task agent:run)
-  rooms                           the rooms you may read
+  status <room> [--json] [--after SEQ]   where a room stands: status, what needs you, notes
+  rooms [--repo owner/name] [--mine] [--needs-me]
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
@@ -42,6 +43,7 @@ type Roomctl struct {
 	HC     *http.Client // the room list and the IdP: bounded
 	Stream *http.Client // the WebSocket: bounded by the context, not a whole-exchange timeout
 	Out    io.Writer
+	Err    io.Writer // hints; nil is stderr
 }
 
 // RunRoomctl runs one roomctl command (SP2 §8), its files under roomctl.Dir and
@@ -85,7 +87,7 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "watch", "post", "fork":
+	case "login", "token", "rooms", "status", "watch", "post", "fork":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -107,7 +109,7 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 		_, err = fmt.Fprintln(r.Out, "logged in")
 		return err
 	}
-	c := roomctl.Client{URL: cfg.URL, HC: r.HC, Stream: r.Stream,
+	c := roomctl.Client{URL: cfg.URL, HC: r.HC, Stream: r.Stream, Issuer: cfg.Issuer, Err: r.Err,
 		Token: func(ctx context.Context) (string, error) { return roomctl.Token(ctx, r.HC, cfg, tokPath) }}
 	switch cmd {
 	case "token":
@@ -119,7 +121,18 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 		_, err = fmt.Fprintln(r.Out, tok)
 		return err
 	case "rooms":
-		return c.Rooms(ctx, r.Out)
+		fs := flag.NewFlagSet("rooms", flag.ContinueOnError)
+		var f roomctl.RoomFilter
+		fs.StringVar(&f.Repo, "repo", "", "only this repository, owner/name")
+		fs.BoolVar(&f.Mine, "mine", false, "only rooms you own")
+		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms waiting on you")
+		pos, err := flags(fs, args)
+		if err != nil || len(pos) != 0 {
+			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me]: %w", errors.Join(err, errors.New("no arguments")))
+		}
+		return c.Rooms(ctx, r.Out, f)
+	case "status":
+		return r.status(ctx, c, args)
 	case "watch":
 		fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 		tail := fs.Int("tail", 50, "events to show first")
@@ -149,6 +162,26 @@ func (r Roomctl) configure(path string, args []string) error {
 		return fmt.Errorf("configure: %w", err)
 	}
 	return roomctl.SaveJSON(path, cfg)
+}
+
+// status prints where a room stands; --json is the broker's body unchanged.
+func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "print the broker's summary/v1 as is")
+	after := fs.Int64("after", 0, "only notes after this seq")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) != 1 || *after < 0 {
+		return fmt.Errorf("status <room> [--json] [--after SEQ]: %w", errors.Join(err, errors.New("one room")))
+	}
+	raw, err := c.Summary(ctx, pos[0], *after)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		_, err = fmt.Fprintln(r.Out, string(raw))
+		return err
+	}
+	return roomctl.RenderSummary(r.Out, raw)
 }
 
 // post chats, or queues a message for the next run's brief: never steering.

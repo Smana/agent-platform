@@ -29,12 +29,32 @@ type roomctlBroker struct {
 	mu     sync.Mutex
 	acts   []map[string]any
 	bearer []string
+	query  string // the last REST query
+	access string // the X-Rooms-Access the room list sends
 }
 
 func newRoomctlBroker(t *testing.T) *roomctlBroker {
 	t.Helper()
 	b := &roomctlBroker{}
 	b.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			b.mu.Lock()
+			b.query = r.URL.Path + "?" + r.URL.RawQuery
+			b.mu.Unlock()
+			switch {
+			case r.URL.Path == "/api/rooms":
+				if b.access != "" {
+					w.Header().Set("X-Rooms-Access", b.access)
+				}
+				_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","repository":"Smana/a","phase":"Active","owner":"human:own","lastSeq":42,"you":{"role":"watcher"}}]`))
+			case strings.Contains(r.URL.Path, "/gone/"):
+				http.Error(w, "no such room", http.StatusNotFound)
+			default:
+				_, _ = w.Write([]byte(`{"apiVersion":"summary/v1","room":"26zfnuxm","status":{"phase":"Implementing"},"needsYou":[],"actions":[],` +
+					`"notes":{"untrusted":true,"items":[{"at":"2026-10-08T19:14:00Z","run":"cf4ato2x","text":"hi\u001b[2J"}]},"cursor":"seq:142"}`))
+			}
+			return
+		}
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -71,7 +91,7 @@ func configured(t *testing.T, b *roomctlBroker) (roomctlApp Roomctl, out *string
 	t.Helper()
 	dir := t.TempDir()
 	out = &strings.Builder{}
-	r := Roomctl{Dir: dir, HC: b.srv.Client(), Stream: b.srv.Client(), Out: out}
+	r := Roomctl{Dir: dir, HC: b.srv.Client(), Stream: b.srv.Client(), Out: out, Err: &strings.Builder{}}
 	if err := r.Run(t.Context(), []string{"configure", "--url", b.srv.URL, "--issuer", "https://auth.example",
 		"--client-id", "cli", "--project-id", "29184"}); err != nil {
 		t.Fatal(err)
@@ -175,5 +195,42 @@ func TestRoomctlNeverSteersOrDecides(t *testing.T) {
 		if a["kind"] != "fork" && !chat {
 			t.Errorf("roomctl sent %v", a)
 		}
+	}
+}
+
+func TestRoomctlStatus(t *testing.T) {
+	b := newRoomctlBroker(t)
+	r, out := configured(t, b)
+	if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--after", "5"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.query != "/api/rooms/26zfnuxm/summary?after=5" || !strings.Contains(out.String(), "phase: Implementing") ||
+		!strings.Contains(out.String(), "hi[2J") || strings.ContainsRune(out.String(), 0x1b) || !strings.Contains(out.String(), "cursor: seq:142") {
+		t.Fatalf("%q\n%q", b.query, out)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"status", "--json", "26zfnuxm"}); err != nil || !strings.HasPrefix(out.String(), `{"apiVersion":"summary/v1"`) || !strings.Contains(out.String(), `\u001b`) {
+		t.Fatalf("--json is the broker's body: %q %v", out, err)
+	}
+	if err := r.Run(t.Context(), []string{"status", "gone"}); err == nil || !strings.Contains(err.Error(), "no such room (or you cannot read it)") {
+		t.Fatalf("404: %v", err)
+	}
+	if err := r.Run(t.Context(), []string{"status"}); err == nil {
+		t.Fatal("a room is required")
+	}
+}
+
+func TestRoomctlRoomsFiltersAndHint(t *testing.T) {
+	b := newRoomctlBroker(t)
+	b.access = "unlinked"
+	r, out := configured(t, b)
+	if err := r.Run(t.Context(), []string{"rooms", "--repo", "Smana/a", "--mine", "--needs-me"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.query != "/api/rooms?mine=1&needs_me=1&repo=Smana%2Fa" || !strings.Contains(out.String(), "REPO") {
+		t.Fatalf("%q %q", b.query, out)
+	}
+	if got := r.Err.(*strings.Builder).String(); !strings.Contains(got, "https://auth.example") {
+		t.Fatalf("the hint goes to stderr and names the issuer: %q", got)
 	}
 }
