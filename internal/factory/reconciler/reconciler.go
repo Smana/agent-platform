@@ -68,6 +68,7 @@ type metrics interface {
 	PROutcome(ctx context.Context, class, outcome string)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
+	Revoked(ctx context.Context, reason string)
 	TraceExportAbandoned(ctx context.Context)
 }
 
@@ -521,6 +522,28 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	if !ok {
 		t.Status.Reason = why
 		return nil
+	}
+	if used := t.Status.Usage.Tokens; t.Spec.Budget.TaskTokens > 0 && used >= t.Spec.Budget.TaskTokens {
+		if r.Cfg.Budgets.EnforceTask {
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
+		}
+		// R3: shadow first, a week of numbers before the flag flips.
+		record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-task-shadow") })
+		r.log().Info("task over its token cap (shadow)", "task", t.Name, "used", used, "cap", t.Spec.Budget.TaskTokens)
+	}
+	// R34: the factory's own day, checked before every run it starts, not only by the meter.
+	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
+		spent, err := r.factorySpentToday(ctx)
+		if err != nil {
+			return err
+		}
+		if spent >= limit {
+			if r.Cfg.Budgets.EnforcePrincipal {
+				t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
+				return nil
+			}
+			record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-principal-shadow") })
+		}
 	}
 	if len(t.Status.Runs) == 0 {
 		// The snapshot, once, in the room of record: later runs read it there, never the live
