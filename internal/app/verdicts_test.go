@@ -102,7 +102,7 @@ func TestRoomDataClass(t *testing.T) {
 
 // Every result reaches rooms_verdict_posts_total{result}.
 func TestVerdictResultsAreCounted(t *testing.T) {
-	exp, err := metrics.NewExporter("test")
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

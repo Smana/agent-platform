@@ -20,10 +20,10 @@ import (
 	"github.com/Smana/agent-platform/internal/verdictpost"
 )
 
+// githubAPI is shared with the factory (factory.go); the poster keeps its own timeout.
 const (
-	githubAPI     = "https://api.github.com/"
-	githubTimeout = 20 * time.Second
-	posterEvery   = 15 * time.Second
+	posterGitHubTimeout = 20 * time.Second
+	posterEvery         = 15 * time.Second
 )
 
 // addVerdictPoster adds the leader's verdict poster (SP2 design §3): agents'
@@ -36,7 +36,7 @@ func addVerdictPoster(dir string, add func(manager.Runnable) error, roomLog verd
 		return nil
 	}
 	p := &verdictpost.Poster{Log: roomLog, PublicURL: publicURL, Now: time.Now, Logger: log,
-		GitHub:    &github.App{Dir: dir, API: githubAPI, HC: httpx.New(githubTimeout, nil), Now: time.Now},
+		GitHub:    &github.App{Dir: dir, API: githubAPI, HC: httpx.New(posterGitHubTimeout, nil), Now: time.Now},
 		DataClass: roomDataClass(rooms, ns), OnResult: verdictResults(m)}
 	return add(posterLoop(p, log, nil))
 }

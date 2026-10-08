@@ -505,7 +505,7 @@ func TestHumanServer(t *testing.T) {
 
 // The hub's listener gauge is exported from the start (FORWARD 2.6).
 func TestFanoutHub(t *testing.T) {
-	exp, err := metrics.NewExporter("test")
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

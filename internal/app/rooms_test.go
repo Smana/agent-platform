@@ -103,7 +103,7 @@ func TestHumanSide(t *testing.T) {
 
 func newMetrics(t *testing.T) (*metrics.Exporter, *metrics.Set) {
 	t.Helper()
-	exp, err := metrics.NewExporter("test")
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

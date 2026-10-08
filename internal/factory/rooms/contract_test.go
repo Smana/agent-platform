@@ -66,6 +66,10 @@ func (l *memLog) Range(_ context.Context, room string, after int64, limit int) (
 	return out, nil
 }
 
+func (l *memLog) Deliveries(context.Context, string, string, int64, int64, int) ([]envelope.Event, error) {
+	return nil, errors.New("unused")
+}
+
 func (l *memLog) Cursor(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (l *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
@@ -78,7 +82,7 @@ func (l *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id, LastSeq: int64(len(evs))}, nil
 }
 
-func (l *memLog) ClaimBridge(context.Context, string, string, time.Duration, func(context.Context, string) bool) (string, bool, error) {
+func (l *memLog) ClaimBridge(context.Context, string, string, func(context.Context, string) bool) (string, bool, error) {
 	return "", false, errors.New("unused")
 }
 

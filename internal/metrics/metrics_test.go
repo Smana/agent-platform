@@ -100,7 +100,7 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 
 // The fan-out listener's state, read at each scrape: 1 while LISTEN is in place.
 func TestFanoutListenerUp(t *testing.T) {
-	exp, err := NewExporter("test")
+	exp, err := NewExporter(BrokerBuildInfo, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
