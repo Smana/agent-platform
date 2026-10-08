@@ -939,8 +939,8 @@ func TestRoomList(t *testing.T) {
 	if err := json.Unmarshal(body, &rows); err != nil || code != http.StatusOK {
 		t.Fatalf("%d %v", code, err)
 	}
-	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"owner":"human:own","phase":"Active",` +
-		`"you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
+	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"owner":"human:own","phase":"Active",` +
+		`"repository":"Smana/agent-platform","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)
 	}

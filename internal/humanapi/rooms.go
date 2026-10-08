@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"slices"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -128,13 +130,45 @@ func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
-	ID        string   `json:"id"`
-	Phase     string   `json:"phase"`
-	Owner     string   `json:"owner"`
-	Driver    string   `json:"driver"`
-	DataClass string   `json:"dataClass"`
-	LastSeq   int64    `json:"lastSeq"`
-	You       wire.You `json:"you"`
+	ID         string   `json:"id"`
+	Phase      string   `json:"phase"`
+	Owner      string   `json:"owner"`
+	Driver     string   `json:"driver"`
+	DataClass  string   `json:"dataClass"`
+	LastSeq    int64    `json:"lastSeq"`
+	Repository string   `json:"repository"`
+	NeedsMe    bool     `json:"needsMe"`
+	You        wire.You `json:"you"`
+}
+
+// roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
+// request, on the first room that needs it: no extra GitHub call per room.
+type roomFilter struct {
+	repo          string
+	mine, needsMe bool
+	login         string
+	resolved      bool
+}
+
+// isMine reports whether the caller's linked GitHub login is on the room's task. Without a
+// login, or when ZITADEL cannot say, nothing is theirs.
+func (f *roomFilter) isMine(ctx context.Context, s *Server, p authn.Principal, room *v1alpha1.Room) bool {
+	if !f.resolved {
+		f.resolved = true
+		if s.Identity != nil {
+			login, err := s.Identity.Login(ctx, p.Sub, room.Spec.Repository)
+			if err != nil {
+				s.log().Warn("mine filter: login unresolved", "err", err)
+			}
+			f.login = login
+		}
+	}
+	t := room.Status.Task
+	if f.login == "" || t == nil {
+		return false
+	}
+	return slices.ContainsFunc(append([]string{t.IssueAuthor, t.LabelledBy, t.PRAuthor}, t.PRReviewers...),
+		func(u string) bool { return strings.EqualFold(u, f.login) })
 }
 
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
@@ -162,6 +196,8 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	// The gate depends on the repository alone, and a failed check is not cached: once per
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
 	readable := map[string]bool{}
+	q := r.URL.Query()
+	f := &roomFilter{repo: q.Get("repo"), mine: q.Get("mine") == "1", needsMe: q.Get("needs_me") == "1"}
 	out := []roomRow{}
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
@@ -188,8 +224,22 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		if !policy.Allowed(sub, policy.Read) {
 			continue
 		}
+		// Filters run after the gate and the Read check, so one never reveals an unreadable room.
+		if f.repo != "" && !strings.EqualFold(repo, f.repo) {
+			continue
+		}
+		// Deciding happens in the web UI: judge it as the web UI would, as the summary's needsYou does.
+		web := sub
+		web.WebUI = true
+		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide)
+		if f.needsMe && !needsMe {
+			continue
+		}
+		if f.mine && !f.isMine(ctx, s, p, room) {
+			continue
+		}
 		out = append(out, roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
-			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, You: you})
+			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo, NeedsMe: needsMe, You: you})
 	}
 	w.Header().Set(accessHeader, access)
 	writeJSON(w, out)
