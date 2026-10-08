@@ -16,6 +16,8 @@ import (
 
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl"
+	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/agent-platform/internal/version"
 )
 
 // roomctlTimeout bounds one call to the broker or the IdP; actTimeout one act.
@@ -33,6 +35,7 @@ const roomctlUsage = `usage: roomctl <command>
   rooms [--repo owner/name] [--mine] [--needs-me]
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
+  skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
                                   a room of your own from events 1..SEQ, with an optional run
 roomctl never steers, interrupts, moves the driver token or decides (ruling P18): use the web UI`
@@ -84,6 +87,8 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 	switch cmd {
 	case "configure":
 		return r.configure(cfgPath, args)
+	case "skill":
+		return r.skill(args)
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
@@ -162,6 +167,26 @@ func (r Roomctl) configure(path string, args []string) error {
 		return fmt.Errorf("configure: %w", err)
 	}
 	return roomctl.SaveJSON(path, cfg)
+}
+
+// skill installs the factory-handoff Agent Skill; it needs no configuration or login.
+func (r Roomctl) skill(args []string) error {
+	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
+	dir := fs.String("dir", filepath.Join(".agents", "skills"), "where the skills live in the repo")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) != 1 || pos[0] != "install" {
+		return fmt.Errorf("skill install [--dir .agents/skills]: %w", errors.Join(err, errors.New("the install subcommand")))
+	}
+	paths, err := skill.Install(*dir, version.Version)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if _, err := fmt.Fprintln(r.Out, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // status prints where a room stands; --json is the broker's body unchanged.

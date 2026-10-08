@@ -198,6 +198,28 @@ func TestRoomctlNeverSteersOrDecides(t *testing.T) {
 	}
 }
 
+func TestRoomctlSkillInstall(t *testing.T) {
+	skills := filepath.Join(t.TempDir(), "skills")
+	out := &strings.Builder{}
+	// No configure first: the skill needs neither a config nor a login.
+	r := Roomctl{Dir: t.TempDir(), Out: out}
+	if err := r.Run(t.Context(), []string{"skill", "install", "--dir", skills}); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"SKILL.md", filepath.Join("references", "issue-template.md")} {
+		p := filepath.Join(skills, "factory-handoff", f)
+		if !strings.Contains(out.String(), p) {
+			t.Errorf("output lacks %s:\n%s", p, out)
+		}
+		if _, err := os.Stat(p); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := r.Run(t.Context(), []string{"skill"}); err == nil {
+		t.Error("skill without a subcommand must fail")
+	}
+}
+
 func TestRoomctlStatus(t *testing.T) {
 	b := newRoomctlBroker(t)
 	r, out := configured(t, b)
