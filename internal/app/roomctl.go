@@ -206,7 +206,7 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 		_, err = fmt.Fprintln(r.Out, string(raw))
 		return err
 	}
-	return roomctl.RenderSummary(r.Out, raw)
+	return roomctl.RenderSummary(r.Out, raw, time.Now())
 }
 
 // post chats, or queues a message for the next run's brief: never steering.

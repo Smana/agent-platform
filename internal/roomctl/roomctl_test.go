@@ -475,18 +475,18 @@ func TestSummaryRefusals(t *testing.T) {
 
 func TestRenderSummary(t *testing.T) {
 	var out strings.Builder
-	if err := RenderSummary(&out, []byte(summaryBody)); err != nil {
+	if err := RenderSummary(&out, []byte(summaryBody), time.Date(2026, 10, 8, 19, 30, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	want := `phase: Implementing  run: cf4ato2x (implementer)  budget: 189093/1500000
 PR #2239 https://github.com/Smana/a/pull/2239
 last verdict: reviewer changes_requested[31m
-needs you: approve "git push to agent/26zfnuxm" by 14:00 → https://rooms.example/r/26zfnuxm#01M4
+needs you: approve "git push to agent/26zfnuxm" by 14:00 UTC → https://rooms.example/r/26zfnuxm#01M4
 actions:
   queue a message: roomctl post 26zfnuxm --queue <text>
   steer the run
 notes (the agents' claims):
-  19:14 cf4ato2x  found both versions[2J on line 12-13, fixing
+  19:14 UTC cf4ato2x  found both versions[2J on line 12-13, fixing
 cursor: seq:142
 `
 	if out.String() != want {
@@ -494,6 +494,19 @@ cursor: seq:142
 	}
 	if strings.ContainsRune(out.String(), 0x1b) || strings.Contains(out.String(), "roomctl approve") {
 		t.Fatal("escape or approve command")
+	}
+}
+
+// A time not of today (UTC) carries its date: "by 14:00" read the next morning is a deadline long gone.
+func TestRenderSummaryDatesAnotherDay(t *testing.T) {
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(summaryBody), time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"by 2026-10-08T14:00:00Z →", "  2026-10-08T19:14:00Z cf4ato2x"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("no %q in:\n%s", want, out.String())
+		}
 	}
 }
 
