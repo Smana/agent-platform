@@ -24,6 +24,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
@@ -75,6 +76,8 @@ type memLog struct {
 	refuse    func(envelope.Draft) error
 	touchHeld bool
 	touches   int // lease renewals
+	// deliveryReads counts the replay's reads of the log.
+	deliveryReads int
 }
 
 func newMemLog() *memLog {
@@ -151,7 +154,43 @@ func (m *memLog) Room(_ context.Context, id string) (store.RoomState, error) {
 	return store.RoomState{ID: id, LastSeq: int64(len(evs))}, nil
 }
 
-func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, _ time.Duration, live func(context.Context, string) bool) (string, bool, error) {
+// LastAck is the store's: the highest ref the run acknowledged as delivered,
+// interrupted, undeliverable or decision_applied that is a delivery of that run.
+func (m *memLog) LastAck(_ context.Context, roomID, runID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	evs := m.events[roomID]
+	var last int64
+	for _, e := range evs {
+		var p struct {
+			Kind string `json:"kind"`
+			Ref  int64  `json:"ref"`
+		}
+		if e.RunID == runID && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil &&
+			(p.Kind == "delivered" || p.Kind == "interrupted" || p.Kind == "undeliverable" || p.Kind == "decision_applied") && p.Ref >= 1 && p.Ref <= int64(len(evs)) {
+			if _, _, ok := Deliverable(evs[p.Ref-1], runID); ok {
+				last = max(last, p.Ref)
+			}
+		}
+	}
+	return last, nil
+}
+
+// Deliveries is the store's: the run's deliverable events in (after, through].
+func (m *memLog) Deliveries(_ context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deliveryReads++
+	var out []envelope.Event
+	for _, e := range m.events[roomID] {
+		if _, _, ok := Deliverable(e, runID); ok && e.Seq > after && e.Seq <= through && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (m *memLog) ClaimBridge(ctx context.Context, roomID, runID string, live func(context.Context, string) bool) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.events[roomID]; !ok {
@@ -208,8 +247,14 @@ func newServer(t *testing.T) (*Server, *memLog, *runwatch.Watcher) {
 	}
 	log := newMemLog()
 	w := runwatch.New()
+	hub := fanout.New(log, nil, nil)
+	hub.PollEvery = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- hub.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
 	s := &Server{Log: log, Redactor: red, Runs: tokenAuth{"run:"}, Systems: tokenAuth{"sys:"}, Watch: w,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		Hub: hub, LastAck: log.LastAck, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	w.OnGone(s.Drop)
 	return s, log, w
 }
@@ -544,7 +589,7 @@ func TestABridgeCannotForgeVerdictsOrDecisions(t *testing.T) {
 func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	var items []wire.Item
 	for i, kind := range []string{"harness_status", "harness_error", "harness_paused", "harness_event",
-		"delivered", "interrupted", "policy_decision", "decision_applied"} {
+		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied"} {
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
 			Payload: envelope.StatePayload(kind, nil)})
 	}
@@ -612,11 +657,11 @@ func TestAChatCarriesNoVerdict(t *testing.T) {
 	h := s.Routes()
 	hello(t, h, runA)
 	it := wire.Item{Stream: wire.StreamEvents, Seq: 1, Type: envelope.Message,
-		Payload: json.RawMessage(`{"kind":"chat","text":"lgtm","delivery":"none","verdict":"approve","commit":"0123abc"}`)}
+		Payload: json.RawMessage(`{"kind":"chat","text":"lgtm","delivery":"none","verdict":"approve","commit":"0123abc","pullRequest":"https://github.com/Smana/cloud-native-ref/pull/12"}`)}
 	if rec := call(t, h, http.MethodPost, "/v1/bridge/events", "run:"+runA, batch(it)); rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	if got := string(log.stored()[0].Payload); strings.Contains(got, "verdict") || strings.Contains(got, "commit") ||
+	if got := string(log.stored()[0].Payload); strings.Contains(got, "verdict") || strings.Contains(got, "commit") || strings.Contains(got, "pull") ||
 		got != `{"kind":"chat","text":"lgtm","delivery":"none"}` {
 		t.Fatalf("stored %s", got)
 	}
@@ -956,6 +1001,41 @@ func TestStreamOutlivesTheReadTimeout(t *testing.T) {
 	<-time.After(4 * srv.Config.ReadTimeout)
 	tick <- time.Now()
 	expectPing(t, sc)
+}
+
+// F10: Go's HTTP/2 server enforces a write deadline as a per-stream timer that
+// resets the stream when it fires, write pending or not. A stream idle past
+// StreamWriteWait, between two pings, must stay open.
+func TestAnIdleHTTP2StreamOutlivesTheWriteWait(t *testing.T) {
+	s, _, w := newServer(t)
+	tick := make(manualTicker, 1)
+	s.Ticker = tick.new
+	s.StreamWriteWait = 50 * time.Millisecond
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	srv := httptest.NewUnstartedServer(s.Routes())
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/v1/bridge/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer run:"+runA)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 || resp.StatusCode != http.StatusOK {
+		t.Fatalf("want an HTTP/2 stream, got %s %d", resp.Proto, resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	expectPing(t, sc)
+	for range 2 {
+		<-time.After(6 * s.StreamWriteWait)
+		tick <- time.Now()
+		expectPing(t, sc)
+	}
 }
 
 // The stream ends with the bridge's token (§4): the bridge re-dials with a fresh one.

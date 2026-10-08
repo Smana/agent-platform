@@ -16,7 +16,7 @@ in crossplane-configuration (`CC-S<N>`). The phase's **gate** is the success cri
 |---|---|---|---|---|---|---|
 | 0 · Bootstrap | Module, toolchain, `task check`, CI, signed multi-arch images, stub binaries | AP-0 | — | — | Pre-release images pull anonymously | **Merged** |
 | 1 · The log | Envelope, redaction, the store and its migration, the `Room` CRD and controller, offline authentication, the `AgentRun` watch and end reasons, `:8443` over TLS, the bridge, the broker binary and metrics | AP-1 | CC-S1 (generated credentials), CC-S2 (the bridge sidecar) | S1 | SC-1, SC-8, SC-10; a run's transcript and end reason outlive its pod | **In progress** |
-| 2 · Live viewers | The permission matrix, human authentication, Valkey fan-out, WebSocket replay, a read-only web UI, two replicas | AP-2 | — | S2 | SC-2, SC-9, SC-11, SC-12 | Planned |
+| 2 · Live viewers | The permission matrix, human authentication, LISTEN/NOTIFY fan-out, WebSocket replay, a read-only web UI, two replicas | AP-2 | — | S2 | SC-2, SC-9, SC-11, SC-12 | Planned |
 | 3 · Room tools | `room_read`, `room_post`, `room_handoff`, `room_verdict` on `:8090`; verdicts posted on the PR; the PR provenance footer | AP-3 | CC-S3 | S3, H-S3 (harness) | SC-4 (owner creates each run), SC-14, SC-15 | Planned |
 | 4 · Driver and messages | Driver token, queue, steering, interrupt, the brief, hand to role, new rooms | AP-4 | CC-S4 | S4 | SC-3, SC-4 by hand to role | Planned |
 | 5 · Approvals | Classification, the confirmation loop, first decision wins, four-eyes, TTL, approval cards | AP-5 | CC-S5 | S5 | SC-5, SC-6 | Planned |

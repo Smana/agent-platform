@@ -45,3 +45,41 @@ CONTRIBUTING.md has the steps to add one. Two checks it does not spell out:
 
 Why `atlas.sum` exists, which migration each phase adds, and how `atlasSchema.ref` tracks them:
 [room log](room-log.md#migrations-with-atlas).
+
+## The web UI
+
+`web/` is TypeScript, bundled by esbuild into `internal/humanapi/ui/dist/`. The bundle is
+committed and embedded with `go:embed`, so the broker image builds without Node, and
+`task ui:check` fails when the committed bundle differs from what `web/` builds. After a change
+under `web/`:
+
+```bash
+task ui:test     # tsc and vitest
+task ui:build    # rewrite dist/; commit it with the source
+```
+
+A room page renders the log twice: the chat view (`web/src/chat.ts` — bubbles, tool rows
+paired by `callId`, timeline markers) and the raw event stream, one toggle apart
+(`web/src/roomview.ts`, remembered in `localStorage`). To read or restyle it without a
+broker, `web/test/fixtures/live-session.jsonl` holds a recorded session and the preview
+serves it statically:
+
+```bash
+npm --prefix web run preview   # http://127.0.0.1:4180/preview/preview.html (?live replays)
+```
+
+The palette is the app-wizard's: `web/src/app.css` carries its design tokens verbatim
+(light first, a `.dark` block), and `web/src/theme.ts` ports its three-mode theme
+(light/dark/system, the `dark` class on `<html>`, the same `app-wizard:theme` storage
+key). Change a token in the wizard, change it here; do not fork the palette.
+
+Room text is untrusted, so there are three rules, all tested in `web/test/render.test.ts`:
+
+- **Parse once, as text.** markdown-it parses with HTML off, and each token becomes a DOM node
+  whose text is set with `textContent`. Nothing builds HTML from a string: a test fails on
+  `innerHTML` anywhere in `web/src/`.
+- **Nothing is unescaped twice.** Markup the factory defused (`&lt;`, `!\[`, `]\:`) renders as the
+  text it spells.
+- **Only the web is linked.** A link must be http(s). An image shows its alt text and loads nothing.
+
+The page loads nothing from another origin, under the CSP `humanapi` sets.

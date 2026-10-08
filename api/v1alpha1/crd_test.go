@@ -51,6 +51,7 @@ func TestCRDCarriesTheDesignRules(t *testing.T) {
 		{"spec.retention", hasDefault(`"90d"`), "default 90d"},
 		{"spec.retention", pattern(`^[1-9][0-9]{0,3}d$`), "a bounded retention"},
 		{"spec.retention", rule("self == oldSelf"), "immutability: the log's retention is fixed at creation"},
+		{"spec.dataClass", rule("self == oldSelf"), "immutability: a room's class is decided at creation (ruling TD)"},
 		{"spec.approvals.ttl", hasDefault(`"4h"`), "default 4h"},
 		{"spec.approvals.ttl", pattern(`^[1-9][0-9]{0,3}(m|h)$`), "a bounded ttl"},
 		{"spec.owner", maxLength(261), "maxLength 261"},

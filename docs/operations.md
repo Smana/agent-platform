@@ -44,16 +44,17 @@ events.
 | `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease | 1 |
 | `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
 | `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip | 1 |
-| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable | 1 |
+| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable. The human issuer has no series until its first fetch: the broker starts without it | 1 |
 | `rooms_connections` | gauge | `kind` | Open connections | 2 |
-| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed (`reauth`, `slow_consumer`, …) | 2 |
+| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable`, `protocol` (a malformed or oversize frame, or a first frame that is not `hello`, or none within 10 s) | 2 |
 | `rooms_participants` | gauge | — | Live participants | 2 |
 | `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; SC-12 wants p95 < 0.5 s | 2 |
+| `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose | 2 |
 | `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) | 2 |
 | `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` | 3 |
-| `rooms_driver_changes_total` | counter | — | Driver token changes | 4 |
-| `rooms_approvals_pending` | gauge | — | Undecided approvals: the sum of the Rooms' `status.pendingApprovals`, 0 until phase 5 | 5 |
-| `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval | 5 |
+| `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries | 4 |
+| `rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` | 5 |
+| `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval in an open room, set by the leader's approval sweep every 30 s; 0 on a replica that stopped leading | 5 |
 | `rooms_approval_decision_seconds` | histogram | — | Request to decision | 5 |
 
 Two more count what bridges tell their rooms. Nothing dials into a sandbox (C4), so the bridge serves
@@ -162,7 +163,8 @@ the harnesses still hold.
 | Bridge gets `503 log_unavailable` | The database is down or refused the call | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` |
 | Bridge gets `401 unauthenticated` | Wrong audience, an issuer not in `runIssuers`, or the broker cannot fetch the JWKS | Check the run's `room-token` audience (`room-broker`), the issuer, and the broker's egress to the JWKS host |
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |
-| Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Delete the extra run. A dead holder frees the room within 2 minutes |
+| Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Nothing to do: its harness waits behind `room-bridge gate`. If the room is still busy after 3 minutes, the pod fails before the harness runs and the run ends `room_busy`. The holder frees the room once its run ends |
+| A room run's pod is `Init:Error`; `room-bridge gate` logs `the room refused this run` | The room stayed busy for 3 minutes, or is sealed | Expected (F15). Start the run again once the holder has ended |
 | Bridge gets `410 sealed` | The room is closed or full | Start a new room; a full room means a run far beyond normal size |
 | A room run's pod waits in `ContainerCreating` | The `room-broker-ca` Secret is not in `agents`: the bridge mounts it, and the mount is not optional | `kubectl describe pod -n agents <pod>` names the missing Secret; `kubectl get externalsecret -n agents room-broker-ca` |
 | Bridge refuses to start: URL not `https://`, or no CA in the file | The composition predates GP-18 | Pin a composition with CC-S2 |
@@ -171,6 +173,8 @@ the harnesses still hold.
 | A run ends `pod_lost` | The pod died before the harness finished and before its deadline | Expected for evictions; `deadline` means it hit `maxMinutes` |
 | Duplicate harness events after a bridge restart | The harness skipped an unreadable event file (ruling P35) | A known limit, confined to that run; nothing to repair |
 | `RoomStalled` | The run is silent: a stuck harness, or a bridge that lost the broker | Bridge logs; the harness's step log in VictoriaLogs |
+| A migration that builds an index `CONCURRENTLY` failed (`20260929120000_verdicts`, `20261001130000_delivery_indexes`, `20261001140000_brief_index`, `20261005130000_approval_indexes`), or `\d events` in `psql` shows the index `INVALID` | `CREATE INDEX CONCURRENTLY` runs outside a transaction: a failure leaves an `INVALID` index behind, and the re-run refuses with "already exists" | Drop it by hand before the migration is retried: as `rooms_owner`, `DROP INDEX CONCURRENTLY <index>;` (`events_agent_verdicts`, `events_deliveries`, `events_acks`, `events_brief`, `approvals_pending`, `events_decisions`, `events_decision_acks` or `events_tool_results`), then let the Atlas operator re-run it |
+| Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key (ruling SZ): each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
 
 ## Upgrades
 

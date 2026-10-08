@@ -363,3 +363,38 @@ func TestNewVerifierRefuses(t *testing.T) {
 		}
 	})
 }
+
+// A lazy verifier starts without its issuer, so an unreachable IdP fails no
+// startup; the first token after it answers fetches the keys (FORWARD 2.6).
+func TestALazyVerifierFetchesOnFirstUse(t *testing.T) {
+	k := newKeyring(t)
+	s := newIssuerServer(t)
+	s.serve(http.StatusServiceUnavailable, []byte(`{}`))
+	clock := newClock()
+	v, err := NewLazyVerifier(issuer, s.srv.URL, WithHTTPClient(s.client()), WithClock(clock.now), WithMinRefreshInterval(time.Minute))
+	if err != nil {
+		t.Fatalf("an unreachable issuer: %v", err)
+	}
+	if got := s.hits.Load(); got != 0 {
+		t.Fatalf("issuer fetched %d times at construction, want 0", got)
+	}
+	raw := mint(t, clock, jwt.SigningMethodRS256, k.rsa, "r1")
+	if _, err := v.Verify(t.Context(), raw, AudienceRun); !errors.Is(err, ErrUnknownKey) {
+		t.Fatalf("while the issuer is down: %v", err)
+	}
+	s.publish(t, rsaJWK("r1", &k.rsa.PublicKey))
+	clock.advance(time.Minute)
+	if _, err := v.Verify(t.Context(), raw, AudienceRun); err != nil {
+		t.Fatalf("once it answers: %v", err)
+	}
+	if v.LastRefresh().IsZero() {
+		t.Fatal("LastRefresh is still zero after a fetch")
+	}
+	for name, c := range map[string][2]string{"no issuer": {"", s.srv.URL}, "a plain-http JWKS URL": {issuer, "http://issuer.example/keys"}} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewLazyVerifier(c[0], c[1]); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+}

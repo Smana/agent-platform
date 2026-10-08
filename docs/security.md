@@ -24,7 +24,7 @@ The design's threats, with the controls this repository implements and where eac
 | T9 | Cross-site WebSocket hijacking | `Origin` check; oauth2-proxy cookie `SameSite=Strict` | Phase 2 | — |
 | T10 | XSS from LLM output | Markdown rendered with HTML disabled; strict CSP; HttpOnly cookie | Phase 2 | XSS could still act *as* the user through the page |
 | T11 | Denial of service | Size and rate limits; byte budgets per connection; authentication before subscription; gateway budgets bound agent loops | Phase 1 (payload and batch limits), phase 2 onwards (connections, rates) | A tailnet member can load the broker |
-| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human |
+| T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | Phase 1, with Ruling Y for history | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential |
 
 ## Identities
 
@@ -34,7 +34,7 @@ Runs and system callers: phase 1 / AP-1. Humans: phase 2 / AP-2.
 |---|---|---|---|
 | Agent run | A projected ServiceAccount token of `xplane-run-<runId>` in `agents`, audience `room-broker`, 600 s, mounted **only** in the bridge container | Offline against the JWKS of an issuer in `runIssuers`; `sub` must match the issuer's `subPattern`; then the `AgentRun` must be live and name a room | `agent:<runId>` |
 | System caller | A ServiceAccount token with audience `rooms-system` (ruling P3: SP1's Kyverno policies reserve every `room-broker*` audience for `agents`) | Offline against `systemIssuer`; `sub` must be a key of the `systemPrincipals` allowlist | e.g. `system:factory` |
-| Human | A ZITADEL ID token and a JWT access token, both from oauth2-proxy (phase 2) | Offline: issuer, audience (the `rooms-proxy` client), expiry, groups; the access token must share the `sub` | `human:<sub>` |
+| Human | A ZITADEL ID token and a JWT access token, both from oauth2-proxy (phase 2) | Offline: issuer, expiry, groups; `aud` holds the project id and a rooms client, and the token names that client: the ID token in `azp` (Ruling AS), the access token in `client_id`, since ZITADEL access tokens carry no `azp`. The two must share the `sub` and the client | `human:<sub>` |
 
 Why offline: every consumer validates issuer-agnostically (C2 r5). A runtime whose identities are
 not ServiceAccounts needs one more `runIssuers` entry, not a new code path. Liveness comes from the
@@ -72,10 +72,14 @@ row). Room roles are cumulative; the approver flag is independent; the driver is
 
 - **Never an agent approves** (S10): one injected transcript would otherwise approve another's
   action.
-- **Never from `roomctl`**: a token whose `azp` is the `roomctl` client cannot decide, steer,
+- **Never from `roomctl`**: a token issued to the `roomctl` client cannot decide, steer,
   interrupt or move the driver token (ruling P18), because a local agent could run it.
 - **Four-eyes** (OD-16, off by default, per room): the humans in the triggering turn's `causedBy`
   chain cannot decide it.
+- **An invite is two writes**: the Room CR, then the `participant` event. If the append fails after
+  the update, the membership briefly has no record; retrying the act with the same `clientSeq`
+  heals it (the update is then a no-op, and the append writes or replays the record). The CR
+  change is also in the Kubernetes audit log. A sealed room refuses the invite before the update.
 - **The broker never creates `AgentRun`s**: its RBAC is `get`, `list`, `watch`, `delete` on
   `agentruns` in `agents` (C3); CRUD on `rooms` in `agent-system`; leases; no cluster-admin.
 
@@ -127,8 +131,9 @@ A unit test pins the four rules the design names:
 | Broker-origin text from a claim | The one free text, a revocation annotation used as an end reason, is redacted like a payload, then cut to 64 bytes |
 | gitleaks' `gitleaks:allow` marker | Ignored: a line carrying it is redacted like any other, because the marker is harness content too |
 
-Later phases apply the same redactor to queued text (phase 4, review M7) and to the action on an
-approval card (phase 5). The harness also redacts GitHub tokens from its own step log before
+Human actions (phase 4) run every payload they append through the same redactor, a take's reason
+included, and a queued message's row keeps the redacted text the next run's brief quotes (review M7).
+Phase 5 applies it to the action on an approval card. The harness also redacts GitHub tokens from its own step log before
 printing (cloud-native-ref H-1, review M4).
 
 ## Database roles
@@ -148,7 +153,7 @@ flow (spec §9, as the plan builds it).
 
 | Endpoint | Ingress | Egress |
 |---|---|---|
-| `room-broker` | Run pods in `agents` (label `agents.ogenki.io/run-id`) and the factory on 8443; oauth2-proxy on 8080 (phase 2); `agent-router` proxies on 8090 (phase 3); `vmagent` and kubelet on 9090 | DNS with an L7 rule; the Kubernetes API; CNPG on 5432; Valkey on 6379 (phase 2); the run issuer's JWKS host on 443; the identity provider (phase 2); `api.github.com` on 443 (phase 3); the factory's run API (phase 4) |
+| `room-broker` | Run pods in `agents` (label `agents.ogenki.io/run-id`) and the factory on 8443; oauth2-proxy on 8080 (phase 2); `agent-router` proxies on 8090 (phase 3); `vmagent` and kubelet on 9090 | DNS with an L7 rule; the Kubernetes API; CNPG on 5432; the run issuer's JWKS host on 443; the identity provider (phase 2); `api.github.com` on 443 (phase 3); the factory's run API (phase 4) |
 | Run pod | kubelet on the bridge's 8085 | The broker on 8443, only when `roomRef` is set (the run's own CNP) |
 | CNPG `xplane-rooms` | The broker and the retention job on 5432; the Atlas and CNPG operators; `vmagent` on 9187 | DNS, the Kubernetes API, peers, the backup plugin, object storage |
 | Retention job | None | DNS; CNPG on 5432 |

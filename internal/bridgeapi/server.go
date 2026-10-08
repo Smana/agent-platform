@@ -23,6 +23,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
@@ -30,11 +31,6 @@ import (
 )
 
 const (
-	// A bridge seen within this window holds its room's lease (ruling P17, kept in
-	// the store: review I7). It pushes at least every 30 s, an empty batch when its
-	// run is quiet, so two minutes of silence means gone.
-	connectedWindow = 2 * time.Minute
-
 	// Request bounds. A bridge sends at most 100 items per batch (Task 1.11).
 	maxBatchBytes   = 2 << 20
 	maxBatchItems   = 500
@@ -47,11 +43,16 @@ const (
 	defaultPing   = 30 * time.Second
 	maxStreamLife = time.Hour
 	// defaultStreamWriteWait bounds one write to a stream, so a bridge that stops
-	// reading cannot pin a handler until its token expires.
+	// reading cannot pin a handler until its token expires. It is armed only
+	// while a write and its flush are under way.
 	defaultStreamWriteWait = 10 * time.Second
 
 	brokerActor = "system:room-broker"
 )
+
+// replayPage is how many deliveries a stream's replay reads at once; a variable
+// so a test can page a short log.
+var replayPage = 500
 
 // Authenticator maps a request's credential to a principal. *authn.Runs and
 // *authn.Systems implement it; authn.ErrForbidden means a valid credential for a
@@ -66,9 +67,11 @@ type Log interface {
 	Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	AppendAsBridge(ctx context.Context, bridgeRun string, d envelope.Draft) (envelope.Event, bool, error)
 	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
+	// Deliveries is the run's deliverable events in (after, through], paged (phase 4).
+	Deliveries(ctx context.Context, roomID, runID string, after, through int64, limit int) ([]envelope.Event, error)
 	Cursor(ctx context.Context, roomID, originClient string) (int64, error)
 	Room(ctx context.Context, id string) (store.RoomState, error)
-	ClaimBridge(ctx context.Context, roomID, runID string, stale time.Duration, live func(ctx context.Context, runID string) bool) (string, bool, error)
+	ClaimBridge(ctx context.Context, roomID, runID string, live func(ctx context.Context, runID string) bool) (string, bool, error)
 	TouchBridge(ctx context.Context, roomID, runID string) (held bool, err error)
 }
 
@@ -76,6 +79,12 @@ type Log interface {
 // ctx ends rather than return it partly scanned; *redact.Redactor implements it.
 type Redactor interface {
 	Payload(ctx context.Context, raw json.RawMessage) (json.RawMessage, []string, error)
+}
+
+// Hub is the fan-out hub's subscription side; *fanout.Hub implements it.
+type Hub interface {
+	Subscribe(ctx context.Context, roomID string) (*fanout.Sub, error)
+	Unsubscribe(*fanout.Sub)
 }
 
 // Liveness answers whether a run is live; *runwatch.Watcher implements it.
@@ -91,17 +100,21 @@ type Server struct {
 	Runs     Authenticator
 	Systems  Authenticator
 	Watch    Liveness
-	// Notify, when set, is told of every new event: a fan-out hint (phase 2). It
-	// runs on the request and must not block.
-	Notify func(roomID string, seq int64)
-	// RoomPolicy, when set, is the room's approval policy handed out at hello (phase 5).
+	// RoomPolicy, when set, is the room's approval policy handed out at hello and
+	// read for each approval's deadline (phase 5); unset means attended.
 	RoomPolicy func(roomID string) wire.ApprovalPolicy
+	// Approvals records approval requests (phase 5); unset answers 503.
+	Approvals Approvals
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// StreamWriteWait bounds each write to a stream; 0 means 10 s.
 	StreamWriteWait time.Duration
+	// Hub feeds each stream its room's live events, and LastAck is where a run's
+	// deliveries resume (phase 4). The stream refuses to start without them.
+	Hub     Hub
+	LastAck func(ctx context.Context, room, run string) (int64, error)
 	// Limits bound each principal on the events endpoint and the system API.
 	Limits Limits
 	// Now is the limits' clock; nil means time.Now. Deadlines handed to the
@@ -121,6 +134,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/bridge/hello", s.bounded(0, s.hello))
 	mux.HandleFunc("POST /v1/bridge/events", s.bounded(maxBatchBytes, s.events))
 	mux.HandleFunc("GET /v1/bridge/stream", s.stream)
+	mux.HandleFunc("POST /v1/bridge/approvals", s.bounded(maxApprovalBytes, s.approval))
 	mux.HandleFunc("GET /v1/rooms/{id}/events", s.bounded(0, s.roomEvents))
 	mux.HandleFunc("POST /v1/rooms/{id}/messages", s.bounded(maxMessageBytes, s.roomMessage))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,15 +246,6 @@ func authWhy(err error) string {
 	return "invalid"
 }
 
-// appended tells the fan-out of a new event. The metrics count appends in the
-// store every writer shares (app's meteredLog), not here: counting in both would
-// count twice.
-func (s *Server) appended(ev envelope.Event) {
-	if s.Notify != nil {
-		s.Notify(ev.RoomID, ev.Seq)
-	}
-}
-
 // bridgeAuth admits a run token for a run that is live and names a room (§1 Admission).
 func (s *Server) bridgeAuth(w http.ResponseWriter, r *http.Request) (authn.Principal, runwatch.Run, bool) {
 	p, err := s.Runs.Authenticate(r)
@@ -282,8 +287,8 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	ctx := r.Context()
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
-	// agrees (review I7). A holder still live and seen within connectedWindow keeps it.
-	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, connectedWindow, func(_ context.Context, id string) bool {
+	// agrees (review I7). A holder keeps it while its run is live (ruling SBB).
+	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, func(_ context.Context, id string) bool {
 		_, live := s.Watch.Live(id)
 		return live
 	})
@@ -297,15 +302,12 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !took {
-		ev, dup, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
+		_, _, err := s.Log.Append(ctx, envelope.Draft{RoomID: run.Room, RunID: run.ID,
 			Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: brokerActor}, Type: envelope.StateChanged,
-			Origin: envelope.OriginBroker, OriginClient: "broker:busy:" + run.ID, OriginSeq: 1,
+			Origin: envelope.OriginBroker, OriginClient: runwatch.BusyScope + run.ID, OriginSeq: 1,
 			Payload: envelope.StatePayload("limit", map[string]any{"reason": "concurrent_run", "running": holder})})
-		switch {
-		case err != nil:
+		if err != nil {
 			s.log().Warn("record a concurrent run", "room", run.Room, "run", run.ID, errAttr(err))
-		case !dup:
-			s.appended(ev)
 		}
 		s.log().Info("room busy", "room", run.Room, "run", run.ID, "holder", holder)
 		fail(w, http.StatusConflict, wire.ReasonRoomBusy)
@@ -398,20 +400,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	var ack wire.BatchAck
 	for i, d := range drafts {
-		ev, dup, err := s.Log.AppendAsBridge(ctx, run.ID, d)
+		_, _, err := s.Log.AppendAsBridge(ctx, run.ID, d)
 		if store.IsDataError(err) {
 			// A value PostgreSQL refuses can never be stored: keep the slot with a stub, as
 			// for an oversize payload, so the bridge's cursor moves on (review I6).
 			s.log().Error("payload refused by the database", "room", run.Room, "run", run.ID, "type", d.Type, errAttr(err))
 			d.Payload, d.Redactions = refusedStub(d.Type, StubInvalidValue), nil
-			ev, dup, err = s.Log.AppendAsBridge(ctx, run.ID, d)
+			_, _, err = s.Log.AppendAsBridge(ctx, run.ID, d)
 		}
 		if err != nil {
 			s.logFailure(w, err, "append a bridge event", "room", run.Room, "run", run.ID, "type", d.Type)
 			return
-		}
-		if !dup {
-			s.appended(ev)
 		}
 		if it := b.Items[i]; it.Stream == wire.StreamEvents {
 			ack.AfterHarnessSeq = max(ack.AfterHarnessSeq, it.Seq)
@@ -475,10 +474,16 @@ func refusedStub(t envelope.Type, why string) json.RawMessage {
 }
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).
-// Phase 1 sends only pings; phases 4 and 5 add deliver, interrupt and decision.
+// It replays what the run has not acknowledged, from the log, then follows the
+// room's hub: a delivery is derived from the log, so it survives a broker
+// restart, a replica change and a bridge restart alike (§2 Steering).
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	p, run, ok := s.bridgeAuth(w, r)
 	if !ok {
+		return
+	}
+	if s.Hub == nil || s.LastAck == nil {
+		fail(w, http.StatusInternalServerError, wire.ReasonStreamingFailed)
 		return
 	}
 	rc := http.NewResponseController(w)
@@ -498,6 +503,25 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		ctx, stopAtExpiry = context.WithDeadline(ctx, p.Expiry)
 		defer stopAtExpiry()
 	}
+	sub, err := s.Hub.Subscribe(ctx, run.Room)
+	if err != nil {
+		s.logFailure(w, err, "subscribe a stream to its room", "room", run.Room, "run", run.ID)
+		return
+	}
+	defer s.Hub.Unsubscribe(sub)
+	// The mark is read after subscribing, as for viewers (§4 Replay): every event
+	// past it arrives through the hub. A failed read refuses the stream rather
+	// than replay from 0, which would hand the harness every delivery again.
+	after, err := s.LastAck(ctx, run.Room, run.ID)
+	if err != nil {
+		s.logFailure(w, err, "read a run's last acknowledgement", "room", run.Room, "run", run.ID)
+		return
+	}
+	st, err := s.Log.Room(ctx, run.Room)
+	if err != nil {
+		s.logFailure(w, err, "read a stream's mark", "room", run.Room, "run", run.ID)
+		return
+	}
 	every := s.PingEvery
 	if every <= 0 {
 		every = defaultPing
@@ -507,18 +531,61 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	for {
+	write := func(frame string) bool {
 		_ = rc.SetWriteDeadline(time.Now().Add(s.streamWriteWait()))
-		if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+		_, err := io.WriteString(w, frame)
+		return err == nil
+	}
+	send := func(ev envelope.Event) bool {
+		after = ev.Seq
+		if name, data, ok := Deliverable(ev, run.ID); ok {
+			return write("event: " + name + "\ndata: " + string(data) + "\n\n")
+		}
+		return true
+	}
+	// What the run has not acknowledged goes out first, in the stream's first
+	// flush: a bridge that connects or resumes gets its pending deliveries before
+	// anything else (review M15).
+	for after < st.LastSeq {
+		evs, err := s.Log.Deliveries(ctx, run.Room, run.ID, after, st.LastSeq, replayPage)
+		if err != nil {
+			s.log().Warn("replay a stream", "room", run.Room, "run", run.ID, errAttr(err))
+			return // the bridge re-dials and resumes from its last ack
+		}
+		for _, ev := range evs {
+			if !send(ev) {
+				return
+			}
+		}
+		if len(evs) < replayPage {
+			after = st.LastSeq // the replay covered up to the mark: the hub carries the rest
+		}
+	}
+	ping := true // the first flush carries the replay, and a ping
+	for {
+		if ping && !write(": ping\n\n") {
 			return
 		}
 		if err := rc.Flush(); err != nil {
 			return
 		}
+		// Disarmed between writes (F10): Go's HTTP/2 server runs the deadline as a
+		// per-stream timer and resets the stream when it fires, even with no write
+		// pending, so an armed deadline would end every stream idle past it.
+		_ = rc.SetWriteDeadline(time.Time{})
 		select {
 		case <-ctx.Done():
 			return
+		case <-sub.Dropped:
+			return // the bridge re-dials and resumes from its last ack
+		case ev := <-sub.C:
+			sub.Sent(ev)
+			ping = false
+			if ev.Seq > after && !send(ev) { // at or below the mark, the replay sent it
+				return
+			}
 		case <-tick:
+			ping = true
 		}
 	}
 }

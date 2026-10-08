@@ -30,7 +30,8 @@ const (
 	// streamIdle ends a stream that sent nothing, not even the broker's 30 s
 	// ping, for this long: a half-open connection would otherwise hang it.
 	streamIdle = 75 * time.Second
-	// maxFrameBytes bounds one SSE line.
+	// maxFrameBytes bounds one SSE line, and one event's data lines together
+	// (review M15): a deliver carries at most a 16 KiB human message, escaped.
 	maxFrameBytes = 256 << 10
 )
 
@@ -138,6 +139,19 @@ func (b *Broker) Send(ctx context.Context, items []json.RawMessage) (Reply, erro
 	return b.call(ctx, "/v1/bridge/events", joinBatch(items), nil)
 }
 
+// RequestApproval asks the room's approvers to decide a pending action, and
+// returns the approval the broker opened (idempotent per call id) with the
+// status code of its answer. An error means the request got no answer.
+func (b *Broker) RequestApproval(ctx context.Context, r wire.ApprovalRequest) (wire.ApprovalAck, int, error) {
+	var a wire.ApprovalAck
+	body, err := json.Marshal(r)
+	if err != nil {
+		return a, 0, fmt.Errorf("broker approval request: %w", err)
+	}
+	rep, err := b.call(ctx, "/v1/bridge/approvals", body, &a)
+	return a, rep.Code, err
+}
+
 // joinBatch is json.Marshal(wire.Batch{Items: items}) for pre-marshalled items.
 func joinBatch(items []json.RawMessage) []byte {
 	var buf bytes.Buffer
@@ -156,9 +170,9 @@ func joinBatch(items []json.RawMessage) []byte {
 func batchOverhead(n int) int { return len(`{"items":[]}`) + max(n-1, 0) }
 
 // Stream reads the broker's SSE stream until it ends, calling handle for each
-// named event. It returns when the stream ends, ctx ends, or nothing arrives
-// for streamIdle.
-func (b *Broker) Stream(ctx context.Context, handle func(event string, data []byte)) error {
+// named event. It returns when the stream ends, ctx ends, handle fails, an
+// event's data passes maxFrameBytes, or nothing arrives for streamIdle.
+func (b *Broker) Stream(ctx context.Context, handle func(event string, data []byte) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := b.request(ctx, http.MethodGet, "/v1/bridge/stream", nil)
@@ -185,13 +199,18 @@ func (b *Broker) Stream(ctx context.Context, handle func(event string, data []by
 		switch {
 		case line == "":
 			if event != "" {
-				handle(event, bytes.Clone(data.Bytes()))
+				if err := handle(event, bytes.Clone(data.Bytes())); err != nil {
+					return fmt.Errorf("broker stream: %s: %w", event, err)
+				}
 			}
 			event = ""
 			data.Reset()
 		case strings.HasPrefix(line, "event:"):
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
+			if data.Len()+len(line) > maxFrameBytes {
+				return fmt.Errorf("broker stream: an event's data passes %d bytes", maxFrameBytes)
+			}
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
