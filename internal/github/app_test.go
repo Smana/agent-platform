@@ -139,6 +139,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.comments = append(f.comments, c)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(c)
+	case r.Method == http.MethodGet && r.URL.Path == "/user/583231" && strings.HasPrefix(auth, "ghs_installation-"):
+		_, _ = w.Write([]byte(`{"login":"octocat","id":583231}`))
+	case r.URL.Path == "/user/999" && strings.HasPrefix(auth, "ghs_installation-"):
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	default:
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 	}
@@ -755,5 +759,22 @@ func TestQuotesFenceIsTheShortestThatHolds(t *testing.T) {
 		if got := strings.SplitN(Quote(in), "\n", 2)[0]; got != fence {
 			t.Errorf("Quote(%q) opens with %q, want %q", in, got, fence)
 		}
+	}
+}
+
+func TestUserLoginResolvesAnIDToTheCurrentLogin(t *testing.T) {
+	a, f, _ := app(t)
+	got, err := a.UserLogin(context.Background(), "Smana", "cloud-native-ref", 583231)
+	if err != nil || got != "octocat" {
+		t.Fatalf("UserLogin = %q, %v", got, err)
+	}
+	if f.repoOf[f.current] != "cloud-native-ref" {
+		t.Fatalf("the lookup did not use the repository's installation token: %v", f.repoOf)
+	}
+	if _, err := a.UserLogin(context.Background(), "Smana", "cloud-native-ref", 999); err == nil {
+		t.Fatal("a 404 must be an error")
+	}
+	if _, err := a.UserLogin(context.Background(), "Smana", "cloud-native-ref", 0); err == nil {
+		t.Fatal("a non-positive id must be refused")
 	}
 }

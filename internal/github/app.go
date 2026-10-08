@@ -345,6 +345,43 @@ func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, err
 	return url, err
 }
 
+// UserLogin is the current login of the GitHub user with the numeric id, read with owner/repo's
+// installation token. The id is stable across a rename; the login is not, so access decisions
+// resolve the id each time they refresh.
+func (a *App) UserLogin(ctx context.Context, owner, repo string, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("github: not a GitHub user id")
+	}
+	api, err := a.api()
+	if err != nil {
+		return "", err
+	}
+	lookup := func() (string, error) {
+		tok, _, err := a.installation(ctx, api, owner, repo)
+		if err != nil {
+			return "", err
+		}
+		var out struct {
+			Login string `json:"login"`
+		}
+		if err := a.do(ctx, api, http.MethodGet, "user/"+strconv.FormatInt(id, 10), "", tok, nil, &out, maxReply); err != nil {
+			return "", err
+		}
+		if out.Login == "" {
+			return "", errors.New("github: the user reply has no login")
+		}
+		return out.Login, nil
+	}
+	login, err := lookup()
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		// A revoked token, or a rotated key: one fresh token, one retry.
+		a.evict(owner + "/" + repo)
+		login, err = lookup()
+	}
+	return login, err
+}
+
 // evict drops the cached installation token of owner/repo.
 func (a *App) evict(repo string) {
 	a.mu.Lock()
