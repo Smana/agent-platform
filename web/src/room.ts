@@ -7,6 +7,7 @@ import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
+import { fetchSummary, renderSummary } from "./summary";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -19,7 +20,16 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const title = document.createElement("span");
   title.className = "title";
   header.append(title);
+  const lead = document.createElement("section");
+  lead.className = "summary";
+  lead.setAttribute("aria-live", "polite");
   const main = document.createElement("main");
+  // The raw stream stays one click away, collapsed: the summary above answers "where are we".
+  const raw = document.createElement("details");
+  raw.className = "raw-events";
+  const rawTitle = document.createElement("summary");
+  rawTitle.textContent = "Raw events";
+  raw.append(rawTitle, main);
   const section = document.createElement("section");
   section.className = "controls";
   const forkPanel = document.createElement("section");
@@ -32,7 +42,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const status = document.createElement("span");
   status.className = "status";
   footer.append(counters, notice, status);
-  app.replaceChildren(header, main, section, forkPanel, footer);
+  app.replaceChildren(header, lead, raw, section, forkPanel, footer);
   const views = mountViews(main, header, localStorage, (seq) => fork.open(seq));
   mountThemeButton(header, theme);
   const state = new RoomState();
@@ -52,6 +62,16 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const renderHeader = () => {
     if (snap) title.textContent = `${snap.roomId} · ${state.phase} · ${snap.dataClass} · driver ${state.driver} · you: ${snap.you.role}${snap.you.approver ? " (approver)" : ""}`;
   };
+  // The summary loads on mount, then at most once a second while events arrive. A failed
+  // fetch shows its text in the blocks' place and leaves the stream alone.
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  const loadSummary = () => {
+    refreshTimer = undefined;
+    fetchSummary(id, o.get).then((sum) => { if (!stopped) renderSummary(lead, sum); },
+      (e) => { if (!stopped) lead.textContent = e instanceof Error ? e.message : String(e); });
+  };
+  const scheduleSummary = () => { refreshTimer ??= setTimeout(loadSummary, 1000); };
   const conn = new RoomConnection(id, {
     // A state frame comes on every (re)connect: an invite may have changed the role.
     onState: (s: Snapshot, throughSeq: number) => {
@@ -71,6 +91,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
     onEvent: (e) => {
       views.apply(e);
+      scheduleSummary();
       state.apply(e);
       renderHeader();
       controls?.refresh();
@@ -99,6 +120,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       }
       if (++absent < 3) return;
       conn.stop();
+      stopped = true;
+      clearTimeout(refreshTimer);
       const back = document.createElement("a");
       back.href = "/";
       back.textContent = "See the rooms you can read";
@@ -125,5 +148,6 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
   };
   const fork = mountFork(forkPanel, sender, state);
+  loadSummary();
   conn.connect();
 }

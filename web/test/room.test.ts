@@ -81,9 +81,12 @@ describe("the room page", () => {
   // the list reads a replica's informer cache, which may lag the POST (review I2): the
   // page stops only after three absent answers in a row, each a backoff apart.
   const listed = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  // The summary fetch is not a list call: it gets a 503 and is not counted.
+  const noSummary = Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
   const lists = (...script: string[][]) => {
     const calls: number[] = [];
-    const get = (() => {
+    const get = ((url: string) => {
+      if (url.includes("/summary")) return noSummary;
       calls.push(calls.length);
       return listed(script[Math.min(calls.length - 1, script.length - 1)].map((id) => ({ id })));
     }) as unknown as typeof fetch;
@@ -116,7 +119,8 @@ describe("the room page", () => {
   it("stops a re-dial already under way", async () => {
     let answer!: (r: unknown) => void;
     let asked = 0;
-    const p = page((() => {
+    const p = page(((url: string) => {
+      if (url.includes("/summary")) return noSummary;
       asked++;
       return asked < 3 ? listed([]) : new Promise((r) => { answer = r; });
     }) as unknown as typeof fetch);
@@ -214,5 +218,33 @@ describe("the room page", () => {
   it("announces its notices politely (R10)", () => {
     const notice = page().app.querySelector("footer .notice")!;
     expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+  });
+
+  // The summary leads the page; the raw stream is collapsed and shares the one socket.
+  it("leads with the summary, refetched once a second on events, over the one socket", async () => {
+    const sum = { apiVersion: "summary/v1", room: "3kq7x2ma", url: "u", status: { phase: "Open", run: null, budget: null, pr: null, issue: null, lastVerdict: null },
+      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor: "seq:0" };
+    const get = vi.fn(async () => new Response(JSON.stringify(sum), { status: 200 })) as unknown as typeof fetch;
+    const p = page(get);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(p.app.querySelector('.summary [data-block="status"]')).not.toBeNull();
+    expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "a", delivery: "none" }));
+    p.last().recv(event(2, "message", { kind: "chat", text: "b", delivery: "none" }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(p.sockets).toHaveLength(1);
+  });
+
+  it("shows the summary's error and keeps the stream when the fetch fails", async () => {
+    const get = (async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    const p = page(get);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.app.querySelector(".summary")!.textContent).toMatch(/cannot be verified/);
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "still here", delivery: "none" }));
+    expect(p.app.querySelector(".view-chat")!.textContent).toContain("still here");
   });
 });
