@@ -239,6 +239,105 @@ def _short(value, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# The harness posts its own progress notes: an implementer asked for them in its brief posted none
+# over a whole task (#60), so a note does not wait on the model. It is the agent's own tool, so the
+# broker's limits apply: one note a minute per run, which MIN_NOTE_GAP_S keeps clear of.
+MIN_NOTE_GAP_S = 60
+MAX_NOTES = 8
+NOTE_FAILURES = 3
+MILESTONES = (
+    ("started", None, "Harness: the agent started working."),
+    ("commit", re.compile(r"\bgit\s+(?:-\S+\s+)*commit\b"), "Harness: the agent committed."),
+    ("push", re.compile(r"\bgit\s+(?:-\S+\s+)*push\b"), "Harness: the agent pushed its branch."),
+    ("checks", re.compile(r"\b(?:go\s+test|pytest|npm\s+(?:run\s+)?test|task\s+(?:check|test)\S*|make\s+test|cargo\s+test)\b"),
+     "Harness: the agent ran the checks."),
+    ("pr", re.compile(r"\bgh\s+pr\s+create\b"), "Harness: the agent opened a pull request."),
+)
+
+
+class ProgressNotes:
+    """Posts a room_progress note at each milestone the step log sees, through the run's own MCP
+    route (the agent's tool, so the confirmation policy and the broker's limits are unchanged).
+    Each milestone is noted once, at most one note per MIN_NOTE_GAP_S and MAX_NOTES a run. The
+    text is fixed: nothing the agent wrote reaches the room through here. Best effort."""
+
+    def __init__(self, url: str, clock=time.monotonic):
+        self.url, self.clock = url, clock
+        self.seen, self.pending, self.sent = set(), [], 0
+        self.last = None
+        self.failures = 0
+        self.tool = None
+        self.session = None
+        self.rid = 0
+
+    def observe(self, command: str) -> None:
+        for name, pattern, text in MILESTONES:
+            if name not in self.seen and (pattern is None or pattern.search(command or "")):
+                self.seen.add(name)
+                self.pending.append(text)
+
+    def flush(self) -> None:
+        if not self.pending or self.sent >= MAX_NOTES or self.failures >= NOTE_FAILURES:
+            return
+        now = self.clock()
+        if self.last is not None and now - self.last < MIN_NOTE_GAP_S:
+            return
+        try:
+            if self.call(self.pending[0]):
+                self.pending.pop(0)
+                self.sent += 1
+                self.last = now
+            self.failures = 0
+        except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+            self.failures += 1
+            print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
+
+    def rpc(self, method: str, params: dict | None = None, notify: bool = False):
+        body = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            body["params"] = params
+        if not notify:
+            self.rid += 1
+            body["id"] = self.rid
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if self.session:
+            headers["Mcp-Session-Id"] = self.session
+        req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.session = resp.headers.get("Mcp-Session-Id") or self.session
+            raw = resp.read(1 << 20).decode(errors="replace")
+        if notify:
+            return None
+        if raw.lstrip().startswith("{"):
+            reply = json.loads(raw)
+        else:  # an event stream: the data line that answers this id
+            replies = (json.loads(line[5:]) for line in raw.splitlines() if line.startswith("data:"))
+            reply = next(r for r in replies if r.get("id") == self.rid)
+        if "error" in reply:
+            raise RuntimeError(str(reply["error"].get("message")))
+        return reply.get("result") or {}
+
+    def call(self, text: str) -> bool:
+        """True when the note was stored; False when the broker's minute is spent (retried later)."""
+        if self.tool is None:
+            self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "agent-run", "version": "1"}})
+            self.rpc("notifications/initialized", notify=True)
+            names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
+            # The gateway may prefix the backend's name (<backend>__<tool>).
+            self.tool = next((n for n in names if n == "room_progress" or n.endswith("__room_progress")), None)
+            if self.tool is None:
+                self.failures = NOTE_FAILURES
+                raise RuntimeError("room_progress is not exposed to this run")
+        result = self.rpc("tools/call", {"name": self.tool, "arguments": {"text": text}})
+        if result.get("isError"):
+            message = _text({"content": result.get("content")})
+            if message.startswith("rate_limited"):
+                return False
+            raise RuntimeError(message[:200])
+        return True
+
+
 class StepLog:
     """Prints each new agent step to stdout, one line each, so `kubectl logs -c
     harness` shows what the agent is doing, and VictoriaLogs keeps it after the
@@ -247,7 +346,8 @@ class StepLog:
     effort: a failure here is logged and never fails the run. Agent-written
     text is redacted first."""
 
-    def __init__(self, cid: str, trace_id: str = ""):
+    def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None):
+        self.notes = notes
         self.cid = cid
         self.trace_id = trace_id
         self.page = None
@@ -275,6 +375,8 @@ class StepLog:
                 self.page = page = nxt
         except Exception as exc:  # noqa: BLE001 -- logging must never fail the run
             print("agent-run: step log unavailable: %s" % exc, file=sys.stderr, flush=True)
+        if self.notes:
+            self.notes.flush()
 
     def describe(self, event: dict) -> str | None:
         kind = event.get("kind")
@@ -282,6 +384,8 @@ class StepLog:
             self.steps += 1
             action = event.get("action") or {}
             target = action.get("command") or action.get("path") or ""
+            if self.notes:
+                self.notes.observe(action.get("command") or "")
             tool = event.get("tool_name") or action.get("kind")
             line = "agent-run step %d: %s | %s | %s" % (self.steps, tool, _short(event.get("summary"), 120), _short(target, 200))
             # Correlation only (O22): links the line to its trace in Grafana, attributes nothing.
@@ -493,7 +597,7 @@ def main() -> int:
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             request = build_request(env, t.read(), r.read())
         cid = http("POST", "/api/conversations", request)["id"]
-        steps = StepLog(cid, trace_id)
+        steps = StepLog(cid, trace_id, ProgressNotes(env["MCP_URL"]) if env.get("MCP_URL") else None)
         code = poll(cid, on_tick=steps)
         steps()
         steps.summary()

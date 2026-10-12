@@ -261,6 +261,130 @@ class StepLogTest(unittest.TestCase):
         self.assertEqual(printed.count(agent_run.REDACTED), 5, printed)
 
 
+class FakeMCP(http.server.BaseHTTPRequestHandler):
+    """The room broker's MCP port as the run reaches it: stateless JSON-RPC, tools/call answered."""
+    calls = []
+    tool = "room_progress"
+    limited = 0
+    sse = False
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        type(self).calls.append(body)
+        if "id" not in body:
+            self.send_response(202)
+            self.end_headers()
+            return
+        result = {}
+        if body["method"] == "tools/list":
+            result = {"tools": [{"name": type(self).tool}, {"name": "room_read"}]}
+        if body["method"] == "tools/call":
+            if type(self).limited:
+                type(self).limited -= 1
+                result = {"isError": True, "content": [{"type": "text", "text": "rate_limited: one progress note a minute"}]}
+            else:
+                result = {"content": [{"type": "text", "text": '{"seq":7}'}]}
+        out = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+        if type(self).sse:
+            out = b"event: message\ndata: " + out + b"\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream" if type(self).sse else "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+class ProgressNotesTest(unittest.TestCase):
+    """#60: a whole task posted no progress note, so the harness posts them itself, bounded."""
+
+    def setUp(self):
+        FakeMCP.calls, FakeMCP.tool, FakeMCP.limited, FakeMCP.sse = [], "room_progress", 0, False
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeMCP)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.now = [1000.0]
+        self.notes = agent_run.ProgressNotes("http://127.0.0.1:%d/mcp" % self.server.server_port, clock=lambda: self.now[0])
+
+    def posted(self):
+        return [c["params"]["arguments"]["text"] for c in FakeMCP.calls if c.get("method") == "tools/call"]
+
+    def test_the_first_step_posts_a_note_at_once(self):
+        self.notes.observe("git status")
+        self.notes.flush()
+        self.assertEqual(self.posted(), ["Harness: the agent started working."])
+        calls = [c["method"] for c in FakeMCP.calls]
+        self.assertEqual(calls, ["initialize", "notifications/initialized", "tools/list", "tools/call"])
+
+    def test_one_note_a_minute_each_milestone_once(self):
+        for command in ("git status", "git commit -m x", "git commit -m y", "git push origin HEAD", "go test ./..."):
+            self.notes.observe(command)
+        self.notes.flush()
+        self.notes.flush()
+        self.assertEqual(len(self.posted()), 1, "nothing more inside the minute")
+        self.now[0] += 61
+        self.notes.flush()
+        self.now[0] += 61
+        self.notes.flush()
+        self.now[0] += 61
+        self.notes.flush()
+        self.now[0] += 61
+        self.notes.flush()
+        self.assertEqual(self.posted(), [
+            "Harness: the agent started working.", "Harness: the agent committed.",
+            "Harness: the agent pushed its branch.", "Harness: the agent ran the checks."])
+
+    def test_the_pull_request_milestone(self):
+        self.notes.observe("gh pr create --fill")
+        self.assertIn("Harness: the agent opened a pull request.", self.notes.pending)
+
+    def test_total_is_capped(self):
+        self.notes.sent = agent_run.MAX_NOTES
+        self.notes.observe("git status")
+        self.notes.flush()
+        self.assertEqual(FakeMCP.calls, [])
+
+    def test_a_rate_limited_note_is_retried_not_lost(self):
+        FakeMCP.limited = 1  # the agent's own note spent the minute
+        self.notes.observe("git status")
+        self.notes.flush()
+        self.assertEqual(self.notes.sent, 0)
+        self.notes.flush()
+        self.assertEqual(self.notes.sent, 1)
+
+    def test_a_gateway_prefixed_tool_name_is_found(self):
+        FakeMCP.tool = "room-broker__room_progress"
+        self.notes.observe("git status")
+        self.notes.flush()
+        self.assertEqual(FakeMCP.calls[-1]["params"]["name"], "room-broker__room_progress")
+
+    def test_an_event_stream_reply_is_read(self):
+        FakeMCP.sse = True
+        self.notes.observe("git status")
+        self.notes.flush()
+        self.assertEqual(self.notes.sent, 1)
+
+    def test_an_unreachable_broker_gives_up_and_never_raises(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.notes.observe("git status")
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            for _ in range(10):
+                self.notes.flush()
+        self.assertEqual(self.notes.failures, agent_run.NOTE_FAILURES)
+        self.assertEqual(self.notes.sent, 0)
+
+    def test_the_step_log_feeds_and_flushes_the_notes(self):
+        log = agent_run.StepLog("cid", notes=self.notes)
+        events = [{"id": "1", "kind": "ActionEvent", "tool_name": "terminal", "summary": "s", "action": {"command": "git status"}}]
+        with mock.patch("agent_run.http", side_effect=[{"items": events, "next_page_id": None}]), mock.patch("sys.stdout", new=io.StringIO()):
+            log()
+        self.assertEqual(self.posted(), ["Harness: the agent started working."])
+
+
 class TimedTest(unittest.TestCase):
     """Disruption design §2: every shutdown step is boxed, and an overrun never holds up the next."""
 

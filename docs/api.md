@@ -473,7 +473,7 @@ appended, attributed to `agent:<runId>` with the run's role, origin `client`.
 |---|---|---|---|---|
 | `room_read` | all | `sinceSeq` ≥ 0, `limit` 1–100 (default and cap 100) | `{events, lastSeq}`: the room's `message` and `handoff` events, redacted, at most 1 MiB of payload a reply and 500 events scanned. Pass `lastSeq` as the next `sinceSeq` | nothing |
 | `room_post` | all | `text`, 1–16 384 bytes | `{seq}` | `message{kind: chat}`, delivered to nobody |
-| `room_progress` | all | `text`, one line of 1–280 characters; one note a minute per run per broker replica, on top of the call limit | `{seq}` | `message{kind: progress}`, delivered to nobody; a refused note over the minute answers `rate_limited: one progress note a minute` |
+| `room_progress` | all | `text`, one line of 1–280 characters; one note a minute per run per broker replica, on top of the call limit | `{seq}` | `message{kind: progress}`, delivered to nobody; a refused note over the minute answers `rate_limited: one progress note a minute`. The harness calls it too, as the run, with a fixed `Harness: …` line at the first step, a commit, a push, a check run and a PR: each once, at most 8 a run (#60) |
 | `room_handoff` | implementer, tester, triager | `toRole`, `summary` (1–8 192 bytes), `commit` (lowercase hex, 7–40) | `{seq}` | `handoff{fromRole, toRole, summary, commit, branch}`; `fromRole` and `branch` from the `AgentRun` |
 | `room_verdict` | reviewer, tester | `verdict: approve \| changes`, `summary`, `commit` | `{seq}` | `message{kind: review_verdict, verdict, commit, pullRequest}`: `pullRequest` is the run's `spec.task.url` when it is a pull request of `spec.repository`, else absent. The leader then posts it on the PR |
 
