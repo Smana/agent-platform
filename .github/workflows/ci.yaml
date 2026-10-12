@@ -24,6 +24,7 @@ jobs:
       - run: task check
 
   # The harness's suites live in its Dockerfile's test stage; `task check` needs no docker.
+  # They run on amd64 only: the arm64 image is published untested, as it was in cloud-native-ref.
   harness-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -53,7 +54,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The harness's multi-arch build under QEMU runs 22-28 min cold; the Go images fit in 30.
+    timeout-minutes: ${{ matrix.image == 'agent-harness' && 60 || 30 }}
     permissions:
       contents: read
       packages: write
