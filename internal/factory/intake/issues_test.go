@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,6 +60,7 @@ func poller(t *testing.T, f issueForge, objs ...client.Object) (*IssuePoller, cl
 	t.Helper()
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
+	_ = corev1.AddToScheme(s)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.Task{}).WithObjects(objs...).Build()
 	return &IssuePoller{Forge: f, Client: c, Namespace: "agent-system", Stopped: func(context.Context) bool { return false },
 		Cfg: &config.Config{Repository: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, TriggerLabel: "factory/ready",
@@ -555,5 +557,49 @@ func TestControlIssue(t *testing.T) {
 	}
 	if len(f.Removed(1)) != 0 {
 		t.Fatal("the control issue keeps its label: removing it is how a human resumes")
+	}
+}
+
+// #53: only the leader polls, but every replica admits. The issue stop is published as the stop
+// object, which each replica reads, so a process that never saw the label (a follower, or the
+// next leader) still refuses.
+func TestTheControlIssueStopReachesAnotherProcess(t *testing.T) {
+	defer killswitch.SetIssue(false)
+	ctx := context.Background()
+	f := forge.NewFake()
+	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
+	p, c := poller(t, f)
+	p.Cfg.ControlIssue = 1
+	if err := p.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	killswitch.SetIssue(false) // another process: no in-memory flag
+	if on, _ := killswitch.Engaged(ctx, c, "agent-system"); !on {
+		t.Fatal("a replica that did not poll must still see the issue stop")
+	}
+	if err := p.Poll(ctx); err != nil { // the next poll, or a new leader's first: no duplicate, no error
+		t.Fatal(err)
+	}
+	f.SetIssue(forge.Issue{Number: 1}) // a human removes the label to resume
+	if err := p.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if on, _ := killswitch.Engaged(ctx, c, "agent-system"); on {
+		t.Fatal("removing the label resumes every replica")
+	}
+}
+
+// The label's removal must not lift a stop a human set by hand.
+func TestRemovingTheLabelKeepsAHandMadeStop(t *testing.T) {
+	defer killswitch.SetIssue(false)
+	f := forge.NewFake()
+	f.SetIssue(forge.Issue{Number: 1})
+	p, c := poller(t, f, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system"}})
+	p.Cfg.ControlIssue = 1
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if on, _ := killswitch.Engaged(context.Background(), c, "agent-system"); !on {
+		t.Fatal("the issue poller deleted a stop object it did not make")
 	}
 }

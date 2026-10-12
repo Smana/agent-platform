@@ -148,7 +148,11 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		killswitch.SetIssue(slices.Contains(iss.Labels, LabelStop))
+		on := slices.Contains(iss.Labels, LabelStop)
+		killswitch.SetIssue(on)
+		if err := killswitch.PublishIssue(ctx, p.Client, p.Namespace, on); err != nil {
+			return err
+		}
 	}
 	if err := p.stops(ctx); err != nil {
 		return err
