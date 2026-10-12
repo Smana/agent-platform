@@ -100,6 +100,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			pred, matched := t.Spec.PredictedClass, d.Matched
 			record(ctx, func(ctx context.Context) { r.Metrics.ClassMismatch(ctx, pred, matched) })
 		}
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
 		narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
 		return nil
@@ -129,6 +130,84 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
+}
+
+// maxGateReentries bounds reenter per task: an input that flaps between a transient hand-off and
+// its clearing (a policy-bot status) returns to the gate this many times, then stays with a human.
+const maxGateReentries = 3
+
+// reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
+// reason is one the gate's inputs can clear by themselves; every other one — a verdict of changes,
+// a maintainer's review, a class or cap rule — was a human's to judge, and stays theirs. Even a
+// transient one returns only on the head it was handed off at, while no maintainer has reviewed or
+// commented since: no factory run is in flight in AwaitingHuman, so a push meanwhile is a human's,
+// and a later revision must never auto-merge what a human was asked to judge. A head reason
+// returns only once the room reports that head from one of the task's implementer runs, so the
+// factory pushed it (R02). Why it returned is the status reason, which the room's facts record.
+func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
+	why := t.Status.Reason
+	switch why {
+	case "policy_pending", "policy_absent", "head_unreported", "verdict_stale":
+	default:
+		return false, nil
+	}
+	if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA ||
+		r.engagedSince(pr, t.Status.PhaseSince) {
+		return false, nil
+	}
+	back, reason := "", ""
+	switch why {
+	case "policy_pending", "policy_absent":
+		c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
+		if err != nil {
+			return false, err
+		}
+		if state, creator := c.StatusOf("policy-bot: main"); state == "SUCCESS" && creator == r.Cfg.Merge.PolicyBotLogin {
+			back, reason = v1alpha1.PhaseAwaitingCI, "reentered_policy"
+		}
+	default: // the head reasons: the room must report this head as the factory's
+		reported, err := r.reportedHead(ctx, t)
+		if err != nil {
+			return false, err
+		}
+		switch {
+		case reported != pr.HeadSHA:
+		case why == "head_unreported":
+			back, reason = v1alpha1.PhaseAwaitingCI, "reentered_head_reported"
+		case r.nextVerifier(t, "implementer") != "":
+			// The gate alone would hand it off again: only a verdict of this head clears it.
+			back, reason = v1alpha1.PhaseQueued, "rereview_verdict_stale"
+		}
+	}
+	if back == "" {
+		return false, nil
+	}
+	t.Status.GateReentries++
+	if back == v1alpha1.PhaseQueued {
+		t.Status.NextRole = r.nextVerifier(t, "implementer")
+	}
+	r.to(t, back, reason)
+	r.log().Info("transient hand-off returns to the merge gate", "task.id", t.Name, "handoff", why, "reason", reason,
+		"head", pr.HeadSHA, "reentries", t.Status.GateReentries)
+	return true, nil
+}
+
+// engagedSince: a maintainer reviewed or commented on the pull request after since.
+func (r *Reconciler) engagedSince(pr forge.PR, since *metav1.Time) bool {
+	if since == nil {
+		return true // no hand-off time to read activity against: never assume there was none
+	}
+	for _, rv := range pr.Reviews {
+		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since.Time) {
+			return true
+		}
+	}
+	for _, c := range pr.Comments {
+		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since.Time) {
+			return true
+		}
+	}
+	return false
 }
 
 // reportedHead is the commit of the latest handoff or final room event whose broker-stamped

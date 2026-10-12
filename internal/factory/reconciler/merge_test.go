@@ -323,3 +323,168 @@ func TestARedSecretScanEscalatesWithoutAFixRun(t *testing.T) {
 		t.Fatalf("%q", c)
 	}
 }
+
+// gatePR is mergeRig's pull request at head h, its commit claiming run.
+func gatePR(h, run string) forge.PR {
+	return forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
+		HeadRef: "agent/3buqdlot", HeadSHA: h, HeadMessage: "docs: fix\n\nAgent-Run: " + run}
+}
+
+// patch edits the rig's task, spec and status.
+func (g *rig) patch(t *testing.T, f func(*v1alpha1.Task)) {
+	t.Helper()
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	f(&tk)
+	st := tk.Status
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status = st
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// N1: a hand-off for a policy-bot status not yet passing is transient. Once policy-bot passes the
+// same head the task returns to the gate, which decides it on its own merits, and says why.
+func TestAPolicyHandOffReturnsToTheGate(t *testing.T) {
+	absent := green("SUCCESS")
+	absent.Statuses = nil
+	for reason, checks := range map[string]forge.Checks{"policy_pending": green("PENDING"), "policy_absent": absent} {
+		t.Run(reason, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.f.SetChecks(12, checks)
+			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != reason {
+				t.Fatalf("while the policy has not passed a human holds it: %s %s", tk.Status.Phase, tk.Status.Reason)
+			}
+			g.f.SetChecks(12, green("SUCCESS"))
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Reason != "reentered_policy" || tk.Status.GateReentries != 1 {
+				t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
+			}
+			if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAutoMerging || len(g.f.Armed()) != 1 || g.f.Armed()[0] != "PR_12 abc" {
+				t.Fatalf("%s %v", tk.Status.Phase, g.f.Armed())
+			}
+		})
+	}
+}
+
+// N1's bound: a policy-bot that flaps between pending and success re-enters the gate at most
+// maxGateReentries times, then a human keeps the pull request.
+func TestAFlappingPolicyCannotLoop(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	entries := 0
+	for range 10 {
+		g.f.SetChecks(12, green("PENDING"))
+		g.reconcile(t, "3buqdlot", 1)
+		g.f.SetChecks(12, green("SUCCESS"))
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase == v1alpha1.PhaseAwaitingCI {
+			entries++
+		}
+	}
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if entries != maxGateReentries || tk.Status.GateReentries != maxGateReentries || tk.Status.Phase != v1alpha1.PhaseAwaitingHuman ||
+		tk.Status.Reason != "policy_pending" || len(g.f.Armed()) != 0 {
+		t.Fatalf("%d entries, %d recorded, %s %s, %v", entries, tk.Status.GateReentries, tk.Status.Phase, tk.Status.Reason, g.f.Armed())
+	}
+}
+
+// N1: the room reporting the head the hand-off was for proves the factory pushed it: the task
+// returns to the gate. A run's push lands before its handoff event does.
+func TestAnUnreportedHeadReturnsOnceTheRoomReportsIt(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.f.SetPR(gatePR("def", rid(0)))
+	g.f.SetChecks(12, green("SUCCESS"))
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "head_unreported" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g.log.handoff(rid(0), "def")
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Reason != "reentered_head_reported" || tk.Status.GateReentries != 1 {
+		t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
+	}
+	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAutoMerging || g.f.Armed()[0] != "PR_12 def" {
+		t.Fatalf("%s %v", tk.Status.Phase, g.f.Armed())
+	}
+}
+
+// N1: a verdict_stale hand-off is a head the factory moved with no verdict of it. Going back to
+// the gate alone would hand it off again, so it is reviewed again, and the review leads to the gate.
+func TestAStaleVerdictIsReviewedAgain(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.patch(t, func(tk *v1alpha1.Task) {
+		tk.Spec.Template = "pair"
+		tk.Status.Verdict = "approve"
+		tk.Status.Runs = append(tk.Status.Runs,
+			v1alpha1.RunRecord{ID: rid(1), Role: "reviewer", Trigger: "review", Phase: "Succeeded", Verdict: "approve", HeadSHA: "old"},
+			v1alpha1.RunRecord{ID: rid(2), Role: "implementer", Trigger: "ci", Phase: "Succeeded"})
+	})
+	g.log.handoff(rid(2), "abc") // a fix run, before this change, went from its push straight to the gate
+	g.f.SetPR(gatePR("abc", rid(2)))
+	g.f.SetChecks(12, green("SUCCESS"))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "verdict_stale" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.NextRole != "reviewer" || tk.Status.Reason != "rereview_verdict_stale" ||
+		tk.Status.GateReentries != 1 {
+		t.Fatalf("%s %s %s %d", tk.Status.Phase, tk.Status.NextRole, tk.Status.Reason, tk.Status.GateReentries)
+	}
+	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseReviewing || current(tk).Role != "reviewer" || current(tk).HeadSHA != "abc" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+}
+
+// N1's constraint: only a transient hand-off of a head nobody else touched returns to the gate.
+// A human's push, a maintainer's review or comment, or a substantive reason keeps the human's.
+func TestASubstantiveHandOffStaysWithTheHuman(t *testing.T) {
+	later := now.Add(time.Minute)
+	for name, tc := range map[string]struct {
+		handOff func(g *rig)
+		after   func(g *rig)
+	}{
+		"human push": {
+			after: func(g *rig) { g.f.SetPR(gatePR("def", rid(0))) }, // the trailer is a claim anyone can write
+		},
+		"maintainer review": {
+			after: func(g *rig) {
+				p := gatePR("abc", rid(0))
+				p.Reviews = []forge.Review{{ID: 7, Author: "Smana", State: "COMMENTED", Body: "looking", At: later}}
+				g.f.SetPR(p)
+			},
+		},
+		"maintainer comment": {
+			after: func(g *rig) {
+				p := gatePR("abc", rid(0))
+				p.Comments = []forge.Comment{{ID: 8, Author: "Smana", Body: "hold on", At: later}}
+				g.f.SetPR(p)
+			},
+		},
+		"substantive reason": {
+			handOff: func(g *rig) { g.r.Cfg.Merge.AutoMergesPerDay = 0 }, // auto_merge_cap
+			after:   func(g *rig) { g.r.Cfg.Merge.AutoMergesPerDay = 10 },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.f.SetPR(gatePR("abc", rid(0)))
+			g.f.SetChecks(12, green("PENDING"))
+			if tc.handOff != nil {
+				g.f.SetChecks(12, green("SUCCESS"))
+				tc.handOff(g)
+			}
+			if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+				t.Fatal(tk.Status.Phase)
+			}
+			tc.after(g)
+			g.f.SetChecks(12, green("SUCCESS"))
+			if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.GateReentries != 0 ||
+				len(g.f.Armed()) != 0 {
+				t.Fatalf("%s %s %d %v", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries, g.f.Armed())
+			}
+		})
+	}
+}

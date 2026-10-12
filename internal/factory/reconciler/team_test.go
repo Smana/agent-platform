@@ -18,6 +18,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/triage"
@@ -651,5 +652,46 @@ func TestARecordedVerifierKeepsItsHead(t *testing.T) {
 	tk = g.reconcile(t, "3buqdlot", 2)
 	if s := g.runs.specs[rid(3)]; s.Role != "reviewer" || tk.Status.Runs[3].HeadSHA != head1 {
 		t.Fatalf("the same role runs again on the same head: %+v %+v", s, tk.Status.Runs)
+	}
+}
+
+// N1: a CI fix moves the head, so the verdict the gate reads must be of the new head. On a
+// template with a reviewer the fix is reviewed again, and the gate decides on a fresh verdict:
+// the shadow log records shadow_would_arm, never verdict_stale.
+func TestACIFixIsReviewedAgainBeforeTheGate(t *testing.T) {
+	g := pairRig(t)
+	g.r.Merger = g.f
+	g.r.Cfg.AgentsLogin = "ogenki-agents[bot]"
+	g.r.Cfg.Classes = map[string]config.Class{"review": {Shadow: true}}
+	agentPR := func(h, run string) forge.PR {
+		p := pr12At(h)
+		p.Author, p.NodeID, p.HeadMessage = "ogenki-agents[bot]", "PR_12", "docs: fix\n\nAgent-Run: "+run
+		return p
+	}
+	g.f.SetPR(agentPR(head1, rid(0)))
+	g.log.handoff(rid(0), head1)
+	g.log.verdict(rid(1), "approve", head1, "LGTM")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+		t.Fatal(tk.Status.Phase)
+	}
+	red := green("SUCCESS")
+	red.Runs[1].State = "FAILURE"
+	g.f.SetChecks(12, red)
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseImplementing || current(tk).Trigger != "ci" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+	g.f.SetPR(agentPR(head2, rid(2))) // the fix pushed and reported
+	g.log.handoff(rid(2), head2)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.finish(rid(2), "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || current(tk).Role != "reviewer" || current(tk).HeadSHA != head2 {
+		t.Fatalf("the CI fix is reviewed again: %s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+	g.log.verdict(rid(3), "approve", head2[:7], "Still right.")
+	g.finish(rid(3), "Succeeded", "agent_finished")
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
+		t.Fatalf("the gate decides on the fresh verdict: %s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }
