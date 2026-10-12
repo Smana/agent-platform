@@ -23,6 +23,23 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
       - run: task check
 
+  # The harness's suites live in its Dockerfile's test stage; `task check` needs no docker.
+  harness-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: images/agent-harness
+          target: test
+          push: false
+
   # One throwaway image per PR push, tagged v<next-patch>-pr<N>.<sha8>: it sorts after
   # the last release and before the next, and each push is its own immutable tag.
   # Never `latest`, never the release tag (the same channel as crossplane-configuration).
@@ -30,7 +47,7 @@ jobs:
   # so a tag names a commit that exists on the branch (review M1).
   # Dependabot's PRs get a read-only token, so they cannot push and are skipped.
   prerelease:
-    needs: check
+    needs: [check, harness-test]
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -43,7 +60,7 @@ jobs:
       id-token: write # keyless cosign signing
     strategy:
       matrix:
-        image: [room-broker, room-bridge, agent-factory]
+        image: [room-broker, room-bridge, agent-factory, agent-harness]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -69,7 +86,8 @@ jobs:
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: .
+          # The Go images build from the module root; the harness from its own directory.
+          context: ${{ matrix.image == 'agent-harness' && 'images/agent-harness' || '.' }}
           file: images/${{ matrix.image }}/Dockerfile
           # The sandbox pool mixes c/m gen 6+ families, Graviton included.
           platforms: linux/amd64,linux/arm64

@@ -20,7 +20,7 @@ jobs:
       id-token: write # keyless cosign signing
     strategy:
       matrix:
-        image: [room-broker, room-bridge, agent-factory]
+        image: [room-broker, room-bridge, agent-factory, agent-harness]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -38,10 +38,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The harness's suites, before anything is pushed: a tag can point at an untested commit.
+      - if: matrix.image == 'agent-harness'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: images/agent-harness
+          target: test
+          push: false
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: .
+          # The Go images build from the module root; the harness from its own directory.
+          context: ${{ matrix.image == 'agent-harness' && 'images/agent-harness' || '.' }}
           file: images/${{ matrix.image }}/Dockerfile
           platforms: linux/amd64,linux/arm64
           build-args: VERSION=${{ github.ref_name }}
