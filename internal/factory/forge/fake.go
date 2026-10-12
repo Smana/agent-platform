@@ -333,8 +333,8 @@ func (f *Fake) SetActivityErr(branch string, err error) {
 }
 
 // BranchActivity implements the forge's BranchActivity. Unset, a branch is its pull request's
-// head, created by the pull request's author, so a test that never pushes more reads what GitHub
-// would of an agent-made branch.
+// head, created by the pull request's author — the agents App in the reconciler's rigs — so the
+// push check passes: a test that never calls SetActivity does not exercise it (#76's tests do).
 func (f *Fake) BranchActivity(_ context.Context, branch string) ([]Push, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

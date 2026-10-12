@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -208,10 +209,17 @@ func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
 // of the task's implementer runs in its Agent-Run trailer (only a claim: see factoryCommits) — the
 // whole list, since an agent's squash or rebase rewrites every SHA — and every push to the branch
 // must be the agents App's (#76, factoryPushed): what binds the commits to the factory, since a
-// human can copy a trailer but not push as the App. The author login is never read: it is whatever
-// GitHub matched the commit's email to, which anyone can set. A merge from GitHub's "Update branch" carries no
-// trailer and hands off here as it already did on its head; that stays the fail-safe side. A pull
-// request past GitHub's 250 listed commits cannot be read whole, so it hands off too.
+// human can copy a trailer but cannot push as the App without access to the agents namespace or
+// the App key. The binding is to the App, not the task: octo-sts's implementer trust policy
+// (cloud-native-ref .github/chainguard/agent-implementer.sts.yaml) is repository-wide, so any
+// implementer run of any task can push as the bot, and only the trailer, a claim, narrows that to
+// this task's runs. The author login is never read: it is whatever GitHub matched the commit's
+// email to, which anyone can set. A merge from GitHub's "Update branch" carries no trailer and
+// hands off here as it already did on its head; that stays the fail-safe side. A pull request
+// past GitHub's 250 listed commits cannot be read whole, so it hands off too.
+//
+// It returns true when the caller must stop: the task was handed off, or GitHub has not recorded
+// the head's push yet and the task waits, unchanged, for a later reconcile (pushRecordGrace).
 func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
 	reported, err := r.reportedHead(ctx, t)
 	if err != nil {
@@ -222,8 +230,18 @@ func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head str
 		if err != nil {
 			return false, err
 		}
-		if factoryMade && r.factoryPushed(ctx, t, head) {
-			return false, nil
+		if factoryMade {
+			pushed, err := r.factoryPushed(ctx, t, head)
+			if err != nil {
+				return false, err
+			}
+			switch {
+			case pushed == pushFactory:
+				return false, nil
+			case pushed == pushUnrecorded && r.Now().Before(pushDeadline(t)):
+				r.log().Info("the head's push is not recorded yet: waiting", "task.id", t.Name, "head", head)
+				return true, nil
+			}
 		}
 	}
 	t.Status.NextTrigger = ""
@@ -299,30 +317,67 @@ func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head 
 	return !slices.ContainsFunc(cs, func(c forge.Commit) bool { return !impl[c.Trailer("Agent-Run")] }), nil
 }
 
+// pushRecordGrace is how long after the task's last implementer run finished the gate waits for
+// GitHub's activity to record the run's push; past it, an unrecorded head hands off.
+const pushRecordGrace = 2 * time.Minute
+
+// pushCheck is factoryPushed's answer.
+type pushCheck int
+
+const (
+	pushStranger   pushCheck = iota // a move not the App's, a broken chain, or a history not read whole
+	pushFactory                     // every move the App's, chained from the creation to the head
+	pushUnrecorded                  // the App's history so far, but the head's push not in it yet
+)
+
+// pushDeadline is when an unrecorded head stops being waited for: pushRecordGrace after the
+// latest finish of the task's implementer runs; zero, so no wait, when none has finished.
+func pushDeadline(t *v1alpha1.Task) time.Time {
+	var last time.Time
+	for _, rec := range t.Status.Runs {
+		if rec.Role == "implementer" && rec.Finished != nil && rec.Finished.After(last) {
+			last = rec.Finished.Time
+		}
+	}
+	if last.IsZero() {
+		return last
+	}
+	return last.Add(pushRecordGrace)
+}
+
 // factoryPushed: GitHub records every move of the task's branch, since its latest creation, as
 // the agents App's (cfg.agentsLogin, the identity octo-sts mints implementer tokens as), in one
 // unbroken chain from that creation to head (#76). The pusher is GitHub's record of whose
 // credential moved the ref, so a commit with a copied trailer, a force-push or GitHub's "Update
-// branch" by anyone else hands off. The chain is what makes the read whole: a push GitHub has not
-// recorded yet, or one past the page cap, leaves a gap, and a gap hands off like a stranger's push.
-// So does any read error: a hand-off is the fail-safe side, and the error is logged.
-func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) bool {
+// branch" by anyone else is a stranger's. The chain is what makes the read whole: a gap, or a
+// history past the page cap, is a stranger's too. One case waits instead: an empty history, or
+// one wholly the App's whose newest move is not yet the head — GitHub records a push a little
+// after it lands. A read error is returned, as factoryCommits's is: the caller retries.
+func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) (pushCheck, error) {
 	ps, err := r.Forge.BranchActivity(ctx, "agent/"+t.Name)
-	if err != nil {
-		r.log().Warn("branch activity unread: the pull request goes to a human", "task.id", t.Name, "err", err)
-		return false
+	if errors.Is(err, forge.ErrActivityTruncated) {
+		return pushStranger, nil
 	}
-	want := head
-	for _, p := range ps { // newest first
-		if p.Actor != r.Cfg.AgentsLogin || p.After != want {
-			return false
+	if err != nil {
+		return pushStranger, err
+	}
+	if len(ps) == 0 {
+		return pushUnrecorded, nil
+	}
+	want := ps[0].After // newest first
+	for _, p := range ps {
+		if p.Actor == "" || p.Actor != r.Cfg.AgentsLogin || p.After != want {
+			return pushStranger, nil
 		}
 		if p.Type == "branch_creation" {
-			return true
+			if ps[0].After != head {
+				return pushUnrecorded, nil
+			}
+			return pushFactory, nil
 		}
 		want = p.Before
 	}
-	return false // the creation was never read
+	return pushStranger, nil // the creation was never read
 }
 
 // implementerRuns are the IDs of the task's implementer runs.

@@ -809,7 +809,8 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 	created := forge.Push{Type: "branch_creation", Actor: bot, Before: strings.Repeat("0", 40), After: head1}
 	red := green("SUCCESS")
 	red.Runs[1].State = "FAILURE"
-	fixed := func(t *testing.T, set func(f *forge.Fake)) *v1alpha1.Task {
+	// fixRun is the fix run rid(2) finished at head2, the branch's activity as set has it.
+	fixRun := func(t *testing.T, set func(f *forge.Fake)) *rig {
 		t.Helper()
 		g := approvedPairAtTheGate(t)
 		g.f.SetChecks(12, red)
@@ -820,7 +821,17 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 		set(g.f)
 		g.log.handoff(rid(2), head2)
 		g.finish(rid(2), "Succeeded", "agent_finished")
-		return g.reconcile(t, "3buqdlot", 2)
+		return g
+	}
+	fixed := func(t *testing.T, set func(f *forge.Fake)) *v1alpha1.Task {
+		t.Helper()
+		return fixRun(t, set).reconcile(t, "3buqdlot", 2)
+	}
+	waiting := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Reason != "" || len(tk.Status.Runs) != 3 {
+			t.Fatalf("waits, unchanged: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(tk.Status.Runs))
+		}
 	}
 	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
 		t.Helper()
@@ -854,11 +865,8 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
 			forge.Push{Type: "push", Before: head1, After: human}, created)))
 	})
-	t.Run("a push GitHub has not recorded yet", func(t *testing.T) {
+	t.Run("a gap in the chain", func(t *testing.T) {
 		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2}, created)))
-	})
-	t.Run("a history that never reaches the head", func(t *testing.T) {
-		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)))
 	})
 	t.Run("a history without its creation", func(t *testing.T) {
 		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
@@ -867,8 +875,42 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 	t.Run("a history past the page cap", func(t *testing.T) {
 		handedOff(t, fixed(t, func(f *forge.Fake) { f.SetActivityErr(branch, forge.ErrActivityTruncated) }))
 	})
-	t.Run("a read GitHub refuses", func(t *testing.T) {
-		handedOff(t, fixed(t, func(f *forge.Fake) { f.SetActivityErr(branch, errors.New("forge: list branch activity: 502")) }))
+	// GitHub records a push a little after it lands: a history wholly the App's whose newest move is
+	// not the head yet waits, unchanged, until pushRecordGrace after the fix run finished.
+	lagging := activity(forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)
+	t.Run("the head's push recorded late", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)
+		g.r.Now = func() time.Time { return now.Add(time.Minute) }
+		reviewed(t, g.reconcile(t, "3buqdlot", 2))
+	})
+	t.Run("an empty history recorded late", func(t *testing.T) {
+		waiting(t, fixed(t, activity()))
+	})
+	t.Run("the head's push never recorded", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.r.Now = func() time.Time { return now.Add(pushRecordGrace + time.Second) }
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a human's push recorded during the wait", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: "Smana", Before: head1, After: human}, created)
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a read GitHub refuses is retried", func(t *testing.T) {
+		g := fixRun(t, func(f *forge.Fake) { f.SetActivityErr(branch, errors.New("forge: list branch activity: 502")) })
+		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+			t.Fatal("the read error is returned for a retry")
+		}
+		waiting(t, g.reconcile(t, "3buqdlot", 0))
+		g.f.SetActivityErr(branch, nil)
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: head1, After: head2}, created)
+		reviewed(t, g.reconcile(t, "3buqdlot", 2))
 	})
 	t.Run("an agent-only history", func(t *testing.T) {
 		reviewed(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
