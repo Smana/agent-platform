@@ -29,12 +29,12 @@ const maxWhat = 200
 // this package stays free of the factory's imports.
 const stopLabel = "factory/stop"
 
-// holds are the factory's Queued reasons a person causes (internal/factory/reconciler slotFree),
+// holds are the factory's Queued reasons another holder of the room causes (reconciler slotFree),
 // repeated here like stopLabel, each with what releases it.
 func holds() map[string]string {
 	return map[string]string{
 		"waiting_human_driver": "the factory's task waits while a person drives this room: hand the driver back to start its next run",
-		"waiting_room_busy":    "the factory's task waits for the run a person started in this room to end",
+		"waiting_room_busy":    "the factory's task waits for another run in this room to end",
 	}
 }
 

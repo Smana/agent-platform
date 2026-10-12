@@ -232,7 +232,7 @@ func reasons() map[string]string {
 		"reentered_head_reported": "the room now reports its head as a commit of the task's run",
 		"rereview_verdict_stale":  "the factory moved its head after the approval, so it is reviewed again",
 		"waiting_human_driver":    "a person drives its room; the hold ends when they hand the driver back or their lease lapses",
-		"waiting_room_busy":       "a run a person started in its room is still going; the hold ends when that run ends",
+		"waiting_room_busy":       "another run in its room is still going; the hold ends when that run ends",
 	}
 }
 
@@ -374,8 +374,9 @@ func BackToGate(t *v1alpha1.Task, reason string, n int32) Event {
 		Body: fmt.Sprintf("Agent factory task `%s` goes back to the merge gate: %s.", t.Name, Reason(reason))}
 }
 
-// Held says a person holds the task's room, so its next run waits (N3). Its key is the wait's:
-// the task's run count and retries, so a hold that changes shape — a person's run ends and the
+// Held says the task's room is held — a person drives it, or another run is live in it — so its
+// next run waits (N3). Its key is the wait's:
+// the task's run count and retries, so a hold that changes shape — the other run ends and a
 // person keeps the driver — is said once, and the next wait for a run says it again.
 func Held(t *v1alpha1.Task, reason, roomsURL string) Event {
 	return Event{Key: fmt.Sprintf("hold-%d-%d", len(t.Status.Runs), t.Status.Retries),
