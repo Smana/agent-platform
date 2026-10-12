@@ -13,6 +13,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -42,15 +43,36 @@ func (r *Reconciler) roomState(ctx context.Context, t *v1alpha1.Task) (due bool,
 	}
 	// The factory closes only what it made: a room of the task's name that another owner made
 	// is that owner's (rooms.Ensure refuses it the same way).
-	return room.DeletionTimestamp == nil && room.Spec.Owner == runs.PrincipalFactory, 0, nil
+	if room.DeletionTimestamp != nil || room.Spec.Owner != runs.PrincipalFactory {
+		return false, 0, nil
+	}
+	if rooms.HumanDriver(&room) { // closing would delete the person's runs mid-session; leases lapse in 2 or 15 min
+		return false, humanDriverWait, nil
+	}
+	return true, 0, nil
 }
 
+// humanDriverWait is how long a room a person drives is left before it is looked at again.
+const humanDriverWait = 2 * time.Minute
+
 // closeRoom deletes the room, which the room controller finalizes: it ends the room's runs and
-// seals the log, and the seal starts the retention clock. NotFound is a room already closed.
+// seals the log, and the seal starts the retention clock. NotFound is a room already closed. The
+// UID precondition keeps a same-named room another owner recreated since the read from being
+// deleted, and the read is repeated here so a person who took the room is not cut off.
 func (r *Reconciler) closeRoom(ctx context.Context, t *v1alpha1.Task) error {
-	room := &roomv1.Room{}
-	room.Name, room.Namespace = t.Status.RoomRef, r.Namespace
-	if err := r.Client.Delete(ctx, room); client.IgnoreNotFound(err) != nil {
+	var room roomv1.Room
+	err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Status.RoomRef}, &room)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("close room %s: %w", t.Status.RoomRef, err)
+	}
+	if room.DeletionTimestamp != nil || room.Spec.Owner != runs.PrincipalFactory || rooms.HumanDriver(&room) {
+		return nil
+	}
+	uid := room.UID
+	if err := r.Client.Delete(ctx, &room, client.Preconditions{UID: &uid}); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("close room %s: %w", room.Name, err)
 	}
 	return nil

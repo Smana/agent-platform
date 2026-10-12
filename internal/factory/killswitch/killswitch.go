@@ -62,7 +62,11 @@ func PublishIssue(ctx context.Context, c client.Client, ns string, on bool) erro
 		if cm.Annotations[AnnotationSource] != SourceIssue {
 			return nil
 		}
-		if err := c.Delete(ctx, &cm); client.IgnoreNotFound(err) != nil {
+		// Preconditions: an operator who replaced the object since the read keeps their stop. A
+		// hand-made stop must be a fresh object (delete, then create): `kubectl apply` over an
+		// issue-made one keeps its annotation, and the label's removal lifts it.
+		uid, rv := cm.UID, cm.ResourceVersion
+		if err := c.Delete(ctx, &cm, client.Preconditions{UID: &uid, ResourceVersion: &rv}); client.IgnoreNotFound(err) != nil {
 			return fmt.Errorf("killswitch: lift %s/%s: %w", ns, ConfigMap, err)
 		}
 	case apierrors.IsNotFound(err) && on:

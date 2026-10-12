@@ -208,11 +208,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if v1alpha1.TerminalPhase(t.Status.Phase) {
 		// #56: the room closes once everything the task owes it has landed. Re-evaluated on the
 		// state this pass left, so the pass that posts the last fact closes it.
+		var closeLeft time.Duration
 		if err == nil {
-			if due, _, serr := r.roomState(ctx, &t); serr != nil {
+			if due, wait, serr := r.roomState(ctx, &t); serr != nil {
 				err = serr
 			} else if due {
 				err = r.closeRoom(ctx, &t)
+			} else {
+				closeLeft = wait
 			}
 		}
 		// The revert watch polls: a revert PR merges, closes or stalls on GitHub's clock, not ours.
@@ -222,7 +225,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err == nil && r.settling(&t) {
 			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: closeLeft}, err // closeLeft: the revert window or a driving person (#56)
 	}
 	if err != nil {
 		return ctrl.Result{}, err

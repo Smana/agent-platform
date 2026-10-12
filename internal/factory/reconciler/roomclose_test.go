@@ -3,12 +3,16 @@
 package reconciler
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
@@ -88,6 +92,54 @@ func TestTheRoomOutlivesTheRevertWindow(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 1)
 	if !roomGone(t, g) {
 		t.Fatal("the room stays open past the revert window")
+	}
+}
+
+// Deleting a room deletes its runs: a person mid-session is not cut off, and the task looks again.
+func TestAHumanDrivenRoomIsLeftOpen(t *testing.T) {
+	g := newRig(t, endedTask(v1alpha1.PhaseDone))
+	withRoom(t, g)
+	var room roomv1.Room
+	key := types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}
+	if err := g.c.Get(t.Context(), key, &room); err != nil {
+		t.Fatal(err)
+	}
+	room.Status.Driver = "human:291"
+	if err := g.c.Status().Update(t.Context(), &room); err != nil {
+		t.Fatal(err)
+	}
+	res, err := g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roomGone(t, g) || res.RequeueAfter <= 0 {
+		t.Fatalf("a human-driven room is closed or never looked at again: requeue %s", res.RequeueAfter)
+	}
+	room.Status.Driver = "system:factory" // the lease lapsed
+	if err := g.c.Status().Update(t.Context(), &room); err != nil {
+		t.Fatal(err)
+	}
+	g.reconcile(t, "3buqdlot", 1)
+	if !roomGone(t, g) {
+		t.Fatal("the room stays open after the person let go")
+	}
+}
+
+// The delete carries the UID it read, so a room recreated under the name is never the one deleted.
+func TestClosingARoomIsPreconditionedOnItsUID(t *testing.T) {
+	g := newRig(t, endedTask(v1alpha1.PhaseDone))
+	withRoom(t, g)
+	var seen client.DeleteOptions
+	g.r.Client = interceptor.NewClient(g.c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, o ...client.DeleteOption) error {
+			if _, ok := obj.(*roomv1.Room); ok {
+				seen.ApplyOptions(o)
+			}
+			return cl.Delete(ctx, obj, o...)
+		}})
+	g.reconcile(t, "3buqdlot", 1)
+	if seen.Preconditions == nil || seen.Preconditions.UID == nil {
+		t.Fatalf("no UID precondition: %+v", seen.Preconditions)
 	}
 }
 

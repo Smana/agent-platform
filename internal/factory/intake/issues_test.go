@@ -603,3 +603,53 @@ func TestRemovingTheLabelKeepsAHandMadeStop(t *testing.T) {
 		t.Fatal("the issue poller deleted a stop object it did not make")
 	}
 }
+
+// A failed publish is reported, but the same pass still serves the revert label.
+func TestAFailedPublishDoesNotSkipReverts(t *testing.T) {
+	defer killswitch.SetIssue(false)
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
+		Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone, PullRequest: &v1alpha1.PullRequestRef{Number: 12, AutoMerged: true}}}
+	f := forge.NewFake()
+	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
+	f.SetLabeled(LabelRevert, forge.Item{Number: 12, PullRequest: true})
+	f.SetEvents(12, forge.LabelEvent{Actor: "Smana", Label: LabelRevert, At: t0})
+	p, c := poller(t, f, tk)
+	p.Cfg.ControlIssue = 1
+	p.Client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, o ...client.CreateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+				return errors.New("apiserver unavailable")
+			}
+			return cl.Create(ctx, obj, o...)
+		}})
+	if err := p.Poll(context.Background()); err == nil {
+		t.Fatal("a failed publish is an error")
+	}
+	var got v1alpha1.Task
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &got)
+	if got.Annotations[v1alpha1.AnnotationRevert] != "label" {
+		t.Fatalf("the revert waited on the publish: %v", got.Annotations)
+	}
+}
+
+// Lifting the stop deletes only the object it read: one replaced since is an operator's.
+func TestLiftingTheStopIsPreconditioned(t *testing.T) {
+	defer killswitch.SetIssue(false)
+	f := forge.NewFake()
+	f.SetIssue(forge.Issue{Number: 1})
+	p, c := poller(t, f, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system",
+		UID: "u1", Annotations: map[string]string{killswitch.AnnotationSource: killswitch.SourceIssue}}})
+	p.Cfg.ControlIssue = 1
+	var pre client.DeleteOptions
+	p.Client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, o ...client.DeleteOption) error {
+			pre.ApplyOptions(o)
+			return cl.Delete(ctx, obj, o...)
+		}})
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pre.Preconditions == nil || pre.Preconditions.UID == nil || *pre.Preconditions.UID != "u1" || pre.Preconditions.ResourceVersion == nil {
+		t.Fatalf("the delete carries no UID and resourceVersion precondition: %+v", pre.Preconditions)
+	}
+}
