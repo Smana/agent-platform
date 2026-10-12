@@ -173,9 +173,10 @@ func (r *Reconciler) taskStatus(ctx context.Context, room *v1alpha1.Room) (*v1al
 	t := &v1alpha1.TaskStatus{Phase: f.Phase}
 	if f.Issue != nil {
 		t.IssueAuthor, t.LabelledBy = f.Issue.Author, f.Issue.LabelledBy
+		t.Issue, t.IssueTitle = int32(f.Issue.Number), f.Issue.Title //nolint:gosec // an issue number is far below 2^31
 	}
 	if f.PR != nil {
-		t.PRAuthor, t.PRReviewers = f.PR.Author, f.PR.Reviewers
+		t.PRAuthor, t.PRReviewers, t.PR = f.PR.Author, f.PR.Reviewers, int32(f.PR.Number) //nolint:gosec // as above
 	}
 	return t, nil
 }
