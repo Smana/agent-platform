@@ -321,7 +321,7 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
-	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
+	g.r = &Reconciler{Client: c, Ledger: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
 	g.runs.now = func() time.Time { return g.r.Now() } // the claims carry the rig's clock

@@ -19,6 +19,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
@@ -139,21 +140,18 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
 }
 
-// factorySpentToday is §6.2's "SP3 at admission" for the factory's own principal (R34): today's
-// system:factory runs, as the meter annotated them. Shadow only until Task 5.3 reads the day's
-// ledger: a stopped run's deleted claim drops out of this sum, its tokens with it.
-func (r *Reconciler) factorySpentToday(ctx context.Context) (int64, error) {
-	all, err := r.Runs.List(ctx)
+// overFactoryDay is §6.2's "SP3 at admission" for the factory's own principal (R34), decided as
+// the API decides it (N2): on the day's ledger, which a deleted claim refunds nothing, for a run
+// of the task's size.
+func (r *Reconciler) overFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (bool, error) {
+	if r.Ledger == nil {
+		return false, errors.New("the daily cap needs the ledger reader")
+	}
+	used, err := api.DayUsed(ctx, r.Ledger, r.Namespace, runs.PrincipalFactory, r.Now())
 	if err != nil {
-		return 0, err
+		return false, err
 	}
-	var n int64
-	for _, x := range all {
-		if x.Principal == runs.PrincipalFactory && sameUTCDay(x.Created, r.Now()) {
-			n += x.Tokens
-		}
-	}
-	return n, nil
+	return api.OverDaily(used, t.Spec.Budget.RunTokens, limit), nil
 }
 
 // traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.

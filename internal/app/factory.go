@@ -143,8 +143,15 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
+	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation, the
+	// meter's settle and Queued's daily cap read date-named ledgers, so through a live client.
+	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		return err
+	}
 	rc := runs.Client{C: mgr.GetClient()}
-	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
+	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
 		Runs: rc, Rooms: broker,
 		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL}, Forge: gh},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
@@ -157,13 +164,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	stopped := func(ctx context.Context) bool {
 		on, err := killswitch.Engaged(ctx, mgr.GetClient(), ns)
 		return on || err != nil // intake pauses on doubt
-	}
-	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
-	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation and
-	// the meter's settle read and write date-named ledgers, so they go through a live client.
-	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
-	if err != nil {
-		return err
 	}
 	humansV, err := authn.NewVerifier(ctx, cfg.API.HumanIssuer, cfg.API.HumanJWKS)
 	if err != nil {

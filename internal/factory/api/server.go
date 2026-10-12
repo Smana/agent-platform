@@ -386,13 +386,7 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 			}
 			return http.StatusConflict, "run_busy"
 		}
-		used := spent[p.ID]
-		for _, v := range reserved {
-			if v.Principal == p.ID {
-				used += v.MaxTokens
-			}
-		}
-		over := used+in.MaxTokens > limit
+		over := OverDaily(dayUsed(spent, reserved, p.ID), in.MaxTokens, limit)
 		if over && s.Cfg.Budgets.EnforcePrincipal {
 			return http.StatusTooManyRequests, "over_budget"
 		}
@@ -446,6 +440,46 @@ func (s *Server) dropReservation(ctx context.Context, id string) {
 	}
 	delete(cm.Data, LedgerReserved+id)
 	_ = s.Rooms.Update(ctx, cm)
+}
+
+// OverDaily is the daily cap's one decision (R50): a run that may spend maxTokens does not fit
+// beside what the principal's day already holds. The API's admission and the factory's Queued
+// (N2) both decide on it.
+func OverDaily(used, maxTokens, limit int64) bool { return used+maxTokens > limit }
+
+// dayUsed is what principal holds of its day: the meter's settled spend plus its admitted runs'
+// reservations.
+func dayUsed(spent map[string]int64, reserved map[string]reservation, principal string) int64 {
+	used := spent[principal]
+	for _, v := range reserved {
+		if v.Principal == principal {
+			used += v.MaxTokens
+		}
+	}
+	return used
+}
+
+// DayUsed reads principal's use of the UTC day of now from that day's ledger, as admission does:
+// a missing ledger is a day with nothing used. c must read ConfigMaps live: the factory's cached
+// watch sees the stop object only.
+func DayUsed(ctx context.Context, c client.Reader, ns, principal string, now time.Time) (int64, error) {
+	cm := &corev1.ConfigMap{}
+	err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: LedgerPrefix + now.UTC().Format(LedgerDayLayout)}, cm)
+	switch {
+	case apierrors.IsNotFound(err):
+		return 0, nil
+	case err != nil:
+		return 0, fmt.Errorf("ledger: %w", err)
+	}
+	spent, err := LedgerSpentColumn(cm)
+	if err != nil {
+		return 0, err
+	}
+	reserved, err := ledgerReservations(cm)
+	if err != nil {
+		return 0, err
+	}
+	return dayUsed(spent, reserved, principal), nil
 }
 
 // LedgerSpentColumn reads a ledger's spent map, nil when the column is empty. Exported with
