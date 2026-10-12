@@ -692,8 +692,8 @@ func TestAMaintainerRestartsTheWait(t *testing.T) {
 		t.Fatalf("13 days after alice's comment: one reminder, no close: %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 	g.r.Now = func() time.Time { return now.Add(24*time.Hour + time.Minute) }
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 2 {
-		t.Fatalf("14 days after it: closed, once reminded: %s %q", tk.Status.Phase, g.f.Comments(7))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 1 {
+		t.Fatalf("14 days after it: closed, once reminded (the close is announced with the settled total, #42): %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 }
 

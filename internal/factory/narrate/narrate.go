@@ -455,8 +455,24 @@ func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event 
 	if h := hints()[phase]; h != "" {
 		b.WriteString("\n\n" + h)
 	}
-	fmt.Fprintf(&b, "\n\nTokens used: %s.", Tokens(t.Status.Usage.Tokens))
-	return Event{Key: fmt.Sprintf("end-%s-%d", strings.ToLower(phase), len(t.Status.Runs)), Body: b.String()}
+	b.WriteString(usageLine + Tokens(t.Status.Usage.Tokens) + ".")
+	return Event{Key: fmt.Sprintf(closingPrefix+"%s-%d", strings.ToLower(phase), len(t.Status.Runs)), Body: b.String()}
+}
+
+const (
+	closingPrefix = "end-"
+	usageLine     = "\n\nTokens used: "
+)
+
+// Closing reports whether key is an ending's: its token total is only final once the usage settles.
+func Closing(key string) bool { return strings.HasPrefix(key, closingPrefix) }
+
+// Retotal rewrites an ending's "Tokens used" line with the settled total (#42).
+func Retotal(body string, tokens int64) string {
+	if i := strings.LastIndex(body, usageLine); i >= 0 {
+		return body[:i] + usageLine + Tokens(tokens) + "."
+	}
+	return body
 }
 
 // StopIgnored answers a factory/stop the poller will not act on, once per label.
