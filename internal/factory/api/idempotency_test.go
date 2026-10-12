@@ -56,7 +56,14 @@ func idemServer(t *testing.T, c *claims, clock func() time.Time) http.Handler {
 	s := mkServer(t, c, cl, true, false, "", 50_000_000)
 	s.NewRunID = taskid.Random // production ids: the key, not a constant, must decide
 	if clock != nil {
-		s.Now = clock
+		// The meter beats as the clock moves: these tests are about the key, not the meter.
+		s.Now = func() time.Time {
+			at := clock()
+			if err := StampMeter(context.Background(), cl, "agent-system", at, time.Hour); err != nil {
+				t.Error(err)
+			}
+			return at
+		}
 	}
 	return s.Handler()
 }
@@ -187,6 +194,31 @@ func TestKeyLifetimeIsTheLedgersDay(t *testing.T) {
 	late := postKey(h, "alice", "k1", base())
 	if late.Code != http.StatusCreated || late.Body.String() == first.Body.String() || len(c.made) != 2 {
 		t.Fatalf("%d %s claims %d", late.Code, late.Body, len(c.made))
+	}
+}
+
+// A replay creates nothing and reserves nothing: a blind meter refuses a new request, not a retry.
+func TestAKeyedReplayIsNotRefusedByTheBlindMeter(t *testing.T) {
+	c := &claims{at: now}
+	cl := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(aliceRoom()).Build()
+	s := mkServer(t, c, cl, true, false, "", 50_000_000)
+	s.NewRunID = taskid.Random
+	h := s.Handler()
+	first := postKey(h, "alice", "k1", base())
+	if first.Code != http.StatusCreated {
+		t.Fatalf("%d %s", first.Code, first.Body)
+	}
+	if err := StampMeter(t.Context(), cl, "agent-system", now.Add(-time.Hour), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	again := postKey(h, "alice", "k1", base())
+	if again.Code != http.StatusCreated || again.Header().Get("Idempotent-Replayed") != "true" ||
+		again.Body.String() != first.Body.String() {
+		t.Fatalf("replay: %d %s", again.Code, again.Body)
+	}
+	if fresh := postKey(h, "alice", "k2", base()); fresh.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(fresh.Body.String(), "meter_blind") || len(c.made) != 1 {
+		t.Fatalf("new: %d %s claims %d", fresh.Code, fresh.Body, len(c.made))
 	}
 }
 
