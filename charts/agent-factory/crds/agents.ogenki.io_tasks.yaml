@@ -185,6 +185,7 @@ spec:
               checkRerunsHead:
                 description: 'The head CheckReruns counts against: a new head resets
                   it.'
+                maxLength: 64
                 type: string
               classification:
                 description: The C7 answer, recorded as-is (§2).

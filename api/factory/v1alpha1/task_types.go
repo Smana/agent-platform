@@ -158,6 +158,7 @@ type TaskStatus struct {
 	// +optional
 	CheckReruns int32 `json:"checkReruns,omitempty"`
 	// The head CheckReruns counts against: a new head resets it.
+	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	CheckRerunsHead string `json:"checkRerunsHead,omitempty"`
 	// +optional
