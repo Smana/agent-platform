@@ -278,6 +278,8 @@ def _segments(command: str) -> list[list[str]]:
     out, cur = [], []
     for w in words:
         if set(w) <= SEPARATORS:
+            if w != "&&":
+                return []  # ; | || & ( ): a failure of one part can be masked by the exit code of another
             out.append(cur)
             cur = []
         else:

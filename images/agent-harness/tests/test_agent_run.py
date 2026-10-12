@@ -355,11 +355,31 @@ class ProgressNotesTest(unittest.TestCase):
         self.assertEqual(m("git -c user.name=x --no-pager commit"), {"commit"})
         self.assertEqual(m("cd repo && git push -u origin HEAD"), {"push"})
         self.assertEqual(m("GIT_X=1 git push"), {"push"})
-        self.assertEqual(m("git add . && git commit -m x; git push"), {"commit", "push"})
+        self.assertEqual(m("git add . && git commit -m x && git push"), {"commit", "push"})
         self.assertEqual(m("gh pr create --fill"), {"pr"})
         self.assertEqual(m("gh -R o/r pr create"), {"pr"})
         for command in ("go test ./...", "pytest -q", "python3 -m pytest", "task check", "task check:go", "npm test", "make test"):
             self.assertEqual(m(command), {"checks"}, command)
+
+    def test_a_masked_failure_arms_nothing(self):
+        # Each of these exits 0 whether or not the push or the PR worked.
+        for command in ("git push || echo failed", "git push; echo done", "git push | tee log",
+                        "git push; gh pr create", "git push & wait", "(git push)"):
+            self.assertEqual(agent_run.milestones(command), set(), command)
+
+    def test_the_observation_is_read_in_the_shape_the_sdk_emits(self):
+        # A TerminalObservation as agent-server 1.49.6 serialises it (openhands/tools/terminal/definition.py:146,
+        # exit_code at :152, set from the session's metadata in terminal_session.py:232): the exit code is
+        # top-level on the observation. metadata.exit_code is -1 until a command ends and is not read.
+        real = {"content": [{"cache_prompt": False, "type": "text", "text": "ok"}], "is_error": False,
+                "command": "git push", "exit_code": 0, "timeout": False,
+                "metadata": {"exit_code": -1, "pid": -1}, "full_output_save_dir": None, "kind": "TerminalObservation"}
+        self.notes.intend("a", "git push")
+        self.notes.result("a", real)
+        self.assertEqual(self.notes.pending, ["started", "push"])
+        self.notes.intend("b", "git commit -m x")
+        self.notes.result("b", {**real, "exit_code": None, "timeout": True})  # a command that timed out
+        self.assertEqual(self.notes.pending, ["started", "push"])
 
     def test_a_4xx_redoes_the_handshake_once(self):
         self.run_ok("git status")
