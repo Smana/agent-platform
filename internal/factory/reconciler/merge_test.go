@@ -33,7 +33,7 @@ func mergeRig(t *testing.T, phase string, objs ...client.Object) *rig {
 		VerifyFor: config.Duration{Duration: 30 * time.Minute}, RevertWindow: config.Duration{Duration: 168 * time.Hour},
 		Breaker: config.Breaker{Window: 10, MaxReverts: 1}}
 	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "OPEN", Title: "docs: fix a link", Author: "ogenki-agents[bot]",
-		HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0)})
+		HeadRef: "agent/3buqdlot", HeadSHA: "abc", HeadMessage: "docs: fix\n\nAgent-Run: " + rid(0)})
 	g.log.handoff(rid(0), "abc")
 	return g
 }

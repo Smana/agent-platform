@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -306,6 +307,58 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		_, _ = io.WriteString(w, `{"number":12,"state":"closed"}`)
 	}))
+	// #76: a branch's activity, newest first, cursor-paged. agent/3buqdlot was created, pushed 119
+	// times, and an older life of the branch lies past its creation on page 2; agent/ghost has an
+	// actor GitHub no longer names; agent/endless never reaches a creation; agent/broken fails.
+	mux.HandleFunc("GET /repos/Smana/demo/activity", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("per_page") != "100" || q.Get("direction") == "asc" {
+			t.Errorf("activity is read newest first, 100 a page: %s", r.URL.RawQuery)
+		}
+		next := func(cursor string) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repositories/1/activity?per_page=100&ref=%s&after=%s>; rel="next"`,
+				g.srv.URL, url.QueryEscape(q.Get("ref")), cursor))
+		}
+		ev := func(i int, typ, actor string) string {
+			before, a := fmt.Sprintf("c%03d", i-1), fmt.Sprintf(`{"login":%q,"type":"Bot"}`, actor)
+			if typ == "branch_creation" {
+				before = "0000000000000000000000000000000000000000"
+			}
+			if actor == "" {
+				a = "null"
+			}
+			return fmt.Sprintf(`{"id":%d,"activity_type":%q,"ref":%q,"before":%q,"after":"c%03d","timestamp":"2026-10-07T19:%02d:00Z","actor":%s}`,
+				i, typ, q.Get("ref"), before, i, i%60, a)
+		}
+		var evs []string
+		switch q.Get("ref") + "@" + q.Get("after") {
+		case "refs/heads/agent/3buqdlot@":
+			for i := 119; i >= 20; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			next("p2")
+		case "refs/heads/agent/3buqdlot@p2":
+			for i := 19; i >= 1; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			evs = append(evs, ev(0, "branch_creation", "ogenki-agents[bot]"), ev(900, "branch_deletion", "Smana"))
+			next("p3")
+		case "refs/heads/agent/ghost@":
+			evs = append(evs, ev(1, "force_push", ""), ev(0, "branch_creation", "ogenki-agents[bot]"))
+		case "refs/heads/agent/broken@":
+			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+			return
+		default:
+			if !strings.HasPrefix(q.Get("ref"), "refs/heads/agent/endless") {
+				t.Errorf("read past the branch's creation: %s", r.URL.RawQuery)
+			}
+			for i := 100; i >= 1; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			next(q.Get("after") + "n")
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(evs, ",")+"]")
+	}))
 	// A pull request's commits, oldest first, paged, and never past GitHub's 250: PR 12 has 130,
 	// PR 14 has 300, of which GitHub serves only the first 250.
 	mux.HandleFunc("GET /repos/Smana/demo/pulls/{n}/commits", g.authed(func(w http.ResponseWriter, r *http.Request) {
@@ -568,6 +621,37 @@ func TestPullRequestCommitsAtGitHubsCapAreTruncated(t *testing.T) {
 	cs, err := r.g.PullRequestCommits(t.Context(), 14)
 	if !errors.Is(err, ErrCommitsTruncated) || len(cs) != 250 {
 		t.Fatalf("%d %v", len(cs), err)
+	}
+}
+
+// #76: a branch's activity, newest first, across cursor pages, back to its latest creation and no
+// further: what came before is an earlier branch of the same name.
+func TestBranchActivityReadsBackToTheCreation(t *testing.T) {
+	r := newRig(t)
+	ps, err := r.g.BranchActivity(t.Context(), "agent/3buqdlot")
+	if err != nil || len(ps) != 120 {
+		t.Fatalf("%d %v", len(ps), err)
+	}
+	if p := ps[0]; p.Type != "push" || p.Actor != "ogenki-agents[bot]" || p.Before != "c118" || p.After != "c119" ||
+		!p.At.Equal(time.Date(2026, 10, 7, 19, 59, 0, 0, time.UTC)) {
+		t.Fatalf("%+v", p)
+	}
+	if p := ps[119]; p.Type != "branch_creation" || p.After != "c000" {
+		t.Fatalf("the creation is the last read: %+v", p)
+	}
+	if ps, err = r.g.BranchActivity(t.Context(), "agent/ghost"); err != nil || ps[0].Actor != "" || ps[0].Type != "force_push" {
+		t.Fatalf("an actor GitHub does not name reads as none: %+v %v", ps, err)
+	}
+}
+
+// A branch whose creation is past the page cap, or a read GitHub refuses, is never a whole history.
+func TestBranchActivityPastTheCapOrRefusedIsNotWhole(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.g.BranchActivity(t.Context(), "agent/endless"); !errors.Is(err, ErrActivityTruncated) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := r.g.BranchActivity(t.Context(), "agent/broken"); err == nil || errors.Is(err, ErrActivityTruncated) {
+		t.Fatalf("%v", err)
 	}
 }
 

@@ -22,6 +22,10 @@ var ErrEventsTruncated = errors.New("forge: label events past the page cap are u
 // never listed, so the list read is not known to be the whole pull request.
 var ErrCommitsTruncated = errors.New("forge: a pull request's commits past GitHub's 250 are unread")
 
+// ErrActivityTruncated is BranchActivity reaching its page cap before the branch's creation: the
+// pushes before what was read are unknown.
+var ErrActivityTruncated = errors.New("forge: a branch's activity past the page cap is unread")
+
 // ErrHeadMoved and ErrNotMergeable are GitHub's refusals of a merge at merge time (ruling R52):
 // expectedHeadOid is no longer the head — a push landed after the decision (HTTP 409) — or the
 // pull request cannot be merged as it stands: protections, an approval it lacks (HTTP 405).
@@ -136,6 +140,17 @@ type Commit struct {
 	SHA     string
 	Author  string // the login GitHub matched the author's email to, "" when none: never proof
 	Message string
+}
+
+// Push is one move of a branch, as GitHub's repository activity records it (#76): Actor is the
+// account whose credential moved the ref from Before to After, "" when GitHub names none. Unlike
+// a commit's author or trailer, the pusher is GitHub's record, not the pusher's claim.
+type Push struct {
+	Type   string // push | force_push | branch_creation | branch_deletion | pr_merge | merge_queue_merge
+	Actor  string
+	Before string
+	After  string
+	At     time.Time
 }
 
 // Trailer is what the commit claims for a git trailer, as PR.Trailer reads the head's.

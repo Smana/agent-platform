@@ -687,6 +687,37 @@ func (g *GitHub) PullRequestCommits(ctx context.Context, number int) ([]Commit, 
 	}
 }
 
+// maxActivityPages bounds BranchActivity: 300 moves of one branch since its creation.
+const maxActivityPages = 3
+
+// BranchActivity is the branch's activity newest first, back to its latest creation and no
+// further: what precedes it is an earlier branch of the same name. GitHub's repository activity
+// API (contents: read) pages by cursor; a history whose creation is not reached within
+// maxActivityPages returns ErrActivityTruncated.
+func (g *GitHub) BranchActivity(ctx context.Context, branch string) ([]Push, error) {
+	var out []Push
+	opt := &github.ListRepositoryActivityOptions{Ref: "refs/heads/" + branch, PerPage: 100}
+	for range maxActivityPages {
+		as, resp, err := g.rest.Repositories.ListRepositoryActivities(ctx, g.owner, g.name, opt)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list branch activity", err)
+		}
+		for _, a := range as {
+			out = append(out, Push{Type: a.ActivityType, Actor: a.GetActor().GetLogin(), Before: a.Before, After: a.After,
+				At: a.GetTimestamp().Time})
+			if a.ActivityType == "branch_creation" {
+				return out, nil
+			}
+		}
+		if resp.After == "" {
+			return out, nil // the branch's whole recorded history, its creation never recorded
+		}
+		opt.After = resp.After
+	}
+	return out, ErrActivityTruncated
+}
+
 // OpenPullRequests are the repository's open pull requests, one page of 100: the factory App's
 // read of the queue (the merger reads PR state through Merger, not here).
 func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
