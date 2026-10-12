@@ -712,6 +712,95 @@ func TestAHumanCommitUnderACIFixGoesToAHuman(t *testing.T) {
 	})
 }
 
+// byRun is a commit claiming run in its Agent-Run trailer.
+func byRun(sha, run string) forge.Commit {
+	return forge.Commit{SHA: sha, Author: "ogenki-agents[bot]", Message: "fix: ci\n\nAgent-Run: " + run}
+}
+
+// #74: a human's push made during the fix run, which the agent pulls and pushes on top of, leaves
+// the head the agent reported: only the pull request's commits show it. Every commit must claim
+// one of the task's implementer runs; anything else, or a list GitHub cuts at 250, goes to a human.
+func TestEveryCommitOfACIFixedPRIsTheFactorys(t *testing.T) {
+	const human, merge = "5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", "6f2a11e6b2c3d4e5f60718293a4b5c6d7e8f9a01"
+	fixed := func(t *testing.T, cs ...forge.Commit) *v1alpha1.Task {
+		t.Helper()
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.reconcile(t, "3buqdlot", 2) // fix run rid(2)
+		g.f.SetPR(agentPR12(head2, rid(2)))
+		g.f.SetCommits(12, cs...)
+		g.log.handoff(rid(2), head2)
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		return g.reconcile(t, "3buqdlot", 2)
+	}
+	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" {
+			t.Fatalf("goes to a human: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	t.Run("a human commit folded into the fix's push", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: human, Author: "Smana", Message: "wip: try this"}, byRun(head2, rid(2))))
+	})
+	t.Run("a human commit forging the bot's login", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: human, Author: "ogenki-agents[bot]", Message: "fix: ci"}, byRun(head2, rid(2))))
+	})
+	t.Run("another task's run", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, "zzzzzzzz"), byRun(head2, rid(2))))
+	})
+	t.Run("a verifier's run, not an implementer's", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, rid(1)), byRun(head2, rid(2))))
+	})
+	t.Run("GitHub's Update branch merged under the fix", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: merge, Author: "Smana", Message: "Merge branch 'main' into agent/3buqdlot"}, byRun(head2, rid(2))))
+	})
+	t.Run("a head the list does not hold", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, rid(2))))
+	})
+	t.Run("an agent-only fix is reviewed again", func(t *testing.T) {
+		if tk := fixed(t, byRun(head1, rid(0)), byRun(head2, rid(2))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("GitHub lists by date, the head not last", func(t *testing.T) {
+		if tk := fixed(t, byRun(head2, rid(2)), byRun(head1, rid(0))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("a human commit already under the reported head at the fix's start", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.f.SetCommits(12, forge.Commit{SHA: human, Author: "Smana", Message: "wip: try this"}, byRun(head1, rid(0)))
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on a human's commit: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+	t.Run("the agent squashed the branch", func(t *testing.T) {
+		if tk := fixed(t, byRun(head2, rid(2))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("more commits than GitHub lists", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.f.SetCommitsTruncated(12)
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on commits nobody can read: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+}
+
 // N1: a CI fix moves the head, so the verdict the gate reads must be of the new head. On a
 // template with a reviewer the fix is reviewed again, and the gate decides on a fresh verdict:
 // the shadow log records shadow_would_arm, never verdict_stale.
@@ -724,6 +813,7 @@ func TestACIFixIsReviewedAgainBeforeTheGate(t *testing.T) {
 		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
 	}
 	g.f.SetPR(agentPR12(head2, rid(2))) // the fix pushed and reported
+	g.f.SetCommits(12, byRun(head1, rid(0)), byRun(head2, rid(2)))
 	g.log.handoff(rid(2), head2)
 	g.f.SetChecks(12, green("SUCCESS"))
 	g.finish(rid(2), "Succeeded", "agent_finished")

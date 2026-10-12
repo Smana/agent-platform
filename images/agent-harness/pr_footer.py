@@ -4,8 +4,8 @@
 Appended after the create, so every way of writing the body (--body,
 --body-file, --fill, a template) gets it. A provenance hint, never
 authorisation (SP3 ruling TB): a pull request opened through `gh api`, or a
-body rewritten by a later `gh pr edit`, has none, and the merge gate binds
-commits to a run by push identity, not by this text.
+body rewritten by a later `gh pr edit`, has none. Nothing binds commits to a
+run by push identity or signature yet (agent-platform#76).
 
 The footer is still the harness's, never the model's. It is always the last
 paragraph, and every line of the body a line-anchored reader would take for an

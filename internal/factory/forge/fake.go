@@ -31,6 +31,8 @@ type Fake struct {
 	agentPulls   []AgentPull
 	checks       map[int]Checks
 	commitChecks map[string][]Check
+	commits      map[int][]Commit
+	commitsCut   map[int]bool
 	filesBase    map[string]string
 	filesHead    map[string]string
 	open         []PRSummary
@@ -48,7 +50,7 @@ func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
-		checks: map[int]Checks{}, commitChecks: map[string][]Check{}}
+		checks: map[int]Checks{}, commitChecks: map[string][]Check{}, commits: map[int][]Commit{}, commitsCut: map[int]bool{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -278,6 +280,39 @@ func (f *Fake) PullRequest(_ context.Context, n int) (PR, error) {
 		return PR{}, fmt.Errorf("pull request %d not found", n)
 	}
 	return p, nil
+}
+
+// SetCommits sets pull request n's commits, oldest first, as PullRequestCommits returns them.
+func (f *Fake) SetCommits(n int, cs ...Commit) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits[n] = slices.Clone(cs)
+}
+
+// SetCommitsTruncated makes PullRequestCommits on n report GitHub's 250-commit cap.
+func (f *Fake) SetCommitsTruncated(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commitsCut[n] = true
+}
+
+// PullRequestCommits implements the forge's PullRequestCommits. Unset, a pull request's commits
+// are its head alone, so a test that never pushes more reads what GitHub would.
+func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]Commit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cs, ok := f.commits[n]
+	if !ok {
+		p, found := f.prs[n]
+		if !found {
+			return nil, fmt.Errorf("pull request %d not found", n)
+		}
+		cs = []Commit{{SHA: p.HeadSHA, Author: p.Author, Message: p.HeadMessage}}
+	}
+	if f.commitsCut[n] {
+		return slices.Clone(cs), ErrCommitsTruncated
+	}
+	return slices.Clone(cs), nil
 }
 
 // SetChecks sets pull request n's head-commit rollup, as PullRequestChecks returns it.

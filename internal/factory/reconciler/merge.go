@@ -202,10 +202,24 @@ func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
 // reported from one of the task's implementer runs: a human pushed, and a fix on top, reviewed and
 // approved by the factory, would merge that human's commit (owner: a human-authored change never
 // auto-merges through the factory). A log read short of its end reports no head, so it hands off.
+//
+// A reported head is not enough (#74): a human's push during the fix run, pulled and pushed on by
+// the agent, ends under the agent's own head. So every commit of the pull request must claim one
+// of the task's implementer runs in its Agent-Run trailer (only a claim: see factoryCommits) — the
+// whole list, since an agent's squash or rebase rewrites every SHA. The author login is never
+// read: it is whatever GitHub matched the
+// commit's email to, which anyone can set. A merge from GitHub's "Update branch" carries no
+// trailer and hands off here as it already did on its head; that stays the fail-safe side. A pull
+// request past GitHub's 250 listed commits cannot be read whole, so it hands off too.
 func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
 	reported, err := r.reportedHead(ctx, t)
-	if err != nil || reported == head {
+	if err != nil {
 		return false, err
+	}
+	if reported == head {
+		if factoryMade, err := r.factoryCommits(ctx, t, head); err != nil || factoryMade {
+			return false, err
+		}
 	}
 	t.Status.NextTrigger = ""
 	t.Status.PullRequest.HeadSHA = head
@@ -237,12 +251,7 @@ func (r *Reconciler) engagedSince(pr forge.PR, since *metav1.Time) bool {
 // be read to its end reports nothing: the newest event may be past what was read, and deciding
 // on a stale newest-commit is exactly what R02 refuses.
 func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string, error) {
-	impl := make(map[string]bool, len(t.Status.Runs))
-	for _, rec := range t.Status.Runs {
-		if rec.Role == "implementer" {
-			impl[rec.ID] = true
-		}
-	}
+	impl := implementerRuns(t)
 	evs, complete, err := r.roomTail(ctx, t.Status.RoomRef, 0, briefEvent)
 	if err != nil {
 		return "", err
@@ -260,6 +269,40 @@ func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string
 		}
 	}
 	return head, nil
+}
+
+// factoryCommits: head is among the pull request's commits, and each of them claims one of the
+// task's implementer runs. The claim authenticates nothing: run IDs are public (the PR footer,
+// every agent commit on the branch) and an amend or a cherry-pick keeps the trailer. It stops a
+// human commit nobody stamped, a careless push, not a deliberate one; binding commits to the
+// factory by push identity or signature is #76.
+func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
+	cs, err := r.Forge.PullRequestCommits(ctx, t.Status.PullRequest.Number)
+	if errors.Is(err, forge.ErrCommitsTruncated) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// GitHub orders the list by commit date, not ancestry, so the head is looked for, not assumed
+	// last. A force-push between the two reads drops it, and hands off; a push on top adds a
+	// commit, which the trailer test below then reads.
+	if !slices.ContainsFunc(cs, func(c forge.Commit) bool { return c.SHA == head }) {
+		return false, nil
+	}
+	impl := implementerRuns(t)
+	return !slices.ContainsFunc(cs, func(c forge.Commit) bool { return !impl[c.Trailer("Agent-Run")] }), nil
+}
+
+// implementerRuns are the IDs of the task's implementer runs.
+func implementerRuns(t *v1alpha1.Task) map[string]bool {
+	impl := make(map[string]bool, len(t.Status.Runs))
+	for _, rec := range t.Status.Runs {
+		if rec.Role == "implementer" {
+			impl[rec.ID] = true
+		}
+	}
+	return impl
 }
 
 // eventCommit is the commit a handoff or a review verdict names, "" when it names none.
