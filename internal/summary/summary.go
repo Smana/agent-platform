@@ -85,7 +85,7 @@ type Note struct {
 // room keeps waiting (N3). It carries a link to the room and never a command: approving is
 // web-only (D4, ruling P18).
 type Need struct {
-	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason)
+	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason) | merge (ID is the PR number)
 	ID       string    `json:"id"`
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
@@ -111,6 +111,8 @@ type Summary struct {
 		PR          *envelope.PRFact     `json:"pr"`
 		Issue       *envelope.IssueFact  `json:"issue"`
 		LastVerdict *Verdict             `json:"lastVerdict"`
+		Reason      string               `json:"reason,omitempty"` // why the task waits, when it does (#59)
+		Next        string               `json:"next,omitempty"`   // what happens or who acts next
 	} `json:"status"`
 	NeedsYou []Need   `json:"needsYou"`
 	Actions  []Action `json:"actions"`
@@ -228,6 +230,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.Status.Phase, s.Status.Run, s.Status.Budget, s.Status.PR, s.Status.Issue = f.Phase, f.Run, f.Budget, f.PR, f.Issue
 	}
 	s.Status.LastVerdict = st.Verdict
+	s.Status.Reason, s.Status.Next = waiting(st.Facts)
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
 	for _, n := range st.Notes {
@@ -255,6 +258,9 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	if n, ok := Hold(st.Facts, sub, url); ok {
 		s.NeedsYou = append(s.NeedsYou, n)
 	}
+	if n, ok := Merge(st.Facts, sub); ok {
+		s.NeedsYou = append(s.NeedsYou, n)
+	}
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
@@ -266,7 +272,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	// No dedicated stop right exists: stopping closes the task, which is the owner's (Close).
 	if st.Facts != nil && st.Facts.Issue != nil && policy.Allowed(sub, policy.Close) {
 		s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
-			CLI: fmt.Sprintf("gh issue edit %d --add-label %s", st.Facts.Issue.Number, stopLabel)})
+			CLI: fmt.Sprintf("gh issue edit %d%s --add-label %s", st.Facts.Issue.Number, repoFlag(repoOf(st.Facts)), stopLabel)})
 	}
 	return s
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/github"
+	summ "github.com/Smana/agent-platform/internal/summary"
 )
 
 // MaxNarrated is status.narrated's maxItems in the Task CRD: Post trims the oldest keys past it.
@@ -364,8 +365,12 @@ func WouldArm(t *v1alpha1.Task, class string) Event {
 
 // WaitingForHuman says the gate stopped deciding and a maintainer's review is what remains.
 func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
-	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)),
-		Body: fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))}
+	body := fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))
+	if pr := t.Status.PullRequest; pr != nil && pr.Number > 0 {
+		// The ruleset blocks a plain merge, whoever approved (#51).
+		body += "\n\nTo " + summ.MergeHow(t.Spec.Repository, pr.Number) + "."
+	}
+	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
 }
 
 // BackToGate says a transient hand-off returned to the merge gate (N1), and why. n is the task's
