@@ -33,6 +33,8 @@ type Fake struct {
 	commitChecks map[string][]Check
 	commits      map[int][]Commit
 	commitsCut   map[int]bool
+	activity     map[string][]Push
+	activityErr  map[string]error
 	filesBase    map[string]string
 	filesHead    map[string]string
 	open         []PRSummary
@@ -50,7 +52,8 @@ func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
-		checks: map[int]Checks{}, commitChecks: map[string][]Check{}, commits: map[int][]Commit{}, commitsCut: map[int]bool{}}
+		checks: map[int]Checks{}, commitChecks: map[string][]Check{}, commits: map[int][]Commit{}, commitsCut: map[int]bool{},
+		activity: map[string][]Push{}, activityErr: map[string]error{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -313,6 +316,40 @@ func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]Commit, error) {
 		return slices.Clone(cs), ErrCommitsTruncated
 	}
 	return slices.Clone(cs), nil
+}
+
+// SetActivity sets branch's activity, newest first, as BranchActivity returns it.
+func (f *Fake) SetActivity(branch string, ps ...Push) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activity[branch] = slices.Clone(ps)
+}
+
+// SetActivityErr makes BranchActivity on branch fail with err (ErrActivityTruncated: past the cap).
+func (f *Fake) SetActivityErr(branch string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activityErr[branch] = err
+}
+
+// BranchActivity implements the forge's BranchActivity. Unset, a branch is its pull request's
+// head, created by the pull request's author, so a test that never pushes more reads what GitHub
+// would of an agent-made branch.
+func (f *Fake) BranchActivity(_ context.Context, branch string) ([]Push, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.activityErr[branch]; err != nil {
+		return slices.Clone(f.activity[branch]), err
+	}
+	if ps, ok := f.activity[branch]; ok {
+		return slices.Clone(ps), nil
+	}
+	for _, p := range f.prs {
+		if p.HeadRef == branch {
+			return []Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA}}, nil
+		}
+	}
+	return nil, nil
 }
 
 // SetChecks sets pull request n's head-commit rollup, as PullRequestChecks returns it.

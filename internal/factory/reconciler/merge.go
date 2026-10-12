@@ -206,9 +206,10 @@ func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
 // A reported head is not enough (#74): a human's push during the fix run, pulled and pushed on by
 // the agent, ends under the agent's own head. So every commit of the pull request must claim one
 // of the task's implementer runs in its Agent-Run trailer (only a claim: see factoryCommits) — the
-// whole list, since an agent's squash or rebase rewrites every SHA. The author login is never
-// read: it is whatever GitHub matched the
-// commit's email to, which anyone can set. A merge from GitHub's "Update branch" carries no
+// whole list, since an agent's squash or rebase rewrites every SHA — and every push to the branch
+// must be the agents App's (#76, factoryPushed): what binds the commits to the factory, since a
+// human can copy a trailer but not push as the App. The author login is never read: it is whatever
+// GitHub matched the commit's email to, which anyone can set. A merge from GitHub's "Update branch" carries no
 // trailer and hands off here as it already did on its head; that stays the fail-safe side. A pull
 // request past GitHub's 250 listed commits cannot be read whole, so it hands off too.
 func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
@@ -217,8 +218,12 @@ func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head str
 		return false, err
 	}
 	if reported == head {
-		if factoryMade, err := r.factoryCommits(ctx, t, head); err != nil || factoryMade {
+		factoryMade, err := r.factoryCommits(ctx, t, head)
+		if err != nil {
 			return false, err
+		}
+		if factoryMade && r.factoryPushed(ctx, t, head) {
+			return false, nil
 		}
 	}
 	t.Status.NextTrigger = ""
@@ -273,9 +278,9 @@ func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string
 
 // factoryCommits: head is among the pull request's commits, and each of them claims one of the
 // task's implementer runs. The claim authenticates nothing: run IDs are public (the PR footer,
-// every agent commit on the branch) and an amend or a cherry-pick keeps the trailer. It stops a
-// human commit nobody stamped, a careless push, not a deliberate one; binding commits to the
-// factory by push identity or signature is #76.
+// every agent commit on the branch) and an amend or a cherry-pick keeps the trailer. factoryPushed
+// is what binds the commits to the factory; the claim stays because it narrows that to this task's
+// implementer runs, where the App's push identity is shared by every implementer run of any task.
 func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
 	cs, err := r.Forge.PullRequestCommits(ctx, t.Status.PullRequest.Number)
 	if errors.Is(err, forge.ErrCommitsTruncated) {
@@ -292,6 +297,32 @@ func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head 
 	}
 	impl := implementerRuns(t)
 	return !slices.ContainsFunc(cs, func(c forge.Commit) bool { return !impl[c.Trailer("Agent-Run")] }), nil
+}
+
+// factoryPushed: GitHub records every move of the task's branch, since its latest creation, as
+// the agents App's (cfg.agentsLogin, the identity octo-sts mints implementer tokens as), in one
+// unbroken chain from that creation to head (#76). The pusher is GitHub's record of whose
+// credential moved the ref, so a commit with a copied trailer, a force-push or GitHub's "Update
+// branch" by anyone else hands off. The chain is what makes the read whole: a push GitHub has not
+// recorded yet, or one past the page cap, leaves a gap, and a gap hands off like a stranger's push.
+// So does any read error: a hand-off is the fail-safe side, and the error is logged.
+func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) bool {
+	ps, err := r.Forge.BranchActivity(ctx, "agent/"+t.Name)
+	if err != nil {
+		r.log().Warn("branch activity unread: the pull request goes to a human", "task.id", t.Name, "err", err)
+		return false
+	}
+	want := head
+	for _, p := range ps { // newest first
+		if p.Actor != r.Cfg.AgentsLogin || p.After != want {
+			return false
+		}
+		if p.Type == "branch_creation" {
+			return true
+		}
+		want = p.Before
+	}
+	return false // the creation was never read
 }
 
 // implementerRuns are the IDs of the task's implementer runs.
