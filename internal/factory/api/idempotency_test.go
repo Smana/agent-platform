@@ -190,6 +190,38 @@ func TestKeyLifetimeIsTheLedgersDay(t *testing.T) {
 	}
 }
 
+// Run ids are public and 40 bits: a key ground to another principal's id must not replay their run.
+func TestAnotherPrincipalsRunIsNeverReplayed(t *testing.T) {
+	c := &claims{at: now}
+	victim := keyedID(now, "human:291", "k1")
+	_ = c.Create(context.Background(), runs.Spec{RunID: victim, Principal: "human:1", Branch: "agent/" + victim,
+		RequestHash: requestHash(RunRequest{})})
+	w := postKey(idemServer(t, c, nil), "alice", "k1", base())
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "idempotency_key_collision") ||
+		strings.Contains(w.Body.String(), victim) || len(c.made) != 1 {
+		t.Fatalf("%d %s claims %d", w.Code, w.Body, len(c.made))
+	}
+}
+
+func TestRetryWithReorderedOrEmptyEgressReplays(t *testing.T) {
+	c := &claims{at: now}
+	h := idemServer(t, c, nil)
+	a := base()
+	a["egressProfiles"] = []string{"pypi", "npm"}
+	b := base()
+	b["egressProfiles"] = []string{"npm", "pypi"}
+	first, second := postKey(h, "alice", "k1", a), postKey(h, "alice", "k1", b)
+	if second.Code != http.StatusCreated || first.Body.String() != second.Body.String() || len(c.made) != 1 {
+		t.Fatalf("%d %s claims %d", second.Code, second.Body, len(c.made))
+	}
+	e := base()
+	e["egressProfiles"] = []string{}
+	postKey(h, "alice", "k2", base())
+	if w := postKey(h, "alice", "k2", e); w.Code != http.StatusCreated || len(c.made) != 2 {
+		t.Fatalf("%d %s claims %d", w.Code, w.Body, len(c.made))
+	}
+}
+
 func TestNoKeyStillMintsAFreshRun(t *testing.T) {
 	c := &claims{at: now}
 	h := idemServer(t, c, nil)

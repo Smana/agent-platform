@@ -211,7 +211,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	id := ""
 	if key != "" {
 		var first *runs.Run
-		id, first = s.keyedRun(p, key, all)
+		var collision bool
+		id, first, collision = s.keyedRun(p, key, all)
+		if collision {
+			refuse(w, http.StatusConflict, "idempotency_key_collision")
+			return
+		}
 		if first != nil {
 			// The room, branch and ledger checks below would meet this run's own claim and
 			// reservation as busy: a retry is answered before them, with the first answer.
@@ -283,17 +288,26 @@ const KeyLifetime = 24 * time.Hour
 // the day turns; the previous day's id is looked up too, so a retry across midnight still finds
 // a run younger than KeyLifetime. first is nil when the key has no live run, and id is then the
 // one to create.
-func (s *Server) keyedRun(p authn.Principal, key string, all []runs.Run) (id string, first *runs.Run) {
+//
+// The id is 40 bits and run ids are public (agent/<id> branches), so a claim under a candidate id
+// that another principal owns is never a replay: collision is true and the caller refuses with 409
+// (creating would collide on the claim name anyway). Known gap: concurrent retries of one key
+// either side of 00:00 UTC both find nothing and compute different ids, so they make two runs.
+func (s *Server) keyedRun(p authn.Principal, key string, all []runs.Run) (id string, first *runs.Run, collision bool) {
 	now := s.Now()
 	id = keyedID(now, p.ID, key)
 	for _, cand := range []string{id, keyedID(now.Add(-KeyLifetime), p.ID, key)} {
 		for i := range all {
-			if all[i].ID == cand && now.Sub(all[i].Created) < KeyLifetime {
-				return cand, &all[i]
+			switch {
+			case all[i].ID != cand:
+			case all[i].Principal != p.ID:
+				return id, nil, true
+			case now.Sub(all[i].Created) < KeyLifetime:
+				return cand, &all[i], false
 			}
 		}
 	}
-	return id, nil
+	return id, nil, false
 }
 
 func keyedID(at time.Time, principal, key string) string {
@@ -302,8 +316,14 @@ func keyedID(at time.Time, principal, key string) string {
 }
 
 // requestHash fingerprints the admitted request, defaults applied: a replay with the same key
-// and another fingerprint is a different request, not a retry.
+// and another fingerprint is a different request, not a retry. Egress profiles are a set (sorted,
+// nil equals empty). It hashes every RunRequest field, so adding one changes the hash of a run
+// made before the deploy: a retry across that rollout may get 422 once.
 func requestHash(in RunRequest) string {
+	in.EgressProfiles = slices.Sorted(slices.Values(in.EgressProfiles))
+	if len(in.EgressProfiles) == 0 {
+		in.EgressProfiles = nil
+	}
 	b, _ := json.Marshal(in) // plain strings, numbers and slices: Marshal cannot fail
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
