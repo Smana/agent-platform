@@ -27,7 +27,8 @@ is working on now.
 1. `gh issue view N --comments` and find the room link `…/r/<room>` in the factory's "started run" comment.
 2. `roomctl status <room> --json`. Report `status.phase`, `status.run`, `status.pr` and the newest `notes.items`.
 3. If `needsYou` is not empty, say "it needs you" first, with each item's `what`, `deadline` and `url`.
-   Approvals happen in the room page: give the link, never a command.
+   Approvals happen in the room page: give the link, never a command. A `hold` is the user's own
+   hold on the room keeping the task waiting: say what releases it (`what`).
 4. To add guidance for the next run: `roomctl post <room> --queue '<text>'`, only with the user's words.
 
 ## Anything waiting on me?

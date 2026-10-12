@@ -58,6 +58,10 @@ func RenderSummary(w io.Writer, raw []byte, now time.Time) error {
 		b.WriteString("needs you: none\n")
 	}
 	for _, n := range s.NeedsYou {
+		if n.Kind == "hold" {
+			fmt.Fprintf(&b, "needs you: %s → %s\n", oneLine(n.What), oneLine(n.URL))
+			continue
+		}
 		by := ""
 		if !n.Deadline.IsZero() {
 			by = " by " + stamp(n.Deadline, now)

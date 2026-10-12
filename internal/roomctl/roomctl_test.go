@@ -512,6 +512,21 @@ func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
 	}
 }
 
+// N3: a hold is no approval: it is printed as what releases it, with the room's link.
+func TestRenderSummaryPrintsAHold(t *testing.T) {
+	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued"},` +
+		`"needsYou":[{"kind":"hold","id":"waiting_human_driver","what":"hand the driver back","url":"https://rooms.example/r/26zfnuxm"}],` +
+		`"actions":[],"notes":{"untrusted":true,"items":[]},"cursor":"seq:3"}`
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(body), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := "phase: Queued\nneeds you: hand the driver back → https://rooms.example/r/26zfnuxm\ncursor: seq:3\n"
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
 // A time not of today (UTC) carries its date: "by 14:00" read the next morning is a deadline long gone.
 func TestRenderSummaryDatesAnotherDay(t *testing.T) {
 	var out strings.Builder

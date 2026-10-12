@@ -21,7 +21,8 @@ export interface Summary {
     issue: { number: number; url: string; author?: string; labelledBy?: string } | null;
     lastVerdict: { by: string; verdict: string; at: string } | null;
   };
-  needsYou: { kind: "approval"; id: string; what: string; deadline?: string; url: string }[];
+  // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
+  needsYou: { kind: "approval" | "hold"; id: string; what: string; deadline?: string; url: string }[];
   actions: { kind: string; what: string; cli?: string }[];
   notes: { untrusted: true; items: { at: string; run: string; text: string }[] };
   cursor: string;
@@ -108,6 +109,10 @@ export function focusApproval(id: string): boolean {
 function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
   const ul = el("ul");
   for (const n of items) {
+    if (n.kind === "hold") { // the page is the room: nothing to link to
+      ul.append(el("li", { textContent: `Hold: ${n.what}` }));
+      continue;
+    }
     const a = el("a", { href: `#${approvalAnchor(n.id)}`, textContent: "Review and decide" });
     // Reveal the existing approval card; the page keeps one decide path.
     a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };

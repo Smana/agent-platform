@@ -44,6 +44,16 @@ describe("renderSummary", () => {
     expect(r.querySelector('[data-block="needs-you"]')).toBeNull();
   });
 
+  // N3: a hold is no approval: it says what releases it, with no decide link.
+  it("renders a hold as what releases it", () => {
+    const s = base();
+    s.needsYou = [{ kind: "hold", id: "waiting_human_driver", what: "hand the driver back", url: "https://rooms.example/r/3kq7x2ma" }];
+    const block = render(s).querySelector('[data-block="needs-you"]')!;
+    expect(block.textContent).toContain("Hold: hand the driver back");
+    expect(block.textContent).not.toMatch(/Approval|Review and decide/);
+    expect(block.querySelector("a")).toBeNull();
+  });
+
   it("omits Needs you when nothing needs you", () => {
     const s = base();
     s.needsYou = [];

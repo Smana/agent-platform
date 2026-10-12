@@ -579,6 +579,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !ok {
 		t.Status.Reason = why
+		if why == "waiting_room_busy" || why == "waiting_human_driver" { // a person's hold, not the factory's own caps (N3)
+			narrateLater(t, narrate.Held(t, why, r.Cfg.RoomsURL))
+		}
 		return nil
 	}
 	// A pull request merged or closed meanwhile ends the wait with no run, so it is read before

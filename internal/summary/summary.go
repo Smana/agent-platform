@@ -29,6 +29,15 @@ const maxWhat = 200
 // this package stays free of the factory's imports.
 const stopLabel = "factory/stop"
 
+// holds are the factory's Queued reasons a person causes (internal/factory/reconciler slotFree),
+// repeated here like stopLabel, each with what releases it.
+func holds() map[string]string {
+	return map[string]string{
+		"waiting_human_driver": "the factory's task waits while a person drives this room: hand the driver back to start its next run",
+		"waiting_room_busy":    "the factory's task waits for the run a person started in this room to end",
+	}
+}
+
 // State is what Fold keeps of a log.
 type State struct {
 	Facts     *envelope.TaskFacts
@@ -62,10 +71,11 @@ type Note struct {
 	Text string    `json:"text"`
 }
 
-// Need is a pending approval the viewer could decide. It carries a link to the room and never a
-// command: approving is web-only (D4, ruling P18).
+// Need is a pending approval the viewer could decide, or a factory task the viewer's hold on the
+// room keeps waiting (N3). It carries a link to the room and never a command: approving is
+// web-only (D4, ruling P18).
 type Need struct {
-	Kind     string    `json:"kind"` // approval
+	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason)
 	ID       string    `json:"id"`
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
@@ -231,6 +241,11 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 			}
 			s.NeedsYou = append(s.NeedsYou, Need{Kind: "approval", ID: a.ID, What: a.What, Deadline: a.ExpiresAt, URL: url + "#" + a.ID})
 		}
+	}
+	// N3: a factory task a person holds waits on whoever can release the room: its driver, or its
+	// owner, who can take the driver back. The factory's next facts end the need.
+	if f := st.Facts; f != nil && f.Phase == "Queued" && holds()[f.Reason] != "" && policy.Allowed(sub, policy.StartRun) {
+		s.NeedsYou = append(s.NeedsYou, Need{Kind: "hold", ID: f.Reason, What: holds()[f.Reason], URL: url})
 	}
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
