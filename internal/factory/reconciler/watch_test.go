@@ -695,6 +695,11 @@ func TestAMaintainerRestartsTheWait(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 1 {
 		t.Fatalf("14 days after it: closed, once reminded (the close is announced with the settled total, #42): %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
+	g.r.Now = func() time.Time { return now.Add(24*time.Hour + time.Minute + g.r.settleWindow()) }
+	g.reconcile(t, "3buqdlot", 1)
+	if c := g.f.Comments(7); len(c) != 2 || !strings.Contains(c[1], "Tokens used") {
+		t.Fatalf("the close is posted once the usage settles: %q", c)
+	}
 }
 
 // A close is never unannounced: a task first seen 14 days quiet (the factory was down) is

@@ -152,6 +152,25 @@ func TestTheClosingCommentCarriesTheSettledTotal(t *testing.T) {
 	}
 }
 
+// A run the meter never read (zero tokens at the settle) makes the total a floor, and the
+// closing comment says so rather than presenting it as final.
+func TestAClosingTotalMissingARunsUsageIsAFloor(t *testing.T) {
+	g := pairRig(t)
+	r := g.runs.runs[rid(0)]
+	r.Tokens = 400_000
+	g.runs.runs[rid(0)] = r // the reviewer's usage stays 0
+	g.log.verdict(rid(1), "approve", head1[:7], "LGTM")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 2)
+	g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", HeadSHA: head1})
+	g.reconcile(t, "3buqdlot", 1)
+	g.r.Now = func() time.Time { return now.Add(2*g.r.Cfg.Poll.Meter.Duration + 30*time.Second) }
+	g.reconcile(t, "3buqdlot", 1)
+	if say := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(say, "Tokens used: at least 400 k") {
+		t.Fatalf("%q", say)
+	}
+}
+
 func TestLateUsageSettles(t *testing.T) {
 	g := pairRig(t)
 	usage := func(n int, tokens int64) {

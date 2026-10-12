@@ -425,9 +425,10 @@ func (r *Reconciler) settle(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	t.Status.UsageSettled = true
+	blind := slices.ContainsFunc(t.Status.Runs, func(rec v1alpha1.RunRecord) bool { return rec.Tokens == 0 })
 	for i := range t.Status.Outbox {
 		if o := &t.Status.Outbox[i]; narrate.Closing(o.Key) { // the closing comment waited for this total (#42)
-			o.Body = narrate.Retotal(o.Body, t.Status.Usage.Tokens)
+			o.Body = narrate.Retotal(o.Body, t.Status.Usage.Tokens, blind)
 		}
 	}
 	tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
