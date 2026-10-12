@@ -75,6 +75,11 @@ tasks:
       - bash charts/agent-factory/tests/render.sh
       - git diff --exit-code -- config/crd api
 
+  harness:test:
+    desc: The agent harness image's test stage (needs docker; kept out of check, which does not)
+    cmds:
+      - docker build --target test images/agent-harness
+
   # web/ builds on the nodejs mise.toml pins, from package-lock.json only (npm ci).
   ui:build:
     dir: web
