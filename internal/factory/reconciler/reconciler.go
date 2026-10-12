@@ -98,8 +98,8 @@ const (
 )
 
 // escalatedPoll is how often an escalated task is reconciled. It waits only for a maintainer's
-// /factory retry or the end of its pull request, which nothing bounds in number (§6.3 gives
-// Escalated no timeout), and each poll costs GitHub calls the whole factory shares.
+// /factory retry, the end of its pull request, or caps.escalatedHours (#61), and each poll costs
+// GitHub calls the whole factory shares.
 const escalatedPoll = 5 * time.Minute
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on

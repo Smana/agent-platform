@@ -87,6 +87,9 @@ func TestGoodConfigParses(t *testing.T) {
 	if c.Caps.MaxPendingMinutes != 30 {
 		t.Fatalf("an omitted Pending bound defaults to 30 (P): %d", c.Caps.MaxPendingMinutes)
 	}
+	if c.Caps.EscalatedHours != 168 {
+		t.Fatalf("an omitted escalation limit defaults to a week (#61): %d", c.Caps.EscalatedHours)
+	}
 	if c.Caps.AwaitingHumanWIP != 5 {
 		t.Fatalf("awaitingHumanWIP: %d", c.Caps.AwaitingHumanWIP)
 	}
