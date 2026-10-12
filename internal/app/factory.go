@@ -210,7 +210,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				m.BudgetCap(ctx, p, c)
 			},
 			OnUsageError: m.MeterUsageReadError, OnSucceeded: m.MeterSucceeded, OnOvershoot: m.RunOvershoot,
-			Ledger: live, Namespace: ns},
+			Ledger: live, Tasks: mgr.GetClient(), Namespace: ns},
 		&killswitch.Sweeper{Reader: mgr.GetClient(), Namespace: ns, Runs: rc, Every: 15 * time.Second,
 			Release: func(ctx context.Context, r runs.Run) error {
 				return api.Release(ctx, live, ns, time.Now(), r.ID) // admission reads today's ledger only

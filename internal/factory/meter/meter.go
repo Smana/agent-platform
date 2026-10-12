@@ -23,9 +23,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
 
 // Revocation reasons (C5). The composition turns each into its own BudgetExhausted variant,
@@ -93,7 +95,10 @@ type Meter struct {
 	// tick's increase to the spent column, releases the reservations of runs that ended, stamps
 	// the heartbeat admission reads (#54), and prunes old days. nil: the day's spend lives in this meter's memory alone, and a failover loses it —
 	// fine while EnforcePrincipal is off, which is every wiring that leaves it unset today.
-	Ledger    client.Client
+	Ledger client.Client
+	// Tasks lists the factory's Tasks (the manager's cached client: no apiserver call per tick),
+	// so a live task's reserved next run is never released as unclaimed. nil: none is protected.
+	Tasks     client.Reader
 	Namespace string
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
@@ -284,13 +289,16 @@ func (m *Meter) Tick(ctx context.Context) error {
 			}
 		}
 	}
+	// The success is reported only once admission can read it: the gauge never looks healthy
+	// beside a 503 meter_blind.
 	at := m.now()
-	if m.OnSucceeded != nil {
-		m.OnSucceeded(ctx, at)
-	}
+	var stamp error
 	if m.Ledger != nil {
-		errs = append(errs, api.StampMeter(ctx, m.Ledger, m.Namespace, at, BlindTicks*m.Every),
-			m.release(ctx, all), m.prune(ctx, day))
+		stamp = api.StampMeter(ctx, m.Ledger, m.Namespace, at, BlindTicks*m.Every)
+		errs = append(errs, stamp, m.release(ctx, all), m.prune(ctx, day))
+	}
+	if stamp == nil && m.OnSucceeded != nil {
+		m.OnSucceeded(ctx, at)
 	}
 	return errors.Join(errs...)
 }
@@ -436,6 +444,20 @@ func (m *Meter) releaseOrphans(ctx context.Context, all []runs.Run) error {
 	claimed := make(map[string]bool, len(all))
 	for _, r := range all {
 		claimed[r.ID] = true
+	}
+	// A live task's next run may wait reserved and unclaimed for minutes in Queued (the room log,
+	// the broker's permission), and its idempotent re-reserve refreshes nothing: releasing it
+	// could start that run unreserved. The task's end releases it instead (#87 review).
+	if m.Tasks != nil {
+		var tasks v1alpha1.TaskList
+		if err := m.Tasks.List(ctx, &tasks, client.InNamespace(m.Namespace)); err != nil {
+			return fmt.Errorf("meter: list tasks: %w", err) // release nothing unclaimed on doubt
+		}
+		for i := range tasks.Items {
+			if tk := &tasks.Items[i]; !v1alpha1.TerminalPhase(tk.Status.Phase) {
+				claimed[taskid.Run(tk.Name, len(tk.Status.Runs))] = true
+			}
+		}
 	}
 	unclaimed := map[string]time.Time{}
 	var due []string
