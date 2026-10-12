@@ -170,6 +170,35 @@ func TestApprovalsNeedAnApproverAndCarryNoCommand(t *testing.T) {
 	}
 }
 
+// N3: a factory task held by a person in its room needs whoever can release the hold — the driver
+// or the owner — until the factory's next facts say the task moved on.
+func TestAHumanHoldNeedsWhoeverCanReleaseIt(t *testing.T) {
+	factory := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
+	facts := func(seq int64, phase, reason string) envelope.Event {
+		return ev(seq, envelope.StateChanged, factory, envelope.TaskStatePayload(envelope.TaskFacts{Phase: phase, Reason: reason}))
+	}
+	for _, reason := range []string{"waiting_human_driver", "waiting_room_busy"} {
+		st := summary.Fold([]envelope.Event{facts(1, "Queued", reason)})
+		for name, sub := range map[string]policy.Subject{"driver": driverWeb(), "owner": owner()} {
+			got := summary.View(st, "r", "u", sub, 0, time.Now()).NeedsYou
+			if len(got) != 1 || got[0].Kind != "hold" || got[0].ID != reason || got[0].URL != "u" || got[0].What == "" {
+				t.Fatalf("%s, %s: %+v", reason, name, got)
+			}
+		}
+		if got := summary.View(st, "r", "u", watcher(), 0, time.Now()).NeedsYou; len(got) != 0 {
+			t.Fatalf("%s: a watcher cannot release a hold: %+v", reason, got)
+		}
+		st.Add([]envelope.Event{facts(2, "Implementing", "")})
+		if got := summary.View(st, "r", "u", driverWeb(), 0, time.Now()).NeedsYou; len(got) != 0 {
+			t.Fatalf("%s: the hold ended: %+v", reason, got)
+		}
+	}
+	other := summary.Fold([]envelope.Event{facts(1, "Queued", "waiting_run_slot")})
+	if got := summary.View(other, "r", "u", owner(), 0, time.Now()).NeedsYou; len(got) != 0 {
+		t.Fatalf("the factory's own waits need no one: %+v", got)
+	}
+}
+
 func TestSteeringHasNoCLIAndIsWebOnly(t *testing.T) {
 	web := summary.View(summary.Fold(nil), "r", "u", driverWeb(), 0, time.Now())
 	steer := false

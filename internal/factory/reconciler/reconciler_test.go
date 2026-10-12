@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +36,8 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/triage"
+	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/summary"
 )
 
 // fakeRuns stands in for the AgentRun API; tests move phases by hand.
@@ -321,7 +325,7 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
-	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
+	g.r = &Reconciler{Client: c, Ledger: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
 	g.runs.now = func() time.Time { return g.r.Now() } // the claims carry the rig's clock
@@ -595,6 +599,67 @@ func TestAHumanDriverHoldsTheTask(t *testing.T) {
 	}
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_human_driver" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// N3: a task a person holds in its room says so on its issue once per wait, not every poll, and
+// the room's summary lists the hold under needsYou for the holder until the hold ends.
+func TestAHumanHoldIsNarratedOnceAndNeedsTheHolder(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 2) // Queued, the room exists
+	drive := func(driver string) {
+		var room roomv1.Room
+		if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &room); err != nil {
+			t.Fatal(err)
+		}
+		room.Status.Driver = driver
+		if err := g.c.Status().Update(t.Context(), &room); err != nil {
+			t.Fatal(err)
+		}
+	}
+	holds := func() int {
+		n := 0
+		for _, c := range g.f.Comments(7) {
+			if strings.Contains(c, "event=hold-") {
+				n++
+			}
+		}
+		return n
+	}
+	needs := func() []summary.Need { // the room's summary, folded from the facts the factory posted
+		var evs []envelope.Event
+		for _, seq := range slices.Sorted(maps.Keys(g.log.facts)) {
+			evs = append(evs, envelope.Event{Seq: seq, Type: envelope.StateChanged, Payload: envelope.TaskStatePayload(g.log.facts[seq])})
+		}
+		holder := policy.Subject{Kind: envelope.ActorHuman, ID: "human:smana", Role: policy.Collaborator, Driver: true, WebUI: true}
+		return summary.View(summary.Fold(evs), "3buqdlot", "u", holder, 0, now).NeedsYou
+	}
+
+	// A person's run in the room: the task waits, says so once, and needs the person.
+	g.runs.runs["hhhhhhhh"] = runs.Run{ID: "hhhhhhhh", RoomRef: "3buqdlot", Principal: "human:smana", Phase: "Running"}
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_room_busy" || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations: %q", tk.Status.Phase, tk.Status.Reason, holds(), g.f.Comments(7))
+	}
+	if n := needs(); len(n) != 1 || n[0].Kind != "hold" || n[0].ID != "waiting_room_busy" {
+		t.Fatalf("needsYou %+v", n)
+	}
+	// The run ends and the person keeps the driver: the same wait, said once.
+	g.runs.set("hhhhhhhh", "Succeeded")
+	drive("human:smana")
+	if tk = g.reconcile(t, "3buqdlot", 3); tk.Status.Reason != "waiting_human_driver" || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations", tk.Status.Phase, tk.Status.Reason, holds())
+	}
+	if n := needs(); len(n) != 1 || n[0].ID != "waiting_human_driver" {
+		t.Fatalf("needsYou %+v", n)
+	}
+	// The driver goes back to the factory: the run starts, and nothing needs the person.
+	drive("system:factory")
+	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations", tk.Status.Phase, tk.Status.Reason, holds())
+	}
+	if n := needs(); len(n) != 0 {
+		t.Fatalf("the hold ended: %+v", n)
 	}
 }
 

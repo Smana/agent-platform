@@ -3,15 +3,26 @@
 package reconciler
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
@@ -201,25 +212,112 @@ func TestARequestChangesPastTheCapIsQueuedNotAnnounced(t *testing.T) {
 	}
 }
 
-// R34: the factory's own day is checked before every run it starts, not only by the meter.
+// factoryLedger is today's R50 ledger (now's UTC day) with system:factory's spend, as the meter
+// settles it, and reservations keyed by run id.
+func factoryLedger(spent int64, reserved map[string]int64) *corev1.ConfigMap {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: api.LedgerPrefix + now.UTC().Format(api.LedgerDayLayout),
+		Namespace: "agent-system"}, Data: map[string]string{}}
+	if err := api.SetLedgerSpentColumn(cm, map[string]int64{runs.PrincipalFactory: spent}); err != nil {
+		panic(err)
+	}
+	for id, n := range reserved {
+		cm.Data[api.LedgerReserved+id] = fmt.Sprintf(`{"principal":%q,"maxTokens":%d}`, runs.PrincipalFactory, n)
+	}
+	return cm
+}
+
+// R34: the factory's own day is checked before every run it starts, not only by the meter, and
+// read from the day's ledger the meter and the API use (N2), never from the live claims.
 func TestFactoryDailyBudget(t *testing.T) {
-	spent := func(g *rig, enforce bool) {
-		g.runs.runs["zzzzzzzz"] = runs.Run{ID: "zzzzzzzz", Principal: runs.PrincipalFactory, Phase: "Succeeded",
-			Tokens: 25_000_000, Created: now.Add(-time.Hour)}
-		g.r.Cfg.Budgets = config.Budgets{EnforcePrincipal: enforce, FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	budgets := config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
+	g.r.Cfg.Budgets = budgets
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
+		!slices.Contains(g.metrics.recorded, "revoked budget-principal-shadow") {
+		t.Fatalf("in shadow the day is counted, not enforced (R3): %s %q", tk.Status.Phase, g.metrics.recorded)
 	}
-	g := newRig(t, issueTask("3buqdlot", 7, "x"))
-	spent(g, false)
-	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
-		t.Fatalf("in shadow the day is counted, not enforced (R3): %s", tk.Status.Phase)
-	}
-	g = newRig(t, issueTask("3buqdlot", 7, "x"))
-	spent(g, true)
+	budgets.EnforcePrincipal = true
+	g = newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
+	g.r.Cfg.Budgets = budgets
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_daily_budget" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	g.r.Now = func() time.Time { return now.Add(24 * time.Hour) }
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing {
-		t.Fatalf("a new UTC day starts it: %s", tk.Status.Phase)
+		t.Fatalf("a new UTC day, a new ledger: %s", tk.Status.Phase)
+	}
+}
+
+// N2: a run's spend stays in the day once its claim is deleted (a stop deletes every claim): the
+// ledger refunds nothing, and the live claims are no measure of the day.
+func TestDeletedRunsSpendStaysInTheDay(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(24_000_000, nil))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
+	// No claim lists any of the 24 M: every run that spent them was deleted.
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_daily_budget" {
+		t.Fatalf("24 M spent and a 1.5 M run do not fit 25 M: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g = newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
+	g.runs.runs["zzzzzzzz"] = runs.Run{ID: "zzzzzzzz", Principal: runs.PrincipalFactory, Phase: "Succeeded",
+		Tokens: 25_000_000, Created: now.Add(-time.Hour)}
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
+		t.Fatalf("a claim's tokens count once the meter settles them in the ledger: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// factoryToken authenticates every request as the factory's own principal.
+type factoryToken struct{}
+
+func (factoryToken) Authenticate(*http.Request) (authn.Principal, error) {
+	return authn.Principal{Kind: envelope.ActorSystem, ID: runs.PrincipalFactory}, nil
+}
+
+type noRuns struct{}
+
+func (noRuns) Create(context.Context, runs.Spec) error  { return nil }
+func (noRuns) List(context.Context) ([]runs.Run, error) { return nil, nil }
+
+// N2: Queued and the API decide the factory's day on one reading of one ledger: for each day,
+// the API's answer to a run of the task's size and Queued's agree.
+func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
+	m, err := fmetrics.New(nil, nil, "agent-system", func() bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		l      *corev1.ConfigMap
+		refuse bool
+	}{
+		"empty":                 {factoryLedger(0, nil), false},
+		"room for one run":      {factoryLedger(23_500_000, nil), false},
+		"no room for a run":     {factoryLedger(23_600_000, nil), true},
+		"spent":                 {factoryLedger(25_000_000, nil), true},
+		"reservations count":    {factoryLedger(20_000_000, map[string]int64{"aaaaaaaa": 2_000_000, "bbbbbbbb": 2_000_000}), true},
+		"reservations leave it": {factoryLedger(20_000_000, map[string]int64{"aaaaaaaa": 2_000_000}), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, issueTask("3buqdlot", 7, "x"), c.l.DeepCopy())
+			g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+			tk := g.reconcile(t, "3buqdlot", 3)
+			queued := tk.Status.Reason == "waiting_daily_budget"
+
+			cf := cfg()
+			cf.Budgets = g.r.Cfg.Budgets
+			cf.API.Repositories = []string{"Smana/cloud-native-ref"}
+			srv := &api.Server{Auth: factoryToken{}, Cfg: cf, Runs: noRuns{},
+				Rooms: fake.NewClientBuilder().WithScheme(scheme()).WithObjects(c.l.DeepCopy()).Build(), Namespace: "agent-system",
+				Stopped: func(context.Context) bool { return false }, NewRunID: func() string { return "7f3cq2xz" },
+				Now: func() time.Time { return now }, Metrics: m}
+			body := fmt.Sprintf(`{"role":"implementer","repository":"Smana/cloud-native-ref","task":{"text":"x"},"dataClass":"public","maxTokens":%d}`,
+				tk.Spec.Budget.RunTokens)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/v1/runs", strings.NewReader(body)))
+			byAPI := w.Code == http.StatusTooManyRequests
+			if queued != c.refuse || byAPI != c.refuse {
+				t.Fatalf("want refused %v: Queued %v (%s %s), the API %v (%d %s)", c.refuse, queued, tk.Status.Phase,
+					tk.Status.Reason, byAPI, w.Code, w.Body)
+			}
+		})
 	}
 }
