@@ -109,8 +109,8 @@ const (
 	LedgerAttempts = 5
 )
 
-// reservation is one ledger entry: what the run may spend, on whose behalf and on which room.
-type reservation struct {
+// Reservation is one ledger entry: what the run may spend, on whose behalf and on which room.
+type Reservation struct {
 	Principal string `json:"principal"`
 	Room      string `json:"room,omitempty"`
 	MaxTokens int64  `json:"maxTokens"`
@@ -346,54 +346,86 @@ func (s *Server) admitResume(ctx context.Context, p authn.Principal, branch stri
 	return 0, ""
 }
 
-// reserve is R50's atomic admission, replacing admitBudget's live-run sum: read the day's
-// ledger, check spent + reserved + maxTokens against the cap and that no reservation holds the
-// room, then write reserved.<runId> — the Update conflicts against a concurrent replica's,
-// and the retry re-reads and re-checks, so exactly one admission per slot lands whatever the
-// interleaving. Shadow mode (R3) counts but does not refuse; room exclusion stays exact.
+// reserve is R50's admission on the day's ledger (Reserve), its refusals said in HTTP.
 func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in RunRequest) (int, string) {
 	limit := s.Cfg.Budgets.HumanDaily
 	if p.ID == runs.PrincipalFactory {
 		limit = s.Cfg.Budgets.FactoryDaily
 	}
-	name := LedgerPrefix + s.Now().UTC().Format(LedgerDayLayout)
-	key := types.NamespacedName{Namespace: s.Namespace, Name: name}
-	mine := reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}
+	over, err := Reserve(ctx, s.Rooms, s.Namespace, s.Now(), id,
+		Reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}, limit, s.Cfg.Budgets.EnforcePrincipal)
+	switch {
+	case errors.Is(err, ErrOverBudget):
+		return http.StatusTooManyRequests, "over_budget"
+	case errors.Is(err, ErrRunBusy):
+		return http.StatusConflict, "run_busy"
+	case errors.Is(err, ErrRoomBusy):
+		return http.StatusConflict, "room_busy"
+	case errors.Is(err, ErrLedgerBusy):
+		return http.StatusServiceUnavailable, "ledger_busy"
+	case err != nil:
+		return http.StatusServiceUnavailable, "ledger_unavailable"
+	}
+	if over {
+		s.Metrics.Revoked(ctx, "budget-principal-shadow") // R3: counted, not enforced
+	}
+	return 0, ""
+}
+
+// Reserve's refusals. Any other error is the ledger unread or unwritten.
+var (
+	ErrOverBudget = errors.New("ledger: over the daily budget")
+	ErrRunBusy    = errors.New("ledger: the run id holds another reservation")
+	ErrRoomBusy   = errors.New("ledger: a reservation holds the room")
+	ErrLedgerBusy = errors.New("ledger: busy")
+)
+
+// Reserve is R50's atomic admission, shared by the API and the factory's Queued (#78): read the
+// UTC day of now's ledger, check spent + reserved + maxTokens against limit and that no
+// reservation holds mine.Room, then write reserved.<id> — the Update conflicts against a
+// concurrent writer's, and the retry re-reads and re-checks, so exactly one admission per slot
+// lands whatever the interleaving. Unless enforce (R3's shadow), an over day is reported as over,
+// written, and never refused; room exclusion stays exact. The meter drops the entry when the run
+// is terminal.
+func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id string, mine Reservation,
+	limit int64, enforce bool) (over bool, err error) {
+	name := LedgerPrefix + now.UTC().Format(LedgerDayLayout)
+	key := types.NamespacedName{Namespace: ns, Name: name}
 	for range LedgerAttempts {
 		cm := &corev1.ConfigMap{}
-		err := s.Rooms.Get(ctx, key, cm)
+		err := c.Get(ctx, key, cm)
 		existed := true
 		if apierrors.IsNotFound(err) {
-			cm = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}}
+			cm = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 			existed = false
 		} else if err != nil {
-			return http.StatusServiceUnavailable, "ledger_unavailable"
+			return false, fmt.Errorf("ledger %s: %w", name, err)
 		}
 		spent, err := LedgerSpentColumn(cm)
 		if err != nil {
-			return http.StatusServiceUnavailable, "ledger_unavailable"
+			return false, err
 		}
 		reserved, err := ledgerReservations(cm)
 		if err != nil {
-			return http.StatusServiceUnavailable, "ledger_unavailable"
+			return false, err
 		}
 		// R48: the run id is the retry's identity. Our own equal entry means we already
 		// landed this admission: pass without reserving twice. A different value under this
 		// id is another run's slot, and overwriting it would unreserve theirs: refuse.
 		if prev, ok := reserved[id]; ok {
 			if prev == mine {
-				return 0, ""
+				return false, nil
 			}
-			return http.StatusConflict, "run_busy"
+			return false, ErrRunBusy
 		}
-		over := OverDaily(dayUsed(spent, reserved, p.ID), in.MaxTokens, limit)
-		if over && s.Cfg.Budgets.EnforcePrincipal {
-			return http.StatusTooManyRequests, "over_budget"
+		over = OverDaily(dayUsed(spent, reserved, mine.Principal), mine.MaxTokens, limit)
+		if over && enforce {
+			return true, ErrOverBudget
 		}
-		if in.RoomRef != "" {
+		if mine.Room != "" {
 			for _, v := range reserved {
-				if v.Room == in.RoomRef {
-					return http.StatusConflict, "room_busy"
+				if v.Room == mine.Room {
+					return over, ErrRoomBusy
 				}
 			}
 		}
@@ -402,28 +434,25 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 		}
 		b, err := json.Marshal(mine)
 		if err != nil {
-			return http.StatusServiceUnavailable, "ledger_unavailable"
+			return false, fmt.Errorf("ledger %s: %w", name, err)
 		}
 		cm.Data[LedgerReserved+id] = string(b)
 		if existed {
-			err = s.Rooms.Update(ctx, cm)
+			err = c.Update(ctx, cm)
 		} else {
-			err = s.Rooms.Create(ctx, cm) // a concurrent Create conflicts; the loop re-reads
+			err = c.Create(ctx, cm) // a concurrent Create conflicts; the loop re-reads
 		}
 		switch {
 		case err == nil:
-			if over {
-				s.Metrics.Revoked(ctx, "budget-principal-shadow") // R3: counted, not enforced
-			}
-			return 0, ""
+			return over, nil
 		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
 			continue // re-read and re-check (R50)
 		default:
-			return http.StatusServiceUnavailable, "ledger_unavailable"
+			return false, fmt.Errorf("ledger %s: %w", name, err)
 		}
 	}
 	// Conflicts at this depth mean steady contention, not a lost slot: fail open never.
-	return http.StatusServiceUnavailable, "ledger_busy"
+	return false, ErrLedgerBusy
 }
 
 // dropReservation undoes reserve when the run creation itself failed. Best effort: a leaked
@@ -449,7 +478,7 @@ func OverDaily(used, maxTokens, limit int64) bool { return used+maxTokens > limi
 
 // dayUsed is what principal holds of its day: the meter's settled spend plus its admitted runs'
 // reservations.
-func dayUsed(spent map[string]int64, reserved map[string]reservation, principal string) int64 {
+func dayUsed(spent map[string]int64, reserved map[string]Reservation, principal string) int64 {
 	used := spent[principal]
 	for _, v := range reserved {
 		if v.Principal == principal {
@@ -509,14 +538,14 @@ func SetLedgerSpentColumn(cm *corev1.ConfigMap, spent map[string]int64) error {
 	return nil
 }
 
-func ledgerReservations(cm *corev1.ConfigMap) (map[string]reservation, error) {
-	m := map[string]reservation{}
+func ledgerReservations(cm *corev1.ConfigMap) (map[string]Reservation, error) {
+	m := map[string]Reservation{}
 	for k, raw := range cm.Data {
 		id, ok := strings.CutPrefix(k, LedgerReserved)
 		if !ok {
 			continue
 		}
-		var r reservation
+		var r Reservation
 		if err := json.Unmarshal([]byte(raw), &r); err != nil {
 			return nil, fmt.Errorf("ledger %s reservation %s: %w", cm.Name, id, err)
 		}

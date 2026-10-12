@@ -145,7 +145,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
 	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation, the
-	// meter's settle and Queued's daily cap read date-named ledgers, so through a live client.
+	// meter's settle and Queued's daily cap (which reserves its runs there, #78) read and write
+	// date-named ledgers, so through a live client.
 	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
 	if err != nil {
 		return err

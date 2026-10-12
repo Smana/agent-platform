@@ -140,18 +140,19 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
 }
 
-// overFactoryDay is §6.2's "SP3 at admission" for the factory's own principal (R34), decided as
-// the API decides it (N2): on the day's ledger, which a deleted claim refunds nothing, for a run
-// of the task's size.
-func (r *Reconciler) overFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (bool, error) {
+// reserveFactoryDay is §6.2's "SP3 at admission" for the factory's own principal (R34), admitted
+// as the API admits (#78): the run about to start is reserved in the day's ledger under its
+// deterministic id before its claim exists, so runs started on one reading cannot overshoot the
+// day, and a replay re-reserves the same entry, never a second. The meter drops it when the run
+// ends. No room: the factory's room exclusion is slotFree's, on the claims, and a reservation
+// that names the room would hold the task's next run until the meter's next tick.
+func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (bool, error) {
 	if r.Ledger == nil {
-		return false, errors.New("the daily cap needs the ledger reader")
+		return false, errors.New("the daily cap needs the ledger client")
 	}
-	used, err := api.DayUsed(ctx, r.Ledger, r.Namespace, runs.PrincipalFactory, r.Now())
-	if err != nil {
-		return false, err
-	}
-	return api.OverDaily(used, t.Spec.Budget.RunTokens, limit), nil
+	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
+		api.Reservation{Principal: runs.PrincipalFactory, MaxTokens: t.Spec.Budget.RunTokens}, limit,
+		r.Cfg.Budgets.EnforcePrincipal)
 }
 
 // traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.

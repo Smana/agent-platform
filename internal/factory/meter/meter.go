@@ -350,13 +350,16 @@ func (m *Meter) now() time.Time {
 	return m.Now()
 }
 
-// dropReservations releases a terminal run's admission reservation (R50): the meter is its only
-// dropper once the API's own drop (create failure) no longer applies. The reservation sits in
-// the ledger of the day that admitted the run — its creation day — so that day and today are
-// searched (the two differ only for a run admitted as the clock crossed midnight). A run deleted
-// before reaching terminal, or a day that stays busy, leaks at most one entry until its ledger
-// is pruned: deleting a run refunds nothing (5.2). A failure is retried on the next tick, while
-// the run is still listed.
+// dropReservations releases a terminal run's admission reservation (R50), the API's and the
+// factory's Queued's alike (#78): the meter is its only dropper once the API's own drop (create
+// failure) no longer applies, and a factory reservation has no such drop at all — Queued
+// re-reserves the same deterministic id on its retry instead. The reservation sits in the ledger
+// of the day that admitted the run — its creation day — so that day and today are searched (the
+// two differ only for a run admitted as the clock crossed midnight). A run deleted before
+// reaching terminal, a factory reservation whose claim was never created, or a day that stays
+// busy, leaks at most one entry until its ledger is pruned: deleting a run refunds nothing (5.2);
+// #55 tracks that leak before enforcePrincipal. A failure is retried on the next tick, while the
+// run is still listed.
 func (m *Meter) dropReservations(ctx context.Context, all []runs.Run) error {
 	today := m.now().UTC().Format(api.LedgerDayLayout)
 	var errs []error

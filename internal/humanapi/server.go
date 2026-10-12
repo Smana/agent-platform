@@ -62,6 +62,9 @@ type Log interface {
 	Queue(ctx context.Context, roomID string) ([]store.Queued, error)
 	// OpenApprovals is the room's pending approvals, for the state frame, likewise.
 	OpenApprovals(ctx context.Context, roomID string) ([]store.Approval, error)
+	// LastTaskState is the room's last task facts above seq after, for the room list's hold
+	// need (#78): its wait reason is not projected into the Room status.
+	LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error)
 }
 
 // Hub is the fan-out hub's subscription side; *fanout.Hub implements it.

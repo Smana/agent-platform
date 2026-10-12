@@ -38,6 +38,16 @@ func holds() map[string]string {
 	}
 }
 
+// Hold is N3's need: a factory task a person holds waits on whoever can release the room — its
+// driver, or its owner, who can take the driver back. The factory's next facts end it. The room
+// list's needsMe asks the same (#78).
+func Hold(f *envelope.TaskFacts, sub policy.Subject, url string) (Need, bool) {
+	if f == nil || f.Phase != "Queued" || holds()[f.Reason] == "" || !policy.Allowed(sub, policy.StartRun) {
+		return Need{}, false
+	}
+	return Need{Kind: "hold", ID: f.Reason, What: holds()[f.Reason], URL: url}, true
+}
+
 // State is what Fold keeps of a log.
 type State struct {
 	Facts     *envelope.TaskFacts
@@ -242,10 +252,8 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 			s.NeedsYou = append(s.NeedsYou, Need{Kind: "approval", ID: a.ID, What: a.What, Deadline: a.ExpiresAt, URL: url + "#" + a.ID})
 		}
 	}
-	// N3: a factory task a person holds waits on whoever can release the room: its driver, or its
-	// owner, who can take the driver back. The factory's next facts end the need.
-	if f := st.Facts; f != nil && f.Phase == "Queued" && holds()[f.Reason] != "" && policy.Allowed(sub, policy.StartRun) {
-		s.NeedsYou = append(s.NeedsYou, Need{Kind: "hold", ID: f.Reason, What: holds()[f.Reason], URL: url})
+	if n, ok := Hold(st.Facts, sub, url); ok {
+		s.NeedsYou = append(s.NeedsYou, n)
 	}
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
