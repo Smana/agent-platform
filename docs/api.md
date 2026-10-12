@@ -435,7 +435,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `reviewer_needs_pr` | A reviewer's `start_run` with no `prUrl`, and no pull request of the room's repository in the latest agent handoff or review verdict. Human chat, queued text and tool output never choose it |
 | `over_budget` | The factory refused the run: over the caller's budget |
 | `factory_unavailable` | The run could not be requested: no requester, or the factory failed or answered no run id. Retry |
-| `bad_action` | Malformed, or about another room; a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
+| `bad_action` | Malformed, or about another room; egress profiles on a run or fork of an `internal` room (T5); a give to someone who cannot hold the token; a `clientSeq` this connection already used for an action of another type |
 | `not_queued` | The queued message was already delivered or removed |
 | `sealed` | The room's log is sealed; a fork of it by anyone but its owner or an `agents-admin` too. A queued message that reached the room's event limit is refused this way but stays in the log, unqueued: the transcript can show it as the room's last message |
 | `conflict` | The Room changed under an `invite`: retry |

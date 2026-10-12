@@ -196,6 +196,7 @@ func TestStartRunRefusals(t *testing.T) {
 		res     runrequest.Result
 		err     error
 		prepare func(a *Actor, log *actLog)
+		class   string
 		want    string
 		asked   bool
 	}{
@@ -205,6 +206,9 @@ func TestStartRunRefusals(t *testing.T) {
 		{name: "another repository's PR", action: Action{Role: "reviewer", PRURL: "https://github.com/evil/repo/pull/1"}, want: "bad_action"},
 		{name: "a malformed egress profile", action: Action{Role: "implementer", EgressProfiles: []string{"PyPI!"}}, want: "bad_action"},
 		{name: "too many egress profiles", action: Action{Role: "implementer", EgressProfiles: nine}, want: "bad_action"},
+		// T5: refused here, not as the factory's 400 mapped to factory_unavailable.
+		{name: "egress profiles in an internal room", action: Action{Role: "implementer", EgressProfiles: []string{"pypi"}},
+			class: "internal", want: "bad_action"},
 		{name: "no requester", action: Action{Role: "implementer"}, prepare: func(a *Actor, _ *actLog) { a.Requester = nil }, want: "factory_unavailable"},
 		{name: "a running run", action: Action{Role: "implementer"}, prepare: func(a *Actor, _ *actLog) {
 			a.Runs = fixtureRuns()
@@ -232,6 +236,9 @@ func TestStartRunRefusals(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			a, log, room := idleFixture()
+			if c.class != "" {
+				room.Spec.DataClass = c.class
+			}
 			res := c.res
 			if res.RunID == "" && c.err == nil {
 				res = ok
