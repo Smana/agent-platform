@@ -87,6 +87,29 @@ func TestAwaitingHumanOnAMergeNeedsTheMaintainerAndSaysHow(t *testing.T) {
 	}
 }
 
+// Only a repository admin can bypass the ruleset: the text says who, not "you".
+func TestTheMergeNeedNamesWhoCanBypass(t *testing.T) {
+	f := envelope.TaskFacts{Phase: "AwaitingHuman", PR: &envelope.PRFact{Number: 2267, URL: prURL}}
+	got := taskView(f, owner()).NeedsYou
+	if len(got) != 1 || !strings.Contains(got[0].What, "a maintainer with admin on Smana/cloud-native-ref merges PR #2267") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// No repository to name: no gh command at all, rather than one that acts on the wrong checkout.
+func TestNoRepositoryNoGhCommand(t *testing.T) {
+	f := envelope.TaskFacts{Phase: "AwaitingHuman", Issue: &envelope.IssueFact{Number: 2266}, PR: &envelope.PRFact{Number: 2267}}
+	s := taskView(f, owner())
+	for _, a := range s.Actions {
+		if a.Kind == "stop" || strings.Contains(a.CLI, "gh ") {
+			t.Fatalf("a gh command with no repository: %+v", a)
+		}
+	}
+	if len(s.NeedsYou) != 1 || strings.Contains(s.NeedsYou[0].What, "gh ") || !strings.Contains(s.NeedsYou[0].What, "bypass") {
+		t.Fatalf("%+v", s.NeedsYou)
+	}
+}
+
 func TestTheIssueTitleIsCarried(t *testing.T) {
 	s := taskView(envelope.TaskFacts{Phase: "Implementing", Issue: &envelope.IssueFact{Number: 1, URL: issueURL, Title: "docs: fix it"}}, watcher())
 	if s.Status.Issue.Title != "docs: fix it" {

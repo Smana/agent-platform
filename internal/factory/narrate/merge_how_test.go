@@ -7,7 +7,39 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	summ "github.com/Smana/agent-platform/internal/summary"
 )
+
+// waitReasons are the reasons a task waits or hands off with (merge gate, run end, queue holds):
+// the summary shows each as prose, never the raw key.
+var waitReasons = []string{
+	"ci_pending", "merge_gate_off", "policy_pending", "policy_absent", "not_mergeable", "gate_path", "verdict_stale",
+	"human_commit_in_pr", "shadow_would_arm", "auto_merge_cap", "stuck", "ci_red", "secret_scan_red", "review_rounds_exhausted",
+	"no_verdict", "budget-task", "resume_budget", "run_unschedulable", "pod_lost", "deadline", "agent_error", "agent_stuck",
+	"no_pr", "waiting_human_driver", "waiting_room_busy", "waiting_run_slot", "waiting_active_tasks", "waiting_review_wip",
+	"waiting_daily_budget", "waiting_room_log", "waiting_broker_permission",
+}
+
+// The summary repeats the narration's prose (it may not import the factory): a reason added to
+// one must reach the other.
+func TestSummaryReasonsTrackNarrate(t *testing.T) {
+	have := map[string]bool{}
+	for _, r := range summ.Reasons() {
+		have[r] = true
+		if _, ok := reasons()[r]; !ok {
+			t.Errorf("summary has prose for %q, which narrate does not know: renamed or removed?", r)
+		}
+	}
+	for _, r := range waitReasons {
+		if _, ok := reasons()[r]; !ok {
+			t.Errorf("narrate does not know the wait reason %q", r)
+		}
+		// waiting_* holds are summary.holds(), not Reasons().
+		if !have[r] && !strings.HasPrefix(r, "waiting_") {
+			t.Errorf("the summary has no prose for the wait reason %q", r)
+		}
+	}
+}
 
 // #51: the comment that hands a PR to the maintainer says how to merge under the ruleset.
 func TestWaitingForHumanSaysHowToMerge(t *testing.T) {

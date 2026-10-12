@@ -8,6 +8,7 @@ package summary
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"time"
@@ -271,8 +272,13 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	}
 	// No dedicated stop right exists: stopping closes the task, which is the owner's (Close).
 	if st.Facts != nil && st.Facts.Issue != nil && policy.Allowed(sub, policy.Close) {
-		s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
-			CLI: fmt.Sprintf("gh issue edit %d%s --add-label %s", st.Facts.Issue.Number, repoFlag(repoOf(st.Facts)), stopLabel)})
+		// Never without --repo: run from another checkout, it would label that repository's issue.
+		if repo := repoOf(st.Facts); repo != "" {
+			s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
+				CLI: fmt.Sprintf("gh issue edit %d --repo %s --add-label %s", st.Facts.Issue.Number, repo, stopLabel)})
+		} else {
+			slog.Warn("summary: no repository for the stop command", "room", room)
+		}
 	}
 	return s
 }

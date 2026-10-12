@@ -4,7 +4,9 @@ package summary
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
+	"slices"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -46,20 +48,18 @@ func urlOfIssue(i *envelope.IssueFact) string {
 	return i.URL
 }
 
-// repoFlag is " --repo owner/name", or nothing when the repository is unknown.
-func repoFlag(repo string) string {
-	if repo == "" {
-		return ""
-	}
-	return " --repo " + repo
-}
-
-// MergeHow is how a maintainer merges pull request n under the repository ruleset
-// (agent-branches restricts updates on every branch but agent/**, so an approval alone leaves
-// "Merging is blocked"): tick the bypass box, or merge as an admin (#51).
+// MergeHow is how pull request n is merged under the repository ruleset (agent-branches
+// restricts updates on every branch but agent/**, so an approval alone leaves "Merging is
+// blocked"): only a repository admin can bypass it, so the text names who (#51). Without a
+// repository it gives the bypass box alone rather than a gh command that would act on whichever
+// checkout it runs from (#59).
 func MergeHow(repo string, n int) string {
-	return fmt.Sprintf("merge PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page, or run `gh pr merge %d --squash --admin%s`",
-		n, n, repoFlag(repo))
+	if repo == "" {
+		slog.Warn("summary: no repository for a merge command", "pr", n)
+		return fmt.Sprintf("a maintainer with admin on the repository merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page", n)
+	}
+	return fmt.Sprintf("a maintainer with admin on %s merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page, or run `gh pr merge %d --squash --admin --repo %s`",
+		repo, n, n, repo)
 }
 
 // Merge is the need of a task that waits for a maintainer's merge: AwaitingHuman with a pull
@@ -76,6 +76,8 @@ func Merge(f *envelope.TaskFacts, sub policy.Subject) (Need, bool) {
 func reasons() map[string]string {
 	return map[string]string{
 		"waiting_run_slot":          "the factory runs its tasks one at a time and another one has the slot",
+		"waiting_active_tasks":      "the factory's cap on active tasks is reached",
+		"waiting_review_wip":        "the reviewers are at their limit of pull requests in review",
 		"waiting_daily_budget":      "the factory's daily token budget is spent",
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
@@ -104,6 +106,17 @@ func reasons() map[string]string {
 		"agent_stuck":               "the agent reported that it was stuck",
 		"no_pr":                     "the agent opened no pull request",
 	}
+}
+
+// Reasons lists the wait reasons the summary has prose for, so the factory's narration can be
+// held to them (a test in internal/factory/narrate).
+func Reasons() []string {
+	var out []string
+	for r := range reasons() {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out
 }
 
 const escalatedNext = "a maintainer comments `/factory retry` on the issue to run it again, or pushes to the branch"
