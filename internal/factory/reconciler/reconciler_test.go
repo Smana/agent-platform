@@ -92,19 +92,19 @@ func (f *fakeRuns) set(id, phase string) { r := f.runs[id]; r.Phase = phase; f.r
 // queued are listed. task_state messages and task facts are kept apart, one per clientSeq, so no
 // seq moves.
 type fakeLog struct {
-	evs       []envelope.Event
-	queue     []rooms.Queued
-	keys      map[string]int64 // stream/clientSeq → Ref
-	nextRef   int64
-	consumed  map[int64]string
-	states    map[int64]string
-	facts     map[int64]envelope.TaskFacts
-	factsSeqs []int64 // every TaskFacts call's clientSeq, in order, refused ones included
-	failFacts error   // TaskFacts' answer while set
-	noRoom    bool    // the broker has no log for the room yet
-	noPermit  bool    // the broker does not allow system:factory yet (FR-1)
-	failEvents error  // EventsSince's answer while set
-	read      int     // events EventsSince returned, all calls
+	evs        []envelope.Event
+	queue      []rooms.Queued
+	keys       map[string]int64 // stream/clientSeq → Ref
+	nextRef    int64
+	consumed   map[int64]string
+	states     map[int64]string
+	facts      map[int64]envelope.TaskFacts
+	factsSeqs  []int64 // every TaskFacts call's clientSeq, in order, refused ones included
+	failFacts  error   // TaskFacts' answer while set
+	noRoom     bool    // the broker has no log for the room yet
+	noPermit   bool    // the broker does not allow system:factory yet (FR-1)
+	failEvents error   // EventsSince's answer while set
+	read       int     // events EventsSince returned, all calls
 }
 
 func (l *fakeLog) TaskFacts(_ context.Context, _ string, f envelope.TaskFacts, clientSeq int64) error {
