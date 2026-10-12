@@ -60,6 +60,10 @@ const (
 		" no GIT_* variables, `-c` or config overrides."
 	textEgress = "Denied (egress.new): this run's egress does not reach that registry, and no approval can widen it." +
 		" Ask in the room for a fork with the egressProfiles it needs." + rejected
+	// An internal run has no egress (T5): its class is immutable and takes no profiles, so a
+	// fork cannot add any, and an unattended model told to ask for one would loop.
+	textEgressInternal = "Denied (egress.new): internal runs have no external egress; no approval and no fork can add it." +
+		" Work without it, or say in the room what you needed." + rejected
 	textUnreadable = "The bridge could not read an action of this step, so it was rejected and none of it ran." +
 		" Retry each action on its own, as a plain tool call."
 	textBrokerDown = "The room could not record the approval request, so this step was rejected and none of it ran." +
@@ -71,14 +75,18 @@ const (
 		" Read the message, then retry the step if it is still needed."
 )
 
-// denial is the text for a step that policy rejected because of class.
-func denial(p wire.ApprovalPolicy, class Class) string {
+// denial is the text for a step that policy rejected because of class. noEgress is a run
+// with no egress profile at all: an internal one, since a public run always carries github.
+func denial(p wire.ApprovalPolicy, class Class, noEgress bool) string {
 	profile := "attended"
 	if p.Profile == "unattended" {
 		profile = "unattended"
 	}
 	switch class {
 	case EgressNew:
+		if noEgress {
+			return textEgressInternal
+		}
 		return textEgress
 	case ForgePush, ForgePR, ForgeOther:
 		return fmt.Sprintf("Denied by the room's %s policy (%s).%s Retry each action on its own, in an allowed shape.%s",
@@ -453,7 +461,7 @@ func (c *Confirmer) settle(ctx context.Context, fromDecision bool) {
 		if j.v != Deny {
 			continue
 		}
-		text := denial(policy, j.class)
+		text := denial(policy, j.class, len(c.Classifier.Egress) == 0)
 		if j.p.unreadable {
 			text = textUnreadable
 		}

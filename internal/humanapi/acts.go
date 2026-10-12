@@ -514,9 +514,12 @@ func isRunRequest(ev envelope.Event) bool {
 }
 
 // validRun reports whether act names a role a human starts, egress profiles by
-// name, and a PR only for a reviewer and only of the room's repository.
+// name and never in an internal room (T5: the factory refuses them, and its 400
+// would read as factory_unavailable), and a PR only for a reviewer and only of
+// the room's repository.
 func validRun(room *v1alpha1.Room, act Action) bool {
 	if !runRoles[act.Role] || len(act.EgressProfiles) > maxEgressProfiles ||
+		(room.Spec.DataClass == "internal" && len(act.EgressProfiles) > 0) ||
 		(act.PRURL != "" && (act.Role != "reviewer" || !brief.IsPR(act.PRURL, room.Spec.Repository))) {
 		return false
 	}
