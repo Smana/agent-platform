@@ -759,12 +759,28 @@ func TestEveryCommitOfACIFixedPRIsTheFactorys(t *testing.T) {
 		handedOff(t, fixed(t, byRun(head1, rid(0)),
 			forge.Commit{SHA: merge, Author: "Smana", Message: "Merge branch 'main' into agent/3buqdlot"}, byRun(head2, rid(2))))
 	})
-	t.Run("a head the list does not end on", func(t *testing.T) {
+	t.Run("a head the list does not hold", func(t *testing.T) {
 		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, rid(2))))
 	})
 	t.Run("an agent-only fix is reviewed again", func(t *testing.T) {
 		if tk := fixed(t, byRun(head1, rid(0)), byRun(head2, rid(2))); tk.Status.Phase != v1alpha1.PhaseReviewing {
 			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("GitHub lists by date, the head not last", func(t *testing.T) {
+		if tk := fixed(t, byRun(head2, rid(2)), byRun(head1, rid(0))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("a human commit already under the reported head at the fix's start", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.f.SetCommits(12, forge.Commit{SHA: human, Author: "Smana", Message: "wip: try this"}, byRun(head1, rid(0)))
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on a human's commit: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
 		}
 	})
 	t.Run("the agent squashed the branch", func(t *testing.T) {

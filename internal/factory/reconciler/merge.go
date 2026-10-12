@@ -205,8 +205,9 @@ func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
 //
 // A reported head is not enough (#74): a human's push during the fix run, pulled and pushed on by
 // the agent, ends under the agent's own head. So every commit of the pull request must claim one
-// of the task's implementer runs in its Agent-Run trailer — the whole list, since an agent's squash
-// or rebase rewrites every SHA. The author login is never read: it is whatever GitHub matched the
+// of the task's implementer runs in its Agent-Run trailer (only a claim: see factoryCommits) — the
+// whole list, since an agent's squash or rebase rewrites every SHA. The author login is never
+// read: it is whatever GitHub matched the
 // commit's email to, which anyone can set. A merge from GitHub's "Update branch" carries no
 // trailer and hands off here as it already did on its head; that stays the fail-safe side. A pull
 // request past GitHub's 250 listed commits cannot be read whole, so it hands off too.
@@ -270,9 +271,11 @@ func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string
 	return head, nil
 }
 
-// factoryCommits: the pull request ends on head, and each of its commits claims one of the task's
-// implementer runs. The trailer is a claim (forge.PR.Trailer): it keeps out a commit nobody
-// stamped, which is the human push this guards against, not a forger with the run's ID.
+// factoryCommits: head is among the pull request's commits, and each of them claims one of the
+// task's implementer runs. The claim authenticates nothing: run IDs are public (the PR footer,
+// every agent commit on the branch) and an amend or a cherry-pick keeps the trailer. It stops a
+// human commit nobody stamped, a careless push, not a deliberate one; binding commits to the
+// factory by push identity or signature is #76.
 func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
 	cs, err := r.Forge.PullRequestCommits(ctx, t.Status.PullRequest.Number)
 	if errors.Is(err, forge.ErrCommitsTruncated) {
@@ -281,8 +284,10 @@ func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head 
 	if err != nil {
 		return false, err
 	}
-	// The list is read after the head: a push in between ends it elsewhere.
-	if len(cs) == 0 || cs[len(cs)-1].SHA != head {
+	// GitHub orders the list by commit date, not ancestry, so the head is looked for, not assumed
+	// last. A force-push between the two reads drops it, and hands off; a push on top adds a
+	// commit, which the trailer test below then reads.
+	if !slices.ContainsFunc(cs, func(c forge.Commit) bool { return c.SHA == head }) {
 		return false, nil
 	}
 	impl := implementerRuns(t)
