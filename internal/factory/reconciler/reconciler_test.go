@@ -103,6 +103,7 @@ type fakeLog struct {
 	failFacts error   // TaskFacts' answer while set
 	noRoom    bool    // the broker has no log for the room yet
 	noPermit  bool    // the broker does not allow system:factory yet (FR-1)
+	failEvents error  // EventsSince's answer while set
 	read      int     // events EventsSince returned, all calls
 }
 
@@ -201,6 +202,9 @@ func (l *fakeLog) Consume(_ context.Context, _ string, refs []int64, runID strin
 const eventsCap = 10_000
 
 func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envelope.Event, int64, error) {
+	if l.failEvents != nil {
+		return nil, after, l.failEvents
+	}
 	var out []envelope.Event
 	cursor := after
 	for _, e := range l.evs {

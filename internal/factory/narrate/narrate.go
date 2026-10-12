@@ -227,6 +227,10 @@ func reasons() map[string]string {
 		"not_mergeable":           "GitHub does not allow merging it as it stands",
 		"head_moved":              "a new commit landed since the decision, so the merge was refused and it is decided again",
 		"shadow_would_arm":        "it would auto-merge, and the merge gate is in shadow until the merge wave",
+		"human_commit_in_pr":      "it holds a commit no run of the task reported, so the factory neither fixes nor merges on top of it",
+		"reentered_policy":        "policy-bot now passes the head it was handed off at",
+		"reentered_head_reported": "the room now reports its head as a commit of the task's run",
+		"rereview_verdict_stale":  "the factory moved its head after the approval, so it is reviewed again",
 	}
 }
 
@@ -359,6 +363,13 @@ func WouldArm(t *v1alpha1.Task, class string) Event {
 func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)),
 		Body: fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))}
+}
+
+// BackToGate says a transient hand-off returned to the merge gate (N1), and why. n is the task's
+// count of returns, so each one is posted once.
+func BackToGate(t *v1alpha1.Task, reason string, n int32) Event {
+	return Event{Key: fmt.Sprintf("gate-%s-%d", reason, n),
+		Body: fmt.Sprintf("Agent factory task `%s` goes back to the merge gate: %s.", t.Name, Reason(reason))}
 }
 
 // CIExhausted says the CI fix runs are spent and the named checks are still failing (§6.3).

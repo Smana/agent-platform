@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -365,6 +366,9 @@ func TestAPolicyHandOffReturnsToTheGate(t *testing.T) {
 			if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Reason != "reentered_policy" || tk.Status.GateReentries != 1 {
 				t.Fatalf("%s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
 			}
+			if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "goes back to the merge gate: policy-bot now passes") {
+				t.Fatalf("the return is narrated: %q", c)
+			}
 			if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAutoMerging || len(g.f.Armed()) != 1 || g.f.Armed()[0] != "PR_12 abc" {
 				t.Fatalf("%s %v", tk.Status.Phase, g.f.Armed())
 			}
@@ -411,30 +415,55 @@ func TestAnUnreportedHeadReturnsOnceTheRoomReportsIt(t *testing.T) {
 	}
 }
 
-// N1: a verdict_stale hand-off is a head the factory moved with no verdict of it. Going back to
-// the gate alone would hand it off again, so it is reviewed again, and the review leads to the gate.
+// N1: verdict_stale is a head the factory moved (R02 holds before it) with no verdict of it. A
+// human has nothing to judge there: the gate queues a review of that head, which leads back to
+// it, and no hand-off is narrated. The return counts against the cap; past it, a human.
 func TestAStaleVerdictIsReviewedAgain(t *testing.T) {
-	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
-	g.patch(t, func(tk *v1alpha1.Task) {
-		tk.Spec.Template = "pair"
-		tk.Status.Verdict = "approve"
-		tk.Status.Runs = append(tk.Status.Runs,
-			v1alpha1.RunRecord{ID: rid(1), Role: "reviewer", Trigger: "review", Phase: "Succeeded", Verdict: "approve", HeadSHA: "old"},
-			v1alpha1.RunRecord{ID: rid(2), Role: "implementer", Trigger: "ci", Phase: "Succeeded"})
-	})
-	g.log.handoff(rid(2), "abc") // a fix run, before this change, went from its push straight to the gate
-	g.f.SetPR(gatePR("abc", rid(2)))
-	g.f.SetChecks(12, green("SUCCESS"))
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "verdict_stale" {
-		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	stale := func(t *testing.T, reentries int32) *rig {
+		g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+		g.patch(t, func(tk *v1alpha1.Task) {
+			tk.Spec.Template = "pair"
+			tk.Status.Verdict, tk.Status.GateReentries = "approve", reentries
+			tk.Status.Runs = append(tk.Status.Runs,
+				v1alpha1.RunRecord{ID: rid(1), Role: "reviewer", Trigger: "review", Phase: "Succeeded", Verdict: "approve", HeadSHA: "old"},
+				v1alpha1.RunRecord{ID: rid(2), Role: "implementer", Trigger: "ci", Phase: "Succeeded"})
+		})
+		g.log.handoff(rid(2), "abc") // a fix run, before this change, went from its push straight to the gate
+		g.f.SetPR(gatePR("abc", rid(2)))
+		g.f.SetChecks(12, green("SUCCESS"))
+		return g
 	}
+	g := stale(t, 0)
 	tk := g.reconcile(t, "3buqdlot", 1)
 	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.NextRole != "reviewer" || tk.Status.Reason != "rereview_verdict_stale" ||
 		tk.Status.GateReentries != 1 {
 		t.Fatalf("%s %s %s %d", tk.Status.Phase, tk.Status.NextRole, tk.Status.Reason, tk.Status.GateReentries)
 	}
+	if c := strings.Join(g.f.Comments(7), "\n"); strings.Contains(c, "waits for a maintainer") || !strings.Contains(c, "reviewed again") {
+		t.Fatalf("%q", c)
+	}
 	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseReviewing || current(tk).Role != "reviewer" || current(tk).HeadSHA != "abc" {
 		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+	g = stale(t, maxGateReentries)
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "verdict_stale" {
+		t.Fatalf("past the cap a human keeps it: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// N1 review: a return the factory cannot read (the room log, the checks) is no return, and never
+// blocks the reminder and the stale close of a pull request a human holds.
+func TestAReturnThatCannotBeReadStillReminds(t *testing.T) {
+	tk := staleTask(15 * 24 * time.Hour)
+	tk.Status.Reason, tk.Status.PullRequest.HeadSHA = "head_unreported", "abc"
+	g := newRig(t, tk)
+	p := pr12()
+	p.HeadSHA = "abc"
+	g.f.SetPR(p)
+	g.log.failEvents = errors.New("broker unavailable")
+	g.remindedAndAged(t)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseClosed || got.Status.Reason != "stale" {
+		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
 	}
 }
 
