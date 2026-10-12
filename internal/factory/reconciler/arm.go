@@ -30,7 +30,7 @@ type ArmInputs struct {
 	Files        struct{ Base, Head map[string]string }
 }
 
-// ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | escalate | human.
+// ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | ci_cancelled | escalate | human.
 // Matched is what the class policy-bot's verdict implies: the predicted class on a clean success,
 // review on a pending one, gate on an error; a difference from the prediction is a class_mismatch (§2).
 type ArmDecision struct {
@@ -40,19 +40,25 @@ type ArmDecision struct {
 }
 
 // CIState over the required checks: FAILURE if one failed or reported a state the rollup's
-// vocabulary does not, PENDING while one is missing or running, SUCCESS when all passed.
+// vocabulary does not, CANCELLED if none failed but one was cancelled (not red: #40), PENDING while one is missing or running, SUCCESS when all passed.
 // NEUTRAL and SKIPPED never reach here as words: forge.checkState already maps them to
 // SUCCESS on the read. Fail-closed on the unrecognized: a renamed state is not green.
 func CIState(c forge.Checks, required []string) string {
 	state := "SUCCESS"
+	cancelled := false
 	for _, name := range required {
 		i := slices.IndexFunc(c.Runs, func(x forge.Check) bool { return x.Name == name })
 		switch {
 		case i < 0 || c.Runs[i].State == "PENDING":
 			state = "PENDING"
+		case c.Runs[i].State == "CANCELLED":
+			cancelled = true
 		case c.Runs[i].State != "SUCCESS":
 			return "FAILURE"
 		}
+	}
+	if cancelled {
+		return "CANCELLED" // a failure elsewhere has returned above: it outranks a cancellation
 	}
 	return state
 }
@@ -68,6 +74,8 @@ func DecideArm(in ArmInputs) ArmDecision {
 	switch CIState(in.Checks, in.Cfg.Merge.RequiredChecks) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}
+	case "CANCELLED":
+		return ArmDecision{Verdict: "ci_cancelled", Reason: "ci_cancelled"}
 	case "PENDING":
 		return ArmDecision{Verdict: "wait", Reason: "ci_pending"}
 	}

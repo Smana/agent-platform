@@ -100,6 +100,8 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "ci_red":
 		return r.fixCI(ctx, t, pr, checks)
+	case "ci_cancelled":
+		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
 		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, d.Reason)
@@ -434,6 +436,33 @@ func failing(c forge.Checks, required []string) []string {
 		}
 	}
 	return out
+}
+
+// rerunCancelled re-runs the cancelled required checks, up to merge.checkReruns per task, then
+// hands the task to a human. A cancellation is the runner's or a concurrency group's, not the
+// diff's: a fix run has nothing to change and spent 405k tokens on an empty commit (#40). The
+// re-run is not a "wait": the checks read PENDING on the next pass, which is what waits.
+func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
+	var ids []int64
+	for _, x := range c.Runs {
+		if x.State == "CANCELLED" && slices.Contains(r.Cfg.Merge.RequiredChecks, x.Name) {
+			ids = append(ids, x.ID)
+		}
+	}
+	if t.Status.CheckReruns >= r.Cfg.Merge.CheckReruns {
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_cancelled")
+		narrateLater(t, narrate.WaitingForHuman(t, "ci_cancelled"))
+		return nil
+	}
+	t.Status.CheckReruns++ // counted before the call: a refused re-run must not loop either
+	for _, id := range ids {
+		if err := r.Merger.RerunCheck(ctx, id); err != nil {
+			return err
+		}
+	}
+	t.Status.Reason = "ci_rerun"
+	return nil
 }
 
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).

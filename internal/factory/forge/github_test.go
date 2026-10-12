@@ -732,7 +732,7 @@ func TestChecksAndMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Check{{"Pre-commit checks", "SUCCESS"}, {"Kubernetes validation", "PENDING"}, {"Security scanning", "FAILURE"}}
+	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS"}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
 	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
 		t.Fatalf("%+v", c.Runs)
 	}
@@ -1018,9 +1018,9 @@ func write(t *testing.T, s string) string {
 // refuses it (the fail-loud contract of app.go's permissions()).
 func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	r := newRig(t) // the factory connection: its mint pins the factory scope
-	r.gh.setWantPerms(MergerPermissions())
+	r.gh.setWantPerms(MergerPermissions(false))
 	o := r.opts
-	o.Permissions = MergerPermissions()
+	o.Permissions = MergerPermissions(false)
 	if _, err := Connect(t.Context(), o); err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1031,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	if !maps.Equal(got[0], permissions()) {
 		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
 	}
-	if !maps.Equal(got[1], MergerPermissions()) {
+	if !maps.Equal(got[1], MergerPermissions(false)) {
 		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
 	}
 }
@@ -1039,7 +1039,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
 	r := newRig(t)
 	o := r.opts
-	o.Permissions = MergerPermissions() // checks:read is beyond the factory App
+	o.Permissions = MergerPermissions(false) // checks:read is beyond the factory App
 	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
 		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
 	}
