@@ -16,8 +16,11 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
+	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -175,6 +178,27 @@ func (f *roomFilter) isMine(ctx context.Context, s *Server, p authn.Principal, r
 		func(u string) bool { return strings.EqualFold(u, f.login) })
 }
 
+// held reports the summary's hold need for sub (N3, #78). The projected task phase screens out
+// every room but a Queued one sub could release, so only those read the room's last task facts —
+// one indexed row, which carries the wait reason the Room status does not. An unreadable row is
+// no need: the room's summary still says it.
+func (s *Server) held(ctx context.Context, room *v1alpha1.Room, sub policy.Subject) bool {
+	if t := room.Status.Task; t == nil || t.Phase != "Queued" || !policy.Allowed(sub, policy.StartRun) {
+		return false
+	}
+	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
+	if err != nil {
+		s.log().Warn("needsMe: task facts unread", "room", room.Name, "err", err)
+		return false
+	}
+	var f envelope.TaskFacts
+	if raw == nil || json.Unmarshal(raw, &f) != nil {
+		return false
+	}
+	_, ok := summary.Hold(&f, sub, "")
+	return ok
+}
+
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
 // (D7, then §1 Groups), from the Room CRs' projected status. A room whose access
 // cannot be verified is left out like an unreadable one: neither the count nor
@@ -235,7 +259,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		// Deciding happens in the web UI: judge it as the web UI would, as the summary's needsYou does.
 		web := sub
 		web.WebUI = true
-		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide)
+		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide) || s.held(ctx, room, sub)
 		if f.needsMe && !needsMe {
 			continue
 		}
