@@ -33,8 +33,11 @@ or rewrite the hook, `gh api` or a later `gh pr edit` bypasses the footer, and r
 can copy a trailer. The factory still reads `Agent-Run` as a claim: it catches an unstamped human commit, not
 a deliberate forgery. What binds commits to the factory is push identity
 ([#76](https://github.com/Smana/agent-platform/issues/76)): before a CI-fixed pull request is reviewed again, every
-push to its branch since the branch's creation must be the agents App's in GitHub's repository activity. Commits
-are not signed.
+push to its branch since the branch's creation must be the agents App's in GitHub's repository activity. A human
+cannot push as the App without access to the agents namespace or the App key. The binding is to the App, not the
+task: the implementer octo-sts trust policy (cloud-native-ref `.github/chainguard/agent-implementer.sts.yaml`) is
+repository-wide, so any implementer run of any task can push as the bot, and only the trailer narrows that to this
+task's runs. Commits are not signed.
 
 The harness never holds a gateway or octo-sts token: identity-proxy injects them. Test with `task harness:test`. `release.yaml` builds, tests, signs and pushes it as
 `ghcr.io/smana/agent-harness:<release tag>`; the AgentRun composition in crossplane-configuration
