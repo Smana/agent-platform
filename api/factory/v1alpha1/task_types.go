@@ -157,6 +157,9 @@ type TaskStatus struct {
 	// not a failure, so it never spends a fix run.
 	// +optional
 	CheckReruns int32 `json:"checkReruns,omitempty"`
+	// The head CheckReruns counts against: a new head resets it.
+	// +optional
+	CheckRerunsHead string `json:"checkRerunsHead,omitempty"`
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
 	// Automatic resumes of runs lost to their infrastructure (disruption design §4), every role

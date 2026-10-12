@@ -57,6 +57,9 @@ func CIState(c forge.Checks, required []string) string {
 			return "FAILURE"
 		}
 	}
+	if state == "PENDING" {
+		return state // a job is re-run only once its workflow run is complete: GitHub refuses it (403) before
+	}
 	if cancelled {
 		return "CANCELLED" // a failure elsewhere has returned above: it outranks a cancellation
 	}

@@ -41,6 +41,7 @@ type Fake struct {
 	created      []string
 	armed        []string
 	reruns       []int64
+	rerunFail    map[int64]error
 	disarmed     []string
 	reverts      []string
 	refused      map[string]error
@@ -467,7 +468,17 @@ func (f *Fake) RerunCheck(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reruns = append(f.reruns, id)
-	return nil
+	return f.rerunFail[id]
+}
+
+// FailReruns makes RerunCheck answer err for these check run ids; with none it clears them.
+func (f *Fake) FailReruns(err error, ids ...int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rerunFail = map[int64]error{}
+	for _, id := range ids {
+		f.rerunFail[id] = err
+	}
 }
 
 // Reruns are the check run ids RerunCheck was called with, in order.

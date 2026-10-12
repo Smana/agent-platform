@@ -166,7 +166,7 @@ const maxGateReentries = 3
 func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
 	why := t.Status.Reason
 	switch why {
-	case "policy_pending", "policy_absent", "head_unreported":
+	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
 	default:
 		return false, nil
 	}
@@ -185,6 +185,13 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 	c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
 	if err != nil {
 		return false, err
+	}
+	if why == "ci_cancelled" {
+		if CIState(c, r.Cfg.Merge.RequiredChecks) != "SUCCESS" {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
+		return true, nil
 	}
 	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || creator != r.Cfg.Merge.PolicyBotLogin {
 		return false, nil
@@ -449,20 +456,33 @@ func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr fo
 			ids = append(ids, x.ID)
 		}
 	}
+	if t.Status.CheckRerunsHead != pr.HeadSHA { // a new head gets a fresh budget
+		t.Status.CheckReruns, t.Status.CheckRerunsHead = 0, pr.HeadSHA
+	}
 	if t.Status.CheckReruns >= r.Cfg.Merge.CheckReruns {
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_cancelled")
 		narrateLater(t, narrate.WaitingForHuman(t, "ci_cancelled"))
 		return nil
 	}
-	t.Status.CheckReruns++ // counted before the call: a refused re-run must not loop either
+	// Every cancelled job is tried; the first error is returned after the loop. A re-run is spent
+	// only once one has gone through, so a refused call leaves the budget for the next pass.
+	var first error
+	done := false
 	for _, id := range ids {
 		if err := r.Merger.RerunCheck(ctx, id); err != nil {
-			return err
+			if first == nil {
+				first = err
+			}
+			continue
 		}
+		done = true
 	}
-	t.Status.Reason = "ci_rerun"
-	return nil
+	if done {
+		t.Status.CheckReruns++
+		t.Status.Reason = "ci_rerun"
+	}
+	return first
 }
 
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).
@@ -532,7 +552,7 @@ func MainState(runs []forge.Check, watched []string) string {
 		switch c.State {
 		case "FAILURE":
 			return "FAILURE"
-		case "PENDING":
+		case "PENDING", "CANCELLED": // a cancelled check on main is not green and not red: keep watching
 			state = "PENDING"
 		}
 	}

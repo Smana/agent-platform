@@ -182,6 +182,10 @@ spec:
                   not a failure, so it never spends a fix run.
                 format: int32
                 type: integer
+              checkRerunsHead:
+                description: 'The head CheckReruns counts against: a new head resets
+                  it.'
+                type: string
               classification:
                 description: The C7 answer, recorded as-is (§2).
                 properties:
