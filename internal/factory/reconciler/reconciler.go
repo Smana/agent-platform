@@ -314,11 +314,15 @@ func (r *Reconciler) stopRequested(ctx context.Context, t *v1alpha1.Task) (bool,
 
 // stop: every live run of the task is annotated revoked=manual, then every run deleted (§6.1).
 // The runs are the cluster's, not status's (ruling SN): a run whose record was lost to a
-// conflicting status write is still the task's, and still stopped.
+// conflicting status write is still the task's, and still stopped. The claims' last usage is
+// copied into the records first: once deleted, the settle can no longer read it (#55).
 func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) error {
 	all, err := r.Runs.List(ctx)
 	if err != nil {
 		return err
+	}
+	if len(t.Status.Runs) > 0 {
+		absorb(t, all)
 	}
 	for _, run := range all {
 		if run.TaskID != t.Name {
@@ -335,7 +339,7 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 				r.Metrics.Revoked(ctx, "manual")
 			}
 		}
-		if err := r.Runs.Delete(ctx, run.ID); err != nil {
+		if err := r.deleteRun(ctx, run.ID); err != nil {
 			return err
 		}
 	}
@@ -388,8 +392,10 @@ func target(t *v1alpha1.Task) int {
 // end moves a task to a terminal or escalated phase and says why, once. The task's tokens are
 // not recorded here: the settle does that, once, after the meter's late readings have had their
 // window (R49). An escalation names the maintainers (§6.3); the outcome records tier fit and the
-// task.final line the moment the task first ends.
+// task.final line the moment the task first ends. The reservations no claim holds any more are
+// released here (#55): every ending path, and every replay of one, passes through it.
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
 	narrateLater(t, narrate.Ended(t, phase, reason, r.Cfg.Maintainers...))
 	r.outcome(ctx, t)
@@ -619,6 +625,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		switch {
 		case errors.Is(err, api.ErrOverBudget):
 			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
+			return nil
+		case errors.Is(err, api.ErrMeterBlind): // an enforced cap the meter cannot feed holds (#54)
+			t.Status.Reason = "waiting_meter_blind"
 			return nil
 		case err != nil && r.Cfg.Budgets.EnforcePrincipal:
 			return err

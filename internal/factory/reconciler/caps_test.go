@@ -307,8 +307,10 @@ func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
 			cf := cfg()
 			cf.Budgets = g.r.Cfg.Budgets
 			cf.API.Repositories = []string{"Smana/cloud-native-ref"}
+			rooms := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(c.l.DeepCopy()).Build()
+			seeingMeter(t, rooms)
 			srv := &api.Server{Auth: factoryToken{}, Cfg: cf, Runs: noRuns{},
-				Rooms: fake.NewClientBuilder().WithScheme(scheme()).WithObjects(c.l.DeepCopy()).Build(), Namespace: "agent-system",
+				Rooms: rooms, Namespace: "agent-system",
 				Stopped: func(context.Context) bool { return false }, NewRunID: func() string { return "7f3cq2xz" },
 				Now: func() time.Time { return now }, Metrics: m}
 			body := fmt.Sprintf(`{"role":"implementer","repository":"Smana/cloud-native-ref","task":{"text":"x"},"dataClass":"public","maxTokens":%d}`,

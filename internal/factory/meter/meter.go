@@ -44,6 +44,16 @@ const (
 // for an operator's audit. Older days are deleted by the meter, its only writer after them.
 const ledgerRetention = 35 * 24 * time.Hour
 
+// BlindTicks is how many periods without a metered tick admission tolerates before an enforced
+// daily cap refuses (#54): a leader handover or a scrape gap is not an outage, five minutes at
+// a 30 s period is.
+const BlindTicks = 10
+
+// orphanGrace is how long a reservation may stay without any claim before the meter releases
+// it (#55). An admission reserves, then creates its claim within seconds; a reservation released
+// in that gap is re-made by the factory's next Queued, and at worst leaves one run unreserved.
+const orphanGrace = 2 * time.Minute
+
 // Store is the part of the AgentRun client the meter uses; runs.Client implements it.
 type Store interface {
 	List(ctx context.Context) ([]runs.Run, error)
@@ -74,9 +84,14 @@ type Meter struct {
 	OnRevoke func(ctx context.Context, reason string)
 	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
 	Remaining func(principal string, remaining, limit int64)
+	// OnUsageError is told of each failed usage read; OnSucceeded of each tick that metered,
+	// with its time; OnOvershoot of what a run spent past its cap when revoked (#54).
+	OnUsageError func(ctx context.Context)
+	OnSucceeded  func(ctx context.Context, at time.Time)
+	OnOvershoot  func(ctx context.Context, tokens int64)
 	// Ledger is the store of R50's day ledgers (the manager's client): the meter appends each
-	// tick's increase to the spent column, drops a terminal run's reservation, and prunes old
-	// days. nil: the day's spend lives in this meter's memory alone, and a failover loses it —
+	// tick's increase to the spent column, releases the reservations of runs that ended, stamps
+	// the heartbeat admission reads (#54), and prunes old days. nil: the day's spend lives in this meter's memory alone, and a failover loses it —
 	// fine while EnforcePrincipal is off, which is every wiring that leaves it unset today.
 	Ledger    client.Client
 	Namespace string
@@ -84,11 +99,12 @@ type Meter struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	Log    *slog.Logger
 
-	last    map[string]reading // per run: the last raw reading and the total it gave
-	mem     map[string]int64   // the day's spend when no Ledger is wired
-	memDay  string             // the UTC day mem counts; a change resets it
-	dropped map[string]bool    // terminal runs whose reservation was dropped
-	pruned  string             // the last UTC day whose old ledgers were deleted
+	last    map[string]reading   // per run: the last raw reading and the total it gave
+	mem     map[string]int64     // the day's spend when no Ledger is wired
+	memDay  string               // the UTC day mem counts; a change resets it
+	dropped map[string]bool      // ended runs whose reservation was dropped
+	orphans map[string]time.Time // unclaimed reservations, by when this meter first saw them
+	pruned  string               // the last UTC day whose old ledgers were deleted
 }
 
 type reading struct {
@@ -179,9 +195,10 @@ func (m *Meter) Start(ctx context.Context) error {
 }
 
 // Tick meters every run once: it appends the usage this tick saw to the day's ledger, writes
-// usage as it grew, revokes a live run at any of its caps, and keeps the ledgers themselves
-// clean. A failed read of runs, usage or the ledger writes nothing; a failed annotation is
-// reported and is no revocation.
+// usage as it grew, revokes a live run at any of its caps, stamps the heartbeat admission reads,
+// and keeps the ledgers themselves clean. A failed read of runs, usage or the ledger writes no
+// usage and no stamp; a failed annotation is reported and is no revocation. Occupancy is not
+// usage: a tick that could not read usage still releases the runs that ended (#55).
 func (m *Meter) Tick(ctx context.Context) error {
 	all, err := m.Runs.List(ctx)
 	if err != nil {
@@ -189,7 +206,15 @@ func (m *Meter) Tick(ctx context.Context) error {
 	}
 	used, err := m.Source.RunTokens(ctx)
 	if err != nil {
-		return fmt.Errorf("meter: read usage: %w", err)
+		if m.OnUsageError != nil {
+			m.OnUsageError(ctx)
+		}
+		err = fmt.Errorf("meter: read usage: %w", err)
+		if m.Ledger != nil {
+			err = errors.Join(err, m.release(ctx, all))
+		}
+		m.forget(all)
+		return err
 	}
 	var hit map[string]bool
 	if m.Throttle != nil {
@@ -254,10 +279,18 @@ func (m *Meter) Tick(ctx context.Context) error {
 			if m.OnRevoke != nil {
 				m.OnRevoke(ctx, why)
 			}
+			if over := n - r.MaxTokens; why == ReasonBudgetRun && r.MaxTokens > 0 && over > 0 && m.OnOvershoot != nil {
+				m.OnOvershoot(ctx, over)
+			}
 		}
 	}
+	at := m.now()
+	if m.OnSucceeded != nil {
+		m.OnSucceeded(ctx, at)
+	}
 	if m.Ledger != nil {
-		errs = append(errs, m.dropReservations(ctx, all), m.prune(ctx, day))
+		errs = append(errs, api.StampMeter(ctx, m.Ledger, m.Namespace, at, BlindTicks*m.Every),
+			m.release(ctx, all), m.prune(ctx, day))
 	}
 	return errors.Join(errs...)
 }
@@ -350,30 +383,32 @@ func (m *Meter) now() time.Time {
 	return m.Now()
 }
 
-// dropReservations releases a terminal run's admission reservation (R50), the API's and the
-// factory's Queued's alike (#78): the meter is its only dropper once the API's own drop (create
-// failure) no longer applies, and a factory reservation has no such drop at all — Queued
-// re-reserves the same deterministic id on its retry instead. The reservation sits in the ledger
-// of the day that admitted the run — its creation day — so that day and today are searched (the
-// two differ only for a run admitted as the clock crossed midnight). A run deleted before
-// reaching terminal, a factory reservation whose claim was never created, or a day that stays
-// busy, leaks at most one entry until its ledger is pruned: deleting a run refunds nothing (5.2);
-// #55 tracks that leak before enforcePrincipal. A failure is retried on the next tick, while the
-// run is still listed.
+// release ends the admission reservations (R50) of the runs that no longer run, the API's and
+// the factory's Queued's alike (#78, #55): a terminal run, a claim being deleted — a stop, the
+// stuck and Pending bounds and the kill switch's sweep delete live claims, which never reach a
+// terminal phase — and, after orphanGrace, a reservation no claim holds at all: its claim gone
+// before any tick saw it end, or never created. The reconciler and the sweep release their own
+// at once; this is the crash-safe floor under them. A failure is retried on the next tick.
+func (m *Meter) release(ctx context.Context, all []runs.Run) error {
+	return errors.Join(m.dropReservations(ctx, all), m.releaseOrphans(ctx, all))
+}
+
+// dropReservations releases an ended run's reservation. It sits in the ledger of the day that
+// admitted the run — its creation day — so that day and today are searched (the two differ only
+// for a run admitted as the clock crossed midnight).
 func (m *Meter) dropReservations(ctx context.Context, all []runs.Run) error {
-	today := m.now().UTC().Format(api.LedgerDayLayout)
+	now := m.now()
 	var errs []error
 	for _, r := range all {
-		if !runs.Terminal(r.Phase) || m.dropped[r.ID] {
+		if ended := runs.Terminal(r.Phase) || r.Deleting; !ended || m.dropped[r.ID] {
 			continue
 		}
-		created := r.Created.UTC().Format(api.LedgerDayLayout)
-		err := m.dropReservation(ctx, created, r.ID)
-		if created != today && err == nil {
-			err = m.dropReservation(ctx, today, r.ID)
+		err := api.Release(ctx, m.Ledger, m.Namespace, r.Created, r.ID)
+		if !sameDay(r.Created, now) && err == nil {
+			err = api.Release(ctx, m.Ledger, m.Namespace, now, r.ID)
 		}
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("meter: run %s: %w", r.ID, err))
 			continue // not dropped yet: retry next tick
 		}
 		if m.dropped == nil {
@@ -384,33 +419,56 @@ func (m *Meter) dropReservations(ctx context.Context, all []runs.Run) error {
 	return errors.Join(errs...)
 }
 
-func (m *Meter) dropReservation(ctx context.Context, day, id string) error {
-	key := types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + day}
-	ck := api.LedgerReserved + id
-	for range api.LedgerAttempts {
-		cm := &corev1.ConfigMap{}
-		err := m.Ledger.Get(ctx, key, cm)
+// releaseOrphans releases today's reservations that no listed claim has held for orphanGrace.
+// Only today's ledger: admission reads no other. The grace lives in this meter's memory, so a
+// new leader starts it again — later, never sooner.
+func (m *Meter) releaseOrphans(ctx context.Context, all []runs.Run) error {
+	now := m.now()
+	key := types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + now.UTC().Format(api.LedgerDayLayout)}
+	cm := &corev1.ConfigMap{}
+	if err := m.Ledger.Get(ctx, key, cm); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil // no ledger that day: no reservation of this run there either
-		}
-		if err != nil {
-			return fmt.Errorf("meter: read the %s ledger: %w", day, err)
-		}
-		if _, ok := cm.Data[ck]; !ok {
+			m.orphans = nil
 			return nil
 		}
-		delete(cm.Data, ck)
-		err = m.Ledger.Update(ctx, cm)
-		switch {
-		case err == nil:
-			return nil
-		case apierrors.IsConflict(err):
-			continue // an admission landed beside us: re-read and drop again
-		default:
-			return fmt.Errorf("meter: drop run %s reservation: %w", id, err)
+		return fmt.Errorf("meter: read the %s ledger: %w", key.Name, err)
+	}
+	claimed := make(map[string]bool, len(all))
+	for _, r := range all {
+		claimed[r.ID] = true
+	}
+	unclaimed := map[string]time.Time{}
+	var due []string
+	for k := range cm.Data {
+		id, ok := strings.CutPrefix(k, api.LedgerReserved)
+		if !ok || claimed[id] {
+			continue
+		}
+		since, seen := m.orphans[id]
+		if !seen {
+			since = now
+		}
+		unclaimed[id] = since
+		if now.Sub(since) >= orphanGrace {
+			due = append(due, id)
 		}
 	}
-	return fmt.Errorf("meter: the %s ledger stayed busy: run %s reservation kept", day, id)
+	m.orphans = unclaimed
+	if len(due) == 0 {
+		return nil
+	}
+	if err := api.Release(ctx, m.Ledger, m.Namespace, now, due...); err != nil {
+		return fmt.Errorf("meter: release unclaimed reservations: %w", err)
+	}
+	m.log().Info("unclaimed reservations released", "runs", due)
+	for _, id := range due {
+		delete(m.orphans, id)
+	}
+	return nil
+}
+
+func sameDay(a, b time.Time) bool {
+	return a.UTC().Format(api.LedgerDayLayout) == b.UTC().Format(api.LedgerDayLayout)
 }
 
 // prune deletes the day ledgers older than ledgerRetention. Once per UTC day: a missed day of

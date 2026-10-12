@@ -51,7 +51,7 @@ func (r *Reconciler) stuck(ctx context.Context, t *v1alpha1.Task, run runs.Run) 
 	if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnRevoked: "manual"}); err != nil {
 		return false, err
 	}
-	return true, r.Runs.Delete(ctx, run.ID)
+	return true, r.deleteRun(ctx, run.ID)
 }
 
 // agent_error is not here: it includes gateway and provider failures, which score nothing (R53).

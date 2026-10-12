@@ -325,6 +325,7 @@ func scheme() *runtime.Scheme {
 func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
+	seeingMeter(t, c)
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
 	g.r = &Reconciler{Client: c, Ledger: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
