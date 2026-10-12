@@ -18,6 +18,10 @@ import (
 // ErrEventsTruncated is LabelEvents reaching its page cap: the newest events are unread.
 var ErrEventsTruncated = errors.New("forge: label events past the page cap are unread")
 
+// ErrCommitsTruncated is PullRequestCommits reaching GitHub's 250-commit cap: commits past it are
+// never listed, so the list read is not known to be the whole pull request.
+var ErrCommitsTruncated = errors.New("forge: a pull request's commits past GitHub's 250 are unread")
+
 // ErrHeadMoved and ErrNotMergeable are GitHub's refusals of a merge at merge time (ruling R52):
 // expectedHeadOid is no longer the head — a push landed after the decision (HTTP 409) — or the
 // pull request cannot be merged as it stands: protections, an approval it lacks (HTTP 405).
@@ -123,8 +127,20 @@ type PR struct {
 // agent that writes its own Agent-Run (or agent-run) keeps the real one out; an agent with a shell
 // can skip the hook altogether. Tasks 7.2/7.3 must fail closed on an absent, foreign, duplicated
 // or case-variant Agent-Run, and a matching one proves only that the commit claims to be the run's.
-func (p PR) Trailer(key string) string {
-	msg := strings.TrimRight(strings.ReplaceAll(p.HeadMessage, "\r\n", "\n"), " \t\n")
+func (p PR) Trailer(key string) string { return trailer(p.HeadMessage, key) }
+
+// Commit is one commit of a pull request, as GitHub lists them.
+type Commit struct {
+	SHA     string
+	Author  string // the login GitHub matched the author's email to, "" when none: never proof
+	Message string
+}
+
+// Trailer is what the commit claims for a git trailer, as PR.Trailer reads the head's.
+func (c Commit) Trailer(key string) string { return trailer(c.Message, key) }
+
+func trailer(message, key string) string {
+	msg := strings.TrimRight(strings.ReplaceAll(message, "\r\n", "\n"), " \t\n")
 	i := strings.LastIndex(msg, "\n\n")
 	if i < 0 {
 		return ""

@@ -306,6 +306,26 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		_, _ = io.WriteString(w, `{"number":12,"state":"closed"}`)
 	}))
+	// A pull request's commits, oldest first, paged, and never past GitHub's 250: PR 12 has 130,
+	// PR 14 has 300, of which GitHub serves only the first 250.
+	mux.HandleFunc("GET /repos/Smana/demo/pulls/{n}/commits", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		total := min(map[string]int{"12": 130, "14": 300}[r.PathValue("n")], 250)
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if per == 0 {
+			per = 30
+		}
+		page = max(page, 1)
+		if page*per < total {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/Smana/demo/pulls/%s/commits?per_page=%d&page=%d>; rel="next"`,
+				g.srv.URL, r.PathValue("n"), per, page+1))
+		}
+		var cs []string
+		for i := (page-1)*per + 1; i <= min(page*per, total); i++ {
+			cs = append(cs, fmt.Sprintf(`{"sha":"c%03d","author":{"login":"ogenki-agents[bot]"},"commit":{"message":"fix %d\n\nAgent-Run: 7f3cq2xz"}}`, i, i))
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(cs, ",")+"]")
+	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
 	}))
@@ -526,6 +546,28 @@ func TestRecentCommentsAreTheNewest(t *testing.T) {
 				t.Fatalf("#%d: comment %d is id %d, want %d (newest first)", issue, i, c.ID, want)
 			}
 		}
+	}
+}
+
+// #74: every commit of the pull request, across pages, with its author's login and message.
+func TestPullRequestCommitsReadsEveryPage(t *testing.T) {
+	r := newRig(t)
+	cs, err := r.g.PullRequestCommits(t.Context(), 12)
+	if err != nil || len(cs) != 130 {
+		t.Fatalf("%d %v", len(cs), err)
+	}
+	if c := cs[129]; c.SHA != "c130" || c.Author != "ogenki-agents[bot]" || c.Trailer("Agent-Run") != "7f3cq2xz" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// GitHub serves at most 250 of a pull request's commits: a list that reaches the cap may be
+// partial, so the caller is told rather than handed it as the whole.
+func TestPullRequestCommitsAtGitHubsCapAreTruncated(t *testing.T) {
+	r := newRig(t)
+	cs, err := r.g.PullRequestCommits(t.Context(), 14)
+	if !errors.Is(err, ErrCommitsTruncated) || len(cs) != 250 {
+		t.Fatalf("%d %v", len(cs), err)
 	}
 }
 

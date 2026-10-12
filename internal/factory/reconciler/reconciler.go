@@ -61,6 +61,7 @@ type taskForge interface {
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	PullRequestForBranch(ctx context.Context, branch string) (int, error)
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
+	PullRequestCommits(ctx context.Context, number int) ([]forge.Commit, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 }

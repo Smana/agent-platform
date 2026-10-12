@@ -659,6 +659,34 @@ func (g *GitHub) RevertPR(ctx context.Context, nodeID, title, body string) (Reve
 	return Revert{Number: r.Number, URL: r.URL, NodeID: r.ID}, wrap("open a revert", err)
 }
 
+// maxPRCommits is the most commits GitHub lists for a pull request.
+const maxPRCommits = 250
+
+// PullRequestCommits are the pull request's commits, oldest first: three pages of 100 at most.
+// A list that reaches GitHub's 250 is returned with ErrCommitsTruncated — it may be all of them,
+// or the first 250 of more, and GitHub does not say which.
+func (g *GitHub) PullRequestCommits(ctx context.Context, number int) ([]Commit, error) {
+	var out []Commit
+	opt := &github.ListOptions{PerPage: 100}
+	for {
+		cs, resp, err := g.rest.PullRequests.ListCommits(ctx, g.owner, g.name, number, opt)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list pull request commits", err)
+		}
+		for _, c := range cs {
+			out = append(out, Commit{SHA: c.GetSHA(), Author: c.GetAuthor().GetLogin(), Message: c.GetCommit().GetMessage()})
+		}
+		if len(out) >= maxPRCommits {
+			return out, ErrCommitsTruncated
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opt.Page = resp.NextPage
+	}
+}
+
 // OpenPullRequests are the repository's open pull requests, one page of 100: the factory App's
 // read of the queue (the merger reads PR state through Merger, not here).
 func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
