@@ -132,6 +132,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.LabelEventsTruncated(ctx, "factory/ready")
 	s.Revoked(ctx, "budget-run")
 	s.GitHubRemaining(ctx, 4990)
+	s.GitHubUp(ctx, true)
 	s.TraceExportAbandoned(ctx)
 	s.Resumed(ctx, "Disrupted")
 	body := scrape()
@@ -148,6 +149,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_intake_errors_total{source="issue"} 1`,
 		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
 		`agent_factory_github_rate_remaining 4990`,
+		`agent_factory_github_up 1`,
 		`agent_factory_trace_export_abandoned_total 1`,
 		`agent_factory_resumes_total{reason="Disrupted"} 1`,
 	} {

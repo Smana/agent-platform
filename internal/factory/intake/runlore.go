@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,7 +66,12 @@ type RunLore struct {
 	Now       func() time.Time
 	Errors    errorCounter
 	Log       *slog.Logger
+
+	warnedAt atomic.Int64 // unix nanoseconds of the last unconfigured warning
 }
+
+// unconfiguredWarnEvery rate-limits the missing-token warning: Alertmanager retries every finding.
+const unconfiguredWarnEvery = time.Minute
 
 // NeedLeaderElection is false: every replica serves intake, and the task's name is the key, so a
 // replay racing across replicas loses on AlreadyExists and opens no second issue (SC-9).
@@ -91,6 +97,20 @@ func (h *RunLore) Start(ctx context.Context) error {
 	return nil
 }
 
+// unconfigured makes a misprovisioned intake visible: an intake error counter on every refusal and
+// a warning at most once a minute.
+func (h *RunLore) unconfigured(ctx context.Context) {
+	if h.Errors != nil {
+		h.Errors.IntakeError(ctx, "runlore")
+	}
+	now := h.Now().UnixNano()
+	last := h.warnedAt.Load()
+	if now-last >= int64(unconfiguredWarnEvery) && h.warnedAt.CompareAndSwap(last, now) {
+		h.log().Warn("runlore intake refuses every request: its token is missing or empty",
+			"file", h.Cfg.RunLore.TokenFile)
+	}
+}
+
 func (h *RunLore) log() *slog.Logger {
 	if h.Log == nil {
 		return slog.New(slog.DiscardHandler)
@@ -105,8 +125,16 @@ func reply(w http.ResponseWriter, code int, v any) {
 }
 
 func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The chart mounts the token Secret optional: without it the intake is off, never open.
+	// An empty bearer must not match an empty token.
+	token := h.Token()
+	if token == "" {
+		h.unconfigured(r.Context())
+		reply(w, http.StatusServiceUnavailable, map[string]string{"error": "intake_unconfigured"})
+		return
+	}
 	raw, err := authn.Bearer(r)
-	if err != nil || subtle.ConstantTimeCompare([]byte(raw), []byte(h.Token())) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(raw), []byte(token)) != 1 {
 		reply(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}

@@ -203,6 +203,7 @@ func reasons() map[string]string {
 		"review_rounds_exhausted": "the reviewer still asked for changes after the last review round",
 		"no_verdict":              "the last review ended without a verdict the factory can act on, with no review round left",
 		"verdict_missing":         "it recorded no verdict",
+		"merge_gate_off":          "no merge class is live or in shadow, so the factory does not gate this pull request",
 		"verdict_stale":           "its approval was not for the pull request's current head",
 		"room_log_too_long":       "the room's log was too long to read to its end",
 		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",

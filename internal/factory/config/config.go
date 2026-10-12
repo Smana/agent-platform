@@ -115,6 +115,17 @@ type GitHub struct {
 	MergerKeyFile   string `json:"mergerKeyFile,omitempty"`
 }
 
+// NeedsMerger reports whether a class is live or in shadow: deciding it reads checks through
+// the merger App, so its key is then mandatory. With every class off the key is optional.
+func (c *Config) NeedsMerger() bool {
+	for _, cl := range c.Classes {
+		if cl.Live || cl.Shadow {
+			return true
+		}
+	}
+	return false
+}
+
 // Poll is how often each loop runs.
 type Poll struct {
 	Issues Duration `json:"issues"`
@@ -449,10 +460,7 @@ func (c *Config) Validate() error {
 	// R16: the merger App's key is both files or neither — a half pair cannot mint a token —
 	// and both are required once any class is live or shadow, whose decision reads checks
 	// through it.
-	var anyMerge bool
-	for _, cl := range c.Classes {
-		anyMerge = anyMerge || cl.Live || cl.Shadow
-	}
+	anyMerge := c.NeedsMerger()
 	switch {
 	case (c.GitHub.MergerAppIDFile == "") != (c.GitHub.MergerKeyFile == ""):
 		bad("github.mergerAppIDFile and github.mergerKeyFile are both set or both empty")
