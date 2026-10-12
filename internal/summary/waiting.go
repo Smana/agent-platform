@@ -94,6 +94,7 @@ func reasons() map[string]string {
 		"auto_merge_cap":            "today's auto-merge cap is reached",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"ci_red":                    "CI stayed red after the fix runs",
+		"ci_cancelled":              "a required check was cancelled and re-running it did not settle it",
 		"secret_scan_red":           "the secret scan found a live credential in the pull request",
 		"review_rounds_exhausted":   "the reviewer still asked for changes after the last review round",
 		"no_verdict":                "the last review ended without a verdict the factory can act on",
