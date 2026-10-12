@@ -3,7 +3,7 @@
 # the driver, the git credential helper, gh with the PR provenance footer, and
 # the Agent-Run trailer hook.
 # The AgentRun composition pins this image by digest; a claim never names one.
-FROM ghcr.io/openhands/agent-server:1.49.6-python@sha256:02ef66fdf0b22a40b0b55c5cca8d1790cfd260c5069f7c0b99edc1b505d5ab37 AS harness
+FROM ghcr.io/openhands/agent-server:1.54.0-python@sha256:082368832a7e48087b64da38c7b2cf2442dd7621fde69f8d06ed52283ff136f8 AS harness
 
 # cli/cli release: Dependabot cannot bump an ARG; move GH_VERSION and both sums together by hand.
 ARG GH_VERSION=2.101.0
