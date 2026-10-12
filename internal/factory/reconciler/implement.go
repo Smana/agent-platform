@@ -321,8 +321,11 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	if reason == "" {
 		return nil
 	}
-	if reason == "pod_lost" && run.Reason == runs.ReasonPodFailed {
-		reason = run.Reason // the broker's pod_lost reads the same for a crash; the AgentRun read the pod
+	if reason == "pod_lost" {
+		switch run.Reason {
+		case runs.ReasonDisrupted, runs.ReasonPodLost, runs.ReasonPodFailed:
+			reason = run.Reason // the broker's pod_lost reads the same for a drain, a deletion and a crash; the AgentRun read the pod
+		}
 	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)

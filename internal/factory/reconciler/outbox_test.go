@@ -44,6 +44,7 @@ func TestProbeTheEndIsNarratedAfterAnOutage(t *testing.T) {
 	_, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
 	t.Logf("reconcile during outage: %v", err)
 	ff.down = false
+	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) } // the end waits for the usage to settle (#42)
 	for range 3 {
 		_, _ = g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
 	}
@@ -81,22 +82,22 @@ func TestTheEndIsPostedOnceAfterAnOutage(t *testing.T) {
 	tk := g.reconcile(t, "3buqdlot", 3)
 	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "true"}
 	_ = g.c.Update(t.Context(), tk)
-	ff.down = true
-	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
-		t.Fatal("an undrained outbox retries")
+	// The end waits for the usage to settle (#42); the outage is at the post, past the window.
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err != nil {
+		t.Fatal(err)
 	}
 	tk = g.reconcile(t, "3buqdlot", 0)
 	if tk.Status.Phase != v1alpha1.PhaseStopped || len(tk.Status.Outbox) != 1 || !strings.HasPrefix(tk.Status.Outbox[0].Key, "end-stopped") {
 		t.Fatalf("the phase and its narration are written together: %s %+v", tk.Status.Phase, tk.Status.Outbox)
 	}
-	ff.down = false
-	res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
-	if err != nil || res.RequeueAfter != g.r.settleWindow() {
-		t.Fatalf("drained, but requeued for its settle: %v %v", err, res)
-	}
 	// Past the settle window the usage settles and TaskTokens is recorded once; after that the
 	// ended task is left alone again.
 	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
+	ff.down = true
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("an undrained outbox retries")
+	}
+	ff.down = false
 	for range 2 {
 		if res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err != nil || res.RequeueAfter != 0 {
 			t.Fatalf("%v %v", err, res)

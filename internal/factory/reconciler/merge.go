@@ -444,6 +444,13 @@ func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "ci_red")
 	}
 	t.Status.FixRuns++
+	var why []string
+	for _, x := range c.Runs {
+		if slices.Contains(names, x.Name) {
+			why = append(why, fmt.Sprintf("`%s`: %s", x.Name, strings.ToLower(x.State)))
+		}
+	}
+	narrateLater(t, narrate.CIFixing(t, pr.Number, pr.HeadSHA, why, int(t.Status.FixRuns), int(r.Cfg.Merge.FixRuns)))
 	msg := fmt.Sprintf("CI failed on %s: %s. Read the failing jobs with `gh pr checks %d` and fix them on the same branch.",
 		pr.HeadSHA, strings.Join(names, ", "), pr.Number)
 	if err := r.Rooms.Enqueue(ctx, t.Status.RoomRef, "ci", msg, int64(t.Status.FixRuns)); err != nil {

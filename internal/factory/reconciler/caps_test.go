@@ -116,7 +116,7 @@ func TestTaskTokenCapLeavesRoomForAWholeRun(t *testing.T) {
 					t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 				}
 				if say := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(say, "no room left for another full run") ||
-					!strings.Contains(say, "Tokens used: 1.5 M") {
+					!strings.Contains(say, "Tokens used so far: 1.5 M") {
 					t.Fatalf("the escalation says why, honestly: %q", say)
 				}
 			})

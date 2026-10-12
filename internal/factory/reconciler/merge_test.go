@@ -209,6 +209,21 @@ func TestMainRedRevertsAndPausesTheClass(t *testing.T) {
 	}
 }
 
+// #41: a run that starts because CI went red says which check failed on which head.
+func TestACIFixRunSaysWhyItStarted(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	red := green("SUCCESS")
+	red.Runs[1].State = "FAILURE"
+	g.f.SetChecks(12, red)
+	g.reconcile(t, "3buqdlot", 2)
+	c := strings.Join(g.f.Comments(7), "\n") // the issue, where the task's other narration lands
+	for _, want := range []string{"CI is red on #12 at `abc`", "`Kubernetes validation`: failure", "a run starts to fix it (1/2)"} {
+		if !strings.Contains(c, want) {
+			t.Fatalf("missing %q in %q", want, c)
+		}
+	}
+}
+
 func TestCIRedGetsTwoFixRunsThenEscalates(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
 	red := green("SUCCESS")

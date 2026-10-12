@@ -365,12 +365,17 @@ func narrateOn(t *v1alpha1.Task, n int, e narrate.Event) {
 func (r *Reconciler) drain(ctx context.Context, t *v1alpha1.Task) error {
 	for len(t.Status.Outbox) > 0 {
 		o := t.Status.Outbox[0]
+		if narrate.Closing(o.Key) && r.settling(t) {
+			break // its token total is final only once the usage settles (#42); settle requeues
+		}
 		if err := r.narrator().Post(ctx, t, o.Number, narrate.Event{Key: o.Key, Body: o.Body}); err != nil {
 			return err
 		}
 		t.Status.Outbox = t.Status.Outbox[1:]
 	}
-	t.Status.Outbox = nil
+	if len(t.Status.Outbox) == 0 {
+		t.Status.Outbox = nil
+	}
 	return nil
 }
 
@@ -420,6 +425,12 @@ func (r *Reconciler) settle(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	t.Status.UsageSettled = true
+	blind := slices.ContainsFunc(t.Status.Runs, func(rec v1alpha1.RunRecord) bool { return rec.Tokens == 0 })
+	for i := range t.Status.Outbox {
+		if o := &t.Status.Outbox[i]; narrate.Closing(o.Key) { // the closing comment waited for this total (#42)
+			o.Body = narrate.Retotal(o.Body, t.Status.Usage.Tokens, blind)
+		}
+	}
 	tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
 	return nil

@@ -410,14 +410,13 @@ func TestLabelToNarratedRun(t *testing.T) {
 	}
 	g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "def"})
 	tk = g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseDone || !strings.Contains(g.f.Comments(7)[2], "Merged by @Smana") ||
-		tk.Status.PullRequest.MergeCommitSHA != "def" {
-		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
+	if tk.Status.Phase != v1alpha1.PhaseDone || len(g.f.Comments(7)) != 2 || tk.Status.PullRequest.MergeCommitSHA != "def" {
+		t.Fatalf("the end waits for the settle (#42): %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 	// The end does not record the tokens (R49); the settle does, once, past its window.
 	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
-	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
-		t.Fatalf("settled: %+v", tk.Status)
+	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled || !strings.Contains(g.f.Comments(7)[2], "Merged by @Smana") {
+		t.Fatalf("settled: %+v %q", tk.Status, g.f.Comments(7))
 	}
 	want := []string{"time_to_pr issue standard solo", "pr review human_merged",
 		"tier_fit static standard over false", "task_tokens 0 standard solo review"}
@@ -440,14 +439,18 @@ func TestEndings(t *testing.T) {
 			g.runs.set(rid(0), c.phase)
 			g.log.end(rid(0), c.phase, c.reason)
 			tk := g.reconcile(t, "3buqdlot", 1)
-			if tk.Status.Phase != c.want || !strings.Contains(strings.Join(g.f.Comments(7), "\n"), c.says) {
+			if tk.Status.Phase != c.want {
 				t.Errorf("%s %q", tk.Status.Phase, g.f.Comments(7))
 			}
 			// An escalated task may be retried: its tokens are recorded once it ends for good,
 			// by the settle (R49), not by the end. Only the task_tokens lines count here: the
 			// end of a task that scored its tier (outcome) records a tier_fit line too.
+			// A terminal ending is posted with the settled total (#42), so it is read after.
 			g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
 			g.reconcile(t, "3buqdlot", 1)
+			if !strings.Contains(strings.Join(g.f.Comments(7), "\n"), c.says) {
+				t.Errorf("%q", g.f.Comments(7))
+			}
 			settled := 0
 			for _, s := range g.metrics.recorded {
 				if strings.HasPrefix(s, "task_tokens") {
