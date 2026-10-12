@@ -56,7 +56,7 @@ const (
 	githubTimeout = 15 * time.Second
 	brokerTimeout = 15 * time.Second
 	vmTimeout     = 10 * time.Second
-	// pingEvery keeps "App token fresh" (forge.freshFor, 3 min) true on every healthy replica.
+	// pingEvery keeps the installation token warm and forge.Healthy true on every replica.
 	pingEvery = time.Minute
 	// traceDrain bounds the span exporter's flush at exit, inside the pod's grace.
 	traceDrain = 2 * time.Second
@@ -122,9 +122,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
 	// workload holds. TW4: its token asks the merger profile, not the factory App's scope —
 	// checks and statuses read, contents and pull requests write.
-	merger, err := forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
-		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions()})
+	merger, err := connectMerger(ctx, log, cfg)
 	if err != nil {
 		return err
 	}
@@ -224,7 +222,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			return fmt.Errorf("manager: %w", err)
 		}
 	}
-	ops := factoryOps(gh.Healthy, time.Now, mgr.GetCache().WaitForCacheSync, func() bool { return ctx.Err() != nil }, exp.Handler())
+	ops := factoryOps(mgr.GetCache().WaitForCacheSync, func() bool { return ctx.Err() != nil }, exp.Handler())
 	return serveFactory(ctx, log, mgr, ops, ns)
 }
 
@@ -261,6 +259,30 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	return errors.Join(err, <-opsDone)
 }
 
+// connectMerger connects the merger App, or answers the fail-closed forge.Absent when its key
+// is not mounted and no class needs it (#57: the chart mounts the Secret optional). A class
+// live or in shadow reads checks through the merger, so for it a missing key stops the start.
+func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (forge.Merger, error) {
+	idFile := cfg.GitHub.MergerAppIDFile
+	if idFile != "" {
+		_, err := os.Stat(filepath.Clean(idFile))
+		switch {
+		case err == nil:
+		case errors.Is(err, os.ErrNotExist) && !cfg.NeedsMerger():
+			idFile = ""
+		case errors.Is(err, os.ErrNotExist):
+			return nil, fmt.Errorf("merger App key %s is missing, and a live or shadow class needs it: create the agent-factory-merger Secret or turn the class off", idFile)
+		}
+	}
+	if idFile == "" {
+		log.Warn("no merger App key: checks, merges and reverts fail closed until it is mounted and the pod restarts")
+		return forge.Absent{}, nil
+	}
+	return forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
+		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions()})
+}
+
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface
 // otherwise, never a typed nil the reconciler would call. The exporter dials lazily: an
 // unreachable collector loses spans, never the factory's start.
@@ -279,19 +301,15 @@ func taskSink(ctx context.Context, endpoint string) (tracing.Sink, func(context.
 	}, nil
 }
 
-// factoryOps is :9090 for the factory: /readyz once the caches synced and the App token is fresh
-// (§6.5); /startupz at once, since the server starts only after the config parsed.
-func factoryOps(fresh func(time.Time) bool, now func() time.Time, synced func(context.Context) bool,
-	draining func() bool, metricsH http.Handler,
-) http.Handler {
-	ping := func(context.Context) error {
-		if !fresh(now()) {
-			return errors.New("GitHub App token not fresh")
-		}
-		return nil
-	}
+// factoryOps is :9090 for the factory: /readyz once the caches synced; /startupz at once, since
+// the server starts only after the config parsed. Readiness does not look at GitHub (#58): an
+// outage would unready every replica at once, and an unready replica serves nothing less than a
+// ready one — the API and the intake need no GitHub call to answer, and the loops that do
+// retry on their own. The outage shows in the loops' error logs and the intake error counter.
+func factoryOps(synced func(context.Context) bool, draining func() bool, metricsH http.Handler) http.Handler {
+	noDependency := func(context.Context) error { return nil }
 	started := func(context.Context) (bool, error) { return true, nil }
-	return opsHandler(ping, started, boundedSync(synced), draining, metricsH)
+	return opsHandler(noDependency, started, boundedSync(synced), draining, metricsH)
 }
 
 // elected reports whether this replica leads; the leader-only gauges read it.

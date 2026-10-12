@@ -66,7 +66,9 @@ spec:
         - name: github
           secret: {secretName: {{ .Values.githubSecret }}, defaultMode: 0440}
         - name: merger
-          secret: {secretName: {{ .Values.mergerSecret }}, defaultMode: 0440}
+          # optional: a factory with every class off starts without the merger App (it fails closed); a
+          # live or shadow class refuses the start in the binary when the key is absent (#57).
+          secret: {secretName: {{ .Values.mergerSecret }}, defaultMode: 0440, optional: true}
         - name: rooms-token
           projected:
             sources:
@@ -76,4 +78,5 @@ spec:
         - name: intake
           # 0440, not the plan's 0400: a 0400 Secret is root-only for uid 65532 — the chart's own
           # render test refuses it (review C1). Group bit plus fsGroup, as the App keys.
-          secret: {secretName: {{ .Values.intakeSecret }}, defaultMode: 0440}
+          # optional: without the token the intake refuses every request (503), never runs open (#57).
+          secret: {secretName: {{ .Values.intakeSecret }}, defaultMode: 0440, optional: true}

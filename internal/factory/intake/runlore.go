@@ -105,8 +105,15 @@ func reply(w http.ResponseWriter, code int, v any) {
 }
 
 func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The chart mounts the token Secret optional: without it the intake is off, never open.
+	// An empty bearer must not match an empty token.
+	token := h.Token()
+	if token == "" {
+		reply(w, http.StatusServiceUnavailable, map[string]string{"error": "intake_unconfigured"})
+		return
+	}
 	raw, err := authn.Bearer(r)
-	if err != nil || subtle.ConstantTimeCompare([]byte(raw), []byte(h.Token())) != 1 {
+	if err != nil || subtle.ConstantTimeCompare([]byte(raw), []byte(token)) != 1 {
 		reply(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}

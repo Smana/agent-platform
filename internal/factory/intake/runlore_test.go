@@ -102,6 +102,18 @@ func TestBarAuthAndCap(t *testing.T) {
 	}
 }
 
+// #57: the intake token Secret is optional in the chart. Without it every request is refused,
+// an empty bearer included, instead of the intake running unauthenticated.
+func TestNoTokenRefusesEveryRequest(t *testing.T) {
+	h, _, _ := runlore(t)
+	h.Token = func() string { return "" }
+	for _, tok := range []string{"", "anything"} {
+		if w := send(h, tok, finding); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "intake_unconfigured") {
+			t.Fatalf("bearer %q: %d %s", tok, w.Code, w.Body)
+		}
+	}
+}
+
 // TW6: the attacker-influenced identifiers reach the public issue transposed to the label
 // charset — the fields still appear, but no image, link or HTML form survives and the
 // zero-width character is gone.
