@@ -54,6 +54,30 @@ describe("renderSummary", () => {
     expect(block.querySelector("a")).toBeNull();
   });
 
+  // #51: a merge waiting on the maintainer, with how to merge under the ruleset and a link to the PR.
+  it("renders a merge with its instruction and the PR link", () => {
+    const s = base();
+    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7: tick bypass", url: "https://github.com/o/r/pull/7" }];
+    const block = render(s).querySelector('[data-block="needs-you"]')!;
+    expect(block.textContent).toContain("Merge: merge PR #7: tick bypass");
+    expect(block.querySelector("a")?.getAttribute("href")).toBe("https://github.com/o/r/pull/7");
+    expect(block.textContent).not.toMatch(/Review and decide/);
+  });
+
+  // #59: a waiting phase says why and what comes next; #50: the issue's title.
+  it("shows the reason, the next step and the issue title", () => {
+    const s = base();
+    s.status.reason = "CI stayed red after the fix runs";
+    s.status.next = "a maintainer comments /factory retry";
+    s.status.issue!.title = "fix the CA";
+    const text = render(s).querySelector('[data-block="status"]')!.textContent;
+    expect(text).toContain("Why: CI stayed red after the fix runs");
+    expect(text).toContain("Next: a maintainer comments /factory retry");
+    expect(text).toContain("fix the CA");
+    const none = render(base()).querySelector('[data-block="status"]')!.textContent;
+    expect(none).not.toMatch(/Why:|Next:/);
+  });
+
   it("omits Needs you when nothing needs you", () => {
     const s = base();
     s.needsYou = [];
