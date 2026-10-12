@@ -71,6 +71,11 @@ func mkServer(t *testing.T, st RunStore, c client.Client, enforce, stopped bool,
 	if err != nil {
 		t.Fatal(err)
 	}
+	if enforce { // an enforced cap needs a meter that sees (#54)
+		if err := StampMeter(t.Context(), c, "agent-system", now, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return &Server{
 		Auth: byToken{
 			"alice": {Kind: envelope.ActorHuman, ID: "human:291", Groups: []string{"agents-member"}},
@@ -397,6 +402,9 @@ func TestConcurrentReservationsAdmitOnlyWhatFits(t *testing.T) {
 			t.Fatal(err)
 		}
 		c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(l).Build()
+		if err := StampMeter(t.Context(), c, "agent-system", now, time.Hour); err != nil {
+			t.Fatal(err)
+		}
 		var (
 			wg                 sync.WaitGroup
 			mu                 sync.Mutex

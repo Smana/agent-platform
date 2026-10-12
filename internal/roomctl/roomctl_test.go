@@ -233,7 +233,9 @@ func newBroker(t *testing.T) *broker {
 			w.Header().Set("X-Rooms-Access", access)
 		}
 		_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","repository":"Smana/a","needsMe":true,"phase":"Active","owner":"human:own","driver":"human:own","dataClass":"public",` +
-			`"lastSeq":42,"you":{"principal":"human:dev","role":"watcher","approver":false,"driver":false,"webUI":false}}]`))
+			`"lastSeq":42,"issue":2266,"title":"fix\u001b[2J the CA","task":"Reviewing","pr":2267,"needsYou":1,` +
+			`"you":{"principal":"human:dev","role":"watcher","approver":false,"driver":false,"webUI":false}},` +
+			`{"id":"d66mo4b4","repository":"Smana/a","phase":"Idle","owner":"human:own","lastSeq":95,"needsYou":0,"you":{"role":"owner"}}]`))
 	})
 	mux.HandleFunc("GET /api/rooms/{id}/summary", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
@@ -301,8 +303,9 @@ func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "PHASE", "EVENTS", "OWNER", "YOU"}) ||
-		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "Active", "42", "human:own", "watcher"}) {
+	if len(lines) != 3 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "ISSUE", "TITLE", "TASK", "PR", "NEEDS-YOU", "ROLE"}) ||
+		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "#2266", "fix[2J", "the", "CA", "Reviewing", "#2267", "1", "watcher"}) ||
+		!slices.Equal(strings.Fields(lines[2]), []string{"d66mo4b4", "Smana/a", "-", "-", "(Idle)", "-", "-", "owner"}) {
 		t.Fatalf("%q", lines)
 	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })

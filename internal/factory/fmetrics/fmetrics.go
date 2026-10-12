@@ -76,6 +76,9 @@ type Set struct {
 	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
+	usageErrors     metric.Int64Counter
+	meterSuccess    metric.Int64Gauge
+	overshoot       metric.Int64Counter
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -133,6 +136,17 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
+	check(err)
+	// #54: the meter's health. Only the leader meters, so only the leader sets the timestamp:
+	// an alert reads its max across pods.
+	s.usageErrors, err = meter.Int64Counter("agent_factory_meter_usage_read_errors_total",
+		metric.WithDescription("Meter ticks whose usage read failed: no run or task cap was checked on them."))
+	check(err)
+	s.meterSuccess, err = meter.Int64Gauge("agent_factory_meter_last_success_timestamp_seconds",
+		metric.WithDescription("When the meter last read usage and settled it in the day's ledger (Unix seconds)."))
+	check(err)
+	s.overshoot, err = meter.Int64Counter("agent_factory_run_overshoot_tokens_total",
+		metric.WithDescription("Tokens runs spent past their own cap before the meter revoked them."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -278,3 +292,15 @@ func (s *Set) GitHubUp(ctx context.Context, up bool) {
 func (s *Set) GitHubRemaining(ctx context.Context, remaining int64) {
 	s.githubRemaining.Record(ctx, remaining)
 }
+
+// MeterUsageReadError counts a meter tick whose usage read failed (#54).
+func (s *Set) MeterUsageReadError(ctx context.Context) { s.usageErrors.Add(ctx, 1) }
+
+// MeterSucceeded sets when the meter last metered (#54).
+func (s *Set) MeterSucceeded(ctx context.Context, at time.Time) {
+	s.meterSuccess.Record(ctx, at.Unix())
+}
+
+// RunOvershoot adds what a run spent past its cap when the meter revoked it (#54): a tick's lag
+// in steady state, the whole blind interval's spend after an outage.
+func (s *Set) RunOvershoot(ctx context.Context, tokens int64) { s.overshoot.Add(ctx, tokens) }

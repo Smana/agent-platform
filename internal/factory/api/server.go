@@ -4,6 +4,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,8 +102,8 @@ const (
 	// (Task 5.3) owns this column; admission only reads it.
 	LedgerSpent = "spent"
 	// LedgerReserved prefixes one key per admitted run — reserved.<runId>, whose C2 id is
-	// key-safe — holding {principal, room, maxTokens}. The meter drops the entry when the run
-	// is terminal; deleting a run refunds nothing.
+	// key-safe — holding {principal, room, maxTokens}. Release drops the entry when the run
+	// ends or its claim goes (#55); the spend it made stays: deleting a run refunds nothing.
 	LedgerReserved = "reserved."
 	// LedgerDayLayout labels the ledger with the UTC day it counts.
 	LedgerDayLayout = "20060102"
@@ -183,12 +186,51 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
 		return
 	}
+	// The defaults come first: the request's fingerprint and the ledger's reservation both
+	// carry what the run will get, not what the caller left out.
+	if in.MaxTokens == 0 {
+		in.MaxTokens = 2_000_000
+	}
+	if in.Model == "" {
+		in.Model = "agent-default"
+	}
+	if in.BaseRef == "" {
+		in.BaseRef = "main"
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if len(key) > maxKeyLen {
+		refuse(w, http.StatusBadRequest, "bad_idempotency_key")
+		return
+	}
 	all, err := s.Runs.List(r.Context())
 	if err != nil {
 		refuse(w, http.StatusServiceUnavailable, "runs_unavailable")
 		return
 	}
-	id := s.NewRunID()
+	hash := requestHash(in)
+	id := ""
+	if key != "" {
+		var first *runs.Run
+		var collision bool
+		id, first, collision = s.keyedRun(p, key, all)
+		if collision {
+			refuse(w, http.StatusConflict, "idempotency_key_collision")
+			return
+		}
+		if first != nil {
+			// The room, branch and ledger checks below would meet this run's own claim and
+			// reservation as busy: a retry is answered before them, with the first answer.
+			if first.RequestHash != hash {
+				refuse(w, http.StatusUnprocessableEntity, "idempotency_key_reused")
+				return
+			}
+			w.Header().Set("Idempotent-Replayed", "true")
+			reply(w, http.StatusCreated, map[string]string{"runId": first.ID, "branch": first.Branch})
+			return
+		}
+	} else {
+		id = s.NewRunID()
+	}
 	branch := "agent/" + id
 	if in.RoomRef != "" {
 		code, reason := s.admitRoom(r.Context(), p, in, all)
@@ -215,16 +257,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 		branch = in.ResumeBranch
 	}
-	// The defaults precede the reservation: the ledger must reserve what the run may spend.
-	if in.MaxTokens == 0 {
-		in.MaxTokens = 2_000_000
-	}
-	if in.Model == "" {
-		in.Model = "agent-default"
-	}
-	if in.BaseRef == "" {
-		in.BaseRef = "main"
-	}
 	if code, reason := s.reserve(r.Context(), p, id, in); code != 0 {
 		refuse(w, code, reason)
 		return
@@ -232,7 +264,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	spec := runs.Spec{RunID: id, Role: in.Role, Repository: in.Repository, BaseRef: in.BaseRef, Branch: branch,
 		TaskText: in.Task.Text, TaskURL: in.Task.URL, Principal: p.ID, DataClass: in.DataClass, Model: in.Model,
 		RoomRef: in.RoomRef, Queue: runs.QueueInteractive, MaxTokens: in.MaxTokens, MaxMinutes: 120,
-		EgressProfiles: in.EgressProfiles}
+		EgressProfiles: in.EgressProfiles, RequestHash: hash}
 	if err := s.Runs.Create(r.Context(), spec); err != nil {
 		// Without this the reservation would eat the principal's day (and room) forever:
 		// the meter drops entries only of runs that reach a terminal phase, and this one
@@ -242,6 +274,59 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusCreated, map[string]string{"runId": id, "branch": branch})
+}
+
+// maxKeyLen bounds an Idempotency-Key; the broker's is <room>:<client>:<seq>, well under it.
+const maxKeyLen = 255
+
+// KeyLifetime is how long an Idempotency-Key answers with its first run: the ledger's day.
+const KeyLifetime = 24 * time.Hour
+
+// keyedRun derives the run id of (principal, key) and finds the run already made under it. The
+// id is a hash, so a retry on any replica names the same claim, and the ledger's equal-entry
+// pass (R48) holds the one reservation. The UTC day is in the hash, so a key frees itself when
+// the day turns; the previous day's id is looked up too, so a retry across midnight still finds
+// a run younger than KeyLifetime. first is nil when the key has no live run, and id is then the
+// one to create.
+//
+// The id is 40 bits and run ids are public (agent/<id> branches), so a claim under a candidate id
+// that another principal owns is never a replay: collision is true and the caller refuses with 409
+// (creating would collide on the claim name anyway). Known gap: concurrent retries of one key
+// either side of 00:00 UTC both find nothing and compute different ids, so they make two runs.
+func (s *Server) keyedRun(p authn.Principal, key string, all []runs.Run) (id string, first *runs.Run, collision bool) {
+	now := s.Now()
+	id = keyedID(now, p.ID, key)
+	for _, cand := range []string{id, keyedID(now.Add(-KeyLifetime), p.ID, key)} {
+		for i := range all {
+			switch {
+			case all[i].ID != cand:
+			case all[i].Principal != p.ID:
+				return id, nil, true
+			case now.Sub(all[i].Created) < KeyLifetime:
+				return cand, &all[i], false
+			}
+		}
+	}
+	return id, nil, false
+}
+
+func keyedID(at time.Time, principal, key string) string {
+	sum := sha256.Sum256([]byte(at.UTC().Format(LedgerDayLayout) + "\x00" + principal + "\x00" + key))
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:5]))
+}
+
+// requestHash fingerprints the admitted request, defaults applied: a replay with the same key
+// and another fingerprint is a different request, not a retry. Egress profiles are a set (sorted,
+// nil equals empty). It hashes every RunRequest field, so adding one changes the hash of a run
+// made before the deploy: a retry across that rollout may get 422 once.
+func requestHash(in RunRequest) string {
+	in.EgressProfiles = slices.Sorted(slices.Values(in.EgressProfiles))
+	if len(in.EgressProfiles) == 0 {
+		in.EgressProfiles = nil
+	}
+	b, _ := json.Marshal(in) // plain strings, numbers and slices: Marshal cannot fail
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func validate(in RunRequest) string {
@@ -363,6 +448,8 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 		return http.StatusConflict, "room_busy"
 	case errors.Is(err, ErrLedgerBusy):
 		return http.StatusServiceUnavailable, "ledger_busy"
+	case errors.Is(err, ErrMeterBlind):
+		return http.StatusServiceUnavailable, "meter_blind"
 	case err != nil:
 		return http.StatusServiceUnavailable, "ledger_unavailable"
 	}
@@ -385,10 +472,18 @@ var (
 // reservation holds mine.Room, then write reserved.<id> — the Update conflicts against a
 // concurrent writer's, and the retry re-reads and re-checks, so exactly one admission per slot
 // lands whatever the interleaving. Unless enforce (R3's shadow), an over day is reported as over,
-// written, and never refused; room exclusion stays exact. The meter drops the entry when the run
-// is terminal.
+// written, and never refused; room exclusion stays exact. An enforced cap also refuses while the
+// meter is blind (#54): its spend column is then stale. Release drops the entry when the run ends.
 func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id string, mine Reservation,
 	limit int64, enforce bool) (over bool, err error) {
+	if enforce {
+		switch blind, err := meterBlind(ctx, c, ns, now); {
+		case err != nil:
+			return false, err
+		case blind:
+			return false, ErrMeterBlind
+		}
+	}
 	name := LedgerPrefix + now.UTC().Format(LedgerDayLayout)
 	key := types.NamespacedName{Namespace: ns, Name: name}
 	for range LedgerAttempts {
