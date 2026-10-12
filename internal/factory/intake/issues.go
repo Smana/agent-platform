@@ -143,21 +143,25 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 // issue carrying the trigger label, then the orphan scan (R51), which also runs on leader start —
 // this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
+	var publishErr error
 	if n := p.Cfg.ControlIssue; n > 0 {
 		iss, err := p.Forge.Issue(ctx, n)
 		if err != nil {
 			return err
 		}
-		killswitch.SetIssue(slices.Contains(iss.Labels, LabelStop))
+		on := slices.Contains(iss.Labels, LabelStop)
+		killswitch.SetIssue(on)
+		// A failed publish must not hold back the stop labels and reverts of this pass.
+		publishErr = killswitch.PublishIssue(ctx, p.Client, p.Namespace, on)
 	}
 	if err := p.stops(ctx); err != nil {
-		return err
+		return errors.Join(publishErr, err)
 	}
 	if err := p.reverts(ctx); err != nil {
-		return err
+		return errors.Join(publishErr, err)
 	}
 	if p.Stopped(ctx) {
-		return nil
+		return publishErr
 	}
 	items, err := p.Forge.Labeled(ctx, p.Cfg.TriggerLabel)
 	if err != nil {
@@ -175,7 +179,7 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 	if err := p.orphans(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("orphans: %w", err))
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, publishErr)...)
 }
 
 // Generation counts maintainers' labels (R4). ok is false when the latest label is not a
