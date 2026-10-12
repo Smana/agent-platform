@@ -4,6 +4,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,12 +186,46 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
 		return
 	}
+	// The defaults come first: the request's fingerprint and the ledger's reservation both
+	// carry what the run will get, not what the caller left out.
+	if in.MaxTokens == 0 {
+		in.MaxTokens = 2_000_000
+	}
+	if in.Model == "" {
+		in.Model = "agent-default"
+	}
+	if in.BaseRef == "" {
+		in.BaseRef = "main"
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if len(key) > maxKeyLen {
+		refuse(w, http.StatusBadRequest, "bad_idempotency_key")
+		return
+	}
 	all, err := s.Runs.List(r.Context())
 	if err != nil {
 		refuse(w, http.StatusServiceUnavailable, "runs_unavailable")
 		return
 	}
-	id := s.NewRunID()
+	hash := requestHash(in)
+	id := ""
+	if key != "" {
+		var first *runs.Run
+		id, first = s.keyedRun(p, key, all)
+		if first != nil {
+			// The room, branch and ledger checks below would meet this run's own claim and
+			// reservation as busy: a retry is answered before them, with the first answer.
+			if first.RequestHash != hash {
+				refuse(w, http.StatusUnprocessableEntity, "idempotency_key_reused")
+				return
+			}
+			w.Header().Set("Idempotent-Replayed", "true")
+			reply(w, http.StatusCreated, map[string]string{"runId": first.ID, "branch": first.Branch})
+			return
+		}
+	} else {
+		id = s.NewRunID()
+	}
 	branch := "agent/" + id
 	if in.RoomRef != "" {
 		code, reason := s.admitRoom(r.Context(), p, in, all)
@@ -215,16 +252,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 		branch = in.ResumeBranch
 	}
-	// The defaults precede the reservation: the ledger must reserve what the run may spend.
-	if in.MaxTokens == 0 {
-		in.MaxTokens = 2_000_000
-	}
-	if in.Model == "" {
-		in.Model = "agent-default"
-	}
-	if in.BaseRef == "" {
-		in.BaseRef = "main"
-	}
 	if code, reason := s.reserve(r.Context(), p, id, in); code != 0 {
 		refuse(w, code, reason)
 		return
@@ -232,7 +259,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	spec := runs.Spec{RunID: id, Role: in.Role, Repository: in.Repository, BaseRef: in.BaseRef, Branch: branch,
 		TaskText: in.Task.Text, TaskURL: in.Task.URL, Principal: p.ID, DataClass: in.DataClass, Model: in.Model,
 		RoomRef: in.RoomRef, Queue: runs.QueueInteractive, MaxTokens: in.MaxTokens, MaxMinutes: 120,
-		EgressProfiles: in.EgressProfiles}
+		EgressProfiles: in.EgressProfiles, RequestHash: hash}
 	if err := s.Runs.Create(r.Context(), spec); err != nil {
 		// Without this the reservation would eat the principal's day (and room) forever:
 		// the meter drops entries only of runs that reach a terminal phase, and this one
@@ -242,6 +269,44 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusCreated, map[string]string{"runId": id, "branch": branch})
+}
+
+// maxKeyLen bounds an Idempotency-Key; the broker's is <room>:<client>:<seq>, well under it.
+const maxKeyLen = 255
+
+// KeyLifetime is how long an Idempotency-Key answers with its first run: the ledger's day.
+const KeyLifetime = 24 * time.Hour
+
+// keyedRun derives the run id of (principal, key) and finds the run already made under it. The
+// id is a hash, so a retry on any replica names the same claim, and the ledger's equal-entry
+// pass (R48) holds the one reservation. The UTC day is in the hash, so a key frees itself when
+// the day turns; the previous day's id is looked up too, so a retry across midnight still finds
+// a run younger than KeyLifetime. first is nil when the key has no live run, and id is then the
+// one to create.
+func (s *Server) keyedRun(p authn.Principal, key string, all []runs.Run) (id string, first *runs.Run) {
+	now := s.Now()
+	id = keyedID(now, p.ID, key)
+	for _, cand := range []string{id, keyedID(now.Add(-KeyLifetime), p.ID, key)} {
+		for i := range all {
+			if all[i].ID == cand && now.Sub(all[i].Created) < KeyLifetime {
+				return cand, &all[i]
+			}
+		}
+	}
+	return id, nil
+}
+
+func keyedID(at time.Time, principal, key string) string {
+	sum := sha256.Sum256([]byte(at.UTC().Format(LedgerDayLayout) + "\x00" + principal + "\x00" + key))
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:5]))
+}
+
+// requestHash fingerprints the admitted request, defaults applied: a replay with the same key
+// and another fingerprint is a different request, not a retry.
+func requestHash(in RunRequest) string {
+	b, _ := json.Marshal(in) // plain strings, numbers and slices: Marshal cannot fail
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func validate(in RunRequest) string {

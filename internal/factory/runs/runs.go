@@ -47,6 +47,9 @@ const (
 	// given, never what the replay would give a run now.
 	AnnStartSeq = "agents.ogenki.io/start-seq" // the room's lastSeq when the run was created
 	AnnHead     = "agents.ogenki.io/head"      // the pull request head a verifier was given
+	// The run API's fingerprint of the request that made the run, so a replay of its
+	// Idempotency-Key with another body is told apart from a retry. CREATE only.
+	AnnRequestHash = "agents.ogenki.io/request-hash"
 
 	namePrefix = runwatch.ClaimPrefix
 )
@@ -74,7 +77,7 @@ func Scheme(s *runtime.Scheme) {
 // CREATE-only annotations' sources (R48).
 type Spec struct {
 	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue, Traceparent, Tier string
-	SourceURL, Head                                                                                                                     string
+	SourceURL, Head, RequestHash                                                                                                        string
 	MaxTokens, MaxMinutes, StartSeq                                                                                                     int64
 	EgressProfiles                                                                                                                      []string
 }
@@ -170,6 +173,9 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.Head != "" {
 		ann[AnnHead] = s.Head
 	}
+	if s.RequestHash != "" {
+		ann[AnnRequestHash] = s.RequestHash
+	}
 	if len(ann) > 0 {
 		u.SetAnnotations(ann)
 	}
@@ -182,7 +188,7 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 // Run is the part of a claim the factory reads back.
 type Run struct {
 	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef string
-	Head, TaskText                                                                    string
+	Head, TaskText, RequestHash                                                       string
 	Tokens, MaxTokens, StartSeq                                                       int64
 	Created, Finished                                                                 time.Time
 }
@@ -199,7 +205,8 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		Role: str("spec", "role"), Principal: str("spec", "principal"), Branch: str("spec", "branch"),
 		RoomRef: str("spec", "roomRef"), Phase: str("status", "phase"), Reason: str("status", "reason"),
 		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead],
-		TaskText: str("spec", "task", "text")}
+		RequestHash: u.GetAnnotations()[AnnRequestHash],
+		TaskText:    str("spec", "task", "text")}
 	// The CREATE-only start seq (R48): absent means the room was empty when the run was created.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnStartSeq], 10, 64); err == nil {
 		r.StartSeq = v
