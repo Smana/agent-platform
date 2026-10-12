@@ -52,6 +52,13 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}
+	if !r.Cfg.NeedsMerger() {
+		// No class is live or in shadow, so the factory may hold no merger key: there is no gate to
+		// read. A maintainer owns the pull request, as in any other hand-off.
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "merge_gate_off")
+		narrateLater(t, narrate.WaitingForHuman(t, "merge_gate_off"))
+		return nil
+	}
 	checks, err := r.Merger.PullRequestChecks(ctx, n)
 	if err != nil {
 		return err

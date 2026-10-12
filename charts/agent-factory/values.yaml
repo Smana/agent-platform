@@ -9,6 +9,11 @@ resources:
 # The factory App's key (keys app_id, private_key), from the agents-secrets store. Mounted at
 # /etc/agent-factory-github: config.github.{appIDFile,privateKeyFile} name the files there.
 githubSecret: agent-factory-github
+# HARD PREREQUISITE for both mergerSecret and intakeSecret whenever any merge class is live or in
+# shadow (the shipped config has two in shadow): the mounts are optional so that a factory with every
+# class off starts without them, but a live or shadow class makes the binary refuse to start without
+# the merger key. That is now a CrashLoopBackOff with a clear log line, no longer ContainerCreating.
+# Without the intake token the RunLore intake answers 503 to every request.
 # The merger App's key (R16): arming, reverts, checks. Keys app_id, private_key, mounted at
 # /etc/agent-factory-merger: config.github.{mergerAppIDFile,mergerKeyFile}. No other workload
 # mounts it (review C1: the group bit plus fsGroup is what makes it readable at all).

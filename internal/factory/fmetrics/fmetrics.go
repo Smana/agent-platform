@@ -73,6 +73,7 @@ type Set struct {
 	eventsTruncated metric.Int64Counter
 	revocations     metric.Int64Counter
 	githubRemaining metric.Int64Gauge
+	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
 }
@@ -123,6 +124,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.githubRemaining, err = meter.Int64Gauge("agent_factory_github_rate_remaining",
 		metric.WithDescription("The factory App's remaining REST rate limit."))
+	check(err)
+	s.githubUp, err = meter.Int64Gauge("agent_factory_github_up",
+		metric.WithDescription("1 while a GitHub call succeeded in the last 3 minutes, else 0. Readiness ignores GitHub, so this is the outage signal (FactoryGitHubUnreachable)."))
 	check(err)
 	s.traceAbandoned, err = meter.Int64Counter("agent_factory_trace_export_abandoned_total",
 		metric.WithDescription("Task spans given up after the collector refused them for a day (ruling ST2)."))
@@ -260,6 +264,15 @@ func (s *Set) Resumed(ctx context.Context, reason string) {
 
 // TraceExportAbandoned counts a task span given up unexported (ruling ST2).
 func (s *Set) TraceExportAbandoned(ctx context.Context) { s.traceAbandoned.Add(ctx, 1) }
+
+// GitHubUp sets agent_factory_github_up: whether GitHub answered recently (forge.Healthy).
+func (s *Set) GitHubUp(ctx context.Context, up bool) {
+	v := int64(0)
+	if up {
+		v = 1
+	}
+	s.githubUp.Record(ctx, v)
+}
 
 // GitHubRemaining sets the factory App's remaining REST rate limit.
 func (s *Set) GitHubRemaining(ctx context.Context, remaining int64) {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,10 +108,18 @@ func TestBarAuthAndCap(t *testing.T) {
 func TestNoTokenRefusesEveryRequest(t *testing.T) {
 	h, _, _ := runlore(t)
 	h.Token = func() string { return "" }
+	var logs bytes.Buffer
+	h.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	for _, tok := range []string{"", "anything"} {
 		if w := send(h, tok, finding); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "intake_unconfigured") {
 			t.Fatalf("bearer %q: %d %s", tok, w.Code, w.Body)
 		}
+	}
+	if got := h.Errors.(*counter).sources; len(got) != 2 || got[0] != "runlore" {
+		t.Fatalf("each refusal counts as an intake error: %v", got)
+	}
+	if n := strings.Count(logs.String(), "token is missing"); n != 1 {
+		t.Fatalf("one warning a minute, got %d: %s", n, logs.String())
 	}
 }
 

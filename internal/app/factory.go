@@ -216,7 +216,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				}
 			}, Log: log},
 		apiSrv,
-		&pinger{ping: gh.Ping, every: pingEvery},
+		&pinger{ping: gh.Ping, every: pingEvery, up: func() bool { return gh.Healthy(time.Now()) }, record: m.GitHubUp},
 	} {
 		if err := mgr.Add(r); err != nil {
 			return fmt.Errorf("manager: %w", err)
@@ -374,16 +374,20 @@ func newFactoryManager(log *slog.Logger, ns string) (ctrl.Manager, error) {
 	return mgr, nil
 }
 
-// pinger keeps /readyz honest on every replica, leader or not: a follower makes no other call to
-// GitHub, and "App token fresh" is a recent success. A failed ping is only a stale token.
+// pinger probes GitHub on every replica, leader or not: a follower makes no other call to it. A
+// failed ping is not an error to act on. The pinger reports whether GitHub answered recently as
+// agent_factory_github_up, the outage signal now that /readyz ignores GitHub (#58).
 type pinger struct {
 	ping  func(context.Context) error
 	every time.Duration
+	// up says whether a call succeeded recently; record publishes it. A nil record reports nothing.
+	up     func() bool
+	record func(ctx context.Context, up bool)
 	// ticker paces the pings; nil means a time.Ticker.
 	ticker func(d time.Duration) (c <-chan time.Time, stop func())
 }
 
-// NeedLeaderElection is false: every replica answers its own readiness.
+// NeedLeaderElection is false: every replica reports its own view of GitHub.
 func (*pinger) NeedLeaderElection() bool { return false }
 
 // Start pings at once, then every period, until ctx ends.
@@ -392,6 +396,9 @@ func (p *pinger) Start(ctx context.Context) error {
 	defer stop()
 	for {
 		_ = p.ping(ctx)
+		if p.record != nil {
+			p.record(ctx, p.up())
+		}
 		select {
 		case <-ctx.Done():
 			return nil

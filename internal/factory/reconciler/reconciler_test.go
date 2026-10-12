@@ -283,6 +283,7 @@ var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 func cfg() *config.Config {
 	return &config.Config{Repository: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, RoomsURL: "https://rooms.priv.aws.ogenki.io",
 		FactoryLogin: "ogenki-agent-factory[bot]",
+		Classes: map[string]config.Class{"docs-links": {Shadow: true}}, // a class in shadow: the merge gate reads checks
 		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}, Meter: config.Duration{Duration: 30 * time.Second}},
 		Defaults:     config.Defaults{Template: "solo", Tier: "standard", DataClass: "public", PredictedClass: "review"},
 		// The reviewer runs on the other tier (4.2): frontier's model is observable as tier-frontier.
