@@ -908,7 +908,7 @@ func TestEveryActIsLogged(t *testing.T) {
 			map[string]any{"act": "message", "delivery": "none", "principal": "human:col", "outcome": "accepted"}},
 		{"unreadable frame", func() {
 			a.Handle(context.Background(), authn.Principal{ID: "human:col"}, true, "s", room, wire.ClientFrame{ClientSeq: 5, Action: []byte("{")})
-		}, map[string]any{"act": "unknown", "outcome": "refused", "reason": "bad_action"}},
+		}, map[string]any{"act": "unparsed", "outcome": "refused", "reason": "bad_action"}},
 	}
 	for _, c := range cases {
 		lines := logged(a, c.run)
@@ -929,6 +929,77 @@ func TestEveryActIsLogged(t *testing.T) {
 		}
 		if (c.want["outcome"] == "refused") != (l["level"] == "WARN") {
 			t.Errorf("%s: level %v", c.name, l["level"])
+		}
+	}
+}
+
+// A frame's strings are the client's: the line bounds them, also on a frame that
+// only half unmarshalled.
+func TestActLogBoundsClientFields(t *testing.T) {
+	a, _, room := fixture("system:factory")
+	huge := strings.Repeat("A", 32<<10)
+	cases := []struct {
+		name   string
+		action string
+		want   map[string]any
+	}{
+		{"oversized kind", `{"kind":"` + huge + `"}`, map[string]any{"act": "invalid", "reason": "bad_action"}},
+		{"junk approval id", `{"kind":"decide","decision":"` + huge + `","approvalId":"` + huge + `"}`,
+			map[string]any{"act": "decide", "decision": "invalid", "approval": strings.Repeat("A", maxLoggedApproval)}},
+		{"junk delivery", `{"kind":"message","delivery":"` + huge + `","text":"x"}`, map[string]any{"act": "message", "delivery": "invalid"}},
+		{"half unmarshalled", `{"kind":"` + huge + `","text":7}`, map[string]any{"act": "invalid"}},
+	}
+	for _, c := range cases {
+		lines := logged(a, func() {
+			a.Handle(context.Background(), authn.Principal{ID: "human:col"}, true, "s", room, wire.ClientFrame{ClientSeq: 1, Action: []byte(c.action)})
+		})
+		if len(lines) != 1 {
+			t.Fatalf("%s: %d lines", c.name, len(lines))
+		}
+		for k, v := range c.want {
+			if lines[0][k] != v {
+				t.Errorf("%s: %s = %v, want %v", c.name, k, lines[0][k], v)
+			}
+		}
+		if raw, _ := json.Marshal(lines[0]); len(raw) > 600 {
+			t.Errorf("%s: line is %d bytes", c.name, len(raw))
+		}
+	}
+}
+
+// A rate-limited act is refused before its frame is read, and still logged.
+func TestRateLimitedActIsLogged(t *testing.T) {
+	a, _, room := fixture("system:factory")
+	lines := logged(a, func() {
+		for i := range 30 {
+			act(a, room, "human:col", int64(i+1), nil, Action{Kind: "message", Text: "x", Delivery: "none"})
+		}
+	})
+	if len(lines) != 30 {
+		t.Fatalf("%d lines for 30 acts", len(lines))
+	}
+	last := lines[len(lines)-1]
+	if last["reason"] != "rate_limited" || last["act"] != "unparsed" || last["outcome"] != "refused" {
+		t.Fatalf("last line %v", last)
+	}
+}
+
+// A refusal in viewer.act, before Handle, is logged too.
+func TestViewerActRefusalIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	v := &viewer{s: &Server{Logger: slog.New(slog.NewJSONHandler(&buf, nil))}, life: context.Background(),
+		p: authn.Principal{ID: "human:col"}, id: "3kq7x2ma"}
+	ack := v.act(wire.ClientFrame{Type: wire.FrameAct, ClientSeq: 3, Action: []byte(`{"kind":"decide","approvalId":"ap1","decision":"approved"}`)})
+	if ack.Rejected != "not_permitted" {
+		t.Fatalf("ack %+v", ack)
+	}
+	var l map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &l); err != nil {
+		t.Fatalf("%v: %q", err, buf.String())
+	}
+	for k, want := range map[string]any{"act": "decide", "approval": "ap1", "principal": "human:col", "room": "3kq7x2ma", "outcome": "refused", "reason": "not_permitted"} {
+		if l[k] != want {
+			t.Errorf("%s = %v, want %v", k, l[k], want)
 		}
 	}
 }

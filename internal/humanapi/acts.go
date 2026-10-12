@@ -181,7 +181,7 @@ var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrup
 func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) (out wire.ServerFrame) {
 	ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq}
 	var act Action
-	defer func() { a.logAct(ctx, p, room.Name, act, f.ClientSeq, out) }()
+	defer func() { logAct(ctx, a.Logger, p, room.Name, act, f.ClientSeq, out) }()
 	reject := func(reason string) wire.ServerFrame {
 		if a.OnReject != nil {
 			a.OnReject(ctx, reason)
@@ -248,28 +248,48 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 
 // logAct writes the one line an act leaves, for whoever asks who did what and
 // why it was refused. It names the act, never its text or reason: those are
-// human payloads, and the room log keeps them redacted.
-func (a *Actor) logAct(ctx context.Context, p authn.Principal, room string, act Action, clientSeq int64, ack wire.ServerFrame) {
-	if a.Logger == nil {
+// human payloads, and the room log keeps them redacted. Every field the frame
+// supplies is bounded: a value outside the known sets reads "invalid". A
+// refusal carries no seq, by design: nothing was appended.
+func logAct(ctx context.Context, l *slog.Logger, p authn.Principal, room string, act Action, clientSeq int64, ack wire.ServerFrame) {
+	if l == nil {
 		return
 	}
+	_, known := kinds[act.Kind]
 	kind := act.Kind
-	if kind == "" {
-		kind = "unknown" // refused before the frame was read
+	switch {
+	case kind == "": // refused before the frame was read
+		kind = "unparsed"
+	case !known && kind != "message":
+		kind = "invalid"
 	}
 	attrs := []any{"room", room, "act", kind, "principal", p.ID, "clientSeq", clientSeq}
-	if act.Kind == "message" {
-		attrs = append(attrs, "delivery", act.Delivery)
+	if kind == "message" {
+		d := act.Delivery
+		if _, ok := deliveries[d]; !ok {
+			d = "invalid"
+		}
+		attrs = append(attrs, "delivery", d)
 	}
-	if act.Kind == "decide" {
-		attrs = append(attrs, "approval", act.ApprovalID, "decision", act.Decision)
+	if kind == "decide" {
+		id, dec := act.ApprovalID, act.Decision
+		if len(id) > maxLoggedApproval {
+			id = id[:maxLoggedApproval]
+		}
+		if dec != store.ApprovalApproved && dec != store.ApprovalDenied {
+			dec = "invalid"
+		}
+		attrs = append(attrs, "approval", strings.ToValidUTF8(id, "?"), "decision", dec)
 	}
 	if ack.Rejected != "" {
-		a.Logger.WarnContext(ctx, "human act", append(attrs, "outcome", "refused", "reason", ack.Rejected)...)
+		l.WarnContext(ctx, "human act", append(attrs, "outcome", "refused", "reason", ack.Rejected)...)
 		return
 	}
-	a.Logger.InfoContext(ctx, "human act", append(attrs, "outcome", "accepted", "seq", ack.Seq)...)
+	l.InfoContext(ctx, "human act", append(attrs, "outcome", "accepted", "seq", ack.Seq)...)
 }
+
+// maxLoggedApproval bounds the approval id a line carries: the client sends it.
+const maxLoggedApproval = 64
 
 func (a *Actor) running(room string) (runwatch.Run, bool) {
 	for _, r := range a.Runs.InRoom(room) {
