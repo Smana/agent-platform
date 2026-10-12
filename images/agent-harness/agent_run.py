@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
@@ -240,41 +241,127 @@ def _short(value, limit: int) -> str:
 
 
 # The harness posts its own progress notes: an implementer asked for them in its brief posted none
-# over a whole task (#60), so a note does not wait on the model. It is the agent's own tool, so the
-# broker's limits apply: one note a minute per run, which MIN_NOTE_GAP_S keeps clear of.
+# over a whole task (#60), so a note does not wait on the model. The harness calls the same read-only
+# chat tool the agent has, through the same identity proxy: nothing is bypassed, and the broker's
+# minute per run is shared with the agent's own notes. The bounds below are per process: a resumed
+# run starts again, and says so in its first note. "Harness (role):" is a text convention, not an
+# attribution: the broker records the note as the run's.
 MIN_NOTE_GAP_S = 60
 MAX_NOTES = 8
 NOTE_FAILURES = 3
-MILESTONES = (
-    ("started", None, "Harness: the agent started working."),
-    ("commit", re.compile(r"\bgit\s+(?:-\S+\s+)*commit\b"), "Harness: the agent committed."),
-    ("push", re.compile(r"\bgit\s+(?:-\S+\s+)*push\b"), "Harness: the agent pushed its branch."),
-    ("checks", re.compile(r"\b(?:go\s+test|pytest|npm\s+(?:run\s+)?test|task\s+(?:check|test)\S*|make\s+test|cargo\s+test)\b"),
-     "Harness: the agent ran the checks."),
-    ("pr", re.compile(r"\bgh\s+pr\s+create\b"), "Harness: the agent opened a pull request."),
-)
+NOTE_TIMEOUT_S = 2
+MILESTONES = {
+    "started": "started working.",
+    "commit": "committed.",
+    "push": "pushed its branch.",
+    "checks": "ran the checks.",
+    "pr": "opened a pull request.",
+}
+# git's global options before the subcommand, as internal/bridge/classify.go reads them.
+GIT_FLAGS = {"--no-pager", "-P", "-p", "--paginate", "--bare", "--no-replace-objects", "--literal-pathspecs",
+             "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks", "--no-advice",
+             "--no-lazy-fetch"}
+GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+CHECK_TARGET = re.compile(r"(?:check|test)(?::[\w-]+)*")
+SEPARATORS = set(";&|()")
+
+
+def _segments(command: str) -> list[list[str]]:
+    """The command's simple commands, split on && ; | and friends, each with its leading VAR=value
+    words dropped. A command shlex cannot read has none."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars="".join(SEPARATORS))
+        lex.whitespace_split = True
+        words = list(lex)
+    except ValueError:
+        return []
+    out, cur = [], []
+    for w in words:
+        if set(w) <= SEPARATORS:
+            out.append(cur)
+            cur = []
+        else:
+            cur.append(w)
+    out.append(cur)
+    for seg in out:
+        while seg and re.fullmatch(r"[A-Za-z_]\w*=.*", seg[0]):
+            seg.pop(0)
+    return [s for s in out if s]
+
+
+def _vcs_sub(argv: list[str]) -> str | None:
+    i = 1
+    while i < len(argv):
+        w = argv[i]
+        if w in GIT_VALUED:
+            i += 2
+        elif w in GIT_FLAGS or w.split("=")[0] in GIT_VALUED:
+            i += 1
+        else:
+            return None if w.startswith("-") else w
+    return None
+
+
+def milestones(command: str) -> set[str]:
+    """The milestones a command would reach if it succeeds, by its command position and nothing else:
+    `echo 'git commit'`, `pip install pytest` and `git commit-tree` reach none."""
+    found = set()
+    for argv in _segments(command):
+        prog = os.path.basename(argv[0])
+        rest = argv[1:]
+        if prog == "git":
+            sub = _vcs_sub(argv)
+            if sub == "commit":
+                found.add("commit")
+            elif sub == "push":
+                found.add("push")
+        elif prog == "gh" and [w for i, w in enumerate(rest) if not w.startswith("-") and (i == 0 or rest[i - 1] not in ("-R", "--repo"))][:2] == ["pr", "create"]:
+            found.add("pr")
+        elif (prog in ("pytest", "py.test") or (prog.startswith("python") and rest[:2] == ["-m", "pytest"])
+              or (prog in ("go", "cargo", "make") and rest[:1] == ["test"])
+              or (prog == "npm" and (rest[:1] == ["test"] or rest[:2] == ["run", "test"]))
+              or (prog == "task" and rest[:1] and CHECK_TARGET.fullmatch(rest[0]))):
+            found.add("checks")
+    return found
 
 
 class ProgressNotes:
-    """Posts a room_progress note at each milestone the step log sees, through the run's own MCP
-    route (the agent's tool, so the confirmation policy and the broker's limits are unchanged).
-    Each milestone is noted once, at most one note per MIN_NOTE_GAP_S and MAX_NOTES a run. The
-    text is fixed: nothing the agent wrote reaches the room through here. Best effort."""
+    """Posts a room_progress note at each milestone the step log saw succeed, through the run's own
+    MCP route. Each milestone is noted once, at most one note per MIN_NOTE_GAP_S and MAX_NOTES a
+    run. The text is fixed: nothing the agent wrote reaches the room through here. Best effort."""
 
-    def __init__(self, url: str, clock=time.monotonic):
-        self.url, self.clock = url, clock
+    def __init__(self, url: str, role: str = "agent", resumed: bool = False, clock=time.monotonic):
+        self.url, self.role, self.resumed, self.clock = url, role, resumed, clock
         self.seen, self.pending, self.sent = set(), [], 0
+        self.calls = {}
         self.last = None
         self.failures = 0
         self.tool = None
         self.session = None
         self.rid = 0
 
-    def observe(self, command: str) -> None:
-        for name, pattern, text in MILESTONES:
-            if name not in self.seen and (pattern is None or pattern.search(command or "")):
+    def intend(self, call_id: str, command: str) -> None:
+        """An action was issued: remember what it would reach, and note the start at once."""
+        if "started" not in self.seen:
+            self.arm({"started"})
+        if call_id and len(self.calls) < 256:
+            self.calls[call_id] = milestones(command)
+
+    def result(self, call_id: str, observation: dict) -> None:
+        """Its observation came back: only an exit code of 0 reaches the milestones."""
+        names = self.calls.pop(call_id, set())
+        if names and observation.get("exit_code") == 0 and not observation.get("is_error"):
+            self.arm(names)
+
+    def arm(self, names) -> None:
+        for name in MILESTONES:
+            if name in names and name not in self.seen:
                 self.seen.add(name)
-                self.pending.append(text)
+                self.pending.append(name)
+
+    def text(self, name: str) -> str:
+        lead = "(resumed) " if self.resumed and not self.sent else ""
+        return "%sHarness (%s): the agent %s" % (lead, self.role, MILESTONES[name])
 
     def flush(self) -> None:
         if not self.pending or self.sent >= MAX_NOTES or self.failures >= NOTE_FAILURES:
@@ -283,7 +370,7 @@ class ProgressNotes:
         if self.last is not None and now - self.last < MIN_NOTE_GAP_S:
             return
         try:
-            if self.call(self.pending[0]):
+            if self.send(self.text(self.pending[0])):
                 self.pending.pop(0)
                 self.sent += 1
                 self.last = now
@@ -291,6 +378,17 @@ class ProgressNotes:
         except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
             self.failures += 1
             print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
+
+    def close(self) -> None:
+        """Ends the MCP session when the server keeps one. The route may not support it."""
+        if not self.session:
+            return
+        try:
+            req = urllib.request.Request(self.url, method="DELETE", headers={"Mcp-Session-Id": self.session})
+            urllib.request.urlopen(req, timeout=NOTE_TIMEOUT_S).close()
+        except Exception:  # noqa: BLE001 -- best effort
+            pass
+        self.session = None
 
     def rpc(self, method: str, params: dict | None = None, notify: bool = False):
         body = {"jsonrpc": "2.0", "method": method}
@@ -303,7 +401,7 @@ class ProgressNotes:
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=NOTE_TIMEOUT_S) as resp:
             self.session = resp.headers.get("Mcp-Session-Id") or self.session
             raw = resp.read(1 << 20).decode(errors="replace")
         if notify:
@@ -317,8 +415,18 @@ class ProgressNotes:
             raise RuntimeError(str(reply["error"].get("message")))
         return reply.get("result") or {}
 
+    def send(self, text: str) -> bool:
+        """True when the note was stored; False when the broker's minute is spent (retried later).
+        An HTTP 4xx (an expired session, a restarted broker) redoes the handshake once."""
+        try:
+            return self.call(text)
+        except urllib.error.HTTPError as exc:
+            if not 400 <= exc.code < 500:
+                raise
+            self.tool, self.session = None, None
+            return self.call(text)
+
     def call(self, text: str) -> bool:
-        """True when the note was stored; False when the broker's minute is spent (retried later)."""
         if self.tool is None:
             self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "agent-run", "version": "1"}})
@@ -385,11 +493,13 @@ class StepLog:
             action = event.get("action") or {}
             target = action.get("command") or action.get("path") or ""
             if self.notes:
-                self.notes.observe(action.get("command") or "")
+                self.notes.intend(event.get("tool_call_id") or "", action.get("command") or "")
             tool = event.get("tool_name") or action.get("kind")
             line = "agent-run step %d: %s | %s | %s" % (self.steps, tool, _short(event.get("summary"), 120), _short(target, 200))
             # Correlation only (O22): links the line to its trace in Grafana, attributes nothing.
             return line + (" | trace_id=" + self.trace_id if self.trace_id else "")
+        if kind == "ObservationEvent" and self.notes:
+            self.notes.result(event.get("tool_call_id") or "", event.get("observation") or {})
         if kind == "MessageEvent" and event.get("source") == "agent":
             self.last_message = redact(_text(event.get("llm_message")))
             return "agent-run message: " + _short(self.last_message, 400)
@@ -407,16 +517,19 @@ def _verified(ref: str) -> bool:
     return subprocess.run(["git", "-C", REPO_DIR, "rev-parse", "--verify", "--quiet", ref], capture_output=True).returncode == 0
 
 
-def clone(env: dict) -> None:
+def clone(env: dict) -> bool:
+    """Clones the repo and checks the run's branch out; True when it resumed a pushed one."""
     subprocess.run(["git", "clone", "--no-tags", "https://github.com/" + env["REPOSITORY"] + ".git", REPO_DIR], check=True)
     # Resume the run's branch when an earlier run of the same task pushed it (R7).
-    if _verified("origin/" + env["BRANCH"]):
+    resumed = _verified("origin/" + env["BRANCH"])
+    if resumed:
         start = "origin/" + env["BRANCH"]
     elif _verified("origin/" + env["BASE_REF"]):
         start = "origin/" + env["BASE_REF"]
     else:
         start = env["BASE_REF"]  # a commit
     subprocess.run(["git", "-C", REPO_DIR, "checkout", "-B", env["BRANCH"], start], check=True)
+    return resumed
 
 
 def report(name: str, status: str, started: float, box: float) -> None:
@@ -554,6 +667,8 @@ def disrupted(env: dict, cid: str, steps) -> None:
     """The first half of a cut-short run's shutdown (disruption design §2): pause the agent, then
     checkpoint its work (implementer only), then let the room read the log to its end. main's
     finally then stops agent-server and revokes the token."""
+    if steps:
+        steps.notes = None  # no notes on the way out: the 15 s budget is for the checkpoint
     timed("pause", PAUSE_S, lambda: pause(cid))
     if env.get("ROLE") == "implementer":
         timed("checkpoint", CHECKPOINT_S, lambda: checkpoint(env, time.monotonic() + CHECKPOINT_S))
@@ -593,14 +708,17 @@ def main() -> int:
     cid, steps, code, signalled, read = None, None, None, False, False
     try:
         wait_ready()
-        clone(env)
+        resumed = clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             request = build_request(env, t.read(), r.read())
         cid = http("POST", "/api/conversations", request)["id"]
-        steps = StepLog(cid, trace_id, ProgressNotes(env["MCP_URL"]) if env.get("MCP_URL") else None)
+        notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed) if env.get("MCP_URL") else None
+        steps = StepLog(cid, trace_id, notes)
         code = poll(cid, on_tick=steps)
         steps()
         steps.summary()
+        if notes:
+            notes.close()
         if env.get("BRIDGE_URL"):
             read = timed("final-read", FINAL_READ_S, lambda: final_read(env))
         # Never on SIGTERM: the close can outlast the grace period and the revoke must not wait.

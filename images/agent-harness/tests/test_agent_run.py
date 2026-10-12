@@ -267,10 +267,24 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
     tool = "room_progress"
     limited = 0
     sse = False
+    fail = 0
+    deleted = []
+
+    def do_DELETE(self):
+        type(self).deleted.append(self.headers.get("Mcp-Session-Id"))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         type(self).calls.append(body)
+        if type(self).fail and body.get("method") == "tools/call":
+            type(self).fail -= 1
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if "id" not in body:
             self.send_response(202)
             self.end_headers()
@@ -302,26 +316,103 @@ class ProgressNotesTest(unittest.TestCase):
 
     def setUp(self):
         FakeMCP.calls, FakeMCP.tool, FakeMCP.limited, FakeMCP.sse = [], "room_progress", 0, False
+        FakeMCP.fail, FakeMCP.deleted = 0, []
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeMCP)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.now = [1000.0]
-        self.notes = agent_run.ProgressNotes("http://127.0.0.1:%d/mcp" % self.server.server_port, clock=lambda: self.now[0])
+        self.notes = agent_run.ProgressNotes("http://127.0.0.1:%d/mcp" % self.server.server_port, "implementer", clock=lambda: self.now[0])
 
     def posted(self):
         return [c["params"]["arguments"]["text"] for c in FakeMCP.calls if c.get("method") == "tools/call"]
 
-    def test_the_first_step_posts_a_note_at_once(self):
-        self.notes.observe("git status")
+    def run_ok(self, command, exit_code=0, call_id=None):
+        """An action and its observation, as the step log sees them."""
+        call_id = call_id or "c%d" % len(self.notes.calls) + command
+        self.notes.intend(call_id, command)
+        self.notes.result(call_id, {"exit_code": exit_code})
+
+    def test_a_failed_push_posts_nothing_and_a_successful_one_posts_once(self):
+        self.run_ok("git push origin HEAD", exit_code=1, call_id="a")
+        self.assertNotIn("push", self.notes.pending)
+        self.run_ok("git push origin HEAD", exit_code=0, call_id="b")
+        self.run_ok("git push origin HEAD", exit_code=0, call_id="c")
+        self.assertEqual(self.notes.pending.count("push"), 1)
+
+    def test_an_error_observation_or_a_missing_one_arms_nothing(self):
+        self.notes.intend("a", "gh pr create")
+        self.notes.result("a", {"exit_code": 0, "is_error": True})
+        self.notes.intend("b", "git commit -m x")  # no observation yet
+        self.assertEqual(self.notes.pending, ["started"])
+
+    def test_milestones_are_read_by_command_position(self):
+        m = agent_run.milestones
+        for command in ("pip install pytest", "grep -r pytest .", "task check-docs", "git commit-tree abc",
+                        "echo 'git commit'", "echo git push", "git status && cat commit", "gh pr view create", "git commit 'unterminated"):
+            self.assertEqual(m(command), set(), command)
+        self.assertEqual(m("git -C repo commit -m x"), {"commit"})
+        self.assertEqual(m("git -c user.name=x --no-pager commit"), {"commit"})
+        self.assertEqual(m("cd repo && git push -u origin HEAD"), {"push"})
+        self.assertEqual(m("GIT_X=1 git push"), {"push"})
+        self.assertEqual(m("git add . && git commit -m x; git push"), {"commit", "push"})
+        self.assertEqual(m("gh pr create --fill"), {"pr"})
+        self.assertEqual(m("gh -R o/r pr create"), {"pr"})
+        for command in ("go test ./...", "pytest -q", "python3 -m pytest", "task check", "task check:go", "npm test", "make test"):
+            self.assertEqual(m(command), {"checks"}, command)
+
+    def test_a_4xx_redoes_the_handshake_once(self):
+        self.run_ok("git status")
         self.notes.flush()
-        self.assertEqual(self.posted(), ["Harness: the agent started working."])
+        self.assertEqual(self.notes.sent, 1)
+        FakeMCP.fail = 1  # the session is gone: the next call answers 404
+        self.now[0] += 61
+        self.run_ok("git commit -m x")
+        self.notes.flush()
+        self.assertEqual(self.notes.sent, 2)
+        self.assertEqual(self.notes.failures, 0)
+        methods = [c["method"] for c in FakeMCP.calls]
+        self.assertEqual(methods.count("initialize"), 2, methods)
+
+    def test_a_persistent_4xx_counts_as_a_failure(self):
+        FakeMCP.fail = 99
+        self.run_ok("git status")
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.notes.flush()
+        self.assertEqual(self.notes.failures, 1)
+
+    def test_close_deletes_the_session(self):
+        self.notes.session = "s1"
+        self.notes.close()
+        self.assertEqual(FakeMCP.deleted, ["s1"])
+
+    def test_a_resumed_run_says_so_in_its_first_note_only(self):
+        self.notes.resumed = True
+        self.run_ok("git status")
+        self.run_ok("git commit -m x")
+        self.notes.flush()
+        self.now[0] += 61
+        self.notes.flush()
+        self.assertEqual(self.posted(), ["(resumed) Harness (implementer): the agent started working.",
+                                         "Harness (implementer): the agent committed."])
+
+    def test_a_disrupted_run_posts_no_note(self):
+        self.run_ok("git status")
+        log = agent_run.StepLog("cid", notes=self.notes)
+        with mock.patch("agent_run.timed"), mock.patch("agent_run.final_read"):
+            agent_run.disrupted({"ROLE": "reviewer"}, "cid", log)
+        self.assertIsNone(log.notes)
+
+    def test_the_first_step_posts_a_note_at_once(self):
+        self.run_ok("git status")
+        self.notes.flush()
+        self.assertEqual(self.posted(), ["Harness (implementer): the agent started working."])
         calls = [c["method"] for c in FakeMCP.calls]
         self.assertEqual(calls, ["initialize", "notifications/initialized", "tools/list", "tools/call"])
 
     def test_one_note_a_minute_each_milestone_once(self):
         for command in ("git status", "git commit -m x", "git commit -m y", "git push origin HEAD", "go test ./..."):
-            self.notes.observe(command)
+            self.run_ok(command)
         self.notes.flush()
         self.notes.flush()
         self.assertEqual(len(self.posted()), 1, "nothing more inside the minute")
@@ -334,22 +425,22 @@ class ProgressNotesTest(unittest.TestCase):
         self.now[0] += 61
         self.notes.flush()
         self.assertEqual(self.posted(), [
-            "Harness: the agent started working.", "Harness: the agent committed.",
-            "Harness: the agent pushed its branch.", "Harness: the agent ran the checks."])
+            "Harness (implementer): the agent started working.", "Harness (implementer): the agent committed.",
+            "Harness (implementer): the agent pushed its branch.", "Harness (implementer): the agent ran the checks."])
 
     def test_the_pull_request_milestone(self):
-        self.notes.observe("gh pr create --fill")
-        self.assertIn("Harness: the agent opened a pull request.", self.notes.pending)
+        self.run_ok("gh pr create --fill")
+        self.assertEqual(self.notes.pending, ["started", "pr"])
 
     def test_total_is_capped(self):
         self.notes.sent = agent_run.MAX_NOTES
-        self.notes.observe("git status")
+        self.run_ok("git status")
         self.notes.flush()
         self.assertEqual(FakeMCP.calls, [])
 
     def test_a_rate_limited_note_is_retried_not_lost(self):
         FakeMCP.limited = 1  # the agent's own note spent the minute
-        self.notes.observe("git status")
+        self.run_ok("git status")
         self.notes.flush()
         self.assertEqual(self.notes.sent, 0)
         self.notes.flush()
@@ -357,20 +448,20 @@ class ProgressNotesTest(unittest.TestCase):
 
     def test_a_gateway_prefixed_tool_name_is_found(self):
         FakeMCP.tool = "room-broker__room_progress"
-        self.notes.observe("git status")
+        self.run_ok("git status")
         self.notes.flush()
         self.assertEqual(FakeMCP.calls[-1]["params"]["name"], "room-broker__room_progress")
 
     def test_an_event_stream_reply_is_read(self):
         FakeMCP.sse = True
-        self.notes.observe("git status")
+        self.run_ok("git status")
         self.notes.flush()
         self.assertEqual(self.notes.sent, 1)
 
     def test_an_unreachable_broker_gives_up_and_never_raises(self):
         self.server.shutdown()
         self.server.server_close()
-        self.notes.observe("git status")
+        self.run_ok("git status")
         with mock.patch("sys.stderr", new=io.StringIO()):
             for _ in range(10):
                 self.notes.flush()
@@ -382,7 +473,7 @@ class ProgressNotesTest(unittest.TestCase):
         events = [{"id": "1", "kind": "ActionEvent", "tool_name": "terminal", "summary": "s", "action": {"command": "git status"}}]
         with mock.patch("agent_run.http", side_effect=[{"items": events, "next_page_id": None}]), mock.patch("sys.stdout", new=io.StringIO()):
             log()
-        self.assertEqual(self.posted(), ["Harness: the agent started working."])
+        self.assertEqual(self.posted(), ["Harness (implementer): the agent started working."])
 
 
 class TimedTest(unittest.TestCase):
