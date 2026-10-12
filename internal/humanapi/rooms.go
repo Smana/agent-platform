@@ -259,11 +259,12 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		// Deciding happens in the web UI: judge it as the web UI would, as the summary's needsYou does.
 		web := sub
 		web.WebUI = true
-		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide) || s.held(ctx, room, sub)
-		if f.needsMe && !needsMe {
+		if f.mine && !f.isMine(ctx, s, p, room) {
 			continue
 		}
-		if f.mine && !f.isMine(ctx, s, p, room) {
+		// After mine: a row filtered out never costs held's store read.
+		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide) || s.held(ctx, room, sub)
+		if f.needsMe && !needsMe {
 			continue
 		}
 		out = append(out, roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
