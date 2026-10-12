@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -101,6 +102,8 @@ type Actor struct {
 	// OnDecided observes a human decision's wait since its request
 	// (rooms_approval_decision_seconds).
 	OnDecided func(time.Duration)
+	// Logger records one line per act, accepted or refused (nil: none).
+	Logger *slog.Logger
 
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
@@ -175,8 +178,10 @@ var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrup
 
 // Handle serves one act frame of p in room, through the web UI or not (ruling
 // P18), on the connection session, and returns its ack.
-func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
+func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) (out wire.ServerFrame) {
 	ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq}
+	var act Action
+	defer func() { a.logAct(ctx, p, room.Name, act, f.ClientSeq, out) }()
 	reject := func(reason string) wire.ServerFrame {
 		if a.OnReject != nil {
 			a.OnReject(ctx, reason)
@@ -187,7 +192,6 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	if a.limited(p.ID) {
 		return reject(rejectRateLimited)
 	}
-	var act Action
 	if json.Unmarshal(f.Action, &act) != nil || f.ClientSeq <= 0 {
 		return reject(rejectBadAction)
 	}
@@ -240,6 +244,31 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	}
 	ack.Seq = ev.Seq
 	return ack
+}
+
+// logAct writes the one line an act leaves, for whoever asks who did what and
+// why it was refused. It names the act, never its text or reason: those are
+// human payloads, and the room log keeps them redacted.
+func (a *Actor) logAct(ctx context.Context, p authn.Principal, room string, act Action, clientSeq int64, ack wire.ServerFrame) {
+	if a.Logger == nil {
+		return
+	}
+	kind := act.Kind
+	if kind == "" {
+		kind = "unknown" // refused before the frame was read
+	}
+	attrs := []any{"room", room, "act", kind, "principal", p.ID, "clientSeq", clientSeq}
+	if act.Kind == "message" {
+		attrs = append(attrs, "delivery", act.Delivery)
+	}
+	if act.Kind == "decide" {
+		attrs = append(attrs, "approval", act.ApprovalID, "decision", act.Decision)
+	}
+	if ack.Rejected != "" {
+		a.Logger.WarnContext(ctx, "human act", append(attrs, "outcome", "refused", "reason", ack.Rejected)...)
+		return
+	}
+	a.Logger.InfoContext(ctx, "human act", append(attrs, "outcome", "accepted", "seq", ack.Seq)...)
 }
 
 func (a *Actor) running(room string) (runwatch.Run, bool) {

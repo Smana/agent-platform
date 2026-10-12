@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -855,5 +856,79 @@ func TestDecide(t *testing.T) {
 	log.approvalErr = errors.New("down")
 	if f := act(a, room, "human:apr", 5, nil, d("ap1", "approved", "")); f.Rejected != "log_unavailable" {
 		t.Fatalf("an unreadable approval: %+v", f)
+	}
+}
+
+// logged runs fn with the actor's logger captured and returns the JSON lines.
+func logged(a *Actor, fn func()) []map[string]any {
+	var buf bytes.Buffer
+	a.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	fn()
+	var out []map[string]any
+	for _, l := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(l) == 0 {
+			continue
+		}
+		m := map[string]any{}
+		if err := json.Unmarshal(l, &m); err != nil {
+			panic(err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// Every act leaves one line with who, what, where and the outcome: accepted
+// with its seq, refused with its reason; never the text or the reason typed.
+func TestEveryActIsLogged(t *testing.T) {
+	a, log, room := fixture("system:factory")
+	room.Spec.Approvals.FourEyes = true
+	room.Spec.Members = append(room.Spec.Members, v1alpha1.Member{Principal: "human:apr", Role: "collaborator", Approver: true})
+	log.approvals = map[string]store.Approval{"ap1": pendingApproval("ap1", room.Name)}
+	decide := func(who, id, decision string, seq int64) {
+		act(a, room, who, seq, nil, Action{Kind: "decide", ApprovalID: id, Decision: decision, Reason: "token ghp_SECRETSECRET"})
+	}
+	cases := []struct {
+		name string
+		run  func()
+		want map[string]any
+	}{
+		{"four_eyes", func() { decide("human:own", "ap1", "approved", 1) },
+			map[string]any{"act": "decide", "principal": "human:own", "approval": "ap1", "decision": "approved", "outcome": "refused", "reason": "four_eyes"}},
+		{"approved", func() { decide("human:apr", "ap1", "approved", 1) },
+			map[string]any{"act": "decide", "principal": "human:apr", "approval": "ap1", "outcome": "accepted", "seq": float64(1)}},
+		{"already_decided", func() { decide("human:apr", "ap1", "denied", 2) },
+			map[string]any{"act": "decide", "approval": "ap1", "decision": "denied", "outcome": "refused", "reason": "already_decided"}},
+		{"not permitted", func() {
+			act(a, room, "human:col", 3, nil, Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"})
+		}, map[string]any{"act": "decide", "principal": "human:col", "outcome": "refused", "reason": "not_permitted"}},
+		{"message", func() {
+			act(a, room, "human:col", 4, nil, Action{Kind: "message", Text: "hello secret-text", Delivery: "none"})
+		},
+			map[string]any{"act": "message", "delivery": "none", "principal": "human:col", "outcome": "accepted"}},
+		{"unreadable frame", func() {
+			a.Handle(context.Background(), authn.Principal{ID: "human:col"}, true, "s", room, wire.ClientFrame{ClientSeq: 5, Action: []byte("{")})
+		}, map[string]any{"act": "unknown", "outcome": "refused", "reason": "bad_action"}},
+	}
+	for _, c := range cases {
+		lines := logged(a, c.run)
+		if len(lines) != 1 {
+			t.Fatalf("%s: %d lines, want 1: %v", c.name, len(lines), lines)
+		}
+		l := lines[0]
+		if l["room"] != room.Name {
+			t.Errorf("%s: room %v", c.name, l["room"])
+		}
+		for k, v := range c.want {
+			if l[k] != v {
+				t.Errorf("%s: %s = %v, want %v (%v)", c.name, k, l[k], v, l)
+			}
+		}
+		if raw, _ := json.Marshal(l); bytes.Contains(raw, []byte("SECRET")) || bytes.Contains(raw, []byte("secret-text")) {
+			t.Errorf("%s: line carries a body: %s", c.name, raw)
+		}
+		if (c.want["outcome"] == "refused") != (l["level"] == "WARN") {
+			t.Errorf("%s: level %v", c.name, l["level"])
+		}
 	}
 }
