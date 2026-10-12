@@ -100,6 +100,14 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			pred, matched := t.Spec.PredictedClass, d.Matched
 			record(ctx, func(ctx context.Context) { r.Metrics.ClassMismatch(ctx, pred, matched) })
 		}
+		// R02 held before verdict_stale: the head is the factory's, so there is nothing for a human
+		// to judge yet, only a verdict of this head to get (N1).
+		if d.Reason == "verdict_stale" && t.Status.GateReentries < maxGateReentries &&
+			r.nextVerifier(t, "implementer") != "" && !r.engagedSince(pr, t.Status.PhaseSince) {
+			r.backToGate(t, d.Reason, "rereview_verdict_stale", pr.HeadSHA)
+			return nil
+		}
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
 		narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
 		return nil
@@ -129,6 +137,99 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
+}
+
+// maxGateReentries bounds the returns to the gate per task: an input that flaps between a
+// transient hand-off and its clearing (a policy-bot status) returns this many times, then stays
+// with a human.
+const maxGateReentries = 3
+
+// reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
+// reason is one the gate's inputs can clear by themselves; every other one — a verdict of changes,
+// a maintainer's review, a class or cap rule — was a human's to judge, and stays theirs. Even a
+// transient one returns only on the head it was handed off at, while no maintainer has reviewed or
+// commented since: no factory run is in flight in AwaitingHuman, so a push meanwhile is a human's,
+// and a later revision must never auto-merge what a human was asked to judge. head_unreported
+// returns only once the room reports that head from one of the task's implementer runs, so the
+// factory pushed it (R02). verdict_stale never reaches here unless past the cap: the gate
+// re-reviews it itself.
+func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
+	why := t.Status.Reason
+	switch why {
+	case "policy_pending", "policy_absent", "head_unreported":
+	default:
+		return false, nil
+	}
+	if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA ||
+		r.engagedSince(pr, t.Status.PhaseSince) {
+		return false, nil
+	}
+	if why == "head_unreported" {
+		reported, err := r.reportedHead(ctx, t)
+		if err != nil || reported != pr.HeadSHA {
+			return false, err
+		}
+		r.backToGate(t, why, "reentered_head_reported", pr.HeadSHA)
+		return true, nil
+	}
+	c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
+	if err != nil {
+		return false, err
+	}
+	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || creator != r.Cfg.Merge.PolicyBotLogin {
+		return false, nil
+	}
+	r.backToGate(t, why, "reentered_policy", pr.HeadSHA)
+	return true, nil
+}
+
+// backToGate is one return to the merge gate, counted against maxGateReentries: to AwaitingCI,
+// or to Queued for the first verifier when only a verdict of the head clears the hand-off. The
+// reason is the status reason, which the room's facts record, and it is narrated.
+func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
+	t.Status.GateReentries++
+	next := v1alpha1.PhaseAwaitingCI
+	if reason == "rereview_verdict_stale" {
+		next, t.Status.NextRole = v1alpha1.PhaseQueued, r.nextVerifier(t, "implementer")
+	}
+	r.to(t, next, reason)
+	narrateLater(t, narrate.BackToGate(t, reason, t.Status.GateReentries))
+	r.log().Info("transient hand-off returns to the merge gate", "task.id", t.Name, "handoff", why, "reason", reason,
+		"head", head, "reentries", t.Status.GateReentries)
+}
+
+// humanCommit hands a CI fix's pull request to a human when its head is not the one the room last
+// reported from one of the task's implementer runs: a human pushed, and a fix on top, reviewed and
+// approved by the factory, would merge that human's commit (owner: a human-authored change never
+// auto-merges through the factory). A log read short of its end reports no head, so it hands off.
+func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
+	reported, err := r.reportedHead(ctx, t)
+	if err != nil || reported == head {
+		return false, err
+	}
+	t.Status.NextTrigger = ""
+	t.Status.PullRequest.HeadSHA = head
+	r.to(t, v1alpha1.PhaseAwaitingHuman, "human_commit_in_pr")
+	narrateLater(t, narrate.WaitingForHuman(t, "human_commit_in_pr"))
+	return true, nil
+}
+
+// engagedSince: a maintainer reviewed or commented on the pull request after since.
+func (r *Reconciler) engagedSince(pr forge.PR, since *metav1.Time) bool {
+	if since == nil {
+		return true // no hand-off time to read activity against: never assume there was none
+	}
+	for _, rv := range pr.Reviews {
+		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since.Time) {
+			return true
+		}
+	}
+	for _, c := range pr.Comments {
+		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since.Time) {
+			return true
+		}
+	}
+	return false
 }
 
 // reportedHead is the commit of the latest handoff or final room event whose broker-stamped

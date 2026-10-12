@@ -160,6 +160,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Resumes int32 `json:"resumes,omitempty"`
+	// Returns from a transient AwaitingHuman hand-off to the merge gate (N1), every cause
+	// counted; capped by the reconciler, so a flapping input cannot loop the gate.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	GateReentries int32 `json:"gateReentries,omitempty"`
 	// The effective verdict of the last review: approve, changes or none.
 	// +kubebuilder:validation:MaxLength=32
 	// +optional
@@ -324,6 +329,8 @@ type PullRequestRef struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +optional
 	NodeID string `json:"nodeID,omitempty"`
+	// The head when the pull request was found, then the head the merge gate last acted on: merged,
+	// or handed to a human (N1: a push after the hand-off keeps it with the human).
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	HeadSHA string `json:"headSHA,omitempty"`

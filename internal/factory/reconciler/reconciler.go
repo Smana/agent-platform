@@ -589,6 +589,12 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
+	// A CI fix starts from the branch head: one a human pushed would ride the fix to a merge.
+	if late && t.Status.NextRole == "" && nextTrigger(t) == "ci" {
+		if handed, err := r.humanCommit(ctx, t, pr.HeadSHA); err != nil || handed {
+			return err
+		}
+	}
 	if !runFits(t) {
 		if r.Cfg.Budgets.EnforceTask {
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)

@@ -256,6 +256,13 @@ spec:
               fixRuns:
                 format: int32
                 type: integer
+              gateReentries:
+                description: |-
+                  Returns from a transient AwaitingHuman hand-off to the merge gate (N1), every cause
+                  counted; capped by the reconciler, so a flapping input cannot loop the gate.
+                format: int32
+                minimum: 0
+                type: integer
               handled:
                 description: GitHub review and comment ids already acted on (Δ5, commands).
                   The reconciler trims the oldest.
@@ -363,6 +370,9 @@ spec:
                   autoMerged:
                     type: boolean
                   headSHA:
+                    description: |-
+                      The head when the pull request was found, then the head the merge gate last acted on: merged,
+                      or handed to a human (N1: a push after the hand-off keeps it with the human).
                     maxLength: 64
                     type: string
                   mergeCommitSHA:

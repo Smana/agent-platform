@@ -473,14 +473,22 @@ func cause(t *v1alpha1.Task) string {
 }
 
 // afterWriter: a revision a maintainer asked for goes straight back to the maintainer; otherwise
-// the template's first verifier after the implementer runs, or the task is ready (solo).
+// the template's first verifier after the implementer runs, or the task is ready (solo). A CI fix
+// is verified like any revision: it moved the head, and the gate only arms on a verdict of the
+// head it decides (R03), so skipping the review would hand it off as verdict_stale (N1).
 func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 	if cause(t) == "human" {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
 		return nil
 	}
-	if cause(t) == "ci" {
-		return r.ready(ctx, t) // a CI fix goes back to CI, not to another review round
+	if cause(t) == "ci" { // a push after the fix's own is a human's: never reviewed into a merge
+		pr, err := r.readPR(ctx, t)
+		if err != nil {
+			return err
+		}
+		if handed, err := r.humanCommit(ctx, t, pr.HeadSHA); err != nil || handed {
+			return err
+		}
 	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {
 		r.requestVerifier(t, next)
@@ -523,6 +531,12 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	r.countApproves(ctx, t, pr)
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
+	}
+	// A return the factory cannot read is no return: it never blocks the reminder and stale close.
+	if back, err := r.reenter(ctx, t, pr); err != nil {
+		r.log().Warn("merge gate return unreadable", "task.id", t.Name, "reason", t.Status.Reason, "err", err)
+	} else if back {
+		return nil
 	}
 	return r.remind(ctx, t, pr)
 }
