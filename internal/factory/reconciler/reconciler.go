@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
@@ -105,9 +106,9 @@ const escalatedPoll = 5 * time.Minute
 // between two tasks starting at once. Run ids are derived from the task (R48), never random.
 type Reconciler struct {
 	Client client.Client
-	// Ledger reads R50's day ledgers live, as the API and the meter do: the cached client watches
-	// one ConfigMap, the stop object.
-	Ledger    client.Reader
+	// Ledger reads and writes R50's day ledgers live, as the API and the meter do: the cached
+	// client watches one ConfigMap, the stop object. Queued reserves its runs there (#78).
+	Ledger    client.Client
 	Namespace string
 	Cfg       *config.Config
 	Forge     taskForge
@@ -613,15 +614,15 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
-		over, err := r.overFactoryDay(ctx, t, limit)
+		over, err := r.reserveFactoryDay(ctx, t, limit)
 		switch {
+		case errors.Is(err, api.ErrOverBudget):
+			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
+			return nil
 		case err != nil && r.Cfg.Budgets.EnforcePrincipal:
 			return err
 		case err != nil: // a shadow cap counts; it never holds a run
-			r.log().Warn("daily cap unread (shadow)", "task.id", t.Name, "err", err)
-		case over && r.Cfg.Budgets.EnforcePrincipal:
-			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
-			return nil
+			r.log().Warn("daily cap unreserved (shadow)", "task.id", t.Name, "err", err)
 		case over:
 			record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-principal-shadow") })
 		}

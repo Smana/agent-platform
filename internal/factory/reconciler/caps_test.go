@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/meter"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -319,5 +321,146 @@ func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
 					tk.Status.Reason, byAPI, w.Code, w.Body)
 			}
 		})
+	}
+}
+
+// ledgerOf reads today's ledger: system:factory's use and its reservations by run id.
+func ledgerOf(t *testing.T, g *rig) (int64, []string) {
+	t.Helper()
+	used, err := api.DayUsed(t.Context(), g.r.Ledger, "agent-system", runs.PrincipalFactory, g.r.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm corev1.ConfigMap
+	if err := g.r.Ledger.Get(t.Context(), client.ObjectKey{Namespace: "agent-system",
+		Name: api.LedgerPrefix + g.r.Now().UTC().Format(api.LedgerDayLayout)}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for k := range cm.Data {
+		if id, ok := strings.CutPrefix(k, api.LedgerReserved); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return used, ids
+}
+
+// #78: Queued reserves each run it starts in the day's ledger before creating its claim, so
+// concurrentRuns' worth of runs admitted on one reading cannot overshoot an enforced day: with
+// room for two 1.5 M runs, two of four tasks start and two wait.
+func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
+	names := []string{"3buqdlot", "4buqdlot", "5buqdlot", "6buqdlot"}
+	objs := []client.Object{factoryLedger(22_000_000, nil)}
+	for i, n := range names {
+		objs = append(objs, issueTask(n, 7+i, "x"))
+	}
+	g := newRig(t, objs...)
+	g.r.Cfg.Caps.ActiveTasks = 4
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	started, waiting := 0, 0
+	for _, n := range names {
+		switch tk := g.reconcile(t, n, 3); {
+		case tk.Status.Phase == v1alpha1.PhaseImplementing:
+			started++
+		case tk.Status.Phase == v1alpha1.PhaseQueued && tk.Status.Reason == "waiting_daily_budget":
+			waiting++
+		default:
+			t.Fatalf("%s: %s %s", n, tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	if started != 2 || waiting != 2 {
+		t.Fatalf("22 M spent, a 25 M day, 1.5 M runs: %d started, %d wait", started, waiting)
+	}
+	used, ids := ledgerOf(t, g)
+	if used != 25_000_000 || len(ids) != 2 {
+		t.Fatalf("the two started runs are reserved: used %d, reservations %v", used, ids)
+	}
+	for _, id := range ids {
+		if _, ok := g.runs.runs[id]; !ok {
+			t.Fatalf("reservation %s names no claim: %v", id, g.runs.runs)
+		}
+	}
+}
+
+// R3: in shadow the factory's run is still reserved, and an over day only counts.
+func TestShadowReservesAndNeverHolds(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
+		!slices.Contains(g.metrics.recorded, "revoked budget-principal-shadow") {
+		t.Fatalf("shadow counts, never holds: %s %s %q", tk.Status.Phase, tk.Status.Reason, g.metrics.recorded)
+	}
+	if used, ids := ledgerOf(t, g); used != 26_500_000 || !slices.Equal(ids, []string{rid(0)}) {
+		t.Fatalf("shadow still records the run: used %d, reservations %v", used, ids)
+	}
+	// A ledger that cannot be read holds nothing in shadow either.
+	g = newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Ledger = brokenLedger{g.c}
+	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
+		t.Fatalf("an unreadable ledger in shadow: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// brokenLedger fails every ledger read and write.
+type brokenLedger struct{ client.Client }
+
+func (brokenLedger) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return errors.New("apiserver down")
+}
+
+func (brokenLedger) Update(context.Context, client.Object, ...client.UpdateOption) error {
+	return errors.New("apiserver down")
+}
+
+func (brokenLedger) Create(context.Context, client.Object, ...client.CreateOption) error {
+	return errors.New("apiserver down")
+}
+
+// meterStore is the rig's claims as the meter sees them.
+type meterStore struct{ *fakeRuns }
+
+func (meterStore) Annotate(context.Context, string, map[string]string) error { return nil }
+
+type meterSource map[string]int64
+
+func (s meterSource) RunTokens(context.Context) (map[string]int64, error) { return s, nil }
+
+// #78: the reservation's key is the run's deterministic id (R48), so a replay after a lost write
+// reserves nothing twice, and the meter that settles the run drops it once: a meter restarted
+// after the drop finds nothing left to drop, and the day holds the run's spend once.
+func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
+	c := losingClient(t, func(tk *v1alpha1.Task) bool { return len(tk.Status.Runs) > 0 })
+	g := newRig(t)
+	g.c, g.r.Client = c, c // g.r.Ledger keeps the rig's own client: the ledger is not the Task's
+	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	g.reconcile(t, "3buqdlot", 2) // Queued
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the write recording the run is lost")
+	}
+	if used, ids := ledgerOf(t, g); used != 1_500_000 || !slices.Equal(ids, []string{rid(0)}) {
+		t.Fatalf("reserved before the claim: used %d, %v", used, ids)
+	}
+	r := g.runs.runs[rid(0)]
+	r.Phase = "Failed"
+	g.runs.runs[rid(0)] = r
+	g.log.end(rid(0), "Failed", "pod_lost")
+	g.reconcile(t, "3buqdlot", 2) // the replay records the claim
+	if used, ids := ledgerOf(t, g); used != 1_500_000 || len(ids) != 1 {
+		t.Fatalf("the replay reserves nothing twice: used %d, %v", used, ids)
+	}
+	for i, tokens := range []int64{0, 900} { // the second meter is a new leader: the first annotated 900
+		r := g.runs.runs[rid(0)]
+		r.Tokens = tokens
+		g.runs.runs[rid(0)] = r
+		m := &meter.Meter{Runs: meterStore{g.runs}, Source: meterSource{rid(0): 900}, Ledger: g.r.Ledger,
+			Namespace: "agent-system", Now: g.r.Now}
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if used, ids := ledgerOf(t, g); used != 900 || len(ids) != 0 {
+			t.Fatalf("meter %d: the run's spend once, no reservation: used %d, %v", i, used, ids)
+		}
 	}
 }
