@@ -214,6 +214,30 @@ func TestRefusals(t *testing.T) {
 	}
 }
 
+// T4/T5 (identity design §2, §7): an internal run has no direct GitHub or profile egress. The
+// AgentRun XRD refuses the claim too; this answers the caller before a reservation is taken.
+func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
+	for name, c := range map[string]struct {
+		class    string
+		profiles []string
+		code     int
+		reason   string
+	}{
+		"internal, pypi":   {"internal", []string{"pypi"}, http.StatusBadRequest, "internal_runs_take_no_egress_profiles"},
+		"internal, github": {"internal", []string{"github"}, http.StatusBadRequest, "internal_runs_take_no_egress_profiles"},
+		"internal, none":   {"internal", nil, http.StatusCreated, ""},
+		"public, pypi":     {"public", []string{"pypi"}, http.StatusCreated, ""},
+		"public, github":   {"public", []string{"github"}, http.StatusBadRequest, "bad_egress_profile"},
+	} {
+		b := base()
+		b["dataClass"], b["egressProfiles"] = c.class, c.profiles
+		w := post(server(t, &store{}, false), "admin", b)
+		if w.Code != c.code || !strings.Contains(w.Body.String(), c.reason) {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		}
+	}
+}
+
 // R35: a stopped human run resumes on its branch; a task's branch, a busy branch or a room the
 // caller cannot start a run in stay closed.
 func TestResumeBranch(t *testing.T) {

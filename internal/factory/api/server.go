@@ -268,6 +268,10 @@ func validate(in RunRequest) string {
 		return "max_tokens_out_of_range"
 	case len(in.EgressProfiles) > 4:
 		return "too_many_egress_profiles"
+	// T4/T5 (identity design §2, §7): no direct GitHub or profile egress for internal data. The
+	// AgentRun XRD refuses the claim too; this names the reason before anything is reserved.
+	case in.DataClass == "internal" && len(in.EgressProfiles) > 0:
+		return "internal_runs_take_no_egress_profiles"
 	}
 	for _, e := range in.EgressProfiles {
 		if !slices.Contains(profiles, e) {
