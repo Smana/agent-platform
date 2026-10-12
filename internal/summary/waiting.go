@@ -108,14 +108,19 @@ func reasons() map[string]string {
 
 const escalatedNext = "a maintainer comments `/factory retry` on the issue to run it again, or pushes to the branch"
 
-// nextSteps are the specific next steps; waitingDefault falls back to the phase's.
-func nextSteps() map[string]string {
-	return map[string]string{
-		"waiting_daily_budget": "nothing to do: it resumes after 00:00 UTC",
-		"secret_scan_red":      "a maintainer revokes the credential and closes the pull request; the factory does not retry",
-		"ci_pending":           "nothing to do: the task goes on when CI finishes",
-		"verdict_stale":        "a maintainer reviews the current head, or the factory asks for a new review",
+// nextStep is the next step a reason has of its own; "" leaves it to the phase's default.
+func nextStep(reason string) string {
+	switch reason {
+	case "waiting_daily_budget":
+		return "nothing to do: it resumes after 00:00 UTC"
+	case "secret_scan_red":
+		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
+	case "ci_pending":
+		return "nothing to do: the task goes on when CI finishes"
+	case "verdict_stale":
+		return "a maintainer reviews the current head, or the factory asks for a new review"
 	}
+	return ""
 }
 
 // waiting is the reason and next step of a task that waits on something other than its own run;
@@ -135,7 +140,7 @@ func waiting(f *envelope.TaskFacts) (reason, next string) {
 			why = string(r[:maxReason]) + "…"
 		}
 	}
-	next = nextSteps()[f.Reason]
+	next = nextStep(f.Reason)
 	switch f.Phase {
 	case "Queued":
 		if why == "" {

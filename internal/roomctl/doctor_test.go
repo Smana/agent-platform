@@ -48,7 +48,7 @@ func TestCauseNamesWhatWentWrong(t *testing.T) {
 		}
 	}
 	other := errors.New("rooms: 403")
-	if Cause(other) != other || Cause(nil) != nil {
+	if !errors.Is(Cause(other), other) || Cause(nil) != nil {
 		t.Error("an error with no known cause passes through unchanged")
 	}
 }
@@ -56,8 +56,13 @@ func TestCauseNamesWhatWentWrong(t *testing.T) {
 func TestCauseOnARealUntrustedCertificate(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
-	_, err := (&http.Client{}).Get(srv.URL) //nolint:noctx // a one-off probe of the default client's refusal
+	req, rerr := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	resp, err := (&http.Client{}).Do(req)
 	if err == nil {
+		_ = resp.Body.Close()
 		t.Fatal("the default client trusts an httptest certificate")
 	}
 	if got := Cause(err); got == nil || !strings.Contains(got.Error(), "platform CA") {
