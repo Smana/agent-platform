@@ -122,11 +122,13 @@ type PR struct {
 // last occurrence wins. Only the message's last paragraph holds trailers, as git reads them, and
 // never its subject.
 //
-// It is a claim, never authentication (review B1). The harness's commit-msg hook runs
-// `git interpret-trailers --if-exists doNothing`, and git matches keys case-insensitively, so an
-// agent that writes its own Agent-Run (or agent-run) keeps the real one out; an agent with a shell
-// can skip the hook altogether. Tasks 7.2/7.3 must fail closed on an absent, foreign, duplicated
-// or case-variant Agent-Run, and a matching one proves only that the commit claims to be the run's.
+// It is a claim, never authentication (review B1). The harness's commit-msg hook marks every
+// other Agent-* line, in any case, as the model's, then appends the real ones with
+// `git interpret-trailers --if-exists add`, so the hook's own is the last occurrence. But an agent
+// with a shell can skip or rewrite the hook, and anyone can copy a run's trailer: run IDs are
+// public, and an amend or a cherry-pick keeps it (#76). Callers must fail closed on an absent,
+// foreign, duplicated or case-variant Agent-Run, and a matching one proves only that the commit
+// claims to be the run's.
 func (p PR) Trailer(key string) string { return trailer(p.HeadMessage, key) }
 
 // Commit is one commit of a pull request, as GitHub lists them.
