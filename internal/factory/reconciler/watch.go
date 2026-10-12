@@ -339,10 +339,12 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 }
 
 // expireEscalation stops a task that has waited Escalated past caps.escalatedHours (#61), unless
-// a person drives its room (C4): the factory never acts on a task a human holds. The room closes
-// by the rooms' own close rules once the task has ended, not here.
+// a person drives its room (C4): the factory never acts on a task a human holds, so such a task
+// never expires while they drive. The PR is left as it is (no stale label, no close). The room
+// closes by the rooms' own close rules once the task has ended, not here.
 func (r *Reconciler) expireEscalation(ctx context.Context, t *v1alpha1.Task) error {
-	limit := time.Duration(r.Cfg.Caps.EscalatedHours) * time.Hour
+	limit := r.Cfg.EscalatedLimit()
+	// No PhaseSince (a task from before the field) never expires: there is nothing to count from.
 	if limit <= 0 || t.Status.PhaseSince == nil || r.Now().Sub(t.Status.PhaseSince.Time) < limit {
 		return nil
 	}

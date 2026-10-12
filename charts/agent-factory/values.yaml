@@ -30,4 +30,7 @@ oidcSecret: agent-factory-oidc
 intakeSecret: agent-factory-intake
 # The factory config (internal/factory/config), rendered verbatim to
 # /etc/agent-factory/config/config.yaml. A gate path. An empty config fails the start (§4).
+# caps.escalatedHours (#61): how long a task may wait Escalated for a maintainer before it is
+# Stopped. Omitted: 168 (a week). 0: no limit. A room a person drives never expires. Example:
+#   caps: {escalatedHours: 72}
 config: {}

@@ -903,7 +903,7 @@ func TestAnEscalatedTaskIsPolledSlowly(t *testing.T) {
 // narrated reason, on the rig's clock.
 func TestAnEscalatedTaskExpires(t *testing.T) {
 	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
-	g.r.Cfg.Caps.EscalatedHours = 24
+	g.r.Cfg.Caps.EscalatedHours = new(24)
 	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
 		t.Fatalf("ten minutes in: %s", got.Status.Phase)
 	}
@@ -923,13 +923,14 @@ func TestAnEscalatedTaskExpires(t *testing.T) {
 // A retry the maintainer already asked for wins over the limit, and a limit of 0 is no limit.
 func TestAnEscalationLimitYieldsToRetryAndZeroMeansOff(t *testing.T) {
 	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
-	g.r.Cfg.Caps.EscalatedHours = 1
+	g.r.Cfg.Caps.EscalatedHours = new(1)
 	g.r.Now = func() time.Time { return now.Add(48 * time.Hour) }
 	g.f.SetComments(7, retryBy(77, "smana", time.Minute))
 	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseQueued {
 		t.Fatalf("retry first: %s", got.Status.Phase)
 	}
 	off := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	off.r.Cfg.Caps.EscalatedHours = new(0)
 	off.r.Now = func() time.Time { return now.Add(365 * 24 * time.Hour) }
 	if got := off.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
 		t.Fatalf("no limit configured: %s", got.Status.Phase)
@@ -941,7 +942,7 @@ func TestAnEscalationLimitSparesAHumanDriver(t *testing.T) {
 	room := roomOf("3buqdlot")
 	room.Status.Driver = "human:smana"
 	g := newRig(t, escalatedTask(false), room)
-	g.r.Cfg.Caps.EscalatedHours = 1
+	g.r.Cfg.Caps.EscalatedHours = new(1)
 	g.r.Now = func() time.Time { return now.Add(48 * time.Hour) }
 	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
 		t.Fatalf("a person is in the room: %s", got.Status.Phase)

@@ -210,8 +210,8 @@ type Caps struct {
 	MaxPendingMinutes int `json:"maxPendingMinutes"`
 	// EscalatedHours is how long a task may wait Escalated for a maintainer before it is
 	// Stopped (#61); otherwise it polls GitHub until its issue or pull request closes.
-	// Defaulted when omitted; the reconciler reads 0 as no limit, for tests built without Load.
-	EscalatedHours int `json:"escalatedHours"`
+	// Omitted: 168. An explicit 0: no limit. A pointer tells the two apart.
+	EscalatedHours *int `json:"escalatedHours,omitempty"`
 	// AwaitingHumanWIP bounds the tasks waiting on a human review before the factory queues
 	// more of the review-class work that produces them (§6.2's back-pressure on reviewers).
 	// Required, never defaulted: a config that omits it fails its rollout (§4).
@@ -326,8 +326,8 @@ func Parse(raw []byte) (*Config, error) {
 	if c.Caps.MaxPendingMinutes == 0 {
 		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)
 	}
-	if c.Caps.EscalatedHours == 0 {
-		c.Caps.EscalatedHours = defaultEscalatedHours
+	if c.Caps.EscalatedHours == nil {
+		c.Caps.EscalatedHours = new(defaultEscalatedHours)
 	}
 	if c.Budgets.FactoryDaily == 0 {
 		c.Budgets.FactoryDaily = defaultFactoryDaily // OD-10
@@ -344,6 +344,15 @@ func Parse(raw []byte) (*Config, error) {
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
 	return &c, nil
+}
+
+// EscalatedLimit is how long a task may wait Escalated; 0 is no limit, which is also what a
+// Config built without Parse means.
+func (c *Config) EscalatedLimit() time.Duration {
+	if c.Caps.EscalatedHours == nil {
+		return 0
+	}
+	return time.Duration(*c.Caps.EscalatedHours) * time.Hour
 }
 
 // IsMaintainer is whether login is a listed maintainer; GitHub logins are case-insensitive.
@@ -517,8 +526,8 @@ func (c *Config) Validate() error {
 	if c.Caps.MaxPendingMinutes < minMaxPendingMinutes || c.Caps.MaxPendingMinutes > maxRunMinutes {
 		bad("caps.maxPendingMinutes must be %d..%d (P)", minMaxPendingMinutes, maxRunMinutes)
 	}
-	if c.Caps.EscalatedHours < 1 {
-		bad("caps.escalatedHours must be positive (#61)")
+	if c.Caps.EscalatedHours != nil && *c.Caps.EscalatedHours < 0 {
+		bad("caps.escalatedHours must be 0 (no limit) or more (#61)")
 	}
 	if c.Caps.AwaitingHumanWIP < 1 {
 		bad("caps.awaitingHumanWIP must be positive")
