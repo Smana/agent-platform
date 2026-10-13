@@ -49,7 +49,17 @@ func RenderSummary(w io.Writer, raw []byte, now time.Time) error {
 		fmt.Fprintf(&b, "PR #%d %s\n", p.Number, oneLine(p.URL))
 	}
 	if i := s.Status.Issue; i != nil {
-		fmt.Fprintf(&b, "issue #%d %s\n", i.Number, oneLine(i.URL))
+		fmt.Fprintf(&b, "issue #%d %s", i.Number, oneLine(i.URL))
+		if i.Title != "" {
+			fmt.Fprintf(&b, " %q", oneLine(i.Title))
+		}
+		b.WriteString("\n")
+	}
+	if s.Status.Reason != "" {
+		fmt.Fprintf(&b, "why: %s\n", oneLine(s.Status.Reason))
+	}
+	if s.Status.Next != "" {
+		fmt.Fprintf(&b, "next: %s\n", oneLine(s.Status.Next))
 	}
 	if v := s.Status.LastVerdict; v != nil {
 		fmt.Fprintf(&b, "last verdict: %s %s\n", oneLine(v.By), oneLine(v.Verdict))
@@ -58,6 +68,10 @@ func RenderSummary(w io.Writer, raw []byte, now time.Time) error {
 		b.WriteString("needs you: none\n")
 	}
 	for _, n := range s.NeedsYou {
+		if n.Kind == "hold" || n.Kind == "merge" {
+			fmt.Fprintf(&b, "needs you: %s → %s\n", oneLine(n.What), oneLine(n.URL))
+			continue
+		}
 		by := ""
 		if !n.Deadline.IsZero() {
 			by = " by " + stamp(n.Deadline, now)

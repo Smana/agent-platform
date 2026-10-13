@@ -37,6 +37,8 @@ const (
 	// minMaxPendingMinutes keeps the Pending bound meaningful: under five minutes a busy cluster
 	// would escalate healthy tasks.
 	minMaxPendingMinutes = 5
+	// defaultEscalatedHours: a week is long enough for a maintainer to come back from leave.
+	defaultEscalatedHours = 168
 	// OD-10's daily token budgets, when the config omits them: R3 wants a week of shadow
 	// numbers first, so the ceilings exist even before an operator writes them down.
 	defaultFactoryDaily = 25_000_000
@@ -115,6 +117,17 @@ type GitHub struct {
 	MergerKeyFile   string `json:"mergerKeyFile,omitempty"`
 }
 
+// NeedsMerger reports whether a class is live or in shadow: deciding it reads checks through
+// the merger App, so its key is then mandatory. With every class off the key is optional.
+func (c *Config) NeedsMerger() bool {
+	for _, cl := range c.Classes {
+		if cl.Live || cl.Shadow {
+			return true
+		}
+	}
+	return false
+}
+
 // Poll is how often each loop runs.
 type Poll struct {
 	Issues Duration `json:"issues"`
@@ -158,9 +171,12 @@ type Merge struct {
 	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
 	AutoMergesPerDay int      `json:"autoMergesPerDay"`
 	FixRuns          int32    `json:"fixRuns"`
-	VerifyFor        Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
-	RevertWindow     Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
-	Breaker          Breaker  `json:"breaker"`
+	// CheckReruns caps the re-runs of a cancelled required check per task; 0 hands it to a human
+	// instead. Above 0 the merger App must hold actions: write.
+	CheckReruns  int32    `json:"checkReruns"`
+	VerifyFor    Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
+	RevertWindow Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
+	Breaker      Breaker  `json:"breaker"`
 }
 
 // Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
@@ -195,6 +211,10 @@ type Caps struct {
 	// pod's start, and Kueue queues unadmitted work forever. Defaulted when omitted, never left
 	// open.
 	MaxPendingMinutes int `json:"maxPendingMinutes"`
+	// EscalatedHours is how long a task may wait Escalated for a maintainer before it is
+	// Stopped (#61); otherwise it polls GitHub until its issue or pull request closes.
+	// Omitted: 168. An explicit 0: no limit. A pointer tells the two apart.
+	EscalatedHours *int `json:"escalatedHours,omitempty"`
 	// AwaitingHumanWIP bounds the tasks waiting on a human review before the factory queues
 	// more of the review-class work that produces them (§6.2's back-pressure on reviewers).
 	// Required, never defaulted: a config that omits it fails its rollout (§4).
@@ -309,6 +329,9 @@ func Parse(raw []byte) (*Config, error) {
 	if c.Caps.MaxPendingMinutes == 0 {
 		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)
 	}
+	if c.Caps.EscalatedHours == nil {
+		c.Caps.EscalatedHours = new(defaultEscalatedHours)
+	}
 	if c.Budgets.FactoryDaily == 0 {
 		c.Budgets.FactoryDaily = defaultFactoryDaily // OD-10
 	}
@@ -324,6 +347,15 @@ func Parse(raw []byte) (*Config, error) {
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
 	return &c, nil
+}
+
+// EscalatedLimit is how long a task may wait Escalated; 0 is no limit, which is also what a
+// Config built without Parse means.
+func (c *Config) EscalatedLimit() time.Duration {
+	if c.Caps.EscalatedHours == nil {
+		return 0
+	}
+	return time.Duration(*c.Caps.EscalatedHours) * time.Hour
 }
 
 // IsMaintainer is whether login is a listed maintainer; GitHub logins are case-insensitive.
@@ -449,10 +481,7 @@ func (c *Config) Validate() error {
 	// R16: the merger App's key is both files or neither — a half pair cannot mint a token —
 	// and both are required once any class is live or shadow, whose decision reads checks
 	// through it.
-	var anyMerge bool
-	for _, cl := range c.Classes {
-		anyMerge = anyMerge || cl.Live || cl.Shadow
-	}
+	anyMerge := c.NeedsMerger()
 	switch {
 	case (c.GitHub.MergerAppIDFile == "") != (c.GitHub.MergerKeyFile == ""):
 		bad("github.mergerAppIDFile and github.mergerKeyFile are both set or both empty")
@@ -500,6 +529,9 @@ func (c *Config) Validate() error {
 	if c.Caps.MaxPendingMinutes < minMaxPendingMinutes || c.Caps.MaxPendingMinutes > maxRunMinutes {
 		bad("caps.maxPendingMinutes must be %d..%d (P)", minMaxPendingMinutes, maxRunMinutes)
 	}
+	if c.Caps.EscalatedHours != nil && *c.Caps.EscalatedHours < 0 {
+		bad("caps.escalatedHours must be 0 (no limit) or more (#61)")
+	}
 	if c.Caps.AwaitingHumanWIP < 1 {
 		bad("caps.awaitingHumanWIP must be positive")
 	}
@@ -535,6 +567,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Merge.FixRuns < 0 {
 		bad("merge.fixRuns must be 0 or more")
+	}
+	if c.Merge.CheckReruns < 0 {
+		bad("merge.checkReruns must be 0 or more")
 	}
 	if c.Merge.VerifyFor.Duration <= 0 {
 		bad("merge.verifyFor must be positive")

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
@@ -35,6 +36,7 @@ merge:
   mergerLogin: ogenki-agent-merger[bot]
   autoMergesPerDay: 10
   fixRuns: 2
+  checkReruns: 1
   verifyFor: 30m
   revertWindow: 168h
   breaker: {window: 10, maxReverts: 1}
@@ -202,6 +204,31 @@ func TestGoodVariantsParse(t *testing.T) {
 	}
 }
 
+// #61: omitted is a week, an explicit 0 is no limit, anything else is itself, a negative fails.
+func TestEscalatedHours(t *testing.T) {
+	caps := "caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}"
+	for name, c := range map[string]struct {
+		with string
+		want time.Duration
+	}{
+		"omitted":  {caps, 168 * time.Hour},
+		"explicit": {strings.Replace(caps, "5}", "5, escalatedHours: 24}", 1), 24 * time.Hour},
+		"zero":     {strings.Replace(caps, "5}", "5, escalatedHours: 0}", 1), 0},
+	} {
+		cfg, err := Parse([]byte(strings.Replace(good, caps, c.with, 1)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := cfg.EscalatedLimit(); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(good, caps, strings.Replace(caps, "5}", "5, escalatedHours: -1}", 1), 1))); err == nil ||
+		!strings.Contains(err.Error(), "caps.escalatedHours") {
+		t.Fatalf("a negative limit is refused: %v", err)
+	}
+}
+
 // Disruption design §4: two automatic resumes per task unless the config says otherwise.
 func TestResumeDefault(t *testing.T) {
 	c, err := Parse([]byte(good))
@@ -279,6 +306,7 @@ func TestBadConfigsFail(t *testing.T) {
 		"merger not a bot":           {"mergerLogin: ogenki-agent-merger[bot]", "mergerLogin: ogenki-agent-merger", "merge.mergerLogin"},
 		"negative auto merges":       {"autoMergesPerDay: 10", "autoMergesPerDay: -1", "merge.autoMergesPerDay must be 0 or more"},
 		"negative fix runs":          {"fixRuns: 2", "fixRuns: -1", "merge.fixRuns must be 0 or more"},
+		"negative check reruns":      {"checkReruns: 1", "checkReruns: -1", "merge.checkReruns must be 0 or more"},
 		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
 		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
 		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.

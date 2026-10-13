@@ -35,7 +35,18 @@ export class RoomLog {
 }
 
 // One row of GET /api/rooms (docs/api.md).
-interface RoomRow { id: string; phase: string; owner: string; driver: string; dataClass: string; lastSeq: number }
+export interface RoomRow {
+  id: string; phase: string; owner: string; driver: string; dataClass: string; lastSeq: number;
+  repository?: string; issue?: number; title?: string; task?: string; pr?: number; needsYou?: number;
+}
+
+// rowText is a room list row: the task it works on when it has one, else the room alone (#50).
+export function rowText(row: RoomRow): string {
+  const task = [row.issue ? `#${row.issue}` : "", row.title ?? "", row.task ?? "", row.pr ? `PR #${row.pr}` : ""].filter(Boolean);
+  const need = row.needsYou ? [`${row.needsYou} need you`] : [];
+  const head = task.length ? task : [row.phase || "Open"];
+  return [...head, ...need, row.id, `${row.lastSeq} events`, `owner ${row.owner}`].join(" · ");
+}
 
 // listRooms renders the room list and the new-room form, or why it cannot: a 401
 // signs in again; an expired session may also reach fetch as a redirect to the IdP,
@@ -59,7 +70,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch) {
     const li = document.createElement("li");
     const a = document.createElement("a");
     a.href = `/r/${encodeURIComponent(row.id)}`;
-    a.textContent = `${row.id} · ${row.phase || "Open"} · ${row.lastSeq} events · owner ${row.owner}`;
+    a.textContent = rowText(row);
     li.append(a);
     ul.append(li);
   }

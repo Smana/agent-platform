@@ -48,6 +48,7 @@ type Client struct {
 type RoomFilter struct {
 	Repo          string // owner/name
 	Mine, NeedsMe bool
+	JSON          bool // print the broker's rows unchanged; not part of the query
 }
 
 func (f RoomFilter) query() string {
@@ -123,23 +124,66 @@ func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
 		return fmt.Errorf("rooms: %w", err)
 	}
 	var rows []struct {
-		ID, Repository, Phase, Owner string
-		LastSeq                      int64
-		You                          struct{ Role string }
+		ID, Repository, Phase, Title, Task string
+		Issue, PR, NeedsYou                int
+		You                                struct{ Role string }
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return fmt.Errorf("rooms: %w", err)
 	}
+	if f.JSON { // the broker's rows as sent: today's fields and the task's
+		if _, err := fmt.Fprintln(out, string(body)); err != nil {
+			return err
+		}
+		c.hint(resp.Header.Get("X-Rooms-Access"))
+		return nil
+	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ROOM\tREPO\tPHASE\tEVENTS\tOWNER\tYOU")
+	_, _ = fmt.Fprintln(tw, "ROOM\tREPO\tISSUE\tTITLE\tTASK\tPR\tNEEDS-YOU\tROLE")
 	for _, r := range rows {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", printable(r.ID), printable(r.Repository), printable(r.Phase), r.LastSeq, printable(r.Owner), printable(r.You.Role))
+		task := r.Task
+		if task == "" { // a room with no factory task: its own phase, marked as not the task's
+			task = "(" + r.Phase + ")"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", printable(r.ID), printable(r.Repository), number(r.Issue),
+			dash(clip(oneLine(r.Title), maxTitle)), printable(task), number(r.PR), count(r.NeedsYou), printable(r.You.Role))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	c.hint(resp.Header.Get("X-Rooms-Access"))
 	return nil
+}
+
+// maxTitle bounds a title in the room table, in runes.
+const maxTitle = 50
+
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func number(n int) string {
+	if n <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("#%d", n)
+}
+
+func count(n int) string {
+	if n <= 0 {
+		return "-"
+	}
+	return strconv.Itoa(n)
 }
 
 func withQuery(q string) string {

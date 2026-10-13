@@ -34,6 +34,7 @@ func TestLastSlot(t *testing.T) {
 
 func schedulerCfg() *config.Config {
 	return &config.Config{Repository: "Smana/cloud-native-ref", Defaults: config.Defaults{DataClass: "public"},
+		Classes: map[string]config.Class{"docs-links": {Shadow: true}},
 		Schedules: []config.Schedule{
 			{Name: "link-rot", Cron: "0 6 * * 1", Class: "docs-links", Text: "Fix broken external links."},
 			{Name: "renovate-red", Cron: "0 6 * * 1", Class: "review", Text: "Fix red Renovate PRs.", Probe: "renovate-red"},

@@ -10,10 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
@@ -313,8 +318,11 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	c, ok, err := r.command(ctx, t, pr, cmdRetry)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return r.expireEscalation(ctx, t)
 	}
 	markHandled(t, c.ID)
 	after := t.Status.Reason
@@ -328,6 +336,27 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 	r.to(t, next, "")
 	narrateLater(t, narrate.Retrying(t, c.Author, after))
 	return nil
+}
+
+// expireEscalation stops a task that has waited Escalated past caps.escalatedHours (#61), unless
+// a person drives its room (C4): the factory never acts on a task a human holds, so such a task
+// never expires while they drive. The PR is left as it is (no stale label, no close). The room
+// closes by the rooms' own close rules once the task has ended, not here.
+func (r *Reconciler) expireEscalation(ctx context.Context, t *v1alpha1.Task) error {
+	limit := r.Cfg.EscalatedLimit()
+	// No PhaseSince (a task from before the field) never expires: there is nothing to count from.
+	if limit <= 0 || t.Status.PhaseSince == nil || r.Now().Sub(t.Status.PhaseSince.Time) < limit {
+		return nil
+	}
+	if t.Status.RoomRef != "" {
+		var room roomv1.Room
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Status.RoomRef}, &room); client.IgnoreNotFound(err) != nil {
+			return err
+		} else if err == nil && rooms.HumanDriver(&room) {
+			return nil
+		}
+	}
+	return r.end(ctx, t, v1alpha1.PhaseStopped, "escalation_expired")
 }
 
 // labelStale marks a pull request the factory closed for want of a review (§6.3).
