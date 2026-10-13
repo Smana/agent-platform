@@ -179,6 +179,10 @@ the harnesses still hold.
 | Factory `CrashLoopBackOff`; the log says `merger App key ... is missing` | The Secrets are hard prerequisites whenever any merge class is `live` or `shadow` (deciding it reads checks through the merger, R16): the optional mount lets the pod start, and the binary then refuses, so a missing key is a crash loop with a clear log line, no longer `ContainerCreating` | Create the `agent-factory-merger` Secret (keys `app_id`, `private_key`), or turn every class off: with none live or in shadow the key is optional and the merger fails closed. A task at the merge gate then waits for a maintainer (`merge_gate_off`) |
 | Factory `POST /intake/runlore` answers `503 intake_unconfigured`; `agent_factory_intake_errors_total{source="runlore"}` rises and the log warns once a minute | The `agent-factory-intake` Secret is absent or empty (the mount is optional): the intake refuses everything instead of running open. It is a hard prerequisite whenever RunLore is meant to feed the factory | Create the Secret (key `token`); the token is re-read per request, no restart |
 
+## Escalated tasks expire
+
+An Escalated task waits for a maintainer (`/factory retry`) or for its pull request to end. `caps.escalatedHours` in the factory config bounds that wait: omitted is 168 (a week), `0` is no limit, a negative value fails the rollout. Past it the task is Stopped with reason `escalation_expired` and says so on its issue. Its pull request is left as it is (no stale label, no close). A task whose room a person drives never expires while they drive; a retry already asked for wins over the limit.
+
 ## Upgrades
 
 | Change | How |

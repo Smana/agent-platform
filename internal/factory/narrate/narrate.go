@@ -168,6 +168,7 @@ func reasons() map[string]string {
 		"agent_finished":            "the agent finished its work",
 		"agent_error":               "the agent stopped on an error",
 		"agent_stuck":               "the agent reported that it was stuck",
+		"escalation_expired":        "it waited past the escalation time limit for a maintainer",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"deadline":                  "the run hit its wall-clock limit",
 		"pod_lost":                  "the sandbox was lost (spot reclaim or eviction)",

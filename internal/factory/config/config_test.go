@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
@@ -200,6 +201,31 @@ func TestGoodVariantsParse(t *testing.T) {
 				t.Error(err)
 			}
 		})
+	}
+}
+
+// #61: omitted is a week, an explicit 0 is no limit, anything else is itself, a negative fails.
+func TestEscalatedHours(t *testing.T) {
+	caps := "caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}"
+	for name, c := range map[string]struct {
+		with string
+		want time.Duration
+	}{
+		"omitted":  {caps, 168 * time.Hour},
+		"explicit": {strings.Replace(caps, "5}", "5, escalatedHours: 24}", 1), 24 * time.Hour},
+		"zero":     {strings.Replace(caps, "5}", "5, escalatedHours: 0}", 1), 0},
+	} {
+		cfg, err := Parse([]byte(strings.Replace(good, caps, c.with, 1)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := cfg.EscalatedLimit(); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(good, caps, strings.Replace(caps, "5}", "5, escalatedHours: -1}", 1), 1))); err == nil ||
+		!strings.Contains(err.Error(), "caps.escalatedHours") {
+		t.Fatalf("a negative limit is refused: %v", err)
 	}
 }
 
