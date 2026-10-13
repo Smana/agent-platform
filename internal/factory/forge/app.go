@@ -42,9 +42,14 @@ func permissions() map[string]string {
 // MergerPermissions is the merger App's installation-token scope (TW4, R16): the merge-side
 // calls read checks and statuses, write contents on the merger's own revert branches, and arm
 // and merge pull requests — and nothing else. Like the factory's, it is the App's ceiling: a
-// mint asking for more fails.
-func MergerPermissions() map[string]string {
-	return map[string]string{"checks": "read", "statuses": "read", "contents": "write", "pull_requests": "write", "metadata": "read"}
+// mint asking for more fails. rerun adds actions: write for RerunCheck: it is asked only when
+// merge.checkReruns is on, so an App that was not granted it keeps minting.
+func MergerPermissions(rerun bool) map[string]string {
+	p := map[string]string{"checks": "read", "statuses": "read", "contents": "write", "pull_requests": "write", "metadata": "read"}
+	if rerun {
+		p["actions"] = "write"
+	}
+	return p
 }
 
 // tokens mints and caches installation tokens for one App on one repository. The App id and key

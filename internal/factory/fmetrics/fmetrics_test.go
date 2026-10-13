@@ -135,6 +135,9 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.GitHubUp(ctx, true)
 	s.TraceExportAbandoned(ctx)
 	s.Resumed(ctx, "Disrupted")
+	s.MeterUsageReadError(ctx)
+	s.MeterSucceeded(ctx, time.Unix(1_790_000_000, 0))
+	s.RunOvershoot(ctx, 42_000)
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -152,6 +155,9 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_github_up 1`,
 		`agent_factory_trace_export_abandoned_total 1`,
 		`agent_factory_resumes_total{reason="Disrupted"} 1`,
+		`agent_factory_meter_usage_read_errors_total 1`,
+		`agent_factory_meter_last_success_timestamp_seconds 1.79e+09`,
+		`agent_factory_run_overshoot_tokens_total 42000`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)

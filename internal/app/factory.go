@@ -209,8 +209,12 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				m.BudgetRemaining(ctx, p, n)
 				m.BudgetCap(ctx, p, c)
 			},
-			Ledger: live, Namespace: ns},
+			OnUsageError: m.MeterUsageReadError, OnSucceeded: m.MeterSucceeded, OnOvershoot: m.RunOvershoot,
+			Ledger: live, Tasks: mgr.GetClient(), Namespace: ns},
 		&killswitch.Sweeper{Reader: mgr.GetClient(), Namespace: ns, Runs: rc, Every: 15 * time.Second,
+			Release: func(ctx context.Context, r runs.Run) error {
+				return api.Release(ctx, live, ns, time.Now(), r.ID) // admission reads today's ledger only
+			},
 			OnSweep: func(n int) {
 				for range n {
 					m.Revoked(ctx, "manual")
@@ -281,7 +285,7 @@ func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (f
 	}
 	return forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
 		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions()})
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.Merge.CheckReruns > 0)})
 }
 
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface

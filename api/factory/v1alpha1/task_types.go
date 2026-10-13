@@ -153,6 +153,14 @@ type TaskStatus struct {
 	ReviewRounds int32 `json:"reviewRounds,omitempty"`
 	// +optional
 	FixRuns int32 `json:"fixRuns,omitempty"`
+	// Re-runs of a cancelled required check, capped by merge.checkReruns. A cancelled check is
+	// not a failure, so it never spends a fix run.
+	// +optional
+	CheckReruns int32 `json:"checkReruns,omitempty"`
+	// The head CheckReruns counts against: a new head resets it.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	CheckRerunsHead string `json:"checkRerunsHead,omitempty"`
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
 	// Automatic resumes of runs lost to their infrastructure (disruption design §4), every role

@@ -102,8 +102,8 @@ const (
 	// (Task 5.3) owns this column; admission only reads it.
 	LedgerSpent = "spent"
 	// LedgerReserved prefixes one key per admitted run — reserved.<runId>, whose C2 id is
-	// key-safe — holding {principal, room, maxTokens}. The meter drops the entry when the run
-	// is terminal; deleting a run refunds nothing.
+	// key-safe — holding {principal, room, maxTokens}. Release drops the entry when the run
+	// ends or its claim goes (#55); the spend it made stays: deleting a run refunds nothing.
 	LedgerReserved = "reserved."
 	// LedgerDayLayout labels the ledger with the UTC day it counts.
 	LedgerDayLayout = "20060102"
@@ -448,6 +448,8 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 		return http.StatusConflict, "room_busy"
 	case errors.Is(err, ErrLedgerBusy):
 		return http.StatusServiceUnavailable, "ledger_busy"
+	case errors.Is(err, ErrMeterBlind):
+		return http.StatusServiceUnavailable, "meter_blind"
 	case err != nil:
 		return http.StatusServiceUnavailable, "ledger_unavailable"
 	}
@@ -470,10 +472,18 @@ var (
 // reservation holds mine.Room, then write reserved.<id> — the Update conflicts against a
 // concurrent writer's, and the retry re-reads and re-checks, so exactly one admission per slot
 // lands whatever the interleaving. Unless enforce (R3's shadow), an over day is reported as over,
-// written, and never refused; room exclusion stays exact. The meter drops the entry when the run
-// is terminal.
+// written, and never refused; room exclusion stays exact. An enforced cap also refuses while the
+// meter is blind (#54): its spend column is then stale. Release drops the entry when the run ends.
 func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id string, mine Reservation,
 	limit int64, enforce bool) (over bool, err error) {
+	if enforce {
+		switch blind, err := meterBlind(ctx, c, ns, now); {
+		case err != nil:
+			return false, err
+		case blind:
+			return false, ErrMeterBlind
+		}
+	}
 	name := LedgerPrefix + now.UTC().Format(LedgerDayLayout)
 	key := types.NamespacedName{Namespace: ns, Name: name}
 	for range LedgerAttempts {

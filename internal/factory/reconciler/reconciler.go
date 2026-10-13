@@ -153,8 +153,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
 	// its action, even after the task itself has ended.
 	revertWait := r.revertable(&t) || r.revertPending(&t)
-	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) {
-		return ctrl.Result{}, nil
+	var closeDue bool
+	var closeWait time.Duration
+	if ended {
+		var rerr error
+		if closeDue, closeWait, rerr = r.roomState(ctx, &t); rerr != nil {
+			return ctrl.Result{}, rerr
+		}
+	}
+	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) && !closeDue {
+		return ctrl.Result{RequeueAfter: closeWait}, nil // closeWait: the revert window still open (#56)
 	}
 	before := t.Status.DeepCopy()
 	if t.Status.Phase == "" {
@@ -198,6 +206,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
 	if v1alpha1.TerminalPhase(t.Status.Phase) {
+		// #56: the room closes once everything the task owes it has landed. Re-evaluated on the
+		// state this pass left, so the pass that posts the last fact closes it.
+		var closeLeft time.Duration
+		if err == nil {
+			if due, wait, serr := r.roomState(ctx, &t); serr != nil {
+				err = serr
+			} else if due {
+				err = r.closeRoom(ctx, &t)
+			} else {
+				closeLeft = wait
+			}
+		}
 		// The revert watch polls: a revert PR merges, closes or stalls on GitHub's clock, not ours.
 		if err == nil && (r.revertable(&t) || r.revertPending(&t)) {
 			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
@@ -205,7 +225,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err == nil && r.settling(&t) {
 			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: closeLeft}, err // closeLeft: the revert window or a driving person (#56)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -314,11 +334,15 @@ func (r *Reconciler) stopRequested(ctx context.Context, t *v1alpha1.Task) (bool,
 
 // stop: every live run of the task is annotated revoked=manual, then every run deleted (§6.1).
 // The runs are the cluster's, not status's (ruling SN): a run whose record was lost to a
-// conflicting status write is still the task's, and still stopped.
+// conflicting status write is still the task's, and still stopped. The claims' last usage is
+// copied into the records first: once deleted, the settle can no longer read it (#55).
 func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) error {
 	all, err := r.Runs.List(ctx)
 	if err != nil {
 		return err
+	}
+	if len(t.Status.Runs) > 0 {
+		absorb(t, all)
 	}
 	for _, run := range all {
 		if run.TaskID != t.Name {
@@ -335,7 +359,7 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 				r.Metrics.Revoked(ctx, "manual")
 			}
 		}
-		if err := r.Runs.Delete(ctx, run.ID); err != nil {
+		if err := r.deleteRun(ctx, run.ID); err != nil {
 			return err
 		}
 	}
@@ -393,8 +417,10 @@ func target(t *v1alpha1.Task) int {
 // end moves a task to a terminal or escalated phase and says why, once. The task's tokens are
 // not recorded here: the settle does that, once, after the meter's late readings have had their
 // window (R49). An escalation names the maintainers (§6.3); the outcome records tier fit and the
-// task.final line the moment the task first ends.
+// task.final line the moment the task first ends. The reservations no claim holds any more are
+// released here (#55): every ending path, and every replay of one, passes through it.
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
 	narrateLater(t, narrate.Ended(t, phase, reason, r.Cfg.Maintainers...))
 	r.outcome(ctx, t)
@@ -630,6 +656,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		switch {
 		case errors.Is(err, api.ErrOverBudget):
 			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
+			return nil
+		case errors.Is(err, api.ErrMeterBlind): // an enforced cap the meter cannot feed holds (#54)
+			t.Status.Reason = "waiting_meter_blind"
 			return nil
 		case err != nil && r.Cfg.Budgets.EnforcePrincipal:
 			return err

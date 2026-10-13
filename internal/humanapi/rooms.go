@@ -117,6 +117,16 @@ func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.principal(w, r); !ok {
 		return
 	}
+	s.writeSetup(w)
+}
+
+// publicSetup is GET /.well-known/roomctl: the same values with no sign-in, so `roomctl
+// configure --url` needs nothing else (#48). The issuer, the client id and the project id are
+// public by design (a native app has no secret) and the CLI setup view shows them to any member.
+// The proxy in front must let this path through unauthenticated.
+func (s *Server) publicSetup(w http.ResponseWriter, _ *http.Request) { s.writeSetup(w) }
+
+func (s *Server) writeSetup(w http.ResponseWriter) {
 	read := func(f func() string) string {
 		if f == nil {
 			return ""
@@ -133,15 +143,21 @@ func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
-	ID         string   `json:"id"`
-	Phase      string   `json:"phase"`
-	Owner      string   `json:"owner"`
-	Driver     string   `json:"driver"`
-	DataClass  string   `json:"dataClass"`
-	LastSeq    int64    `json:"lastSeq"`
-	Repository string   `json:"repository"`
-	NeedsMe    bool     `json:"needsMe"`
-	You        wire.You `json:"you"`
+	ID         string `json:"id"`
+	Phase      string `json:"phase"`
+	Owner      string `json:"owner"`
+	Driver     string `json:"driver"`
+	DataClass  string `json:"dataClass"`
+	LastSeq    int64  `json:"lastSeq"`
+	Repository string `json:"repository"`
+	NeedsMe    bool   `json:"needsMe"`
+	// The task the room works on (#50): Phase above is the room's, Task the task's.
+	Issue    int      `json:"issue,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Task     string   `json:"task,omitempty"`
+	PR       int      `json:"pr,omitempty"`
+	NeedsYou int      `json:"needsYou"` // how many things wait for this caller
+	You      wire.You `json:"you"`
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
@@ -197,6 +213,25 @@ func (s *Server) held(ctx context.Context, room *v1alpha1.Room, sub policy.Subje
 	}
 	_, ok := summary.Hold(&f, sub, "")
 	return ok
+}
+
+// needs counts what waits for sub in room, as the room's summary lists it: approvals sub could
+// decide in the web UI (web is sub as that UI), a hold sub could release, a merge sub owns.
+func (s *Server) needs(ctx context.Context, room *v1alpha1.Room, sub, web policy.Subject) int {
+	n := 0
+	if policy.Allowed(web, policy.Decide) {
+		n += int(room.Status.PendingApprovals)
+	}
+	if s.held(ctx, room, sub) {
+		n++
+	}
+	if t := room.Status.Task; t != nil && t.PR > 0 {
+		f := envelope.TaskFacts{Phase: t.Phase, PR: &envelope.PRFact{Number: int(t.PR)}}
+		if _, ok := summary.Merge(&f, sub); ok {
+			n++
+		}
+	}
+	return n
 }
 
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
@@ -263,12 +298,16 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// After mine: a row filtered out never costs held's store read.
-		needsMe := room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide) || s.held(ctx, room, sub)
-		if f.needsMe && !needsMe {
+		needs := s.needs(ctx, room, sub, web)
+		if f.needsMe && needs == 0 {
 			continue
 		}
-		out = append(out, roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
-			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo, NeedsMe: needsMe, You: you})
+		row := roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
+			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo, NeedsMe: needs > 0, NeedsYou: needs, You: you}
+		if t := room.Status.Task; t != nil {
+			row.Task, row.Issue, row.Title, row.PR = t.Phase, int(t.Issue), t.IssueTitle, int(t.PR)
+		}
+		out = append(out, row)
 	}
 	w.Header().Set(accessHeader, access)
 	writeJSON(w, out)

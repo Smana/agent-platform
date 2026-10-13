@@ -3,6 +3,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,13 +31,14 @@ const (
 )
 
 const roomctlUsage = `usage: roomctl <command>
-  configure --url URL --issuer URL --client-id ID --project-id ID
-                                  the values are on the room list's CLI setup view
+  configure --url URL [--issuer URL --client-id ID --project-id ID]
+                                  the broker's URL is enough: it serves the other three
   login                           sign in with the device flow
+  doctor                          check the VPN, the CA, your login and your GitHub link, with the fix of each
   token                           print a valid access token, for scripts (task agent:run)
   status <room> [--json] [--after seq:N] where a room stands: status, what needs you, notes
-  rooms [--repo owner/name] [--mine] [--needs-me]
-                                  the rooms you can read. --mine: the tasks of
+  rooms [--repo owner/name] [--mine] [--needs-me] [--json]
+                                  the rooms you can read, with each task's issue, title, phase and PR. --mine: the tasks of
                                   issues you filed or labelled, PRs you authored or review.
                                   --needs-me: an approval you could decide
   watch <room> [--tail N]         follow a room
@@ -81,8 +85,12 @@ func flags(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// Run runs one command.
+// Run runs one command. A transport failure leaves it naming its cause and fix (#48).
 func (r Roomctl) Run(ctx context.Context, args []string) error {
+	return roomctl.Cause(r.run(ctx, args))
+}
+
+func (r Roomctl) run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("a command is required\n%s", roomctlUsage)
 	}
@@ -90,19 +98,19 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 	cfgPath, tokPath := filepath.Join(r.Dir, "config.json"), filepath.Join(r.Dir, "token.json")
 	switch cmd {
 	case "configure":
-		return r.configure(cfgPath, args)
+		return r.configure(ctx, cfgPath, args)
 	case "skill":
 		return r.skill(args)
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "watch", "post", "fork":
+	case "login", "token", "rooms", "status", "watch", "post", "fork", "doctor":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
 	var cfg roomctl.Config
 	if err := roomctl.LoadJSON(cfgPath, &cfg); err != nil {
-		return errors.New("run roomctl configure first: the room list's CLI setup view has the values")
+		return errors.New("not configured: run roomctl configure --url https://rooms.<your private domain>")
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("%s: %w: run roomctl configure again", cfgPath, err)
@@ -115,8 +123,11 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 		if err := roomctl.SaveJSON(tokPath, tok); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(r.Out, "logged in")
+		_, err = fmt.Fprintln(r.Out, "logged in; roomctl rooms lists the rooms you can read, roomctl doctor checks the setup")
 		return err
+	}
+	if cmd == "doctor" {
+		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath}.Run(ctx, r.Out)
 	}
 	c := roomctl.Client{URL: cfg.URL, HC: r.HC, Stream: r.Stream, Issuer: cfg.Issuer, Err: r.Err,
 		Token: func(ctx context.Context) (string, error) { return roomctl.Token(ctx, r.HC, cfg, tokPath) }}
@@ -135,9 +146,10 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 		fs.StringVar(&f.Repo, "repo", "", "only this repository, owner/name")
 		fs.BoolVar(&f.Mine, "mine", false, "only the tasks of issues you filed or labelled, PRs you authored or review")
 		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms with an approval you could decide")
+		fs.BoolVar(&f.JSON, "json", false, "print the broker's rows as is")
 		pos, err := flags(fs, args)
 		if err != nil || len(pos) != 0 {
-			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me]: %w", errors.Join(err, errors.New("no arguments")))
+			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me] [--json]: %w", errors.Join(err, errors.New("no arguments")))
 		}
 		return c.Rooms(ctx, r.Out, f)
 	case "status":
@@ -156,21 +168,46 @@ func (r Roomctl) Run(ctx context.Context, args []string) error {
 	return r.fork(ctx, c, cfg.URL, args)
 }
 
-func (r Roomctl) configure(path string, args []string) error {
+// configure saves the config. The URL alone is enough: whatever the flags leave empty is read from
+// the broker, which serves the three values unauthenticated (#48).
+func (r Roomctl) configure(ctx context.Context, path string, args []string) error {
 	var cfg roomctl.Config
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>")
-	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL")
-	fs.StringVar(&cfg.ClientID, "client-id", "", "the roomctl client id")
-	fs.StringVar(&cfg.ProjectID, "project-id", "", "the rooms project id")
+	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL (default: the broker's)")
+	fs.StringVar(&cfg.ClientID, "client-id", "", "the roomctl client id (default: the broker's)")
+	fs.StringVar(&cfg.ProjectID, "project-id", "", "the rooms project id (default: the broker's)")
 	if _, err := flags(fs, args); err != nil {
 		return err
 	}
 	cfg.URL, cfg.Issuer = strings.TrimRight(cfg.URL, "/"), strings.TrimRight(cfg.Issuer, "/")
+	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ProjectID == "" {
+		if u, err := url.Parse(cfg.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("configure: url %q is not an https URL: roomctl configure --url https://rooms.<your private domain>", cfg.URL)
+		}
+		hc := r.HC
+		if hc == nil {
+			hc = httpx.New(roomctlTimeout, nil)
+		}
+		found, err := roomctl.Discover(ctx, hc, cfg.URL)
+		if err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+		cfg.Issuer, cfg.ClientID, cfg.ProjectID = cmp.Or(cfg.Issuer, found.Issuer), cmp.Or(cfg.ClientID, found.ClientID), cmp.Or(cfg.ProjectID, found.ProjectID)
+	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("configure: %w", err)
 	}
-	return roomctl.SaveJSON(path, cfg)
+	if err := roomctl.SaveJSON(path, cfg); err != nil {
+		return err
+	}
+	// A hint, on the hint stream: stdout stays what a script can read.
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	_, err := fmt.Fprintf(hints, "configured %s; next: roomctl login\n", cfg.URL)
+	return err
 }
 
 // skill installs the factory-handoff Agent Skill; it needs no configuration or login.
