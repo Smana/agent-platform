@@ -489,7 +489,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	return out, nil
 }
 
-// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | PENDING. Both the
+// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | CANCELLED | PENDING. Both the
 // GraphQL rollup and the REST check runs use the same words; REST spells them lowercase.
 func checkState(status, conclusion string) string {
 	if status != "COMPLETED" {
@@ -498,8 +498,21 @@ func checkState(status, conclusion string) string {
 	switch conclusion {
 	case "SUCCESS", "NEUTRAL", "SKIPPED":
 		return "SUCCESS"
+	case "CANCELLED":
+		return "CANCELLED"
 	}
 	return "FAILURE"
+}
+
+// RerunCheck re-runs the Actions job whose id is the check run's. Re-running a job whose run is
+// not complete is refused by GitHub (403), which the reconciler reads as a failed attempt.
+func (g *GitHub) RerunCheck(ctx context.Context, id int64) error {
+	_, err := g.rest.Actions.RerunJobByID(ctx, g.owner, g.name, id)
+	g.mark(err)
+	if err != nil {
+		return wrap("re-run a check", err)
+	}
+	return nil
 }
 
 // PullRequestChecks is the head commit's rollup, one GraphQL query. It needs checks: read and
@@ -516,6 +529,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 									Nodes []struct {
 										Typename string `graphql:"__typename"`
 										CheckRun struct {
+											DatabaseID int64
 											Name       string
 											Status     string
 											Conclusion string
@@ -554,7 +568,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 	for _, n := range rollup.Contexts.Nodes {
 		switch n.Typename {
 		case "CheckRun":
-			out.Runs = append(out.Runs, Check{Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
+			out.Runs = append(out.Runs, Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
 		case "StatusContext":
 			out.Statuses = append(out.Statuses, Status{Context: n.StatusContext.Context, State: n.StatusContext.State, Creator: n.StatusContext.Creator.login()})
 		}
@@ -572,7 +586,7 @@ func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) 
 	}
 	out := make([]Check, 0, len(res.CheckRuns))
 	for _, cr := range res.CheckRuns {
-		out = append(out, Check{Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
+		out = append(out, Check{ID: cr.GetID(), Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
 	}
 	return out, nil
 }

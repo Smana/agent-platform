@@ -100,6 +100,8 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "ci_red":
 		return r.fixCI(ctx, t, pr, checks)
+	case "ci_cancelled":
+		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
 		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, d.Reason)
@@ -164,7 +166,7 @@ const maxGateReentries = 3
 func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
 	why := t.Status.Reason
 	switch why {
-	case "policy_pending", "policy_absent", "head_unreported":
+	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
 	default:
 		return false, nil
 	}
@@ -183,6 +185,13 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 	c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
 	if err != nil {
 		return false, err
+	}
+	if why == "ci_cancelled" {
+		if CIState(c, r.Cfg.Merge.RequiredChecks) != "SUCCESS" {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
+		return true, nil
 	}
 	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || creator != r.Cfg.Merge.PolicyBotLogin {
 		return false, nil
@@ -436,6 +445,46 @@ func failing(c forge.Checks, required []string) []string {
 	return out
 }
 
+// rerunCancelled re-runs the cancelled required checks, up to merge.checkReruns per task, then
+// hands the task to a human. A cancellation is the runner's or a concurrency group's, not the
+// diff's: a fix run has nothing to change and spent 405k tokens on an empty commit (#40). The
+// re-run is not a "wait": the checks read PENDING on the next pass, which is what waits.
+func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
+	var ids []int64
+	for _, x := range c.Runs {
+		if x.State == "CANCELLED" && slices.Contains(r.Cfg.Merge.RequiredChecks, x.Name) {
+			ids = append(ids, x.ID)
+		}
+	}
+	if t.Status.CheckRerunsHead != pr.HeadSHA { // a new head gets a fresh budget
+		t.Status.CheckReruns, t.Status.CheckRerunsHead = 0, pr.HeadSHA
+	}
+	if t.Status.CheckReruns >= r.Cfg.Merge.CheckReruns {
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_cancelled")
+		narrateLater(t, narrate.WaitingForHuman(t, "ci_cancelled"))
+		return nil
+	}
+	// Every cancelled job is tried; the first error is returned after the loop. A re-run is spent
+	// only once one has gone through, so a refused call leaves the budget for the next pass.
+	var first error
+	done := false
+	for _, id := range ids {
+		if err := r.Merger.RerunCheck(ctx, id); err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		done = true
+	}
+	if done {
+		t.Status.CheckReruns++
+		t.Status.Reason = "ci_rerun"
+	}
+	return first
+}
+
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).
 func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
 	names := failing(c, r.Cfg.Merge.RequiredChecks)
@@ -503,7 +552,7 @@ func MainState(runs []forge.Check, watched []string) string {
 		switch c.State {
 		case "FAILURE":
 			return "FAILURE"
-		case "PENDING":
+		case "PENDING", "CANCELLED": // a cancelled check on main is not green and not red: keep watching
 			state = "PENDING"
 		}
 	}

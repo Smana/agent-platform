@@ -211,6 +211,7 @@ func reasons() map[string]string {
 		"run_unschedulable":         "the cluster never admitted the task's run within its bound",
 		"ci_red":                    "CI stayed red after the fix runs",
 		"secret_scan_red":           "the secret scan (Security scanning 🔒, TruffleHog) found a live credential in this pull request: a maintainer revokes it and closes the pull request, and the factory does not retry",
+		"ci_cancelled":              "a required check was cancelled and re-running it did not settle it",
 		"ci_pending":                "CI has not finished",
 		"main_red":                  "main's CI went red after the merge",
 		"revert_requested":          "a maintainer asked for a revert",

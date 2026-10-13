@@ -23,6 +23,9 @@ func (Absent) PullRequestChecks(context.Context, int) (Checks, error) { return C
 // CommitChecks implements the Merger's CommitChecks and fails closed.
 func (Absent) CommitChecks(context.Context, string) ([]Check, error) { return nil, ErrNoMerger }
 
+// RerunCheck implements Merger.
+func (Absent) RerunCheck(context.Context, int64) error { return ErrNoMerger }
+
 // Files implements the Merger's Files and fails closed.
 func (Absent) Files(context.Context, string, string) (map[string]string, map[string]string, error) {
 	return nil, nil, ErrNoMerger
