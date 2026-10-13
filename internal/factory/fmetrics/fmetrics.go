@@ -42,8 +42,9 @@ func revocations() []string {
 	return []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "manual",
 		"budget-task-shadow", "budget-principal-shadow"}
 }
-func intakeSources() []string { return []string{"issue", "runlore", "schedule", "api"} }
-func resumeReasons() []string { return []string{"Disrupted", "PodLost"} }
+func intakeSources() []string  { return []string{"issue", "runlore", "schedule", "api"} }
+func resumeReasons() []string  { return []string{"Disrupted", "PodLost"} }
+func roomCapReasons() []string { return []string{"human_driver", "facts_due"} }
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -76,6 +77,7 @@ type Set struct {
 	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
+	roomsCapped     metric.Int64Counter
 	usageErrors     metric.Int64Counter
 	meterSuccess    metric.Int64Gauge
 	overshoot       metric.Int64Counter
@@ -136,6 +138,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
+	check(err)
+	s.roomsCapped, err = meter.Int64Counter("agent_factory_rooms_closed_at_cap_total",
+		metric.WithDescription("Finished tasks' rooms closed a day after the end, by the wait cut short: a driver still holding the room, or facts the broker never took (#92)."))
 	check(err)
 	// #54: the meter's health. Only the leader meters, so only the leader sets the timestamp:
 	// an alert reads its max across pods.
@@ -274,6 +279,11 @@ func (s *Set) Revoked(ctx context.Context, reason string) {
 // (disruption design §6).
 func (s *Set) Resumed(ctx context.Context, reason string) {
 	s.resumes.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, resumeReasons()))))
+}
+
+// RoomClosedAtCap counts a finished task's room closed at the cap instead of after its wait (#92).
+func (s *Set) RoomClosedAtCap(ctx context.Context, reason string) {
+	s.roomsCapped.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, roomCapReasons()))))
 }
 
 // TraceExportAbandoned counts a task span given up unexported (ruling ST2).

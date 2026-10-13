@@ -79,6 +79,7 @@ type metrics interface {
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	Resumed(ctx context.Context, reason string)
+	RoomClosedAtCap(ctx context.Context, reason string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -157,7 +158,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var closeWait time.Duration
 	if ended {
 		var rerr error
-		if closeDue, closeWait, rerr = r.roomState(ctx, &t); rerr != nil {
+		if closeDue, _, closeWait, rerr = r.roomState(ctx, &t); rerr != nil {
 			return ctrl.Result{}, rerr
 		}
 	}
@@ -210,10 +211,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// state this pass left, so the pass that posts the last fact closes it.
 		var closeLeft time.Duration
 		if err == nil {
-			if due, wait, serr := r.roomState(ctx, &t); serr != nil {
+			if due, capped, wait, serr := r.roomState(ctx, &t); serr != nil {
 				err = serr
 			} else if due {
-				err = r.closeRoom(ctx, &t)
+				var closed bool
+				if closed, err = r.closeRoom(ctx, &t, capped != ""); closed && capped != "" {
+					r.log().Info("room closed at the cap", "task.id", t.Name, "reason", capped)
+					r.Metrics.RoomClosedAtCap(ctx, capped)
+				}
 			} else {
 				closeLeft = wait
 			}

@@ -277,6 +277,9 @@ func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string
 	m.add("class_mismatch " + predicted + " " + matched)
 }
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
+func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
+	m.add("room_closed_at_cap " + reason)
+}
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
