@@ -175,6 +175,21 @@ the harnesses still hold.
 | `RoomStalled` | The run is silent: a stuck harness, or a bridge that lost the broker | Bridge logs; the harness's step log in VictoriaLogs |
 | A migration that builds an index `CONCURRENTLY` failed (`20260929120000_verdicts`, `20261001130000_delivery_indexes`, `20261001140000_brief_index`, `20261005130000_approval_indexes`), or `\d events` in `psql` shows the index `INVALID` | `CREATE INDEX CONCURRENTLY` runs outside a transaction: a failure leaves an `INVALID` index behind, and the re-run refuses with "already exists" | Drop it by hand before the migration is retried: as `rooms_owner`, `DROP INDEX CONCURRENTLY <index>;` (`events_agent_verdicts`, `events_deliveries`, `events_acks`, `events_brief`, `approvals_pending`, `events_decisions`, `events_decision_acks` or `events_tool_results`), then let the Atlas operator re-run it |
 | Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key (ruling SZ): each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
+| `agent_factory_github_up` is 0; factory loops log GitHub errors and no task advances, while the replicas stay `Ready` | GitHub is down, or the App key is refused. Readiness ignores GitHub on purpose (#58): unready replicas would serve nothing more, and the PDB's `unhealthyPodEvictionPolicy: AlwaysAllow` (Kubernetes 1.27+) never blocks a drain either way. The gauge is 1 while any GitHub call succeeded in the last 3 minutes, on each replica, and `FactoryGitHubUnreachable` (`agent_factory_github_up == 0` for 10m) pages on it | Check GitHub's status and the App key (`agent-factory-github`); the loops recover by themselves when GitHub returns |
+| Factory `CrashLoopBackOff`; the log says `merger App key ... is missing` | The Secrets are hard prerequisites whenever any merge class is `live` or `shadow` (deciding it reads checks through the merger, R16): the optional mount lets the pod start, and the binary then refuses, so a missing key is a crash loop with a clear log line, no longer `ContainerCreating` | Create the `agent-factory-merger` Secret (keys `app_id`, `private_key`), or turn every class off: with none live or in shadow the key is optional and the merger fails closed. A task at the merge gate then waits for a maintainer (`merge_gate_off`) |
+| Factory `POST /intake/runlore` answers `503 intake_unconfigured`; `agent_factory_intake_errors_total{source="runlore"}` rises and the log warns once a minute | The `agent-factory-intake` Secret is absent or empty (the mount is optional): the intake refuses everything instead of running open. It is a hard prerequisite whenever RunLore is meant to feed the factory | Create the Secret (key `token`); the token is re-read per request, no restart |
+
+## Escalated tasks expire
+
+An Escalated task waits for a maintainer (`/factory retry`) or for its pull request to end. `caps.escalatedHours` in the factory config bounds that wait: omitted is 168 (a week), `0` is no limit, a negative value fails the rollout. Past it the task is Stopped with reason `escalation_expired` and says so on its issue. Its pull request is left as it is (no stale label, no close). A task whose room a person drives never expires while they drive; a retry already asked for wins over the limit.
+
+## Finished rooms close
+
+A finished task's room closes once its outbox, settle, facts and revert window are done, and while no person drives it. The last two waits are capped a day after the task ended: past that the room closes anyway, a person still driving it included, and `agent_factory_rooms_closed_at_cap_total{reason="human_driver"|"facts_due"}` counts it (#92).
+
+## Kill switch
+
+A hand-made stop must be a fresh object: `kubectl create configmap agent-factory-stop -n agent-system`. `kubectl apply` over a stop the control issue made keeps its `agents.ogenki.io/stop-source: control-issue` annotation, so removing `factory/stop` from the issue lifts it.
 
 ## Upgrades
 

@@ -18,6 +18,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/triage"
@@ -651,5 +652,401 @@ func TestARecordedVerifierKeepsItsHead(t *testing.T) {
 	tk = g.reconcile(t, "3buqdlot", 2)
 	if s := g.runs.specs[rid(3)]; s.Role != "reviewer" || tk.Status.Runs[3].HeadSHA != head1 {
 		t.Fatalf("the same role runs again on the same head: %+v %+v", s, tk.Status.Runs)
+	}
+}
+
+// agentPR12 is PR 12 at head h, the agents' own, its commit claiming run.
+func agentPR12(h, run string) forge.PR {
+	p := pr12At(h)
+	p.Author, p.NodeID, p.HeadMessage = "ogenki-agents[bot]", "PR_12", "docs: fix\n\nAgent-Run: "+run
+	return p
+}
+
+// approvedPairAtTheGate is a pair task in AwaitingCI: rid(0) reported head1, rid(1) approved it,
+// and the gate is in shadow for the task's class.
+func approvedPairAtTheGate(t *testing.T) *rig {
+	t.Helper()
+	g := pairRig(t)
+	g.r.Merger = g.f
+	g.r.Cfg.AgentsLogin = "ogenki-agents[bot]"
+	g.r.Cfg.Classes = map[string]config.Class{"review": {Shadow: true}}
+	g.f.SetPR(agentPR12(head1, rid(0)))
+	g.log.handoff(rid(0), head1)
+	g.log.verdict(rid(1), "approve", head1, "LGTM")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+		t.Fatal(tk.Status.Phase)
+	}
+	return g
+}
+
+// Owner constraint: a human-authored change never auto-merges through the factory. A CI fix is
+// reviewed now, so a fix built on a human's push, or a human's push after the fix, would carry that
+// commit to an approve and a merge: the task goes to a human instead.
+func TestAHumanCommitUnderACIFixGoesToAHuman(t *testing.T) {
+	red := green("SUCCESS")
+	red.Runs[1].State = "FAILURE"
+	t.Run("pushed before the fix run", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetPR(agentPR12(head2, rid(0))) // a human's push: no run of the task reported it
+		g.f.SetChecks(12, red)
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on a human's commit: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+		if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, "waits for a maintainer") {
+			t.Fatalf("%q", c)
+		}
+	})
+	t.Run("pushed after the fix run's", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetChecks(12, red)
+		g.reconcile(t, "3buqdlot", 2) // fix run rid(2)
+		g.log.handoff(rid(2), head2)
+		g.f.SetPR(agentPR12("5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", rid(2))) // a human's push on top
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 3 {
+			t.Fatalf("no re-review of a human's commit: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+}
+
+// byRun is a commit claiming run in its Agent-Run trailer.
+func byRun(sha, run string) forge.Commit {
+	return forge.Commit{SHA: sha, Author: "ogenki-agents[bot]", Message: "fix: ci\n\nAgent-Run: " + run}
+}
+
+// #74: a human's push made during the fix run, which the agent pulls and pushes on top of, leaves
+// the head the agent reported: only the pull request's commits show it. Every commit must claim
+// one of the task's implementer runs; anything else, or a list GitHub cuts at 250, goes to a human.
+func TestEveryCommitOfACIFixedPRIsTheFactorys(t *testing.T) {
+	const human, merge = "5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", "6f2a11e6b2c3d4e5f60718293a4b5c6d7e8f9a01"
+	fixed := func(t *testing.T, cs ...forge.Commit) *v1alpha1.Task {
+		t.Helper()
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.reconcile(t, "3buqdlot", 2) // fix run rid(2)
+		g.f.SetPR(agentPR12(head2, rid(2)))
+		g.f.SetCommits(12, cs...)
+		g.log.handoff(rid(2), head2)
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		return g.reconcile(t, "3buqdlot", 2)
+	}
+	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" {
+			t.Fatalf("goes to a human: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	t.Run("a human commit folded into the fix's push", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: human, Author: "Smana", Message: "wip: try this"}, byRun(head2, rid(2))))
+	})
+	t.Run("a human commit forging the bot's login", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: human, Author: "ogenki-agents[bot]", Message: "fix: ci"}, byRun(head2, rid(2))))
+	})
+	t.Run("another task's run", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, "zzzzzzzz"), byRun(head2, rid(2))))
+	})
+	t.Run("a verifier's run, not an implementer's", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, rid(1)), byRun(head2, rid(2))))
+	})
+	t.Run("GitHub's Update branch merged under the fix", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)),
+			forge.Commit{SHA: merge, Author: "Smana", Message: "Merge branch 'main' into agent/3buqdlot"}, byRun(head2, rid(2))))
+	})
+	t.Run("a head the list does not hold", func(t *testing.T) {
+		handedOff(t, fixed(t, byRun(head1, rid(0)), byRun(human, rid(2))))
+	})
+	t.Run("an agent-only fix is reviewed again", func(t *testing.T) {
+		if tk := fixed(t, byRun(head1, rid(0)), byRun(head2, rid(2))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("GitHub lists by date, the head not last", func(t *testing.T) {
+		if tk := fixed(t, byRun(head2, rid(2)), byRun(head1, rid(0))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("a human commit already under the reported head at the fix's start", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.f.SetCommits(12, forge.Commit{SHA: human, Author: "Smana", Message: "wip: try this"}, byRun(head1, rid(0)))
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on a human's commit: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+	t.Run("the agent squashed the branch", func(t *testing.T) {
+		if tk := fixed(t, byRun(head2, rid(2))); tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("more commits than GitHub lists", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		red := green("SUCCESS")
+		red.Runs[1].State = "FAILURE"
+		g.f.SetChecks(12, red)
+		g.f.SetCommitsTruncated(12)
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on commits nobody can read: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+}
+
+// #76: an Agent-Run trailer is a claim anyone can copy; who pushed is GitHub's record. Every move of
+// the task's branch since its creation must be the agents App's, in one unbroken chain to the head,
+// or the CI-fixed pull request goes to a human, whatever its commits claim.
+func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
+	const human, bot, branch = "5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", "ogenki-agents[bot]", "agent/3buqdlot"
+	created := forge.Push{Type: "branch_creation", Actor: bot, Before: strings.Repeat("0", 40), After: head1}
+	red := green("SUCCESS")
+	red.Runs[1].State = "FAILURE"
+	// fixRun is the fix run rid(2) finished at head2, the branch's activity as set has it.
+	fixRun := func(t *testing.T, set func(f *forge.Fake)) *rig {
+		t.Helper()
+		g := approvedPairAtTheGate(t)
+		g.f.SetChecks(12, red)
+		g.reconcile(t, "3buqdlot", 2) // fix run rid(2)
+		g.f.SetPR(agentPR12(head2, rid(2)))
+		// Every commit claims an implementer run of the task: the human's carries a copied trailer.
+		g.f.SetCommits(12, byRun(head1, rid(0)), byRun(human, rid(2)), byRun(head2, rid(2)))
+		set(g.f)
+		g.log.handoff(rid(2), head2)
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		return g
+	}
+	fixed := func(t *testing.T, set func(f *forge.Fake)) *v1alpha1.Task {
+		t.Helper()
+		return fixRun(t, set).reconcile(t, "3buqdlot", 2)
+	}
+	waiting := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.Reason != "" || len(tk.Status.Runs) != 3 {
+			t.Fatalf("waits, unchanged: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(tk.Status.Runs))
+		}
+	}
+	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" {
+			t.Fatalf("goes to a human: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	reviewed := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseReviewing {
+			t.Fatalf("reviewed again: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	activity := func(ps ...forge.Push) func(*forge.Fake) {
+		return func(f *forge.Fake) { f.SetActivity(branch, ps...) }
+	}
+	t.Run("a human's push carrying a copied trailer", func(t *testing.T) {
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: "Smana", Before: head1, After: human}, created)))
+	})
+	t.Run("a human's force-push", func(t *testing.T) {
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "force_push", Actor: "Smana", Before: head1, After: human}, created)))
+	})
+	t.Run("a branch a human created", func(t *testing.T) {
+		c := created
+		c.Actor = "Smana"
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: head1, After: head2}, c)))
+	})
+	t.Run("an actor GitHub does not name", func(t *testing.T) {
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Before: head1, After: human}, created)))
+	})
+	t.Run("a gap in the chain", func(t *testing.T) {
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2}, created)))
+	})
+	t.Run("a history without its creation", func(t *testing.T) {
+		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: bot, Before: head1, After: human})))
+	})
+	t.Run("a history past the page cap", func(t *testing.T) {
+		handedOff(t, fixed(t, func(f *forge.Fake) { f.SetActivityErr(branch, forge.ErrActivityTruncated) }))
+	})
+	// GitHub records a push a little after it lands: a history wholly the App's whose newest move is
+	// not the head yet waits, unchanged, until pushRecordGrace after the fix run finished.
+	lagging := activity(forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)
+	t.Run("the head's push recorded late", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)
+		g.r.Now = func() time.Time { return now.Add(time.Minute) }
+		reviewed(t, g.reconcile(t, "3buqdlot", 2))
+	})
+	t.Run("an empty history recorded late", func(t *testing.T) {
+		waiting(t, fixed(t, activity()))
+	})
+	t.Run("the head's push never recorded", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.r.Now = func() time.Time { return now.Add(pushRecordGrace + time.Second) }
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a human's push recorded during the wait", func(t *testing.T) {
+		g := fixRun(t, lagging)
+		waiting(t, g.reconcile(t, "3buqdlot", 2))
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: "Smana", Before: head1, After: human}, created)
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a read GitHub refuses is retried", func(t *testing.T) {
+		g := fixRun(t, func(f *forge.Fake) { f.SetActivityErr(branch, errors.New("forge: list branch activity: 502")) })
+		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+			t.Fatal("the read error is returned for a retry")
+		}
+		waiting(t, g.reconcile(t, "3buqdlot", 0))
+		g.f.SetActivityErr(branch, nil)
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: head1, After: head2}, created)
+		reviewed(t, g.reconcile(t, "3buqdlot", 2))
+	})
+	t.Run("an agent-only history", func(t *testing.T) {
+		reviewed(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
+			forge.Push{Type: "push", Actor: bot, Before: head1, After: human}, created)))
+	})
+	t.Run("the agent's own force-push", func(t *testing.T) {
+		reviewed(t, fixed(t, activity(forge.Push{Type: "force_push", Actor: bot, Before: head1, After: head2}, created)))
+	})
+	t.Run("a human's push already under the head at the fix's start", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetChecks(12, red)
+		g.f.SetCommits(12, byRun(human, rid(0)), byRun(head1, rid(0)))
+		g.f.SetActivity(branch, forge.Push{Type: "push", Actor: bot, Before: human, After: head1},
+			forge.Push{Type: "branch_creation", Actor: "Smana", Before: strings.Repeat("0", 40), After: human})
+		tk := g.reconcile(t, "3buqdlot", 2)
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" || len(g.runs.specs) != 2 {
+			t.Fatalf("no fix run on a human's push: %s %s %d runs", tk.Status.Phase, tk.Status.Reason, len(g.runs.specs))
+		}
+	})
+}
+
+// #82: push identity is checked at the gate too, not only on CI fixes. A human's push before the
+// first gate, or during a revision run, folded under the agent's reported head, passes R02 and R03:
+// only who moved the branch tells it apart, so the gate hands off instead of arming.
+func TestEveryPushToAPRAtTheGateIsTheFactorys(t *testing.T) {
+	const human, bot, branch = "5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", "ogenki-agents[bot]", "agent/3buqdlot"
+	created := forge.Push{Type: "branch_creation", Actor: bot, Before: strings.Repeat("0", 40), After: human[:39] + "1"}
+	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" {
+			t.Fatalf("goes to a human: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	decided := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
+			t.Fatalf("the gate decides: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	// folded is the history of a human's push the agent pulled and pushed on top of, to head.
+	folded := func(head string) []forge.Push {
+		return []forge.Push{{Type: "push", Actor: bot, Before: human, After: head},
+			{Type: "push", Actor: "Smana", Before: created.After, After: human}, created}
+	}
+	agentOnly := func(head string) []forge.Push {
+		return []forge.Push{{Type: "push", Actor: bot, Before: human, After: head},
+			{Type: "push", Actor: bot, Before: created.After, After: human}, created}
+	}
+	atFirstGate := func(t *testing.T, ps ...forge.Push) *rig {
+		t.Helper()
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivity(branch, ps...)
+		g.f.SetChecks(12, green("SUCCESS"))
+		return g
+	}
+	t.Run("a human's push before the first gate", func(t *testing.T) {
+		handedOff(t, atFirstGate(t, folded(head1)...).reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a human's push during a revision run", func(t *testing.T) {
+		g := pairRig(t)
+		g.r.Merger = g.f
+		g.r.Cfg.AgentsLogin = "ogenki-agents[bot]"
+		g.r.Cfg.Classes = map[string]config.Class{"review": {Shadow: true}}
+		g.f.SetPR(agentPR12(head1, rid(0)))
+		g.log.handoff(rid(0), head1)
+		g.log.verdict(rid(1), "changes", head1, "Add a test.")
+		g.finish(rid(1), "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2) // revision run rid(2)
+		g.f.SetPR(agentPR12(head2, rid(2)))
+		g.f.SetActivity(branch, folded(head2)...)
+		g.log.handoff(rid(2), head2)
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2) // reviewer rid(3) on head2
+		g.log.verdict(rid(3), "approve", head2, "Looks right.")
+		g.finish(rid(3), "Succeeded", "agent_finished")
+		g.f.SetChecks(12, green("SUCCESS"))
+		handedOff(t, g.reconcile(t, "3buqdlot", 2))
+	})
+	t.Run("a history past the page cap", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivityErr(branch, forge.ErrActivityTruncated)
+		g.f.SetChecks(12, green("SUCCESS"))
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("an agent-only history", func(t *testing.T) {
+		decided(t, atFirstGate(t, agentOnly(head1)...).reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("the head's push recorded late", func(t *testing.T) {
+		g := atFirstGate(t, agentOnly(human)[1:]...)
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+			t.Fatalf("waits at the gate: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+		g.f.SetActivity(branch, agentOnly(head1)...)
+		decided(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("the head's push never recorded", func(t *testing.T) {
+		g := atFirstGate(t, agentOnly(human)[1:]...)
+		g.r.Now = func() time.Time { return now.Add(pushRecordGrace + time.Second) }
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a read GitHub refuses is retried", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivityErr(branch, errors.New("forge: list branch activity: 502"))
+		g.f.SetChecks(12, green("SUCCESS"))
+		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+			t.Fatal("the read error is returned for a retry")
+		}
+		g.f.SetActivityErr(branch, nil)
+		g.f.SetActivity(branch, agentOnly(head1)...)
+		decided(t, g.reconcile(t, "3buqdlot", 1))
+	})
+}
+
+// N1: a CI fix moves the head, so the verdict the gate reads must be of the new head. On a
+// template with a reviewer the fix is reviewed again, and the gate decides on a fresh verdict:
+// the shadow log records shadow_would_arm, never verdict_stale.
+func TestACIFixIsReviewedAgainBeforeTheGate(t *testing.T) {
+	g := approvedPairAtTheGate(t)
+	red := green("SUCCESS")
+	red.Runs[1].State = "FAILURE"
+	g.f.SetChecks(12, red)
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseImplementing || current(tk).Trigger != "ci" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+	g.f.SetPR(agentPR12(head2, rid(2))) // the fix pushed and reported
+	g.f.SetCommits(12, byRun(head1, rid(0)), byRun(head2, rid(2)))
+	g.log.handoff(rid(2), head2)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.finish(rid(2), "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseReviewing || current(tk).Role != "reviewer" || current(tk).HeadSHA != head2 {
+		t.Fatalf("the CI fix is reviewed again: %s %+v", tk.Status.Phase, tk.Status.Runs)
+	}
+	g.log.verdict(rid(3), "approve", head2[:7], "Still right.")
+	g.finish(rid(3), "Succeeded", "agent_finished")
+	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
+		t.Fatalf("the gate decides on the fresh verdict: %s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }

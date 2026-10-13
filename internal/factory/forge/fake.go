@@ -31,11 +31,17 @@ type Fake struct {
 	agentPulls   []AgentPull
 	checks       map[int]Checks
 	commitChecks map[string][]Check
+	commits      map[int][]Commit
+	commitsCut   map[int]bool
+	activity     map[string][]Push
+	activityErr  map[string]error
 	filesBase    map[string]string
 	filesHead    map[string]string
 	open         []PRSummary
 	created      []string
 	armed        []string
+	reruns       []int64
+	rerunFail    map[int64]error
 	disarmed     []string
 	reverts      []string
 	refused      map[string]error
@@ -48,7 +54,8 @@ func NewFake() *Fake {
 	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
 		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
-		checks: map[int]Checks{}, commitChecks: map[string][]Check{}}
+		checks: map[int]Checks{}, commitChecks: map[string][]Check{}, commits: map[int][]Commit{}, commitsCut: map[int]bool{},
+		activity: map[string][]Push{}, activityErr: map[string]error{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
@@ -280,6 +287,73 @@ func (f *Fake) PullRequest(_ context.Context, n int) (PR, error) {
 	return p, nil
 }
 
+// SetCommits sets pull request n's commits, oldest first, as PullRequestCommits returns them.
+func (f *Fake) SetCommits(n int, cs ...Commit) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits[n] = slices.Clone(cs)
+}
+
+// SetCommitsTruncated makes PullRequestCommits on n report GitHub's 250-commit cap.
+func (f *Fake) SetCommitsTruncated(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commitsCut[n] = true
+}
+
+// PullRequestCommits implements the forge's PullRequestCommits. Unset, a pull request's commits
+// are its head alone, so a test that never pushes more reads what GitHub would.
+func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]Commit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cs, ok := f.commits[n]
+	if !ok {
+		p, found := f.prs[n]
+		if !found {
+			return nil, fmt.Errorf("pull request %d not found", n)
+		}
+		cs = []Commit{{SHA: p.HeadSHA, Author: p.Author, Message: p.HeadMessage}}
+	}
+	if f.commitsCut[n] {
+		return slices.Clone(cs), ErrCommitsTruncated
+	}
+	return slices.Clone(cs), nil
+}
+
+// SetActivity sets branch's activity, newest first, as BranchActivity returns it.
+func (f *Fake) SetActivity(branch string, ps ...Push) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activity[branch] = slices.Clone(ps)
+}
+
+// SetActivityErr makes BranchActivity on branch fail with err (ErrActivityTruncated: past the cap).
+func (f *Fake) SetActivityErr(branch string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activityErr[branch] = err
+}
+
+// BranchActivity implements the forge's BranchActivity. Unset, a branch is its pull request's
+// head, created by the pull request's author — the agents App in the reconciler's rigs — so the
+// push check passes: a test that never calls SetActivity does not exercise it (#76's tests do).
+func (f *Fake) BranchActivity(_ context.Context, branch string) ([]Push, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.activityErr[branch]; err != nil {
+		return slices.Clone(f.activity[branch]), err
+	}
+	if ps, ok := f.activity[branch]; ok {
+		return slices.Clone(ps), nil
+	}
+	for _, p := range f.prs {
+		if p.HeadRef == branch {
+			return []Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA}}, nil
+		}
+	}
+	return nil, nil
+}
+
 // SetChecks sets pull request n's head-commit rollup, as PullRequestChecks returns it.
 func (f *Fake) SetChecks(n int, c Checks) {
 	f.mu.Lock()
@@ -387,6 +461,31 @@ func (f *Fake) CommitChecks(_ context.Context, sha string) ([]Check, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.commitChecks[sha]), nil
+}
+
+// RerunCheck implements the Merger's RerunCheck, recording the check run id.
+func (f *Fake) RerunCheck(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reruns = append(f.reruns, id)
+	return f.rerunFail[id]
+}
+
+// FailReruns makes RerunCheck answer err for these check run ids; with none it clears them.
+func (f *Fake) FailReruns(err error, ids ...int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rerunFail = map[int64]error{}
+	for _, id := range ids {
+		f.rerunFail[id] = err
+	}
+}
+
+// Reruns are the check run ids RerunCheck was called with, in order.
+func (f *Fake) Reruns() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.reruns)
 }
 
 // EnableAutoMerge implements the Merger's EnableAutoMerge, recording the arming. The expected

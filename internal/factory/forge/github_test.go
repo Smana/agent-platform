@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -306,6 +307,78 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		_, _ = io.WriteString(w, `{"number":12,"state":"closed"}`)
 	}))
+	// #76: a branch's activity, newest first, cursor-paged. agent/3buqdlot was created, pushed 119
+	// times, and an older life of the branch lies past its creation on page 2; agent/ghost has an
+	// actor GitHub no longer names; agent/endless never reaches a creation; agent/broken fails.
+	mux.HandleFunc("GET /repos/Smana/demo/activity", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("per_page") != "100" || q.Get("direction") == "asc" {
+			t.Errorf("activity is read newest first, 100 a page: %s", r.URL.RawQuery)
+		}
+		next := func(cursor string) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repositories/1/activity?per_page=100&ref=%s&after=%s>; rel="next"`,
+				g.srv.URL, url.QueryEscape(q.Get("ref")), cursor))
+		}
+		ev := func(i int, typ, actor string) string {
+			before, a := fmt.Sprintf("c%03d", i-1), fmt.Sprintf(`{"login":%q,"type":"Bot"}`, actor)
+			if typ == "branch_creation" {
+				before = "0000000000000000000000000000000000000000"
+			}
+			if actor == "" {
+				a = "null"
+			}
+			return fmt.Sprintf(`{"id":%d,"activity_type":%q,"ref":%q,"before":%q,"after":"c%03d","timestamp":"2026-10-07T19:%02d:00Z","actor":%s}`,
+				i, typ, q.Get("ref"), before, i, i%60, a)
+		}
+		var evs []string
+		switch q.Get("ref") + "@" + q.Get("after") {
+		case "refs/heads/agent/3buqdlot@":
+			for i := 119; i >= 20; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			next("p2")
+		case "refs/heads/agent/3buqdlot@p2":
+			for i := 19; i >= 1; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			evs = append(evs, ev(0, "branch_creation", "ogenki-agents[bot]"), ev(900, "branch_deletion", "Smana"))
+			next("p3")
+		case "refs/heads/agent/ghost@":
+			evs = append(evs, ev(1, "force_push", ""), ev(0, "branch_creation", "ogenki-agents[bot]"))
+		case "refs/heads/agent/broken@":
+			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+			return
+		default:
+			if !strings.HasPrefix(q.Get("ref"), "refs/heads/agent/endless") {
+				t.Errorf("read past the branch's creation: %s", r.URL.RawQuery)
+			}
+			for i := 100; i >= 1; i-- {
+				evs = append(evs, ev(i, "push", "ogenki-agents[bot]"))
+			}
+			next(q.Get("after") + "n")
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(evs, ",")+"]")
+	}))
+	// A pull request's commits, oldest first, paged, and never past GitHub's 250: PR 12 has 130,
+	// PR 14 has 300, of which GitHub serves only the first 250.
+	mux.HandleFunc("GET /repos/Smana/demo/pulls/{n}/commits", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		total := min(map[string]int{"12": 130, "14": 300}[r.PathValue("n")], 250)
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if per == 0 {
+			per = 30
+		}
+		page = max(page, 1)
+		if page*per < total {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/Smana/demo/pulls/%s/commits?per_page=%d&page=%d>; rel="next"`,
+				g.srv.URL, r.PathValue("n"), per, page+1))
+		}
+		var cs []string
+		for i := (page-1)*per + 1; i <= min(page*per, total); i++ {
+			cs = append(cs, fmt.Sprintf(`{"sha":"c%03d","author":{"login":"ogenki-agents[bot]"},"commit":{"message":"fix %d\n\nAgent-Run: 7f3cq2xz"}}`, i, i))
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(cs, ",")+"]")
+	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
 	}))
@@ -338,6 +411,14 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		default:
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
+	}))
+	mux.HandleFunc("POST /repos/Smana/demo/actions/jobs/{id}/rerun", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "403" {
+			http.Error(w, `{"message":"Workflow run is still in progress"}`, http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{}`)
 	}))
 	mux.HandleFunc("GET /rate_limit", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"resources":{}}`)
@@ -529,6 +610,59 @@ func TestRecentCommentsAreTheNewest(t *testing.T) {
 	}
 }
 
+// #74: every commit of the pull request, across pages, with its author's login and message.
+func TestPullRequestCommitsReadsEveryPage(t *testing.T) {
+	r := newRig(t)
+	cs, err := r.g.PullRequestCommits(t.Context(), 12)
+	if err != nil || len(cs) != 130 {
+		t.Fatalf("%d %v", len(cs), err)
+	}
+	if c := cs[129]; c.SHA != "c130" || c.Author != "ogenki-agents[bot]" || c.Trailer("Agent-Run") != "7f3cq2xz" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// GitHub serves at most 250 of a pull request's commits: a list that reaches the cap may be
+// partial, so the caller is told rather than handed it as the whole.
+func TestPullRequestCommitsAtGitHubsCapAreTruncated(t *testing.T) {
+	r := newRig(t)
+	cs, err := r.g.PullRequestCommits(t.Context(), 14)
+	if !errors.Is(err, ErrCommitsTruncated) || len(cs) != 250 {
+		t.Fatalf("%d %v", len(cs), err)
+	}
+}
+
+// #76: a branch's activity, newest first, across cursor pages, back to its latest creation and no
+// further: what came before is an earlier branch of the same name.
+func TestBranchActivityReadsBackToTheCreation(t *testing.T) {
+	r := newRig(t)
+	ps, err := r.g.BranchActivity(t.Context(), "agent/3buqdlot")
+	if err != nil || len(ps) != 120 {
+		t.Fatalf("%d %v", len(ps), err)
+	}
+	if p := ps[0]; p.Type != "push" || p.Actor != "ogenki-agents[bot]" || p.Before != "c118" || p.After != "c119" ||
+		!p.At.Equal(time.Date(2026, 10, 7, 19, 59, 0, 0, time.UTC)) {
+		t.Fatalf("%+v", p)
+	}
+	if p := ps[119]; p.Type != "branch_creation" || p.After != "c000" {
+		t.Fatalf("the creation is the last read: %+v", p)
+	}
+	if ps, err = r.g.BranchActivity(t.Context(), "agent/ghost"); err != nil || ps[0].Actor != "" || ps[0].Type != "force_push" {
+		t.Fatalf("an actor GitHub does not name reads as none: %+v %v", ps, err)
+	}
+}
+
+// A branch whose creation is past the page cap, or a read GitHub refuses, is never a whole history.
+func TestBranchActivityPastTheCapOrRefusedIsNotWhole(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.g.BranchActivity(t.Context(), "agent/endless"); !errors.Is(err, ErrActivityTruncated) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := r.g.BranchActivity(t.Context(), "agent/broken"); err == nil || errors.Is(err, ErrActivityTruncated) {
+		t.Fatalf("%v", err)
+	}
+}
+
 // The issue's author is a login, for the room list's "mine" filter.
 func TestIssueAuthorIsItsLogin(t *testing.T) {
 	r := newRig(t)
@@ -606,7 +740,7 @@ func TestChecksAndMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Check{{"Pre-commit checks", "SUCCESS"}, {"Kubernetes validation", "PENDING"}, {"Security scanning", "FAILURE"}}
+	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS"}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
 	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
 		t.Fatalf("%+v", c.Runs)
 	}
@@ -892,9 +1026,9 @@ func write(t *testing.T, s string) string {
 // refuses it (the fail-loud contract of app.go's permissions()).
 func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	r := newRig(t) // the factory connection: its mint pins the factory scope
-	r.gh.setWantPerms(MergerPermissions())
+	r.gh.setWantPerms(MergerPermissions(false))
 	o := r.opts
-	o.Permissions = MergerPermissions()
+	o.Permissions = MergerPermissions(false)
 	if _, err := Connect(t.Context(), o); err != nil {
 		t.Fatal(err)
 	}
@@ -905,7 +1039,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	if !maps.Equal(got[0], permissions()) {
 		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
 	}
-	if !maps.Equal(got[1], MergerPermissions()) {
+	if !maps.Equal(got[1], MergerPermissions(false)) {
 		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
 	}
 }
@@ -913,8 +1047,33 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
 	r := newRig(t)
 	o := r.opts
-	o.Permissions = MergerPermissions() // checks:read is beyond the factory App
+	o.Permissions = MergerPermissions(false) // checks:read is beyond the factory App
 	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
 		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
+	}
+}
+
+// RerunCheck re-runs the Actions job of the check run id; a refusal (the run is still going) is an error.
+func TestRerunCheckPostsTheJobRerun(t *testing.T) {
+	r := newRig(t)
+	if err := r.g.RerunCheck(t.Context(), 4242); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.g.RerunCheck(t.Context(), 403); err == nil {
+		t.Fatal("a refused re-run must be an error")
+	}
+	r.gh.mu.Lock()
+	defer r.gh.mu.Unlock()
+	if !slices.Contains(r.gh.calls, "POST /repos/Smana/demo/actions/jobs/4242/rerun") {
+		t.Fatalf("calls: %v", r.gh.calls)
+	}
+}
+
+func TestMergerPermissionsAskForActionsOnlyToRerun(t *testing.T) {
+	if _, ok := MergerPermissions(false)["actions"]; ok {
+		t.Fatal("re-run off must not ask for actions")
+	}
+	if got := MergerPermissions(true)["actions"]; got != "write" {
+		t.Fatalf("actions: %q", got)
 	}
 }

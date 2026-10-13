@@ -5,5 +5,8 @@ metadata:
   labels: {{- include "agent-factory.labels" . | nindent 4 }}
 spec:
   minAvailable: 1
+  # Readiness ignores GitHub, but a replica can still be unready (caches, a crash loop): a drain
+  # must evict it rather than wait for a health that cannot return (#58). Kubernetes 1.27+.
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels: {app.kubernetes.io/name: agent-factory}

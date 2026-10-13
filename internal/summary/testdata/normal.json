@@ -35,7 +35,7 @@
     "actions": [
       {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"},
       {"kind":"steer","what":"steer the running agent"},
-      {"kind":"stop","what":"stop this task","cli":"gh issue edit 42 --add-label factory/stop"}
+      {"kind":"stop","what":"stop this task","cli":"gh issue edit 42 --repo Smana/cloud-native-ref --add-label factory/stop"}
     ],
     "notes": {"untrusted": true, "items": [
       {"at":"2026-10-07T19:12:10Z","run":"cf4ato2x","text":"found both versions on line 12-13, fixing"}

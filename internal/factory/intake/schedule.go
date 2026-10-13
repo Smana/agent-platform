@@ -154,6 +154,9 @@ func (s *Scheduler) probe(ctx context.Context, name string) (bool, string, error
 	if name != "renovate-red" {
 		return false, "", fmt.Errorf("intake: unknown probe %q", name)
 	}
+	if !s.Cfg.NeedsMerger() {
+		return false, "", nil // no merger key is required, and reading checks needs it: nothing to find
+	}
 	prs, err := s.Forge.OpenPullRequests(ctx)
 	if err != nil {
 		return false, "", err
