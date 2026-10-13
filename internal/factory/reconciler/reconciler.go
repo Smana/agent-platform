@@ -153,8 +153,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
 	// its action, even after the task itself has ended.
 	revertWait := r.revertable(&t) || r.revertPending(&t)
-	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) {
-		return ctrl.Result{}, nil
+	var closeDue bool
+	var closeWait time.Duration
+	if ended {
+		var rerr error
+		if closeDue, closeWait, rerr = r.roomState(ctx, &t); rerr != nil {
+			return ctrl.Result{}, rerr
+		}
+	}
+	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) && !closeDue {
+		return ctrl.Result{RequeueAfter: closeWait}, nil // closeWait: the revert window still open (#56)
 	}
 	before := t.Status.DeepCopy()
 	if t.Status.Phase == "" {
@@ -198,6 +206,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
 	if v1alpha1.TerminalPhase(t.Status.Phase) {
+		// #56: the room closes once everything the task owes it has landed. Re-evaluated on the
+		// state this pass left, so the pass that posts the last fact closes it.
+		var closeLeft time.Duration
+		if err == nil {
+			if due, wait, serr := r.roomState(ctx, &t); serr != nil {
+				err = serr
+			} else if due {
+				err = r.closeRoom(ctx, &t)
+			} else {
+				closeLeft = wait
+			}
+		}
 		// The revert watch polls: a revert PR merges, closes or stalls on GitHub's clock, not ours.
 		if err == nil && (r.revertable(&t) || r.revertPending(&t)) {
 			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
@@ -205,7 +225,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err == nil && r.settling(&t) {
 			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: closeLeft}, err // closeLeft: the revert window or a driving person (#56)
 	}
 	if err != nil {
 		return ctrl.Result{}, err

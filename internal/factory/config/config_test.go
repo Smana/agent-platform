@@ -36,6 +36,7 @@ merge:
   mergerLogin: ogenki-agent-merger[bot]
   autoMergesPerDay: 10
   fixRuns: 2
+  checkReruns: 1
   verifyFor: 30m
   revertWindow: 168h
   breaker: {window: 10, maxReverts: 1}
@@ -305,6 +306,7 @@ func TestBadConfigsFail(t *testing.T) {
 		"merger not a bot":           {"mergerLogin: ogenki-agent-merger[bot]", "mergerLogin: ogenki-agent-merger", "merge.mergerLogin"},
 		"negative auto merges":       {"autoMergesPerDay: 10", "autoMergesPerDay: -1", "merge.autoMergesPerDay must be 0 or more"},
 		"negative fix runs":          {"fixRuns: 2", "fixRuns: -1", "merge.fixRuns must be 0 or more"},
+		"negative check reruns":      {"checkReruns: 1", "checkReruns: -1", "merge.checkReruns must be 0 or more"},
 		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
 		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
 		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.

@@ -171,9 +171,12 @@ type Merge struct {
 	MergerLogin      string   `json:"mergerLogin"`    // the arming actor, so the merge actor (R16)
 	AutoMergesPerDay int      `json:"autoMergesPerDay"`
 	FixRuns          int32    `json:"fixRuns"`
-	VerifyFor        Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
-	RevertWindow     Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
-	Breaker          Breaker  `json:"breaker"`
+	// CheckReruns caps the re-runs of a cancelled required check per task; 0 hands it to a human
+	// instead. Above 0 the merger App must hold actions: write.
+	CheckReruns  int32    `json:"checkReruns"`
+	VerifyFor    Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
+	RevertWindow Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
+	Breaker      Breaker  `json:"breaker"`
 }
 
 // Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
@@ -564,6 +567,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Merge.FixRuns < 0 {
 		bad("merge.fixRuns must be 0 or more")
+	}
+	if c.Merge.CheckReruns < 0 {
+		bad("merge.checkReruns must be 0 or more")
 	}
 	if c.Merge.VerifyFor.Duration <= 0 {
 		bad("merge.verifyFor must be positive")
