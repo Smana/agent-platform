@@ -94,6 +94,22 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		in.Files.Base, in.Files.Head = base, head
 		d = DecideArm(in)
 	}
+	if d.Verdict == "arm" || d.Verdict == "shadow" {
+		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
+		// first gate or during a revision run. Only who moved the branch tells it apart, as on a CI
+		// fix (humanCommit), so every path into a merge reads it.
+		pushed, err := r.factoryPushed(ctx, t, pr.HeadSHA)
+		if err != nil {
+			return err
+		}
+		switch {
+		case pushed == pushUnrecorded && r.Now().Before(pushDeadline(t)):
+			r.log().Info("the head's push is not recorded yet: waiting", "task.id", t.Name, "head", pr.HeadSHA)
+			return nil
+		case pushed != pushFactory:
+			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr"}
+		}
+	}
 	switch d.Verdict {
 	case "wait":
 		t.Status.Reason = d.Reason
