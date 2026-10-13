@@ -81,9 +81,10 @@ export const roomId = /^[a-z2-7]{8}$/;
 
 // installRoomctl downloads the roomctl release for this machine, checks it against the
 // release's checksums and installs it: the broker's own release, or the latest when the
-// broker is not a release build. macOS has shasum, not always sha256sum.
+// broker is not a release build. The version lands in a pasted shell block: only a whole
+// semver passes. macOS has shasum, not always sha256sum.
 function installRoomctl(version?: string): string {
-  const base = /^v\d/.test(version ?? "")
+  const base = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")
     ? `https://github.com/Smana/agent-platform/releases/download/${version}`
     : "https://github.com/Smana/agent-platform/releases/latest/download";
   return [
