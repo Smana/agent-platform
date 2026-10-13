@@ -932,6 +932,98 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 	})
 }
 
+// #82: push identity is checked at the gate too, not only on CI fixes. A human's push before the
+// first gate, or during a revision run, folded under the agent's reported head, passes R02 and R03:
+// only who moved the branch tells it apart, so the gate hands off instead of arming.
+func TestEveryPushToAPRAtTheGateIsTheFactorys(t *testing.T) {
+	const human, bot, branch = "5e1f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", "ogenki-agents[bot]", "agent/3buqdlot"
+	created := forge.Push{Type: "branch_creation", Actor: bot, Before: strings.Repeat("0", 40), After: human[:39] + "1"}
+	handedOff := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "human_commit_in_pr" {
+			t.Fatalf("goes to a human: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	decided := func(t *testing.T, tk *v1alpha1.Task) {
+		t.Helper()
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
+			t.Fatalf("the gate decides: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	}
+	// folded is the history of a human's push the agent pulled and pushed on top of, to head.
+	folded := func(head string) []forge.Push {
+		return []forge.Push{{Type: "push", Actor: bot, Before: human, After: head},
+			{Type: "push", Actor: "Smana", Before: created.After, After: human}, created}
+	}
+	agentOnly := func(head string) []forge.Push {
+		return []forge.Push{{Type: "push", Actor: bot, Before: human, After: head},
+			{Type: "push", Actor: bot, Before: created.After, After: human}, created}
+	}
+	atFirstGate := func(t *testing.T, ps ...forge.Push) *rig {
+		t.Helper()
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivity(branch, ps...)
+		g.f.SetChecks(12, green("SUCCESS"))
+		return g
+	}
+	t.Run("a human's push before the first gate", func(t *testing.T) {
+		handedOff(t, atFirstGate(t, folded(head1)...).reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a human's push during a revision run", func(t *testing.T) {
+		g := pairRig(t)
+		g.r.Merger = g.f
+		g.r.Cfg.AgentsLogin = "ogenki-agents[bot]"
+		g.r.Cfg.Classes = map[string]config.Class{"review": {Shadow: true}}
+		g.f.SetPR(agentPR12(head1, rid(0)))
+		g.log.handoff(rid(0), head1)
+		g.log.verdict(rid(1), "changes", head1, "Add a test.")
+		g.finish(rid(1), "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2) // revision run rid(2)
+		g.f.SetPR(agentPR12(head2, rid(2)))
+		g.f.SetActivity(branch, folded(head2)...)
+		g.log.handoff(rid(2), head2)
+		g.finish(rid(2), "Succeeded", "agent_finished")
+		g.reconcile(t, "3buqdlot", 2) // reviewer rid(3) on head2
+		g.log.verdict(rid(3), "approve", head2, "Looks right.")
+		g.finish(rid(3), "Succeeded", "agent_finished")
+		g.f.SetChecks(12, green("SUCCESS"))
+		handedOff(t, g.reconcile(t, "3buqdlot", 2))
+	})
+	t.Run("a history past the page cap", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivityErr(branch, forge.ErrActivityTruncated)
+		g.f.SetChecks(12, green("SUCCESS"))
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("an agent-only history", func(t *testing.T) {
+		decided(t, atFirstGate(t, agentOnly(head1)...).reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("the head's push recorded late", func(t *testing.T) {
+		g := atFirstGate(t, agentOnly(human)[1:]...)
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI {
+			t.Fatalf("waits at the gate: %s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+		g.f.SetActivity(branch, agentOnly(head1)...)
+		decided(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("the head's push never recorded", func(t *testing.T) {
+		g := atFirstGate(t, agentOnly(human)[1:]...)
+		g.r.Now = func() time.Time { return now.Add(pushRecordGrace + time.Second) }
+		handedOff(t, g.reconcile(t, "3buqdlot", 1))
+	})
+	t.Run("a read GitHub refuses is retried", func(t *testing.T) {
+		g := approvedPairAtTheGate(t)
+		g.f.SetActivityErr(branch, errors.New("forge: list branch activity: 502"))
+		g.f.SetChecks(12, green("SUCCESS"))
+		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+			t.Fatal("the read error is returned for a retry")
+		}
+		g.f.SetActivityErr(branch, nil)
+		g.f.SetActivity(branch, agentOnly(head1)...)
+		decided(t, g.reconcile(t, "3buqdlot", 1))
+	})
+}
+
 // N1: a CI fix moves the head, so the verdict the gate reads must be of the new head. On a
 // template with a reviewer the fix is reviewed again, and the gate decides on a fresh verdict:
 // the shadow log records shadow_would_arm, never verdict_stale.
