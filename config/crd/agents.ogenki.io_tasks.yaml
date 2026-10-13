@@ -176,6 +176,17 @@ spec:
               TaskStatus is the task's audit record: the whole §4 record, including the fields later
               phases fill.
             properties:
+              checkReruns:
+                description: |-
+                  Re-runs of a cancelled required check, capped by merge.checkReruns. A cancelled check is
+                  not a failure, so it never spends a fix run.
+                format: int32
+                type: integer
+              checkRerunsHead:
+                description: 'The head CheckReruns counts against: a new head resets
+                  it.'
+                maxLength: 64
+                type: string
               classification:
                 description: The C7 answer, recorded as-is (§2).
                 properties:

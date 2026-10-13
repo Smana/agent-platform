@@ -412,6 +412,14 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
 	}))
+	mux.HandleFunc("POST /repos/Smana/demo/actions/jobs/{id}/rerun", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "403" {
+			http.Error(w, `{"message":"Workflow run is still in progress"}`, http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{}`)
+	}))
 	mux.HandleFunc("GET /rate_limit", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"resources":{}}`)
 	}))
@@ -732,7 +740,7 @@ func TestChecksAndMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Check{{"Pre-commit checks", "SUCCESS"}, {"Kubernetes validation", "PENDING"}, {"Security scanning", "FAILURE"}}
+	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS"}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
 	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
 		t.Fatalf("%+v", c.Runs)
 	}
@@ -1018,9 +1026,9 @@ func write(t *testing.T, s string) string {
 // refuses it (the fail-loud contract of app.go's permissions()).
 func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	r := newRig(t) // the factory connection: its mint pins the factory scope
-	r.gh.setWantPerms(MergerPermissions())
+	r.gh.setWantPerms(MergerPermissions(false))
 	o := r.opts
-	o.Permissions = MergerPermissions()
+	o.Permissions = MergerPermissions(false)
 	if _, err := Connect(t.Context(), o); err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1039,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	if !maps.Equal(got[0], permissions()) {
 		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
 	}
-	if !maps.Equal(got[1], MergerPermissions()) {
+	if !maps.Equal(got[1], MergerPermissions(false)) {
 		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
 	}
 }
@@ -1039,8 +1047,33 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
 	r := newRig(t)
 	o := r.opts
-	o.Permissions = MergerPermissions() // checks:read is beyond the factory App
+	o.Permissions = MergerPermissions(false) // checks:read is beyond the factory App
 	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
 		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
+	}
+}
+
+// RerunCheck re-runs the Actions job of the check run id; a refusal (the run is still going) is an error.
+func TestRerunCheckPostsTheJobRerun(t *testing.T) {
+	r := newRig(t)
+	if err := r.g.RerunCheck(t.Context(), 4242); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.g.RerunCheck(t.Context(), 403); err == nil {
+		t.Fatal("a refused re-run must be an error")
+	}
+	r.gh.mu.Lock()
+	defer r.gh.mu.Unlock()
+	if !slices.Contains(r.gh.calls, "POST /repos/Smana/demo/actions/jobs/4242/rerun") {
+		t.Fatalf("calls: %v", r.gh.calls)
+	}
+}
+
+func TestMergerPermissionsAskForActionsOnlyToRerun(t *testing.T) {
+	if _, ok := MergerPermissions(false)["actions"]; ok {
+		t.Fatal("re-run off must not ask for actions")
+	}
+	if got := MergerPermissions(true)["actions"]; got != "write" {
+		t.Fatalf("actions: %q", got)
 	}
 }

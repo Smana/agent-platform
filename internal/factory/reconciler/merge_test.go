@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -245,6 +246,54 @@ func TestCIRedGetsTwoFixRunsThenEscalates(t *testing.T) {
 	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "ci_red" ||
 		!strings.Contains(strings.Join(g.f.Comments(12), "\n"), "Kubernetes validation") {
 		t.Fatalf("%s %s %q", tk.Status.Phase, tk.Status.Reason, g.f.Comments(12))
+	}
+}
+
+// A cancelled required check is not a failure (#40): it is re-run, and no fix run is spent.
+func TestCancelledCheckIsRerunNotFixed(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.CheckReruns = 1
+	c := green("SUCCESS")
+	c.Runs[1].State, c.Runs[1].ID = "CANCELLED", 777
+	g.f.SetChecks(12, c)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.FixRuns != 0 || tk.Status.CheckReruns != 1 ||
+		tk.Status.Reason != "ci_rerun" || !slices.Equal(g.f.Reruns(), []int64{777}) {
+		t.Fatalf("%s fix=%d reruns=%d %q %v", tk.Status.Phase, tk.Status.FixRuns, tk.Status.CheckReruns, tk.Status.Reason, g.f.Reruns())
+	}
+}
+
+// The cap bounds the re-runs: a check that keeps being cancelled goes to a human, not a loop.
+func TestCancelledCheckRerunCapHandsOff(t *testing.T) {
+	for name, cap := range map[string]int32{"cap reached": 1, "re-run off": 0} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+			g.r.Cfg.Merge.CheckReruns = cap
+			c := green("SUCCESS")
+			c.Runs[1].State, c.Runs[1].ID = "CANCELLED", 777
+			g.f.SetChecks(12, c)
+			var tk *v1alpha1.Task
+			for range 4 { // however often the check is cancelled again
+				tk = g.reconcile(t, "3buqdlot", 1)
+			}
+			if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "ci_cancelled" ||
+				tk.Status.FixRuns != 0 || len(g.f.Reruns()) != int(cap) {
+				t.Fatalf("%s %q fix=%d reruns=%v", tk.Status.Phase, tk.Status.Reason, tk.Status.FixRuns, g.f.Reruns())
+			}
+		})
+	}
+}
+
+// A failure beside a cancellation is still a failure: the fix run starts, nothing is re-run.
+func TestFailureBesideCancelledStillFixed(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Merge.CheckReruns = 1
+	c := green("SUCCESS")
+	c.Runs[0].State, c.Runs[1].State = "CANCELLED", "FAILURE"
+	g.f.SetChecks(12, c)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseImplementing || tk.Status.FixRuns != 1 || len(g.f.Reruns()) != 0 {
+		t.Fatalf("%s fix=%d %v", tk.Status.Phase, tk.Status.FixRuns, g.f.Reruns())
 	}
 }
 

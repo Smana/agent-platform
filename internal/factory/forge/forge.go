@@ -171,10 +171,12 @@ func trailer(message, key string) string {
 	return v
 }
 
-// Check is one CI check run on a commit: SUCCESS, FAILURE or PENDING.
+// Check is one CI check run on a commit: SUCCESS, FAILURE, CANCELLED or PENDING. CANCELLED is
+// apart from FAILURE because nothing failed: the runner or a concurrency group stopped the job.
 type Check struct {
+	ID    int64 // the check run's database id, which is its Actions job id
 	Name  string
-	State string // SUCCESS | FAILURE | PENDING
+	State string // SUCCESS | FAILURE | CANCELLED | PENDING
 }
 
 // Status is one classic commit status, policy-bot's among them.
@@ -228,6 +230,9 @@ type PRSummary struct {
 type Merger interface {
 	PullRequestChecks(ctx context.Context, number int) (Checks, error)
 	CommitChecks(ctx context.Context, sha string) ([]Check, error)
+	// RerunCheck re-runs the Actions job a check run is. It needs actions: write, beyond what
+	// the merger App held until merge.checkReruns was turned on.
+	RerunCheck(ctx context.Context, id int64) error
 	Files(ctx context.Context, base, head string) (baseFiles, headFiles map[string]string, err error)
 	Merge(ctx context.Context, nodeID, head string) error
 	EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error
