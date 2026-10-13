@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,6 +53,13 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}
+	if !r.Cfg.NeedsMerger() {
+		// No class is live or in shadow, so the factory may hold no merger key: there is no gate to
+		// read. A maintainer owns the pull request, as in any other hand-off.
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "merge_gate_off")
+		narrateLater(t, narrate.WaitingForHuman(t, "merge_gate_off"))
+		return nil
+	}
 	checks, err := r.Merger.PullRequestChecks(ctx, n)
 	if err != nil {
 		return err
@@ -86,12 +94,30 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		in.Files.Base, in.Files.Head = base, head
 		d = DecideArm(in)
 	}
+	if d.Verdict == "arm" || d.Verdict == "shadow" {
+		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
+		// first gate or during a revision run. Only who moved the branch tells it apart, as on a CI
+		// fix (humanCommit), so every path into a merge reads it.
+		pushed, err := r.factoryPushed(ctx, t, pr.HeadSHA)
+		if err != nil {
+			return err
+		}
+		switch {
+		case pushed == pushUnrecorded && r.Now().Before(pushDeadline(t)):
+			r.log().Info("the head's push is not recorded yet: waiting", "task.id", t.Name, "head", pr.HeadSHA)
+			return nil
+		case pushed != pushFactory:
+			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr"}
+		}
+	}
 	switch d.Verdict {
 	case "wait":
 		t.Status.Reason = d.Reason
 		return nil
 	case "ci_red":
 		return r.fixCI(ctx, t, pr, checks)
+	case "ci_cancelled":
+		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
 		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, d.Reason)
@@ -100,6 +126,14 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			pred, matched := t.Spec.PredictedClass, d.Matched
 			record(ctx, func(ctx context.Context) { r.Metrics.ClassMismatch(ctx, pred, matched) })
 		}
+		// R02 held before verdict_stale: the head is the factory's, so there is nothing for a human
+		// to judge yet, only a verdict of this head to get (N1).
+		if d.Reason == "verdict_stale" && t.Status.GateReentries < maxGateReentries &&
+			r.nextVerifier(t, "implementer") != "" && !r.engagedSince(pr, t.Status.PhaseSince) {
+			r.backToGate(t, d.Reason, "rereview_verdict_stale", pr.HeadSHA)
+			return nil
+		}
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA // what reenter holds the hand-off to
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
 		narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
 		return nil
@@ -131,17 +165,148 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
+// maxGateReentries bounds the returns to the gate per task: an input that flaps between a
+// transient hand-off and its clearing (a policy-bot status) returns this many times, then stays
+// with a human.
+const maxGateReentries = 3
+
+// reenter returns a transient hand-off to the merge gate (N1). A hand-off is transient when its
+// reason is one the gate's inputs can clear by themselves; every other one — a verdict of changes,
+// a maintainer's review, a class or cap rule — was a human's to judge, and stays theirs. Even a
+// transient one returns only on the head it was handed off at, while no maintainer has reviewed or
+// commented since: no factory run is in flight in AwaitingHuman, so a push meanwhile is a human's,
+// and a later revision must never auto-merge what a human was asked to judge. head_unreported
+// returns only once the room reports that head from one of the task's implementer runs, so the
+// factory pushed it (R02). verdict_stale never reaches here unless past the cap: the gate
+// re-reviews it itself.
+func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
+	why := t.Status.Reason
+	switch why {
+	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
+	default:
+		return false, nil
+	}
+	if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA ||
+		r.engagedSince(pr, t.Status.PhaseSince) {
+		return false, nil
+	}
+	if why == "head_unreported" {
+		reported, err := r.reportedHead(ctx, t)
+		if err != nil || reported != pr.HeadSHA {
+			return false, err
+		}
+		r.backToGate(t, why, "reentered_head_reported", pr.HeadSHA)
+		return true, nil
+	}
+	c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
+	if err != nil {
+		return false, err
+	}
+	if why == "ci_cancelled" {
+		if CIState(c, r.Cfg.Merge.RequiredChecks) != "SUCCESS" {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
+		return true, nil
+	}
+	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || creator != r.Cfg.Merge.PolicyBotLogin {
+		return false, nil
+	}
+	r.backToGate(t, why, "reentered_policy", pr.HeadSHA)
+	return true, nil
+}
+
+// backToGate is one return to the merge gate, counted against maxGateReentries: to AwaitingCI,
+// or to Queued for the first verifier when only a verdict of the head clears the hand-off. The
+// reason is the status reason, which the room's facts record, and it is narrated.
+func (r *Reconciler) backToGate(t *v1alpha1.Task, why, reason, head string) {
+	t.Status.GateReentries++
+	next := v1alpha1.PhaseAwaitingCI
+	if reason == "rereview_verdict_stale" {
+		next, t.Status.NextRole = v1alpha1.PhaseQueued, r.nextVerifier(t, "implementer")
+	}
+	r.to(t, next, reason)
+	narrateLater(t, narrate.BackToGate(t, reason, t.Status.GateReentries))
+	r.log().Info("transient hand-off returns to the merge gate", "task.id", t.Name, "handoff", why, "reason", reason,
+		"head", head, "reentries", t.Status.GateReentries)
+}
+
+// humanCommit hands a CI fix's pull request to a human when its head is not the one the room last
+// reported from one of the task's implementer runs: a human pushed, and a fix on top, reviewed and
+// approved by the factory, would merge that human's commit (owner: a human-authored change never
+// auto-merges through the factory). A log read short of its end reports no head, so it hands off.
+//
+// A reported head is not enough (#74): a human's push during the fix run, pulled and pushed on by
+// the agent, ends under the agent's own head. So every commit of the pull request must claim one
+// of the task's implementer runs in its Agent-Run trailer (only a claim: see factoryCommits) — the
+// whole list, since an agent's squash or rebase rewrites every SHA — and every push to the branch
+// must be the agents App's (#76, factoryPushed): what binds the commits to the factory, since a
+// human can copy a trailer but cannot push as the App without access to the agents namespace or
+// the App key. The binding is to the App, not the task: octo-sts's implementer trust policy
+// (cloud-native-ref .github/chainguard/agent-implementer.sts.yaml) is repository-wide, so any
+// implementer run of any task can push as the bot, and only the trailer, a claim, narrows that to
+// this task's runs. The author login is never read: it is whatever GitHub matched the commit's
+// email to, which anyone can set. A merge from GitHub's "Update branch" carries no trailer and
+// hands off here as it already did on its head; that stays the fail-safe side. A pull request
+// past GitHub's 250 listed commits cannot be read whole, so it hands off too.
+//
+// It returns true when the caller must stop: the task was handed off, or GitHub has not recorded
+// the head's push yet and the task waits, unchanged, for a later reconcile (pushRecordGrace).
+func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
+	reported, err := r.reportedHead(ctx, t)
+	if err != nil {
+		return false, err
+	}
+	if reported == head {
+		factoryMade, err := r.factoryCommits(ctx, t, head)
+		if err != nil {
+			return false, err
+		}
+		if factoryMade {
+			pushed, err := r.factoryPushed(ctx, t, head)
+			if err != nil {
+				return false, err
+			}
+			switch {
+			case pushed == pushFactory:
+				return false, nil
+			case pushed == pushUnrecorded && r.Now().Before(pushDeadline(t)):
+				r.log().Info("the head's push is not recorded yet: waiting", "task.id", t.Name, "head", head)
+				return true, nil
+			}
+		}
+	}
+	t.Status.NextTrigger = ""
+	t.Status.PullRequest.HeadSHA = head
+	r.to(t, v1alpha1.PhaseAwaitingHuman, "human_commit_in_pr")
+	narrateLater(t, narrate.WaitingForHuman(t, "human_commit_in_pr"))
+	return true, nil
+}
+
+// engagedSince: a maintainer reviewed or commented on the pull request after since.
+func (r *Reconciler) engagedSince(pr forge.PR, since *metav1.Time) bool {
+	if since == nil {
+		return true // no hand-off time to read activity against: never assume there was none
+	}
+	for _, rv := range pr.Reviews {
+		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since.Time) {
+			return true
+		}
+	}
+	for _, c := range pr.Comments {
+		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since.Time) {
+			return true
+		}
+	}
+	return false
+}
+
 // reportedHead is the commit of the latest handoff or final room event whose broker-stamped
 // actor is one of the task's implementer runs (R02's input to DecideArm). A log that could not
 // be read to its end reports nothing: the newest event may be past what was read, and deciding
 // on a stale newest-commit is exactly what R02 refuses.
 func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string, error) {
-	impl := make(map[string]bool, len(t.Status.Runs))
-	for _, rec := range t.Status.Runs {
-		if rec.Role == "implementer" {
-			impl[rec.ID] = true
-		}
-	}
+	impl := implementerRuns(t)
 	evs, complete, err := r.roomTail(ctx, t.Status.RoomRef, 0, briefEvent)
 	if err != nil {
 		return "", err
@@ -159,6 +324,103 @@ func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string
 		}
 	}
 	return head, nil
+}
+
+// factoryCommits: head is among the pull request's commits, and each of them claims one of the
+// task's implementer runs. The claim authenticates nothing: run IDs are public (the PR footer,
+// every agent commit on the branch) and an amend or a cherry-pick keeps the trailer. factoryPushed
+// is what binds the commits to the factory; the claim stays because it narrows that to this task's
+// implementer runs, where the App's push identity is shared by every implementer run of any task.
+func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
+	cs, err := r.Forge.PullRequestCommits(ctx, t.Status.PullRequest.Number)
+	if errors.Is(err, forge.ErrCommitsTruncated) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// GitHub orders the list by commit date, not ancestry, so the head is looked for, not assumed
+	// last. A force-push between the two reads drops it, and hands off; a push on top adds a
+	// commit, which the trailer test below then reads.
+	if !slices.ContainsFunc(cs, func(c forge.Commit) bool { return c.SHA == head }) {
+		return false, nil
+	}
+	impl := implementerRuns(t)
+	return !slices.ContainsFunc(cs, func(c forge.Commit) bool { return !impl[c.Trailer("Agent-Run")] }), nil
+}
+
+// pushRecordGrace is how long after the task's last implementer run finished the gate waits for
+// GitHub's activity to record the run's push; past it, an unrecorded head hands off.
+const pushRecordGrace = 2 * time.Minute
+
+// pushCheck is factoryPushed's answer.
+type pushCheck int
+
+const (
+	pushStranger   pushCheck = iota // a move not the App's, a broken chain, or a history not read whole
+	pushFactory                     // every move the App's, chained from the creation to the head
+	pushUnrecorded                  // the App's history so far, but the head's push not in it yet
+)
+
+// pushDeadline is when an unrecorded head stops being waited for: pushRecordGrace after the
+// latest finish of the task's implementer runs; zero, so no wait, when none has finished.
+func pushDeadline(t *v1alpha1.Task) time.Time {
+	var last time.Time
+	for _, rec := range t.Status.Runs {
+		if rec.Role == "implementer" && rec.Finished != nil && rec.Finished.After(last) {
+			last = rec.Finished.Time
+		}
+	}
+	if last.IsZero() {
+		return last
+	}
+	return last.Add(pushRecordGrace)
+}
+
+// factoryPushed: GitHub records every move of the task's branch, since its latest creation, as
+// the agents App's (cfg.agentsLogin, the identity octo-sts mints implementer tokens as), in one
+// unbroken chain from that creation to head (#76). The pusher is GitHub's record of whose
+// credential moved the ref, so a commit with a copied trailer, a force-push or GitHub's "Update
+// branch" by anyone else is a stranger's. The chain is what makes the read whole: a gap, or a
+// history past the page cap, is a stranger's too. One case waits instead: an empty history, or
+// one wholly the App's whose newest move is not yet the head — GitHub records a push a little
+// after it lands. A read error is returned, as factoryCommits's is: the caller retries.
+func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) (pushCheck, error) {
+	ps, err := r.Forge.BranchActivity(ctx, "agent/"+t.Name)
+	if errors.Is(err, forge.ErrActivityTruncated) {
+		return pushStranger, nil
+	}
+	if err != nil {
+		return pushStranger, err
+	}
+	if len(ps) == 0 {
+		return pushUnrecorded, nil
+	}
+	want := ps[0].After // newest first
+	for _, p := range ps {
+		if p.Actor == "" || p.Actor != r.Cfg.AgentsLogin || p.After != want {
+			return pushStranger, nil
+		}
+		if p.Type == "branch_creation" {
+			if ps[0].After != head {
+				return pushUnrecorded, nil
+			}
+			return pushFactory, nil
+		}
+		want = p.Before
+	}
+	return pushStranger, nil // the creation was never read
+}
+
+// implementerRuns are the IDs of the task's implementer runs.
+func implementerRuns(t *v1alpha1.Task) map[string]bool {
+	impl := make(map[string]bool, len(t.Status.Runs))
+	for _, rec := range t.Status.Runs {
+		if rec.Role == "implementer" {
+			impl[rec.ID] = true
+		}
+	}
+	return impl
 }
 
 // eventCommit is the commit a handoff or a review verdict names, "" when it names none.
@@ -199,6 +461,46 @@ func failing(c forge.Checks, required []string) []string {
 	return out
 }
 
+// rerunCancelled re-runs the cancelled required checks, up to merge.checkReruns per task, then
+// hands the task to a human. A cancellation is the runner's or a concurrency group's, not the
+// diff's: a fix run has nothing to change and spent 405k tokens on an empty commit (#40). The
+// re-run is not a "wait": the checks read PENDING on the next pass, which is what waits.
+func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
+	var ids []int64
+	for _, x := range c.Runs {
+		if x.State == "CANCELLED" && slices.Contains(r.Cfg.Merge.RequiredChecks, x.Name) {
+			ids = append(ids, x.ID)
+		}
+	}
+	if t.Status.CheckRerunsHead != pr.HeadSHA { // a new head gets a fresh budget
+		t.Status.CheckReruns, t.Status.CheckRerunsHead = 0, pr.HeadSHA
+	}
+	if t.Status.CheckReruns >= r.Cfg.Merge.CheckReruns {
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_cancelled")
+		narrateLater(t, narrate.WaitingForHuman(t, "ci_cancelled"))
+		return nil
+	}
+	// Every cancelled job is tried; the first error is returned after the loop. A re-run is spent
+	// only once one has gone through, so a refused call leaves the budget for the next pass.
+	var first error
+	done := false
+	for _, id := range ids {
+		if err := r.Merger.RerunCheck(ctx, id); err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		done = true
+	}
+	if done {
+		t.Status.CheckReruns++
+		t.Status.Reason = "ci_rerun"
+	}
+	return first
+}
+
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).
 func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
 	names := failing(c, r.Cfg.Merge.RequiredChecks)
@@ -207,6 +509,13 @@ func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "ci_red")
 	}
 	t.Status.FixRuns++
+	var why []string
+	for _, x := range c.Runs {
+		if slices.Contains(names, x.Name) {
+			why = append(why, fmt.Sprintf("`%s`: %s", x.Name, strings.ToLower(x.State)))
+		}
+	}
+	narrateLater(t, narrate.CIFixing(t, pr.Number, pr.HeadSHA, why, int(t.Status.FixRuns), int(r.Cfg.Merge.FixRuns)))
 	msg := fmt.Sprintf("CI failed on %s: %s. Read the failing jobs with `gh pr checks %d` and fix them on the same branch.",
 		pr.HeadSHA, strings.Join(names, ", "), pr.Number)
 	if err := r.Rooms.Enqueue(ctx, t.Status.RoomRef, "ci", msg, int64(t.Status.FixRuns)); err != nil {
@@ -259,7 +568,7 @@ func MainState(runs []forge.Check, watched []string) string {
 		switch c.State {
 		case "FAILURE":
 			return "FAILURE"
-		case "PENDING":
+		case "PENDING", "CANCELLED": // a cancelled check on main is not green and not red: keep watching
 			state = "PENDING"
 		}
 	}

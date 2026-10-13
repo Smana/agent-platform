@@ -14,7 +14,7 @@ rules:
     verbs: [get, update, patch]
   - apiGroups: [agents.ogenki.io]
     resources: [rooms]
-    verbs: [get, list, watch, create]
+    verbs: [get, list, watch, create, delete]
   # The stop object: the cache lists and watches it by a metadata.name field selector.
   - apiGroups: [""]
     resources: [configmaps]

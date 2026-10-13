@@ -4,6 +4,8 @@ package killswitch
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -54,5 +56,34 @@ func TestTheStopSweepsEveryRun(t *testing.T) {
 	}
 	if _, left := st.runs["cccccccc"]; !left || len(st.runs) != 1 {
 		t.Fatalf("a finished run is left for its record: %v", st.runs)
+	}
+}
+
+// #55: each run the sweep deletes has its reservation released, so lifting the stop frees its
+// room the same day; a failed release fails the sweep, which the next pass retries.
+func TestTheSweepReleasesWhatItDeletes(t *testing.T) {
+	st := &store{revoked: map[string]string{}, runs: map[string]runs.Run{
+		"aaaaaaaa": {ID: "aaaaaaaa", Principal: "human:291", RoomRef: "3kq7x2ma", Phase: "Running"},
+		"cccccccc": {ID: "cccccccc", Principal: "human:291", Phase: "Succeeded"},
+	}}
+	c := fake.NewClientBuilder().WithObjects(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ConfigMap,
+		Namespace: "agent-system"}}).Build()
+	var released []string
+	fail := true
+	s := &Sweeper{Reader: c, Namespace: "agent-system", Runs: st, Release: func(_ context.Context, r runs.Run) error {
+		if fail {
+			fail = false
+			return errors.New("ledger busy")
+		}
+		released = append(released, r.ID)
+		return nil
+	}}
+	if _, err := s.Sweep(context.Background()); err == nil {
+		t.Fatal("a failed release is reported")
+	}
+	st.runs["aaaaaaaa"] = runs.Run{ID: "aaaaaaaa", Principal: "human:291", RoomRef: "3kq7x2ma", Phase: "Running",
+		Revoked: "manual"} // its delete is still draining: listed again
+	if _, err := s.Sweep(context.Background()); err != nil || !slices.Equal(released, []string{"aaaaaaaa"}) {
+		t.Fatalf("released once, the finished run left to the meter: %v %v", released, err)
 	}
 }

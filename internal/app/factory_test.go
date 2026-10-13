@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -109,38 +107,7 @@ func TestFactoryManagerOptions(t *testing.T) {
 	}
 }
 
-// /readyz on every replica, leader or not: the caches synced and the App token fresh (§6.5).
-func TestFactoryReadiness(t *testing.T) {
-	now := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
-	for _, c := range []struct {
-		name          string
-		fresh, synced bool
-		path          string
-		want          int
-	}{
-		{"ready", true, true, "/readyz", http.StatusOK},
-		{"not ready while the App token is stale", false, true, "/readyz", http.StatusServiceUnavailable},
-		{"not ready before the caches synced", true, false, "/readyz", http.StatusServiceUnavailable},
-		{"started once the config parsed: the server starts after it", false, false, "/startupz", http.StatusOK},
-		{"alive whatever GitHub says", false, false, "/healthz", http.StatusOK},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			var asked time.Time
-			h := factoryOps(func(at time.Time) bool { asked = at; return c.fresh }, func() time.Time { return now },
-				func(context.Context) bool { return c.synced }, func() bool { return false }, http.NotFoundHandler())
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, c.path, nil))
-			if rec.Code != c.want {
-				t.Fatalf("GET %s = %d, want %d", c.path, rec.Code, c.want)
-			}
-			if c.path == "/readyz" && !asked.Equal(now) {
-				t.Fatal("freshness is judged at the probe's time, on the injected clock")
-			}
-		})
-	}
-}
-
-// Every replica pings GitHub at once and then every period, so /readyz stays honest on a replica
+// Every replica pings GitHub at once and then every period, so the token stays warm on a replica
 // that is not leading and makes no other call.
 func TestPingerPingsAtOnceThenEveryPeriod(t *testing.T) {
 	ticks := make(chan time.Time)

@@ -76,6 +76,22 @@ func (m *memLog) OpenApprovals(context.Context, string) ([]store.Approval, error
 	return m.approvals, m.approvalErr
 }
 
+// LastTaskState is the log's last task facts above after, as the store's query reads them.
+func (m *memLog) LastTaskState(_ context.Context, _ string, after int64) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.evs) - 1; i >= 0; i-- {
+		e := m.evs[i]
+		var p struct {
+			Kind string `json:"kind"`
+		}
+		if e.Seq > after && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil && p.Kind == "task" {
+			return e.Payload, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *memLog) add(n int) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -939,7 +955,7 @@ func TestRoomList(t *testing.T) {
 	if err := json.Unmarshal(body, &rows); err != nil || code != http.StatusOK {
 		t.Fatalf("%d %v", code, err)
 	}
-	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"owner":"human:own","phase":"Active",` +
+	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"needsYou":0,"owner":"human:own","phase":"Active",` +
 		`"repository":"Smana/agent-platform","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)

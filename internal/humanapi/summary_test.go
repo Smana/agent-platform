@@ -207,6 +207,54 @@ func TestRoomFilters(t *testing.T) {
 	}
 }
 
+// #78: a factory task held by a person in its room needs its driver and its owner on the room
+// list too, as the room's summary says (N3), and no one else; the factory's next facts end it.
+func TestNeedsMeListsAHoldForWhoeverCanReleaseIt(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
+		a := repoRoom(roomID, "Smana/a")
+		a.Status.Driver = "human:dev1"
+		a.Status.Task = &v1alpha1.TaskStatus{Phase: "Queued"}
+		s.Rooms = roomClient(t, a, repoRoom(roomB, "Smana/a"))
+	})
+	factory := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
+	facts := func(phase, reason string) {
+		e.log.mu.Lock()
+		defer e.log.mu.Unlock()
+		e.log.evs = append(e.log.evs, envelope.Event{V: 1, Seq: int64(len(e.log.evs) + 1), RoomID: roomID,
+			Type: envelope.StateChanged, Actor: factory, TS: time.Now(),
+			Payload: envelope.TaskStatePayload(envelope.TaskFacts{Phase: phase, Reason: reason})})
+	}
+	needs := func(h http.Header) []string {
+		t.Helper()
+		code, body := get(t, e, "/api/rooms?needs_me=1", h)
+		var rows []roomRow
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &rows) != nil {
+			t.Fatalf("%d %s", code, body)
+		}
+		ids := []string{}
+		for _, r := range rows {
+			if !r.NeedsMe {
+				t.Fatalf("a needs_me row without needsMe: %+v", r)
+			}
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	facts("Queued", "waiting_human_driver")
+	for name, h := range map[string]http.Header{"driver": header("dev1"), "owner": header("own")} {
+		if got := needs(h); !slices.Equal(got, []string{roomID}) {
+			t.Errorf("%s: %v", name, got)
+		}
+	}
+	if got := needs(header("dev2")); len(got) != 0 {
+		t.Errorf("a member who neither drives nor owns the room cannot release it: %v", got)
+	}
+	facts("Queued", "waiting_run_slot") // the factory's own wait needs no one
+	if got := needs(header("dev1")); len(got) != 0 {
+		t.Errorf("the hold ended: %v", got)
+	}
+}
+
 // A filter never reveals a room the caller cannot read.
 func TestRoomFiltersRespectTheGate(t *testing.T) {
 	w := world(map[string][]string{"Smana/a": {"dev1"}})

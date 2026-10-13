@@ -58,6 +58,7 @@ func humanSide(cfg config.Config, humans *authn.Humans, rooms client.Client, ns 
 	if err := add(leaseLoop(roomLog, log, nil)); err != nil {
 		return nil, fmt.Errorf("driver lease: %w", err)
 	}
+	actor.Logger = log
 	s := humanServer(cfg, humans, rooms, ns, roomLog, hub, runs, actor, m, log)
 	s.Identity, s.Access = identity, access
 	return s, nil

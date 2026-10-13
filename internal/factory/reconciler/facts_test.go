@@ -49,6 +49,24 @@ func TestFactsOfATaskWithARunAndAPR(t *testing.T) {
 	}
 }
 
+// The issue's title is the snapshot's first line ("# title"), bounded; a snapshot without one
+// has none.
+func TestFactsCarryTheIssueTitle(t *testing.T) {
+	task := issueTask("3buqdlot", 7, "x")
+	task.Spec.Repository, task.Spec.Text = "Smana/cloud-native-ref", "# docs(agents): runbook 11\n\nthe body"
+	if f := factsOf(task); f.Issue.Title != "docs(agents): runbook 11" {
+		t.Fatalf("title %q", f.Issue.Title)
+	}
+	task.Spec.Text = "# " + strings.Repeat("é", 500) + "\n\nbody"
+	if f := factsOf(task); len([]rune(f.Issue.Title)) > 121 {
+		t.Fatalf("title of %d runes is unbounded", len([]rune(f.Issue.Title)))
+	}
+	task.Spec.Text = "no heading here"
+	if f := factsOf(task); f.Issue.Title != "" {
+		t.Fatalf("title %q", f.Issue.Title)
+	}
+}
+
 // A task with no run, no cap, no issue and no PR has a phase alone; a RunLore task was labelled by
 // nobody.
 func TestFactsOfABareTask(t *testing.T) {

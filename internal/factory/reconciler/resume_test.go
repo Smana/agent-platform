@@ -48,6 +48,22 @@ func TestALostImplementerResumesOnTheSameBranchAndRoom(t *testing.T) {
 	}
 }
 
+// The run record reads the AgentRun's reason, as the resume metric does: the broker's pod_lost
+// covers a disrupted run, an evicted one and a deleted one alike (#33).
+func TestALostRunsRecordKeepsTheAgentRunsReason(t *testing.T) {
+	for _, why := range []string{runs.ReasonDisrupted, runs.ReasonPodLost} {
+		t.Run(why, func(t *testing.T) {
+			g := newRig(t, issueTask("3buqdlot", 7, "x"))
+			g.reconcile(t, "3buqdlot", 3)
+			g.lose(rid(0), why)
+			tk := g.reconcile(t, "3buqdlot", 2)
+			if got := tk.Status.Runs[0].Reason; got != why {
+				t.Fatalf("runs[0].reason %q, want %q", got, why)
+			}
+		})
+	}
+}
+
 func TestResumesStopAtTheCapThenEscalate(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)

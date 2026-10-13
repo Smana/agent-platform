@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
@@ -85,9 +85,7 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 // runID is the deterministic id of a task's nth run (R48): the claim a replay recomputes, so a
 // lost status write finds the run it created instead of minting another. A C2 id, like a Task
 // name, so the claim's name is always xplane-run-<id>.
-func runID(task string, n int) string {
-	return taskid.Name(task + ":run:" + strconv.Itoa(n))
-}
+func runID(task string, n int) string { return taskid.Run(task, n) }
 
 // recordExisting records a claim the task's status does not know (R48): the run was created and
 // the write that recorded it was lost, so the replay found the claim by its deterministic id.
@@ -139,21 +137,19 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
 }
 
-// factorySpentToday is §6.2's "SP3 at admission" for the factory's own principal (R34): today's
-// system:factory runs, as the meter annotated them. Shadow only until Task 5.3 reads the day's
-// ledger: a stopped run's deleted claim drops out of this sum, its tokens with it.
-func (r *Reconciler) factorySpentToday(ctx context.Context) (int64, error) {
-	all, err := r.Runs.List(ctx)
-	if err != nil {
-		return 0, err
+// reserveFactoryDay is §6.2's "SP3 at admission" for the factory's own principal (R34), admitted
+// as the API admits (#78): the run about to start is reserved in the day's ledger under its
+// deterministic id before its claim exists, so runs started on one reading cannot overshoot the
+// day, and a replay re-reserves the same entry, never a second. The meter drops it when the run
+// ends. No room: the factory's room exclusion is slotFree's, on the claims, and a reservation
+// that names the room would hold the task's next run until the meter's next tick.
+func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (bool, error) {
+	if r.Ledger == nil {
+		return false, errors.New("the daily cap needs the ledger client")
 	}
-	var n int64
-	for _, x := range all {
-		if x.Principal == runs.PrincipalFactory && sameUTCDay(x.Created, r.Now()) {
-			n += x.Tokens
-		}
-	}
-	return n, nil
+	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
+		api.Reservation{Principal: runs.PrincipalFactory, MaxTokens: t.Spec.Budget.RunTokens}, limit,
+		r.Cfg.Budgets.EnforcePrincipal)
 }
 
 // traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.
@@ -215,6 +211,13 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 	if err != nil {
 		return runs.Run{}, false, err
 	}
+	x, found := absorb(t, all)
+	return x, found, nil
+}
+
+// absorb is observe on claims already listed: each record takes its claim's usage, and the
+// current run's claim is returned. A stop calls it before deleting the claims (#55).
+func absorb(t *v1alpha1.Task, all []runs.Run) (runs.Run, bool) {
 	claims := make(map[string]runs.Run, len(all))
 	for _, x := range all {
 		claims[x.ID] = x
@@ -233,7 +236,7 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 	}
 	t.Status.Usage.Tokens = sum
 	x, found := claims[cur.ID]
-	return x, found, nil
+	return x, found
 }
 
 // pending is a claim that exists but never started: not admitted, no phase written yet.
@@ -249,10 +252,69 @@ func (r *Reconciler) boundPending(ctx context.Context, t *v1alpha1.Task, run run
 		r.Now().Sub(run.Created) < time.Duration(r.Cfg.Caps.MaxPendingMinutes)*time.Minute {
 		return nil
 	}
-	if err := r.Runs.Delete(ctx, run.ID); err != nil {
+	if err := r.deleteRun(ctx, run.ID); err != nil {
 		return err
 	}
 	return r.end(ctx, t, v1alpha1.PhaseEscalated, "run_unschedulable")
+}
+
+// deleteRun deletes a claim and releases its reservation (#55): a claim deleted while live
+// never reaches the terminal phase the meter releases on. The release is best effort: end
+// releases again by run id, and the meter's sweep is the floor under both.
+func (r *Reconciler) deleteRun(ctx context.Context, id string) error {
+	if err := r.Runs.Delete(ctx, id); err != nil {
+		return err
+	}
+	r.release(ctx, id)
+	return nil
+}
+
+// release drops ids' reservations from today's ledger, the only one admission reads. A failure
+// is logged, never returned: an ending task must not wait on the ledger, and the meter releases
+// an unclaimed reservation after its grace.
+func (r *Reconciler) release(ctx context.Context, ids ...string) {
+	if r.Ledger == nil || len(ids) == 0 {
+		return
+	}
+	if err := api.Release(ctx, r.Ledger, r.Namespace, r.Now(), ids...); err != nil {
+		r.log().Warn("reservation not released; the meter will", "run.ids", ids, "err", err)
+	}
+}
+
+// releaseUnheld releases every reservation of the task that no claim holds (#55): its recorded
+// runs whose claims are gone or being deleted, and the next run's id, which Queued may have
+// reserved without its claim ever being created. By run id, so a replay of a stop whose claims
+// are already gone still releases them. An ended claim's is the meter's, as before.
+func (r *Reconciler) releaseUnheld(ctx context.Context, t *v1alpha1.Task) {
+	if r.Ledger == nil {
+		return
+	}
+	all, err := r.Runs.List(ctx)
+	if err != nil {
+		r.log().Warn("reservations not released; the meter will", "task.id", t.Name, "err", err)
+		return
+	}
+	held := map[string]bool{}
+	for _, x := range all {
+		if !x.Deleting {
+			held[x.ID] = true
+		}
+	}
+	var ids []string
+	for _, id := range append(recordIDs(t), runID(t.Name, len(t.Status.Runs))) {
+		if !held[id] {
+			ids = append(ids, id)
+		}
+	}
+	r.release(ctx, ids...)
+}
+
+func recordIDs(t *v1alpha1.Task) []string {
+	ids := make([]string, 0, len(t.Status.Runs)+1)
+	for _, rec := range t.Status.Runs {
+		ids = append(ids, rec.ID)
+	}
+	return ids
 }
 
 // roomReason is the broker's end reason for the task's current run, if the room has it.
@@ -322,8 +384,11 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	if reason == "" {
 		return nil
 	}
-	if reason == "pod_lost" && run.Reason == runs.ReasonPodFailed {
-		reason = run.Reason // the broker's pod_lost reads the same for a crash; the AgentRun read the pod
+	if reason == "pod_lost" {
+		switch run.Reason {
+		case runs.ReasonDisrupted, runs.ReasonPodLost, runs.ReasonPodFailed:
+			reason = run.Reason // the broker's pod_lost reads the same for a drain, a deletion and a crash; the AgentRun read the pod
+		}
 	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)
@@ -473,14 +538,22 @@ func cause(t *v1alpha1.Task) string {
 }
 
 // afterWriter: a revision a maintainer asked for goes straight back to the maintainer; otherwise
-// the template's first verifier after the implementer runs, or the task is ready (solo).
+// the template's first verifier after the implementer runs, or the task is ready (solo). A CI fix
+// is verified like any revision: it moved the head, and the gate only arms on a verdict of the
+// head it decides (R03), so skipping the review would hand it off as verdict_stale (N1).
 func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 	if cause(t) == "human" {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "")
 		return nil
 	}
-	if cause(t) == "ci" {
-		return r.ready(ctx, t) // a CI fix goes back to CI, not to another review round
+	if cause(t) == "ci" { // a push after the fix's own is a human's: never reviewed into a merge
+		pr, err := r.readPR(ctx, t)
+		if err != nil {
+			return err
+		}
+		if handed, err := r.humanCommit(ctx, t, pr.HeadSHA); err != nil || handed {
+			return err
+		}
 	}
 	if next := r.nextVerifier(t, "implementer"); next != "" {
 		r.requestVerifier(t, next)
@@ -523,6 +596,12 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 	r.countApproves(ctx, t, pr)
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
+	}
+	// A return the factory cannot read is no return: it never blocks the reminder and stale close.
+	if back, err := r.reenter(ctx, t, pr); err != nil {
+		r.log().Warn("merge gate return unreadable", "task.id", t.Name, "reason", t.Status.Reason, "err", err)
+	} else if back {
+		return nil
 	}
 	return r.remind(ctx, t, pr)
 }

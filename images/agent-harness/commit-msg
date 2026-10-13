@@ -2,8 +2,10 @@
 """Adds the Agent-Run trailer, Agent-Task when the run has a task (SP3 ruling
 SW), and Agent-Checkpoint when agent-run commits a checkpoint on SIGTERM
 (disruption design §2). A provenance hint, never authorisation (SP3 ruling
-TB): an agent with a shell can skip or rewrite it, so the merge gate binds
-commits to a run by push identity.
+TB): an agent with a shell can skip or rewrite it, and anyone can copy a
+run's trailer. The factory reads it as a claim only; what binds commits to
+the factory is GitHub's record that every push to the branch was the
+agents App's (agent-platform#76).
 
 Every other `Agent-*` line, in any case, is marked as the model's first, as
 in the PR body, so a reader of the last paragraph finds only the harness's.
