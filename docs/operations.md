@@ -183,6 +183,14 @@ the harnesses still hold.
 
 An Escalated task waits for a maintainer (`/factory retry`) or for its pull request to end. `caps.escalatedHours` in the factory config bounds that wait: omitted is 168 (a week), `0` is no limit, a negative value fails the rollout. Past it the task is Stopped with reason `escalation_expired` and says so on its issue. Its pull request is left as it is (no stale label, no close). A task whose room a person drives never expires while they drive; a retry already asked for wins over the limit.
 
+## Finished rooms close
+
+A finished task's room closes once its outbox, settle, facts and revert window are done, and while no person drives it. The last two waits are capped a day after the task ended: past that the room closes anyway, a person still driving it included, and `agent_factory_rooms_closed_at_cap_total{reason="human_driver"|"facts_due"}` counts it (#92).
+
+## Kill switch
+
+A hand-made stop must be a fresh object: `kubectl create configmap agent-factory-stop -n agent-system`. `kubectl apply` over a stop the control issue made keeps its `agents.ogenki.io/stop-source: control-issue` annotation, so removing `factory/stop` from the issue lifts it.
+
 ## Upgrades
 
 | Change | How |

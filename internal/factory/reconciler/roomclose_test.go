@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -150,5 +151,58 @@ func TestAForeignRoomIsLeftOpen(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 1)
 	if roomGone(t, g) {
 		t.Fatal("closed a room another owner made")
+	}
+}
+
+// #92: a driver whose lease never lapses would hold a finished task's room open forever. Past
+// the cap the room closes anyway, and the close is counted.
+func TestAHumanDrivenRoomClosesAtTheCap(t *testing.T) {
+	g := newRig(t, endedTask(v1alpha1.PhaseDone))
+	withRoom(t, g)
+	var room roomv1.Room
+	key := types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}
+	if err := g.c.Get(t.Context(), key, &room); err != nil {
+		t.Fatal(err)
+	}
+	room.Status.Driver = "human:291"
+	if err := g.c.Status().Update(t.Context(), &room); err != nil {
+		t.Fatal(err)
+	}
+	g.reconcile(t, "3buqdlot", 1)
+	if roomGone(t, g) {
+		t.Fatal("a human-driven room closed before the cap")
+	}
+	g.r.Now = func() time.Time { return now.Add(-time.Hour + roomCloseCap + time.Minute) } // PhaseSince + cap
+	g.reconcile(t, "3buqdlot", 1)
+	if !roomGone(t, g) {
+		t.Fatal("a human-driven room stays open past the cap")
+	}
+	if !slices.Contains(g.metrics.recorded, "room_closed_at_cap human_driver") {
+		t.Fatalf("the close at the cap is not counted: %v", g.metrics.recorded)
+	}
+}
+
+// #92: facts the broker never takes keep factsDue true; the task wakes at the cap and closes the room.
+func TestARoomWhoseFactsNeverPostClosesAtTheCap(t *testing.T) {
+	g := newRig(t, endedTask(v1alpha1.PhaseDone))
+	withRoom(t, g)
+	g.log.noRoom = true
+	res, err := g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roomGone(t, g) {
+		t.Fatal("the room closed with its facts due, before the cap")
+	}
+	if left := roomCloseCap - time.Hour; res.RequeueAfter != left {
+		t.Fatalf("requeue %s, want the cap's %s: nothing else wakes the task", res.RequeueAfter, left)
+	}
+	g.r.Now = func() time.Time { return now.Add(res.RequeueAfter) }
+	g.reconcile(t, "3buqdlot", 1)
+	if !roomGone(t, g) {
+		t.Fatal("a room whose facts never post stays open past the cap")
+	}
+	if !slices.Contains(g.metrics.recorded, "room_closed_at_cap facts_due") {
+		t.Fatalf("the close at the cap is not counted: %v", g.metrics.recorded)
 	}
 }
