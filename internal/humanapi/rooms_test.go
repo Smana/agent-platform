@@ -21,6 +21,7 @@ import (
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/version"
 )
 
 // POST /api/rooms: an agents member creates a room they own and drive, in the
@@ -118,12 +119,13 @@ func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
 	var out map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if rec.Code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" ||
-		out["clientID"] != "3434@agents" || out["projectID"] != "29184" {
+		out["clientID"] != "3434@agents" || out["projectID"] != "29184" || out["version"] != version.Version {
 		t.Fatalf("%d %v", rec.Code, out)
 	}
 }
 
-// GET /api/roomctl: what `roomctl configure` needs, for any agents member. The
+// GET /api/roomctl: what `roomctl configure` needs, and the broker's version for the
+// install snippet to pin roomctl's release, for any agents member. The
 // client id is read at use, like the web client's: the IdP mints it per build.
 func TestRoomctlSetup(t *testing.T) {
 	id := "3434@agents"
@@ -142,7 +144,7 @@ func TestRoomctlSetup(t *testing.T) {
 	}
 	code, out := get("alice")
 	if code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" || out["clientID"] != id ||
-		out["projectID"] != "29184" {
+		out["projectID"] != "29184" || out["version"] != version.Version {
 		t.Fatalf("%d %v", code, out)
 	}
 	if code, _ := get("stranger"); code != http.StatusForbidden {

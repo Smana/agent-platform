@@ -21,6 +21,7 @@ import (
 	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
 	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/agent-platform/internal/version"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -109,8 +110,8 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"id": room.Name})
 }
 
-// roomctlSetup is GET /api/roomctl: the values of `roomctl configure`, for the
-// UI's CLI setup view. clientID is "" while the broker has no roomctl client.
+// roomctlSetup is GET /api/roomctl: the values of `roomctl configure` and the broker's
+// version, whose roomctl release the UI's CLI setup view installs. clientID is "" while the broker has no roomctl client.
 // roomctl asks for the project's audience with projectID: ZITADEL adds the
 // project to aud only then, and the broker refuses a token without it (ruling AS).
 func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +139,8 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 		Issuer    string `json:"issuer"`
 		ClientID  string `json:"clientID"`
 		ProjectID string `json:"projectID"`
-	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID)})
+		Version   string `json:"version"`
+	}{s.PublicURL, s.Issuer, read(s.RoomctlClient), read(s.ProjectID), version.Version})
 }
 
 // roomRow is one row of GET /api/rooms.
