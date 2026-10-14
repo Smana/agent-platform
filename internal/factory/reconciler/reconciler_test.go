@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +36,8 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/triage"
+	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/summary"
 )
 
 // fakeRuns stands in for the AgentRun API; tests move phases by hand.
@@ -92,18 +96,19 @@ func (f *fakeRuns) set(id, phase string) { r := f.runs[id]; r.Phase = phase; f.r
 // queued are listed. task_state messages and task facts are kept apart, one per clientSeq, so no
 // seq moves.
 type fakeLog struct {
-	evs       []envelope.Event
-	queue     []rooms.Queued
-	keys      map[string]int64 // stream/clientSeq → Ref
-	nextRef   int64
-	consumed  map[int64]string
-	states    map[int64]string
-	facts     map[int64]envelope.TaskFacts
-	factsSeqs []int64 // every TaskFacts call's clientSeq, in order, refused ones included
-	failFacts error   // TaskFacts' answer while set
-	noRoom    bool    // the broker has no log for the room yet
-	noPermit  bool    // the broker does not allow system:factory yet (FR-1)
-	read      int     // events EventsSince returned, all calls
+	evs        []envelope.Event
+	queue      []rooms.Queued
+	keys       map[string]int64 // stream/clientSeq → Ref
+	nextRef    int64
+	consumed   map[int64]string
+	states     map[int64]string
+	facts      map[int64]envelope.TaskFacts
+	factsSeqs  []int64 // every TaskFacts call's clientSeq, in order, refused ones included
+	failFacts  error   // TaskFacts' answer while set
+	noRoom     bool    // the broker has no log for the room yet
+	noPermit   bool    // the broker does not allow system:factory yet (FR-1)
+	failEvents error   // EventsSince's answer while set
+	read       int     // events EventsSince returned, all calls
 }
 
 func (l *fakeLog) TaskFacts(_ context.Context, _ string, f envelope.TaskFacts, clientSeq int64) error {
@@ -201,6 +206,9 @@ func (l *fakeLog) Consume(_ context.Context, _ string, refs []int64, runID strin
 const eventsCap = 10_000
 
 func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envelope.Event, int64, error) {
+	if l.failEvents != nil {
+		return nil, after, l.failEvents
+	}
 	var out []envelope.Event
 	cursor := after
 	for _, e := range l.evs {
@@ -269,12 +277,16 @@ func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string
 	m.add("class_mismatch " + predicted + " " + matched)
 }
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
+func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
+	m.add("room_closed_at_cap " + reason)
+}
 
 var now = time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
 func cfg() *config.Config {
 	return &config.Config{Repository: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, RoomsURL: "https://rooms.priv.aws.ogenki.io",
 		FactoryLogin: "ogenki-agent-factory[bot]",
+		Classes:      map[string]config.Class{"docs-links": {Shadow: true}}, // a class in shadow: the merge gate reads checks
 		Poll:         config.Poll{Tasks: config.Duration{Duration: 30 * time.Second}, Meter: config.Duration{Duration: 30 * time.Second}},
 		Defaults:     config.Defaults{Template: "solo", Tier: "standard", DataClass: "public", PredictedClass: "review"},
 		// The reviewer runs on the other tier (4.2): frontier's model is observable as tier-frontier.
@@ -316,8 +328,9 @@ func scheme() *runtime.Scheme {
 func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
+	seeingMeter(t, c)
 	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
-	g.r = &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
+	g.r = &Reconciler{Client: c, Ledger: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}
 	g.runs.now = func() time.Time { return g.r.Now() } // the claims carry the rig's clock
@@ -401,14 +414,13 @@ func TestLabelToNarratedRun(t *testing.T) {
 	}
 	g.f.SetPR(forge.PR{Number: 12, State: "MERGED", MergedBy: "Smana", MergeCommitSHA: "def"})
 	tk = g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseDone || !strings.Contains(g.f.Comments(7)[2], "Merged by @Smana") ||
-		tk.Status.PullRequest.MergeCommitSHA != "def" {
-		t.Fatalf("%s %q", tk.Status.Phase, g.f.Comments(7))
+	if tk.Status.Phase != v1alpha1.PhaseDone || len(g.f.Comments(7)) != 2 || tk.Status.PullRequest.MergeCommitSHA != "def" {
+		t.Fatalf("the end waits for the settle (#42): %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 	// The end does not record the tokens (R49); the settle does, once, past its window.
 	g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
-	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
-		t.Fatalf("settled: %+v", tk.Status)
+	if tk = g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled || !strings.Contains(g.f.Comments(7)[2], "Merged by @Smana") {
+		t.Fatalf("settled: %+v %q", tk.Status, g.f.Comments(7))
 	}
 	want := []string{"time_to_pr issue standard solo", "pr review human_merged",
 		"tier_fit static standard over false", "task_tokens 0 standard solo review"}
@@ -431,14 +443,18 @@ func TestEndings(t *testing.T) {
 			g.runs.set(rid(0), c.phase)
 			g.log.end(rid(0), c.phase, c.reason)
 			tk := g.reconcile(t, "3buqdlot", 1)
-			if tk.Status.Phase != c.want || !strings.Contains(strings.Join(g.f.Comments(7), "\n"), c.says) {
+			if tk.Status.Phase != c.want {
 				t.Errorf("%s %q", tk.Status.Phase, g.f.Comments(7))
 			}
 			// An escalated task may be retried: its tokens are recorded once it ends for good,
 			// by the settle (R49), not by the end. Only the task_tokens lines count here: the
 			// end of a task that scored its tier (outcome) records a tier_fit line too.
+			// A terminal ending is posted with the settled total (#42), so it is read after.
 			g.r.Now = func() time.Time { return now.Add(g.r.settleWindow()) }
 			g.reconcile(t, "3buqdlot", 1)
+			if !strings.Contains(strings.Join(g.f.Comments(7), "\n"), c.says) {
+				t.Errorf("%q", g.f.Comments(7))
+			}
 			settled := 0
 			for _, s := range g.metrics.recorded {
 				if strings.HasPrefix(s, "task_tokens") {
@@ -591,6 +607,67 @@ func TestAHumanDriverHoldsTheTask(t *testing.T) {
 	}
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_human_driver" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// N3: a task a person holds in its room says so on its issue once per wait, not every poll, and
+// the room's summary lists the hold under needsYou for the holder until the hold ends.
+func TestAHumanHoldIsNarratedOnceAndNeedsTheHolder(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "x"))
+	g.reconcile(t, "3buqdlot", 2) // Queued, the room exists
+	drive := func(driver string) {
+		var room roomv1.Room
+		if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &room); err != nil {
+			t.Fatal(err)
+		}
+		room.Status.Driver = driver
+		if err := g.c.Status().Update(t.Context(), &room); err != nil {
+			t.Fatal(err)
+		}
+	}
+	holds := func() int {
+		n := 0
+		for _, c := range g.f.Comments(7) {
+			if strings.Contains(c, "event=hold-") {
+				n++
+			}
+		}
+		return n
+	}
+	needs := func() []summary.Need { // the room's summary, folded from the facts the factory posted
+		var evs []envelope.Event
+		for _, seq := range slices.Sorted(maps.Keys(g.log.facts)) {
+			evs = append(evs, envelope.Event{Seq: seq, Type: envelope.StateChanged, Payload: envelope.TaskStatePayload(g.log.facts[seq])})
+		}
+		holder := policy.Subject{Kind: envelope.ActorHuman, ID: "human:smana", Role: policy.Collaborator, Driver: true, WebUI: true}
+		return summary.View(summary.Fold(evs), "3buqdlot", "u", holder, 0, now).NeedsYou
+	}
+
+	// A person's run in the room: the task waits, says so once, and needs the person.
+	g.runs.runs["hhhhhhhh"] = runs.Run{ID: "hhhhhhhh", RoomRef: "3buqdlot", Principal: "human:smana", Phase: "Running"}
+	tk := g.reconcile(t, "3buqdlot", 3)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_room_busy" || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations: %q", tk.Status.Phase, tk.Status.Reason, holds(), g.f.Comments(7))
+	}
+	if n := needs(); len(n) != 1 || n[0].Kind != "hold" || n[0].ID != "waiting_room_busy" {
+		t.Fatalf("needsYou %+v", n)
+	}
+	// The run ends and the person keeps the driver: the same wait, said once.
+	g.runs.set("hhhhhhhh", "Succeeded")
+	drive("human:smana")
+	if tk = g.reconcile(t, "3buqdlot", 3); tk.Status.Reason != "waiting_human_driver" || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations", tk.Status.Phase, tk.Status.Reason, holds())
+	}
+	if n := needs(); len(n) != 1 || n[0].ID != "waiting_human_driver" {
+		t.Fatalf("needsYou %+v", n)
+	}
+	// The driver goes back to the factory: the run starts, and nothing needs the person.
+	drive("system:factory")
+	if tk = g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseImplementing || holds() != 1 {
+		t.Fatalf("%s %s, %d hold narrations", tk.Status.Phase, tk.Status.Reason, holds())
+	}
+	if n := needs(); len(n) != 0 {
+		t.Fatalf("the hold ended: %+v", n)
 	}
 }
 

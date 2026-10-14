@@ -8,6 +8,7 @@ package summary
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"time"
@@ -28,6 +29,25 @@ const maxWhat = 200
 // stopLabel is the factory's stop label (internal/factory/intake LabelStop), repeated here so
 // this package stays free of the factory's imports.
 const stopLabel = "factory/stop"
+
+// holds are the factory's Queued reasons another holder of the room causes (reconciler slotFree),
+// repeated here like stopLabel, each with what releases it.
+func holds() map[string]string {
+	return map[string]string{
+		"waiting_human_driver": "the factory's task waits while a person drives this room: hand the driver back to start its next run",
+		"waiting_room_busy":    "the factory's task waits for another run in this room to end",
+	}
+}
+
+// Hold is N3's need: a factory task a person holds waits on whoever can release the room — its
+// driver, or its owner, who can take the driver back. The factory's next facts end it. The room
+// list's needsMe asks the same (#78).
+func Hold(f *envelope.TaskFacts, sub policy.Subject, url string) (Need, bool) {
+	if f == nil || f.Phase != "Queued" || holds()[f.Reason] == "" || !policy.Allowed(sub, policy.StartRun) {
+		return Need{}, false
+	}
+	return Need{Kind: "hold", ID: f.Reason, What: holds()[f.Reason], URL: url}, true
+}
 
 // State is what Fold keeps of a log.
 type State struct {
@@ -62,10 +82,11 @@ type Note struct {
 	Text string    `json:"text"`
 }
 
-// Need is a pending approval the viewer could decide. It carries a link to the room and never a
-// command: approving is web-only (D4, ruling P18).
+// Need is a pending approval the viewer could decide, or a factory task the viewer's hold on the
+// room keeps waiting (N3). It carries a link to the room and never a command: approving is
+// web-only (D4, ruling P18).
 type Need struct {
-	Kind     string    `json:"kind"` // approval
+	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason) | merge (ID is the PR number)
 	ID       string    `json:"id"`
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
@@ -91,6 +112,8 @@ type Summary struct {
 		PR          *envelope.PRFact     `json:"pr"`
 		Issue       *envelope.IssueFact  `json:"issue"`
 		LastVerdict *Verdict             `json:"lastVerdict"`
+		Reason      string               `json:"reason,omitempty"` // why the task waits, when it does (#59)
+		Next        string               `json:"next,omitempty"`   // what happens or who acts next
 	} `json:"status"`
 	NeedsYou []Need   `json:"needsYou"`
 	Actions  []Action `json:"actions"`
@@ -208,6 +231,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.Status.Phase, s.Status.Run, s.Status.Budget, s.Status.PR, s.Status.Issue = f.Phase, f.Run, f.Budget, f.PR, f.Issue
 	}
 	s.Status.LastVerdict = st.Verdict
+	s.Status.Reason, s.Status.Next = waiting(st.Facts)
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
 	for _, n := range st.Notes {
@@ -232,6 +256,12 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 			s.NeedsYou = append(s.NeedsYou, Need{Kind: "approval", ID: a.ID, What: a.What, Deadline: a.ExpiresAt, URL: url + "#" + a.ID})
 		}
 	}
+	if n, ok := Hold(st.Facts, sub, url); ok {
+		s.NeedsYou = append(s.NeedsYou, n)
+	}
+	if n, ok := Merge(st.Facts, sub); ok {
+		s.NeedsYou = append(s.NeedsYou, n)
+	}
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
@@ -242,8 +272,13 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	}
 	// No dedicated stop right exists: stopping closes the task, which is the owner's (Close).
 	if st.Facts != nil && st.Facts.Issue != nil && policy.Allowed(sub, policy.Close) {
-		s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
-			CLI: fmt.Sprintf("gh issue edit %d --add-label %s", st.Facts.Issue.Number, stopLabel)})
+		// Never without --repo: run from another checkout, it would label that repository's issue.
+		if repo := repoOf(st.Facts); repo != "" {
+			s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
+				CLI: fmt.Sprintf("gh issue edit %d --repo %s --add-label %s", st.Facts.Issue.Number, repo, stopLabel)})
+		} else {
+			slog.Warn("summary: no repository for the stop command", "room", room)
+		}
 	}
 	return s
 }

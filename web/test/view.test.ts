@@ -51,6 +51,26 @@ describe("listRooms", () => {
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
     expect(el.querySelector("a")?.getAttribute("href")).toBe("/r/3kq7x2ma");
   });
+  // #50: a row says which task it is, not only a random id; the title is text, never markup.
+  it("names the issue, title, task phase, PR and what needs you", async () => {
+    const el = app();
+    const rows = [
+      { id: "yacoriey", phase: "Idle", owner: "system:factory", driver: "", dataClass: "internal", lastSeq: 70, repository: "Smana/a",
+        issue: 2266, title: "<img src=x onerror=alert(1)>", task: "Reviewing", pr: 2267, needsYou: 2 },
+      { id: "d66mo4b4", phase: "Idle", owner: "human:1", driver: "", dataClass: "internal", lastSeq: 95, needsYou: 0 },
+    ];
+    await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
+    const [first, second] = [...el.querySelectorAll("li")].map((li) => li.textContent);
+    expect(first).toContain("#2266");
+    expect(first).toContain("<img src=x onerror=alert(1)>");
+    expect(first).toContain("Reviewing");
+    expect(first).toContain("PR #2267");
+    expect(first).toContain("2 need you");
+    expect(el.querySelector("img")).toBeNull();
+    expect(second).toContain("d66mo4b4");
+    expect(second).toContain("Idle");
+    expect(second).not.toMatch(/need you|PR #/);
+  });
 });
 
 describe("newRoomForm", () => {

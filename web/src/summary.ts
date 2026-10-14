@@ -18,10 +18,13 @@ export interface Summary {
     run: { id: string; role: string; trigger?: string; startedAt?: string } | null;
     budget: { usedTokens: number; limitTokens: number } | null;
     pr: { number: number; url: string; author?: string; reviewers?: string[] } | null;
-    issue: { number: number; url: string; author?: string; labelledBy?: string } | null;
+    issue: { number: number; url: string; title?: string; author?: string; labelledBy?: string } | null;
     lastVerdict: { by: string; verdict: string; at: string } | null;
+    reason?: string; // why the task waits (#59)
+    next?: string; // what happens or who acts next
   };
-  needsYou: { kind: "approval"; id: string; what: string; deadline?: string; url: string }[];
+  // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
+  needsYou: { kind: "approval" | "hold" | "merge"; id: string; what: string; deadline?: string; url: string }[];
   actions: { kind: string; what: string; cli?: string }[];
   notes: { untrusted: true; items: { at: string; run: string; text: string }[] };
   cursor: string;
@@ -90,7 +93,11 @@ function statusBlock(st: Summary["status"]): HTMLElement {
     rows.push(line("PR: ", safeLink(`#${st.pr.number}`, st.pr.url), by(st.pr.author),
       reviewers.length ? ` · reviewers ${reviewers.join(", ")}` : ""));
   }
-  if (st.issue) rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), by(st.issue.author)));
+  if (st.issue) {
+    rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), st.issue.title ? ` ${st.issue.title}` : "", by(st.issue.author)));
+  }
+  if (st.reason) rows.push(line(`Why: ${st.reason}`));
+  if (st.next) rows.push(line(`Next: ${st.next}`));
   if (st.lastVerdict) rows.push(line(`Last verdict: ${st.lastVerdict.verdict} by ${st.lastVerdict.by} · ${when(st.lastVerdict.at)}`));
   return block("status", "Status", ...rows);
 }
@@ -108,6 +115,16 @@ export function focusApproval(id: string): boolean {
 function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
   const ul = el("ul");
   for (const n of items) {
+    if (n.kind === "hold") { // the page is the room: nothing to link to
+      ul.append(el("li", { textContent: `Hold: ${n.what}` }));
+      continue;
+    }
+    if (n.kind === "merge") { // the PR is on GitHub: link out, https only
+      const li = el("li");
+      li.append(`Merge: ${n.what} · `, safeLink("open the PR", n.url));
+      ul.append(li);
+      continue;
+    }
     const a = el("a", { href: `#${approvalAnchor(n.id)}`, textContent: "Review and decide" });
     // Reveal the existing approval card; the page keeps one decide path.
     a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };

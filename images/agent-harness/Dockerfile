@@ -56,7 +56,7 @@ ENV GIT_TERMINAL_PROMPT=0
 USER 10001
 ENTRYPOINT ["tini", "--", "/usr/local/bin/agent-run"]
 
-# `docker build --target test .` runs every suite against the SDK in the image.
+# `task harness:test` runs every suite against the SDK in the image.
 FROM harness AS test
 COPY --chown=10001:10001 tests /opt/agent/tests
 RUN cd /opt/agent && /agent-server/.venv/bin/python -m unittest discover -s tests -v

@@ -51,16 +51,16 @@ func TestTrailerReadsOnlyTheTrailerBlock(t *testing.T) {
 }
 
 // The review's B1: Trailer is what the head commit claims, never authentication. The harness
-// hook runs `git interpret-trailers --if-exists doNothing`, so an agent that writes its own
-// Agent-Run, in any case, keeps the hook from adding the real one; and an agent with a shell can
-// skip the hook. Each case returns what the message says, and 7.2/7.3 must fail closed on it.
+// hook marks the model's Agent-* lines and appends the real ones with `git interpret-trailers
+// --if-exists add`, but an agent with a shell can skip or rewrite the hook, and anyone can write
+// a run's ID. Each case returns what the message says, and callers must fail closed on it.
 func TestTrailerIsAClaimNotAProof(t *testing.T) {
 	for name, c := range map[string]struct{ msg, want string }{
-		// The hook added nothing: the agent's own value is all there is.
+		// The hook was skipped: the writer's own value is all there is.
 		"a forged trailer": {"docs: fix\n\nAgent-Run: forged01", "forged01"},
 		// Both lines are in the message; the last is returned and says nothing about the first.
 		"a duplicated trailer": {"docs: fix\n\nAgent-Run: 7f3cq2xz\nAgent-Run: forged01", "forged01"},
-		// git reads agent-run as Agent-Run, so the hook added nothing; the exact key is absent.
+		// Only a case variant, the hook skipped: the exact key is absent.
 		"a case-variant trailer": {"docs: fix\n\nagent-run: forged01", ""},
 	} {
 		t.Run(name, func(t *testing.T) {

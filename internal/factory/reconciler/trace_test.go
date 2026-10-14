@@ -172,8 +172,8 @@ func TestALostExportIsRetriedWithTheRecordedEnd(t *testing.T) {
 	g.r.Trace = sink
 	stopTask(t, g, g.reconcile(t, "3buqdlot", 3))
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Trace.Exported || len(tk.Status.Outbox) != 0 {
-		t.Fatalf("the task ends and narrates regardless: %s %+v", tk.Status.Phase, tk.Status.Trace)
+	if tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Trace.Exported {
+		t.Fatalf("the task ends regardless: %s %+v", tk.Status.Phase, tk.Status.Trace)
 	}
 	sink.down = false
 	g.r.Now = func() time.Time { return now.Add(time.Hour) }

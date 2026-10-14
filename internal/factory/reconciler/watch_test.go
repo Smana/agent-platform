@@ -692,8 +692,13 @@ func TestAMaintainerRestartsTheWait(t *testing.T) {
 		t.Fatalf("13 days after alice's comment: one reminder, no close: %s %q", tk.Status.Phase, g.f.Comments(7))
 	}
 	g.r.Now = func() time.Time { return now.Add(24*time.Hour + time.Minute) }
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 2 {
-		t.Fatalf("14 days after it: closed, once reminded: %s %q", tk.Status.Phase, g.f.Comments(7))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseClosed || len(g.f.Comments(7)) != 1 {
+		t.Fatalf("14 days after it: closed, once reminded (the close is announced with the settled total, #42): %s %q", tk.Status.Phase, g.f.Comments(7))
+	}
+	g.r.Now = func() time.Time { return now.Add(24*time.Hour + time.Minute + g.r.settleWindow()) }
+	g.reconcile(t, "3buqdlot", 1)
+	if c := g.f.Comments(7); len(c) != 2 || !strings.Contains(c[1], "Tokens used") {
+		t.Fatalf("the close is posted once the usage settles: %q", c)
 	}
 }
 
@@ -891,6 +896,56 @@ func TestAnEscalatedTaskIsPolledSlowly(t *testing.T) {
 	g.f.SetComments(7, retryBy(77, "Smana", time.Minute))
 	if res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err != nil || res.RequeueAfter != 30*time.Second {
 		t.Fatalf("once retried, the task's poll: %v %v", res, err)
+	}
+}
+
+// #61: an escalated task is not polled for ever. Past caps.escalatedHours it is Stopped with a
+// narrated reason, on the rig's clock.
+func TestAnEscalatedTaskExpires(t *testing.T) {
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	g.r.Cfg.Caps.EscalatedHours = new(24)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatalf("ten minutes in: %s", got.Status.Phase)
+	}
+	g.r.Now = func() time.Time { return now.Add(24 * time.Hour) } // escalated 10 minutes before `now`
+	got := g.reconcile(t, "3buqdlot", 1)
+	if got.Status.Phase != v1alpha1.PhaseStopped || got.Status.Reason != "escalation_expired" {
+		t.Fatalf("%s %q", got.Status.Phase, got.Status.Reason)
+	}
+	// The ending waits for the usage to settle (#42), then the outbox drains.
+	g.r.Now = func() time.Time { return now.Add(24*time.Hour + g.r.settleWindow()) }
+	g.reconcile(t, "3buqdlot", 2)
+	if c := g.f.Comments(7); len(c) == 0 || !strings.Contains(c[len(c)-1], "was stopped: ") || !strings.Contains(c[len(c)-1], "limit") {
+		t.Fatalf("the ending says why: %q", c)
+	}
+}
+
+// A retry the maintainer already asked for wins over the limit, and a limit of 0 is no limit.
+func TestAnEscalationLimitYieldsToRetryAndZeroMeansOff(t *testing.T) {
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	g.r.Cfg.Caps.EscalatedHours = new(1)
+	g.r.Now = func() time.Time { return now.Add(48 * time.Hour) }
+	g.f.SetComments(7, retryBy(77, "smana", time.Minute))
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseQueued {
+		t.Fatalf("retry first: %s", got.Status.Phase)
+	}
+	off := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	off.r.Cfg.Caps.EscalatedHours = new(0)
+	off.r.Now = func() time.Time { return now.Add(365 * 24 * time.Hour) }
+	if got := off.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatalf("no limit configured: %s", got.Status.Phase)
+	}
+}
+
+// Never act on a task a human is driving (C4).
+func TestAnEscalationLimitSparesAHumanDriver(t *testing.T) {
+	room := roomOf("3buqdlot")
+	room.Status.Driver = "human:smana"
+	g := newRig(t, escalatedTask(false), room)
+	g.r.Cfg.Caps.EscalatedHours = new(1)
+	g.r.Now = func() time.Time { return now.Add(48 * time.Hour) }
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatalf("a person is in the room: %s", got.Status.Phase)
 	}
 }
 
