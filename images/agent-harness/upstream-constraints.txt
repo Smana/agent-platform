@@ -177,7 +177,7 @@ pydeck==0.9.1
 pygments==2.20.0
 pyinstaller-hooks-contrib==2026.7
 pyinstaller==6.22.2
-pyjwt==2.13.0
+pyjwt==2.15.0
 pyobjc-core==11.1
 pyobjc-framework-accessibility==11.1
 pyobjc-framework-accounts==11.1
