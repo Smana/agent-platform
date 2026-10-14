@@ -60,9 +60,9 @@ Later phases add the driver/steering channel (4), approvals (5) and forking with
 Every image is multi-arch (`linux/amd64`, `linux/arm64`). The Go ones are static binaries on distroless `nonroot`; the harness is OpenHands' Python image, run as uid 10001.
 
 ```bash
-roomctl configure --url … --issuer … --client-id … --project-id …   # the room list's "CLI setup" has the line
+roomctl configure --url https://rooms.<domain>                       # the broker serves the issuer and ids; roomctl doctor checks VPN, CA, login, GitHub
 roomctl login                                                        # device flow, in any browser
-roomctl rooms --needs-me                                             # also --repo owner/name, --mine
+roomctl rooms --needs-me                                             # issue, title, task, PR per room; --repo, --mine, --json
 roomctl status 3kq7x2ma                                              # phase, needs you, notes; --json, --after seq:N
 roomctl watch 3kq7x2ma
 roomctl post 3kq7x2ma --queue "address L42"

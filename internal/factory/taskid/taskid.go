@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,10 @@ func Name(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))[:8]
 }
+
+// Run is the deterministic id of task's nth run (R48). The reconciler names its claims and
+// reservations with it; the meter recognises a Queued task's next run by it (#55).
+func Run(task string, n int) string { return Name(task + ":run:" + strconv.Itoa(n)) }
 
 // Random is a fresh C2 id for a run or a brief's nonce: 5 random bytes are exactly 8 base32
 // characters.

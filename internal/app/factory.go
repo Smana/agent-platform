@@ -56,7 +56,7 @@ const (
 	githubTimeout = 15 * time.Second
 	brokerTimeout = 15 * time.Second
 	vmTimeout     = 10 * time.Second
-	// pingEvery keeps "App token fresh" (forge.freshFor, 3 min) true on every healthy replica.
+	// pingEvery keeps the installation token warm and forge.Healthy true on every replica.
 	pingEvery = time.Minute
 	// traceDrain bounds the span exporter's flush at exit, inside the pod's grace.
 	traceDrain = 2 * time.Second
@@ -122,9 +122,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
 	// workload holds. TW4: its token asks the merger profile, not the factory App's scope —
 	// checks and statuses read, contents and pull requests write.
-	merger, err := forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
-		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions()})
+	merger, err := connectMerger(ctx, log, cfg)
 	if err != nil {
 		return err
 	}
@@ -143,8 +141,16 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
+	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation, the
+	// meter's settle and Queued's daily cap (which reserves its runs there, #78) read and write
+	// date-named ledgers, so through a live client.
+	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		return err
+	}
 	rc := runs.Client{C: mgr.GetClient()}
-	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
+	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
 		Runs: rc, Rooms: broker,
 		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL}, Forge: gh},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
@@ -157,13 +163,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	stopped := func(ctx context.Context) bool {
 		on, err := killswitch.Engaged(ctx, mgr.GetClient(), ns)
 		return on || err != nil // intake pauses on doubt
-	}
-	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
-	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation and
-	// the meter's settle read and write date-named ledgers, so they go through a live client.
-	live, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
-	if err != nil {
-		return err
 	}
 	humansV, err := authn.NewVerifier(ctx, cfg.API.HumanIssuer, cfg.API.HumanJWKS)
 	if err != nil {
@@ -210,21 +209,25 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				m.BudgetRemaining(ctx, p, n)
 				m.BudgetCap(ctx, p, c)
 			},
-			Ledger: live, Namespace: ns},
+			OnUsageError: m.MeterUsageReadError, OnSucceeded: m.MeterSucceeded, OnOvershoot: m.RunOvershoot,
+			Ledger: live, Tasks: mgr.GetClient(), Namespace: ns},
 		&killswitch.Sweeper{Reader: mgr.GetClient(), Namespace: ns, Runs: rc, Every: 15 * time.Second,
+			Release: func(ctx context.Context, r runs.Run) error {
+				return api.Release(ctx, live, ns, time.Now(), r.ID) // admission reads today's ledger only
+			},
 			OnSweep: func(n int) {
 				for range n {
 					m.Revoked(ctx, "manual")
 				}
 			}, Log: log},
 		apiSrv,
-		&pinger{ping: gh.Ping, every: pingEvery},
+		&pinger{ping: gh.Ping, every: pingEvery, up: func() bool { return gh.Healthy(time.Now()) }, record: m.GitHubUp},
 	} {
 		if err := mgr.Add(r); err != nil {
 			return fmt.Errorf("manager: %w", err)
 		}
 	}
-	ops := factoryOps(gh.Healthy, time.Now, mgr.GetCache().WaitForCacheSync, func() bool { return ctx.Err() != nil }, exp.Handler())
+	ops := factoryOps(mgr.GetCache().WaitForCacheSync, func() bool { return ctx.Err() != nil }, exp.Handler())
 	return serveFactory(ctx, log, mgr, ops, ns)
 }
 
@@ -261,6 +264,30 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	return errors.Join(err, <-opsDone)
 }
 
+// connectMerger connects the merger App, or answers the fail-closed forge.Absent when its key
+// is not mounted and no class needs it (#57: the chart mounts the Secret optional). A class
+// live or in shadow reads checks through the merger, so for it a missing key stops the start.
+func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (forge.Merger, error) {
+	idFile := cfg.GitHub.MergerAppIDFile
+	if idFile != "" {
+		_, err := os.Stat(filepath.Clean(idFile))
+		switch {
+		case err == nil:
+		case errors.Is(err, os.ErrNotExist) && !cfg.NeedsMerger():
+			idFile = ""
+		case errors.Is(err, os.ErrNotExist):
+			return nil, fmt.Errorf("merger App key %s is missing, and a live or shadow class needs it: create the agent-factory-merger Secret or turn the class off", idFile)
+		}
+	}
+	if idFile == "" {
+		log.Warn("no merger App key: checks, merges and reverts fail closed until it is mounted and the pod restarts")
+		return forge.Absent{}, nil
+	}
+	return forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
+		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.Merge.CheckReruns > 0)})
+}
+
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface
 // otherwise, never a typed nil the reconciler would call. The exporter dials lazily: an
 // unreachable collector loses spans, never the factory's start.
@@ -279,19 +306,15 @@ func taskSink(ctx context.Context, endpoint string) (tracing.Sink, func(context.
 	}, nil
 }
 
-// factoryOps is :9090 for the factory: /readyz once the caches synced and the App token is fresh
-// (§6.5); /startupz at once, since the server starts only after the config parsed.
-func factoryOps(fresh func(time.Time) bool, now func() time.Time, synced func(context.Context) bool,
-	draining func() bool, metricsH http.Handler,
-) http.Handler {
-	ping := func(context.Context) error {
-		if !fresh(now()) {
-			return errors.New("GitHub App token not fresh")
-		}
-		return nil
-	}
+// factoryOps is :9090 for the factory: /readyz once the caches synced; /startupz at once, since
+// the server starts only after the config parsed. Readiness does not look at GitHub (#58): an
+// outage would unready every replica at once, and an unready replica serves nothing less than a
+// ready one — the API and the intake need no GitHub call to answer, and the loops that do
+// retry on their own. The outage shows in the loops' error logs and the intake error counter.
+func factoryOps(synced func(context.Context) bool, draining func() bool, metricsH http.Handler) http.Handler {
+	noDependency := func(context.Context) error { return nil }
 	started := func(context.Context) (bool, error) { return true, nil }
-	return opsHandler(ping, started, boundedSync(synced), draining, metricsH)
+	return opsHandler(noDependency, started, boundedSync(synced), draining, metricsH)
 }
 
 // elected reports whether this replica leads; the leader-only gauges read it.
@@ -356,16 +379,20 @@ func newFactoryManager(log *slog.Logger, ns string) (ctrl.Manager, error) {
 	return mgr, nil
 }
 
-// pinger keeps /readyz honest on every replica, leader or not: a follower makes no other call to
-// GitHub, and "App token fresh" is a recent success. A failed ping is only a stale token.
+// pinger probes GitHub on every replica, leader or not: a follower makes no other call to it. A
+// failed ping is not an error to act on. The pinger reports whether GitHub answered recently as
+// agent_factory_github_up, the outage signal now that /readyz ignores GitHub (#58).
 type pinger struct {
 	ping  func(context.Context) error
 	every time.Duration
+	// up says whether a call succeeded recently; record publishes it. A nil record reports nothing.
+	up     func() bool
+	record func(ctx context.Context, up bool)
 	// ticker paces the pings; nil means a time.Ticker.
 	ticker func(d time.Duration) (c <-chan time.Time, stop func())
 }
 
-// NeedLeaderElection is false: every replica answers its own readiness.
+// NeedLeaderElection is false: every replica reports its own view of GitHub.
 func (*pinger) NeedLeaderElection() bool { return false }
 
 // Start pings at once, then every period, until ctx ends.
@@ -374,6 +401,9 @@ func (p *pinger) Start(ctx context.Context) error {
 	defer stop()
 	for {
 		_ = p.ping(ctx)
+		if p.record != nil {
+			p.record(ctx, p.up())
+		}
 		select {
 		case <-ctx.Done():
 			return nil

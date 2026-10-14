@@ -21,6 +21,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/github"
+	summ "github.com/Smana/agent-platform/internal/summary"
 )
 
 // MaxNarrated is status.narrated's maxItems in the Task CRD: Post trims the oldest keys past it.
@@ -164,69 +165,84 @@ func Tokens(n int64) string {
 // reasons reads the end, stop and refusal reasons of the factory, SP1 and SP2 (P15) as prose.
 func reasons() map[string]string {
 	return map[string]string{
-		"agent_finished":          "the agent finished its work",
-		"agent_error":             "the agent stopped on an error",
-		"agent_stuck":             "the agent reported that it was stuck",
-		"stuck":                   "the run showed no activity for 10 minutes",
-		"deadline":                "the run hit its wall-clock limit",
-		"pod_lost":                "the sandbox was lost (spot reclaim or eviction)",
-		"Disrupted":               "the sandbox's node was reclaimed or drained",
-		"PodLost":                 "the sandbox was lost (deleted, or its node disappeared)",
-		"PodFailed":               "the sandbox failed on its own",
-		"resumes_exhausted":       "the sandbox was lost again and the automatic resumes are used up",
-		"resume_budget":           "the sandbox was lost and the task's token budget cannot cover another run",
-		"revoked":                 "the run was stopped by hand",
-		"deleted":                 "the run's claim was deleted",
-		"budget-run":              "the run spent its token budget",
-		"budget-principal":        "the factory's daily token budget is spent",
-		"budget-fleet":            "the agent fleet's daily token budget is spent",
-		"budget-task":             "the task's token budget has no room left for another full run",
-		"run_lost":                "the run disappeared",
-		"no_pr":                   "the agent opened no pull request",
-		"no_action":               "the triager found nothing to change",
-		"proposal_ready":          "the triager proposed a change for a maintainer to publish",
-		"merged":                  "the pull request was merged",
-		"pr_closed":               "the pull request was closed",
-		"text_too_long":           "the issue text is longer than the factory accepts (14 KiB)",
-		"daily_task_cap":          "the factory has reached its daily task cap",
-		"kill_switch":             "the factory's kill switch is engaged",
-		"stopped_by_label":        "a maintainer applied factory/stop",
-		"stopped_by_annotation":   "an operator stopped it",
-		"superseded":              "a new factory/ready replaced it",
-		"unauthorised_labeller":   "only a maintainer's factory/ready starts a task",
-		"edited_after_label":      "the issue was edited after it was labelled",
-		"task_active":             "a task for this issue is still running",
-		"unsanitisable":           "the issue text could not be made safe for an agent to read; simplify its markup",
-		"unauthorised_stopper":    "only a maintainer's factory/stop stops a task",
-		"foreign_room":            "a room of the task's name exists and is not the factory's",
-		"stale":                   "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
-		"review_rounds_exhausted": "the reviewer still asked for changes after the last review round",
-		"no_verdict":              "the last review ended without a verdict the factory can act on, with no review round left",
-		"verdict_missing":         "it recorded no verdict",
-		"verdict_stale":           "its approval was not for the pull request's current head",
-		"room_log_too_long":       "the room's log was too long to read to its end",
-		"room_log_unreadable":     "the room's log, which holds the review verdict, could not be read",
-		"run_unschedulable":       "the cluster never admitted the task's run within its bound",
-		"ci_red":                  "CI stayed red after the fix runs",
-		"secret_scan_red":         "the secret scan (Security scanning 🔒, TruffleHog) found a live credential in this pull request: a maintainer revokes it and closes the pull request, and the factory does not retry",
-		"ci_pending":              "CI has not finished",
-		"main_red":                "main's CI went red after the merge",
-		"revert_requested":        "a maintainer asked for a revert",
-		"merged_verified":         "merged, and main stayed green for 30 minutes",
-		"gate_path":               "it touches a gate path, so an agent can never merge it; a human must re-author the change",
-		"class_mismatch":          "the diff is not the class the triage predicted",
-		"foreign_trailer":         "its head commit comes from another task's run",
-		"class_paused":            "auto-merge of this class is paused after a revert",
-		"head_unreported":         "the room never reported its current head as a commit one of the task's runs pushed",
-		"auto_merge_cap":          "today's auto-merge cap is reached",
-		"policy_pending":          "the policy needs a maintainer's approval",
-		"policy_absent":           "policy-bot has not evaluated it",
-		"maintainer_approved":     "a maintainer approved it: a human merges it",
-		"no_approving_verdict":    "the reviewer did not approve it",
-		"not_agent_authored":      "it is not the agents' pull request",
-		"not_mergeable":           "GitHub does not allow merging it as it stands",
-		"head_moved":              "a new commit landed since the decision, so the merge was refused and it is decided again",
-		"shadow_would_arm":        "it would auto-merge, and the merge gate is in shadow until the merge wave",
+		"agent_finished":            "the agent finished its work",
+		"agent_error":               "the agent stopped on an error",
+		"agent_stuck":               "the agent reported that it was stuck",
+		"escalation_expired":        "it waited past the escalation time limit for a maintainer",
+		"stuck":                     "the run showed no activity for 10 minutes",
+		"deadline":                  "the run hit its wall-clock limit",
+		"pod_lost":                  "the sandbox was lost (spot reclaim or eviction)",
+		"Disrupted":                 "the sandbox's node was reclaimed or drained",
+		"PodLost":                   "the sandbox was lost (deleted, or its node disappeared)",
+		"PodFailed":                 "the sandbox failed on its own",
+		"resumes_exhausted":         "the sandbox was lost again and the automatic resumes are used up",
+		"resume_budget":             "the sandbox was lost and the task's token budget cannot cover another run",
+		"revoked":                   "the run was stopped by hand",
+		"deleted":                   "the run's claim was deleted",
+		"budget-run":                "the run spent its token budget",
+		"budget-principal":          "the factory's daily token budget is spent",
+		"budget-fleet":              "the agent fleet's daily token budget is spent",
+		"budget-task":               "the task's token budget has no room left for another full run",
+		"run_lost":                  "the run disappeared",
+		"no_pr":                     "the agent opened no pull request",
+		"no_action":                 "the triager found nothing to change",
+		"proposal_ready":            "the triager proposed a change for a maintainer to publish",
+		"merged":                    "the pull request was merged",
+		"pr_closed":                 "the pull request was closed",
+		"text_too_long":             "the issue text is longer than the factory accepts (14 KiB)",
+		"daily_task_cap":            "the factory has reached its daily task cap",
+		"kill_switch":               "the factory's kill switch is engaged",
+		"stopped_by_label":          "a maintainer applied factory/stop",
+		"stopped_by_annotation":     "an operator stopped it",
+		"superseded":                "a new factory/ready replaced it",
+		"unauthorised_labeller":     "only a maintainer's factory/ready starts a task",
+		"edited_after_label":        "the issue was edited after it was labelled",
+		"task_active":               "a task for this issue is still running",
+		"unsanitisable":             "the issue text could not be made safe for an agent to read; simplify its markup",
+		"unauthorised_stopper":      "only a maintainer's factory/stop stops a task",
+		"foreign_room":              "a room of the task's name exists and is not the factory's",
+		"stale":                     "the pull request had no maintainer activity (a review, a comment or a push) for 14 days",
+		"review_rounds_exhausted":   "the reviewer still asked for changes after the last review round",
+		"no_verdict":                "the last review ended without a verdict the factory can act on, with no review round left",
+		"verdict_missing":           "it recorded no verdict",
+		"merge_gate_off":            "no merge class is live or in shadow, so the factory does not gate this pull request",
+		"verdict_stale":             "its approval was not for the pull request's current head",
+		"room_log_too_long":         "the room's log was too long to read to its end",
+		"room_log_unreadable":       "the room's log, which holds the review verdict, could not be read",
+		"run_unschedulable":         "the cluster never admitted the task's run within its bound",
+		"ci_red":                    "CI stayed red after the fix runs",
+		"secret_scan_red":           "the secret scan (Security scanning 🔒, TruffleHog) found a live credential in this pull request: a maintainer revokes it and closes the pull request, and the factory does not retry",
+		"ci_cancelled":              "a required check was cancelled and re-running it did not settle it",
+		"ci_pending":                "CI has not finished",
+		"main_red":                  "main's CI went red after the merge",
+		"revert_requested":          "a maintainer asked for a revert",
+		"merged_verified":           "merged, and main stayed green for 30 minutes",
+		"gate_path":                 "it touches a gate path, so an agent can never merge it; a human must re-author the change",
+		"class_mismatch":            "the diff is not the class the triage predicted",
+		"foreign_trailer":           "its head commit comes from another task's run",
+		"class_paused":              "auto-merge of this class is paused after a revert",
+		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
+		"auto_merge_cap":            "today's auto-merge cap is reached",
+		"policy_pending":            "the policy needs a maintainer's approval",
+		"policy_absent":             "policy-bot has not evaluated it",
+		"maintainer_approved":       "a maintainer approved it: a human merges it",
+		"no_approving_verdict":      "the reviewer did not approve it",
+		"not_agent_authored":        "it is not the agents' pull request",
+		"not_mergeable":             "GitHub does not allow merging it as it stands",
+		"head_moved":                "a new commit landed since the decision, so the merge was refused and it is decided again",
+		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow until the merge wave",
+		"human_commit_in_pr":        "it holds a commit no run of the task reported, so the factory neither fixes nor merges on top of it",
+		"reentered_policy":          "policy-bot now passes the head it was handed off at",
+		"reentered_head_reported":   "the room now reports its head as a commit of the task's run",
+		"rereview_verdict_stale":    "the factory moved its head after the approval, so it is reviewed again",
+		"waiting_human_driver":      "a person drives its room; the hold ends when they hand the driver back or their lease lapses",
+		"waiting_room_busy":         "another run in its room is still going; the hold ends when that run ends",
+		"waiting_run_slot":          "the factory runs its tasks one at a time and another one has the slot",
+		"waiting_active_tasks":      "the factory's cap on active tasks is reached",
+		"waiting_review_wip":        "the reviewers are at their limit of pull requests in review",
+		"waiting_daily_budget":      "the factory's daily token budget is spent",
+		"waiting_room_log":          "the room's log is not open on the broker yet",
+		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 	}
 }
 
@@ -357,8 +373,37 @@ func WouldArm(t *v1alpha1.Task, class string) Event {
 
 // WaitingForHuman says the gate stopped deciding and a maintainer's review is what remains.
 func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
-	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)),
-		Body: fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))}
+	body := fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))
+	if pr := t.Status.PullRequest; pr != nil && pr.Number > 0 {
+		// The ruleset blocks a plain merge, whoever approved (#51).
+		body += "\n\nTo merge: " + summ.MergeHow(t.Spec.Repository, pr.Number) + "."
+	}
+	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
+}
+
+// BackToGate says a transient hand-off returned to the merge gate (N1), and why. n is the task's
+// count of returns, so each one is posted once.
+func BackToGate(t *v1alpha1.Task, reason string, n int32) Event {
+	return Event{Key: fmt.Sprintf("gate-%s-%d", reason, n),
+		Body: fmt.Sprintf("Agent factory task `%s` goes back to the merge gate: %s.", t.Name, Reason(reason))}
+}
+
+// Held says the task's room is held — a person drives it, or another run is live in it — so its
+// next run waits (N3). Its key is the wait's:
+// the task's run count and retries, so a hold that changes shape — the other run ends and a
+// person keeps the driver — is said once, and the next wait for a run says it again.
+func Held(t *v1alpha1.Task, reason, roomsURL string) Event {
+	return Event{Key: fmt.Sprintf("hold-%d-%d", len(t.Status.Runs), t.Status.Retries),
+		Body: fmt.Sprintf("Agent factory task `%s` waits: %s. Its next run starts once the room is free: %s/r/%s (tailnet only).",
+			t.Name, Reason(reason), strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)}
+}
+
+// CIFixing says why the next run starts: CI is red on the head, naming each check and its
+// conclusion ("name: state"). Once per fix run, as Revising is once per round.
+func CIFixing(t *v1alpha1.Task, pr int, head string, checks []string, n, limit int) Event {
+	return Event{Key: fmt.Sprintf("ci-fixing-%d", n),
+		Body: fmt.Sprintf("Agent factory task `%s`: CI is red on #%d at `%s` (%s); a run starts to fix it (%d/%d).",
+			t.Name, pr, head, strings.Join(checks, ", "), n, limit)}
 }
 
 // CIExhausted says the CI fix runs are spent and the named checks are still failing (§6.3).
@@ -424,8 +469,31 @@ func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event 
 	if h := hints()[phase]; h != "" {
 		b.WriteString("\n\n" + h)
 	}
-	fmt.Fprintf(&b, "\n\nTokens used: %s.", Tokens(t.Status.Usage.Tokens))
-	return Event{Key: fmt.Sprintf("end-%s-%d", strings.ToLower(phase), len(t.Status.Runs)), Body: b.String()}
+	if v1alpha1.TerminalPhase(phase) {
+		b.WriteString(usageLine + ": " + Tokens(t.Status.Usage.Tokens) + ".")
+	} else { // a retry can still spend: this is the total so far
+		b.WriteString(usageLine + " so far: " + Tokens(t.Status.Usage.Tokens) + ".")
+	}
+	return Event{Key: fmt.Sprintf(closingPrefix+"%s-%d", strings.ToLower(phase), len(t.Status.Runs)), Body: b.String()}
+}
+
+const (
+	closingPrefix = "end-"
+	usageLine     = "\n\nTokens used"
+)
+
+// Closing reports whether key is an ending's: its token total is only final once the usage settles.
+func Closing(key string) bool { return strings.HasPrefix(key, closingPrefix) }
+
+// Retotal rewrites an ending's "Tokens used" line with the settled total (#42).
+func Retotal(body string, tokens int64, incomplete bool) string {
+	if i := strings.LastIndex(body, usageLine); i >= 0 {
+		if incomplete { // a run the meter never read: the total is a floor
+			return body[:i] + usageLine + ": at least " + Tokens(tokens) + " (a run's usage was not read)."
+		}
+		return body[:i] + usageLine + ": " + Tokens(tokens) + "."
+	}
+	return body
 }
 
 // StopIgnored answers a factory/stop the poller will not act on, once per label.

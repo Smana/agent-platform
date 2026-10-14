@@ -55,6 +55,10 @@ func (*fakeActLog) DriverSeen(context.Context, string, string, bool) error { ret
 
 func (*fakeActLog) OpenApprovals(context.Context, string) ([]store.Approval, error) { return nil, nil }
 
+func (*fakeActLog) LastTaskState(context.Context, string, int64) (json.RawMessage, error) {
+	return nil, nil
+}
+
 // The rest of humanLog: the room list's reads and the lease sweep's.
 func (*fakeActLog) Range(context.Context, string, int64, int) ([]envelope.Event, error) {
 	return nil, nil

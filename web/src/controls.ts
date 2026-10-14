@@ -215,12 +215,43 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     send(action);
   };
 
+  // Owner-only, and an admin is an owner in every room (policy Invite, Close): the same acts the
+  // broker checks again, so a hidden control is a courtesy and never the gate.
+  const members = el("form", { className: "members" });
+  const invitee = named(el("input", { name: "invitee", placeholder: "human:<sub> to invite" }), "member to invite");
+  const memberRole = select("memberRole", "role of the invited member", [["watcher", "watcher"], ["collaborator", "collaborator"], ["owner", "owner"]]);
+  memberRole.value = "collaborator";
+  const approver = named(el("input", { name: "inviteApprover", type: "checkbox" }), "may decide approvals");
+  const approverLabel = el("label", { textContent: " approver" });
+  approverLabel.prepend(approver);
+  let invited = { seq: 0, who: "" };
+  const invite = () => {
+    const principal = invitee.value.trim();
+    if (!principal) return;
+    invited = { seq: send({ kind: "invite", principal, memberRole: memberRole.value, approver: approver.checked }), who: invitee.value };
+  };
+  members.append(invitee, memberRole, approverLabel, button("invite", "invite", invite));
+  members.onsubmit = (e) => { e.preventDefault(); invite(); };
+
+  // Closing seals the room for good: the first click asks, the second does it.
+  const closeLabel = "close room";
+  const closer = button(closeLabel, "close", () => {
+    if (closer.textContent === closeLabel) {
+      closer.textContent = "confirm: close this room for good";
+      return;
+    }
+    closer.textContent = closeLabel;
+    send({ kind: "close" });
+  });
+  const admin = el("div", { className: "room-admin" });
+  admin.append(members, closer);
+
   const manifest = el("div", { className: "manifest", hidden: true });
   const claim = el("pre");
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
   // Mounted once: refresh toggles hidden, never re-mounts (R10).
-  root.replaceChildren(approvals, driver, composer, queue, hand, manifest);
+  root.replaceChildren(approvals, driver, composer, queue, hand, admin, manifest);
   const showResult = (result: unknown) => {
     if (!result) return;
     claim.textContent = claimText(result);
@@ -240,6 +271,8 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       for (const e of [driver, composer, queue]) e.hidden = watcher;
       hand.hidden = watcher || !(isDriver() || isOwner());
       manifest.hidden = watcher || !claim.textContent;
+      admin.hidden = !isOwner() || state.sealed;
+      if (admin.hidden) closer.textContent = closeLabel;
       renderDriver();
       renderQueue();
       renderApprovals();
@@ -251,6 +284,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     onAck(f: Frame) {
       if (f.rejected) return;
       if (f.clientSeq && f.clientSeq === sent.seq && text.value === sent.text) text.value = "";
+      if (f.clientSeq && f.clientSeq === invited.seq && invitee.value === invited.who) invitee.value = "";
       showResult(f.result);
     },
   };

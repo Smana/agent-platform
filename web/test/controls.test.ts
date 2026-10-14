@@ -29,6 +29,41 @@ const queued = (seq: number, author: string, text: string) => ({ v: 1, id: Strin
   payload: { kind: "chat", text, delivery: "queued" } });
 
 describe("mountControls", () => {
+  it("lets an owner invite a member, with a role and the approver flag", () => {
+    const c = setup(you("human:o", "owner"));
+    c.btn("invite")!.click(); // nobody named: nothing sent
+    expect(c.sent).toHaveLength(0);
+    c.field<HTMLInputElement>("invitee").value = "human:new@ogenki.io";
+    c.field<HTMLSelectElement>("memberRole").value = "collaborator";
+    c.field<HTMLInputElement>("inviteApprover").checked = true;
+    c.btn("invite")!.click();
+    expect(c.acts()).toEqual([{ kind: "invite", principal: "human:new@ogenki.io", memberRole: "collaborator", approver: true }]);
+    expect(c.field<HTMLInputElement>("invitee").value).toBe("human:new@ogenki.io"); // cleared by its ack, not before
+    c.controls.onAck({ type: "ack", clientSeq: c.sent[0].clientSeq, seq: 5 });
+    expect(c.field<HTMLInputElement>("invitee").value).toBe("");
+  });
+
+  it("closes the room after a confirmation, and only for an owner", () => {
+    const c = setup(you("human:o", "owner"));
+    c.btn("close")!.click();
+    expect(c.sent).toHaveLength(0); // the first click asks
+    c.btn("close")!.click();
+    expect(c.acts()).toEqual([{ kind: "close" }]);
+  });
+
+  it("offers neither invite nor close to anyone but an owner, nor in a sealed room", () => {
+    for (const role of ["collaborator", "watcher"]) {
+      const c = setup(you("human:c", role));
+      expect(c.btn("invite")).toBeNull();
+      expect(c.btn("close")).toBeNull();
+    }
+    const o = setup(you("human:o", "owner"));
+    o.state.sealed = true;
+    o.controls.refresh();
+    expect(o.btn("invite")).toBeNull();
+    expect(o.btn("close")).toBeNull();
+  });
+
   it("sends the composer's text with its delivery and the epoch it was decided on", () => {
     const c = setup(you("human:a", "owner"));
     c.field<HTMLTextAreaElement>("text").value = "look at the flaky test";

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -241,7 +242,7 @@ func TestAnnotateRefusesTheCreateOnlyKeys(t *testing.T) {
 	if err := c.Create(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead} {
+	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash} {
 		if err := c.Annotate(t.Context(), s.RunID, map[string]string{key: "https://github.com/Smana/cloud-native-ref/issues/1"}); err == nil {
 			t.Errorf("%s was patched", key)
 		}
@@ -284,6 +285,20 @@ func TestFromUnstructuredReadsFinishedAt(t *testing.T) {
 	r, ok := FromUnstructured(u)
 	if want := time.Date(2026, 9, 30, 10, 20, 0, 0, time.UTC); !ok || !r.Finished.Equal(want) {
 		t.Fatalf("%v %v", r.Finished, ok)
+	}
+}
+
+// #55: a claim deleted while live keeps its phase while its finalizers run; Deleting says it
+// is going, so its reservation is released then, not at a terminal phase it never reaches.
+func TestFromUnstructuredReadsDeleting(t *testing.T) {
+	u := Build(spec())
+	if r, _ := FromUnstructured(u); r.Deleting {
+		t.Fatal("a claim without a deletion timestamp is not deleting")
+	}
+	ts := metav1.NewTime(time.Date(2026, 9, 30, 10, 20, 0, 0, time.UTC))
+	u.SetDeletionTimestamp(&ts)
+	if r, ok := FromUnstructured(u); !ok || !r.Deleting {
+		t.Fatalf("%+v %v", r, ok)
 	}
 }
 

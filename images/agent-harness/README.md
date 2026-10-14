@@ -29,8 +29,15 @@ characters or holds a control character or line separator is left out, and `Agen
 `https://github.com/` URL. If the footer cannot be written, `gh pr create` exits 1.
 
 Trailers and footer are provenance hints, never authorisation (SP3 ruling TB). An agent with a shell can skip
-or rewrite the hook, and `gh api` or a later `gh pr edit` bypasses the footer, so the merge gate binds a commit
-to a run by push identity.
+or rewrite the hook, `gh api` or a later `gh pr edit` bypasses the footer, and run IDs are public, so anyone
+can copy a trailer. The factory still reads `Agent-Run` as a claim: it catches an unstamped human commit, not
+a deliberate forgery. What binds commits to the factory is push identity
+([#76](https://github.com/Smana/agent-platform/issues/76), [#82](https://github.com/Smana/agent-platform/issues/82)): before a CI-fixed pull request is reviewed again, and before the merge gate arms or shadows any pull request, every
+push to its branch since the branch's creation must be the agents App's in GitHub's repository activity. A human
+cannot push as the App without access to the agents namespace or the App key. The binding is to the App, not the
+task: the implementer octo-sts trust policy (cloud-native-ref `.github/chainguard/agent-implementer.sts.yaml`) is
+repository-wide, so any implementer run of any task can push as the bot, and only the trailer narrows that to this
+task's runs. Commits are not signed.
 
 The harness never holds a gateway or octo-sts token: identity-proxy injects them. Test with `task harness:test`. `release.yaml` builds, tests, signs and pushes it as
 `ghcr.io/smana/agent-harness:<release tag>`; the AgentRun composition in crossplane-configuration

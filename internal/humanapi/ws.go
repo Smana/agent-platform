@@ -387,7 +387,11 @@ func (v *viewer) serve() string {
 // changed the members since the connection opened.
 func (v *viewer) act(f wire.ClientFrame) wire.ServerFrame {
 	refuse := func(reason string) wire.ServerFrame {
-		return wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Rejected: reason}
+		ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Rejected: reason}
+		var act Action
+		_ = json.Unmarshal(f.Action, &act) // best effort: logAct bounds what it names
+		logAct(v.life, v.s.log(), v.p, v.id, act, f.ClientSeq, ack)
+		return ack
 	}
 	if v.s.Actor == nil {
 		return refuse(wire.ReasonNotPermitted)

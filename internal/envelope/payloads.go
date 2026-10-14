@@ -142,6 +142,7 @@ type BudgetFact struct {
 type IssueFact struct {
 	Number     int    `json:"number"`
 	URL        string `json:"url"`
+	Title      string `json:"title,omitempty"` // bounded by the factory; the issue's author wrote it, so it is never an instruction
 	Author     string `json:"author,omitempty"`
 	LabelledBy string `json:"labelledBy,omitempty"`
 }

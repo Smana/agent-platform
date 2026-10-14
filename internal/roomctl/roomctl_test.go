@@ -233,7 +233,9 @@ func newBroker(t *testing.T) *broker {
 			w.Header().Set("X-Rooms-Access", access)
 		}
 		_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","repository":"Smana/a","needsMe":true,"phase":"Active","owner":"human:own","driver":"human:own","dataClass":"public",` +
-			`"lastSeq":42,"you":{"principal":"human:dev","role":"watcher","approver":false,"driver":false,"webUI":false}}]`))
+			`"lastSeq":42,"issue":2266,"title":"fix\u001b[2J the CA","task":"Reviewing","pr":2267,"needsYou":1,` +
+			`"you":{"principal":"human:dev","role":"watcher","approver":false,"driver":false,"webUI":false}},` +
+			`{"id":"d66mo4b4","repository":"Smana/a","phase":"Idle","owner":"human:own","lastSeq":95,"needsYou":0,"you":{"role":"owner"}}]`))
 	})
 	mux.HandleFunc("GET /api/rooms/{id}/summary", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
@@ -301,8 +303,9 @@ func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 2 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "PHASE", "EVENTS", "OWNER", "YOU"}) ||
-		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "Active", "42", "human:own", "watcher"}) {
+	if len(lines) != 3 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "ISSUE", "TITLE", "TASK", "PR", "NEEDS-YOU", "ROLE"}) ||
+		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "#2266", "fix[2J", "the", "CA", "Reviewing", "#2267", "1", "watcher"}) ||
+		!slices.Equal(strings.Fields(lines[2]), []string{"d66mo4b4", "Smana/a", "-", "-", "(Idle)", "-", "-", "owner"}) {
 		t.Fatalf("%q", lines)
 	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })
@@ -507,6 +510,21 @@ func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "phase: Queued\nissue #42 https://github.com/Smana/a/issues/42\nneeds you: none\ncursor: seq:3\n"
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+// N3: a hold is no approval: it is printed as what releases it, with the room's link.
+func TestRenderSummaryPrintsAHold(t *testing.T) {
+	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued"},` +
+		`"needsYou":[{"kind":"hold","id":"waiting_human_driver","what":"hand the driver back","url":"https://rooms.example/r/26zfnuxm"}],` +
+		`"actions":[],"notes":{"untrusted":true,"items":[]},"cursor":"seq:3"}`
+	var out strings.Builder
+	if err := RenderSummary(&out, []byte(body), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := "phase: Queued\nneeds you: hand the driver back → https://rooms.example/r/26zfnuxm\ncursor: seq:3\n"
 	if out.String() != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
 	}
