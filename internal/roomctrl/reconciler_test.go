@@ -601,7 +601,7 @@ func taskEvent(seq int64, f envelope.TaskFacts) seqPayload {
 
 func TestTaskStatus(t *testing.T) {
 	first := envelope.TaskFacts{Phase: "AwaitingHuman",
-		Issue: &envelope.IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: "dev1", LabelledBy: "dev1"},
+		Issue: &envelope.IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Title: "fix it", Author: "dev1", LabelledBy: "dev1"},
 		PR:    &envelope.PRFact{Number: 1, URL: "https://github.com/o/r/pull/1", Author: "bot", Reviewers: []string{"dev2"}}}
 	later := envelope.TaskFacts{Phase: "Merged", PR: &envelope.PRFact{Number: 1, URL: "https://github.com/o/r/pull/1", Author: "bot"}}
 	prior := &v1alpha1.TaskStatus{Phase: "Planning", IssueAuthor: "kept"}
@@ -612,9 +612,9 @@ func TestTaskStatus(t *testing.T) {
 		want   *v1alpha1.TaskStatus
 	}{
 		{"the facts become the status", []seqPayload{taskEvent(2, first)}, nil,
-			&v1alpha1.TaskStatus{Phase: "AwaitingHuman", IssueAuthor: "dev1", LabelledBy: "dev1", PRAuthor: "bot", PRReviewers: []string{"dev2"}}},
+			&v1alpha1.TaskStatus{Phase: "AwaitingHuman", IssueAuthor: "dev1", LabelledBy: "dev1", PRAuthor: "bot", PRReviewers: []string{"dev2"}, Issue: 1, IssueTitle: "fix it", PR: 1}},
 		{"the highest seq wins, whatever the order", []seqPayload{taskEvent(9, later), taskEvent(2, first)}, nil,
-			&v1alpha1.TaskStatus{Phase: "Merged", PRAuthor: "bot"}},
+			&v1alpha1.TaskStatus{Phase: "Merged", PRAuthor: "bot", PR: 1}},
 		{"no facts leaves it nil", nil, nil, nil},
 		{"an undecodable payload leaves the last status", []seqPayload{{3, json.RawMessage(`{"kind":"task","phase":7}`)}}, prior, prior},
 		{"another kind leaves the last status", []seqPayload{{3, envelope.StatePayload("run_phase", map[string]any{"phase": "Failed"})}}, prior, prior},

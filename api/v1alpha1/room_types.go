@@ -139,6 +139,14 @@ type TaskStatus struct {
 	// +kubebuilder:validation:items:MaxLength=64
 	// +optional
 	PRReviewers []string `json:"prReviewers,omitempty"`
+	// The issue and PR the task works on, for the room list's rows (#50).
+	// +optional
+	Issue int32 `json:"issue,omitempty"`
+	// +kubebuilder:validation:MaxLength=500
+	// +optional
+	IssueTitle string `json:"issueTitle,omitempty"`
+	// +optional
+	PR int32 `json:"pr,omitempty"`
 }
 
 func addKnownTypes(scheme *runtime.Scheme) error {

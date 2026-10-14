@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
@@ -61,6 +62,8 @@ type taskForge interface {
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	PullRequestForBranch(ctx context.Context, branch string) (int, error)
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
+	PullRequestCommits(ctx context.Context, number int) ([]forge.Commit, error)
+	BranchActivity(ctx context.Context, branch string) ([]forge.Push, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 }
@@ -76,6 +79,7 @@ type metrics interface {
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	Resumed(ctx context.Context, reason string)
+	RoomClosedAtCap(ctx context.Context, reason string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -95,15 +99,18 @@ const (
 )
 
 // escalatedPoll is how often an escalated task is reconciled. It waits only for a maintainer's
-// /factory retry or the end of its pull request, which nothing bounds in number (§6.3 gives
-// Escalated no timeout), and each poll costs GitHub calls the whole factory shares.
+// /factory retry, the end of its pull request, or caps.escalatedHours (#61), and each poll costs
+// GitHub calls the whole factory shares.
 const escalatedPoll = 5 * time.Minute
 
 // Reconciler is the Task state machine (§4). One reconcile per task every poll interval and on
 // every change of one of its AgentRuns; one worker, so the caps are counted without a race
 // between two tasks starting at once. Run ids are derived from the task (R48), never random.
 type Reconciler struct {
-	Client    client.Client
+	Client client.Client
+	// Ledger reads and writes R50's day ledgers live, as the API and the meter do: the cached
+	// client watches one ConfigMap, the stop object. Queued reserves its runs there (#78).
+	Ledger    client.Client
 	Namespace string
 	Cfg       *config.Config
 	Forge     taskForge
@@ -147,8 +154,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
 	// its action, even after the task itself has ended.
 	revertWait := r.revertable(&t) || r.revertPending(&t)
-	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) {
-		return ctrl.Result{}, nil
+	var closeDue bool
+	var closeWait time.Duration
+	if ended {
+		var rerr error
+		if closeDue, _, closeWait, rerr = r.roomState(ctx, &t); rerr != nil {
+			return ctrl.Result{}, rerr
+		}
+	}
+	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) && !closeDue {
+		return ctrl.Result{RequeueAfter: closeWait}, nil // closeWait: the revert window still open (#56)
 	}
 	before := t.Status.DeepCopy()
 	if t.Status.Phase == "" {
@@ -192,6 +207,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{RequeueAfter: spanRetry}, nil
 	}
 	if v1alpha1.TerminalPhase(t.Status.Phase) {
+		// #56: the room closes once everything the task owes it has landed. Re-evaluated on the
+		// state this pass left, so the pass that posts the last fact closes it.
+		var closeLeft time.Duration
+		if err == nil {
+			if due, capped, wait, serr := r.roomState(ctx, &t); serr != nil {
+				err = serr
+			} else if due {
+				var closed bool
+				if closed, err = r.closeRoom(ctx, &t, capped != ""); closed && capped != "" {
+					r.log().Info("room closed at the cap", "task.id", t.Name, "reason", capped)
+					r.Metrics.RoomClosedAtCap(ctx, capped)
+				}
+			} else {
+				closeLeft = wait
+			}
+		}
 		// The revert watch polls: a revert PR merges, closes or stalls on GitHub's clock, not ours.
 		if err == nil && (r.revertable(&t) || r.revertPending(&t)) {
 			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
@@ -199,7 +230,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err == nil && r.settling(&t) {
 			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: closeLeft}, err // closeLeft: the revert window or a driving person (#56)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -308,11 +339,15 @@ func (r *Reconciler) stopRequested(ctx context.Context, t *v1alpha1.Task) (bool,
 
 // stop: every live run of the task is annotated revoked=manual, then every run deleted (§6.1).
 // The runs are the cluster's, not status's (ruling SN): a run whose record was lost to a
-// conflicting status write is still the task's, and still stopped.
+// conflicting status write is still the task's, and still stopped. The claims' last usage is
+// copied into the records first: once deleted, the settle can no longer read it (#55).
 func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) error {
 	all, err := r.Runs.List(ctx)
 	if err != nil {
 		return err
+	}
+	if len(t.Status.Runs) > 0 {
+		absorb(t, all)
 	}
 	for _, run := range all {
 		if run.TaskID != t.Name {
@@ -329,7 +364,7 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 				r.Metrics.Revoked(ctx, "manual")
 			}
 		}
-		if err := r.Runs.Delete(ctx, run.ID); err != nil {
+		if err := r.deleteRun(ctx, run.ID); err != nil {
 			return err
 		}
 	}
@@ -359,12 +394,17 @@ func narrateOn(t *v1alpha1.Task, n int, e narrate.Event) {
 func (r *Reconciler) drain(ctx context.Context, t *v1alpha1.Task) error {
 	for len(t.Status.Outbox) > 0 {
 		o := t.Status.Outbox[0]
+		if narrate.Closing(o.Key) && r.settling(t) {
+			break // its token total is final only once the usage settles (#42); settle requeues
+		}
 		if err := r.narrator().Post(ctx, t, o.Number, narrate.Event{Key: o.Key, Body: o.Body}); err != nil {
 			return err
 		}
 		t.Status.Outbox = t.Status.Outbox[1:]
 	}
-	t.Status.Outbox = nil
+	if len(t.Status.Outbox) == 0 {
+		t.Status.Outbox = nil
+	}
 	return nil
 }
 
@@ -382,8 +422,10 @@ func target(t *v1alpha1.Task) int {
 // end moves a task to a terminal or escalated phase and says why, once. The task's tokens are
 // not recorded here: the settle does that, once, after the meter's late readings have had their
 // window (R49). An escalation names the maintainers (§6.3); the outcome records tier fit and the
-// task.final line the moment the task first ends.
+// task.final line the moment the task first ends. The reservations no claim holds any more are
+// released here (#55): every ending path, and every replay of one, passes through it.
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
 	narrateLater(t, narrate.Ended(t, phase, reason, r.Cfg.Maintainers...))
 	r.outcome(ctx, t)
@@ -414,6 +456,12 @@ func (r *Reconciler) settle(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	}
 	t.Status.UsageSettled = true
+	blind := slices.ContainsFunc(t.Status.Runs, func(rec v1alpha1.RunRecord) bool { return rec.Tokens == 0 })
+	for i := range t.Status.Outbox {
+		if o := &t.Status.Outbox[i]; narrate.Closing(o.Key) { // the closing comment waited for this total (#42)
+			o.Body = narrate.Retotal(o.Body, t.Status.Usage.Tokens, blind)
+		}
+	}
 	tokens, tier, tmpl, class := t.Status.Usage.Tokens, t.Spec.Budget.Tier, t.Spec.Template, t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.TaskTokens(ctx, tokens, tier, tmpl, class) })
 	return nil
@@ -576,6 +624,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !ok {
 		t.Status.Reason = why
+		if why == "waiting_room_busy" || why == "waiting_human_driver" { // the room is held, not the factory's own caps (N3)
+			narrateLater(t, narrate.Held(t, why, r.Cfg.RoomsURL))
+		}
 		return nil
 	}
 	// A pull request merged or closed meanwhile ends the wait with no run, so it is read before
@@ -586,6 +637,12 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	if late {
 		var done bool
 		if pr, done, err = r.lateReviews(ctx, t); err != nil || done {
+			return err
+		}
+	}
+	// A CI fix starts from the branch head: one a human pushed would ride the fix to a merge.
+	if late && t.Status.NextRole == "" && nextTrigger(t) == "ci" {
+		if handed, err := r.humanCommit(ctx, t, pr.HeadSHA); err != nil || handed {
 			return err
 		}
 	}
@@ -600,15 +657,19 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
-		spent, err := r.factorySpentToday(ctx)
-		if err != nil {
+		over, err := r.reserveFactoryDay(ctx, t, limit)
+		switch {
+		case errors.Is(err, api.ErrOverBudget):
+			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
+			return nil
+		case errors.Is(err, api.ErrMeterBlind): // an enforced cap the meter cannot feed holds (#54)
+			t.Status.Reason = "waiting_meter_blind"
+			return nil
+		case err != nil && r.Cfg.Budgets.EnforcePrincipal:
 			return err
-		}
-		if spent >= limit {
-			if r.Cfg.Budgets.EnforcePrincipal {
-				t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
-				return nil
-			}
+		case err != nil: // a shadow cap counts; it never holds a run
+			r.log().Warn("daily cap unreserved (shadow)", "task.id", t.Name, "err", err)
+		case over:
 			record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-principal-shadow") })
 		}
 	}

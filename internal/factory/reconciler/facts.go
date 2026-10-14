@@ -33,8 +33,8 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	}
 	if t.Spec.Issue > 0 {
 		f.Issue = &envelope.IssueFact{Number: t.Spec.Issue,
-			URL:    fmt.Sprintf("https://github.com/%s/issues/%d", t.Spec.Repository, t.Spec.Issue),
-			Author: t.Spec.IssueAuthor}
+			URL:   fmt.Sprintf("https://github.com/%s/issues/%d", t.Spec.Repository, t.Spec.Issue),
+			Title: issueTitle(t.Spec.Text), Author: t.Spec.IssueAuthor}
 		if login, ok := strings.CutPrefix(t.Spec.Source.RequestedBy, "github:"); ok { // system:runlore labelled nothing
 			f.Issue.LabelledBy = login
 		}
@@ -43,6 +43,24 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 		f.PR = &envelope.PRFact{Number: pr.Number, URL: pr.URL, Author: pr.Author, Reviewers: pr.Reviewers}
 	}
 	return f
+}
+
+// maxTitle bounds the title the facts carry, in runes.
+const maxTitle = 120
+
+// issueTitle is the first line of the snapshot ("# title", intake.Snapshot), bounded: the
+// room list shows it, and the Room status keeps it.
+func issueTitle(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	title, ok := strings.CutPrefix(line, "# ")
+	if !ok {
+		return ""
+	}
+	title = strings.Join(strings.Fields(title), " ")
+	if r := []rune(title); len(r) > maxTitle {
+		title = string(r[:maxTitle]) + "…"
+	}
+	return title
 }
 
 // factsKey is what decides that the room's facts changed. Token usage counts in steps (R12): 10% of

@@ -42,8 +42,9 @@ func revocations() []string {
 	return []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "manual",
 		"budget-task-shadow", "budget-principal-shadow"}
 }
-func intakeSources() []string { return []string{"issue", "runlore", "schedule", "api"} }
-func resumeReasons() []string { return []string{"Disrupted", "PodLost"} }
+func intakeSources() []string  { return []string{"issue", "runlore", "schedule", "api"} }
+func resumeReasons() []string  { return []string{"Disrupted", "PodLost"} }
+func roomCapReasons() []string { return []string{"human_driver", "facts_due"} }
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -73,8 +74,13 @@ type Set struct {
 	eventsTruncated metric.Int64Counter
 	revocations     metric.Int64Counter
 	githubRemaining metric.Int64Gauge
+	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
+	roomsCapped     metric.Int64Counter
+	usageErrors     metric.Int64Counter
+	meterSuccess    metric.Int64Gauge
+	overshoot       metric.Int64Counter
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -124,11 +130,28 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	s.githubRemaining, err = meter.Int64Gauge("agent_factory_github_rate_remaining",
 		metric.WithDescription("The factory App's remaining REST rate limit."))
 	check(err)
+	s.githubUp, err = meter.Int64Gauge("agent_factory_github_up",
+		metric.WithDescription("1 while a GitHub call succeeded in the last 3 minutes, else 0. Readiness ignores GitHub, so this is the outage signal (FactoryGitHubUnreachable)."))
+	check(err)
 	s.traceAbandoned, err = meter.Int64Counter("agent_factory_trace_export_abandoned_total",
 		metric.WithDescription("Task spans given up after the collector refused them for a day (ruling ST2)."))
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
+	check(err)
+	s.roomsCapped, err = meter.Int64Counter("agent_factory_rooms_closed_at_cap_total",
+		metric.WithDescription("Finished tasks' rooms closed a day after the end, by the wait cut short: a driver still holding the room, or facts the broker never took (#92)."))
+	check(err)
+	// #54: the meter's health. Only the leader meters, so only the leader sets the timestamp:
+	// an alert reads its max across pods.
+	s.usageErrors, err = meter.Int64Counter("agent_factory_meter_usage_read_errors_total",
+		metric.WithDescription("Meter ticks whose usage read failed: no run or task cap was checked on them."))
+	check(err)
+	s.meterSuccess, err = meter.Int64Gauge("agent_factory_meter_last_success_timestamp_seconds",
+		metric.WithDescription("When the meter last read usage and settled it in the day's ledger (Unix seconds)."))
+	check(err)
+	s.overshoot, err = meter.Int64Counter("agent_factory_run_overshoot_tokens_total",
+		metric.WithDescription("Tokens runs spent past their own cap before the meter revoked them."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -258,10 +281,36 @@ func (s *Set) Resumed(ctx context.Context, reason string) {
 	s.resumes.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, resumeReasons()))))
 }
 
+// RoomClosedAtCap counts a finished task's room closed at the cap instead of after its wait (#92).
+func (s *Set) RoomClosedAtCap(ctx context.Context, reason string) {
+	s.roomsCapped.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, roomCapReasons()))))
+}
+
 // TraceExportAbandoned counts a task span given up unexported (ruling ST2).
 func (s *Set) TraceExportAbandoned(ctx context.Context) { s.traceAbandoned.Add(ctx, 1) }
+
+// GitHubUp sets agent_factory_github_up: whether GitHub answered recently (forge.Healthy).
+func (s *Set) GitHubUp(ctx context.Context, up bool) {
+	v := int64(0)
+	if up {
+		v = 1
+	}
+	s.githubUp.Record(ctx, v)
+}
 
 // GitHubRemaining sets the factory App's remaining REST rate limit.
 func (s *Set) GitHubRemaining(ctx context.Context, remaining int64) {
 	s.githubRemaining.Record(ctx, remaining)
 }
+
+// MeterUsageReadError counts a meter tick whose usage read failed (#54).
+func (s *Set) MeterUsageReadError(ctx context.Context) { s.usageErrors.Add(ctx, 1) }
+
+// MeterSucceeded sets when the meter last metered (#54).
+func (s *Set) MeterSucceeded(ctx context.Context, at time.Time) {
+	s.meterSuccess.Record(ctx, at.Unix())
+}
+
+// RunOvershoot adds what a run spent past its cap when the meter revoked it (#54): a tick's lag
+// in steady state, the whole blind interval's spend after an outage.
+func (s *Set) RunOvershoot(ctx context.Context, tokens int64) { s.overshoot.Add(ctx, tokens) }

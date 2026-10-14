@@ -108,6 +108,21 @@ func TestCreateRoom(t *testing.T) {
 	}
 }
 
+// #48: the same values, with no sign-in, for `roomctl configure --url`. None is a secret.
+func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
+	srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Issuer: "https://auth.example",
+		RoomctlClient: func() string { return "3434@agents" }, ProjectID: func() string { return "29184" }}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/roomctl", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	var out map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || out["url"] != "https://rooms.priv.example" || out["issuer"] != "https://auth.example" ||
+		out["clientID"] != "3434@agents" || out["projectID"] != "29184" {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+}
+
 // GET /api/roomctl: what `roomctl configure` needs, for any agents member. The
 // client id is read at use, like the web client's: the IdP mints it per build.
 func TestRoomctlSetup(t *testing.T) {

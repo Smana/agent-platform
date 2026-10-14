@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +70,11 @@ func mkServer(t *testing.T, st RunStore, c client.Client, enforce, stopped bool,
 	m, err := fmetrics.New(nil, nil, "agent-system", func() bool { return false })
 	if err != nil {
 		t.Fatal(err)
+	}
+	if enforce { // an enforced cap needs a meter that sees (#54)
+		if err := StampMeter(t.Context(), c, "agent-system", now, time.Hour); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &Server{
 		Auth: byToken{
@@ -209,6 +215,30 @@ func TestRefusals(t *testing.T) {
 		b := base()
 		c.edit(b)
 		if w := post(server(t, &store{}, false), c.tok, b); w.Code != c.code {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		}
+	}
+}
+
+// T4/T5 (identity design §2, §7): an internal run has no direct GitHub or profile egress. The
+// AgentRun XRD refuses the claim too; this answers the caller before a reservation is taken.
+func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
+	for name, c := range map[string]struct {
+		class    string
+		profiles []string
+		code     int
+		reason   string
+	}{
+		"internal, pypi":   {"internal", []string{"pypi"}, http.StatusBadRequest, "internal_runs_take_no_egress_profiles"},
+		"internal, github": {"internal", []string{"github"}, http.StatusBadRequest, "internal_runs_take_no_egress_profiles"},
+		"internal, none":   {"internal", nil, http.StatusCreated, ""},
+		"public, pypi":     {"public", []string{"pypi"}, http.StatusCreated, ""},
+		"public, github":   {"public", []string{"github"}, http.StatusBadRequest, "bad_egress_profile"},
+	} {
+		b := base()
+		b["dataClass"], b["egressProfiles"] = c.class, c.profiles
+		w := post(server(t, &store{}, false), "admin", b)
+		if w.Code != c.code || !strings.Contains(w.Body.String(), c.reason) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body)
 		}
 	}
@@ -360,5 +390,60 @@ func TestTheRetryOfAWholeAdmissionAnswers201Again(t *testing.T) {
 	}
 	if _, ok := cm.Data[LedgerReserved+"7f3cq2xz"]; !ok {
 		t.Fatalf("the retry dropped the reservation of a live run: %v", cm.Data)
+	}
+}
+
+// #78: four factory runs reserving at once on an enforced day with room for two: exactly two
+// land, whatever the interleaving; in shadow all four land and the over ones say so.
+func TestConcurrentReservationsAdmitOnlyWhatFits(t *testing.T) {
+	for _, enforce := range []bool{true, false} {
+		l := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: LedgerPrefix + "20260927", Namespace: "agent-system"}}
+		if err := SetLedgerSpentColumn(l, map[string]int64{runs.PrincipalFactory: 22_000_000}); err != nil {
+			t.Fatal(err)
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(l).Build()
+		if err := StampMeter(t.Context(), c, "agent-system", now, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		var (
+			wg                 sync.WaitGroup
+			mu                 sync.Mutex
+			landed, over, busy int
+		)
+		for _, id := range []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd"} {
+			wg.Go(func() {
+				for { // a caller retries ErrLedgerBusy: the reconciler's requeue, the API's 503
+					o, err := Reserve(t.Context(), c, "agent-system", now, id,
+						Reservation{Principal: runs.PrincipalFactory, MaxTokens: 1_500_000}, 25_000_000, enforce)
+					mu.Lock()
+					switch {
+					case errors.Is(err, ErrLedgerBusy):
+						busy++
+						mu.Unlock()
+						continue
+					case err == nil:
+						landed++
+					case !errors.Is(err, ErrOverBudget):
+						t.Error(err)
+					}
+					if o {
+						over++
+					}
+					mu.Unlock()
+					return
+				}
+			})
+		}
+		wg.Wait()
+		used, err := DayUsed(t.Context(), c, "agent-system", runs.PrincipalFactory, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case enforce && (landed != 2 || over != 2 || used != 25_000_000):
+			t.Fatalf("enforced: %d landed, %d over, used %d (%d busy)", landed, over, used, busy)
+		case !enforce && (landed != 4 || over != 2 || used != 28_000_000):
+			t.Fatalf("shadow: %d landed, %d over, used %d (%d busy)", landed, over, used, busy)
+		}
 	}
 }

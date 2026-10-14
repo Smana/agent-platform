@@ -489,7 +489,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	return out, nil
 }
 
-// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | PENDING. Both the
+// checkState maps a check run's status and conclusion to SUCCESS | FAILURE | CANCELLED | PENDING. Both the
 // GraphQL rollup and the REST check runs use the same words; REST spells them lowercase.
 func checkState(status, conclusion string) string {
 	if status != "COMPLETED" {
@@ -498,8 +498,21 @@ func checkState(status, conclusion string) string {
 	switch conclusion {
 	case "SUCCESS", "NEUTRAL", "SKIPPED":
 		return "SUCCESS"
+	case "CANCELLED":
+		return "CANCELLED"
 	}
 	return "FAILURE"
+}
+
+// RerunCheck re-runs the Actions job whose id is the check run's. Re-running a job whose run is
+// not complete is refused by GitHub (403), which the reconciler reads as a failed attempt.
+func (g *GitHub) RerunCheck(ctx context.Context, id int64) error {
+	_, err := g.rest.Actions.RerunJobByID(ctx, g.owner, g.name, id)
+	g.mark(err)
+	if err != nil {
+		return wrap("re-run a check", err)
+	}
+	return nil
 }
 
 // PullRequestChecks is the head commit's rollup, one GraphQL query. It needs checks: read and
@@ -516,6 +529,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 									Nodes []struct {
 										Typename string `graphql:"__typename"`
 										CheckRun struct {
+											DatabaseID int64
 											Name       string
 											Status     string
 											Conclusion string
@@ -554,7 +568,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 	for _, n := range rollup.Contexts.Nodes {
 		switch n.Typename {
 		case "CheckRun":
-			out.Runs = append(out.Runs, Check{Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
+			out.Runs = append(out.Runs, Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
 		case "StatusContext":
 			out.Statuses = append(out.Statuses, Status{Context: n.StatusContext.Context, State: n.StatusContext.State, Creator: n.StatusContext.Creator.login()})
 		}
@@ -572,7 +586,7 @@ func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) 
 	}
 	out := make([]Check, 0, len(res.CheckRuns))
 	for _, cr := range res.CheckRuns {
-		out = append(out, Check{Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
+		out = append(out, Check{ID: cr.GetID(), Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
 	}
 	return out, nil
 }
@@ -657,6 +671,65 @@ func (g *GitHub) RevertPR(ctx context.Context, nodeID, title, body string) (Reve
 	g.mark(err)
 	r := m.RevertPullRequest.RevertPullRequest
 	return Revert{Number: r.Number, URL: r.URL, NodeID: r.ID}, wrap("open a revert", err)
+}
+
+// maxPRCommits is the most commits GitHub lists for a pull request.
+const maxPRCommits = 250
+
+// PullRequestCommits are the pull request's commits, oldest first: three pages of 100 at most.
+// A list that reaches GitHub's 250 is returned with ErrCommitsTruncated — it may be all of them,
+// or the first 250 of more, and GitHub does not say which.
+func (g *GitHub) PullRequestCommits(ctx context.Context, number int) ([]Commit, error) {
+	var out []Commit
+	opt := &github.ListOptions{PerPage: 100}
+	for {
+		cs, resp, err := g.rest.PullRequests.ListCommits(ctx, g.owner, g.name, number, opt)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list pull request commits", err)
+		}
+		for _, c := range cs {
+			out = append(out, Commit{SHA: c.GetSHA(), Author: c.GetAuthor().GetLogin(), Message: c.GetCommit().GetMessage()})
+		}
+		if len(out) >= maxPRCommits {
+			return out, ErrCommitsTruncated
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opt.Page = resp.NextPage
+	}
+}
+
+// maxActivityPages bounds BranchActivity: 300 moves of one branch since its creation.
+const maxActivityPages = 3
+
+// BranchActivity is the branch's activity newest first, back to its latest creation and no
+// further: what precedes it is an earlier branch of the same name. GitHub's repository activity
+// API (contents: read) pages by cursor; a history whose creation is not reached within
+// maxActivityPages returns ErrActivityTruncated.
+func (g *GitHub) BranchActivity(ctx context.Context, branch string) ([]Push, error) {
+	var out []Push
+	opt := &github.ListRepositoryActivityOptions{Ref: "refs/heads/" + branch, PerPage: 100}
+	for range maxActivityPages {
+		as, resp, err := g.rest.Repositories.ListRepositoryActivities(ctx, g.owner, g.name, opt)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list branch activity", err)
+		}
+		for _, a := range as {
+			out = append(out, Push{Type: a.ActivityType, Actor: a.GetActor().GetLogin(), Before: a.Before, After: a.After,
+				At: a.GetTimestamp().Time})
+			if a.ActivityType == "branch_creation" {
+				return out, nil
+			}
+		}
+		if resp.After == "" {
+			return out, nil // the branch's whole recorded history, its creation never recorded
+		}
+		opt.After = resp.After
+	}
+	return out, ErrActivityTruncated
 }
 
 // OpenPullRequests are the repository's open pull requests, one page of 100: the factory App's

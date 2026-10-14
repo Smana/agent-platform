@@ -29,9 +29,13 @@ type Sweeper struct {
 	Reader    client.Reader
 	Namespace string
 	Runs      RunStore
-	Every     time.Duration
-	OnSweep   func(n int)
-	Log       *slog.Logger
+	// Release drops a deleted run's reservation from the day's ledger (#55): a claim deleted
+	// while live never reaches the terminal phase the meter releases on. nil: the meter's
+	// unclaimed sweep releases it after its grace.
+	Release func(ctx context.Context, r runs.Run) error
+	Every   time.Duration
+	OnSweep func(n int)
+	Log     *slog.Logger
 }
 
 // NeedLeaderElection is true: only the leader sweeps; two would race the same deletes.
@@ -86,6 +90,10 @@ func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 		}
 		if err := s.Runs.Delete(ctx, r.ID); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if s.Release != nil {
+			errs = append(errs, s.Release(ctx, r))
 		}
 	}
 	return n, errors.Join(errs...)

@@ -93,7 +93,7 @@ var reasons = map[string]string{
 	"reviewer_needs_pr":   "a reviewer needs --pr, since no agent handoff or verdict names a pull request",
 	"over_budget":         "the factory refused the run: you are over your budget",
 	"factory_unavailable": "the run could not be requested right now; retry",
-	"bad_action":          "the broker refused the request as malformed: check the seq, role, PR and egress profiles",
+	"bad_action":          "the broker refused the request as malformed: check the seq, role, PR and egress profiles (an internal room takes none)",
 	"sealed":              "the room is sealed: it takes no more messages, and only its owner or an agents-admin may fork it",
 	"conflict":            "the room changed at the same moment; retry",
 	"log_unavailable":     "the room's log is unavailable right now; retry",

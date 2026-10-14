@@ -291,6 +291,15 @@ func TestForkRefusals(t *testing.T) {
 			t.Fatalf("%+v", f)
 		}
 	})
+	// T5: a fork keeps its source's class, and an internal run takes no egress profiles.
+	t.Run("egress profiles from an internal room", func(t *testing.T) {
+		a, log, room, req := forkFixture(t, nil)
+		room.Spec.DataClass = "internal"
+		f := forkAs(a, room, "human:bob", false, Action{Seq: 1, Role: "implementer", EgressProfiles: []string{"pypi"}})
+		if f.Rejected != "bad_action" || len(log.forked) != 0 || len(req.calls()) != 0 {
+			t.Fatalf("%+v", f)
+		}
+	})
 	t.Run("a prefix over the store's caps", func(t *testing.T) {
 		a, log, room, _ := forkFixture(t, nil)
 		log.forkErr = fmt.Errorf("store: fork: %w", store.ErrForkTooLarge)

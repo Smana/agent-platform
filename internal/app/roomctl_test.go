@@ -37,6 +37,10 @@ func newRoomctlBroker(t *testing.T) *roomctlBroker {
 	t.Helper()
 	b := &roomctlBroker{}
 	b.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/roomctl" {
+			_, _ = w.Write([]byte(`{"url":"https://elsewhere","issuer":"https://auth.example","clientID":"cli","projectID":"29184"}`))
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			b.mu.Lock()
 			b.query = r.URL.Path + "?" + r.URL.RawQuery
