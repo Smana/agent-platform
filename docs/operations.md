@@ -106,7 +106,7 @@ ROOM=3kq7x2ma
 | Is it gapless (SC-1)? | `$PSQL "SELECT max(seq) = count(*) FROM events WHERE room_id = '$ROOM'"` → `t` |
 | Why did each run end? | `$PSQL "SELECT run_id, payload->>'phase', payload->>'reason' FROM events WHERE room_id = '$ROOM' AND payload->>'kind' = 'run_phase' AND payload->>'phase' <> 'Running' ORDER BY seq"` |
 | Latest redactions | `$PSQL "SELECT room_id, seq, redactions FROM events WHERE redactions <> '{}' ORDER BY ts DESC LIMIT 20"` |
-| Who holds the bridge lease? | `$PSQL "SELECT bridge_run FROM rooms WHERE room_id = '$ROOM'"` |
+| Who holds the bridge lease? | `$PSQL "SELECT bridge_run FROM rooms WHERE room_id = '$ROOM'"`  (`rooms.bridge_seen_at` is unused since this change; a later release drops it) |
 | Concurrent-run refusals | `$PSQL "SELECT seq, payload FROM events WHERE room_id = '$ROOM' AND payload->>'kind' = 'limit'"` |
 | Sealed and when | `$PSQL "SELECT sealed, closed_at, retention, last_seq, bytes FROM rooms WHERE room_id = '$ROOM'"` |
 | Append-only, proven (SC-10) | `$PSQL "SET ROLE rooms_broker; UPDATE events SET payload = '{}' WHERE room_id = '$ROOM'"` → `permission denied for table events` |

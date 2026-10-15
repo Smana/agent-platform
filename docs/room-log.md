@@ -24,6 +24,7 @@ erDiagram
     timestamptz driver_acted_at "holder's last action (phase 4)"
     timestamptz last_event_at
     text bridge_run "bridge lease holder, a run id"
+    timestamptz bridge_seen_at "unused since the lease stopped stamping it; a later release drops it"
     boolean sealed
     timestamptz closed_at
     interval retention "default 90 days"
@@ -194,7 +195,7 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 |---|---|
 | `hello` | `ClaimBridge` locks the row. Another run keeps the lease for as long as it is live in the `AgentRun` watch, however long since its bridge was seen (ruling SBB): a quiet or cut-off bridge may still have a harness at work. Otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes is fenced like an append (the lease row is only checked, not stamped). A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
+| Renewal | Every batch the holder pushes checks that it still holds the lease: an unlocked `SELECT` on (room, run) in `TouchBridge`, nothing is stamped. Only an append checks under the row lock. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
 | A run that ended | Frees the lease at once |
 | A holder whose pod died | Blocks the room until its run ends: a lost pod ends the run `PodLost` (F12), and a hung one ends at its deadline |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |
@@ -223,7 +224,6 @@ and applies only if `UPDATE rooms … WHERE driver_epoch = $epoch` matches.
 | `20261001140000_brief_index.sql` | The partial index `events_brief`: agent handoffs and review verdicts, run requests and participants, which `start_run` reads; `CONCURRENTLY`, outside a transaction | 4 / AP-4 |
 | `20261005120000_approvals.sql` | The `approvals` table: a row is its `approval_requested` event and closes once, with its `approval_decided` (trigger `approvals_are_their_events`, deferred `approvals_decision_has_event`); the broker updates only the close columns | 5 / AP-5 |
 | `20261005130000_approval_indexes.sql` | The partial indexes `approvals_pending`, `events_decisions`, `events_decision_acks` and `events_tool_results`; `CONCURRENTLY`, outside a transaction | 5 / AP-5 |
-| `20261016120000_drop_bridge_seen_at.sql` | Drops `rooms.bridge_seen_at`, written on every claim and renewal and read nowhere since ruling SBB; narrows the broker's column grant | 1 / AP-1 |
 
 **`atlas.sum` must match the directory.** It is a checksum of every migration file and of their
 order. Atlas refuses to apply a directory whose files do not match it, which catches a migration
