@@ -205,19 +205,23 @@ func (l *fakeLog) Consume(_ context.Context, _ string, refs []int64, runID strin
 // eventsCap is rooms.Client.EventsSince's cap on one call: 100 pages of 100.
 const eventsCap = 10_000
 
-func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64) ([]envelope.Event, int64, error) {
+func (l *fakeLog) EventsSince(_ context.Context, _ string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, int64, error) {
 	if l.failEvents != nil {
 		return nil, after, l.failEvents
 	}
 	var out []envelope.Event
 	cursor := after
+	scanned := 0
 	for _, e := range l.evs {
-		if e.Seq > after && len(out) < eventsCap {
-			out = append(out, e)
+		if e.Seq > after && scanned < eventsCap {
+			scanned++
 			cursor = e.Seq
+			if keep == nil || keep(e) {
+				out = append(out, e)
+			}
 		}
 	}
-	l.read += len(out)
+	l.read += scanned
 	return out, cursor, nil
 }
 
@@ -917,6 +921,6 @@ func TestANilLoggerIsQuiet(t *testing.T) {
 // failingLog cannot read the room's log; writes succeed.
 type failingLog struct{ fakeLog }
 
-func (*failingLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
+func (*failingLog) EventsSince(context.Context, string, int64, func(envelope.Event) bool) ([]envelope.Event, int64, error) {
 	return nil, 0, errors.New("no_room")
 }

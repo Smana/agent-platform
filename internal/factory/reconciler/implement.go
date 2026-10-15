@@ -414,11 +414,11 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		if run.Phase != "Succeeded" {
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
 		}
-		evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, current(t).StartSeq)
+		evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, current(t).StartSeq, handoffTo("implementer"))
 		if err != nil {
 			return err
 		}
-		if !handedOffTo(evs, "implementer") {
+		if len(evs) == 0 {
 			return r.end(ctx, t, v1alpha1.PhaseNoOp, "no_action")
 		}
 		narrateLater(t, narrate.ProposalReady(t, r.Cfg.RoomsURL))
@@ -434,16 +434,12 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 }
 
-// handedOffTo reports whether any event is a handoff to role: the triager's proposal exists only
-// if it made one (R38).
-func handedOffTo(evs []envelope.Event, role string) bool {
-	for _, e := range evs {
+// handoffTo selects the handoffs to role: the triager's proposal exists only if it made one (R38).
+func handoffTo(role string) func(envelope.Event) bool {
+	return func(e envelope.Event) bool {
 		var p envelope.HandoffPayload
-		if e.Type == envelope.Handoff && json.Unmarshal(e.Payload, &p) == nil && p.ToRole == role {
-			return true
-		}
+		return e.Type == envelope.Handoff && json.Unmarshal(e.Payload, &p) == nil && p.ToRole == role
 	}
-	return false
 }
 
 // lostReason is why a run of the task vanished: SP2 records a deleted claim as Revoked, reason

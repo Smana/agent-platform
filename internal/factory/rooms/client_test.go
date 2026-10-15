@@ -193,7 +193,7 @@ func newRig(t *testing.T, events int) *rig {
 
 func TestEventsSinceReadsEveryPageWithTheTokenOfTheMoment(t *testing.T) {
 	r := newRig(t, 2*pageSize+3)
-	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 1)
+	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 1, nil)
 	if err != nil || len(evs) != 2*pageSize+2 || cursor != int64(2*pageSize+3) || evs[0].Seq != 2 {
 		t.Fatalf("%d events, cursor %d, %v", len(evs), cursor, err)
 	}
@@ -221,15 +221,15 @@ func TestEventsSinceReadsEveryPageWithTheTokenOfTheMoment(t *testing.T) {
 // lastSeq: resuming from lastSeq would skip what it did not read.
 func TestEventsSinceStopsAtItsCapWithAResumableCursor(t *testing.T) {
 	r := newRig(t, maxPages*pageSize+5)
-	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 0)
+	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 0, nil)
 	if err != nil || len(evs) != maxPages*pageSize || cursor != int64(maxPages*pageSize) {
 		t.Fatalf("%d events, cursor %d, %v", len(evs), cursor, err)
 	}
-	evs, cursor, err = r.c.EventsSince(t.Context(), "3buqdlot", cursor)
+	evs, cursor, err = r.c.EventsSince(t.Context(), "3buqdlot", cursor, nil)
 	if err != nil || len(evs) != 5 || cursor != int64(maxPages*pageSize+5) {
 		t.Fatalf("%d events, cursor %d, %v", len(evs), cursor, err)
 	}
-	if evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", cursor); err != nil || len(evs) != 0 || cursor != int64(maxPages*pageSize+5) {
+	if evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", cursor, nil); err != nil || len(evs) != 0 || cursor != int64(maxPages*pageSize+5) {
 		t.Fatalf("nothing new keeps the cursor: %d %d %v", len(evs), cursor, err)
 	}
 }
@@ -325,7 +325,7 @@ func TestTheClientRefusesWhatTheBrokerWould(t *testing.T) {
 		"a negative afterSeq":        func() error { _, _, err := r.c.Events(ctx, "3buqdlot", -1, 10); return err },
 		"a zero limit":               func() error { _, _, err := r.c.Events(ctx, "3buqdlot", 0, 0); return err },
 		"a limit over 500":           func() error { _, _, err := r.c.Events(ctx, "3buqdlot", 0, 501); return err },
-		"since in a bad room":        func() error { _, _, err := r.c.EventsSince(ctx, "../x", 0); return err },
+		"since in a bad room":        func() error { _, _, err := r.c.EventsSince(ctx, "../x", 0, nil); return err },
 		"a message to a bad room":    func() error { return r.c.TaskState(ctx, "3BUQDLOT", "x", 1) },
 		"a zero clientSeq":           func() error { return r.c.TaskState(ctx, "3buqdlot", "x", 0) },
 		"a message over 16 KiB": func() error {
@@ -422,7 +422,7 @@ func TestLoadCAReadsAPEMBundle(t *testing.T) {
 func TestSpansCarryMetadataOnly(t *testing.T) {
 	r := newRig(t, 3)
 	ctx := t.Context()
-	if _, _, err := r.c.EventsSince(ctx, "3buqdlot", 0); err != nil {
+	if _, _, err := r.c.EventsSince(ctx, "3buqdlot", 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.c.TaskState(ctx, "3buqdlot", "a secret-looking text", 1); err != nil {
@@ -651,5 +651,15 @@ func TestLastSeqIsTheRoomsCurrentSeq(t *testing.T) {
 	r.b.fail["/v1/rooms/3buqdlot/events"], r.b.reason = http.StatusNotFound, wire.ReasonNoRoom
 	if _, err := r.c.LastSeq(t.Context(), "3buqdlot"); !errors.Is(err, ErrNoRoom) {
 		t.Fatalf("the broker's refusal: %v", err)
+	}
+}
+
+// The cursor moves past the events keep drops: only the kept ones are retained.
+func TestEventsSinceRetainsOnlyWhatKeepSelects(t *testing.T) {
+	r := newRig(t, 300)
+	keep := func(e envelope.Event) bool { return e.Seq%100 == 0 }
+	evs, cursor, err := r.c.EventsSince(t.Context(), "3buqdlot", 0, keep)
+	if err != nil || len(evs) != 3 || cursor != 300 {
+		t.Fatalf("%d events, cursor %d, %v", len(evs), cursor, err)
 	}
 }

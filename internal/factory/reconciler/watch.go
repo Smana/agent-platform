@@ -103,16 +103,12 @@ const maxTailReads = 10
 func (r *Reconciler) roomTail(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, bool, error) {
 	var out []envelope.Event
 	for range maxTailReads {
-		evs, cursor, err := r.Rooms.EventsSince(ctx, room, after)
+		evs, cursor, err := r.Rooms.EventsSince(ctx, room, after, keep)
 		if err != nil {
 			return nil, false, err
 		}
-		for _, e := range evs {
-			if keep(e) {
-				out = append(out, e)
-			}
-		}
-		if len(evs) == 0 || cursor <= after {
+		out = append(out, evs...)
+		if cursor <= after {
 			return out, true, nil
 		}
 		after = cursor
