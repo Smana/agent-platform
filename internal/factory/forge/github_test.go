@@ -1084,3 +1084,71 @@ func TestMergerPermissionsAskForActionsOnlyToRerun(t *testing.T) {
 		t.Fatalf("actions: %q", got)
 	}
 }
+
+type closeSpy struct {
+	io.Reader
+	closed *bool
+}
+
+func (c closeSpy) Close() error { *c.closed = true; return nil }
+
+type spyRT struct {
+	base   http.RoundTripper
+	closed bool
+}
+
+func (s *spyRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := s.base.RoundTrip(r)
+	if err == nil {
+		resp.Body = closeSpy{Reader: resp.Body, closed: &s.closed}
+	}
+	return resp, err
+}
+
+func TestStatusRTErrorsOn4xxAndFollowsRedirects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/ok", http.StatusTemporaryRedirect)
+		case "/ok":
+			_, _ = io.WriteString(w, `{"data":{}}`)
+		default:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, "secret body")
+		}
+	}))
+	defer srv.Close()
+	spy := &spyRT{base: srv.Client().Transport}
+	hc := &http.Client{Transport: statusRT{base: spy}}
+
+	resp, err := hc.Do(mustReq(t, srv.URL+"/start"))
+	if err != nil {
+		t.Fatalf("a redirect must be followed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("redirect ended at %d", resp.StatusCode)
+	}
+
+	spy.closed = false
+	_, err = hc.Do(mustReq(t, srv.URL+"/conflict")) //nolint:bodyclose // the error path has no response
+	var se *statusError
+	if !errors.As(err, &se) || se.code != http.StatusConflict {
+		t.Fatalf("a 409 is a statusError: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("the body must not reach the error: %v", err)
+	}
+	if !spy.closed {
+		t.Fatal("the body must be closed")
+	}
+}
+
+func mustReq(t *testing.T, u string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}

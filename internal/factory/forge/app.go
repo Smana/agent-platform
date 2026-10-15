@@ -225,14 +225,16 @@ func (a *auth) RoundTrip(req *http.Request) (*http.Response, error) {
 	return a.base.RoundTrip(r)
 }
 
-// statusError is a non-2xx answer, carried by status alone: the body is drained and dropped, so
+// statusError is a 4xx or 5xx answer, carried by status alone: the body is drained and dropped, so
 // no payload text reaches an error or a log. errors.As reads the code back through the client's
 // *url.Error.
 type statusError struct{ code int }
 
-func (e *statusError) Error() string { return fmt.Sprintf("status %d", e.code) }
+func (e *statusError) Error() string {
+	return fmt.Sprintf("status %d %s", e.code, http.StatusText(e.code))
+}
 
-// statusRT turns a non-2xx response into a *statusError. Only the GraphQL client is wrapped
+// statusRT turns a 4xx or 5xx response into a *statusError. Only the GraphQL client is wrapped
 // with it: githubv4 reports any non-200 as an untyped error and keeps no status, while go-github
 // needs the response of a non-2xx to build its own typed error.
 type statusRT struct{ base http.RoundTripper }
@@ -240,7 +242,7 @@ type statusRT struct{ base http.RoundTripper }
 // RoundTrip implements http.RoundTripper.
 func (s statusRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := s.base.RoundTrip(req)
-	if err != nil || (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+	if err != nil || resp.StatusCode < 400 { // 3xx passes: the client follows it through checkRedirect
 		return resp, err
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
