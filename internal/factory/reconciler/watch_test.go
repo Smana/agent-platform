@@ -1015,3 +1015,18 @@ func TestAStaleCloseReplayedStaysStale(t *testing.T) {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }
+
+// A read that keeps nothing still moves the cursor: the tail goes on to the next read, which holds
+// the kept event, instead of taking the empty read for the log's end.
+func TestARoomTailGoesOnPastAReadThatKeepsNothing(t *testing.T) {
+	log := &fakeLog{}
+	for i := int64(1); i <= eventsCap+1; i++ {
+		log.evs = append(log.evs, envelope.Event{Seq: i, Type: envelope.Message})
+	}
+	log.evs[eventsCap].Type = envelope.Handoff // seq eventsCap+1, past the first read
+	r := &Reconciler{Rooms: log}
+	evs, complete, err := r.roomTail(t.Context(), "3buqdlot", 0, func(e envelope.Event) bool { return e.Type == envelope.Handoff })
+	if err != nil || !complete || len(evs) != 1 || evs[0].Seq != eventsCap+1 {
+		t.Fatalf("tail %v complete=%v err=%v: want the handoff at seq %d", evs, complete, err, eventsCap+1)
+	}
+}
