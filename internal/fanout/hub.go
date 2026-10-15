@@ -105,7 +105,7 @@ type Hub struct {
 	// PollEvery is the poll period while the listener is down (default 1 s).
 	PollEvery time.Duration
 	// Budget is the bound on bytes pending per viewer before it is dropped (default
-	// 2 MiB); the channel holds at most 1024 events and a full one counts as slow.
+	// 2 MiB); the channel holds at most subChan events and a full one counts as slow.
 	Budget int
 	// MinBackoff and MaxBackoff bound the reconnect wait, which doubles per
 	// failed session and gains up to a quarter of jitter (default 1 s and 30 s).

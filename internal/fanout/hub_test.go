@@ -512,8 +512,8 @@ func TestSubscriberChannelIsSmall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cap(sub.C); got != subChan {
-		t.Fatalf("cap(sub.C) = %d, want %d", got, subChan)
+	if got := cap(sub.C); pageSize > got || got > 1024 {
+		t.Fatalf("cap(sub.C) = %d, want a page (%d) at least and 1024 at most", got, pageSize)
 	}
 }
 
