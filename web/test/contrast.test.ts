@@ -41,6 +41,8 @@ const pairs = (t: Record<string, string>) => [
   ["the controls' group names", t["--muted-foreground"], t["--background"], 4.5],
   ["a destructive button on the controls", t["--destructive"], t["--background"], 4.5],
   ["the room list's notice on the page", t["--destructive-text"], t["--muted"], 4.5],
+  ["destructive text on the page (.status-error, .summary-error, .mk-harness_error)", t["--destructive"], t["--muted"], 4.5],
+  ["the focus ring on the header", t["--ring"], t["--brand-navy"], 3],
 ] as const;
 
 describe.each([["light", light], ["dark", dark]])("%s theme", (_name, t) => {

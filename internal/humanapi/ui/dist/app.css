@@ -369,11 +369,6 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 
 /* Room page lead: the notes. Wraps at phone width, never scrolls sideways. */
 .summary { padding: 8px 16px; display: grid; gap: 8px; max-width: 100%; overflow-wrap: anywhere; }
-.summary-block { border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; background: var(--card); color: var(--card-foreground); }
-.summary-block h2 { margin: 0 0 4px; font-size: 1em; }
-.summary-block p { margin: 2px 0; }
-.summary-block ul { margin: 0; padding-left: 18px; }
-.summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
 .summary-error { color: var(--destructive); margin: 0; }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
 .notes { overflow-wrap: anywhere; }
