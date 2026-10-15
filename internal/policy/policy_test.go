@@ -3,6 +3,7 @@
 package policy
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
@@ -48,9 +49,9 @@ func TestTheSection1Matrix(t *testing.T) {
 		{DriverRequest, map[string]bool{"watcher": false, "collab": true, "driver": false, "agent": false, "factory": false, "sysDriver": false}},
 		{DriverGive, map[string]bool{"collab": false, "driver": true, "agent": false, "factory": false, "sysDriver": true}},
 		{DriverTake, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": false, "sysDriver": false}},
-		{Fork, map[string]bool{"watcher": true, "collab": true, "driver": true, "owner": true, "agent": false, "factory": true, "stranger": false}},
-		{Invite, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": true}},
-		{Close, map[string]bool{"collab": false, "owner": true, "factory": true}},
+		{Fork, map[string]bool{"watcher": true, "collab": true, "driver": true, "owner": true, "agent": false, "factory": false, "stranger": false}},
+		{Invite, map[string]bool{"collab": false, "driver": false, "owner": true, "agent": false, "factory": false}},
+		{Close, map[string]bool{"collab": false, "owner": true, "factory": false}},
 		{PromoteQueued, map[string]bool{"collab": false, "driver": true, "owner": false, "agent": false, "factory": false, "sysDriver": true}},
 		{RemoveQueued, map[string]bool{"watcher": false, "collab": true, "agent": false}},
 	}
@@ -186,5 +187,23 @@ func TestIsAdmin(t *testing.T) {
 		if got := c.groups.IsAdmin(c.p); got != c.want {
 			t.Errorf("%s: IsAdmin = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// Every action has an explicit answer for a system actor: nothing is granted by omission (T7).
+// The allowed set is what the wired callers use: Read, Chat and Queue are the system API's
+// reads, posts and queued messages (internal/bridgeapi/system.go), StartRun is the factory's
+// admission check (internal/factory/api/server.go). Fork and Close have no system caller.
+func TestASystemActorIsGrantedNothingByDefault(t *testing.T) {
+	all := []Action{Read, Chat, Queue, Steer, Interrupt, Decide, DriverRequest, DriverGive, DriverTake,
+		PromoteQueued, RemoveQueued, StartRun, Fork, Invite, Close}
+	granted := []Action{Read, Chat, Queue, StartRun}
+	sys := Subject{Kind: envelope.ActorSystem, ID: "system:factory"}
+	for _, a := range all {
+		t.Run(string(a), func(t *testing.T) {
+			if want := slices.Contains(granted, a); Allowed(sys, a) != want {
+				t.Errorf("Allowed(system:factory, %v) = %v, want %v", a, !want, want)
+			}
+		})
 	}
 }

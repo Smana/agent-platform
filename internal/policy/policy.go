@@ -103,8 +103,13 @@ func Allowed(s Subject, a Action) bool {
 			return s.Driver
 		case DriverRequest, DriverTake:
 			return false // a system holder gives, and yields to humans
-		default:
+		case Read, Chat, Queue, StartRun:
+			// What the wired system callers do: read the log, post and queue messages
+			// (bridgeapi/system.go) and request a run (factory/api). Anything else is
+			// denied by omission-proofing: a new Action is not granted to a system actor.
 			return true
+		default:
+			return false
 		}
 	case envelope.ActorHuman:
 	default:
