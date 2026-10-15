@@ -872,36 +872,7 @@ func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
 // stays bounded, further verdicts wait with the harness parked, and no record
 // of a verdict given is dropped.
 func TestLocalVerdictsPastTheCapStopAtTheStatusBound(t *testing.T) {
-	f := &fakeAgentServer{pageSize: 2, status: "running"}
-	for range 2 {
-		f.add(chatEvent(strings.Repeat("x", 1<<10)))
-	}
-	fb := &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
-	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
-	r.b.MaxBuffer, r.b.FlushGrace = 2<<10, 50*time.Millisecond
-	confirming(r)
-	ctx, stop := r.run(t)
-	eventually(ctx, t, "the first page fills the buffer", func() bool {
-		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
-	})
-	const steps = 100
-	answered := 0
-	for i := 1; i <= steps && answered == i-1; i++ {
-		f.mu.Lock()
-		f.status = waiting
-		f.events = append(f.events, actionEvent(fmt.Sprintf("c%d", i), "git push origin agent/3kq7x2ma"))
-		f.events[len(f.events)-1]["id"] = fmt.Sprintf("e%d", len(f.events))
-		f.mu.Unlock()
-		for range 20 { // a verdict takes a few polls; twenty without one means it waits
-			if answered = len(f.responded()); answered == i {
-				break
-			}
-			f.polls(ctx, t, 1)
-		}
-	}
-	if answered == 0 || answered >= steps {
-		t.Fatalf("%d of %d allow-class steps answered: want some, then a pause at the bound", answered, steps)
-	}
+	r, f, _, ctx, stop, answered := pauseAtTheStatusBound(t)
 	f.polls(ctx, t, 20)
 	if got := len(f.responded()); got != answered {
 		t.Fatalf("%d verdicts given past the bound, want none", got-answered)
@@ -921,6 +892,52 @@ func TestLocalVerdictsPastTheCapStopAtTheStatusBound(t *testing.T) {
 	if records != answered {
 		t.Fatalf("%d policy_decision records for %d verdicts", records, answered)
 	}
+}
+
+// Verdicts paused at statusCap resume once the broker takes the buffer: the
+// parked step is answered.
+func TestLocalVerdictsResumeOnceTheBufferDrains(t *testing.T) {
+	_, f, fb, ctx, _, answered := pauseAtTheStatusBound(t)
+	fb.set(func(b *fakeBroker) { b.hold = false })
+	eventually(ctx, t, "the parked step is answered", func() bool { return len(f.responded()) > answered })
+}
+
+// pauseAtTheStatusBound parks allow-class steps one after another under a held
+// broker until the verdicts pause at statusCap, and returns how many were given.
+func pauseAtTheStatusBound(t *testing.T) (r *rig, f *fakeAgentServer, fb *fakeBroker, ctx context.Context,
+	stop func(), answered int,
+) {
+	t.Helper()
+	f = &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 2 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
+	}
+	fb = &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	r = newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer, r.b.FlushGrace = 2<<10, 50*time.Millisecond
+	confirming(r)
+	ctx, stop = r.run(t)
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+	const steps = 100
+	for i := 1; i <= steps && answered == i-1; i++ {
+		f.mu.Lock()
+		f.status = waiting
+		f.events = append(f.events, actionEvent(fmt.Sprintf("c%d", i), "git push origin agent/3kq7x2ma"))
+		f.events[len(f.events)-1]["id"] = fmt.Sprintf("e%d", len(f.events))
+		f.mu.Unlock()
+		for range 20 { // a verdict takes a few polls; twenty without one means it waits
+			if answered = len(f.responded()); answered == i {
+				break
+			}
+			f.polls(ctx, t, 1)
+		}
+	}
+	if answered == 0 || answered >= steps {
+		t.Fatalf("%d of %d allow-class steps answered: want some, then a pause at the bound", answered, steps)
+	}
+	return r, f, fb, ctx, stop, answered
 }
 
 func TestAlwaysConfirmIsRetriedUntilTaken(t *testing.T) {
