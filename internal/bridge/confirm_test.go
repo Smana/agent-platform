@@ -682,6 +682,7 @@ func confirming(r *rig) *Confirmer {
 	r.b.OnResume = func(_ context.Context, res wire.Resume) { c.SetPolicy(res.Approvals) }
 	r.b.OnReady, r.b.OnRaw, r.b.OnStatus, r.b.OnDecision = c.Ready, c.Observe, c.OnStatus, c.Decision
 	r.b.Classify = c.ClassOf
+	c.PastCap = r.b.PastCap
 	return c
 }
 
@@ -781,14 +782,16 @@ func TestARestartedBridgeStillAnswersThePendingStep(t *testing.T) {
 
 // A broker outage never stops the sandbox (§3): with the buffer full, the
 // bridge still reads the harness for the confirmation loop and answers a local
-// verdict itself; a human decision waits for the broker, past the outage. Each
-// event reaches OnRaw once, so an action already settled is never pending again.
+// verdict itself; a human decision is not even asked for until the buffer
+// drains, so the outage never rejects it, then waits for the broker. Each event
+// reaches OnRaw once, so an action already settled is never pending again.
 func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
 	f := &fakeAgentServer{pageSize: 2, status: "running"}
 	for range 10 {
 		f.add(chatEvent(strings.Repeat("x", 1<<10)))
 	}
-	fb := &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	fb := &fakeBroker{hold: true, holdApprovals: true,
+		resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	r.b.MaxBuffer = 2 << 10 // one page of two events fills it
 	c := confirming(r)
@@ -820,18 +823,21 @@ func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
 	f.add(map[string]any{"kind": "ObservationEvent", "source": "environment", "tool_call_id": "c1"})
 
 	park(actionEvent("c2", "gh pr create --fill")) // forge.pr: a human decides
-	eventually(ctx, t, "the approval is asked", func() bool {
+	f.polls(ctx, t, 10)                            // the outage lasts
+	if got := f.responded(); len(got) != 1 {
+		t.Fatalf("a human-class action was answered during the outage: %v", got)
+	}
+	if calls := fb.callLog(); slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "approvals") }) {
+		t.Fatalf("a human decision was asked for past the cap: %v", calls)
+	}
+
+	fb.set(func(b *fakeBroker) { b.hold, b.holdApprovals = false, false })
+	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 13 })
+	eventually(ctx, t, "the approval is asked once the buffer drains", func() bool {
 		fb.mu.Lock()
 		defer fb.mu.Unlock()
 		return len(fb.approvals) == 1
 	})
-	f.polls(ctx, t, 10) // still under back-pressure
-	if got := f.responded(); len(got) != 1 {
-		t.Fatalf("a human-class action was answered without the broker: %v", got)
-	}
-
-	fb.set(func(b *fakeBroker) { b.hold = false })
-	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 13 })
 	f.polls(ctx, t, 10) // past the outage
 	if got := f.responded(); len(got) != 1 {
 		t.Fatalf("the human-class action was answered before its decision: %v", got)

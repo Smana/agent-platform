@@ -330,6 +330,7 @@ type Bridge struct {
 	lastStatus string    // the status the previous step read, "" if it failed
 
 	sealed     atomic.Bool
+	pastCap    atomic.Bool // the last events poll found the buffer at MaxBuffer
 	lastSeen   atomic.Int64
 	admission  atomic.Pointer[Admission]
 	finalOnce  sync.Once
@@ -608,6 +609,7 @@ func (b *Bridge) step(ctx context.Context) {
 // confirmation loop reads ahead. It reports that OnRaw saw every event up to
 // the log's end.
 func (b *Bridge) pollEvents(ctx context.Context) bool {
+	b.pastCap.Store(b.bufBytes >= b.MaxBuffer)
 	if b.bufBytes >= b.MaxBuffer {
 		return b.readAhead(ctx)
 	}
@@ -657,6 +659,11 @@ func (b *Bridge) readAhead(ctx context.Context) bool {
 	b.harnessRead(ctx, err, b.ahead.Count)
 	return end && err == nil
 }
+
+// PastCap reports that the last events poll found the buffer full: the broker
+// is behind, so only what policy decides alone is answered (Confirmer.PastCap).
+// Safe for concurrent use.
+func (b *Bridge) PastCap() bool { return b.pastCap.Load() }
 
 // readLog reads the harness log to its end, whatever the poll's backoff, until
 // a read fails, the buffer is full or ctx ends (F11).

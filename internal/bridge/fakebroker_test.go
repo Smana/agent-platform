@@ -48,10 +48,12 @@ type fakeBroker struct {
 	hellos  []reply
 	events  []reply
 	maxBody int
-	hold    bool     // answer 503 to every events POST while set
-	busy    bool     // answer 409 room_busy to every hello while set
-	poison  string   // a batch holding an item whose payload contains it is 400 bad_item
-	sse     []string // frames the stream sends before idling
+	hold    bool // answer 503 to every events POST while set
+	// holdApprovals answers 503 to every approval request while set: with hold, a whole outage.
+	holdApprovals bool
+	busy          bool     // answer 409 room_busy to every hello while set
+	poison        string   // a batch holding an item whose payload contains it is 400 bad_item
+	sse           []string // frames the stream sends before idling
 	// approvals are the approval requests received; each opens "ap-<callId>".
 	approvals []wire.ApprovalRequest
 	// noApprovals is a broker built before phase 5: no approvals route, so ServeMux's 404.
@@ -151,10 +153,17 @@ func (b *fakeBroker) start(t *testing.T) (srv *httptest.Server, caFile string) {
 	})
 	mux.HandleFunc("POST /v1/bridge/approvals", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
-		gone := b.noApprovals
+		gone, held := b.noApprovals, b.holdApprovals
+		if held {
+			b.record(r, "approvals", http.StatusServiceUnavailable)
+		}
 		b.mu.Unlock()
 		if gone {
 			http.NotFound(w, r)
+			return
+		}
+		if held {
+			refuse(w, reply{code: http.StatusServiceUnavailable, reason: wire.ReasonLogUnavailable})
 			return
 		}
 		var req wire.ApprovalRequest
