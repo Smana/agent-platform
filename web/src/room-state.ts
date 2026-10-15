@@ -9,6 +9,8 @@ export interface Queued { ref: number; author: string; text: string }
 // agent's or a human's message.
 export interface Latest { seq: number; text: string; status: "running" | "ok" | "error" | "rejected" | "ended" | "message"; ts: string }
 // A pending approval: its card. action is the raw, redacted call (T3).
+// A human member as the log's participant events last named them.
+export interface Member { principal: string; role: string; approver: boolean }
 export interface Approval { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }
 
 // What the controls need: the state frame's projection of the log (driver, queue,
@@ -22,7 +24,10 @@ export class RoomState {
   // The calls still open to a result, by callId, oldest first, at most maxCalls of them,
   // each with the principal of the run that owns it (agent:<runId>).
   private calls = new Map<string, { l: Latest; owner: string }>();
+  private members_ = new Map<string, Member>();
   sealed = false;
+  // Who closed the room and when: the close's own event. A limit seals with no closer.
+  closed?: { who: string; at: string };
   phase = "";
   constructor(public driver = "", public driverEpoch = 0) {}
 
@@ -108,6 +113,7 @@ export class RoomState {
           this.phase = p.phase;
         }
         // The seals (internal/store sealTx): a close, or the room's event or byte limit.
+        if (p.kind === "room_phase" && p.phase === "Closed") this.closed = { who: ev.actor.id, at: ev.ts };
         if ((p.kind === "room_phase" && p.phase === "Closed") || (p.kind === "limit" && p.events !== undefined)) {
           this.sealed = true;
           this.release(() => true);
@@ -117,9 +123,16 @@ export class RoomState {
         break;
       case "participant":
         if (p.change === "left" && typeof p.principal === "string") this.release((o) => o === p.principal);
+        // The members list is humans only: a run's agent is in the strip and the stream.
+        if (typeof p.principal === "string" && p.principal.startsWith("human:")) {
+          if (p.change === "left") this.members_.delete(p.principal);
+          else this.members_.set(p.principal, { principal: p.principal, role: String(p.role ?? ""), approver: p.approver === true });
+        }
         break;
     }
   }
+
+  members(): Member[] { return [...this.members_.values()].sort((a, b) => a.principal.localeCompare(b.principal)); }
 
   queue(): Queued[] { return [...this.queued.values()].sort((a, b) => a.ref - b.ref); }
 

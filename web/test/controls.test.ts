@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import type { Snapshot } from "../src/conn";
-import { hasControls, mountControls, rejection } from "../src/controls";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Frame, Snapshot } from "../src/conn";
+import { confirmButton, hasControls, mountComposer, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
 import { newRoomForm } from "../src/view";
 
@@ -15,18 +15,31 @@ function setup(who: You, driver = "human:a", epoch = 4) {
   const notices: string[] = [];
   const conn = { send: (f: Record<string, unknown>) => { sent.push(f); return true; } };
   const state = new RoomState(driver, epoch);
+  // The controls' section and the page's dock, as room.ts mounts them.
   const root = document.createElement("section");
-  const controls = mountControls(root, conn, state, who, (t) => notices.push(t));
+  const dock = document.createElement("footer");
+  const wrap = document.createElement("div");
+  wrap.append(root, dock);
+  const ctl = mountControls(root, conn, state, who, (t) => notices.push(t));
+  const composer = mountComposer(dock, conn, state, who);
+  const controls = {
+    ...ctl,
+    refresh() { ctl.refresh(); composer.refresh(); },
+    onAck(f: Frame) { ctl.onAck(f); composer.onAck(f); },
+  };
   controls.refresh();
   // A button counts when the human can see it: sections toggle hidden (R10).
-  const btn = (act: string) => [...root.querySelectorAll<HTMLButtonElement>(`button[data-act="${act}"]`)].find(shown) ?? null;
-  const field = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[name="${name}"]`)!;
-  return { sent, notices, state, root, controls, btn, field, acts: () => sent.map((f) => f.action) };
+  const btn = (act: string) => [...wrap.querySelectorAll<HTMLButtonElement>(`button[data-act="${act}"]`)].find(shown) ?? null;
+  const field = <T extends HTMLElement>(name: string) => wrap.querySelector<T>(`[name="${name}"]`)!;
+  const deliveryNotice = () => dock.querySelector("#delivery-notice")!.textContent;
+  return { sent, notices, state, root, dock, wrap, controls, composer, btn, field, deliveryNotice, acts: () => sent.map((f) => f.action) };
 }
+const mountOwner = () => setup(you("human:a", "owner"));
 
 const queued = (seq: number, author: string, text: string) => ({ v: 1, id: String(seq), seq, roomId: "3kq7x2ma",
   actor: { kind: "human", id: author }, type: "message", origin: "client", ts: "2026-09-27T10:00:00Z", redactions: [],
   payload: { kind: "chat", text, delivery: "queued" } });
+const ev = (seq: number, type: string, payload: unknown) => ({ ...queued(seq, "human:a", ""), type, payload });
 
 describe("mountControls", () => {
   it("lets an owner invite a member, with a role and the approver flag", () => {
@@ -94,7 +107,7 @@ describe("mountControls", () => {
 
   it("offers steering to the driver only", () => {
     const c = setup(you("human:b", "collaborator"));
-    const steer = c.root.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+    const steer = c.wrap.querySelector<HTMLOptionElement>('option[value="steering"]')!;
     expect(steer.disabled).toBe(true);
     c.state.apply({ ...queued(1, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:b", epoch: 5, reason: "given" } });
     c.controls.refresh();
@@ -108,12 +121,15 @@ describe("mountControls", () => {
     expect(steer.disabled).toBe(true);
     expect(delivery.value).toBe("");
     const choose = "You no longer hold the driver token: choose where this message goes.";
-    expect(c.notices).toEqual([choose]);
+    expect(c.deliveryNotice()).toBe(choose); // beside the select, not the page's act notice
+    expect(c.notices).toEqual([]);
     c.field<HTMLTextAreaElement>("text").value = "steer this";
     c.btn("message")!.click();
     expect(c.sent).toHaveLength(0);
-    expect(c.notices).toEqual([choose, choose]);
+    expect(c.deliveryNotice()).toBe(choose);
     delivery.value = "none";
+    delivery.dispatchEvent(new Event("change")); // a choice answers the notice
+    expect(c.deliveryNotice()).toBe("");
     c.btn("message")!.click();
     expect(c.acts()).toEqual([{ kind: "message", text: "steer this", delivery: "none" }]);
   });
@@ -150,6 +166,8 @@ describe("mountControls", () => {
     const d = setup(you("human:a", "owner"));
     d.state.apply(queued(8, "human:c", "promote me"));
     d.controls.refresh();
+    d.btn("promote_queued")!.click(); // steer now asks first: it prompts the running agent
+    expect(d.sent).toHaveLength(0);
     d.btn("promote_queued")!.click();
     d.btn("remove_queued")!.click(); // the driver removes anyone's
     expect(d.acts()).toEqual([{ kind: "promote_queued", ref: 8 }, { kind: "remove_queued", ref: 8 }]);
@@ -172,6 +190,8 @@ describe("mountControls", () => {
     d.btn("driver_give")!.click(); // no target: nothing sent
     d.field<HTMLInputElement>("giveTo").value = " system:factory ";
     d.btn("driver_give")!.click();
+    d.btn("interrupt")!.click(); // asks first
+    expect(d.sent).toHaveLength(1);
     d.btn("interrupt")!.click();
     expect(d.acts()).toEqual([{ kind: "driver_give", to: "system:factory" }, { kind: "interrupt" }]);
 
@@ -187,8 +207,12 @@ describe("mountControls", () => {
     const c = setup(you("human:o", "owner"));
     expect(c.btn("driver_request")).not.toBeNull(); // asking first is still open to an owner
     c.btn("driver_take")!.click();
+    c.btn("driver_take")!.click(); // confirmed, but no reason given: nothing sent
     expect(c.sent).toHaveLength(0);
+    expect(c.notices.at(-1)).toBe("Say why you take the driver token.");
     c.field<HTMLInputElement>("takeReason").value = "the driver is away";
+    c.btn("driver_take")!.click();
+    expect(c.sent).toHaveLength(0); // the first click asks
     c.btn("driver_take")!.click();
     expect(c.acts()).toEqual([{ kind: "driver_take", reason: "the driver is away" }]);
   });
@@ -209,7 +233,7 @@ describe("mountControls", () => {
     ]);
     // A collaborator who does not drive cannot start a run (policy StartRun).
     const o = setup(you("human:b", "collaborator"));
-    expect(o.root.querySelector<HTMLFormElement>("form.hand")!.hidden).toBe(true);
+    expect(o.root.querySelector<HTMLElement>(".group-run")!.hidden).toBe(true);
   });
 
   it("shows the claim as a command to copy, and copies only the command", async () => {
@@ -236,6 +260,133 @@ describe("mountControls", () => {
   });
 });
 
+describe("the control groups", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("groups the controls under Run, Driver and Room, with Room behind a toggle", () => {
+    const { root } = mountOwner();
+    expect([...root.querySelectorAll(":scope > section > h2, :scope > details > summary")].map((h) => h.textContent)).toEqual(["Run", "Driver", "Room"]);
+    expect(root.querySelector<HTMLDetailsElement>("details.group-room")?.open).toBe(false);
+  });
+
+  it("confirms interrupt, take, close and steer-now inline, with a cancel", () => {
+    const { root, sent } = mountOwner();
+    const close = root.querySelector('button[data-act="close"]') as HTMLButtonElement;
+    close.click();
+    expect(root.querySelector('button[data-act="close"]')?.textContent).toBe("confirm: close room");
+    (root.querySelector('button[data-act="close-cancel"]') as HTMLButtonElement).click();
+    expect(root.querySelector('button[data-act="close"]')?.textContent).toBe("close room");
+    expect(sent).toEqual([]);
+    close.click(); (root.querySelector('button[data-act="close"]') as HTMLButtonElement).click();
+    expect(sent.at(-1)).toMatchObject({ action: { kind: "close" } });
+    expect(root.querySelector('button[data-act="interrupt"]')?.classList.contains("destructive")).toBe(true);
+    for (const a of ["driver_take", "promote_queued"]) {
+      const b = root.querySelector<HTMLElement>(`[data-act="${a}"]`);
+      expect(b === null || b.classList.contains("destructive"), a).toBe(true);
+    }
+  });
+
+  it("puts the confirm back after 10 s, and the cancel returns the focus to the button", () => {
+    vi.useFakeTimers();
+    let done = 0;
+    const span = confirmButton("interrupt", "interrupt", () => done++);
+    document.body.append(span);
+    const b = span.querySelector<HTMLButtonElement>('button[data-act="interrupt"]')!;
+    b.click();
+    expect(span.textContent).toBe("confirm: interruptcancel");
+    expect(span.getAttribute("aria-live")).toBe("polite"); // the confirm is announced
+    vi.advanceTimersByTime(10_000);
+    expect(b.textContent).toBe("interrupt");
+    expect(span.querySelector('[data-act="interrupt-cancel"]')).toBeNull();
+    b.click();
+    span.querySelector<HTMLButtonElement>('[data-act="interrupt-cancel"]')!.focus();
+    span.querySelector<HTMLButtonElement>('[data-act="interrupt-cancel"]')!.click();
+    expect(document.activeElement).toBe(b);
+    expect(done).toBe(0);
+    b.click(); b.click();
+    expect(done).toBe(1);
+    vi.advanceTimersByTime(10_000); // the timer of a confirmed click is gone: nothing resets twice
+    expect(b.textContent).toBe("interrupt");
+    span.remove();
+  });
+
+  it("shows the PR URL only for a reviewer and the egress field under advanced", () => {
+    const { root } = mountOwner();
+    const role = root.querySelector('select[name="role"]') as HTMLSelectElement;
+    expect((root.querySelector('input[name="prUrl"]') as HTMLInputElement).hidden).toBe(true);
+    role.value = "reviewer"; role.dispatchEvent(new Event("change"));
+    expect((root.querySelector('input[name="prUrl"]') as HTMLInputElement).hidden).toBe(false);
+    expect(root.querySelector('input[name="egress"]')?.closest("details")?.querySelector("summary")?.textContent).toBe("advanced");
+  });
+
+  it("labels its fields with visible text, not placeholders", () => {
+    const { wrap } = mountOwner();
+    for (const name of ["role", "prUrl", "giveTo", "takeReason", "invitee", "memberRole", "delivery"]) {
+      const f = wrap.querySelector<HTMLElement>(`[name="${name}"]`)!;
+      expect(f.closest("label")?.textContent?.trim(), name).toBeTruthy();
+      expect(f.getAttribute("placeholder"), name).toBeNull();
+    }
+    expect(wrap.querySelector('select[name="role"]')!.closest("label")!.firstChild!.textContent).toBe("Start a run as");
+    expect(wrap.querySelector('select[name="delivery"]')!.closest("label")!.firstChild!.textContent).toBe("Deliver to");
+  });
+
+  it("hides Run and Driver once the room is sealed", () => {
+    const { root, state, controls } = mountOwner();
+    state.apply(ev(9, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    controls.refresh();
+    expect((root.querySelector(".group-run") as HTMLElement).hidden).toBe(true);
+    expect((root.querySelector(".group-driver") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("names the driver without its epoch", () => {
+    const { root } = mountOwner();
+    expect(root.querySelector(".driver-holder")?.textContent).toBe("driver: human:a (you)");
+  });
+
+  it("lists the members as text and hides the Room group from anyone but an owner", () => {
+    const hostile = 'human:<img src=x onerror="alert(1)">';
+    const o = mountOwner();
+    o.state.apply(ev(2, "participant", { principal: hostile, change: "joined", role: "collaborator", approver: true }));
+    o.controls.refresh();
+    expect(o.root.querySelector("ul.members")?.textContent).toBe(`${hostile} · collaborator · approver`);
+    expect(o.root.querySelector("img")).toBeNull();
+    const c = setup(you("human:c", "collaborator"));
+    expect(c.root.querySelector<HTMLElement>(".group-room")!.hidden).toBe(true);
+  });
+
+  it("says how to stop the task, with the issue's link, once the summary names one", () => {
+    const o = mountOwner();
+    expect(o.root.querySelector(".stop")).toBeNull();
+    o.controls.setSummary({ status: { issue: { number: 74, url: "https://github.com/Smana/x/issues/74" } } } as never);
+    const stop = o.root.querySelector(".group-room .stop")!;
+    expect(stop.textContent).toBe("Stop the task: label the issue #74 factory/stop");
+    expect(stop.querySelector("a")?.getAttribute("href")).toBe("https://github.com/Smana/x/issues/74");
+    expect(stop.querySelector("code")?.textContent).toBe("factory/stop");
+    o.controls.setSummary({ status: { issue: null } } as never);
+    expect(o.root.querySelector(".stop")).toBeNull();
+  });
+});
+
+describe("mountComposer", () => {
+  it("disables Send while not live, and hides the composer in a sealed room", () => {
+    const c = mountOwner();
+    const send = c.dock.querySelector<HTMLButtonElement>('button[data-act="message"]')!;
+    c.composer.setLive(false);
+    expect(send.disabled).toBe(true);
+    expect(c.field<HTMLTextAreaElement>("text").hidden).toBe(false); // nothing hides: the draft stays in view
+    c.composer.setLive(true);
+    expect(send.disabled).toBe(false);
+    c.state.apply(ev(9, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    c.controls.refresh();
+    for (const f of [c.field("text"), c.field("delivery"), send]) expect(shown(f)).toBe(false);
+  });
+
+  it("ties the notice to the select", () => {
+    const c = mountOwner();
+    expect(c.field("delivery").getAttribute("aria-describedby")).toBe("delivery-notice");
+  });
+});
+
 describe("refresh", () => {
   // R10: every event refreshes the controls. The field the human is in keeps its
   // focus: refresh used to re-mount every section, and the driver's fields with it.
@@ -247,7 +398,7 @@ describe("refresh", () => {
       const c = setup(you(who, "owner"));
       c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
       c.controls.refresh();
-      document.body.append(c.root);
+      document.body.append(c.wrap);
       const f = c.field<HTMLInputElement>(name);
       f.focus();
       expect(document.activeElement, name).toBe(f);
@@ -255,7 +406,7 @@ describe("refresh", () => {
       c.state.apply(queued(11, "human:c", "an event between")); // re-renders the queue
       c.controls.refresh();
       expect(document.activeElement, name).toBe(f);
-      c.root.remove();
+      c.wrap.remove();
     }
   });
 });
@@ -270,7 +421,7 @@ describe("accessible names", () => {
       const c = setup(you(who, "owner"));
       c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
       c.controls.refresh();
-      roots.push(c.root);
+      roots.push(c.wrap);
     }
     const fields = roots.flatMap((r) => [...r.querySelectorAll<HTMLElement>("input, select, textarea")]);
     expect(fields.length).toBeGreaterThanOrEqual(10);

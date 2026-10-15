@@ -181,4 +181,26 @@ describe("RoomState", () => {
     s.apply(agentEv(4, "tool_result", { callId: "b", status: "ok", output: "x" }));
     expect(s.latest()).toMatchObject({ seq: 2, status: "ok" });
   });
+  it("records who closed the room and when, from the seal's own event", () => {
+    const s = new RoomState();
+    expect(s.closed).toBeUndefined();
+    s.apply(ev(3, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
+    expect(s.closed).toEqual({ who: "human:a", at: "2026-09-27T10:00:00Z" });
+    expect(s.sealed).toBe(true);
+    // A limit seals with no closer: sealed, but not closed by anyone.
+    const l = new RoomState();
+    l.apply(ev(4, "state_changed", { kind: "limit", events: 100000 }));
+    expect([l.sealed, l.closed]).toEqual([true, undefined]);
+  });
+
+  it("lists the human members from the log's participant events", () => {
+    const s = new RoomState();
+    s.apply(ev(1, "participant", { principal: "human:b", change: "joined", role: "collaborator", approver: false }));
+    s.apply(ev(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    s.apply(ev(3, "participant", { principal: "human:a", change: "joined", role: "owner", approver: true }));
+    s.apply(ev(4, "participant", { principal: "human:b", change: "role_changed", role: "watcher", approver: false }));
+    expect(s.members()).toEqual([{ principal: "human:a", role: "owner", approver: true }, { principal: "human:b", role: "watcher", approver: false }]);
+    s.apply(ev(5, "participant", { principal: "human:a", change: "left" }));
+    expect(s.members().map((m) => m.principal)).toEqual(["human:b"]);
+  });
 });

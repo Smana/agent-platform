@@ -38,6 +38,8 @@ const pairs = (t: Record<string, string>) => [
   ["the budget meter's fill", t["--accent"], mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.20), 3],
   ["the needs-you border", t["--warning-border"], t["--card"], 3],
   ["the deny button's text on a card", t["--destructive-text"], t["--card"], 4.5],
+  ["the controls' group names", t["--muted-foreground"], t["--background"], 4.5],
+  ["a destructive button on the controls", t["--destructive"], t["--background"], 4.5],
 ] as const;
 
 describe.each([["light", light], ["dark", dark]])("%s theme", (_name, t) => {

@@ -12,6 +12,7 @@ import { RoomLog } from "./view";
 export interface Views {
   apply(ev: RoomEvent): void;
   rowFor(callId: string): HTMLElement | undefined; // a call's chat row, while the page holds it
+  counters(text: string): void; // the protocol's self-check, on the raw log's summary line
 }
 
 // mountViews fills main with the chat and the collapsed raw log. fork, when set,
@@ -37,5 +38,6 @@ export function mountViews(main: HTMLElement, fork?: (seq: number) => void, you?
       raw.put(ev.seq, renderEvent(ev));
     },
     rowFor: (callId) => chat.rowFor(callId),
+    counters(text: string) { title.textContent = `Raw events · ${text}`; },
   };
 }

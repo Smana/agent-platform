@@ -2,6 +2,7 @@
 
 import type { Frame, Snapshot } from "./conn";
 import type { RoomState } from "./room-state";
+import { safeLink, type Summary } from "./summary";
 
 // Human copy for an ack's rejected reason (docs/api.md, Actions).
 const rejections: Record<string, string> = {
@@ -125,9 +126,56 @@ export function hasControls(you: Snapshot["you"]): boolean {
   return you.role !== "watcher" || you.approver;
 }
 
-// mountControls renders what a collaborator and up can do: the composer, the queue,
-// the driver token, interrupt, and hand to role. Approvals are decided in the needs-you
-// panel (needs.ts). Room text goes in as text only (T10).
+// labelled wraps a field in a visible label: the text a sighted human reads, while
+// named() keeps the field's accessible name (R10). No placeholder stands in for either.
+export function labelled(text: string, field: HTMLElement, cls = "field"): HTMLLabelElement {
+  const l = el("label", { className: cls });
+  l.append(el("span", { textContent: text }), field);
+  return l;
+}
+
+// confirmButton is a destructive act's button: the first click asks ("confirm: label")
+// beside a cancel, the second does it. The ask goes back after 10 s or on cancel, so a
+// stale confirm never fires on a stray click. The span is a polite live region: the ask
+// is announced.
+export function confirmButton(label: string, act: string, onConfirm: () => void): HTMLSpanElement {
+  const span = el("span", { className: "confirm" });
+  span.setAttribute("aria-live", "polite");
+  const cancel = button("cancel", `${act}-cancel`, () => { reset(); main.focus(); });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reset = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    main.textContent = label;
+    cancel.remove();
+  };
+  const main = button(label, act, () => {
+    if (timer === undefined) {
+      main.textContent = `confirm: ${label}`;
+      main.after(cancel);
+      timer = setTimeout(reset, confirmFor);
+      return;
+    }
+    reset();
+    onConfirm();
+  });
+  main.classList.add("destructive");
+  span.append(main);
+  return span;
+}
+const confirmFor = 10_000;
+
+function group(cls: string, title: string): HTMLElement {
+  const s = el("section", { className: `group ${cls}` });
+  s.append(el("h2", { textContent: title }));
+  return s;
+}
+
+// mountControls renders what a collaborator and up can do, in named groups: Run (start a
+// run as a role), Driver (the token, interrupt), the queue, and Room (members, invite, the
+// stop instruction, close), the last behind a toggle and for owners only. The composer
+// docks at the page's foot (mountComposer). Approvals are decided in the needs-you panel
+// (needs.ts). Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
 // say sets the footer's notice.
 export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"], say: (text: string) => void) {
@@ -135,65 +183,19 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const isDriver = () => state.driver === you.principal;
   const isOwner = () => you.role === "owner";
 
-  const text = named(el("textarea", { name: "text", maxLength: 16384, rows: 3, placeholder: "Write to the room" }), "message");
-  // The room is the default: queued and steered text enters an agent's prompt (R09).
-  const delivery = select("delivery", "where this message goes", [["none", "post to the room (no agent is prompted)"],
-    ["queued", "queue for the next run's brief"], ["steering", "steer the running agent now"]]);
-  delivery.append(el("option", { value: "", textContent: "choose where this goes", disabled: true, hidden: true }));
-  const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
-  const choose = "You no longer hold the driver token: choose where this message goes.";
-  const composer = el("div", { className: "composer" });
-  // The text stays until its own ack accepts it: a rejected message is not lost.
-  let sent = { seq: 0, text: "" };
-  composer.append(text, delivery, button("send", "message", () => {
-    if (!text.value.trim()) return;
-    if (!delivery.value) return say(choose);
-    sent = { seq: send({ kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
-  }));
-
-  const queue = el("ul", { className: "queue" });
-  const queueRows = keyed(queue);
-  const renderQueue = () => queueRows(state.queue().map((q) => {
-    const remove = !state.sealed && (q.author === you.principal || isDriver()); // sealed: every action answers sealed
-    const promote = !state.sealed && isDriver();
-    return { key: String(q.ref), sig: `${remove} ${promote}`, build: () => {
-      const li = el("li");
-      li.append(el("span", { textContent: `#${q.ref} ${q.author}: ${q.text}` }));
-      if (remove) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
-      if (promote) li.append(button("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
-      return li;
-    } };
-  }));
-
-  // The driver's fields stay mounted and toggle hidden: a refresh never takes the
-  // focus or the text of a field the human is in (R10).
-  const holder = el("span");
-  const giveTo = named(el("input", { name: "giveTo", placeholder: "human:<sub> or system:factory" }), "give the driver token to");
-  const give = button("give", "driver_give", () => {
-    const to = giveTo.value.trim();
-    if (to && send({ kind: "driver_give", to })) giveTo.value = "";
-  });
-  const interrupt = button("interrupt", "interrupt", () => send({ kind: "interrupt" }));
-  const request = button("request the token", "driver_request", () => send({ kind: "driver_request" }));
-  const takeReason = named(el("input", { name: "takeReason", maxLength: 256, placeholder: "why take the token" }), "why take the driver token");
-  const take = button("take", "driver_take", () => {
-    const reason = takeReason.value.trim();
-    if (reason && send({ kind: "driver_take", reason })) takeReason.value = "";
-  });
-  const driver = el("div", { className: "driver" });
-  driver.append(holder, giveTo, give, interrupt, request, takeReason, take);
-  const renderDriver = () => {
-    holder.textContent = `driver: ${state.driver}${isDriver() ? " (you)" : ""} · epoch ${state.driverEpoch}`;
-    for (const e of [giveTo, give, interrupt]) e.hidden = !isDriver();
-    request.hidden = isDriver();
-    for (const e of [takeReason, take]) e.hidden = isDriver() || !isOwner();
-  };
-
+  // Run: start a run as a role. The PR URL shows for a reviewer only; egress is advanced.
+  const run = group("group-run", "Run");
   const hand = el("form", { className: "hand" });
-  const role = select("role", "role of the run to start", [["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
-  const prUrl = named(el("input", { name: "prUrl", type: "url", placeholder: "PR URL (reviewer only)" }), "pull request URL (reviewer only)");
-  const egress = named(el("input", { name: "egress", placeholder: "egress profiles: pypi, npm" }), "egress profiles, comma-separated");
-  hand.append(role, prUrl, egress, el("button", { type: "submit", textContent: "hand to role" }));
+  const role = select("role", "Start a run as", [["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
+  const prUrl = named(el("input", { name: "prUrl", type: "url" }), "pull request URL (reviewer only)");
+  const prLabel = labelled("Pull request URL", prUrl);
+  const egress = named(el("input", { name: "egress" }), "egress profiles, comma-separated");
+  const advanced = el("details", { className: "advanced" });
+  advanced.append(el("summary", { textContent: "advanced" }), labelled("Egress profiles (comma-separated)", egress));
+  const showPr = () => { prUrl.hidden = prLabel.hidden = role.value !== "reviewer"; };
+  role.onchange = showPr;
+  showPr();
+  hand.append(labelled("Start a run as", role), prLabel, el("button", { type: "submit", textContent: "start run" }), advanced);
   hand.onsubmit = (e) => {
     e.preventDefault();
     const action: Record<string, unknown> = { kind: "start_run", role: role.value };
@@ -202,11 +204,68 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     if (profiles.length) action.egressProfiles = profiles;
     send(action);
   };
+  const manifest = el("div", { className: "manifest", hidden: true });
+  const claim = el("pre");
+  manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
+  run.append(hand, manifest);
 
-  // Owner-only, and an admin is an owner in every room (policy Invite, Close): the same acts the
-  // broker checks again, so a hidden control is a courtesy and never the gate.
-  const members = el("form", { className: "members" });
-  const invitee = named(el("input", { name: "invitee", placeholder: "human:<sub> to invite" }), "member to invite");
+  // Driver: the fields stay mounted and toggle hidden: a refresh never takes the
+  // focus or the text of a field the human is in (R10).
+  const drv = group("group-driver", "Driver");
+  const holder = el("span", { className: "driver-holder" });
+  const giveTo = named(el("input", { name: "giveTo" }), "give the driver token to (human:<sub> or system:factory)");
+  const giveLabel = labelled("Give to", giveTo);
+  const give = button("give", "driver_give", () => {
+    const to = giveTo.value.trim();
+    if (to && send({ kind: "driver_give", to })) giveTo.value = "";
+  });
+  const interrupt = confirmButton("interrupt", "interrupt", () => send({ kind: "interrupt" }));
+  const request = button("request the token", "driver_request", () => send({ kind: "driver_request" }));
+  const takeReason = named(el("input", { name: "takeReason", maxLength: 256 }), "why take the driver token");
+  const takeLabel = labelled("Why take it", takeReason);
+  const take = confirmButton("take", "driver_take", () => {
+    const reason = takeReason.value.trim();
+    if (!reason) return say("Say why you take the driver token.");
+    if (send({ kind: "driver_take", reason })) takeReason.value = "";
+  });
+  const driver = el("div", { className: "driver" });
+  driver.append(holder, giveLabel, give, interrupt, request, takeLabel, take);
+  drv.append(driver);
+  const renderDriver = () => {
+    holder.textContent = `driver: ${state.driver}${isDriver() ? " (you)" : ""}`;
+    for (const e of [giveLabel, give, interrupt]) e.hidden = !isDriver();
+    request.hidden = isDriver();
+    for (const e of [takeLabel, take]) e.hidden = isDriver() || !isOwner();
+  };
+
+  // The queue: what waits for the next run's brief. steer now prompts the running agent
+  // with it, so it asks first.
+  const queueBox = el("div", { className: "group-queue" });
+  const queue = el("ul", { className: "queue" });
+  queue.setAttribute("aria-label", "Queued for the next run");
+  queueBox.append(el("p", { className: "group-label", textContent: "Queued for the next run" }), queue);
+  const queueRows = keyed(queue);
+  const renderQueue = () => queueRows(state.queue().map((q) => {
+    const remove = !state.sealed && (q.author === you.principal || isDriver()); // sealed: every action answers sealed
+    const promote = !state.sealed && isDriver();
+    return { key: String(q.ref), sig: `${remove} ${promote}`, build: () => {
+      const li = el("li");
+      li.append(el("span", { textContent: `#${q.ref} ${q.author}: ${q.text}` }));
+      if (remove) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
+      if (promote) li.append(confirmButton("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
+      return li;
+    } };
+  }));
+
+  // Room: owner-only, and an admin is an owner in every room (policy Invite, Close): the
+  // same acts the broker checks again, so a hidden control is a courtesy and never the gate.
+  const room = el("details", { className: "group group-room" });
+  room.append(el("summary", { textContent: "Room" }));
+  const memberList = el("ul", { className: "members" });
+  memberList.setAttribute("aria-label", "Members");
+  const memberRows = keyed(memberList);
+  const inviteForm = el("form", { className: "invite" });
+  const invitee = named(el("input", { name: "invitee" }), "member to invite (human:<sub>)");
   const memberRole = select("memberRole", "role of the invited member", [["watcher", "watcher"], ["collaborator", "collaborator"], ["owner", "owner"]]);
   memberRole.value = "collaborator";
   const approver = named(el("input", { name: "inviteApprover", type: "checkbox" }), "may decide approvals");
@@ -218,28 +277,15 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     if (!principal) return;
     invited = { seq: send({ kind: "invite", principal, memberRole: memberRole.value, approver: approver.checked }), who: invitee.value };
   };
-  members.append(invitee, memberRole, approverLabel, button("invite", "invite", invite));
-  members.onsubmit = (e) => { e.preventDefault(); invite(); };
-
-  // Closing seals the room for good: the first click asks, the second does it.
-  const closeLabel = "close room";
-  const closer = button(closeLabel, "close", () => {
-    if (closer.textContent === closeLabel) {
-      closer.textContent = "confirm: close this room for good";
-      return;
-    }
-    closer.textContent = closeLabel;
-    send({ kind: "close" });
-  });
-  const admin = el("div", { className: "room-admin" });
-  admin.append(members, closer);
-
-  const manifest = el("div", { className: "manifest", hidden: true });
-  const claim = el("pre");
-  manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
+  inviteForm.append(labelled("Invite", invitee), labelled("as", memberRole), approverLabel, button("invite", "invite", invite));
+  inviteForm.onsubmit = (e) => { e.preventDefault(); invite(); };
+  const stopSlot = el("div");
+  // Closing seals the room for good: it asks first.
+  const closer = confirmButton("close room", "close", () => send({ kind: "close" }));
+  room.append(memberList, inviteForm, stopSlot, closer);
 
   // Mounted once: refresh toggles hidden, never re-mounts (R10).
-  root.replaceChildren(driver, composer, queue, hand, admin, manifest);
+  root.replaceChildren(run, drv, queueBox, room);
   const showResult = (result: unknown) => {
     if (!result) return;
     claim.textContent = claimText(result);
@@ -247,32 +293,87 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   };
   return {
     refresh() {
-      steering.disabled = !isDriver();
-      // A lost token picks no other delivery for the human: both prompt or skip an
-      // agent the human meant to reach (R09, reversing review 4.5 I3).
-      if (steering.disabled && delivery.value === "steering") {
-        delivery.value = "";
-        say(choose);
-      }
       // A watcher who is an approver decides in the needs-you panel, and gets nothing here.
       const watcher = you.role === "watcher";
-      for (const e of [driver, composer, queue]) e.hidden = watcher;
-      hand.hidden = watcher || !(isDriver() || isOwner());
-      manifest.hidden = watcher || !claim.textContent;
-      admin.hidden = !isOwner() || state.sealed;
-      if (admin.hidden) closer.textContent = closeLabel;
+      // A sealed room takes no run and no token: only its queue and its members remain.
+      run.hidden = watcher || state.sealed || !(isDriver() || isOwner());
+      manifest.hidden = !claim.textContent;
+      drv.hidden = watcher || state.sealed;
+      queueBox.hidden = watcher || state.queue().length === 0;
+      room.hidden = !isOwner();
+      for (const e of [inviteForm, closer]) e.hidden = state.sealed;
       renderDriver();
       renderQueue();
+      memberRows(state.members().map((m) => {
+        const text = `${m.principal} · ${m.role}${m.approver ? " · approver" : ""}`;
+        return { key: m.principal, sig: text, build: () => el("li", { textContent: text }) };
+      }));
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,
-    // onAck takes every ack: an accepted one clears the composer it came from, if
-    // unedited since, and shows a claim it carries.
+    // setSummary takes each summary: with an issue, the Room group says how to stop the task.
+    setSummary(sum: Summary) {
+      const issue = sum.status?.issue;
+      if (!issue) return stopSlot.replaceChildren();
+      const p = el("p", { className: "stop" });
+      p.append("Stop the task: label the issue ", safeLink(`#${issue.number}`, issue.url), " ", el("code", { textContent: "factory/stop" }));
+      stopSlot.replaceChildren(p);
+    },
+    // onAck takes every ack: an accepted one clears the invite it came from, if unedited
+    // since, and shows a claim it carries.
     onAck(f: Frame) {
       if (f.rejected) return;
-      if (f.clientSeq && f.clientSeq === sent.seq && text.value === sent.text) text.value = "";
       if (f.clientSeq && f.clientSeq === invited.seq && invitee.value === invited.who) invitee.value = "";
       showResult(f.result);
     },
+  };
+}
+
+// mountComposer renders the dock's composer into root: the text, where it goes, Send.
+// The text stays until its own ack accepts it: a rejected message is not lost. setLive
+// disables Send while the socket is down and hides nothing, so the draft stays in view;
+// a sealed room hides the composer, and a watcher has none.
+export function mountComposer(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"]) {
+  const isDriver = () => state.driver === you.principal;
+  const text = named(el("textarea", { name: "text", maxLength: 16384, rows: 2 }), "message to the room");
+  // The room is the default: queued and steered text enters an agent's prompt (R09).
+  const delivery = select("delivery", "Deliver to", [["none", "post to the room (no agent is prompted)"],
+    ["queued", "queue for the next run's brief"], ["steering", "steer the running agent now"]]);
+  delivery.append(el("option", { value: "", textContent: "choose where this goes", disabled: true, hidden: true }));
+  delivery.setAttribute("aria-describedby", "delivery-notice");
+  const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+  const choose = "You no longer hold the driver token: choose where this message goes.";
+  // The notice sits beside the select it is about, so the page's act notice keeps its own.
+  const notice = el("span", { id: "delivery-notice", className: "notice" });
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  delivery.onchange = () => { notice.textContent = ""; };
+  let sent = { seq: 0, text: "" };
+  const sendBtn = button("send", "message", () => {
+    if (!text.value.trim()) return;
+    if (!delivery.value) { notice.textContent = choose; return; }
+    sent = { seq: act(conn, state, { kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
+    if (sent.seq) notice.textContent = ""; // a send that went out supersedes the notice
+  });
+  sendBtn.classList.add("primary");
+  const row = el("div", { className: "composer-row" });
+  row.append(labelled("Deliver to", delivery), notice, sendBtn);
+  root.replaceChildren(text, row);
+  return {
+    refresh() {
+      steering.disabled = !isDriver();
+      // A lost token picks no other delivery for the human: both prompt or skip an
+      // agent the human meant to reach (R09, reversing review 4.5 I3). The draft stays.
+      if (steering.disabled && delivery.value === "steering") {
+        delivery.value = "";
+        notice.textContent = choose;
+      }
+      root.hidden = you.role === "watcher";
+      text.hidden = row.hidden = state.sealed;
+    },
+    onAck(f: Frame) {
+      if (!f.rejected && f.clientSeq && f.clientSeq === sent.seq && text.value === sent.text) text.value = "";
+    },
+    setLive(live: boolean) { sendBtn.disabled = !live; },
   };
 }

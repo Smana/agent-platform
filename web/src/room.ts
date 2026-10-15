@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The room page: the header, the needs-you panel, the notes, the chat and raw views,
-// the controls and the footer, all fed by one RoomConnection.
+// The room page: the header, the reconnecting banner, the needs-you panel, the notes,
+// the chat and raw views, the controls and the dock (the composer, the connection), all
+// fed by one RoomConnection.
 
 import { api } from "./api";
 import { reveal } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
-import { hasControls, mountControls, rejection } from "./controls";
+import { hasControls, mountComposer, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
 import { mountNeeds } from "./needs";
 import { changesSummary, fetchSummary, focusApproval, renderNotes, type Summary } from "./summary";
@@ -22,6 +23,11 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const header = document.createElement("header");
   header.className = "page-header";
   const strip = mountStrip(header);
+  // Not live: why, and when the page retries. Hidden while live.
+  const banner = document.createElement("div");
+  banner.className = "banner";
+  banner.setAttribute("role", "status");
+  banner.hidden = true;
   const needsPanel = document.createElement("section");
   const lead = document.createElement("section");
   lead.className = "summary";
@@ -37,19 +43,27 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const section = document.createElement("section");
   section.className = "controls";
   const forkPanel = document.createElement("section");
+  // The dock: the composer (mounted with the first state frame), then the page's act
+  // notice, the theme button and the connection.
   const footer = document.createElement("footer");
   footer.className = "page-dock";
-  const counters = document.createElement("span");
+  const composerEl = document.createElement("div");
+  composerEl.className = "composer";
+  const meta = document.createElement("div");
+  meta.className = "dock-meta";
   const notice = document.createElement("span");
-  notice.className = "notice";
+  notice.className = "notice act-notice";
   notice.setAttribute("role", "status");
   notice.setAttribute("aria-live", "polite");
   const status = document.createElement("span");
   status.className = "status";
-  footer.append(counters, notice, status);
-  app.replaceChildren(header, needsPanel, lead, main, section, forkPanel, footer);
+  status.textContent = "connecting…";
+  meta.append(notice);
+  mountThemeButton(meta, theme);
+  meta.append(status);
+  footer.append(composerEl, meta);
+  app.replaceChildren(header, banner, needsPanel, lead, main, section, forkPanel, footer);
   const views = mountViews(main, (seq) => fork.open(seq), () => snap?.you.principal);
-  mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
   const sender = {
@@ -61,6 +75,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   };
   const needsPanelView = mountNeeds(needsPanel, sender, state, () => snap?.you, views);
   let controls: ReturnType<typeof mountControls> | undefined;
+  let composer: ReturnType<typeof mountComposer> | undefined;
   const say = (text: string) => { notice.textContent = text; };
   // What an act said (a refusal, not connected, a lost act): an ack clears only that,
   // never a notice the controls set meanwhile, such as a lost token's. A send that went
@@ -74,10 +89,12 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let mark = 0; // the latest state frame's throughSeq
   let summary: Summary | undefined;
   let connection = "connecting…";
+  let events = 0; // the counters' last seq, for the dock's "live · N events"
+  const showStatus = () => { status.textContent = connection === "live" ? `live · ${events} events` : connection; };
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: undefined, summary: sum, needs: needsPanelView.count(), connection, now: state.latest() });
+    sealedBy: state.closed, summary: sum, needs: needsPanelView.count(), connection, now: state.latest() });
   strip.onNeedsClick(() => needsPanel.scrollIntoView?.({ block: "start" }));
   // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
   // call's row, which carries the call's seq). A row gone at the cap finds nothing. The
@@ -115,6 +132,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       const key = JSON.stringify(sum);
       if (key !== shown) {
         needsPanelView.setSummary(sum); // first: the strip's count reads it
+        controls?.setSummary(sum);
         refreshStrip(sum); // a strip that throws leaves the notes as they were
         renderNotes(blocks, sum);
         summary = sum;
@@ -150,14 +168,25 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       state.reset(s, throughSeq);
       needsPanelView.refresh();
       refreshStrip();
+      // One you for the page: the controls and the composer read it, and an invite that
+      // changes the role updates it in place.
+      if (you) Object.assign(you, s.you);
+      else you = { ...s.you };
       if (!hasControls(s.you)) {
-        controls = you = undefined;
+        controls = undefined;
         section.replaceChildren();
       } else {
-        if (you && controls) Object.assign(you, s.you);
-        else controls = mountControls(section, sender, state, (you = { ...s.you }), say);
+        if (!controls) {
+          controls = mountControls(section, sender, state, you, say);
+          if (summary) controls.setSummary(summary);
+        }
         controls.refresh();
       }
+      if (!composer) {
+        composer = mountComposer(composerEl, sender, state, you);
+        composer.setLive(connection === "live");
+      }
+      composer.refresh();
       land();
     },
     onEvent: (e) => {
@@ -167,6 +196,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       needsPanelView.refresh();
       refreshStrip();
       controls?.refresh();
+      composer?.refresh();
       land();
       // A membership change naming you: the page projects none (R10). The reconnect's
       // state frame re-resolves you, and the broker re-checks every act anyway.
@@ -176,6 +206,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       pending.ack(f);
       if (f.rejected) sayAct(rejection(f.rejected)); else clearAct();
       controls?.onAck(f);
+      composer?.onAck(f);
       fork.onAck(f);
       needsPanelView.refresh();
     },
@@ -207,12 +238,17 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       app.replaceChildren(gone);
     }).catch(() => {}),
     onCounters: (c) => {
-      counters.textContent = `seq ${c.last} · gaps ${c.gaps} · dups ${c.duplicates}`;
+      events = c.last;
+      views.counters(`seq ${c.last} · gaps ${c.gaps} · dups ${c.duplicates}`);
+      showStatus();
     },
     onStatus: (s) => {
-      footer.dataset.status = s;
-      status.textContent = s;
+      footer.dataset.status = s.startsWith("reconnecting") ? "reconnecting" : s;
       connection = s;
+      showStatus();
+      banner.hidden = s === "live";
+      banner.textContent = banner.hidden ? "" : s.charAt(0).toUpperCase() + s.slice(1);
+      composer?.setLive(s === "live");
       refreshStrip();
       pending.status(s);
     },

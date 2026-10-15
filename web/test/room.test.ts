@@ -253,26 +253,28 @@ describe("the room page", () => {
     expect(p.sockets).toHaveLength(4);
   });
 
-  // Review M3: an ack clears what an act said, never a notice the controls set
-  // meanwhile, such as a lost token's.
+  // Review M3: an ack clears what an act said, never the lost token's notice, which
+  // now sits beside the select it is about.
   it("keeps the lost token's notice past the ack of the give that lost it", () => {
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
-    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    const notice = () => p.app.querySelector("footer .act-notice")!.textContent;
+    const beside = () => p.app.querySelector("#delivery-notice")!.textContent;
     p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
     p.app.querySelector<HTMLInputElement>('[name="giveTo"]')!.value = "human:c";
     p.app.querySelector<HTMLButtonElement>('[data-act="driver_give"]')!.click();
     const give = p.last().sent.at(-1) as { clientSeq: number };
     p.last().recv(event(1, "driver", { from: "human:a", to: "human:c", epoch: 2, reason: "given" }));
     const choose = "You no longer hold the driver token: choose where this message goes.";
-    expect(notice()).toBe(choose);
+    expect(beside()).toBe(choose);
     p.last().recv({ type: "ack", clientSeq: give.clientSeq, seq: 1 });
-    expect(notice()).toBe(choose);
-    // A refusal is an act's own: the next accepted ack clears it.
+    expect(beside()).toBe(choose);
+    // A refusal is an act's own: the next accepted ack clears it, and only it.
     p.last().recv({ type: "ack", clientSeq: give.clientSeq + 1, rejected: "rate_limited" });
     expect(notice()).toMatch(/^Too many actions/);
     p.last().recv({ type: "ack", clientSeq: give.clientSeq + 2, seq: 2 });
     expect(notice()).toBe("");
+    expect(beside()).toBe(choose);
   });
 
   // Re-review N2: a connection the broker accepted proves the room readable, so the
@@ -305,7 +307,7 @@ describe("the room page", () => {
   it("clears the lost token's notice once the human picks a delivery and sends", () => {
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
-    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    const notice = () => p.app.querySelector("#delivery-notice")!.textContent;
     const delivery = p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!;
     const text = p.app.querySelector<HTMLTextAreaElement>('textarea[name="text"]')!;
     const send = p.app.querySelector<HTMLButtonElement>('[data-act="message"]')!;
@@ -328,8 +330,11 @@ describe("the room page", () => {
   });
 
   it("announces its notices politely (R10)", () => {
-    const notice = page().app.querySelector("footer .notice")!;
-    expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+    const p = page();
+    p.join(snapshot(), 0);
+    for (const notice of [p.app.querySelector("footer .act-notice")!, p.app.querySelector("#delivery-notice")!]) {
+      expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+    }
   });
 
   // The summary leads the page; the raw stream is collapsed and shares the one socket.
@@ -390,7 +395,58 @@ describe("the room page", () => {
     expect(p.app.querySelector("details.raw-events .view-chat")).toBeNull();
     expect(p.app.querySelector("details.raw-events")!.contains(p.app.querySelector('textarea[name="text"]'))).toBe(false);
     expect(p.app.querySelector<HTMLElement>("section.controls")!.hidden).toBe(false);
-    expect(p.app.querySelector<HTMLElement>(".composer")!.hidden).toBe(false);
+    expect(p.app.querySelector<HTMLElement>("footer .composer")!.hidden).toBe(false);
+  });
+
+  it("docks the composer at the bottom and disables Send while reconnecting or sealed", () => {
+    const p = page();
+    p.join(snapshot({ role: "collaborator" }), 0);
+    const dock = p.app.querySelector("footer.page-dock")!;
+    expect(dock.querySelector("textarea")).not.toBeNull();
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(false);
+    expect(p.app.querySelector<HTMLElement>(".banner")!.hidden).toBe(true);
+    p.last().drop(1006);
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(p.app.querySelector(".banner")?.textContent).toMatch(/^Reconnecting in \d+ s: connection lost$/);
+    expect(p.app.querySelector<HTMLElement>(".banner")!.hidden).toBe(false);
+    expect(p.app.querySelector(".banner")!.previousElementSibling).toBe(p.app.querySelector("header.page-header"));
+  });
+
+  it("reads live with its event count in the dock, and the protocol counters on the raw log", () => {
+    const p = page();
+    expect(p.app.querySelector("footer .status")?.textContent).toBe("connecting…");
+    p.join(snapshot(), 0, event(1, "message", { kind: "chat", text: "a", delivery: "none" }), event(2, "message", { kind: "chat", text: "b", delivery: "none" }));
+    expect(p.app.querySelector("footer .status")?.textContent).toBe("live · 2 events");
+    expect(p.app.querySelector("details.raw-events > summary")?.textContent).toBe("Raw events · seq 2 · gaps 0 · dups 0");
+    expect(p.app.querySelector("footer .theme-toggle")).not.toBeNull(); // the theme button moved to the dock
+    expect(p.app.querySelector("header .theme-toggle")).toBeNull();
+  });
+
+  // Review focus 5.
+  it("keeps a steering draft and moves the notice beside the select when the token is lost (review focus 5)", () => {
+    const p = page();
+    p.join(snapshot({ role: "collaborator", driver: true }), 0);
+    const dock = p.app.querySelector("footer.page-dock")!;
+    const text = dock.querySelector("textarea") as HTMLTextAreaElement;
+    const delivery = dock.querySelector('select[name="delivery"]') as HTMLSelectElement;
+    text.value = "turn left"; delivery.value = "steering";
+    p.last().recv(event(1, "driver", { from: "human:b", to: "human:c", epoch: 2 }));
+    expect(text.value).toBe("turn left");
+    expect(delivery.value).toBe("");
+    expect(delivery.getAttribute("aria-describedby")).toBe("delivery-notice");
+    expect(dock.querySelector("#delivery-notice")?.textContent).toMatch(/choose where this message goes/);
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("reads Closed by whom in the strip and hides the composer", () => {
+    const p = page();
+    p.join(snapshot({ role: "owner" }), 0);
+    p.last().recv({ ...event(1, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }), event: { ...event(1, "state_changed", {}).event,
+      actor: { kind: "human", id: "human:b" }, payload: { kind: "room_phase", phase: "Closed", reason: "owner" } } });
+    expect(p.app.querySelector(".closed")?.textContent).toMatch(/^Closed .* by you$/);
+    expect((p.app.querySelector("footer.page-dock textarea") as HTMLElement).hidden).toBe(true);
+    expect(p.app.querySelector<HTMLElement>(".group-run")!.hidden).toBe(true);
+    expect(p.app.querySelector<HTMLElement>(".group-driver")!.hidden).toBe(true);
   });
 
   // R24: the broker's link is <room>#<approvalId>; it lands on that approval's card.
@@ -440,7 +496,9 @@ describe("the room page", () => {
       p.join(snapshot({ role: "owner" }), 0, requested(1, "01M4A"));
       const kids = [...p.app.children];
       const panel = p.app.querySelector("section.needs")!;
-      expect(kids.indexOf(panel)).toBe(kids.indexOf(p.app.querySelector("header")!) + 1);
+      // Only the reconnecting banner, hidden while live, sits between the strip and the panel.
+      expect(kids.indexOf(panel)).toBe(kids.indexOf(p.app.querySelector("header")!) + 2);
+      expect(kids[kids.indexOf(panel) - 1].className).toBe("banner");
       expect(kids.indexOf(panel)).toBeLessThan(kids.indexOf(p.app.querySelector("main")!));
       expect(panel.querySelector("#approval-01M4A .approval-command")?.textContent).toBe("git push");
     });
@@ -464,7 +522,7 @@ describe("the room page", () => {
       const act = p.last().sent.at(-1) as { clientSeq: number; action: unknown };
       expect(act.action).toEqual({ kind: "decide", approvalId: "01M4A", decision: "approved" });
       p.last().recv({ type: "ack", clientSeq: act.clientSeq, rejected: "already_decided" });
-      expect(p.app.querySelector("footer .notice")?.textContent).toBe("Another approver decided first.");
+      expect(p.app.querySelector("footer .act-notice")?.textContent).toBe("Another approver decided first.");
       p.last().recv(event(2, "approval_decided", { approvalId: "01M4A", decision: "denied" }));
       expect(p.app.querySelector("#approval-01M4A")).toBeNull();
       expect(p.app.querySelector("[data-act=approve]")).toBeNull();
