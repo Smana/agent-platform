@@ -36,6 +36,26 @@ const (
 		origin_client, origin_seq, ts, redactions, payload FROM events WHERE room_id = $1 AND seq = $3`
 )
 
+// forkQueueSQL carries the source's queue at the fork point into the fork, as
+// the fork's own rows, after their events and before forked_from;
+// queue_is_its_event checks each against its copied event. A row was queued at the
+// point ($3) if it is queued now, or if the event that took it out of queued has a
+// seq past the point: promoted (the steering message caused_by the ref), removed
+// (state_changed queued_removed naming it) or consumed by a brief (state_changed
+// run_requested listing it in consumed). Every row enters queued, naming no run.
+// The one gap is POST /queue/consume (Store.SetQueued): it moves a row with no
+// event, so a row consumed that way is carried only while still queued.
+const forkQueueSQL = `INSERT INTO queue (room_id, ref, author, text, state)
+	SELECT $2, q.ref, q.author, q.text, 'queued' FROM queue q
+	WHERE q.room_id = $1 AND q.ref <= $3 AND (q.state = 'queued' OR EXISTS (
+		SELECT 1 FROM events e WHERE e.room_id = q.room_id AND e.seq > $3 AND (
+			(q.state = 'promoted' AND e.type = 'message' AND e.caused_by = q.ref
+				AND e.payload->>'delivery' = 'steering')
+			OR (q.state = 'removed' AND e.type = 'state_changed' AND e.payload->>'kind' = 'queued_removed'
+				AND e.payload->'ref' = to_jsonb(q.ref))
+			OR (q.state = 'consumed' AND e.type = 'state_changed' AND e.payload->>'kind' = 'run_requested'
+				AND jsonb_typeof(e.payload->'consumed') = 'array' AND e.payload->'consumed' @> to_jsonb(q.ref)))))`
+
 // Fork creates room r from events 1..upTo of src, copied with their seq, id and
 // idempotency key (§5), then appends d as state_changed{forked_from}: fields,
 // plus the source room and seq. The copy is the fork's own, so it outlives src's
@@ -102,14 +122,7 @@ func (s *Store) fork(ctx context.Context, src string, upTo int64, r NewRoom, d e
 			return envelope.Event{}, ErrForkTooLarge
 		}
 	}
-	// The messages still queued at the point come along as the fork's own rows,
-	// after their events and before the forked_from event. queue_is_its_event
-	// checks each against its copied event. The table records no time of leaving
-	// the queue, so a row the source moved out of queued before this read is not
-	// carried: the copy is the queue as the fork finds it.
-	if _, err := tx.Exec(ctx, `INSERT INTO queue (room_id, ref, author, text, state)
-		SELECT $2, ref, author, text, 'queued' FROM queue WHERE room_id = $1 AND ref <= $3 AND state = 'queued'`,
-		src, r.ID, upTo); err != nil {
+	if _, err := tx.Exec(ctx, forkQueueSQL, src, r.ID, upTo); err != nil {
 		return envelope.Event{}, err
 	}
 	ev, _, err := s.appendTx(ctx, tx, d, fence{})
