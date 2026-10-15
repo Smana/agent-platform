@@ -916,6 +916,8 @@ func TestSystemAPI(t *testing.T) {
 		{"a task_state", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", "Reviewing", 1), http.StatusCreated, ""},
 		{"the same task_state again", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", "Reviewing", 1), http.StatusOK, ""},
 		{"a chat", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("chat", "hi", 2), http.StatusBadRequest, wire.ReasonBadMessage},
+		{"a whitespace-only text", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", "   ", 9), http.StatusBadRequest, wire.ReasonBadMessage},
+		{"an empty text", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", "", 10), http.StatusBadRequest, wire.ReasonBadMessage},
 		{"no clientSeq", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", "x", 0), http.StatusBadRequest, wire.ReasonBadMessage},
 		{"an overlong text", "/v1/rooms/" + room + "/messages", "sys:" + factory, msg("task_state", strings.Repeat("x", envelope.MaxHumanMessage+1), 3), http.StatusBadRequest, wire.ReasonBadMessage},
 		{"an unknown field", "/v1/rooms/" + room + "/messages", "sys:" + factory, map[string]any{"kind": "task_state", "text": "x", "clientSeq": 4, "actor": "human:x"}, http.StatusBadRequest, wire.ReasonBadMessage},
