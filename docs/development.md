@@ -83,3 +83,15 @@ Room text is untrusted, so there are three rules, all tested in `web/test/render
 - **Only the web is linked.** A link must be http(s). An image shows its alt text and loads nothing.
 
 The page loads nothing from another origin, under the CSP `humanapi` sets.
+
+## The UI preview
+
+`npm --prefix web run preview` builds two pages and serves `web/` on localhost from recorded
+fixtures, so it needs no broker, no cluster and no network. The first shows the log views
+alone; the second is the whole room page: the title strip, what needs you, the notes, the
+chat and raw views, the controls and the composer.
+
+- `http://127.0.0.1:4180/preview/preview.html` (add `?live` to replay the session at reading pace)
+- `http://127.0.0.1:4180/preview/full.html` (add `?theme=dark` for the dark palette)
+
+The built files stay out of git. Buttons on the full page send nothing.
