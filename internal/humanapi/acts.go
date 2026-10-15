@@ -27,6 +27,7 @@ import (
 	"github.com/Smana/agent-platform/internal/brief"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/prpattern"
 	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
 	"github.com/Smana/agent-platform/internal/runwatch"
@@ -108,6 +109,7 @@ type Actor struct {
 	mu       sync.Mutex
 	limiters map[string]*rate.Limiter
 	forks    map[string]*rate.Limiter
+	prs      prpattern.Cache // the rooms' repositories' PR patterns
 }
 
 // The rejections an ack carries (docs/api.md).
@@ -566,10 +568,10 @@ func isRunRequest(ev envelope.Event) bool {
 // name and never in an internal room (T5: the factory refuses them, and its 400
 // would read as factory_unavailable), and a PR only for a reviewer and only of
 // the room's repository.
-func validRun(room *v1alpha1.Room, act Action) bool {
+func (a *Actor) validRun(room *v1alpha1.Room, act Action) bool {
 	if !runRoles[act.Role] || len(act.EgressProfiles) > maxEgressProfiles ||
 		(room.Spec.DataClass == "internal" && len(act.EgressProfiles) > 0) ||
-		(act.PRURL != "" && (act.Role != "reviewer" || !brief.IsPR(act.PRURL, room.Spec.Repository))) {
+		(act.PRURL != "" && (act.Role != "reviewer" || !a.prs.For(room.Spec.Repository).IsPR(act.PRURL))) {
 		return false
 	}
 	for _, e := range act.EgressProfiles {
@@ -586,7 +588,7 @@ func validRun(room *v1alpha1.Room, act Action) bool {
 // the record without asking again, and without the result.
 func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
 	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
-	if !validRun(room, act) {
+	if !a.validRun(room, act) {
 		return fail(rejectBadAction)
 	}
 	if a.Requester == nil {
@@ -632,7 +634,7 @@ func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.
 	var refs []int64
 	if act.Role == "reviewer" { // ruling P24: its task is the PR, and the queue waits for a brief
 		if req.TaskURL = act.PRURL; req.TaskURL == "" {
-			req.TaskURL = brief.LastPR(evs, room.Spec.Repository)
+			req.TaskURL = brief.LastPR(evs, a.prs.For(room.Spec.Repository))
 		}
 		if req.TaskURL == "" {
 			return fail(rejectNeedsPR)
@@ -682,7 +684,7 @@ const maxNote = 1 << 10
 func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
 	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
 	note := strings.TrimSpace(act.Note)
-	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
+	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !a.validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
 		return fail(rejectBadAction) // the owner must be one the Room CRD admits
 	}
 	if a.forkLimited(p.ID) {

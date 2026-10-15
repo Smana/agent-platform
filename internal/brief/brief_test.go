@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/prpattern"
 	"github.com/Smana/agent-platform/internal/store"
 )
 
@@ -122,6 +123,7 @@ func TestLastCommitIsAnObjectName(t *testing.T) {
 // Ruling P24: a reviewer's task is a pull request of the room's repository.
 func TestPullRequests(t *testing.T) {
 	const repo = "Smana/cloud-native-ref"
+	var prs prpattern.Cache
 	agent := envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz"}
 	handoff := func(summary string) envelope.Event {
 		return envelope.Event{Type: envelope.Handoff, Actor: agent, Payload: envelope.Must(envelope.HandoffPayload{Summary: summary})}
@@ -152,7 +154,7 @@ func TestPullRequests(t *testing.T) {
 		{"a human posing a handoff", []envelope.Event{{Type: envelope.Handoff, Actor: human.Actor, Payload: opened.Payload}}, ""},
 		{"not ours", []envelope.Event{handoff("https://github.com/Smana/cloud-native-refx/pull/99 and https://github.com/Smana/cloud-native-ref/pull/15abc")}, ""},
 	} {
-		if got := LastPR(c.evs, repo); got != c.want {
+		if got := LastPR(c.evs, prs.For(repo)); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -163,7 +165,7 @@ func TestPullRequests(t *testing.T) {
 		"http://github.com/Smana/cloud-native-ref/pull/12":        false,
 		"https://github.com/Smana/cloud-native-ref/issues/12":     false,
 	} {
-		if IsPR(url, repo) != want {
+		if prs.For(repo).IsPR(url) != want {
 			t.Errorf("IsPR(%q) = %v", url, !want)
 		}
 	}

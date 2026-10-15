@@ -16,6 +16,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/prpattern"
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
@@ -61,6 +62,7 @@ func isRole(s string) bool {
 // only: no argument names a room. Agents cannot prompt each other: a handoff or
 // a verdict is read by the orchestrator, which builds the next brief.
 func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
+	prs := &prpattern.Cache{} // the verdict tool's, for every call of the list
 	appendAs := func(ctx context.Context, c Caller, t envelope.Type, payload any) (any, error) {
 		if red == nil {
 			return nil, errors.New("mcp: no redactor: nothing is stored unredacted")
@@ -166,7 +168,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
 					Text: a.Summary, Verdict: a.Verdict, Commit: a.Commit, Delivery: envelope.DeliveryNone,
-					PullRequest: pullRequestOf(c.Run)})
+					PullRequest: pullRequestOf(prs, c.Run)})
 			}},
 	}
 }
@@ -203,10 +205,9 @@ func readRoom(ctx context.Context, log Log, room string, since int64, limit int)
 // pullRequestOf is the pull request a verdict is about: the run's task URL, when
 // it is a pull request of the run's repository. A reviewer's always is (ruling
 // P24). It comes from the AgentRun, never from the model's arguments.
-func pullRequestOf(r runwatch.Run) string {
+func pullRequestOf(prs *prpattern.Cache, r runwatch.Run) string {
 	// An empty Repository matches nothing: no pull request URL has "//pull/".
-	re := regexp.MustCompile(`^https://github\.com/` + regexp.QuoteMeta(r.Repository) + `/pull/[1-9][0-9]*$`)
-	if re.MatchString(r.TaskURL) {
+	if prs.For(r.Repository).IsTask(r.TaskURL) {
 		return r.TaskURL
 	}
 	return ""
