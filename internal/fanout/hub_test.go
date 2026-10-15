@@ -370,7 +370,8 @@ func TestSlowConsumerIsDropped(t *testing.T) {
 }
 
 // A viewer that stops reading fills its channel long before a big budget: it is
-// dropped there, and the worker never waits on it. Every other viewer of the room keeps every seq (review I1).
+// dropped there, and the worker never waits on it. Every other viewer of the
+// room keeps every seq (review I1).
 func TestAStalledViewerIsDroppedAtItsChannelCap(t *testing.T) {
 	log, b := &memLog{}, newBus()
 	h := New(log, b, discard)
@@ -520,7 +521,7 @@ func TestSubscriberChannelIsSmall(t *testing.T) {
 // held up, its own lock taken here as a slow Sent would, never stalls the
 // listener's notify for any other room.
 func TestASlowOfferDoesNotStallNotify(t *testing.T) {
-	log := &memLog{gate: make(chan struct{})}
+	log := &rangedLog{memLog: &memLog{gate: make(chan struct{})}, ranged: make(chan struct{}, 1)}
 	h := New(log, nil, discard)
 	ctx := run(t, h)
 	slow, err := h.Subscribe(ctx, roomID) // its read (after 0) is held on the gate
@@ -534,16 +535,38 @@ func TestASlowOfferDoesNotStallNotify(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Notify keeps arriving while the worker reaches the offer: under the old
-		// lock scope one of these waits on it for good.
-		for start := time.Now(); time.Since(start) < 20*time.Millisecond; {
+		// Notify keeps arriving until well after the read returned and the worker
+		// went on to the offer: under the old lock scope one of these waits on it
+		// for good, so the select below fails instead of the test passing early.
+		var since time.Time
+		for since.IsZero() || time.Since(since) < 50*time.Millisecond {
 			h.notify(roomID, 2)
 			h.notify("other", 1)
+			select {
+			case <-log.ranged:
+				since = time.Now()
+			default:
+			}
 		}
 	}()
 	select {
 	case <-done:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("notify blocked behind a viewer's offer")
 	}
+}
+
+// rangedLog signals each read of the log once it returned.
+type rangedLog struct {
+	*memLog
+	ranged chan struct{}
+}
+
+func (l *rangedLog) Range(ctx context.Context, room string, after int64, limit int) ([]envelope.Event, error) {
+	evs, err := l.memLog.Range(ctx, room, after, limit)
+	select {
+	case l.ranged <- struct{}{}:
+	default:
+	}
+	return evs, err
 }
