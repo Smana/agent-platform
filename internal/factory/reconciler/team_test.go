@@ -241,9 +241,9 @@ func TestAVerdictAfterTheRunsEndIsIgnored(t *testing.T) {
 // endlessLog is a room whose log never ends: every read past it returns one more event.
 type endlessLog struct{ *fakeLog }
 
-func (l endlessLog) EventsSince(ctx context.Context, room string, after int64) ([]envelope.Event, int64, error) {
-	evs, cursor, err := l.fakeLog.EventsSince(ctx, room, after)
-	if len(evs) == 0 {
+func (l endlessLog) EventsSince(ctx context.Context, room string, after int64, keep func(envelope.Event) bool) ([]envelope.Event, int64, error) {
+	evs, cursor, err := l.fakeLog.EventsSince(ctx, room, after, keep)
+	if cursor == after {
 		return []envelope.Event{{Seq: after + 1, RoomID: room}}, after + 1, nil
 	}
 	return evs, cursor, err
@@ -520,7 +520,7 @@ type brokenLog struct {
 	err error
 }
 
-func (l brokenLog) EventsSince(context.Context, string, int64) ([]envelope.Event, int64, error) {
+func (l brokenLog) EventsSince(context.Context, string, int64, func(envelope.Event) bool) ([]envelope.Event, int64, error) {
 	return nil, 0, l.err
 }
 

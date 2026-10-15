@@ -26,6 +26,11 @@ import (
 // pageSize bounds one log read.
 const pageSize = 500
 
+// subChan is a viewer's channel capacity: two of fetch's pages. A full channel
+// drops the viewer, so it must hold a page burst from a consumer that is still
+// draining; Budget, not this, is the bound on pending bytes.
+const subChan = 1024
+
 // Reader is the log's read side.
 type Reader interface {
 	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
@@ -99,7 +104,8 @@ type room struct {
 type Hub struct {
 	// PollEvery is the poll period while the listener is down (default 1 s).
 	PollEvery time.Duration
-	// Budget is a viewer's pending bytes before it is dropped (default 2 MiB).
+	// Budget is the bound on bytes pending per viewer before it is dropped (default
+	// 2 MiB); the channel holds at most subChan events and a full one counts as slow.
 	Budget int
 	// MinBackoff and MaxBackoff bound the reconnect wait, which doubles per
 	// failed session and gains up to a quarter of jitter (default 1 s and 30 s).
@@ -142,7 +148,7 @@ func (h *Hub) Subscribe(ctx context.Context, roomID string) (*Sub, error) {
 		}
 		last = st.LastSeq
 	}
-	c, d := make(chan envelope.Event, 4096), make(chan struct{})
+	c, d := make(chan envelope.Event, subChan), make(chan struct{})
 	s := &Sub{C: c, Dropped: d, room: roomID, c: c, dropped: d, budget: h.Budget}
 	h.mu.Lock()
 	rm, ok := h.rooms[roomID]
@@ -289,7 +295,11 @@ func (h *Hub) takeDirty() []string {
 }
 
 // fetch offers the room's events after its cursor to every viewer, page by page.
-// No lock is held across the read.
+// No lock is held across the read or the offers (B15): notify, Subscribe and
+// Unsubscribe never wait on a viewer. Only work calls fetch, so one fetch runs at
+// a time and nothing else moves rm.last; a page goes to the viewers subscribed
+// when it was taken, and one subscribing after that reads the page's events from
+// the log, since it reads its mark after Subscribe returns (§4 Replay).
 func (h *Hub) fetch(ctx context.Context, id string) {
 	for {
 		h.mu.Lock()
@@ -317,13 +327,25 @@ func (h *Hub) fetch(ctx context.Context, id string) {
 			return
 		}
 		rm.retry = false
-		for _, ev := range evs {
-			for s := range rm.subs {
-				s.offer(ev) // never blocks
-			}
-			rm.last = ev.Seq
+		subs := make([]*Sub, 0, len(rm.subs))
+		for s := range rm.subs {
+			subs = append(subs, s)
 		}
 		h.mu.Unlock()
+		for _, ev := range evs {
+			for _, s := range subs {
+				s.offer(ev) // never blocks on the channel; one unsubscribed meanwhile drops it unread
+			}
+		}
+		if len(evs) > 0 {
+			h.mu.Lock()
+			// A room forgotten meanwhile is a new one if subscribed again, with its own
+			// cursor from the log: only this room's cursor moves.
+			if h.rooms[id] == rm {
+				rm.last = evs[len(evs)-1].Seq
+			}
+			h.mu.Unlock()
+		}
 		if len(evs) < pageSize {
 			return
 		}

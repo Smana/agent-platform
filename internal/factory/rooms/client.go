@@ -185,8 +185,9 @@ func (c *Client) LastSeq(ctx context.Context, room string) (int64, error) {
 // EventsSince pages through room's log after afterSeq, pageSize at a time and at most maxPages
 // pages. It returns the events read and the cursor to resume from: the seq of the last event read,
 // or afterSeq when there was none. Never the room's lastSeq, which would skip what a capped read
-// left behind.
-func (c *Client) EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error) {
+// left behind. Only the events keep selects are retained (nil keeps all), so a long room costs
+// one page of memory, not 10,000 events; the cursor still moves past the dropped ones.
+func (c *Client) EventsSince(ctx context.Context, room string, afterSeq int64, keep func(envelope.Event) bool) ([]envelope.Event, int64, error) {
 	var all []envelope.Event
 	cursor := afterSeq
 	for range maxPages {
@@ -194,7 +195,11 @@ func (c *Client) EventsSince(ctx context.Context, room string, afterSeq int64) (
 		if err != nil {
 			return nil, 0, err
 		}
-		all = append(all, evs...)
+		for _, e := range evs {
+			if keep == nil || keep(e) {
+				all = append(all, e)
+			}
+		}
 		if len(evs) > 0 {
 			cursor = evs[len(evs)-1].Seq
 		}

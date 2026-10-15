@@ -47,7 +47,7 @@ type RunClient interface {
 // from afterSeq with its resume cursor, its current seq, the room's queue, task_state messages and
 // the task's facts.
 type RoomLog interface {
-	EventsSince(ctx context.Context, room string, afterSeq int64) ([]envelope.Event, int64, error)
+	EventsSince(ctx context.Context, room string, afterSeq int64, keep func(envelope.Event) bool) ([]envelope.Event, int64, error)
 	LastSeq(ctx context.Context, room string) (int64, error)
 	Enqueue(ctx context.Context, room, stream, text string, clientSeq int64) error
 	Queue(ctx context.Context, room string) ([]rooms.Queued, error)

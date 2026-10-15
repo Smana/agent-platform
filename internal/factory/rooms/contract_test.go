@@ -152,7 +152,7 @@ func TestTheClientSpeaksTheBrokersSystemAPI(t *testing.T) {
 		evs[1].Actor.ID != "system:factory" {
 		t.Fatalf("%+v %+v %v", evs[1], p, err)
 	}
-	all, cursor, err := c.EventsSince(ctx, "3buqdlot", 1)
+	all, cursor, err := c.EventsSince(ctx, "3buqdlot", 1, nil)
 	if err != nil || len(all) != 1 || cursor != 2 {
 		t.Fatalf("%v %d %v", all, cursor, err)
 	}

@@ -121,7 +121,7 @@ func TestWireBridgeSetsEveryHook(t *testing.T) {
 	hooks := map[string]bool{"OnDeliver": b.OnDeliver != nil, "OnInterrupt": b.OnInterrupt != nil,
 		"OnResume": b.OnResume != nil, "OnReady": b.OnReady != nil, "OnRaw": b.OnRaw != nil,
 		"OnStatus": b.OnStatus != nil, "OnDecision": b.OnDecision != nil, "Classify": b.Classify != nil,
-		"steering gate": steer.Gate != nil, "confirmer": confirm != nil}
+		"steering gate": steer.Gate != nil, "confirmer": confirm != nil, "PastCap": confirm != nil && confirm.PastCap != nil}
 	for name, set := range hooks {
 		if !set {
 			t.Errorf("%s is not wired", name)

@@ -169,7 +169,7 @@ func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridge
 		log.Info("read-only MCP tools configured", "count", len(cfg.readOnlyMCP))
 	}
 	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
-		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}}
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}, PastCap: b.PastCap}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
 	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
 	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }

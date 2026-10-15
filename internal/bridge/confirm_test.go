@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -681,6 +682,7 @@ func confirming(r *rig) *Confirmer {
 	r.b.OnResume = func(_ context.Context, res wire.Resume) { c.SetPolicy(res.Approvals) }
 	r.b.OnReady, r.b.OnRaw, r.b.OnStatus, r.b.OnDecision = c.Ready, c.Observe, c.OnStatus, c.Decision
 	r.b.Classify = c.ClassOf
+	c.PastCap = r.b.PastCap
 	return c
 }
 
@@ -776,6 +778,166 @@ func TestARestartedBridgeStillAnswersThePendingStep(t *testing.T) {
 	if r := f.responded(); r[0] {
 		t.Fatalf("answered %v", r)
 	}
+}
+
+// A broker outage never stops the sandbox (§3): with the buffer full, the
+// bridge still reads the harness for the confirmation loop and answers a local
+// verdict itself; a human decision is not even asked for until the buffer
+// drains, so the outage never rejects it, then waits for the broker. Each event
+// reaches OnRaw once, so an action already settled is never pending again.
+func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 10 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
+	}
+	fb := &fakeBroker{hold: true, holdApprovals: true,
+		resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer = 2 << 10 // one page of two events fills it
+	c := confirming(r)
+	var rawMu sync.Mutex
+	raw := map[string]int{}
+	r.b.OnRaw = func(e RawEvent) {
+		rawMu.Lock()
+		raw[e.ID]++
+		rawMu.Unlock()
+		c.Observe(e)
+	}
+	park := func(ev map[string]any) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.status = waiting
+		ev["id"] = "e" + strconv.Itoa(len(f.events)+1)
+		f.events = append(f.events, ev)
+	}
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+
+	park(actionEvent("c1", "git push origin agent/3kq7x2ma")) // allow under attended
+	eventually(ctx, t, "the allow-class action is accepted locally", func() bool { return len(f.responded()) == 1 })
+	if got := f.responded(); !got[0] {
+		t.Fatalf("answered %v: want the allow-class action accepted", got)
+	}
+	f.add(map[string]any{"kind": "ObservationEvent", "source": "environment", "tool_call_id": "c1"})
+
+	park(actionEvent("c2", "gh pr create --fill")) // forge.pr: a human decides
+	f.polls(ctx, t, 10)                            // the outage lasts
+	if got := f.responded(); len(got) != 1 {
+		t.Fatalf("a human-class action was answered during the outage: %v", got)
+	}
+	if calls := fb.callLog(); slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "approvals") }) {
+		t.Fatalf("a human decision was asked for past the cap: %v", calls)
+	}
+
+	fb.set(func(b *fakeBroker) { b.hold, b.holdApprovals = false, false })
+	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 13 })
+	eventually(ctx, t, "the approval is asked once the buffer drains", func() bool {
+		fb.mu.Lock()
+		defer fb.mu.Unlock()
+		return len(fb.approvals) == 1
+	})
+	f.polls(ctx, t, 10) // past the outage
+	if got := f.responded(); len(got) != 1 {
+		t.Fatalf("the human-class action was answered before its decision: %v", got)
+	}
+	if err := c.Decision(ctx, wire.Decision{ApprovalID: "ap-c2", Allow: true, Ref: 7}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(ctx, t, "the decision is applied", func() bool { return len(f.responded()) == 2 })
+	stop()
+	if got := f.responded(); !got[1] {
+		t.Fatalf("answered %v: approved means accept", got)
+	}
+	rawMu.Lock()
+	defer rawMu.Unlock()
+	for id, n := range raw {
+		if n != 1 {
+			t.Errorf("OnRaw saw %s %d times", id, n)
+		}
+	}
+	if len(raw) != 13 {
+		t.Errorf("OnRaw saw %d events, want 13", len(raw))
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.approvals) != 1 || fb.approvals[0].CallID != "c2" {
+		t.Fatalf("approvals %v", fb.approvals)
+	}
+}
+
+// Each local verdict records a policy_decision, so past MaxBuffer the
+// confirmation loop's read stops at statusCap: over a long outage the buffer
+// stays bounded, further verdicts wait with the harness parked, and no record
+// of a verdict given is dropped.
+func TestLocalVerdictsPastTheCapStopAtTheStatusBound(t *testing.T) {
+	r, f, _, ctx, stop, answered := pauseAtTheStatusBound(t)
+	f.polls(ctx, t, 20)
+	if got := len(f.responded()); got != answered {
+		t.Fatalf("%d verdicts given past the bound, want none", got-answered)
+	}
+	stop()
+	// The loop is done: its buffer is safe to read. The slack past statusCap is
+	// one poll's status items and one step's record, each a few hundred bytes here.
+	if limit := statusCap(r.b.MaxBuffer) + 1<<10; r.b.bufBytes > limit {
+		t.Fatalf("buffer %d bytes after %d verdicts, over %d", r.b.bufBytes, answered, limit)
+	}
+	records := 0
+	for _, p := range r.b.buf {
+		if strings.Contains(string(p.enc), `"kind":"policy_decision"`) {
+			records++
+		}
+	}
+	if records != answered {
+		t.Fatalf("%d policy_decision records for %d verdicts", records, answered)
+	}
+}
+
+// Verdicts paused at statusCap resume once the broker takes the buffer: the
+// parked step is answered.
+func TestLocalVerdictsResumeOnceTheBufferDrains(t *testing.T) {
+	_, f, fb, ctx, _, answered := pauseAtTheStatusBound(t)
+	fb.set(func(b *fakeBroker) { b.hold = false })
+	eventually(ctx, t, "the parked step is answered", func() bool { return len(f.responded()) > answered })
+}
+
+// pauseAtTheStatusBound parks allow-class steps one after another under a held
+// broker until the verdicts pause at statusCap, and returns how many were given.
+func pauseAtTheStatusBound(t *testing.T) (r *rig, f *fakeAgentServer, fb *fakeBroker, ctx context.Context,
+	stop func(), answered int,
+) {
+	t.Helper()
+	f = &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 2 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
+	}
+	fb = &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	r = newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer, r.b.FlushGrace = 2<<10, 50*time.Millisecond
+	confirming(r)
+	ctx, stop = r.run(t)
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+	const steps = 100
+	for i := 1; i <= steps && answered == i-1; i++ {
+		f.mu.Lock()
+		f.status = waiting
+		f.events = append(f.events, actionEvent(fmt.Sprintf("c%d", i), "git push origin agent/3kq7x2ma"))
+		f.events[len(f.events)-1]["id"] = fmt.Sprintf("e%d", len(f.events))
+		f.mu.Unlock()
+		for range 20 { // a verdict takes a few polls; twenty without one means it waits
+			if answered = len(f.responded()); answered == i {
+				break
+			}
+			f.polls(ctx, t, 1)
+		}
+	}
+	if answered == 0 || answered >= steps {
+		t.Fatalf("%d of %d allow-class steps answered: want some, then a pause at the bound", answered, steps)
+	}
+	return r, f, fb, ctx, stop, answered
 }
 
 func TestAlwaysConfirmIsRetriedUntilTaken(t *testing.T) {

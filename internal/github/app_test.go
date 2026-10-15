@@ -64,12 +64,21 @@ type fakeGitHub struct {
 	repoOf   map[string]string // the repository each token was minted for
 	perms    map[string]string // a login's permission on cloud-native-ref; absent is GitHub's 404
 	permCode int               // the permission GET's status, when set
+	// hold, when set, runs before a request takes the fake's lock; false means it
+	// answered the request itself.
+	hold func(w http.ResponseWriter, r *http.Request) bool
 }
 
 // locked runs fn under the fake's lock: the handler runs on the server's goroutines.
 func (f *fakeGitHub) locked(fn func()) { f.mu.Lock(); defer f.mu.Unlock(); fn() }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	hold := f.hold
+	f.mu.Unlock()
+	if hold != nil && !hold(w, r) {
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests++
@@ -343,6 +352,43 @@ func TestOneMintForConcurrentCallers(t *testing.T) {
 			t.Fatalf("%d mints", f.tokens)
 		}
 	})
+	if len(a.minting.m) != 0 {
+		t.Fatalf("%d mint locks left held", len(a.minting.m))
+	}
+}
+
+// Two repositories mint at once (B15): GitHub holds the first mint until the
+// second arrives, which a lock held across the first round trip never lets happen.
+func TestMintsForTwoRepositoriesRunConcurrently(t *testing.T) {
+	a, f, _ := app(t)
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	both := make(chan struct{})
+	go func() { arrived.Wait(); close(both) }()
+	f.locked(func() {
+		f.hold = func(w http.ResponseWriter, r *http.Request) bool {
+			if r.Method != http.MethodPost || r.URL.Path != "/app/installations/77/access_tokens" {
+				return true
+			}
+			arrived.Done()
+			select {
+			case <-both:
+				return true
+			case <-time.After(5 * time.Second):
+				http.Error(w, `{"message":"the other mint never arrived"}`, http.StatusGatewayTimeout)
+				return false
+			}
+		}
+	})
+	var wg sync.WaitGroup
+	for _, repo := range []string{"cloud-native-ref", "other"} {
+		wg.Go(func() {
+			if _, _, err := a.installation(t.Context(), mustAPI(t, a), "Smana", repo); err != nil {
+				t.Errorf("%s: %v", repo, err)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestErrorsSayWhetherARetryCanHelp(t *testing.T) {
@@ -510,15 +556,15 @@ func TestConcurrentCallsForOneMarkerPostOnce(t *testing.T) {
 			t.Fatalf("urls %v", urls)
 		}
 	}
-	if len(a.posting) != 0 {
-		t.Fatalf("%d marker locks left held", len(a.posting))
+	if len(a.posting.m) != 0 {
+		t.Fatalf("%d marker locks left held", len(a.posting.m))
 	}
 }
 
 // Another marker is not held up by one whose post is in flight.
 func TestAnotherMarkerIsNotHeld(t *testing.T) {
 	a, _, _ := app(t)
-	unlock, err := a.lockMarker(t.Context(), pr+marker)
+	unlock, err := a.posting.lock(t.Context(), pr+marker)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -139,42 +139,51 @@ type App struct {
 	HC  *http.Client
 	Now func() time.Time
 
-	mu     sync.Mutex // held across a mint: concurrent callers wait for one
+	// mu guards slug and tokens only, never a round trip: a mint holds its
+	// repository's key in minting, so one repository's callers wait for one mint
+	// while another repository's mint runs alongside (B15).
+	mu     sync.Mutex
 	slug   string
 	tokens map[string]token // by owner/repo
 
-	postMu  sync.Mutex
-	posting map[string]*markerLock // by pull request + marker, while held or awaited
+	minting keyedLock // by owner/repo, while a mint is held or awaited
+	posting keyedLock // by pull request + marker, while held or awaited
 }
 
-// markerLock serialises one marker's search and post; waiters counts its holder
-// and those queued, so the last one out removes it.
-type markerLock struct {
+// keyedLock serialises callers per key. An entry lives only while its key is
+// held or awaited, so the map is bounded by the callers in flight, not by every
+// key ever seen.
+type keyedLock struct {
+	mu sync.Mutex
+	m  map[string]*keyEntry
+}
+
+// keyEntry is one key's lock; waiters counts its holder and those queued, so the
+// last one out removes it.
+type keyEntry struct {
 	sem     chan struct{}
 	waiters int
 }
 
-// lockMarker holds key until unlock is called, or fails once ctx ends first.
-// Search then post is not atomic on GitHub, so two calls for one marker would
-// both find nothing and both post.
-func (a *App) lockMarker(ctx context.Context, key string) (func(), error) {
-	a.postMu.Lock()
-	if a.posting == nil {
-		a.posting = map[string]*markerLock{}
+// lock holds key until unlock is called, or fails once ctx ends first.
+func (k *keyedLock) lock(ctx context.Context, key string) (func(), error) {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[string]*keyEntry{}
 	}
-	l := a.posting[key]
+	l := k.m[key]
 	if l == nil {
-		l = &markerLock{sem: make(chan struct{}, 1)}
-		a.posting[key] = l
+		l = &keyEntry{sem: make(chan struct{}, 1)}
+		k.m[key] = l
 	}
 	l.waiters++
-	a.postMu.Unlock()
+	k.mu.Unlock()
 	release := func() {
-		a.postMu.Lock()
+		k.mu.Lock()
 		if l.waiters--; l.waiters == 0 {
-			delete(a.posting, key)
+			delete(k.m, key)
 		}
-		a.postMu.Unlock()
+		k.mu.Unlock()
 	}
 	select {
 	case l.sem <- struct{}{}:
@@ -281,17 +290,26 @@ func (a *App) do(ctx context.Context, api *url.URL, method, path, query, bearer 
 // cached until refreshBefore its expiry, and the App's slug: the bot login
 // `<slug>[bot]` marks the App's own comments.
 func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string) (string, string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	key := owner + "/" + repo
-	if t := a.tokens[key]; a.slug != "" && a.Now().Before(t.exp.Add(-refreshBefore)) {
-		return t.value, a.slug, nil
+	unlock, err := a.minting.lock(ctx, key)
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
+	// Checked under the repository's key: a caller that waited for another's mint
+	// finds its token here instead of minting again.
+	a.mu.Lock()
+	t, slug := a.tokens[key], a.slug
+	a.mu.Unlock()
+	if slug != "" && a.Now().Before(t.exp.Add(-refreshBefore)) {
+		return t.value, slug, nil
 	}
 	appJWT, err := a.appJWT()
 	if err != nil {
 		return "", "", err
 	}
-	if a.slug == "" {
+	if slug == "" {
+		// Two repositories' first mints may both read it: the slug is the same.
 		var app struct {
 			Slug string `json:"slug"`
 		}
@@ -301,7 +319,10 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 		if app.Slug == "" {
 			return "", "", errors.New("github: the App has no slug")
 		}
-		a.slug = app.Slug
+		slug = app.Slug
+		a.mu.Lock()
+		a.slug = slug
+		a.mu.Unlock()
 	}
 	var inst struct {
 		ID int64 `json:"id"`
@@ -329,11 +350,13 @@ func (a *App) installation(ctx context.Context, api *url.URL, owner, repo string
 	if out.Token == "" || !out.ExpiresAt.After(a.Now()) {
 		return "", "", errors.New("github: the token reply has no live token")
 	}
+	a.mu.Lock()
 	if a.tokens == nil {
 		a.tokens = map[string]token{}
 	}
 	a.tokens[key] = token{out.Token, out.ExpiresAt}
-	return out.Token, a.slug, nil
+	a.mu.Unlock()
+	return out.Token, slug, nil
 }
 
 // Comment posts body, then marker, on the pull request, once. The App's own
@@ -349,7 +372,9 @@ func (a *App) Comment(ctx context.Context, pr, marker, body string) (string, err
 	if err != nil {
 		return "", err
 	}
-	unlock, err := a.lockMarker(ctx, pr+marker)
+	// Search then post is not atomic on GitHub, so two calls for one marker would
+	// both find nothing and both post.
+	unlock, err := a.posting.lock(ctx, pr+marker)
 	if err != nil {
 		return "", err
 	}

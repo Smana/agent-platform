@@ -182,6 +182,11 @@ type Confirmer struct {
 	Logger     *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// PastCap reports that the bridge's buffer is full (Bridge.PastCap): the
+	// broker is behind, maybe down, so a step needing a human decision is not
+	// asked for, which an outage would reject, but left waiting until it drains;
+	// allows and denies are still answered. Nil means never.
+	PastCap func() bool
 	// classifyFn replaces Classifier.Classify in tests.
 	classifyFn func(tool string, action json.RawMessage, risk string) Class
 
@@ -472,10 +477,17 @@ func (c *Confirmer) settle(ctx context.Context, fromDecision bool) {
 	}
 	var humans []judged
 	var asked []*pendingAction
+	unasked := false
 	for _, j := range js {
 		if j.v == Human {
 			humans, asked = append(humans, j), append(asked, j.p)
+			c.mu.Lock()
+			unasked = unasked || j.p.approvalID == ""
+			c.mu.Unlock()
 		}
+	}
+	if unasked && c.PastCap != nil && c.PastCap() {
+		return // the broker is behind: ask once the buffer drains, never reject for it
 	}
 	if text := c.askAll(ctx, humans, policy); text != "" {
 		_ = c.answer(ctx, step, false, text, nil, fromDecision)

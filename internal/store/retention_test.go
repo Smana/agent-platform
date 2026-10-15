@@ -3,6 +3,8 @@
 package store
 
 import (
+	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -70,6 +72,39 @@ func TestPurgeExpired(t *testing.T) {
 	}
 	if again, _, err := r.PurgeExpired(ctx); err != nil || again != 0 {
 		t.Fatalf("a second run purged %d rooms (%v), want 0", again, err)
+	}
+}
+
+// B9: a room past the 100 000-event limit (n = 120 000) is purged even when the
+// session's statement_timeout (200 ms here) is far too short for its DELETE:
+// retention sets its own timeout, purgeStatementTimeout, on its transaction.
+func TestPurgeExpiredBigRoom(t *testing.T) {
+	ctx := t.Context()
+	s, _, retention, super := open(t)
+	const big, n = "bigroomx", 120_000
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: big, Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	forge(t, super, `INSERT INTO events (room_id, seq, id, actor_kind, actor_id, type, origin, origin_client,
+		origin_seq, ts, payload)
+		SELECT '`+big+`', g, 'id' || g, 'agent', 'agent:7f3cq2xz', 'message', 'harness', 'agent:7f3cq2xz', g, now(),
+		jsonb_build_object('text', repeat('x', 200))
+		FROM generate_series(1, `+fmt.Sprint(n)+`) g;
+		UPDATE rooms SET last_seq = `+fmt.Sprint(n)+`, sealed = true, closed_at = now() - interval '2 days'
+		WHERE room_id = '`+big+`'`)
+	u, err := url.Parse(retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.RawQuery += "&statement_timeout=200ms"
+	r, err := Open(ctx, u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rooms, events, err := r.PurgeExpired(ctx)
+	if err != nil || rooms != 1 || events != n {
+		t.Fatalf("purged %d rooms and %d events (%v), want 1 and %d", rooms, events, err, n)
 	}
 }
 
