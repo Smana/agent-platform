@@ -329,14 +329,17 @@ func TestClientRoundTrip(t *testing.T) {
 	Scheme(s)
 	c := Client{C: fake.NewClientBuilder().WithScheme(s).Build()}
 	ctx := t.Context()
-	if err := c.Create(ctx, spec()); err != nil {
+	sp := spec()
+	sp.Tier = "standard" // the meter prices a run by its tier and model
+	if err := c.Create(ctx, sp); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Annotate(ctx, "7f3cq2xz", map[string]string{AnnUsage: "1200", AnnRevoked: "budget-run"}); err != nil {
 		t.Fatal(err)
 	}
 	r, found, err := c.Get(ctx, "7f3cq2xz")
-	if err != nil || !found || r.Tokens != 1200 || r.Revoked != "budget-run" || r.TaskID != "3buqdlot" || r.MaxTokens != 1_500_000 {
+	if err != nil || !found || r.Tokens != 1200 || r.Revoked != "budget-run" || r.TaskID != "3buqdlot" || r.MaxTokens != 1_500_000 ||
+		r.Model != "agent-default" || r.Tier != "standard" {
 		t.Fatalf("%+v %v %v", r, found, err)
 	}
 	all, err := c.List(ctx)

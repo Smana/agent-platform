@@ -141,6 +141,13 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	runUSD := map[string]float64{}
+	for name, t := range cfg.Tiers {
+		if t.RunUSD > 0 {
+			runUSD[name] = t.RunUSD
+			m.RunBudgetUSD(ctx, name, t.RunUSD)
+		}
+	}
 	// The day ledgers are invisible to the manager's cache: its ConfigMap informer carries a
 	// metadata.name selector for the stop object (factoryManagerOptions). R50's reservation, the
 	// meter's settle and Queued's daily cap (which reserves its runs there, #78) read and write
@@ -202,7 +209,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				return strings.TrimSpace(string(b))
 			},
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
-		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.Revoked, Log: log,
+		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.RunRevoked, Log: log,
+			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, OnFallback: m.RunBudgetFallback,
 			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
 			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,
 			Remaining: func(p string, n, c int64) {

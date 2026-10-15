@@ -143,6 +143,34 @@ func TestBudgetDefaults(t *testing.T) {
 	}
 }
 
+// OD-6 (b): meter.prices turns every tier's run cap into USD, defaulting to runTokens reference
+// tokens; without prices a tier keeps its token cap, as before.
+func TestRunUSD(t *testing.T) {
+	prices := "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}\n  logsURL:"
+	for name, c := range map[string]struct {
+		edit func(string) string
+		want map[string]float64
+	}{
+		"no prices: token caps":   {func(s string) string { return s }, map[string]float64{"light": 0, "standard": 0, "frontier": 0}},
+		"prices: the REF default": {func(s string) string { return strings.Replace(s, "  logsURL:", prices, 1) }, map[string]float64{"light": 0.51, "standard": 2.55, "frontier": 6.80}},
+		"an explicit cap wins": {func(s string) string {
+			return strings.Replace(strings.Replace(s, "  logsURL:", prices, 1), "runTokens: 4000000,", "runUSD: 10, runTokens: 4000000,", 1)
+		}, map[string]float64{"light": 0.51, "standard": 2.55, "frontier": 10}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Parse([]byte(c.edit(good)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for tier, want := range c.want {
+				if got := cfg.Tiers[tier].RunUSD; got != want {
+					t.Errorf("tier %s: runUSD %v, want %v", tier, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadReadsTheFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
@@ -373,12 +401,22 @@ func TestBadConfigsFail(t *testing.T) {
 		"runlore confidence zero": {"minConfidence: 0.75", "minConfidence: 0", "runlore.minConfidence must be in (0, 1]"},
 		"runlore cap negative":    {"dailyCap: 5", "dailyCap: -1", "runlore.dailyCap must be 0 or more"},
 		// §1 schedules: the name keys the task, the cron must fire, the class must exist.
-		"schedule name twice":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
-		"schedule name uppercase":     {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},
-		"schedule cron unparsable":    {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 oops\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: cron "0 6 oops" does not parse`},
-		"schedule class undeclared":   {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: ops, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: class "ops" is review or a declared class`},
-		"schedule text empty":         {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: \"\"}]\ncaps: {activeTasks: 3,", "schedule a: text must be 1..14336 bytes"},
-		"schedule probe unknown":      {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, probe: dependabot-red}]\ncaps: {activeTasks: 3,", `schedule a: probe "dependabot-red" is not renovate-red`},
+		"schedule name twice":       {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix links}, {name: a, cron: \"0 7 * * 1\", class: review, text: renovate}]\ncaps: {activeTasks: 3,", `schedule name "a" is used twice`},
+		"schedule name uppercase":   {"caps: {activeTasks: 3,", "schedules: [{name: Link-Rot, cron: \"0 6 * * 1\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `must match ^[a-z0-9-]{1,40}$`},
+		"schedule cron unparsable":  {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 oops\", class: review, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: cron "0 6 oops" does not parse`},
+		"schedule class undeclared": {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: ops, text: fix}]\ncaps: {activeTasks: 3,", `schedule a: class "ops" is review or a declared class`},
+		"schedule text empty":       {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: \"\"}]\ncaps: {activeTasks: 3,", "schedule a: text must be 1..14336 bytes"},
+		"schedule probe unknown":    {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, probe: dependabot-red}]\ncaps: {activeTasks: 3,", `schedule a: probe "dependabot-red" is not renovate-red`},
+		// A run cap in USD: priced, or the rollout fails (never an unpriced model metered at $0).
+		"runUSD without a price": {"runTokens: 1500000,", "runUSD: 2.55, runTokens: 1500000,", "tier standard: runUSD needs meter.prices.agent-default"},
+		"negative runUSD":        {"runTokens: 1500000,", "runUSD: -1, runTokens: 1500000,", "tier standard: runUSD must be a positive amount"},
+		"a tier's model unpriced": {"  logsURL:", "  prices: {tier-light: {input: 1.40, cacheRead: 0.26, output: 4.40}}\n  logsURL:",
+			"tier light: runUSD needs meter.prices.agent-default"},
+		"price of an unknown model": {"  logsURL:", "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}, glm-5.3: {input: 1, cacheRead: 1, output: 1}}\n  logsURL:",
+			`meter.prices: "glm-5.3" is not a C5 logical name`},
+		"a price without its cache-read rate": {"  logsURL:", "  prices: {agent-default: {input: 1.40, output: 4.40}}\n  logsURL:",
+			"meter.prices.agent-default: input, cacheRead and output must be positive"},
+		"an unknown price field":      {"  logsURL:", "  prices: {agent-default: {input: 1.40, cached: 0.26, output: 4.40}}\n  logsURL:", `unknown field "cached"`},
 		"schedule data class unknown": {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, dataClass: secret}]\ncaps: {activeTasks: 3,", `schedule a: dataClass "secret" is public or internal`},
 	} {
 		t.Run(name, func(t *testing.T) {

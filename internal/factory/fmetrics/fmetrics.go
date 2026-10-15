@@ -42,9 +42,14 @@ func revocations() []string {
 	return []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "manual",
 		"budget-task-shadow", "budget-principal-shadow"}
 }
-func intakeSources() []string  { return []string{"issue", "runlore", "schedule", "api"} }
-func resumeReasons() []string  { return []string{"Disrupted", "PodLost"} }
-func roomCapReasons() []string { return []string{"human_driver", "facts_due"} }
+func revocationLimits() []string {
+	return []string{"run-usd", "run-tokens", "gateway-ceiling", "fleet", "principal-day"}
+}
+func budgetFallbacks() []string { return []string{"unpriced", "untyped"} }
+func tiers() []string           { return []string{"light", "standard", "frontier"} }
+func intakeSources() []string   { return []string{"issue", "runlore", "schedule", "api"} }
+func resumeReasons() []string   { return []string{"Disrupted", "PodLost"} }
+func roomCapReasons() []string  { return []string{"human_driver", "facts_due"} }
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -58,6 +63,8 @@ func oneOf(v string, set []string) string {
 var (
 	timeToPRBuckets   = []float64{60, 300, 600, 900, 1800, 3600, 7200}
 	taskTokensBuckets = []float64{50_000, 100_000, 200_000, 400_000, 600_000, 1_000_000, 2_000_000, 3_000_000, 5_000_000, 8_000_000, 12_000_000}
+	// The default USD run caps (0.51, 2.55, 6.80) and the v2 cohort's $0.58–0.76 runs.
+	runCostBuckets = []float64{0.1, 0.25, 0.51, 0.75, 1, 1.5, 2, 2.55, 3.5, 5, 6.8, 10}
 )
 
 // Set is the factory's instruments. Record through its methods, which fix each label set.
@@ -81,6 +88,9 @@ type Set struct {
 	usageErrors     metric.Int64Counter
 	meterSuccess    metric.Int64Gauge
 	overshoot       metric.Int64Counter
+	runCost         metric.Float64Histogram
+	runBudgetUSD    metric.Float64Gauge
+	budgetFallbacks metric.Int64Counter
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -152,6 +162,16 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.overshoot, err = meter.Int64Counter("agent_factory_run_overshoot_tokens_total",
 		metric.WithDescription("Tokens runs spent past their own cap before the meter revoked them."))
+	check(err)
+	s.runCost, err = meter.Float64Histogram("agent_factory_run_cost_usd",
+		metric.WithDescription("A priced run's USD cost when it ended, cache reads at their own rate (OD-6)."),
+		metric.WithExplicitBucketBoundaries(runCostBuckets...))
+	check(err)
+	s.runBudgetUSD, err = meter.Float64Gauge("agent_factory_run_budget_usd",
+		metric.WithDescription("Each tier's USD run cap; absent for a tier capped in tokens."))
+	check(err)
+	s.budgetFallbacks, err = meter.Int64Counter("agent_factory_run_budget_fallbacks_total",
+		metric.WithDescription("Runs of a USD-capped tier the meter capped in tokens instead: an unpriced model, or a meter.query without gen_ai_token_type."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -273,6 +293,27 @@ func (s *Set) LabelEventsTruncated(ctx context.Context, label string) {
 // Revoked counts a run the factory revoked, by reason: the run meter's OnRevoke.
 func (s *Set) Revoked(ctx context.Context, reason string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations()))))
+}
+
+// RunRevoked counts a revocation by the run meter, by reason and the limit that fired.
+func (s *Set) RunRevoked(ctx context.Context, reason, limit string) {
+	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations())),
+		attribute.String("limit", oneOf(limit, revocationLimits()))))
+}
+
+// RunCost records a priced run's USD cost at its end: the run meter's OnCost.
+func (s *Set) RunCost(ctx context.Context, tier string, usd float64) {
+	s.runCost.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
+}
+
+// RunBudgetUSD sets a tier's USD run cap.
+func (s *Set) RunBudgetUSD(ctx context.Context, tier string, usd float64) {
+	s.runBudgetUSD.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
+}
+
+// RunBudgetFallback counts a run capped in tokens though its tier caps in USD: the meter's OnFallback.
+func (s *Set) RunBudgetFallback(ctx context.Context, why string) {
+	s.budgetFallbacks.Add(ctx, 1, metric.WithAttributes(attribute.String("why", oneOf(why, budgetFallbacks()))))
 }
 
 // Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason
