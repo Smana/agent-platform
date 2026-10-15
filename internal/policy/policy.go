@@ -103,10 +103,10 @@ func Allowed(s Subject, a Action) bool {
 			return s.Driver
 		case DriverRequest, DriverTake:
 			return false // a system holder gives, and yields to humans
-		case Read, Chat, Queue, StartRun:
-			// What the wired system callers do: read the log, post and queue messages
-			// (bridgeapi/system.go) and request a run (factory/api). Anything else is
-			// denied by omission-proofing: a new Action is not granted to a system actor.
+		case Read, Chat, Queue, StartRun, Fork, Invite, Close:
+			// The section 1 matrix's system grants, kept explicit: the system API's
+			// reads, posts and queued messages, the factory's run request, and the
+			// matrix's fork, invite and close. A new Action is not granted by omission.
 			return true
 		default:
 			return false
