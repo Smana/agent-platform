@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -13,6 +14,11 @@ import (
 // role's row-level security exposes only those for DELETE: this clause is the
 // belt, RLS the braces.
 const expired = `sealed AND closed_at IS NOT NULL AND closed_at < now() - retention`
+
+// purgeStatementTimeout bounds one room's purge transaction, replacing the
+// session's 15 s. It is a retention-only bound: the purged room is expired and
+// sealed, so a long DELETE blocks no writer. The broker's 15 s bound is unchanged.
+const purgeStatementTimeout = 10 * time.Minute
 
 // PurgeExpired deletes every expired room's log, then its row, one room per
 // transaction, so each stays bounded by the room limits (100 000 events) under
@@ -48,6 +54,10 @@ func (s *Store) purge(ctx context.Context, roomID string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// SET LOCAL needs no grant and lasts this transaction only.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", purgeStatementTimeout.Milliseconds())); err != nil {
+		return 0, err
+	}
 	// queue and approvals reference events, so they go first.
 	if _, err := tx.Exec(ctx, `DELETE FROM queue WHERE room_id = $1
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
