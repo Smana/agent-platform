@@ -182,7 +182,7 @@ func TestListenEnds(t *testing.T) {
 // terminateListener kills the LISTEN backend as the superuser would on a failover.
 func terminateListener(t *testing.T, super string) {
 	t.Helper()
-	exec(t, super, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '`+ListenApplication+`'`)
+	exec(t, super, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '`+ListenApplication+`' AND datname = current_database()`)
 }
 
 // The connection budget: 8 pool connections plus one listener per replica (Ruling AT).
