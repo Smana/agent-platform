@@ -272,7 +272,14 @@ func (m *fakeMetrics) TierFit(_ context.Context, classifier, tier, fit string, c
 	m.add("tier_fit " + classifier + " " + tier + " " + fit + " " + strconv.FormatBool(control))
 }
 func (m *fakeMetrics) Revoked(_ context.Context, reason string) { m.add("revoked " + reason) }
-func (m *fakeMetrics) TraceExportAbandoned(context.Context)     { m.add("trace_export_abandoned") }
+func (m *fakeMetrics) RunRevoked(_ context.Context, reason, limit string) {
+	m.add("revoked " + reason)
+	m.add("limit " + limit)
+}
+func (m *fakeMetrics) RunBudgetFallback(_ context.Context, scope, why string) {
+	m.add("fallback " + scope + " " + why)
+}
+func (m *fakeMetrics) TraceExportAbandoned(context.Context) { m.add("trace_export_abandoned") }
 func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string) {
 	m.add("class_mismatch " + predicted + " " + matched)
 }

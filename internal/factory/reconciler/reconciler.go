@@ -26,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
+	"github.com/Smana/agent-platform/internal/factory/meter"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -76,6 +77,8 @@ type metrics interface {
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
 	Revoked(ctx context.Context, reason string)
+	RunRevoked(ctx context.Context, reason, limit string)
+	RunBudgetFallback(ctx context.Context, scope, why string)
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	Resumed(ctx context.Context, reason string)
@@ -123,6 +126,9 @@ type Reconciler struct {
 	Nonce     func() string
 	Log       *slog.Logger
 	Trace     tracing.Sink // nil: tracing off (R46)
+	// Costs is the run meter's per-run USD costs, which a task capped in USD sums (OD-6 (b));
+	// nil: every task is held to TaskTokens.
+	Costs costReader
 
 	oldBroker sync.Once // the broker serves no task route: said once per process
 }
@@ -594,12 +600,79 @@ func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
+// costReader is the run meter's hand-off of each run's cost (meter.Costs).
+type costReader interface {
+	Get(id string) (meter.Cost, bool)
+}
+
 // runFits: the task's cap still holds one whole run (owner, 2026-10-07). A run may spend up to
-// RunTokens before the meter revokes it, so admitting on "under the cap" let a task end 1.5 M past
-// it; a resume follows the same rule.
+// its run cap before the meter revokes it, so admitting on "under the cap" let a task end 1.5 M
+// past it; a resume follows the same rule. In USD while usdCapped, else in tokens.
 func runFits(t *v1alpha1.Task) bool {
 	b := t.Spec.Budget
+	if usdCapped(t) {
+		return b.TaskMicroUSD-t.Status.Usage.CostMicroUSD >= b.RunMicroUSD
+	}
 	return b.TaskTokens <= 0 || b.TaskTokens-t.Status.Usage.Tokens >= b.RunTokens
+}
+
+// usdCapped: the task is held to TaskMicroUSD rather than TaskTokens (OD-6 (b)), while every run
+// it holds was priced. A run the meter could not price, or one with tokens and no cost (a task
+// begun before the meter priced runs), holds it to TaskTokens: never a cost counted as $0.
+func usdCapped(t *v1alpha1.Task) bool {
+	if t.Spec.Budget.TaskMicroUSD <= 0 {
+		return false
+	}
+	for _, rec := range t.Status.Runs {
+		if rec.Unpriced != "" || (rec.Tokens > 0 && rec.CostMicroUSD == 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// taskLimit names the task cap runFits checks, for the revocations metric.
+func taskLimit(t *v1alpha1.Task) string {
+	if usdCapped(t) {
+		return "task-usd"
+	}
+	return "task-tokens"
+}
+
+// price takes each run's cost from the meter into the task's records: a record keeps its last
+// cost once its claim is gone, as it keeps its tokens (R49). The first run the meter cannot
+// price, on a task with a USD cap, is said once: the task falls back to TaskTokens.
+func (r *Reconciler) price(ctx context.Context, t *v1alpha1.Task) {
+	if r.Costs == nil {
+		return
+	}
+	before := unpriced(t)
+	var sum int64
+	for i := range t.Status.Runs {
+		rec := &t.Status.Runs[i]
+		if c, ok := r.Costs.Get(rec.ID); ok {
+			rec.CostMicroUSD = max(rec.CostMicroUSD, c.MicroUSD)
+			if rec.Unpriced == "" {
+				rec.Unpriced = c.Why
+			}
+		}
+		sum += rec.CostMicroUSD
+	}
+	t.Status.Usage.CostMicroUSD = sum
+	if why := unpriced(t); why != "" && before == "" && t.Spec.Budget.TaskMicroUSD > 0 {
+		r.log().Warn("task capped in tokens: a run's cost cannot be priced", "task.id", t.Name, "why", why,
+			"cap", t.Spec.Budget.TaskTokens)
+		record(ctx, func(ctx context.Context) { r.Metrics.RunBudgetFallback(ctx, "task", why) })
+	}
+}
+
+func unpriced(t *v1alpha1.Task) string {
+	for _, rec := range t.Status.Runs {
+		if rec.Unpriced != "" {
+			return rec.Unpriced
+		}
+	}
+	return ""
 }
 
 func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
@@ -647,13 +720,16 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	if !runFits(t) {
+		limit := taskLimit(t)
 		if r.Cfg.Budgets.EnforceTask {
+			record(ctx, func(ctx context.Context) { r.Metrics.RunRevoked(ctx, "budget-task", limit) })
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
 		}
 		// R3: shadow first, a week of numbers before the flag flips.
-		record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-task-shadow") })
-		r.log().Info("task cap has no room for a whole run (shadow)", "task.id", t.Name, "used", t.Status.Usage.Tokens,
-			"run", t.Spec.Budget.RunTokens, "cap", t.Spec.Budget.TaskTokens)
+		record(ctx, func(ctx context.Context) { r.Metrics.RunRevoked(ctx, "budget-task-shadow", limit) })
+		r.log().Info("task cap has no room for a whole run (shadow)", "task.id", t.Name, "limit", limit,
+			"used", t.Status.Usage.Tokens, "run", t.Spec.Budget.RunTokens, "cap", t.Spec.Budget.TaskTokens,
+			"used_micro_usd", t.Status.Usage.CostMicroUSD, "cap_micro_usd", t.Spec.Budget.TaskMicroUSD)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {

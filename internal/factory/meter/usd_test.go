@@ -39,7 +39,7 @@ type revocation struct{ reason, limit string }
 
 func usdMeter(st *store, src Source, revoked *[]revocation, fell *[]string) *Meter {
 	return &Meter{Runs: st, Source: src, Prices: glm,
-		RunUSD: map[string]float64{"standard": config.DefaultRunUSD(1_500_000)},
+		RunUSD: map[string]float64{"standard": config.RefUSD(1_500_000)},
 		OnRevoke: func(_ context.Context, r, l string) {
 			*revoked = append(*revoked, revocation{r, l})
 		},
@@ -49,7 +49,7 @@ func usdMeter(st *store, src Source, revoked *[]revocation, fell *[]string) *Met
 // J-AC1 under OD-6 (b): the standard tier's default cap is $2.55, and none of the four cohort runs
 // reaches it, though each is past the 1.5 M tokens that revoked it.
 func TestCohortRunsStayUnderTheStandardUSDCap(t *testing.T) {
-	if c := config.DefaultRunUSD(1_500_000); c != 2.55 {
+	if c := config.RefUSD(1_500_000); c != 2.55 {
 		t.Fatalf("the standard tier's default cap is $%v, want $2.55", c)
 	}
 	for issue, u := range cohort {

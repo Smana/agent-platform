@@ -66,6 +66,13 @@ spec:
                   model:
                     maxLength: 64
                     type: string
+                  runMicroUSD:
+                    description: |-
+                      The USD caps in micro-dollars (OD-6 (b)): a run's, and the task's in place of TaskTokens
+                      while every run of the task is priced. 0: the token caps.
+                    format: int64
+                    minimum: 0
+                    type: integer
                   runMinutes:
                     format: int64
                     maximum: 480
@@ -75,6 +82,10 @@ spec:
                       gateway ceiling (C3).
                     format: int64
                     maximum: 5000000
+                    type: integer
+                  taskMicroUSD:
+                    format: int64
+                    minimum: 0
                     type: integer
                   taskTokens:
                     format: int64
@@ -451,6 +462,11 @@ spec:
                 items:
                   description: RunRecord is one AgentRun the task started.
                   properties:
+                    costMicroUSD:
+                      description: The run's cost in micro-dollars, cache reads at
+                        their own rate, as the meter priced it.
+                      format: int64
+                      type: integer
                     finished:
                       format: date-time
                       type: string
@@ -502,6 +518,13 @@ spec:
                       - retry
                       - resume
                       type: string
+                    unpriced:
+                      description: 'Why the meter could not price the run: its task
+                        is then held to TaskTokens.'
+                      enum:
+                      - unpriced
+                      - untyped
+                      type: string
                     verdict:
                       maxLength: 32
                       type: string
@@ -549,6 +572,10 @@ spec:
               usage:
                 description: Usage is the task's token spend.
                 properties:
+                  costMicroUSD:
+                    description: Σ of the task's run costs, in micro-dollars.
+                    format: int64
+                    type: integer
                   tokens:
                     description: Σ of the task's run usage; it never drops (SP1 §2).
                     format: int64

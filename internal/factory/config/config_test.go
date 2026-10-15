@@ -143,19 +143,20 @@ func TestBudgetDefaults(t *testing.T) {
 	}
 }
 
-// OD-6 (b): meter.prices turns every tier's run cap into USD, defaulting to runTokens reference
-// tokens; without prices a tier keeps its token cap, as before.
-func TestRunUSD(t *testing.T) {
+// OD-6 (b): meter.prices turns every tier's run and task caps into USD, defaulting to their
+// token caps in reference tokens; without prices a tier keeps its token caps, as before.
+func TestUSDCaps(t *testing.T) {
 	prices := "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}\n  logsURL:"
+	priced := func(s string) string { return strings.Replace(s, "  logsURL:", prices, 1) }
 	for name, c := range map[string]struct {
 		edit func(string) string
-		want map[string]float64
+		want map[string][2]float64 // runUSD, taskUSD
 	}{
-		"no prices: token caps":   {func(s string) string { return s }, map[string]float64{"light": 0, "standard": 0, "frontier": 0}},
-		"prices: the REF default": {func(s string) string { return strings.Replace(s, "  logsURL:", prices, 1) }, map[string]float64{"light": 0.51, "standard": 2.55, "frontier": 6.80}},
+		"no prices: token caps":   {func(s string) string { return s }, map[string][2]float64{"light": {0, 0}, "standard": {0, 0}, "frontier": {0, 0}}},
+		"prices: the REF default": {priced, map[string][2]float64{"light": {0.51, 1.02}, "standard": {2.55, 5.10}, "frontier": {6.80, 13.60}}},
 		"an explicit cap wins": {func(s string) string {
-			return strings.Replace(strings.Replace(s, "  logsURL:", prices, 1), "runTokens: 4000000,", "runUSD: 10, runTokens: 4000000,", 1)
-		}, map[string]float64{"light": 0.51, "standard": 2.55, "frontier": 10}},
+			return strings.Replace(priced(s), "runTokens: 4000000,", "runUSD: 10, taskUSD: 20, runTokens: 4000000,", 1)
+		}, map[string][2]float64{"light": {0.51, 1.02}, "standard": {2.55, 5.10}, "frontier": {10, 20}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := Parse([]byte(c.edit(good)))
@@ -163,8 +164,8 @@ func TestRunUSD(t *testing.T) {
 				t.Fatal(err)
 			}
 			for tier, want := range c.want {
-				if got := cfg.Tiers[tier].RunUSD; got != want {
-					t.Errorf("tier %s: runUSD %v, want %v", tier, got, want)
+				if got := [2]float64{cfg.Tiers[tier].RunUSD, cfg.Tiers[tier].TaskUSD}; got != want {
+					t.Errorf("tier %s: runUSD, taskUSD %v, want %v", tier, got, want)
 				}
 			}
 		})
@@ -408,10 +409,12 @@ func TestBadConfigsFail(t *testing.T) {
 		"schedule text empty":       {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: \"\"}]\ncaps: {activeTasks: 3,", "schedule a: text must be 1..14336 bytes"},
 		"schedule probe unknown":    {"caps: {activeTasks: 3,", "schedules: [{name: a, cron: \"0 6 * * 1\", class: review, text: fix, probe: dependabot-red}]\ncaps: {activeTasks: 3,", `schedule a: probe "dependabot-red" is not renovate-red`},
 		// A run cap in USD: priced, or the rollout fails (never an unpriced model metered at $0).
-		"runUSD without a price": {"runTokens: 1500000,", "runUSD: 2.55, runTokens: 1500000,", "tier standard: runUSD needs meter.prices.agent-default"},
+		"runUSD without a price": {"runTokens: 1500000,", "runUSD: 2.55, runTokens: 1500000,", "tier standard: runUSD and taskUSD need meter.prices.agent-default"},
+		"negative taskUSD":       {"runTokens: 1500000,", "taskUSD: -1, runTokens: 1500000,", "tier standard: taskUSD must be a positive amount"},
+		"taskUSD below runUSD":   {"runTokens: 1500000,", "runUSD: 3, taskUSD: 2, runTokens: 1500000,", "tier standard: taskUSD below runUSD"},
 		"negative runUSD":        {"runTokens: 1500000,", "runUSD: -1, runTokens: 1500000,", "tier standard: runUSD must be a positive amount"},
 		"a tier's model unpriced": {"  logsURL:", "  prices: {tier-light: {input: 1.40, cacheRead: 0.26, output: 4.40}}\n  logsURL:",
-			"tier light: runUSD needs meter.prices.agent-default"},
+			"tier light: runUSD and taskUSD need meter.prices.agent-default"},
 		"price of an unknown model": {"  logsURL:", "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}, glm-5.3: {input: 1, cacheRead: 1, output: 1}}\n  logsURL:",
 			`meter.prices: "glm-5.3" is not a C5 logical name`},
 		"a price without its cache-read rate": {"  logsURL:", "  prices: {agent-default: {input: 1.40, output: 4.40}}\n  logsURL:",

@@ -141,6 +141,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	costs := &meter.Costs{} // the meter writes each run's cost, the reconciler sums a task's
 	runUSD := map[string]float64{}
 	for name, t := range cfg.Tiers {
 		if t.RunUSD > 0 {
@@ -161,7 +162,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		Runs: rc, Rooms: broker,
 		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL}, Forge: gh},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
-		Trace: sink}
+		Trace: sink, Costs: costs}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -210,9 +211,10 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			},
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.RunRevoked, Log: log,
-			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, OnFallback: m.RunBudgetFallback,
-			Throttle: meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
-			Budgets:  cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,
+			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, Costs: costs,
+			OnFallback: func(ctx context.Context, why string) { m.RunBudgetFallback(ctx, "run", why) },
+			Throttle:   meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},
+			Budgets:    cfg.Budgets, B1Ceiling: config.RunTokenCeiling, Now: time.Now,
 			Remaining: func(p string, n, c int64) {
 				m.BudgetRemaining(ctx, p, n)
 				m.BudgetCap(ctx, p, c)

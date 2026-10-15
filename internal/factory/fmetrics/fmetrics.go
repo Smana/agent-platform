@@ -43,9 +43,10 @@ func revocations() []string {
 		"budget-task-shadow", "budget-principal-shadow"}
 }
 func revocationLimits() []string {
-	return []string{"run-usd", "run-tokens", "gateway-ceiling", "fleet", "principal-day"}
+	return []string{"run-usd", "run-tokens", "task-usd", "task-tokens", "gateway-ceiling", "fleet", "principal-day"}
 }
 func budgetFallbacks() []string { return []string{"unpriced", "untyped"} }
+func budgetScopes() []string    { return []string{"run", "task"} }
 func tiers() []string           { return []string{"light", "standard", "frontier"} }
 func intakeSources() []string   { return []string{"issue", "runlore", "schedule", "api"} }
 func resumeReasons() []string   { return []string{"Disrupted", "PodLost"} }
@@ -171,7 +172,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("Each tier's USD run cap; absent for a tier capped in tokens."))
 	check(err)
 	s.budgetFallbacks, err = meter.Int64Counter("agent_factory_run_budget_fallbacks_total",
-		metric.WithDescription("Runs of a USD-capped tier the meter capped in tokens instead: an unpriced model, or a meter.query without gen_ai_token_type."))
+		metric.WithDescription("Runs and tasks of a USD-capped tier held to their token cap instead: an unpriced model, or a meter.query without gen_ai_token_type."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader))
@@ -311,9 +312,11 @@ func (s *Set) RunBudgetUSD(ctx context.Context, tier string, usd float64) {
 	s.runBudgetUSD.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
 }
 
-// RunBudgetFallback counts a run capped in tokens though its tier caps in USD: the meter's OnFallback.
-func (s *Set) RunBudgetFallback(ctx context.Context, why string) {
-	s.budgetFallbacks.Add(ctx, 1, metric.WithAttributes(attribute.String("why", oneOf(why, budgetFallbacks()))))
+// RunBudgetFallback counts a run (the meter's OnFallback) or a task (the reconciler) held to its
+// token cap though its tier caps in USD.
+func (s *Set) RunBudgetFallback(ctx context.Context, scope, why string) {
+	s.budgetFallbacks.Add(ctx, 1, metric.WithAttributes(attribute.String("scope", oneOf(scope, budgetScopes())),
+		attribute.String("why", oneOf(why, budgetFallbacks()))))
 }
 
 // Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason

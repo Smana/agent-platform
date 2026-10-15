@@ -140,9 +140,10 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.MeterSucceeded(ctx, time.Unix(1_790_000_000, 0))
 	s.RunOvershoot(ctx, 42_000)
 	s.RunRevoked(ctx, "budget-run", "run-usd")
+	s.RunRevoked(ctx, "budget-task", "task-usd")
 	s.RunCost(ctx, "standard", 0.65)
 	s.RunBudgetUSD(ctx, "standard", 2.55)
-	s.RunBudgetFallback(ctx, "unpriced")
+	s.RunBudgetFallback(ctx, "task", "unpriced")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -165,9 +166,10 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_meter_last_success_timestamp_seconds 1.79e+09`,
 		`agent_factory_run_overshoot_tokens_total 42000`,
 		`agent_factory_run_revocations_total{limit="run-usd",reason="budget-run"} 1`,
+		`agent_factory_run_revocations_total{limit="task-usd",reason="budget-task"} 1`,
 		`agent_factory_run_cost_usd_bucket{tier="standard",le="0.75"} 1`,
 		`agent_factory_run_budget_usd{tier="standard"} 2.55`,
-		`agent_factory_run_budget_fallbacks_total{why="unpriced"} 1`,
+		`agent_factory_run_budget_fallbacks_total{scope="task",why="unpriced"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -195,7 +197,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.RoomClosedAtCap(ctx, "an agent's text")
 	s.RunRevoked(ctx, "budget-run", "a limit")
 	s.RunCost(ctx, "huge", 1)
-	s.RunBudgetFallback(ctx, "a reason")
+	s.RunBudgetFallback(ctx, "a scope", "a reason")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_run_revocations_total{reason="other"} 1`,
@@ -206,7 +208,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 		`agent_factory_rooms_closed_at_cap_total{reason="other"} 1`,
 		`agent_factory_run_revocations_total{limit="other",reason="budget-run"} 1`,
 		`agent_factory_run_cost_usd_count{tier="other"} 1`,
-		`agent_factory_run_budget_fallbacks_total{why="other"} 1`,
+		`agent_factory_run_budget_fallbacks_total{scope="other",why="other"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)

@@ -26,7 +26,8 @@ type Triager interface {
 // BudgetFor is the tier's caps and model (§6.2, R11).
 func BudgetFor(cfg *config.Config, tier string) v1alpha1.Budget {
 	c := cfg.Tiers[tier]
-	return v1alpha1.Budget{Tier: tier, Model: c.Model, RunTokens: c.RunTokens, TaskTokens: c.TaskTokens, RunMinutes: c.RunMinutes}
+	return v1alpha1.Budget{Tier: tier, Model: c.Model, RunTokens: c.RunTokens, TaskTokens: c.TaskTokens, RunMinutes: c.RunMinutes,
+		RunMicroUSD: config.MicroUSD(c.RunUSD), TaskMicroUSD: config.MicroUSD(c.TaskUSD)}
 }
 
 // Static is phase 1's triage: the config's defaults for every task.

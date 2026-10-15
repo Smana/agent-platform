@@ -33,8 +33,8 @@ intakeSecret: agent-factory-intake
 # caps.escalatedHours (#61): how long a task may wait Escalated for a maintainer before it is
 # Stopped. Omitted: 168 (a week). 0: no limit. A room a person drives never expires. Example:
 #   caps: {escalatedHours: 72}
-# meter.prices (USD per million tokens, by the tier's model) caps each run in USD rather than in
-# tokens, defaulting tiers.<tier>.runUSD to runTokens × $1.70/M; meter.query must then group by
-# gen_ai_token_type (docs/operations.md#run-budget). Example:
+# meter.prices (USD per million tokens, by the tier's model) caps each run and task in USD rather
+# than in tokens, defaulting tiers.<tier>.runUSD and taskUSD to runTokens and taskTokens × $1.70/M;
+# meter.query must then group by gen_ai_token_type (docs/operations.md#run-and-task-budgets). Example:
 #   meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}}
 config: {}

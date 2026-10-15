@@ -183,27 +183,44 @@ the harnesses still hold.
 
 An Escalated task waits for a maintainer (`/factory retry`) or for its pull request to end. `caps.escalatedHours` in the factory config bounds that wait: omitted is 168 (a week), `0` is no limit, a negative value fails the rollout. Past it the task is Stopped with reason `escalation_expired` and says so on its issue. Its pull request is left as it is (no stale label, no close). A task whose room a person drives never expires while they drive; a retry already asked for wins over the limit.
 
-## Run budget
+## Run and task budgets
 
-The run meter (`internal/factory/meter`) revokes a run at its tier's cap with reason `budget-run`. With `meter.prices` set, the cap is in USD, so a cache read is charged at its own rate instead of as a full input token. Without prices, the cap stays in tokens (`runTokens`) as before.
+The run meter (`internal/factory/meter`) revokes a run at its tier's run cap with reason `budget-run`. Before each run of a task, the reconciler checks that the task cap still has room for one whole run; if it does not, the task is escalated with reason `budget-task` (when `budgets.enforceTask` is set) or counted in shadow (when it is not). With `meter.prices` set, both caps are in USD, so a cache read is charged at its own rate instead of as a full input token. Without prices, both caps stay in tokens (`runTokens`, `taskTokens`) as before.
 
 | Setting | Effect |
 |---|---|
 | `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the tier's logical model (`agent-default`). `cacheWrite` defaults to `input`. A price must be positive |
-| `tiers.<tier>.runUSD` | That tier's cap in USD. If omitted while prices are set, it defaults to `runTokens` reference tokens at $1.70 per million (D11): light $0.51, standard $2.55, frontier $6.80 |
-| `meter.query` | Must keep `gen_ai_token_type` in its `by` clause: `sum by (ar_agent, gen_ai_token_type) (gen_ai_client_token_usage_sum{…, gen_ai_token_type=~"input\|cached_input\|cache_creation_input\|output"})`. The token caps still count `input + output` |
+| `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's run and task caps in USD. When omitted while prices are set, each defaults to its token cap counted as reference tokens at $1.70 per million (D11). Run caps: light $0.51, standard $2.55, frontier $6.80. Task caps: light $1.02, standard $5.10, frontier $13.60. `taskUSD` may not be below `runUSD` |
+| `meter.query` | Must keep `gen_ai_token_type` in its `by` clause: `sum by (ar_agent, gen_ai_token_type) (gen_ai_client_token_usage_sum{…, gen_ai_token_type=~"input\|cached_input\|cache_creation_input\|output"})`. The token counts still mean `input + output` |
 
-A run's cost is `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`, all divided by 10⁶. At GLM-5.3's prices ($1.40 / $0.26 / $4.40), the v2 cohort's implementer runs cost $0.58–0.70 for 1.54–1.69 M tokens, which is well under $2.55. The same volume with no cache hit costs $2.30–2.49, so the cap stops an uncached run at about 1.8 M tokens. A run capped in USD is not also held to `runTokens`. The gateway's B1 ceiling (5 M) still bounds its raw tokens.
+A run's cost is `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`, all divided by 10⁶.
+
+At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
+
+- **Run cap.** The v2 cohort's implementer runs cost $0.58–0.70 for 1.54–1.69 M tokens, well under $2.55. The same volume with no cache hit costs $2.30–2.49, so the run cap stops an uncached run at about 1.8 M tokens.
+- **Task cap.** A pair task of 4.7 M tokens at 95 % cache reads costs $1.78 of its $5.10. Uncached, the same task costs $6.77.
+
+A run or task capped in USD is no longer held to `runTokens` or `taskTokens`. The gateway's B1 ceiling (5 M) still bounds a run's raw tokens.
+
+The meter hands each run's cost to the reconciler (`meter.Costs`). The reconciler records it in the Task status as `runs[].costMicroUSD`, with the total in `usage.costMicroUSD`. A record keeps its last cost after its claim is gone, just as it keeps its tokens. A task stays on its `taskTokens` cap in two cases:
+
+- A run the meter cannot price (`runs[].unpriced`).
+- A run with tokens and no cost, such as a task started before this release.
+
+Its USD cost is never counted as $0.
+
+**The daily budgets stay in raw tokens for now.** That covers `budgets.factoryDaily`, `budgets.humanDaily` (`principal-day`) and the gateway's fleet bucket (`fleet`, B2). A cache-heavy day therefore reaches them sooner than its cost would suggest.
 
 | Signal | Meaning |
 |---|---|
-| A tier sets `runUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
-| `agent_factory_run_budget_fallbacks_total{why="unpriced"}` | A run's claim names a model with no price (a config changed under a live run). The run is capped at `runTokens`. The log says `run capped in tokens` |
-| `agent_factory_run_budget_fallbacks_total{why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
-| `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `gateway-ceiling` (B1), `fleet` (B2) or `principal-day`. The `revoked` annotation keeps C5's reason, because the composition maps each value to a phase |
-| `agent_factory_run_cost_usd{tier}` | A priced run's cost when it ended. `agent_factory_run_budget_usd{tier}` is the cap |
+| A tier sets `runUSD` or `taskUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
+| `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A run's claim names a model with no price (a config changed under a live run). The run is capped at `runTokens`. The log says `run capped in tokens` |
+| `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
+| `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
+| `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling` (B1), `fleet` (B2) or `principal-day`. The `revoked` annotation keeps C5's reason, because the composition maps each value to a phase |
+| `agent_factory_run_cost_usd{tier}` | A priced run's cost when it ended. `agent_factory_run_budget_usd{tier}` is the run cap |
 
-The USD total is kept in the meter's memory only, because the factory's patch limit admits no annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a run spent before that reset. The token count, which the task and daily caps read, is unchanged.
+A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a run spent before that reset; the Task status keeps the costs already recorded.
 
 ## Finished rooms close
 

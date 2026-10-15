@@ -17,6 +17,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -93,6 +94,34 @@ type Source interface {
 	RunUsage(ctx context.Context) (map[string]Usage, error)
 }
 
+// Cost is what the meter knows of a run's USD cost: MicroUSD once a typed reading priced it,
+// or Why it cannot be priced (FallbackUnpriced, FallbackUntyped).
+type Cost struct {
+	MicroUSD int64
+	Why      string
+}
+
+// Costs hands each tick's run costs to the reconciler, which sums a task's for its USD cap
+// (OD-6 (b)). Safe for concurrent use: the meter writes it, the reconciler reads it.
+type Costs struct {
+	mu sync.RWMutex
+	m  map[string]Cost
+}
+
+// Get is a run's cost as of the meter's last tick; false when the meter has no word on it.
+func (c *Costs) Get(id string) (Cost, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.m[id]
+	return v, ok
+}
+
+func (c *Costs) put(m map[string]Cost) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = m
+}
+
 // cost prices a typed reading in micro-USD: tokens times USD per million is micro-USD.
 func cost(p config.Price, u Usage) int64 {
 	write := p.CacheWrite
@@ -121,7 +150,9 @@ type Meter struct {
 	// priced and its reading typed; otherwise on MaxTokens, reported through OnFallback.
 	Prices map[string]config.Price
 	RunUSD map[string]float64
-	Every  time.Duration
+	// Costs receives each tick's run costs, for the task cap; nil: nobody reads them.
+	Costs *Costs
+	Every time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// OnRevoke is told of each revocation written, with its reason and the limit that fired:
@@ -325,6 +356,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	totals := make(map[string]int64, len(all))
 	usd := map[string]int64{}
 	caps := map[string]int64{}
+	costs := map[string]Cost{}
 	delta := map[string]int64{}
 	pending := map[string]int64{}
 	for _, r := range all {
@@ -341,9 +373,14 @@ func (m *Meter) Tick(ctx context.Context) error {
 			if typed {
 				raw = cost(p, u)
 			}
-			if v := m.spend(r.ID, raw, typed); m.last[r.ID].usdKnown { // never a typed reading: no cost
-				usd[r.ID] = v
+			switch v := m.spend(r.ID, raw, typed); {
+			case m.last[r.ID].usdKnown:
+				usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
+			case seen: // never a typed reading: no cost
+				costs[r.ID] = Cost{Why: FallbackUntyped}
 			}
+		} else {
+			costs[r.ID] = Cost{Why: FallbackUnpriced}
 		}
 		var why string
 		if caps[r.ID], why = m.usdCap(r, u, seen); why != "" {
@@ -353,6 +390,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 			delta[r.Principal] += inc
 			pending[r.ID] = t
 		}
+	}
+	if m.Costs != nil {
+		m.Costs.put(costs)
 	}
 	spent, err := m.settle(ctx, day, delta) // budget-principal reads the ledger, not the live runs (R07)
 	if err != nil {
