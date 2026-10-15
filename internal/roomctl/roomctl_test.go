@@ -36,24 +36,24 @@ func TestLineIsOneReadableRow(t *testing.T) {
 	}{
 		{"a verdict", envelope.Event{Seq: 12, Actor: agent, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindReviewVerdict, Verdict: "changes", Text: "Add a test.\nAnd docs."})},
-			"#12 agent:7f3cq2xz (reviewer) review_verdict changes: Add a test. And docs."},
+			"#12 reviewer (agent:7f3cq2xz) review_verdict changes: Add a test. And docs."},
 		{"a queued message", envelope.Event{Seq: 3, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:291"}, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "address L42", Delivery: envelope.DeliveryQueued})},
 			"#3 human:291 message queued: address L42"},
 		{"a tool call", envelope.Event{Seq: 4, Actor: agent, Type: envelope.ToolCall,
 			Payload: envelope.Must(map[string]any{"tool": "terminal", "args": map[string]any{"command": "go test ./..."}})},
-			"#4 agent:7f3cq2xz (reviewer) tool_call terminal: go test ./..."},
+			"#4 reviewer (agent:7f3cq2xz) tool_call terminal: go test ./..."},
 		{"a state change", envelope.Event{Seq: 5, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
 			Type: envelope.StateChanged, Payload: envelope.StatePayload("run_phase", map[string]any{"phase": "Running"})},
 			"#5 system:room-broker run_phase Running"},
 		{"a handoff", envelope.Event{Seq: 6, Actor: agent, Type: envelope.Handoff,
 			Payload: envelope.Must(envelope.HandoffPayload{FromRole: "implementer", ToRole: "reviewer", Commit: "4be1c9d", Summary: "Opened #12"})},
-			"#6 agent:7f3cq2xz (reviewer) handoff → reviewer @ 4be1c9d: Opened #12"},
+			"#6 reviewer (agent:7f3cq2xz) handoff → reviewer @ 4be1c9d: Opened #12"},
 		// T10's terminal twin: room text is untrusted, and an escape sequence
 		// would drive the developer's terminal (OSC 52 writes the clipboard).
 		{"no escape reaches the terminal", envelope.Event{Seq: 7, Actor: agent, Type: envelope.Message,
 			Payload: envelope.Must(envelope.MessagePayload{Kind: envelope.KindChat, Text: "hi\x1b]52;c;cm0gLXJmIH4=\x07 \x1b[2Jthere\u202e"})},
-			"#7 agent:7f3cq2xz (reviewer) message: hi]52;c;cm0gLXJmIH4= [2Jthere"},
+			"#7 reviewer (agent:7f3cq2xz) message: hi]52;c;cm0gLXJmIH4= [2Jthere"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -481,7 +481,7 @@ func TestRenderSummary(t *testing.T) {
 	if err := RenderSummary(&out, []byte(summaryBody), time.Date(2026, 10, 8, 19, 30, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	want := `phase: Implementing  run: cf4ato2x (implementer)  budget: 189093/1500000
+	want := `phase: Implementing  run: cf4ato2x (implementer)  budget: 189 k / 1.5 M (13 %)
 PR #2239 https://github.com/Smana/a/pull/2239
 last verdict: reviewer changes_requested[31m
 needs you: approve "git push to agent/26zfnuxm" by 14:00 UTC → https://rooms.example/r/26zfnuxm#01M4
@@ -501,6 +501,23 @@ cursor: seq:142
 }
 
 // The skill reports "needs you: none" as the spec words it, and the task's issue is part of its status.
+func TestStatusLeadsWithTheTaskAndReadsTheBudget(t *testing.T) {
+	raw := []byte(`{"apiVersion":"summary/v1","room":"r","url":"u","status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},
+		"budget":{"usedTokens":189093,"limitTokens":1500000},"pr":null,"issue":{"number":74,"url":"https://github.com/o/r/issues/74","title":"Chat view: pair tool calls"},
+		"lastVerdict":null},"needsYou":[],"actions":[],"notes":{"untrusted":true,"items":[]},"cursor":"seq:27"}`)
+	var out strings.Builder
+	if err := RenderSummary(&out, raw, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out.String(), "\n")
+	if lines[0] != `task: #74 "Chat view: pair tool calls"` {
+		t.Fatalf("first line %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "budget: 189 k / 1.5 M (13 %)") {
+		t.Fatalf("budget line %q", lines[1])
+	}
+}
+
 func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
 	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued",` +
 		`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],` +
@@ -509,7 +526,7 @@ func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
 	if err := RenderSummary(&out, []byte(body), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	want := "phase: Queued\nissue #42 https://github.com/Smana/a/issues/42\nneeds you: none\ncursor: seq:3\n"
+	want := "task: #42\nphase: Queued\nissue #42 https://github.com/Smana/a/issues/42\nneeds you: none\ncursor: seq:3\n"
 	if out.String() != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
 	}
