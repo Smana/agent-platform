@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
@@ -540,4 +541,136 @@ func TestRecentlyThrottled(t *testing.T) {
 	if _, err := (VL{URL: srv.URL, Query: "q"}).RecentlyThrottled(ctx); err == nil {
 		t.Error("the audited httpx client is required, never a hand-rolled one")
 	}
+}
+
+// failingLedger is a ledger day seeded with spent whose Update fails while *fail is set.
+func failingLedger(t *testing.T, spent map[string]int64, fail *bool) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(cmScheme()).
+		WithObjects(ledgerDay(t, "20260927", spent, nil)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if *fail {
+					return errors.New("configmap busy")
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+}
+
+// A ledger that cannot be written delays the daily budget, never a run's own cap (review
+// 2026-10-15, F2); the increase is paid once when the ledger recovers, and the usage annotation
+// (which a new leader takes as already paid) is held back until then.
+func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
+	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return day }
+
+	t.Run("an over-cap run is revoked and the failure reported", func(t *testing.T) {
+		fail := true
+		c := failingLedger(t, map[string]int64{"human:a": 100}, &fail)
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+			{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 1000, Principal: "human:a", Created: day}}}
+		var succeeded, remaining bool
+		m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1500}, Ledger: c, Namespace: "agent-system", Now: now,
+			OnSucceeded: func(context.Context, time.Time) { succeeded = true },
+			Remaining:   func(string, int64, int64) { remaining = true }}
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the ledger failure is still reported")
+		}
+		p := st.patches["aaaaaaaa"]
+		if p[runs.AnnRevoked] != ReasonBudgetRun {
+			t.Fatalf("revoked = %q, want %q: the run cap waited for the ledger", p[runs.AnnRevoked], ReasonBudgetRun)
+		}
+		if _, ok := p[runs.AnnUsage]; ok {
+			t.Fatalf("usage written beside a failed ledger: %v", p)
+		}
+		if succeeded || remaining {
+			t.Fatalf("succeeded=%v remaining=%v: the meter looked healthy", succeeded, remaining)
+		}
+	})
+
+	t.Run("the same meter pays an increase missed during the outage once", func(t *testing.T) {
+		fail := true
+		c := failingLedger(t, map[string]int64{"human:b": 100}, &fail)
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+			{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 100_000, Tokens: 500, Principal: "human:b", Created: day}}}
+		src := source{"bbbbbbbb": 500}
+		m := &Meter{Runs: st, Source: src, Ledger: c, Namespace: "agent-system", Now: now}
+		if err := m.Tick(t.Context()); err != nil { // no growth: nothing to write
+			t.Fatal(err)
+		}
+		src["bbbbbbbb"] = 800
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the failing write is reported")
+		}
+		fail = false
+		for range 2 {
+			if err := m.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 400 {
+			t.Fatalf("ledger %v, want human:b 400 (100 + the increase once)", spent)
+		}
+	})
+
+	t.Run("a new leader after the outage still bills the increase once", func(t *testing.T) {
+		fail := true
+		c := failingLedger(t, map[string]int64{"human:b": 100}, &fail)
+		run := runs.Run{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 100_000, Tokens: 500, Principal: "human:b", Created: day}
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}
+		m := &Meter{Runs: st, Source: source{"bbbbbbbb": 800}, Ledger: c, Namespace: "agent-system", Now: now}
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the failing write is reported")
+		}
+		if _, ok := st.patches["bbbbbbbb"][runs.AnnUsage]; ok {
+			t.Fatalf("an unpaid increase was annotated: %v", st.patches)
+		}
+		// Failover: a memory-less meter against the recovered ledger, the run as the store holds it.
+		fail = false
+		if v, ok := st.patches["bbbbbbbb"][runs.AnnUsage]; ok {
+			run.Tokens, _ = strconv.ParseInt(v, 10, 64)
+		}
+		next := &Meter{Runs: &store{patches: map[string]map[string]string{}, runs: []runs.Run{run}},
+			Source: source{"bbbbbbbb": 800}, Ledger: c, Namespace: "agent-system", Now: now}
+		if err := next.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 400 {
+			t.Fatalf("ledger %v, want human:b 400 (100 + the increase once)", spent)
+		}
+	})
+
+	t.Run("a first typed reading after several failed ticks is revoked at the USD cap", func(t *testing.T) {
+		fail := true
+		c := failingLedger(t, map[string]int64{"human:z": 1}, &fail)
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{{ID: "cccccccc", Phase: "Running",
+			Tier: "standard", Model: "agent-default", MaxTokens: 1_500_000, Principal: "human:c", Created: day}}}
+		src := typed{"cccccccc": {Tokens: 1000}} // untyped: the token cap stands in
+		var revoked []revocation
+		m := usdMeter(st, src, &revoked, new([]string))
+		m.Ledger, m.Namespace, m.Now = c, "agent-system", now
+		for range 3 {
+			if err := m.Tick(t.Context()); err == nil {
+				t.Fatal("the failing write is reported")
+			}
+		}
+		if len(revoked) != 0 {
+			t.Fatalf("revoked before the reading landed: %v", revoked)
+		}
+		src["cccccccc"] = typedUsage(Usage{Input: 2_000_000}) // $2.80 against the $2.55 cap
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the failing write is reported")
+		}
+		if len(revoked) != 1 || revoked[0] != (revocation{ReasonBudgetRun, LimitRunUSD}) {
+			t.Fatalf("revoked %v, want one %s/%s on the first typed tick", revoked, ReasonBudgetRun, LimitRunUSD)
+		}
+		fail = false
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:c"] != 2_000_000 {
+			t.Fatalf("ledger %v, want human:c 2000000 (the increase once)", spent)
+		}
+	})
 }

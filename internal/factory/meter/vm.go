@@ -73,6 +73,11 @@ func (v *VM) RunUsage(ctx context.Context) (map[string]Usage, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("meter: query: status %d", resp.StatusCode)
 	}
+	return parseUsage(raw)
+}
+
+// parseUsage reads the body of an api/v1/query reply into each run's counters.
+func parseUsage(raw []byte) (map[string]Usage, error) {
 	var body struct {
 		Status string `json:"status"`
 		Data   struct {

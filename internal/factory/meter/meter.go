@@ -82,7 +82,8 @@ type Store interface {
 }
 
 // Usage is a run's raw counters. Tokens is what the token caps count: input plus output, or an
-// untyped series' value. Input includes CacheRead and CacheWrite, as the gateway reports it.
+// untyped series' value. `Input` is the gateway's `input` series, which **includes** `cached_input`
+// and `cache_creation_input`; `cost` subtracts them to price fresh input.
 type Usage struct {
 	Tokens, Input, CacheRead, CacheWrite, Output int64
 	// Typed: the reading carried gen_ai_token_type, so it can be priced.
@@ -324,9 +325,11 @@ func (m *Meter) Start(ctx context.Context) error {
 
 // Tick meters every run once: it appends the usage this tick saw to the day's ledger, writes
 // usage as it grew, revokes a live run at any of its caps, stamps the heartbeat admission reads,
-// and keeps the ledgers themselves clean. A failed read of runs, usage or the ledger writes no
-// usage and no stamp; a failed annotation is reported and is no revocation. Occupancy is not
-// usage: a tick that could not read usage still releases the runs that ended (#55).
+// and keeps the ledgers themselves clean. A failed read of runs or usage writes no usage and no
+// stamp. A ledger that cannot be written writes no usage annotation (a new leader takes the
+// annotation as already paid), no stamp and no upkeep, but still revokes at the per-run caps. A
+// failed annotation is reported and is no revocation. Occupancy is not usage: a tick that could
+// not read usage still releases the runs that ended (#55), provided the ledger can be written.
 func (m *Meter) Tick(ctx context.Context) error {
 	all, err := m.Runs.List(ctx)
 	if err != nil {
@@ -394,25 +397,29 @@ func (m *Meter) Tick(ctx context.Context) error {
 	if m.Costs != nil {
 		m.Costs.put(costs)
 	}
-	spent, err := m.settle(ctx, day, delta) // budget-principal reads the ledger, not the live runs (R07)
-	if err != nil {
-		return err
-	}
-	for id, t := range pending { // the increase is in the day's ledger: those runs are paid up
-		p := m.last[id]
-		p.paid = t
-		m.last[id] = p
-	}
-	if m.Remaining != nil {
-		for p, n := range spent {
-			m.Remaining(p, max(0, m.dailyCap(p)-n), m.dailyCap(p))
+	spent, settleErr := m.settle(ctx, day, delta) // budget-principal reads the ledger, not the live runs (R07)
+	var errs []error
+	if settleErr != nil {
+		// A ledger that cannot be written delays the daily budget, never a run's own cap: the
+		// loop below still revokes. Nothing is marked paid, so the increases are retried whole.
+		errs = append(errs, settleErr)
+		spent = m.readSpent(ctx, day) // read-only; nil when that fails too: budget-principal waits
+	} else {
+		for id, t := range pending { // the increase is in the day's ledger: those runs are paid up
+			p := m.last[id]
+			p.paid = t
+			m.last[id] = p
+		}
+		if m.Remaining != nil {
+			for p, n := range spent {
+				m.Remaining(p, max(0, m.dailyCap(p)-n), m.dailyCap(p))
+			}
 		}
 	}
-	var errs []error
 	for _, r := range all {
 		n := totals[r.ID]
 		kv := map[string]string{}
-		if n > r.Tokens {
+		if n > r.Tokens && settleErr == nil { // an unpaid increase is never annotated: a new leader would skip it
 			kv[runs.AnnUsage] = strconv.FormatInt(n, 10)
 		}
 		var limit string
@@ -442,6 +449,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 	}
 	// The success is reported only once admission can read it: the gauge never looks healthy
 	// beside a 503 meter_blind.
+	if settleErr != nil { // no stamp, no success, no ledger upkeep: the meter must not look healthy
+		return errors.Join(errs...)
+	}
 	at := m.now()
 	var stamp error
 	if m.Ledger != nil {
@@ -452,6 +462,24 @@ func (m *Meter) Tick(ctx context.Context) error {
 		m.OnSucceeded(ctx, at)
 	}
 	return errors.Join(errs...)
+}
+
+// readSpent reads the day's spent column without writing; nil when there is no Ledger, no day
+// yet or the read fails (the caller then does not evaluate budget-principal).
+func (m *Meter) readSpent(ctx context.Context, day string) map[string]int64 {
+	if m.Ledger == nil {
+		return nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + day}
+	if err := m.Ledger.Get(ctx, key, cm); err != nil {
+		return nil
+	}
+	spent, err := api.LedgerSpentColumn(cm)
+	if err != nil {
+		return nil
+	}
+	return spent
 }
 
 // settle appends this tick's increases to the day's ledger and returns the day's spend per
