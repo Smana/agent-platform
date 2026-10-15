@@ -162,7 +162,7 @@ func TestStreamSendsTheSeamOnce(t *testing.T) {
 	defer time.AfterFunc(5*time.Second, stop).Stop()
 	expectFrame(t, sc, wire.EventDeliver, `{"ref":1,"text":"seam"}`)
 	expectPing(t, sc)
-	for seen := int64(0); seen < 1; { // the hub has read seq 1 and offers it to the buffer
+	for seen := int64(0); seen < 1; { // the hub's worker has read seq 1; it offers it to the buffer before reading again
 		select {
 		case seen = <-log.ranged:
 		case <-time.After(2 * time.Second):

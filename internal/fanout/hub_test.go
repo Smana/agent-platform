@@ -494,6 +494,7 @@ func (s *syncBuffer) Bytes() []byte {
 
 // The last viewer leaving forgets the room: its notifications cost nothing.
 func TestUnsubscribeForgetsTheRoom(t *testing.T) {
+	const probeRoom = "probe123"
 	log, b := &memLog{}, newBus()
 	h := New(log, b, discard)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -505,19 +506,31 @@ func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	probe, err := h.Subscribe(ctx, probeRoom) // the barrier: it stays subscribed
+	if err != nil {
+		t.Fatal(err)
+	}
 	b.publish(roomID, log.add(1))
+	b.publish(probeRoom, 1)
 	drain(t, sub, 1, 1)
+	drain(t, probe, 1, 1)
+	// The first pass may still be reading the room under test; a pass that only
+	// the probe is dirty for ends the settling.
+	b.publish(probeRoom, log.add(1))
+	drain(t, probe, 2, 1)
 	h.Unsubscribe(sub)
 	before := log.ranges.Load()
-	b.publish(roomID, log.add(1))
-	cancel() // stop the hub and wait for it: nothing can still be about to read
+	b.publish(roomID, log.add(1)) // dirties nothing: nobody watches the room
+	b.publish(probeRoom, 3)
+	drain(t, probe, 3, 1) // the one worker has run a pass that saw the first publish
+	cancel()              // and the pass is over once the hub has stopped
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the hub did not stop")
 	}
-	if n := log.ranges.Load(); n != before {
-		t.Fatalf("%d reads for a room nobody watches", n-before)
+	if n := log.ranges.Load() - before; n != 1 {
+		t.Fatalf("%d reads, want the probe's one and none for a room nobody watches", n)
 	}
 }
 
