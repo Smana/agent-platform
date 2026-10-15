@@ -825,14 +825,14 @@ func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
 		defer fb.mu.Unlock()
 		return len(fb.approvals) == 1
 	})
-	time.Sleep(50 * time.Millisecond) // ten polls, still under back-pressure
+	f.polls(ctx, t, 10) // still under back-pressure
 	if got := f.responded(); len(got) != 1 {
 		t.Fatalf("a human-class action was answered without the broker: %v", got)
 	}
 
 	fb.set(func(b *fakeBroker) { b.hold = false })
 	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 13 })
-	time.Sleep(50 * time.Millisecond) // ten polls past the outage
+	f.polls(ctx, t, 10) // past the outage
 	if got := f.responded(); len(got) != 1 {
 		t.Fatalf("the human-class action was answered before its decision: %v", got)
 	}
@@ -858,6 +858,62 @@ func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
 	defer fb.mu.Unlock()
 	if len(fb.approvals) != 1 || fb.approvals[0].CallID != "c2" {
 		t.Fatalf("approvals %v", fb.approvals)
+	}
+}
+
+// Each local verdict records a policy_decision, so past MaxBuffer the
+// confirmation loop's read stops at statusCap: over a long outage the buffer
+// stays bounded, further verdicts wait with the harness parked, and no record
+// of a verdict given is dropped.
+func TestLocalVerdictsPastTheCapStopAtTheStatusBound(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 2 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
+	}
+	fb := &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer, r.b.FlushGrace = 2<<10, 50*time.Millisecond
+	confirming(r)
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+	const steps = 100
+	answered := 0
+	for i := 1; i <= steps && answered == i-1; i++ {
+		f.mu.Lock()
+		f.status = waiting
+		f.events = append(f.events, actionEvent(fmt.Sprintf("c%d", i), "git push origin agent/3kq7x2ma"))
+		f.events[len(f.events)-1]["id"] = fmt.Sprintf("e%d", len(f.events))
+		f.mu.Unlock()
+		for range 20 { // a verdict takes a few polls; twenty without one means it waits
+			if answered = len(f.responded()); answered == i {
+				break
+			}
+			f.polls(ctx, t, 1)
+		}
+	}
+	if answered == 0 || answered >= steps {
+		t.Fatalf("%d of %d allow-class steps answered: want some, then a pause at the bound", answered, steps)
+	}
+	f.polls(ctx, t, 20)
+	if got := len(f.responded()); got != answered {
+		t.Fatalf("%d verdicts given past the bound, want none", got-answered)
+	}
+	stop()
+	// The loop is done: its buffer is safe to read. The slack past statusCap is
+	// one poll's status items and one step's record, each a few hundred bytes here.
+	if limit := statusCap(r.b.MaxBuffer) + 1<<10; r.b.bufBytes > limit {
+		t.Fatalf("buffer %d bytes after %d verdicts, over %d", r.b.bufBytes, answered, limit)
+	}
+	records := 0
+	for _, p := range r.b.buf {
+		if strings.Contains(string(p.enc), `"kind":"policy_decision"`) {
+			records++
+		}
+	}
+	if records != answered {
+		t.Fatalf("%d policy_decision records for %d verdicts", records, answered)
 	}
 }
 

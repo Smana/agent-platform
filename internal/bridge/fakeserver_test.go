@@ -3,7 +3,9 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,20 +18,21 @@ import (
 // event_router.py and event_service.py: page_id is inclusive, and next_page_id is
 // the id of the first event of the next page.
 type fakeAgentServer struct {
-	mu         sync.Mutex
-	events     []map[string]any
-	status     string
-	sent       []string
-	responses  []bool
-	reasons    []string // the reason of each response
-	refuse     int      // while set, confirmations and the policy are answered with this status
-	policy     string
-	policySets int // confirmation policies taken
-	pageSize   int
-	limits     []int
-	searches   int  // event searches asked
-	hang       bool // event searches never answer while set
-	flap       bool // each status read flips running and paused
+	mu          sync.Mutex
+	events      []map[string]any
+	status      string
+	sent        []string
+	responses   []bool
+	reasons     []string // the reason of each response
+	refuse      int      // while set, confirmations and the policy are answered with this status
+	policy      string
+	policySets  int // confirmation policies taken
+	pageSize    int
+	limits      []int
+	searches    int  // event searches asked
+	statusReads int  // conversation reads: one per bridge poll
+	hang        bool // event searches never answer while set
+	flap        bool // each status read flips running and paused
 	// writes logs each write in order: "respond true|false", "send", "run", "interrupt".
 	writes  []string
 	runCode int // while set, POST /run is answered with this status
@@ -70,6 +73,20 @@ func (f *fakeAgentServer) written() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string{}, f.writes...)
+}
+
+// polls waits until the bridge read the conversation n more times, each read a
+// poll of its loop, so a check that nothing happened rests on polls, not time.
+func (f *fakeAgentServer) polls(ctx context.Context, t *testing.T, n int) {
+	t.Helper()
+	f.mu.Lock()
+	want := f.statusReads + n
+	f.mu.Unlock()
+	eventually(ctx, t, fmt.Sprintf("%d polls", n), func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.statusReads >= want
+	})
 }
 
 // searched is how many event searches were asked so far.
@@ -128,6 +145,7 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		f.statusReads++
 		if code := f.statusCode; code != 0 {
 			http.Error(w, "refused", code)
 			return

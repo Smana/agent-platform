@@ -675,10 +675,12 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 // room-bridge runs under: the buffer before a poll, what one Next retains and
 // reads, and the items that poll maps.
 func TestTheWorstCaseHeapFitsTheMemoryLimit(t *testing.T) {
-	// Events are mapped only below MaxBuffer; status items stop at statusCap,
-	// where a read ahead for the confirmation loop still runs one Next.
-	worst := max(DefaultMaxBuffer+nextPeakBytes(DefaultMaxPages)+pageItemBytes(DefaultMaxPages),
-		statusCap(DefaultMaxBuffer)+statusItemsPerPoll*maxItemBytes+nextPeakBytes(DefaultMaxPages))
+	// Events are mapped only below MaxBuffer, so the buffer holds at most
+	// MaxBuffer plus one poll's items; status items and the confirmation loop's
+	// read stop at statusCap. A Next runs below either bound; the sum takes the
+	// larger buffer with it, whichever read it is.
+	worst := max(DefaultMaxBuffer+pageItemBytes(DefaultMaxPages), statusCap(DefaultMaxBuffer)+statusItemsPerPoll*maxItemBytes) +
+		nextPeakBytes(DefaultMaxPages)
 	if worst > MemoryLimit {
 		t.Fatalf("worst case %d MiB > MemoryLimit %d MiB", worst>>20, MemoryLimit>>20)
 	}
