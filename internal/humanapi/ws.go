@@ -139,6 +139,7 @@ func (s *Server) socketsGone() <-chan struct{} {
 	s.closing = true
 	s.mu.Unlock()
 	gone := make(chan struct{})
+	// Past a drain timeout no one reads gone: this waiter is left for process exit.
 	go func() {
 		s.sockets.Wait()
 		close(gone)
