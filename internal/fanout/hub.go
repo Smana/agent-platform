@@ -295,7 +295,11 @@ func (h *Hub) takeDirty() []string {
 }
 
 // fetch offers the room's events after its cursor to every viewer, page by page.
-// No lock is held across the read.
+// No lock is held across the read or the offers (B15): notify, Subscribe and
+// Unsubscribe never wait on a viewer. Only work calls fetch, so one fetch runs at
+// a time and nothing else moves rm.last; a page goes to the viewers subscribed
+// when it was taken, and one subscribing after that reads the page's events from
+// the log, since it reads its mark after Subscribe returns (§4 Replay).
 func (h *Hub) fetch(ctx context.Context, id string) {
 	for {
 		h.mu.Lock()
@@ -323,13 +327,25 @@ func (h *Hub) fetch(ctx context.Context, id string) {
 			return
 		}
 		rm.retry = false
-		for _, ev := range evs {
-			for s := range rm.subs {
-				s.offer(ev) // never blocks
-			}
-			rm.last = ev.Seq
+		subs := make([]*Sub, 0, len(rm.subs))
+		for s := range rm.subs {
+			subs = append(subs, s)
 		}
 		h.mu.Unlock()
+		for _, ev := range evs {
+			for _, s := range subs {
+				s.offer(ev) // never blocks on the channel; one unsubscribed meanwhile drops it unread
+			}
+		}
+		if len(evs) > 0 {
+			h.mu.Lock()
+			// A room forgotten meanwhile is a new one if subscribed again, with its own
+			// cursor from the log: only this room's cursor moves.
+			if h.rooms[id] == rm {
+				rm.last = evs[len(evs)-1].Seq
+			}
+			h.mu.Unlock()
+		}
 		if len(evs) < pageSize {
 			return
 		}
