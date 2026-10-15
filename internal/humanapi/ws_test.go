@@ -817,7 +817,8 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 	send(t, c, hello(nil, 0))
 	read(t, c)
 	eventually(t, "the connection is counted", func() bool {
-		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 1`)
+		out := scrape(t, e)
+		return strings.Contains(out, `rooms_connections{kind="human"} 1`) && strings.Contains(out, `rooms_participants{kind="human"} 1`)
 	})
 	start := time.Now()
 	cancel()
@@ -828,7 +829,8 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 		t.Fatalf("serve: %v after %s", err, time.Since(start))
 	}
 	eventually(t, "the connection is uncounted", func() bool {
-		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
+		out := scrape(t, e)
+		return strings.Contains(out, `rooms_connections{kind="human"} 0`) && strings.Contains(out, `rooms_participants{kind="human"} 0`)
 	})
 }
 

@@ -34,6 +34,7 @@ type Watcher struct {
 	removed []func(context.Context, Run)
 	// synced reports that the AgentRun cache has delivered its first list; nil before Register.
 	synced func() bool
+	live    []func(context.Context, int64)
 }
 
 // New returns an empty Watcher.
@@ -45,6 +46,32 @@ func (w *Watcher) OnGone(f func(context.Context, Run)) {
 	w.mu.Lock()
 	w.gone = append(w.gone, f)
 	w.mu.Unlock()
+}
+
+// OnLive registers f for the count of live runs naming a room: +1 when a run
+// enters that set, -1 when it leaves (terminal, revoked or deleted). A run is
+// counted at most once, whatever the updates, resyncs and deletes that follow.
+func (w *Watcher) OnLive(f func(context.Context, int64)) {
+	w.mu.Lock()
+	w.live = append(w.live, f)
+	w.mu.Unlock()
+}
+
+// counted is whether r is in the set OnLive counts.
+func counted(r Run) bool { return r.Room != "" && r.Live() }
+
+// notifyLive reports the move of one run in or out of the counted set.
+func notifyLive(ctx context.Context, fs []func(context.Context, int64), was, is bool) {
+	if was == is {
+		return
+	}
+	d := int64(1)
+	if was {
+		d = -1
+	}
+	for _, f := range fs {
+		f(ctx, d)
+	}
 }
 
 // OnChange registers f for every observed state of a run, replays included.
@@ -71,8 +98,9 @@ func (w *Watcher) Upsert(ctx context.Context, u *unstructured.Unstructured) {
 	w.mu.Lock()
 	old, had := w.runs[cur.ID]
 	w.runs[cur.ID] = cur
-	gone, changed := slices.Clone(w.gone), slices.Clone(w.changed)
+	gone, changed, live := slices.Clone(w.gone), slices.Clone(w.changed), slices.Clone(w.live)
 	w.mu.Unlock()
+	notifyLive(ctx, live, had && counted(old), counted(cur))
 	// OnGone first: cutting a dead run's connections must never wait behind
 	// OnChange's appends to the log.
 	if !cur.Live() && (!had || old.Live()) {
@@ -94,11 +122,12 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	w.mu.Lock()
 	old, had := w.runs[r.ID]
 	delete(w.runs, r.ID)
-	gone, removed := slices.Clone(w.gone), slices.Clone(w.removed)
+	gone, removed, live := slices.Clone(w.gone), slices.Clone(w.removed), slices.Clone(w.live)
 	w.mu.Unlock()
 	if !had {
 		return
 	}
+	notifyLive(ctx, live, counted(old), false)
 	if old.Live() {
 		for _, f := range gone {
 			f(ctx, old)

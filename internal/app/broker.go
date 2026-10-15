@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -172,6 +174,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	api.Queue = logStore // the system queue routes (SP3 R9)
 	rw.watch.OnGone(api.Drop)
+	rw.watch.OnLive(func(ctx context.Context, d int64) {
+		m.Participants.Add(ctx, d, metric.WithAttributes(attribute.String("kind", "run")))
+	})
 	hub, err := fanoutHub(st, st, m, log)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)

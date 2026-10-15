@@ -269,7 +269,9 @@ const (
 
 func (s *Server) count(ctx context.Context, delta int64) {
 	if s.Metrics != nil {
-		s.Metrics.Connections.Add(ctx, delta, metric.WithAttributes(attribute.String("kind", kindHuman)))
+		kind := metric.WithAttributes(attribute.String("kind", kindHuman))
+		s.Metrics.Connections.Add(ctx, delta, kind)
+		s.Metrics.Participants.Add(ctx, delta, kind)
 	}
 }
 

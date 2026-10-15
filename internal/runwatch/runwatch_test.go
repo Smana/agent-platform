@@ -479,3 +479,44 @@ func TestLiveTellsUnknownFromDead(t *testing.T) {
 		t.Fatalf("after sync, an absent run: live %v known %v", live, known)
 	}
 }
+
+// rooms_participants{kind="run"}: each run with a roomRef counts once while live,
+// whatever the updates and resyncs, and leaves once, whatever ends it.
+func TestOnLiveCountsEachLiveRunOnce(t *testing.T) {
+	ctx := t.Context()
+	w := New()
+	var n int64
+	w.OnLive(func(_ context.Context, d int64) {
+		if n += d; n < 0 {
+			t.Fatalf("count went negative: %d", n)
+		}
+	})
+	check := func(step string, want int64) {
+		t.Helper()
+		if n != want {
+			t.Fatalf("%s: count = %d, want %d", step, n, want)
+		}
+	}
+	const a = "xplane-run-7f3cq2xz"
+	w.Upsert(ctx, claim(a, "3kq7x2ma", "Pending", ""))
+	check("live", 1)
+	w.Upsert(ctx, claim(a, "3kq7x2ma", "Running", ""))
+	w.Upsert(ctx, claim(a, "3kq7x2ma", "Running", "")) // resync
+	check("still live", 1)
+	w.Upsert(ctx, claim(a, "3kq7x2ma", "Succeeded", ""))
+	check("terminal", 0)
+	w.Upsert(ctx, claim(a, "3kq7x2ma", "Succeeded", "")) // resync
+	w.Remove(ctx, claim(a, "3kq7x2ma", "Succeeded", ""))
+	check("deleted after terminal", 0)
+
+	w.Upsert(ctx, claim("xplane-run-aaaaaaaa", "3kq7x2ma", "Running", ""))
+	w.Upsert(ctx, claim("xplane-run-bbbbbbbb", "3kq7x2ma", "Running", ""))
+	check("two live", 2)
+	w.Remove(ctx, claim("xplane-run-aaaaaaaa", "3kq7x2ma", "Running", ""))
+	check("deleted while live", 1)
+	w.Upsert(ctx, claim("xplane-run-bbbbbbbb", "3kq7x2ma", "Running", "manual"))
+	check("revoked", 0)
+	w.Upsert(ctx, claim("xplane-run-cccccccc", "", "Running", ""))
+	w.Upsert(ctx, claim("xplane-run-dddddddd", "3kq7x2ma", "Failed", ""))
+	check("no room, or born terminal", 0)
+}

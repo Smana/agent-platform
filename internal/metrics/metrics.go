@@ -92,7 +92,8 @@ func (e *Exporter) Shutdown(ctx context.Context) error { return e.provider.Shutd
 // the phase that feeds each is named beside it. Label values stay bounded:
 // never a payload field, and room only on the gauge of rooms with a Running run.
 type Set struct {
-	// Participants is rooms_participants: live participants (phase 2).
+	// Participants is rooms_participants: live participants, by kind (run: a live
+	// run naming a room; human: an open viewer WebSocket).
 	Participants metric.Int64UpDownCounter
 	// Connections is rooms_connections{kind}: open viewer connections (phase 2).
 	Connections metric.Int64UpDownCounter
@@ -139,7 +140,7 @@ func New(meter metric.Meter) (*Set, error) {
 	var errs []error
 	check := func(err error) { errs = append(errs, err) }
 	var err error
-	s.Participants, err = meter.Int64UpDownCounter("rooms_participants", metric.WithDescription("Live participants."))
+	s.Participants, err = meter.Int64UpDownCounter("rooms_participants", metric.WithDescription("Live participants, by kind."))
 	check(err)
 	s.Connections, err = meter.Int64UpDownCounter("rooms_connections", metric.WithDescription("Open connections, by kind."))
 	check(err)
