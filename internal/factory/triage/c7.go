@@ -6,10 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"time"
+
+	"github.com/Smana/agent-platform/internal/httpx"
 )
+
+// maxC7Reply bounds the classifier's reply: a verdict is a few hundred bytes.
+const maxC7Reply = 64 << 10
 
 // C7Request and C7Response are the programme's C7 contract, verbatim.
 type C7Request struct {
@@ -39,8 +44,8 @@ type Classifier interface {
 	Classify(ctx context.Context, r C7Request) (C7Response, error)
 }
 
-// HTTPClassifier calls C7's endpoint over HTTP (R24). HC nil uses a 3 s client: C7's own
-// deadline is 2 s, so the caller waits, but never forever.
+// HTTPClassifier calls C7's endpoint over HTTP (R24). HC is the audited egress client
+// (httpx.New) and is required; C7's own deadline is 2 s, so a 3 s client waits, but never forever.
 type HTTPClassifier struct {
 	URL string
 	HC  *http.Client
@@ -49,6 +54,9 @@ type HTTPClassifier struct {
 // Classify posts the request and decodes the verdict; a non-200 is an error, which the caller
 // falls back on.
 func (h HTTPClassifier) Classify(ctx context.Context, r C7Request) (C7Response, error) {
+	if h.HC == nil {
+		return C7Response{}, errors.New("classifier: no HTTP client")
+	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return C7Response{}, err
@@ -58,11 +66,7 @@ func (h HTTPClassifier) Classify(ctx context.Context, r C7Request) (C7Response, 
 		return C7Response{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	hc := h.HC
-	if hc == nil {
-		hc = &http.Client{Timeout: 3 * time.Second} // C7's own deadline is 2 s
-	}
-	resp, err := hc.Do(req)
+	resp, err := h.HC.Do(req)
 	if err != nil {
 		return C7Response{}, err
 	}
@@ -70,6 +74,13 @@ func (h HTTPClassifier) Classify(ctx context.Context, r C7Request) (C7Response, 
 	if resp.StatusCode != http.StatusOK {
 		return C7Response{}, fmt.Errorf("classifier: %s", resp.Status)
 	}
+	body, err := httpx.ReadBody(resp.Body, maxC7Reply)
+	if err != nil {
+		return C7Response{}, fmt.Errorf("classifier: %w", err)
+	}
 	var out C7Response
-	return out, json.NewDecoder(resp.Body).Decode(&out)
+	if err := json.Unmarshal(body, &out); err != nil {
+		return C7Response{}, fmt.Errorf("classifier: decode reply: %w", err)
+	}
+	return out, nil
 }

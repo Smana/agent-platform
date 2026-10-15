@@ -147,15 +147,33 @@ func TestAnUnsetBranchIsLoggedAtStart(t *testing.T) {
 	}
 }
 
+func TestAnUnsetReadOnlyMCPSetIsLoggedAtStart(t *testing.T) {
+	for _, tc := range []struct {
+		tools  map[string]bool
+		warned bool
+	}{{nil, true}, {map[string]bool{"a__x": true}, false}} {
+		var buf strings.Builder
+		b := &bridge.Bridge{Harness: bridge.NewHarness("http://127.0.0.1:1", "c1"), RunID: "7f3cq2xz"}
+		wireBridge(b, nil, bridgeConfig{branch: "b", readOnlyMCP: tc.tools}, slog.New(slog.NewTextHandler(&buf, nil)))
+		if got := strings.Contains(buf.String(), "level=WARN") && strings.Contains(buf.String(), "MCP_READ_ONLY_TOOLS"); got != tc.warned {
+			t.Errorf("tools %v: warned %v, want %v: %s", tc.tools, got, tc.warned, buf.String())
+		}
+	}
+}
+
 // The classifier's inputs (phase 5): both optional, since CC-S5 adds BRANCH.
 func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
-	env := map[string]string{"BRANCH": "agent/3kq7x2ma", "EGRESS_PROFILES": " golang, ,npm ,"}
+	env := map[string]string{"BRANCH": "agent/3kq7x2ma", "EGRESS_PROFILES": " golang, ,npm ,",
+		"MCP_READ_ONLY_TOOLS": " a__x, ,b__y ,"}
 	c, _ := loadBridgeConfig(func(k string) string { return env[k] })
 	if c.branch != "agent/3kq7x2ma" || len(c.egress) != 2 || !c.egress["golang"] || !c.egress["npm"] {
 		t.Fatalf("branch %q egress %v", c.branch, c.egress)
 	}
-	if c, _ = loadBridgeConfig(func(string) string { return "" }); c.branch != "" || len(c.egress) != 0 {
-		t.Fatalf("unset: branch %q egress %v", c.branch, c.egress)
+	if len(c.readOnlyMCP) != 2 || !c.readOnlyMCP["a__x"] || !c.readOnlyMCP["b__y"] {
+		t.Fatalf("readOnlyMCP %v", c.readOnlyMCP)
+	}
+	if c, _ = loadBridgeConfig(func(string) string { return "" }); c.branch != "" || len(c.egress) != 0 || len(c.readOnlyMCP) != 0 {
+		t.Fatalf("unset: branch %q egress %v readOnlyMCP %v", c.branch, c.egress, c.readOnlyMCP)
 	}
 }
 

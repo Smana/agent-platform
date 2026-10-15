@@ -125,11 +125,19 @@ Set by the `AgentRun` composition (CC-S2).
 | `HARNESS_URL` | `http://127.0.0.1:8000` |
 | `ROOM_TOKEN_FILE` | `/var/run/secrets/agents/room/token` |
 | `EGRESS_PROFILES` | The run's egress profiles, comma-separated. The classifier reads them: a package install outside them is `egress.new` (phase 5) |
+| `MCP_READ_ONLY_TOOLS` | The MCP tools that only read, comma-separated `<server>__<tool>` names. The classifier lets these through as plain; every other MCP tool is `mcp.write`. Unset, all of them are `mcp.write` (fail closed), so the composition must set it, and before it rolls out a bridge that reads it (an older bridge ignores the variable). The platform's values (SP1's toolSelector, plus the room tools, which only append to the room) are in the list below |
 | `HEALTH_ADDR` | `:8085` (default): `/healthz` for kubelet only, and `POST /final-read` for the harness on loopback (F11, the harness half): the bridge reads the harness log to its end and mirrors it, then answers `{"events","unmirrored","sealed"}` within 3 s (`504` past it). `agent-run` calls it on SIGTERM before it stops agent-server. The bridge serves no metrics; the broker counts its stalls and stubs (Ruling AP) |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
 | `FLUSH_GRACE` | How long the SIGTERM drain may take; `25s` (default), at most `28s`. Set it lower when the harness uses much of the pod's 30 s grace: the kubelet signals the sidecar only after the harness exits |
 | `GOMEMLIMIT` | Unset: the binary sets `48MiB`, the soft heap limit its buffer budget is sized for inside the 64 Mi limit. A pod spec may set its own |
 | `BRANCH` | The run's branch (phase 5, CC-S5): the one push that is `forge.push`. Unset, every push is `forge.other` |
+
+The platform's `MCP_READ_ONLY_TOOLS` (each name is `<server>__<tool>`):
+
+- `flux-operator-mcp`: `search_flux_docs`, `get_flux_instance`, `get_kubernetes_api_versions`, `get_kubernetes_resources`, `get_kubernetes_metrics`, `get_kubernetes_logs`
+- `mcp-victoriametrics`: `documentation`, `query`, `query_range`, `metrics`, `metrics_metadata`, `labels`, `label_values`, `series`, `alerts`, `rules`, `explain_query`, `prettify_query`, `metric_statistics`, `tsdb_status`, `active_queries`, `top_queries`
+- `mcp-victorialogs`: `documentation`, `query`, `hits`, `facets`, `field_names`, `field_values`, `stats_query`, `stats_query_range`, `streams`, `stream_ids`, `stream_field_names`, `stream_field_values`, `flags`
+- `room-broker`: `room_read`, `room_post`, `room_progress`, `room_handoff`, `room_verdict`
 
 Resources: requests 20m / 32Mi, limits 100m / 64Mi; read-only root filesystem, all capabilities
 dropped.

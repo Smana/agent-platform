@@ -195,9 +195,8 @@ func TestStreamMissesNothingAfterTheMark(t *testing.T) {
 // Review 4.3 I1, I3: the replay pages through the run's deliveries, all of them,
 // in as many reads as pages, never the room's whole log.
 func TestStreamReplayPages(t *testing.T) {
-	defer func(n int) { replayPage = n }(replayPage)
-	replayPage = 2
 	s, log, w := newServer(t)
+	s.ReplayPage = 2
 	s.Ticker = make(manualTicker).new
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
 	for i := range int64(5) {

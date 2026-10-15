@@ -64,8 +64,7 @@ func RunRoomctl(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	stream := httpx.New(roomctlTimeout, nil)
-	stream.Timeout = 0 // a watch lasts as long as the developer wants it
+	stream := httpx.NewStreaming(roomctlTimeout, nil) // a watch lasts as long as the developer wants it
 	return Roomctl{Dir: dir, HC: httpx.New(roomctlTimeout, nil), Stream: stream, Out: stdout}.Run(ctx, args)
 }
 

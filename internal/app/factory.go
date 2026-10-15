@@ -56,6 +56,8 @@ const (
 	githubTimeout = 15 * time.Second
 	brokerTimeout = 15 * time.Second
 	vmTimeout     = 10 * time.Second
+	// C7's own deadline is 2 s.
+	classifierTimeout = 3 * time.Second
 	// pingEvery keeps the installation token warm and forge.Healthy true on every replica.
 	pingEvery = time.Minute
 	// traceDrain bounds the span exporter's flush at exit, inside the pod's grace.
@@ -160,7 +162,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	rc := runs.Client{C: mgr.GetClient()}
 	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
 		Runs: rc, Rooms: broker,
-		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL}, Forge: gh},
+		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)}, Forge: gh},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink, Costs: costs}
 	if err := rec.SetupWithManager(mgr); err != nil {
@@ -190,9 +192,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		}
 		return out
 	}
-	// The two groups R23 admits. The names are platform-fixed — the broker's config carries the
-	// same values — and the factory's config has no groups block to name them from.
-	groups := policy.Groups{Admin: "agents-admin", Member: "agents-member"}
+	// The two groups R23 admits: api.groups, which defaults to the values the broker's config carries.
+	groups := policy.Groups{Admin: cfg.API.Groups.Admin, Member: cfg.API.Groups.Member}
 	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,

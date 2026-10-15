@@ -48,7 +48,7 @@ The allowlist of system callers ships **empty**. SP3's entry,
 clients, so that the broker and the factory can validate them offline. oauth2-proxy keeps them in an
 HttpOnly, `SameSite=Strict` cookie, away from a page that renders LLM output. Two ZITADEL project
 roles, flattened into `groups`, gate access: `agents-admin` (owner and approver everywhere) and
-`agents-member` (may create rooms, and watches a room only under D7, below). Anyone else is refused
+`agents-member` (both are the defaults of the factory config's `api.groups`; may create rooms, and watches a room only under D7, below). Anyone else is refused
 at oauth2-proxy and again by the broker. Revoking a group takes effect within the hour, when
 connections re-authenticate.
 

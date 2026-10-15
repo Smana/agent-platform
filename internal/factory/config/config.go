@@ -52,6 +52,10 @@ const (
 	// and the most a config may ask for.
 	defaultResumesPerTask = 2
 	maxResumesPerTask     = 5
+	// The platform's values for the deployment facts an older file omits.
+	defaultAdminGroup  = "agents-admin"
+	defaultMemberGroup = "agents-member"
+	defaultProbeAuthor = "renovate[bot]"
 )
 
 // Duration is a time.Duration written as a string such as "30s".
@@ -293,6 +297,15 @@ type Schedule struct {
 	Text      string `json:"text"`
 	DataClass string `json:"dataClass,omitempty"`
 	Probe     string `json:"probe,omitempty"` // "" or renovate-red
+	// ProbeAuthor is the login whose open PRs the probe looks at; omitted: renovate[bot].
+	ProbeAuthor string `json:"probeAuthor,omitempty"`
+}
+
+// Groups names the two agents groups the run-request API admits (R23): the broker's config
+// carries the same two values.
+type Groups struct {
+	Admin  string `json:"admin"`
+	Member string `json:"member"`
 }
 
 // API is the run-request API's configuration (§4): what it binds, which repositories it
@@ -304,6 +317,8 @@ type API struct {
 	HumanJWKS    string   `json:"humanJWKS"`
 	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
 	ClientIDFiles []string `json:"clientIDFiles"`
+	// Groups defaults to agents-admin and agents-member.
+	Groups Groups `json:"groups"`
 	// Empty today (R23): no system caller of POST /v1/runs exists.
 	SystemIssuer     string            `json:"systemIssuer,omitempty"`
 	SystemJWKS       string            `json:"systemJWKS,omitempty"`
@@ -380,6 +395,17 @@ func Parse(raw []byte) (*Config, error) {
 				t.TaskUSD = RefUSD(t.TaskTokens)
 			}
 			c.Tiers[name] = t
+		}
+	}
+	if c.API.Groups.Admin == "" {
+		c.API.Groups.Admin = defaultAdminGroup
+	}
+	if c.API.Groups.Member == "" {
+		c.API.Groups.Member = defaultMemberGroup
+	}
+	for i := range c.Schedules {
+		if c.Schedules[i].ProbeAuthor == "" {
+			c.Schedules[i].ProbeAuthor = defaultProbeAuthor
 		}
 	}
 	if err := c.Validate(); err != nil {
@@ -578,6 +604,9 @@ func (c *Config) Validate() error {
 		if e.Probe != "" && e.Probe != "renovate-red" {
 			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
 		}
+		if e.Probe != "" && e.ProbeAuthor == "" {
+			bad("schedule %s: probeAuthor is required with a probe", e.Name)
+		}
 		if e.DataClass != "" && e.DataClass != "public" && e.DataClass != "internal" {
 			bad("schedule %s: dataClass %q is public or internal", e.Name, e.DataClass)
 		}
@@ -651,6 +680,12 @@ func (c *Config) Validate() error {
 		if f.value == "" {
 			bad("%s is required", f.key)
 		}
+	}
+	if c.API.Groups.Admin == "" {
+		bad("api.groups.admin is required")
+	}
+	if c.API.Groups.Member == "" {
+		bad("api.groups.member is required")
 	}
 	if len(c.API.Repositories) == 0 {
 		bad("api.repositories is empty: with none listed the API admits no repository")

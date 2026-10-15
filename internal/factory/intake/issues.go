@@ -144,13 +144,14 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 // this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
 	var publishErr error
+	engaged := false // reflects the stop label this pass saw or set, so the reader's cache may not hold it yet; it errs safe if the publish fails
 	if n := p.Cfg.ControlIssue; n > 0 {
 		iss, err := p.Forge.Issue(ctx, n)
 		if err != nil {
 			return err
 		}
 		on := slices.Contains(iss.Labels, LabelStop)
-		killswitch.SetIssue(on)
+		engaged = on
 		// A failed publish must not hold back the stop labels and reverts of this pass.
 		publishErr = killswitch.PublishIssue(ctx, p.Client, p.Namespace, on)
 	}
@@ -160,7 +161,7 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 	if err := p.reverts(ctx); err != nil {
 		return errors.Join(publishErr, err)
 	}
-	if p.Stopped(ctx) {
+	if engaged || p.Stopped(ctx) {
 		return publishErr
 	}
 	items, err := p.Forge.Labeled(ctx, p.Cfg.TriggerLabel)

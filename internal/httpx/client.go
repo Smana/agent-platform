@@ -78,6 +78,15 @@ func New(timeout time.Duration, roots *x509.CertPool) *http.Client {
 	}
 }
 
+// NewStreaming returns New's client without the whole-exchange Timeout, for a
+// WebSocket or SSE exchange, whose length no timeout fits; every other invariant
+// of New holds, the header timeout, the redirect cap and the metadata guard.
+func NewStreaming(timeout time.Duration, roots *x509.CertPool) *http.Client {
+	c := New(timeout, roots)
+	c.Timeout = 0
+	return c
+}
+
 // refuseMetadata runs after DNS resolution and before connect, on the address
 // actually dialed. All of 169.254.0.0/16 and fe80::/10 is refused: the metadata
 // servers (169.254.169.254), the EKS Pod Identity agent (169.254.170.23) and the

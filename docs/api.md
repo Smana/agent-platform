@@ -323,7 +323,7 @@ both from oauth2-proxy.
 |---|---|
 | ID token | Issuer is the identity provider, audience holds the `rooms-proxy` client id, not expired |
 | Access token | Same `sub`; issued for `rooms-proxy`. A web session requires it to differ from the ID token (review M16) |
-| Groups | `agents-admin` or `agents-member`, else `403` |
+| Groups | `agents-admin` or `agents-member` (the defaults of the factory config's `api.groups`), else `403` |
 | Room access (D7) | `agents-admin` sees every room. Anyone else sees a room only if GitHub lets the login linked to their ZITADEL user read the room's `repository`; a room with none is admins-only. Answers are cached for at most 5 minutes; past that, a check ZITADEL or GitHub cannot answer fails closed. A room you may not see answers exactly like a missing one |
 | `Origin` | Must match the room host: no cross-site WebSocket (T9) |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |

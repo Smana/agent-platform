@@ -36,9 +36,10 @@ func TestStuckRunEscalatesAndMentions(t *testing.T) {
 }
 
 func TestControlIssueEngagesTheStop(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
-	killswitch.SetIssue(true)
+	if err := killswitch.PublishIssue(t.Context(), g.c, "agent-system", true); err != nil {
+		t.Fatal(err)
+	}
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseStopped || tk.Status.Reason != "kill_switch" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}

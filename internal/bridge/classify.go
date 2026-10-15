@@ -75,33 +75,14 @@ func worse(a, b Class) Class {
 var builtins = map[string]bool{"terminal": true, "execute_bash": true, "file_editor": true, "str_replace_editor": true,
 	"task_tracker": true, "think": true, "finish": true, "browser": true}
 
-// The MCP tools a run can reach, as the gateway names them (<backend>__<tool>):
-// read-only by SP1's toolSelector, and the room tools only append to the room.
-// Anything else is mcp.write. The harness event carries no readOnlyHint.
-var readOnlyMCP = func() map[string]bool {
-	m := map[string]bool{}
-	for server, tools := range map[string][]string{
-		"flux-operator-mcp": {"search_flux_docs", "get_flux_instance", "get_kubernetes_api_versions",
-			"get_kubernetes_resources", "get_kubernetes_metrics", "get_kubernetes_logs"},
-		"mcp-victoriametrics": {"documentation", "query", "query_range", "metrics", "metrics_metadata", "labels",
-			"label_values", "series", "alerts", "rules", "explain_query", "prettify_query", "metric_statistics",
-			"tsdb_status", "active_queries", "top_queries"},
-		"mcp-victorialogs": {"documentation", "query", "hits", "facets", "field_names", "field_values", "stats_query",
-			"stats_query_range", "streams", "stream_ids", "stream_field_names", "stream_field_values", "flags"},
-		"room-broker": {"room_read", "room_post", "room_progress", "room_handoff", "room_verdict"},
-	} {
-		for _, t := range tools {
-			m[server+"__"+t] = true
-		}
-	}
-	return m
-}()
-
-// readOnly matches the last server__tool pair, so a prefix the harness adds
-// cannot hide the server, and a bare tool name never matches.
-func readOnly(tool string) bool {
+// readOnly reports whether the run's configured read-only set holds the tool.
+// It matches the last server__tool pair, so a prefix the harness adds cannot
+// hide the server, and a bare tool name never matches. The set is the
+// composition's (MCP_READ_ONLY_TOOLS): the harness event carries no
+// readOnlyHint, and an empty set makes every MCP tool mcp.write.
+func (c Classifier) readOnly(tool string) bool {
 	p := strings.Split(tool, "__")
-	return len(p) >= 2 && readOnlyMCP[p[len(p)-2]+"__"+p[len(p)-1]]
+	return len(p) >= 2 && c.ReadOnlyMCP[p[len(p)-2]+"__"+p[len(p)-1]]
 }
 
 func set(s ...string) map[string]bool {
@@ -250,17 +231,21 @@ var runners = map[string]runner{
 		"-Q", "-R", "-S", "-W", "-w"), skip: 1, shell: true, remote: true},
 }
 
-// Classifier knows the run's own branch and the egress profiles it was given.
+// Classifier knows the run's own branch, the egress profiles it was given and
+// the MCP tools it may call without asking.
 type Classifier struct {
 	Branch string
 	Egress map[string]bool
+	// ReadOnlyMCP holds the MCP tools that only read, as <server>__<tool>.
+	// Anything else is mcp.write; the zero value gates every MCP tool.
+	ReadOnlyMCP map[string]bool
 }
 
 // Classify maps one harness action to its class, deterministically: the
 // harness's own risk label only matters when nothing else matched.
 func (c Classifier) Classify(tool string, action json.RawMessage, risk string) Class {
 	if !builtins[tool] {
-		if readOnly(tool) {
+		if c.readOnly(tool) {
 			return Plain
 		}
 		return MCPWrite
