@@ -100,7 +100,7 @@ describe("renderEvent (T10)", () => {
   it("badges a message with its delivery, one per value", () => {
     const badge = (payload: object) =>
       renderEvent(ev("message", { kind: "chat", text: "x", ...payload })).querySelector(".chip-delivery")?.textContent;
-    expect(badge({ delivery: "none" })).toBe("chat");
+    expect(badge({ delivery: "none" })).toBeUndefined(); // the room only: no chip (U7)
     expect(badge({ delivery: "queued" })).toBe("queued");
     expect(badge({ delivery: "steering", to: ["agent:7f3cq2xz"] })).toBe("steering → agent:7f3cq2xz");
     const d = renderEvent(ev("state_changed", { kind: "delivered", ref: 1846, runId: "7f3cq2xz" }));

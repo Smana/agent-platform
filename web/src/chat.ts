@@ -4,6 +4,8 @@
 // tool_call pairs with its tool_result into one collapsed row (by callId), the
 // policy's decisions hang off that row as badges, and state_changed/turn become
 // slim timeline markers. The raw stream stays one toggle away (roomview.ts).
+// Plumbing (markers and system lines that say nothing the reader acts on) folds:
+// a run of consecutive plumbing rows reads as one "· N changes" line, open on click.
 // The same untrusted-text rules as render.ts hold: DOM nodes and textContent only.
 
 import type { RoomEvent } from "./conn";
@@ -20,24 +22,54 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
 // A class name from a payload value: letters, digits, _ and - only.
 const cls = (v: unknown) => String(v ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 
-const time = (ts: string) => el("time", "t-time", new Date(ts).toLocaleTimeString());
+function time(ts: string): HTMLElement {
+  const t = el("time", "t-time", new Date(ts).toLocaleTimeString());
+  t.setAttribute("datetime", ts);
+  return t;
+}
 
 function redacted(ev: RoomEvent): HTMLElement | null {
   return ev.redactions?.length ? el("div", "redacted", `redacted: ${ev.redactions.join(", ")}`) : null;
 }
 
-// who names the actor by its room role when it has one, else by id.
-function who(ev: RoomEvent): string {
-  return ev.actor.role ? `${ev.actor.role} (${ev.actor.id})` : ev.actor.id;
+// idTail is a principal without its kind; a long human id keeps its first four characters.
+function idTail(id: string): string {
+  const i = id.indexOf(":");
+  const tail = id.slice(i + 1);
+  return id.startsWith("human:") && tail.length > 8 ? `${tail.slice(0, 4)}…` : tail;
+}
+
+// swatchClass picks one of six fixed actor colours, keyed on the principal.
+export function swatchClass(id: string): string {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `swatch-${h % 6}`;
+}
+
+// who names the actor: "you" for the viewer, else its room role and short id, the
+// full id as the title, after its colour swatch.
+function who(ev: RoomEvent, you?: string): HTMLElement[] {
+  const id = ev.actor.id;
+  const name = id === you ? "you" : ev.actor.role ? `${ev.actor.role} · ${idTail(id)}` : idTail(id);
+  const w = el("span", "who", name);
+  w.title = id;
+  return [el("span", `swatch ${swatchClass(id)}`), w];
+}
+
+// whoText is who as one string, for a summary line.
+function whoText(ev: RoomEvent): string {
+  return ev.actor.role ? `${ev.actor.role} · ${idTail(ev.actor.id)}` : ev.actor.id;
 }
 
 // bubble renders a message as the agent's or human's prose.
-function bubble(ev: RoomEvent): HTMLElement {
+function bubble(ev: RoomEvent, you?: string): HTMLElement {
   const p = ev.payload ?? {};
   const row = el("article", `msg from-${cls(ev.actor.kind)}`);
   row.dataset.seq = String(ev.seq);
-  const head = el("header", "msg-head", who(ev));
-  head.append(deliveryChip(p));
+  const head = el("header", "msg-head");
+  head.append(...who(ev, you));
+  const delivery = deliveryChip(p);
+  if (delivery) head.append(delivery);
   if (p.kind === "review_verdict" && p.verdict) {
     head.append(el("span", `chip verdict-${cls(p.verdict)}`, `verdict: ${p.verdict}`));
   }
@@ -90,8 +122,10 @@ function toolRow(c: Call): HTMLElement {
   const sum = el("summary", "");
   const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
   sum.append(el("span", "t-name", name), el("code", "t-cmd", preview(c.call, c.result)), chip(status));
-  for (const dec of c.decisions) sum.append(polBadge(dec));
   const by = c.call?.payload?.decidedBy;
+  // An allowed call is the norm: only a decision that is not a plain allow, or one a
+  // person made, earns a badge.
+  for (const dec of c.decisions) if (by || dec.payload?.decision !== "allow") sum.append(polBadge(dec));
   if (by) sum.append(el("span", "pol pol-by", `decided by ${cls(by)}`));
   sum.append(time((c.result ?? c.call ?? c.decisions[0])!.ts));
 
@@ -207,8 +241,33 @@ function handoff(ev: RoomEvent): HTMLElement {
 function fallback(ev: RoomEvent): HTMLElement {
   const d = el("details", "other");
   d.dataset.seq = String(ev.seq);
-  d.append(el("summary", "", `${ev.type} · ${who(ev)}`), el("pre", "", JSON.stringify(ev.payload ?? null, null, 2)));
+  d.append(el("summary", "", `${ev.type} · ${whoText(ev)}`), el("pre", "", JSON.stringify(ev.payload ?? null, null, 2)));
   return d;
+}
+
+// plumbing is whether ev is a row the reader need not see one by one: a marker or a
+// system line, except a harness error, a seal, and a driver change to or from you.
+export function plumbing(ev: RoomEvent, you?: string): boolean {
+  const p = ev.payload ?? {};
+  if (!["state_changed", "turn", "participant", "driver"].includes(ev.type)) return false;
+  if (p.kind === "harness_error" || p.kind === "limit") return false;
+  return !(ev.type === "driver" && you !== undefined && (p.from === you || p.to === you));
+}
+
+// reveal opens every fold and row around row, so a link to it lands on a visible line.
+export function reveal(row: HTMLElement): void {
+  for (let n: HTMLElement | null = row; n; n = n.parentElement) if (n instanceof HTMLDetailsElement) n.open = true;
+}
+
+const body = (fold: HTMLElement) => fold.querySelector<HTMLElement>(":scope > .fold-body")!;
+
+// tidy keeps a fold honest after a row left it: an empty one goes, one with a single
+// row gives the row back to the stream, else its count is rewritten.
+function tidy(fold: HTMLElement) {
+  const rows = [...body(fold).children];
+  if (rows.length === 0) fold.remove();
+  else if (rows.length === 1) fold.replaceWith(rows[0]);
+  else fold.querySelector(":scope > summary")!.textContent = `· ${rows.length} changes`;
 }
 
 // ChatView holds the log as a conversation, newest rows last. A resume can
@@ -222,17 +281,27 @@ export class ChatView {
   // renders as a marker; if the call still arrives, the marker folds into it.
   private pending = new Map<string, RoomEvent[]>();
 
-  // fork, when set, gives every row a "fork here" at the last seq it shows.
-  constructor(private el: HTMLElement, private cap = maxRows, private fork?: (seq: number) => void) {}
+  // fork, when set, gives every message and handoff a "fork here" at its seq. you, the
+  // viewer's principal (or a getter for it, known once the state frame lands), names
+  // the viewer's own rows "you".
+  constructor(private el: HTMLElement, private cap = maxRows, private fork?: (seq: number) => void,
+    private you?: string | (() => string | undefined)) {}
+
+  private viewer(): string | undefined { return typeof this.you === "function" ? this.you() : this.you; }
 
   // rowFor is the row of a call the page still holds, for a link to it.
   rowFor(callId: string): HTMLElement | undefined { return this.rows.get(this.calls.get(callId)?.seq ?? -1); }
 
   apply(ev: RoomEvent) {
     const p = ev.payload ?? {};
+    const you = this.viewer();
+    const put = (row: HTMLElement) => {
+      if (plumbing(ev, you)) row.dataset.plumbing = "1";
+      this.put(ev.seq, row);
+    };
     switch (ev.type) {
       case "message":
-        this.put(ev.seq, bubble(ev));
+        this.put(ev.seq, this.tools(bubble(ev, you), ev.seq));
         break;
       case "tool_call":
         this.merge(String(p.callId ?? `seq${ev.seq}`), ev, "call");
@@ -248,21 +317,21 @@ export class ChatView {
             const list = this.pending.get(callId) ?? [];
             if (!list.some((d) => d.seq === ev.seq)) list.push(ev);
             this.pending.set(callId, list);
-            this.put(ev.seq, marker(ev));
+            put(marker(ev));
           }
         } else {
-          this.put(ev.seq, marker(ev));
+          put(marker(ev));
         }
         break;
       case "turn":
-        this.put(ev.seq, marker(ev));
+        put(marker(ev));
         break;
       case "participant":
       case "driver":
-        this.put(ev.seq, sysline(ev));
+        put(sysline(ev));
         break;
       case "handoff":
-        this.put(ev.seq, handoff(ev));
+        this.put(ev.seq, this.tools(handoff(ev), ev.seq));
         break;
       default:
         this.put(ev.seq, fallback(ev));
@@ -288,46 +357,103 @@ export class ChatView {
   }
 
   private drop(seq: number) {
-    const row = this.rows.get(seq);
-    if (!row) return;
-    row.remove();
+    const i = this.seqs.indexOf(seq);
+    if (i < 0) return;
+    this.detach(this.rows.get(seq)!);
     this.rows.delete(seq);
-    this.seqs.splice(this.seqs.indexOf(seq), 1);
+    this.seqs.splice(i, 1);
+    this.regroup(i - 1);
+    this.regroup(i);
   }
 
-  private forkButton(row: HTMLElement, fork: (seq: number) => void) {
+  // tools puts a "fork here" beside row, outside any summary, when forking is on.
+  private tools(row: HTMLElement, seq: number): HTMLElement {
+    const fork = this.fork;
+    if (!fork) return row;
     const b = el("button", "fork-here", "fork here") as HTMLButtonElement;
     b.type = "button";
     b.dataset.act = "fork";
     b.title = "Branch a room of your own from the log up to here";
-    const at = Number(row.dataset.lastSeq ?? row.dataset.seq);
-    b.onclick = (e) => {
-      e.preventDefault(); // inside a summary, a click would also toggle the row
-      fork(at);
-    };
-    (row.querySelector(":scope > summary, :scope > header") ?? row).append(b);
+    b.setAttribute("aria-label", `fork here, at #${seq}`);
+    b.onclick = () => fork(seq);
+    const bar = el("div", "row-tools");
+    bar.append(b);
+    const wrap = el("div", "row");
+    wrap.append(row, bar);
+    return wrap;
+  }
+
+  // The fold around a row, if any; top is what sits in the stream for it.
+  private foldOf(n: HTMLElement): HTMLElement | undefined {
+    const parent = n.parentElement;
+    return parent?.classList.contains("fold-body") ? parent.parentElement ?? undefined : undefined;
+  }
+  private top(n: HTMLElement): HTMLElement { return this.foldOf(n) ?? n; }
+  private detach(n: HTMLElement) {
+    const fold = this.foldOf(n);
+    n.remove();
+    if (fold) tidy(fold);
+  }
+  private isPlumbing(i: number): boolean { return this.rows.get(this.seqs[i])?.dataset.plumbing === "1"; }
+
+  // regroup lays out the run of consecutive plumbing rows around index i: one fold for
+  // two or more, the row alone for one. A fold that already holds just the run stays
+  // (its open state with it); otherwise the run moves into a fresh one.
+  private regroup(i: number) {
+    if (i < 0 || i >= this.seqs.length || !this.isPlumbing(i)) return;
+    let a = i, b = i;
+    while (a > 0 && this.isPlumbing(a - 1)) a--;
+    while (b < this.seqs.length - 1 && this.isPlumbing(b + 1)) b++;
+    const items = this.seqs.slice(a, b + 1).map((s) => this.rows.get(s)!);
+    const after = b + 1 < this.seqs.length ? this.top(this.rows.get(this.seqs[b + 1])!) : null;
+    const sources = new Set(items.map((n) => this.foldOf(n)).filter((f): f is HTMLElement => !!f));
+    if (items.length === 1) {
+      const fold = this.foldOf(items[0]);
+      if (fold) {
+        this.el.insertBefore(items[0], after);
+        tidy(fold);
+      }
+      return;
+    }
+    let target = [...sources].find((f) => [...body(f).children].every((c) => items.includes(c as HTMLElement)));
+    if (!target) {
+      target = el("details", "fold");
+      (target as HTMLDetailsElement).open = [...sources].some((f) => (f as HTMLDetailsElement).open);
+      target.append(el("summary", ""), el("div", "fold-body"));
+    }
+    const inner = body(target);
+    if (inner.children.length !== items.length || items.some((n, k) => inner.children[k] !== n)) inner.replaceChildren(...items);
+    if (target.parentElement !== this.el || target.nextElementSibling !== after) this.el.insertBefore(target, after);
+    for (const f of sources) if (f !== target) tidy(f);
+    tidy(target);
   }
 
   private put(seq: number, row: HTMLElement) {
-    if (this.fork) this.forkButton(row, this.fork);
     const old = this.rows.get(seq);
-    if (old) {
-      old.replaceWith(row);
+    if (old && old.dataset.plumbing === row.dataset.plumbing) {
+      old.replaceWith(row); // inside its fold, if it is in one: a resend never doubles a line
       this.rows.set(seq, row);
       return;
     }
+    if (old) this.drop(seq);
     let i = this.seqs.length;
     while (i > 0 && this.seqs[i - 1] > seq) i--; // from the end: live events land there
-    const next = i < this.seqs.length ? this.rows.get(this.seqs[i]) : undefined;
-    if (next) next.before(row); else this.el.append(row);
+    const next = i < this.seqs.length ? this.top(this.rows.get(this.seqs[i])!) : null;
+    this.el.insertBefore(row, next);
     this.seqs.splice(i, 0, seq);
     this.rows.set(seq, row);
+    if (row.dataset.plumbing === "1") this.regroup(i);
+    else {
+      this.regroup(i - 1);
+      this.regroup(i + 1);
+    }
     while (this.seqs.length > this.cap) {
       const s = this.seqs.shift()!;
-      const gone = this.rows.get(s);
-      if (gone?.dataset.callId) this.calls.delete(gone.dataset.callId);
-      gone?.remove();
+      const gone = this.rows.get(s)!;
+      if (gone.dataset.callId) this.calls.delete(gone.dataset.callId);
+      this.detach(gone);
       this.rows.delete(s);
+      this.regroup(0);
     }
   }
 }

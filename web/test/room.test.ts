@@ -70,6 +70,47 @@ describe("the room page", () => {
     } finally { p.app.remove(); }
   });
 
+  // U7: the Now link and the needs-you call link land on a visible row beside folded
+  // plumbing, and a folded row's seq still resolves (its fold exposes the seqs it holds).
+  it("takes the Now link and the call link to a visible row beside a folded group", () => {
+    const p = page();
+    document.body.append(p.app);
+    try {
+      p.join(snapshot({ approver: true }), 0);
+      p.last().recv(event(1, "turn", { turnId: "t1", phase: "started" }));
+      p.last().recv(event(2, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
+      p.last().recv(agent(3, "tool_call", { callId: "c1", tool: "terminal", args: { command: "git push" } }));
+      p.last().recv(event(4, "state_changed", { kind: "policy_decision", decision: "ask", callId: "c1" }));
+      p.last().recv(event(5, "turn", { turnId: "t1", phase: "waiting" }));
+      p.last().recv(event(6, "state_changed", { kind: "harness_status", status: "waiting_for_confirmation", previous: "running" }));
+      p.last().recv(agent(7, "approval_requested", { approvalId: "ap1", callId: "c1", class: "forge.other",
+        action: { command: "git push" }, expiresAt: "2026-10-06T11:00:00Z" }));
+      const chat = p.app.querySelector<HTMLElement>(".view-chat")!;
+      expect([...chat.querySelectorAll("details.fold")].map((f) => f.querySelector("summary")?.textContent)).toEqual(["· 2 changes", "· 2 changes"]);
+      expect(chat.querySelector('details.fold [data-seq="5"]')).not.toBeNull();
+      const row = chat.querySelector<HTMLDetailsElement>('details.tool[data-seq="3"]')!;
+      expect(row.closest(".fold")).toBeNull();
+      let scrolled = 0;
+      row.scrollIntoView = () => { scrolled++; };
+      p.app.querySelector<HTMLButtonElement>(".now-link")!.click();
+      expect(row.open).toBe(true);
+      row.open = false;
+      const link = p.app.querySelector<HTMLAnchorElement>("a.approval-call")!;
+      expect(link.hidden).toBe(false);
+      link.click();
+      expect(row.open).toBe(true);
+      expect(scrolled).toBe(2);
+    } finally { p.app.remove(); }
+  });
+
+  it("names the viewer's own messages 'you', from the state frame", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    const f = event(1, "message", { kind: "chat", text: "mine", delivery: "none" });
+    p.last().recv({ ...f, event: { ...f.event, actor: { kind: "human", id: "human:b" } } });
+    expect(p.app.querySelector(".view-chat .msg-head .who")?.textContent).toBe("you");
+  });
+
   // Review focus 2: the call row went at the cap; its result alone heads the Now line.
   it("shows a result whose call the page dropped, and its click finds nothing without throwing", () => {
     const p = page();
@@ -295,7 +336,7 @@ describe("the room page", () => {
   // otherwise refetch the whole fold every second (R27).
   it("leads with the summary, refetched at most once a second on summary events, over the one socket", async () => {
     const sum = { apiVersion: "summary/v1", room: "3kq7x2ma", url: "u", status: { phase: "Open", run: null, budget: null, pr: null, issue: null, lastVerdict: null },
-      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor: "seq:0" };
+      needsYou: [], actions: [], notes: { untrusted: true, items: [{ at: "2026-10-06T10:00:00Z", run: "ikely2yk", text: "reading" }] }, cursor: "seq:0" };
     const get = vi.fn(async () => new Response(JSON.stringify(sum), { status: 200 })) as unknown as typeof fetch;
     const p = page(get);
     await vi.advanceTimersByTimeAsync(0);
@@ -432,7 +473,7 @@ describe("the room page", () => {
   describe("summary refresh", () => {
     const sum = (phase: string, cursor: string) => ({ apiVersion: "summary/v1", room: "3kq7x2ma", url: "u",
       status: { phase, run: null, budget: null, pr: null, issue: null, lastVerdict: null },
-      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor });
+      needsYou: [], actions: [], notes: { untrusted: true, items: [{ at: "2026-10-06T10:00:00Z", run: "ikely2yk", text: "reading" }] }, cursor });
     const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
     const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
     const note = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "progress", text: "x", delivery: "none" }));

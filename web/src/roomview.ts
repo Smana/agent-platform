@@ -15,8 +15,8 @@ export interface Views {
 }
 
 // mountViews fills main with the chat and the collapsed raw log. fork, when set,
-// puts "fork here" on chat rows.
-export function mountViews(main: HTMLElement, fork?: (seq: number) => void): Views {
+// puts "fork here" on chat messages and handoffs; you is the viewer's principal, once known.
+export function mountViews(main: HTMLElement, fork?: (seq: number) => void, you?: () => string | undefined): Views {
   const chatEl = document.createElement("div");
   chatEl.className = "view-chat";
   const rawEl = document.createElement("div");
@@ -28,7 +28,7 @@ export function mountViews(main: HTMLElement, fork?: (seq: number) => void): Vie
   details.append(title, rawEl);
   main.replaceChildren(chatEl, details);
 
-  const chat = new ChatView(chatEl, undefined, fork);
+  const chat = new ChatView(chatEl, undefined, fork, you);
   const raw = new RoomLog(rawEl);
 
   return {

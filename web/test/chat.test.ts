@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ChatView } from "../src/chat";
+import { ChatView, reveal } from "../src/chat";
 import type { RoomEvent } from "../src/conn";
 
 const ev = (seq: number, type: string, payload: unknown, actor: { kind: string; id: string; role?: string } = { kind: "agent", id: "agent:ikely2yk", role: "implementer" }): RoomEvent => ({
@@ -22,6 +22,12 @@ function inert(root: HTMLElement) {
     }
   }
   for (const a of root.querySelectorAll("a")) expect(a.href).toMatch(/^https?:\/\//);
+}
+
+// mount is an empty chat view, with a fork handler and the viewer's principal when given.
+function mount(fork?: (seq: number) => void, you?: string): { el: HTMLElement; view: ChatView } {
+  const el = document.createElement("div");
+  return { el, view: new ChatView(el, undefined, fork, you) };
 }
 
 function view(events: RoomEvent[], cap = 5000): { el: HTMLElement; v: ChatView } {
@@ -45,14 +51,14 @@ describe("ChatView messages", () => {
     expect(el.querySelector("img")).toBeNull();
     expect(el.textContent).toContain("<img src=x onerror=alert(1)>");
   });
-  // R09: every bubble says where it went, as the raw row does.
-  it("marks each message with its delivery", () => {
+  // R09: every bubble that left the room says where it went; one for the room only gets no chip (U7).
+  it("marks each message that left the room with its delivery", () => {
     const { el } = view([
       ev(1, "message", { kind: "chat", text: "for the room", delivery: "none" }),
       ev(2, "message", { kind: "chat", text: "later", delivery: "queued" }),
       ev(3, "message", { kind: "chat", text: "now", delivery: "steering", to: ["agent:ikely2yk"] }),
     ]);
-    expect([...el.querySelectorAll(".chip-delivery")].map((c) => c.textContent)).toEqual(["chat", "queued", "steering → agent:ikely2yk"]);
+    expect([...el.querySelectorAll(".chip-delivery")].map((c) => c.textContent)).toEqual(["queued", "steering → agent:ikely2yk"]);
   });
   it("names the message a delivery delivered", () => {
     const { el } = view([ev(1, "state_changed", { kind: "delivered", ref: 1846, runId: "ikely2yk" }, { kind: "system", id: "system:room-broker" })]);
@@ -128,11 +134,11 @@ describe("ChatView policy badges", () => {
   });
   it("folds a marker into its call when the call still arrives", () => {
     const { el } = view([
-      decided(2, "c", "allow"),
+      decided(2, "c", "deny"),
       ev(3, "tool_call", { callId: "c", tool: "terminal", args: { command: "ls" }, risk: "LOW", decidedBy: null }),
     ]);
     expect(el.querySelectorAll(".mark")).toHaveLength(0);
-    expect(el.querySelector("details.tool .pol-allow")?.textContent).toContain("allow");
+    expect(el.querySelector("details.tool .pol-deny")?.textContent).toContain("deny");
   });
 });
 
@@ -206,9 +212,133 @@ describe("the recorded session fixture", () => {
     expect(el.querySelectorAll(".st-rejected")).toHaveLength(1); // the refused push
     expect(el.querySelectorAll(".st-ok")).toHaveLength(3);
     expect(el.querySelectorAll(".st-running")).toHaveLength(1); // git log, still running
-    expect(el.querySelectorAll(".pol-allow")).toHaveLength(3); // policy badges on their rows
+    expect(el.querySelectorAll(".pol-allow")).toHaveLength(0); // an allowed call is the norm: no badge (U7)
     expect(el.querySelectorAll(".sys")).toHaveLength(2); // owner and agent joined
     expect(el.querySelector(".redacted")?.textContent).toContain("github-app-token");
     expect(el.querySelector(".msg.from-human .chip-delivery")?.textContent).toBe("steering → agent:ikely2yk");
+  });
+});
+
+describe("ChatView noise rules (U7)", () => {
+  it("folds consecutive plumbing rows into one line per run of them", () => {
+    const { el, view } = mount();
+    view.apply(ev(1, "state_changed", { kind: "room_phase", phase: "Open" }));
+    view.apply(ev(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    view.apply(ev(3, "turn", { turnId: "t1", phase: "started" }));
+    view.apply(ev(4, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    view.apply(ev(5, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
+    const rows = [...el.children];
+    expect(rows.map((r) => r.className.split(" ")[0])).toEqual(["fold", "msg", "mark"]);
+    expect(rows[0].querySelector("summary")?.textContent).toBe("· 3 changes");
+    expect(rows[0].querySelectorAll(".mark, .sys").length).toBe(3);
+  });
+  it("never folds a harness error or a seal, and keeps a replaced seq in place (review focus 4)", () => {
+    const { el, view } = mount();
+    view.apply(ev(1, "turn", { turnId: "t1", phase: "started" }));
+    view.apply(ev(2, "state_changed", { kind: "harness_error", code: "E1", detail: "boom" }));
+    view.apply(ev(1, "turn", { turnId: "t1", phase: "started" })); // a clamped resume resends seq 1
+    expect([...el.children].map((r) => r.className.split(" ")[0])).toEqual(["mark", "mark"]);
+    expect(el.querySelectorAll('[data-seq="1"]').length).toBe(1);
+    expect(el.querySelector(".mk-harness_error")?.textContent).toContain("harness error E1: boom");
+  });
+  it("hides the policy chip on an allowed call and the chat chip on a room message", () => {
+    const { el, view } = mount();
+    view.apply(ev(1, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    view.apply(ev(2, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
+    view.apply(ev(3, "state_changed", { kind: "policy_decision", decision: "allow", callId: "c1" }));
+    expect(el.querySelector(".msg .chip-delivery")).toBeNull();
+    expect(el.querySelector(".tool .pol")).toBeNull();
+    view.apply(ev(4, "state_changed", { kind: "policy_decision", decision: "deny", callId: "c1" }));
+    expect(el.querySelector(".tool .pol")?.textContent).toBe("policy: deny");
+  });
+  it("puts one fork action beside a message, none on a tool row or a marker, outside the summary", () => {
+    const forks: number[] = [];
+    const { el, view } = mount((seq) => forks.push(seq));
+    view.apply(ev(1, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    view.apply(ev(2, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
+    view.apply(ev(3, "turn", { turnId: "t1", phase: "started" }));
+    const buttons = [...el.querySelectorAll("button.fork-here")];
+    expect(buttons.length).toBe(1);
+    expect(buttons[0].closest("summary")).toBeNull();
+    expect(buttons[0].getAttribute("aria-label")).toBe("fork here, at #1");
+    (buttons[0] as HTMLButtonElement).click();
+    expect(forks).toEqual([1]);
+  });
+  it("names the actor as role · id with a swatch, and 'you' for the viewer", () => {
+    const { el, view } = mount(undefined, "human:291847362183");
+    view.apply(ev(1, "message", { kind: "chat", text: "hi", delivery: "none" }, { kind: "agent", id: "agent:ikely2yk", role: "implementer" }));
+    view.apply(ev(2, "message", { kind: "chat", text: "yo", delivery: "none" }, { kind: "human", id: "human:291847362183" }));
+    const heads = [...el.querySelectorAll(".msg-head .who")].map((h) => h.textContent);
+    expect(heads).toEqual(["implementer · ikely2yk", "you"]);
+    expect(el.querySelector(".msg-head .swatch")).not.toBeNull();
+    expect(el.querySelector("time")?.getAttribute("datetime")).toBe("2026-10-04T14:00:01Z");
+  });
+});
+
+describe("ChatView folds", () => {
+  const turn = (seq: number) => ev(seq, "turn", { turnId: "t1", phase: "started" });
+  const msg = (seq: number) => ev(seq, "message", { kind: "chat", text: `m${seq}`, delivery: "none" });
+  const shape = (el: HTMLElement) => [...el.children].map((r) =>
+    r.classList.contains("fold") ? `fold(${[...r.querySelectorAll("[data-seq]")].map((x) => (x as HTMLElement).dataset.seq).join(",")})` : (r as HTMLElement).dataset.seq ?? r.querySelector<HTMLElement>("[data-seq]")?.dataset.seq);
+
+  it("replaces a resent seq inside a fold in place, never doubling a line (review focus 4)", () => {
+    const { el, view } = mount();
+    for (const s of [1, 2, 3]) view.apply(turn(s));
+    for (const s of [2, 1, 3]) view.apply(turn(s)); // a clamped resume, out of order
+    expect(shape(el)).toEqual(["fold(1,2,3)"]);
+    expect(el.querySelector(".fold summary")?.textContent).toBe("· 3 changes");
+    for (const s of [1, 2, 3]) expect(el.querySelectorAll(`[data-seq="${s}"]`)).toHaveLength(1);
+  });
+  it("splits a fold when a message lands between its rows, and joins a marker landing between two", () => {
+    const { el, view } = mount();
+    for (const s of [1, 2, 4, 5]) view.apply(turn(s));
+    view.apply(msg(3));
+    expect(shape(el)).toEqual(["fold(1,2)", "3", "fold(4,5)"]);
+    view.apply(turn(6));
+    expect(shape(el)).toEqual(["fold(1,2)", "3", "fold(4,5,6)"]);
+    view.apply(msg(8));
+    view.apply(turn(7));
+    expect(shape(el)).toEqual(["fold(1,2)", "3", "fold(4,5,6,7)", "8"]);
+  });
+  it("splits off a lone marker when a message lands after the first row of a fold", () => {
+    const { el, view } = mount();
+    for (const s of [1, 3, 4]) view.apply(turn(s));
+    view.apply(msg(2));
+    expect(shape(el)).toEqual(["1", "2", "fold(3,4)"]);
+    expect(el.children[0].className).toContain("mark");
+  });
+  it("lets a driver change to or from the viewer stand alone", () => {
+    const { el, view } = mount(undefined, "human:me");
+    view.apply(turn(1));
+    view.apply(ev(2, "driver", { from: "human:a", to: "human:me" }, { kind: "system", id: "system:room-broker" }));
+    view.apply(turn(3));
+    view.apply(ev(4, "driver", { from: "human:a", to: "human:b" }, { kind: "system", id: "system:room-broker" }));
+    expect(shape(el)).toEqual(["1", "2", "fold(3,4)"]);
+  });
+  it("dissolves a fold when a decision marker in it folds into its call", () => {
+    const { el, view } = mount();
+    view.apply(turn(1));
+    view.apply(ev(2, "state_changed", { kind: "policy_decision", decision: "allow", callId: "c" }));
+    expect(shape(el)).toEqual(["fold(1,2)"]);
+    view.apply(ev(3, "tool_call", { callId: "c", tool: "terminal", args: { command: "ls" } }));
+    expect(shape(el)).toEqual(["1", "3"]);
+  });
+  it("evicts a folded row at the cap and keeps the rest folded", () => {
+    const el = document.createElement("div");
+    const v = new ChatView(el, 3);
+    for (const s of [1, 2, 3]) v.apply(turn(s));
+    v.apply(msg(4));
+    expect(shape(el)).toEqual(["fold(2,3)", "4"]);
+    v.apply(msg(5));
+    expect(shape(el)).toEqual(["3", "4", "5"]);
+  });
+  it("reveal opens the fold that holds a row, so a link to its seq lands on a visible row", () => {
+    const { el, view } = mount();
+    for (const s of [1, 2]) view.apply(turn(s));
+    const row = el.querySelector<HTMLElement>('[data-seq="2"]')!;
+    const fold = el.querySelector<HTMLDetailsElement>("details.fold")!;
+    expect(fold.open).toBe(false);
+    reveal(row);
+    expect(fold.open).toBe(true);
   });
 });

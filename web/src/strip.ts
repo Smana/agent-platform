@@ -9,7 +9,7 @@
 import type { Snapshot } from "./conn";
 import { el } from "./controls";
 import type { Latest } from "./room-state";
-import { safeLink, type Summary, when } from "./summary";
+import { ago, safeLink, type Summary, when } from "./summary";
 
 export interface StripInput {
   roomId: string; snap?: Snapshot; phase: string; driver: string; sealedBy?: { who: string; at: string };
@@ -36,16 +36,6 @@ function since(iso: string, now: number): string {
   if (isNaN(t)) return "";
   const m = Math.max(0, Math.floor((now - t) / 60000));
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
-}
-
-// ago reads a timestamp relative to now: "12 s ago", "4 min ago", "2 h ago".
-export function ago(iso: string, now: number): string {
-  const t = Date.parse(iso);
-  if (isNaN(t)) return "";
-  const s = Math.max(0, Math.floor((now - t) / 1000));
-  if (s < 60) return `${s} s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return `${Math.floor(s / 3600)} h ago`;
 }
 
 // nowText is the Now line: what, its status, and how long ago.

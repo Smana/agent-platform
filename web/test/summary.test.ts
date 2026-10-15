@@ -33,7 +33,35 @@ const needs = (s: Summary) => {
 describe("renderNotes", () => {
   it("renders the notes block alone: needs you lives in the panel (needs.ts)", () => {
     const r = render(base());
-    expect([...r.querySelectorAll("section")].map((s) => s.dataset.block)).toEqual(["notes"]);
+    expect([...r.children].map((s) => (s as HTMLElement).dataset.block)).toEqual(["notes"]);
+  });
+
+  // U7: the latest note on one line, labelled the agent's claim; the rest behind a toggle.
+  it("shows the latest note inline and the rest behind Notes (N)", () => {
+    const s = base();
+    s.notes.items = [
+      { at: "2026-10-08T10:01:00Z", run: "run-1", text: "reading the repo" },
+      { at: "2026-10-08T10:03:00Z", run: "run-1", text: "running the tests" },
+      { at: "2026-10-08T10:05:00Z", run: "ikely2yk", text: "Quoting the last three commits" },
+    ];
+    const root = document.createElement("div");
+    renderNotes(root, s, Date.parse("2026-10-08T10:07:00Z"));
+    const latest = root.querySelector(".notes > p.note-latest")!;
+    expect(latest.firstChild?.textContent).toBe("ikely2yk · 2 min ago · Quoting the last three commits");
+    expect(latest.querySelector(".hint")?.textContent).toBe("the agent's claim");
+    const d = root.querySelector<HTMLDetailsElement>(".notes > details")!;
+    expect(d.open).toBe(false);
+    expect(d.querySelector("summary")?.textContent).toBe("Notes (2)");
+    expect([...d.querySelectorAll("li")].map((l) => l.textContent)).toEqual([
+      expect.stringContaining("run-1: running the tests"), expect.stringContaining("run-1: reading the repo")]);
+  });
+  it("has no toggle for a single note, and no block at all without notes", () => {
+    const one = render(base());
+    expect(one.querySelector(".note-latest")).not.toBeNull();
+    expect(one.querySelector("details")).toBeNull();
+    const s = base();
+    s.notes.items = [];
+    expect(render(s).children).toHaveLength(0);
   });
 
   it("renders agent text as text, never as markup", () => {
@@ -45,8 +73,8 @@ describe("renderNotes", () => {
     expect(r.querySelector('[data-block="notes"]')?.textContent).toContain(evil);
   });
 
-  it("labels notes as the agents' claims", () => {
-    expect(render(base()).querySelector('[data-block="notes"]')?.textContent).toMatch(/agents' claims/i);
+  it("labels notes as the agent's claim", () => {
+    expect(render(base()).querySelector('[data-block="notes"]')?.textContent).toMatch(/agent's claim/i);
   });
 
   it("shows a watcher no action buttons", () => {

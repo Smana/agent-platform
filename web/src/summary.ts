@@ -69,17 +69,14 @@ export function when(iso: string): string {
   return isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
-function block(name: string, title: string, ...body: Node[]): HTMLElement {
-  const s = el("section", { className: `summary-block summary-${name}` });
-  s.dataset.block = name;
-  s.append(el("h2", { textContent: title }), ...body);
-  return s;
-}
-
-function line(...parts: (string | Node)[]): HTMLElement {
-  const p = el("p");
-  p.append(...parts);
-  return p;
+// ago reads a timestamp relative to now: "12 s ago", "4 min ago", "2 h ago".
+export function ago(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  return `${Math.floor(s / 3600)} h ago`;
 }
 
 // focusApproval reveals the approval card for id in the needs-you panel and focuses its
@@ -108,14 +105,29 @@ export function needsItems(s: Summary): HTMLLIElement[] {
   return out;
 }
 
-function notesBlock(n: Summary["notes"]): HTMLElement {
-  const ul = el("ul");
-  for (const i of n.items) ul.append(el("li", { textContent: `${when(i.at)} · ${i.run}: ${i.text}` }));
-  return block("notes", "Notes", el("p", { className: "hint", textContent: "The agents' claims, not verified." }),
-    n.items.length ? ul : line("No notes yet."));
-}
-
-// renderNotes renders the agents' notes, labelled as their claims.
-export function renderNotes(root: HTMLElement, s: Summary): void {
-  root.replaceChildren(notesBlock(s.notes));
+// renderNotes renders the agents' notes (oldest first in the summary): the latest on one
+// line, labelled as the agent's claim, and the earlier ones, newest first, behind a
+// "Notes (N)" toggle. No notes, no block.
+export function renderNotes(root: HTMLElement, s: Summary, now = Date.now()): void {
+  const items = s.notes.items;
+  if (!items.length) {
+    root.replaceChildren();
+    return;
+  }
+  const last = items[items.length - 1];
+  const box = el("div", { className: "notes" });
+  box.dataset.block = "notes";
+  const latest = el("p", { className: "note-latest" });
+  latest.append(el("span", { textContent: [last.run, ago(last.at, now), last.text].filter(Boolean).join(" · ") }),
+    el("span", { className: "hint", textContent: "the agent's claim" }));
+  box.append(latest);
+  const rest = items.slice(0, -1).reverse();
+  if (rest.length) {
+    const ul = el("ul");
+    for (const i of rest) ul.append(el("li", { textContent: `${when(i.at)} · ${i.run}: ${i.text}` }));
+    const d = el("details");
+    d.append(el("summary", { textContent: `Notes (${rest.length})` }), ul);
+    box.append(d);
+  }
+  root.replaceChildren(box);
 }

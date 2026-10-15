@@ -4,6 +4,7 @@
 // the controls and the footer, all fed by one RoomConnection.
 
 import { api } from "./api";
+import { reveal } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
@@ -47,7 +48,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   status.className = "status";
   footer.append(counters, notice, status);
   app.replaceChildren(header, needsPanel, lead, main, section, forkPanel, footer);
-  const views = mountViews(main, (seq) => fork.open(seq));
+  const views = mountViews(main, (seq) => fork.open(seq), () => snap?.you.principal);
   mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -79,13 +80,12 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     sealedBy: undefined, summary: sum, needs: needsPanelView.count(), connection, now: state.latest() });
   strip.onNeedsClick(() => needsPanel.scrollIntoView?.({ block: "start" }));
   // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
-  // call's row, which carries the call's seq). A row gone at the cap finds nothing.
+  // call's row, which carries the call's seq). A row gone at the cap finds nothing. The
+  // row opens, and so does every fold or raw log around it.
   strip.onNowClick((seq) => {
     const row = main.querySelector<HTMLElement>(`.view-chat [data-seq="${seq}"]`) ?? main.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
     if (!row) return;
-    if (row instanceof HTMLDetailsElement) row.open = true;
-    const raw = row.closest<HTMLDetailsElement>("details.raw-events");
-    if (raw) raw.open = true;
+    reveal(row);
     row.scrollIntoView?.({ block: "center" });
   });
   // The strip's ages (the Now line's, the run's) move with the clock: one timer per

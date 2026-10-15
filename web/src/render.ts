@@ -105,11 +105,12 @@ export function markdown(src: string): HTMLElement {
 // A class name from a payload value: letters, digits, _ and - only.
 const cls = (v: unknown) => String(v ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 
-// deliveryChip says where a message went (R09): the room only, the next run's
-// brief, or the running agent it steered.
-export function deliveryChip(p: any): HTMLElement {
+// deliveryChip says where a message went (R09): the next run's brief, or the running
+// agent it steered. A message for the room only is the norm, and gets none (null).
+export function deliveryChip(p: any): HTMLElement | null {
+  if (p.delivery === "none") return null;
   const to = Array.isArray(p.to) && p.to.length ? ` → ${p.to.join(", ")}` : "";
-  const label = p.delivery === "none" ? "chat" : p.delivery === "steering" ? `steering${to}` : String(p.delivery ?? "");
+  const label = p.delivery === "steering" ? `steering${to}` : String(p.delivery ?? "");
   return el("span", `chip chip-delivery dl-${cls(p.delivery)}`, label);
 }
 
@@ -133,7 +134,10 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
   const p = ev.payload ?? {};
   switch (ev.type) {
     case "message":
-      head.append(deliveryChip(p));
+      {
+        const chip = deliveryChip(p);
+        if (chip) head.append(chip);
+      }
       if (p.kind === "review_verdict") row.append(el("div", `verdict verdict-${cls(p.verdict)}`, `verdict: ${p.verdict}`));
       row.append(markdown(String(p.text ?? "")));
       break;

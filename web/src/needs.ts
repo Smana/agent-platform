@@ -7,6 +7,7 @@
 // (already_decided) leaves no dead button. Every string here may be agent-written: all
 // of it enters the DOM as text.
 
+import { reveal } from "./chat";
 import type { Snapshot } from "./conn";
 import { act, approvalAnchor, approvalCard, button, el, keyed, named, type Sender } from "./controls";
 import type { RoomState } from "./room-state";
@@ -38,8 +39,9 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
     link.onclick = (e) => {
       e.preventDefault();
       const row = chat.rowFor(a.callId);
-      if (row instanceof HTMLDetailsElement) row.open = true;
-      row?.scrollIntoView?.({ block: "center" });
+      if (!row) return;
+      reveal(row); // the row, and any fold around it
+      row.scrollIntoView?.({ block: "center" });
     };
     li.querySelector(".approval-meta")!.after(link);
     if (!decide) return li;

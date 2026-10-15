@@ -268,6 +268,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .sys { font-style: italic; }
 .sys::before { content: "·"; }
 .mk-harness_error .mark-text, .mk-limit .mark-text { color: var(--destructive); }
+.mark { max-width: 72ch; }
+/* U7: a run of plumbing rows reads as one "· N changes" line, open on click. */
+.fold { color: var(--muted-foreground); font-size: 12px; margin: 6px 0; max-width: 72ch; }
+.fold > summary { cursor: pointer; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold-body { padding-left: 14px; }
+/* An actor's colour, keyed on its id: decoration beside the name, which carries the meaning. */
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: -2px; flex: none; align-self: center; }
+.swatch-0 { background: var(--primary); }
+.swatch-1 { background: var(--accent); }
+.swatch-2 { background: var(--warning); }
+.swatch-3 { background: var(--destructive); }
+.swatch-4 { background: var(--link); }
+.swatch-5 { background: var(--muted-foreground); }
 .other { max-width: 72ch; color: var(--muted-foreground); }
 .other summary { cursor: pointer; }
 
@@ -312,8 +326,11 @@ button.primary { background: var(--primary); color: var(--primary-foreground); b
 button.deny { color: var(--destructive-text); border-color: var(--destructive-text); }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
-.fork-here { margin-left: 8px; font-size: 12px; padding: 0 6px; opacity: 0.55; }
-.fork-here:hover, .fork-here:focus-visible { opacity: 1; }
+.fork-here { font-size: 12px; padding: 0 6px; }
+/* U7: fork here sits in a toolbar beside a message or a handoff, shown on hover and focus. */
+.row { position: relative; max-width: 72ch; }
+.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; }
+.row:hover .row-tools, .row:focus-within .row-tools { opacity: 1; }
 .fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
 .fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .fork input { flex: 1 1 12em; min-width: 0; }
@@ -331,6 +348,11 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
 .summary-error { color: var(--destructive); margin: 0; }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
+.notes { overflow-wrap: anywhere; }
+.notes .note-latest { margin: 0; }
+.notes .note-latest .hint { margin-left: 8px; }
+.notes details > summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; }
+.notes ul { margin: 4px 0 0; padding-left: 18px; }
 .raw-events { margin-top: 8px; }
 .raw-events > summary { cursor: pointer; padding: 4px 0; }
 

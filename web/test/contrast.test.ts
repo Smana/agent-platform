@@ -19,6 +19,7 @@ const light = tokens(":root"), dark = tokens(".dark");
 const pairs = (t: Record<string, string>) => [
   ["body text on the page", t["--foreground"], t["--muted"], 4.5],
   ["muted text on a card", t["--muted-foreground"], t["--card"], 4.5],
+  ["folded plumbing and marker text on the page", t["--muted-foreground"], t["--muted"], 4.5],
   ["placeholder and meta text on a card", t["--placeholder"], t["--card"], 4.5],
   ["placeholder and meta text on the page", t["--placeholder"], t["--muted"], 4.5],
   ["links on the page", t["--link"], t["--muted"], 4.5],
