@@ -145,3 +145,34 @@ func TestForkRefusesAPrefixOverTheCaps(t *testing.T) {
 		t.Fatalf("a prefix at the caps: %v", err)
 	}
 }
+
+// Review focus 3: a fork carries the messages still queued at its point, and the
+// source's later consume does not reach the fork's copy.
+func TestAForkCarriesTheQueueAtItsPoint(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	q, err := s.Enqueue(ctx, queuedDraft(1, "address L42"), "human:alice", "address L42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := s.Enqueue(ctx, queuedDraft(2, "after the point"), "human:alice", "after the point")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := envelope.Draft{Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:bob"}, Origin: envelope.OriginClient,
+		OriginClient: "human:bob:s1", OriginSeq: 1, Payload: []byte(`{}`), Type: envelope.StateChanged}
+	dst := NewRoom{ID: "abcdefgh", Driver: "human:bob", Retention: 90 * 24 * time.Hour}
+	if _, err := s.Fork(ctx, room, q.Seq, dst, by, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetQueued(ctx, room, q.Seq, "consumed", "cf4ato2x"); err != nil { // the source consumes after the fork point
+		t.Fatal(err)
+	}
+	got, err := s.Queue(ctx, "abcdefgh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Ref != q.Seq || got[0].Author != "human:alice" || got[0].Text != "address L42" {
+		t.Fatalf("fork queue %+v: want only the message queued at the fork point (%d, not %d)", got, q.Seq, later.Seq)
+	}
+}

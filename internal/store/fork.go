@@ -102,6 +102,16 @@ func (s *Store) fork(ctx context.Context, src string, upTo int64, r NewRoom, d e
 			return envelope.Event{}, ErrForkTooLarge
 		}
 	}
+	// The messages still queued at the point come along as the fork's own rows,
+	// after their events and before the forked_from event. queue_is_its_event
+	// checks each against its copied event. The table records no time of leaving
+	// the queue, so a row the source moved out of queued before this read is not
+	// carried: the copy is the queue as the fork finds it.
+	if _, err := tx.Exec(ctx, `INSERT INTO queue (room_id, ref, author, text, state)
+		SELECT $2, ref, author, text, 'queued' FROM queue WHERE room_id = $1 AND ref <= $3 AND state = 'queued'`,
+		src, r.ID, upTo); err != nil {
+		return envelope.Event{}, err
+	}
 	ev, _, err := s.appendTx(ctx, tx, d, fence{})
 	if err != nil {
 		return envelope.Event{}, err
