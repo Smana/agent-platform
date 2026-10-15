@@ -148,6 +148,30 @@ describe("RoomState", () => {
     s.apply(agentEv(4, "message", { kind: "chat", text: "Tests fail.", delivery: "none" }));
     expect(s.latest()).toMatchObject({ seq: 4, status: "message" });
   });
+  // A run that ends without its call's result: the call no longer holds the line as running.
+  it.each([
+    ["its agent leaves", { ...ev(3, "participant", { principal: "agent:ikely2yk", change: "left", role: "implementer" }),
+      actor: { kind: "system", id: "system:room-broker" } }],
+    ["its run phase ends", { ...ev(3, "state_changed", { kind: "run_phase", phase: "Failed", reason: "harness_error" }),
+      runId: "ikely2yk", actor: { kind: "system", id: "system:room-broker" } }],
+    ["the room seals", ev(3, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" })],
+  ])("releases an unfinished call when %s", (_, end) => {
+    const s = new RoomState();
+    s.apply({ ...agentEv(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "make" } }), runId: "ikely2yk" });
+    s.apply(ev(2, "message", { kind: "chat", text: "still there?", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 1, status: "running" });
+    s.apply(end);
+    expect(s.latest()).toMatchObject({ seq: 2, status: "message" });
+  });
+  it("marks an unfinished call ended when it was the latest activity", () => {
+    const s = new RoomState();
+    s.apply({ ...agentEv(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "make" } }), runId: "ikely2yk" });
+    s.apply({ ...agentEv(2, "tool_call", { callId: "c2", tool: "terminal", args: { command: "ls" } }), runId: "other123" });
+    s.apply({ ...ev(3, "state_changed", { kind: "run_phase", phase: "Succeeded" }), runId: "ikely2yk" });
+    expect(s.latest()).toMatchObject({ seq: 2, status: "running" }); // another run's call still holds it
+    s.apply({ ...ev(4, "participant", { principal: "agent:other123", change: "left" }) });
+    expect(s.latest()).toMatchObject({ seq: 2, text: "terminal ls", status: "ended" });
+  });
   it("keeps the latest when a result lands for an older call", () => {
     const s = new RoomState();
     s.apply(agentEv(1, "tool_call", { callId: "a", tool: "terminal", args: { command: "make" } }));

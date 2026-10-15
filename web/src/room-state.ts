@@ -5,8 +5,9 @@ import { maxRows } from "./view";
 
 export interface Queued { ref: number; author: string; text: string }
 // The latest activity, for the strip's Now line: a tool call (running until its result
-// says ok, error or rejected), a result alone, or an agent's or a human's message.
-export interface Latest { seq: number; text: string; status: "running" | "ok" | "error" | "rejected" | "message"; ts: string }
+// says ok, error or rejected, or ended when its run ended first), a result alone, or an
+// agent's or a human's message.
+export interface Latest { seq: number; text: string; status: "running" | "ok" | "error" | "rejected" | "ended" | "message"; ts: string }
 // A pending approval: its card. action is the raw, redacted call (T3).
 export interface Approval { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }
 
@@ -18,8 +19,9 @@ export class RoomState {
   private through = 0;
   private last?: Latest;
   private lastAt = 0; // the seq of the event that set last: a result's, for a call's entry
-  // The calls still open to a result, by callId, oldest first, at most maxCalls of them.
-  private calls = new Map<string, Latest>();
+  // The calls still open to a result, by callId, oldest first, at most maxCalls of them,
+  // each with the principal of the run that owns it (agent:<runId>).
+  private calls = new Map<string, { l: Latest; owner: string }>();
   sealed = false;
   phase = "";
   constructor(public driver = "", public driverEpoch = 0) {}
@@ -55,14 +57,14 @@ export class RoomState {
         this.set(call, ev.seq);
         if (typeof p.callId === "string") {
           this.calls.delete(p.callId); // a resent call moves to the newest end
-          this.calls.set(p.callId, call);
+          this.calls.set(p.callId, { l: call, owner: ev.runId ? `agent:${ev.runId}` : ev.actor.id });
           if (this.calls.size > maxCalls) this.calls.delete(this.calls.keys().next().value!);
         }
         break;
       }
       case "tool_result": {
         const status = resultStatus(p.status);
-        const call = typeof p.callId === "string" ? this.calls.get(p.callId) : undefined;
+        const call = typeof p.callId === "string" ? this.calls.get(p.callId)?.l : undefined;
         // The result is the latest activity, shown as its call's line with the result's
         // status. A result whose call the page never saw (its tail began after it, or the
         // row went at the cap) stands alone, its output's first line as the text.
@@ -106,7 +108,15 @@ export class RoomState {
           this.phase = p.phase;
         }
         // The seals (internal/store sealTx): a close, or the room's event or byte limit.
-        if ((p.kind === "room_phase" && p.phase === "Closed") || (p.kind === "limit" && p.events !== undefined)) this.sealed = true;
+        if ((p.kind === "room_phase" && p.phase === "Closed") || (p.kind === "limit" && p.events !== undefined)) {
+          this.sealed = true;
+          this.release(() => true);
+        }
+        // A run's terminal phase (runwatch: run_phase <terminal>, then its agent leaves).
+        if (p.kind === "run_phase" && p.phase !== "Running" && ev.runId) this.release((o) => o === `agent:${ev.runId}`);
+        break;
+      case "participant":
+        if (p.change === "left" && typeof p.principal === "string") this.release((o) => o === p.principal);
         break;
     }
   }
@@ -117,9 +127,19 @@ export class RoomState {
   // message until its result lands; with none running, the latest activity.
   latest(): Latest | undefined {
     let running: Latest | undefined;
-    for (const c of this.calls.values()) if (!running || c.seq > running.seq) running = c;
+    for (const { l } of this.calls.values()) if (!running || l.seq > running.seq) running = l;
     const l = running ?? this.last;
     return l && { ...l };
+  }
+
+  // release ends the open calls whose owner matches: a run that ended before its result
+  // leaves the call ended, so it no longer holds the Now line as running.
+  private release(owned: (owner: string) => boolean) {
+    for (const [id, c] of this.calls) {
+      if (!owned(c.owner)) continue;
+      c.l.status = "ended";
+      this.calls.delete(id);
+    }
   }
 
   // set makes l the latest activity unless a resend of an older event replays it.
