@@ -108,6 +108,38 @@ describe("the room table", () => {
     sel.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(get).toHaveBeenLastCalledWith("/api/rooms?repo=o%2Fa", expect.anything()));
   });
+  it("opens the new-room form above the table, which has a name", async () => {
+    const root = app();
+    await listRooms(root, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);
+    const form = root.querySelector("form.new-room")!;
+    const table = root.querySelector("table.rooms")!;
+    expect(form.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(table.getAttribute("aria-label")).toBe("Rooms");
+  });
+  it("never lets an older filter answer overwrite a newer one", async () => {
+    const waiting: ((r: Response) => void)[] = [];
+    const get = vi.fn((url: string) => url === "/api/rooms"
+      ? Promise.resolve(new Response(JSON.stringify(rows)))
+      : new Promise<Response>((res) => waiting.push(res)));
+    const root = app();
+    await listRooms(root, get as unknown as typeof fetch);
+    (root.querySelector('input[name="mine"]') as HTMLInputElement).click(); // older
+    (root.querySelector('input[name="needsMe"]') as HTMLInputElement).click(); // newer
+    await vi.waitFor(() => expect(waiting.length).toBe(2));
+    waiting[1](new Response(JSON.stringify([rows[1]])));
+    await vi.waitFor(() => expect(root.querySelectorAll("tbody tr").length).toBe(1));
+    waiting[0](new Response(JSON.stringify(rows)));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(root.querySelectorAll("tbody tr").length).toBe(1);
+  });
+  it("offers Retry when the first fetch fails", async () => {
+    let n = 0;
+    const get = vi.fn(async () => (n++ ? new Response("[]") : new Response("", { status: 503 })));
+    const root = app();
+    await listRooms(root, get as unknown as typeof fetch);
+    (root.querySelector("button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(root.querySelector("table.rooms")).not.toBeNull());
+  });
   it("keeps the new-room form behind a button and the CLI setup below the table", async () => {
     const root = app();
     await listRooms(root, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);

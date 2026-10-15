@@ -40,6 +40,7 @@ const pairs = (t: Record<string, string>) => [
   ["the deny button's text on a card", t["--destructive-text"], t["--card"], 4.5],
   ["the controls' group names", t["--muted-foreground"], t["--background"], 4.5],
   ["a destructive button on the controls", t["--destructive"], t["--background"], 4.5],
+  ["the room list's notice on the page", t["--destructive-text"], t["--muted"], 4.5],
 ] as const;
 
 describe.each([["light", light], ["dark", dark]])("%s theme", (_name, t) => {

@@ -127,7 +127,17 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
         : `The room list is unavailable (reload to sign in again): ${e instanceof Error ? e.message : String(e)}`);
     }
   };
-  const first = await fetchRooms(filters);
+  const first = await fetchRooms(filters, (m) => {
+    const p = document.createElement("p");
+    p.textContent = m;
+    app.replaceChildren(p);
+    if (m.startsWith("signing")) return;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry";
+    retry.onclick = () => void listRooms(app, get, filters, theme);
+    app.append(retry);
+  });
   if (!first) return;
 
   const header = document.createElement("header");
@@ -177,6 +187,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
 
   const table = document.createElement("table");
   table.className = "rooms";
+  table.setAttribute("aria-label", "Rooms");
   const head = document.createElement("tr");
   head.append(...["Needs you", "Task", "Repository", "Phase", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
   const thead = document.createElement("thead");
@@ -201,7 +212,7 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   for (const e of [mine.input, needsMe.input]) e.addEventListener("click", () => void refetch());
   repo.addEventListener("change", () => void refetch());
 
-  app.replaceChildren(header, tools, table, form, cliSetup(get));
+  app.replaceChildren(header, tools, form, table, cliSetup(get));
 }
 
 export const roomId = /^[a-z2-7]{8}$/;
