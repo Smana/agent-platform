@@ -17,6 +17,7 @@ import { mountThemeButton, type ThemeController } from "./theme";
 // drive the page with no broker.
 export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, o: Options & { get?: typeof fetch } = {}) {
   const header = document.createElement("header");
+  header.className = "page-header";
   const title = document.createElement("span");
   title.className = "title";
   header.append(title);
@@ -35,6 +36,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   section.className = "controls";
   const forkPanel = document.createElement("section");
   const footer = document.createElement("footer");
+  footer.className = "page-dock";
   const counters = document.createElement("span");
   const notice = document.createElement("span");
   notice.className = "notice";

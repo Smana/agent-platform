@@ -36,6 +36,14 @@ describe("the room page", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("styles only the page chrome as a header: a message head is not sticky navy (U1)", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    expect(p.app.querySelector("header.page-header")).not.toBeNull();
+    expect(p.app.querySelector("header.msg-head")?.classList.contains("page-header")).toBe(false);
+  });
+
   it("heads the page with the room's phase as the log moves it (R10)", () => {
     const p = page();
     p.join(snapshot(), 0);

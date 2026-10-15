@@ -36,7 +36,10 @@
   --brand-navy: #002538;
   --brand-navy-foreground: #f2f2f2;
 
-  --placeholder: #8a8a8a;
+  --placeholder: #6b6b6b;
+  --link: #00639c; /* text-weight ocean blue: --primary is 4.6:1 on white but fails on the haze page */
+  --success-text: #3a7410;
+  --warning-border: #b36f00;
 
   /* Elevation: a layered transparent shadow lifts a card off whatever surface
      ends up underneath; a border colour doesn't. Structural borders stay borders. */
@@ -77,13 +80,16 @@
   /* Light amber, not deep navy: warning text renders on a faint warning tint. */
   --warning-foreground: #f5c97f;
 
-  --destructive: #f26363;
+  --destructive: #f37171; /* was #f26363: 4.13:1 on the card, under AA */
   --destructive-foreground: #002538;
 
   --brand-navy: #002538;
   --brand-navy-foreground: #f2f2f2;
 
-  --placeholder: #7f93a1;
+  --placeholder: #9db0bc;
+  --link: #4db3e8;
+  --success-text: #7fcf3a;
+  --warning-border: #ed9d13;
 
   /* Layered depth shadows are invisible against navy — collapse to the ring. */
   --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
@@ -105,24 +111,26 @@ body {
 h1, h2, h3, h4 { text-wrap: balance; }
 p, li { text-wrap: pretty; }
 
-a { color: var(--primary); }
+a { color: var(--link); }
 
-/* The page chrome: a brand-navy header, a card footer holding the counters. */
-header, footer { padding: 8px 16px; position: sticky; }
-header {
-  top: 0; z-index: 1;
+/* The page chrome: a brand-navy header, a docked footer. Class-scoped: the chat's
+   <header class="msg-head"> and the raw view's <header class="ev-head"> are headers too,
+   and the bare selector made each of them a sticky navy bar (review 2026-10-15, U1). */
+.page-header, .page-dock { padding: 8px 16px; position: sticky; }
+.page-header {
+  top: 0; z-index: 2;
   display: flex; gap: 12px; align-items: baseline;
   background: var(--brand-navy); color: var(--brand-navy-foreground);
 }
-header .title { overflow-wrap: anywhere; }
-footer {
-  bottom: 0;
-  font-family: ui-monospace, monospace;
+.page-header .title { overflow-wrap: anywhere; }
+.page-dock {
+  bottom: 0; z-index: 2;
   background: var(--card); color: var(--card-foreground);
   border-top: 1px solid var(--border);
 }
-footer .status { float: right; color: var(--muted-foreground); }
-footer[data-status="live"] .status { color: var(--success); }
+.page-dock .status { float: right; color: var(--muted-foreground); font-family: ui-monospace, monospace; }
+.page-dock[data-status="live"] .status { color: var(--success-text); }
+.page-dock .notice { margin-left: 12px; color: var(--destructive); }
 main { padding: 8px 16px 16px; max-width: 100%; }
 
 button {
@@ -134,14 +142,14 @@ button:hover { box-shadow: var(--shadow-border-hover); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
-header button { background: transparent; color: var(--brand-navy-foreground); }
+.page-header button { background: transparent; color: var(--brand-navy-foreground); }
 .theme-toggle { margin-left: auto; font-size: 12px; }
 .theme-toggle { margin-left: 0; }
 
 /* Chat view */
 .msg { margin: 12px 0; max-width: 72ch; }
 .msg-head { color: var(--muted-foreground); font-size: 12px; display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
-.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 11px; white-space: nowrap; }
+.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 12px; white-space: nowrap; }
 .bubble {
   background: var(--card); color: var(--card-foreground);
   border-radius: 4px 12px 12px 12px; padding: 6px 12px;
@@ -164,21 +172,21 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 .tool summary::-webkit-details-marker { display: none; }
 .tool.st-rejected, .tool.st-error { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--destructive) 65%, var(--card)); }
 .tool.st-rejected { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--warning) 80%, var(--card)); }
-.t-name { color: var(--primary); font-weight: 600; }
+.t-name { color: var(--link); font-weight: 600; }
 .t-cmd { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; flex: 1 1 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool[open] .t-cmd { white-space: normal; overflow-wrap: anywhere; }
 .t-body { border-top: 1px solid var(--border); padding: 6px 10px; }
-.t-sec { color: var(--placeholder); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
-.t-meta { color: var(--placeholder); font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
+.t-sec { color: var(--placeholder); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
+.t-meta { color: var(--placeholder); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
 .t-body pre, .other pre { background: var(--muted); border-radius: 6px; padding: 6px 8px; }
 
 /* Chips and badges: a tinted pill, the status token for its text. */
 .chip, .pol {
-  font-size: 11px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 12px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
   border: 1px solid var(--border); color: var(--muted-foreground);
 }
 .chip-ok {
-  color: var(--success);
+  color: var(--success-text);
   background: color-mix(in srgb, var(--success) 12%, var(--card));
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
@@ -195,7 +203,7 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 /* A message for the room prompts no agent: a neutral chip, the others amber (R09). */
 .chip-delivery.dl-none { color: var(--muted-foreground); background: none; border-color: var(--border); }
 .chip-running {
-  color: var(--primary);
+  color: var(--link);
   background: color-mix(in srgb, var(--primary) 10%, var(--card));
   border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
 }
@@ -204,7 +212,7 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
   @keyframes pulse { 50% { opacity: .45; } }
 }
 .pol-allow, .pol-approved, .verdict-approve {
-  color: var(--success);
+  color: var(--success-text);
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .pol-deny, .pol-denied, .pol-expired {
@@ -235,7 +243,6 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow
 .status-error, .status-rejected { color: var(--destructive); }
 /* An audit note, not an alarm: the warning foreground reads on both schemes. */
 .redacted { color: var(--warning-foreground); font-size: 12px; }
-footer .notice { margin-left: 12px; color: var(--destructive); font-family: inherit; }
 
 /* Controls (unchanged behaviour, platform palette) */
 /* hidden must win over a flex display: the controls toggle it, never re-mount (R10). */
@@ -258,7 +265,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
-.fork-here { margin-left: 8px; font-size: 11px; padding: 0 6px; opacity: 0.55; }
+.fork-here { margin-left: 8px; font-size: 12px; padding: 0 6px; opacity: 0.55; }
 .fork-here:hover, .fork-here:focus-visible { opacity: 1; }
 .fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
 .fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -275,7 +282,7 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .summary-block p { margin: 2px 0; }
 .summary-block ul { margin: 0; padding-left: 18px; }
 .summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
-.summary-needs-you { border-color: var(--warning); }
+.summary-needs-you { border-color: var(--warning-border); }
 .summary-error { color: var(--destructive); margin: 0; }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
 .raw-events { margin-top: 8px; }

@@ -20,6 +20,7 @@ async function load(): Promise<RoomEvent[]> {
 
 function skeleton(): { views: Views; counters: HTMLElement; status: HTMLElement; foot: HTMLElement } {
   const header = document.createElement("header");
+  header.className = "page-header";
   const title = document.createElement("span");
   title.className = "title";
   title.textContent = "3kq7x2ma · Open · internal · preview of test/fixtures/live-session.jsonl";
@@ -27,6 +28,7 @@ function skeleton(): { views: Views; counters: HTMLElement; status: HTMLElement;
   mountThemeButton(header, theme);
   const main = document.createElement("main");
   const foot = document.createElement("footer");
+  foot.className = "page-dock";
   const counters = document.createElement("span");
   const status = document.createElement("span");
   status.className = "status";
