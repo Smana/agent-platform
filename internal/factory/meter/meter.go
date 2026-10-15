@@ -325,10 +325,11 @@ func (m *Meter) Start(ctx context.Context) error {
 
 // Tick meters every run once: it appends the usage this tick saw to the day's ledger, writes
 // usage as it grew, revokes a live run at any of its caps, stamps the heartbeat admission reads,
-// and keeps the ledgers themselves clean. A failed read of runs, usage or the ledger writes no
-// stamp (a ledger that cannot be written still lets the per-run caps revoke); a failed read of
-// runs or usage writes no usage; a failed annotation is reported and is no revocation. Occupancy is not
-// usage: a tick that could not read usage still releases the runs that ended (#55).
+// and keeps the ledgers themselves clean. A failed read of runs or usage writes no usage and no
+// stamp. A ledger that cannot be written writes no usage annotation (a new leader takes the
+// annotation as already paid), no stamp and no upkeep, but still revokes at the per-run caps. A
+// failed annotation is reported and is no revocation. Occupancy is not usage: a tick that could
+// not read usage still releases the runs that ended (#55), provided the ledger can be written.
 func (m *Meter) Tick(ctx context.Context) error {
 	all, err := m.Runs.List(ctx)
 	if err != nil {
@@ -418,7 +419,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	for _, r := range all {
 		n := totals[r.ID]
 		kv := map[string]string{}
-		if n > r.Tokens {
+		if n > r.Tokens && settleErr == nil { // an unpaid increase is never annotated: a new leader would skip it
 			kv[runs.AnnUsage] = strconv.FormatInt(n, 10)
 		}
 		var limit string
