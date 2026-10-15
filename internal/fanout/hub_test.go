@@ -30,6 +30,21 @@ type memLog struct {
 	fails  atomic.Int32
 	// started, when set, gets a tick as each read begins (before the gate).
 	started chan struct{}
+	// reads records the room of each read.
+	readMu sync.Mutex
+	reads  []string
+}
+
+// readsOf counts the reads that targeted room.
+func (m *memLog) readsOf(room string) (n int) {
+	m.readMu.Lock()
+	defer m.readMu.Unlock()
+	for _, r := range m.reads {
+		if r == room {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *memLog) add(n int) int64 {
@@ -41,8 +56,11 @@ func (m *memLog) add(n int) int64 {
 	return int64(len(m.evs))
 }
 
-func (m *memLog) Range(ctx context.Context, _ string, after int64, limit int) ([]envelope.Event, error) {
+func (m *memLog) Range(ctx context.Context, room string, after int64, limit int) ([]envelope.Event, error) {
 	m.ranges.Add(1)
+	m.readMu.Lock()
+	m.reads = append(m.reads, room)
+	m.readMu.Unlock()
 	if m.started != nil {
 		select {
 		case m.started <- struct{}{}:
@@ -519,7 +537,7 @@ func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	b.publish(probeRoom, log.add(1))
 	drain(t, probe, 2, 1)
 	h.Unsubscribe(sub)
-	before := log.ranges.Load()
+	before := log.readsOf(roomID)
 	b.publish(roomID, log.add(1)) // dirties nothing: nobody watches the room
 	b.publish(probeRoom, 3)
 	drain(t, probe, 3, 1) // the one worker has run a pass that saw the first publish
@@ -529,8 +547,8 @@ func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the hub did not stop")
 	}
-	if n := log.ranges.Load() - before; n != 1 {
-		t.Fatalf("%d reads, want the probe's one and none for a room nobody watches", n)
+	if n := log.readsOf(roomID) - before; n != 0 {
+		t.Fatalf("%d reads for a room nobody watches", n)
 	}
 }
 
