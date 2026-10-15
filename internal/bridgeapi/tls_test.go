@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,4 +194,19 @@ func TestTheListenerSetsItsBounds(t *testing.T) {
 	if srv.MaxHeaderBytes <= 0 || srv.WriteTimeout != 0 {
 		t.Errorf("MaxHeaderBytes %d, WriteTimeout %s", srv.MaxHeaderBytes, srv.WriteTimeout)
 	}
+}
+
+func TestAServerWithoutItsDependenciesRefusesToStart(t *testing.T) {
+	addr := freeAddr(t)
+	err := (&Server{}).ListenAndServeTLS(t.Context(), addr, nil, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "Log, Redactor, Runs, Systems and Watch are required") {
+		t.Fatalf("err = %v, want the required-dependencies error", err)
+	}
+	// No listener was opened: the address is still free to bind.
+	var lc net.ListenConfig
+	ln, lerr := lc.Listen(t.Context(), "tcp", addr)
+	if lerr != nil {
+		t.Fatalf("address taken after a refused start: %v", lerr)
+	}
+	_ = ln.Close()
 }

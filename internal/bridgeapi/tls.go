@@ -111,6 +111,10 @@ func (s *Server) httpServer(addr string, cfg *tls.Config) *http.Server {
 // then drains for at most drain. Streams end at once on shutdown: their bridges
 // re-dial another replica.
 func (s *Server) ListenAndServeTLS(ctx context.Context, addr string, cfg *tls.Config, drain time.Duration) error {
+	if s.Log == nil || s.Redactor == nil || s.Runs == nil || s.Systems == nil || s.Watch == nil {
+		// Unchecked, each would panic on every request instead (review B4).
+		return errors.New("bridgeapi: Log, Redactor, Runs, Systems and Watch are required")
+	}
 	srv := s.httpServer(addr, cfg)
 	served := make(chan error, 1)
 	go func() { served <- srv.ListenAndServeTLS("", "") }()
