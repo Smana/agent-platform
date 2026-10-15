@@ -11,14 +11,22 @@ out="$(helm template agent-factory . --namespace agent-system --set image.tag="$
   --set config.repository=Smana/cloud-native-ref)"
 fail=0
 check() { grep -qF -- "$1" <<<"$out" || { echo "FAIL: $2" >&2; fail=1; }; }
-# yq assertion on one rendered kind: ykind KIND 'expr' 'message'; expr must be true.
+# yq assertion on one rendered kind: ykind KIND 'expr' 'message'; expr must yield at least one
+# value, and every value it yields, across every document of that kind, must be true.
 ykind() {
-  yq -e "select(.kind == \"$1\") | $2" - <<<"$out" >/dev/null 2>&1 || { echo "FAIL: $3" >&2; fail=1; }
+  yq ea -e "[select(.kind == \"$1\") | $2] | (length > 0 and all)" - <<<"$out" >/dev/null 2>&1 || { echo "FAIL: $3" >&2; fail=1; }
+}
+# yq query that must succeed and print nothing: ynone 'expr' 'message'.
+ynone() {
+  local got
+  got=$(yq "$1" - <<<"$out") || { echo "FAIL: yq errored: $2" >&2; fail=1; return; }
+  [ -z "$got" ] || { echo "FAIL: $2" >&2; fail=1; }
 }
 pod='.spec.template.spec'
 ctr="$pod.containers[0]"
-vol() { echo "$pod.volumes[] | select(.name == \"$1\")"; }
-mnt() { echo "$ctr.volumeMounts[] | select(.name == \"$1\")"; }
+# Parenthesised so a path appended after the helper applies to the selected item only.
+vol() { echo "($pod.volumes[] | select(.name == \"$1\"))"; }
+mnt() { echo "($ctr.volumeMounts[] | select(.name == \"$1\"))"; }
 ykind Deployment "$pod.serviceAccountName == \"agent-factory\"" "the factory's ServiceAccount is agent-factory"
 ykind Deployment '.spec.template.metadata.labels."app.kubernetes.io/name" == "agent-factory"' "the pod label SP2's broker CNP admits"
 ykind Deployment "$(vol rooms-token).projected.sources[0].serviceAccountToken.audience == \"rooms-system\"" "the broker's system audience (SP2 P3)"
@@ -52,7 +60,7 @@ ykind PodDisruptionBudget '.spec.minAvailable == 1' "PDB"
 ykind PodDisruptionBudget '.spec.unhealthyPodEvictionPolicy == "AlwaysAllow"' "a drain evicts unready pods (#58)"
 ykind Deployment "$(vol merger).secret | (.secretName == \"agent-factory-merger\" and .defaultMode == \"0440\" and .optional == true)" "the merger key is optional (#57)"
 ykind Deployment "$(vol intake).secret | (.secretName == \"agent-factory-intake\" and .defaultMode == \"0440\" and .optional == true)" "the intake token is optional (#57)"
-ykind Role '.rules[] | select(.resources[] == "agentruns") | length > 0' "AgentRun RBAC"
+ykind Role '.rules[] | select(.resources[] == "agentruns") | has("verbs")' "AgentRun RBAC"
 # Review C1: a 0400 root-owned key is unreadable to uid 65532; the group bit plus fsGroup is not.
 ykind Deployment "$pod.securityContext.fsGroup == 65532" "the pod's fsGroup owns the mounted Secrets"
 ykind Deployment "$(vol github).secret | (.secretName == \"agent-factory-github\" and .defaultMode == \"0440\")" "the App key readable by the group only"
@@ -67,13 +75,9 @@ n=$(yq '[.rules[] | select(.resources[] == "configmaps")] | length' - <<<"$role"
 [ "$n" = 1 ] || { echo "FAIL: want one configmaps rule, got $n" >&2; fail=1; }
 yq -e '.rules[] | select(.resources[] == "configmaps") | ((has("resourceNames") | not) and ((.verbs | sort | join(",")) == "create,delete,get,list,update,watch"))' - <<<"$role" >/dev/null \
   || { echo "FAIL: the configmaps rule: no resourceNames, verbs = stop object's watch + R50 ledgers" >&2; fail=1; }
-if [ -n "$(yq 'select(.kind == "Role" or .kind == "ClusterRole") | .rules[] | select(.resources[] == "secrets")' - <<<"$out")" ]; then
-  echo "FAIL: the factory never reads Secrets through the API" >&2; fail=1
-fi
+ynone 'select(.kind == "Role" or .kind == "ClusterRole") | .rules[] | select(.resources[] == "secrets")' "the factory never reads Secrets through the API"
 # defaultMode renders as 0400 or 0440 (yq keeps the octal spelling); only the group-readable one is allowed.
-if [ -n "$(yq 'select(.kind == "Deployment") | .spec.template.spec.volumes[].secret.defaultMode | select(. == "0400" or . == "400")' - <<<"$out")" ]; then
-  echo "FAIL: a 0400 Secret is root-only: the factory runs as 65532" >&2; fail=1
-fi
+ynone 'select(.kind == "Deployment") | .spec.template.spec.volumes[].secret.defaultMode | select(. == "0400" or . == "400")' "a 0400 Secret is root-only: the factory runs as 65532"
 for bad in "" "v0.0.0" "latest"; do
   if helm template agent-factory . --namespace agent-system --set image.tag="$bad" >/dev/null 2>&1; then
     echo "FAIL: image.tag '$bad' must not render: only <version>@sha256:<digest>" >&2; fail=1
