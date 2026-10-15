@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
@@ -26,7 +25,7 @@ const maxVMReply = 4 << 20
 const maxReading = 1 << 53
 
 // runSA maps agent-router's ar_agent label (the token's sub, C5) to the run id.
-var runSA = regexp.MustCompile("^system:serviceaccount:" + runs.Namespace + ":" + runwatch.ClaimPrefix + "([a-z2-7]{8})$")
+var runSA = regexp.MustCompile("^system:serviceaccount:" + runwatch.Namespace + ":" + runwatch.ClaimPrefix + "([a-z2-7]{8})$")
 
 // VM runs the meter's one instant query against VictoriaMetrics (R12): the expression of SP4
 // PR 2's agent_router:run_tokens:total over the raw series, until that rule exists.

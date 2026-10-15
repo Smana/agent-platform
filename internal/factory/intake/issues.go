@@ -144,7 +144,7 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 // this poll is the first thing Start runs. One issue's failure does not keep the others waiting.
 func (p *IssuePoller) Poll(ctx context.Context) error {
 	var publishErr error
-	engaged := false // this pass published the stop: the reader's cache may not hold it yet
+	engaged := false // reflects the stop label this pass saw or set, so the reader's cache may not hold it yet; it errs safe if the publish fails
 	if n := p.Cfg.ControlIssue; n > 0 {
 		iss, err := p.Forge.Issue(ctx, n)
 		if err != nil {
