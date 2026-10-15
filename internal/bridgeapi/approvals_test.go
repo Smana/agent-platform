@@ -27,7 +27,9 @@ type fakeApprovals struct {
 	err         error
 	prompters   []string
 	promptErr   error
-	prompterFor []string // room/run of each Prompters call
+	prompterFor []string         // room/run of each Prompters call
+	replay      bool             // like the store: a request whose (room, run, event id) is stored returns the stored approval
+	sent        []envelope.Draft // every draft offered, stored or replayed
 }
 
 func (f *fakeApprovals) RequestApproval(_ context.Context, a store.Approval, d envelope.Draft) (store.Approval, envelope.Event, error) {
@@ -35,6 +37,14 @@ func (f *fakeApprovals) RequestApproval(_ context.Context, a store.Approval, d e
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return store.Approval{}, envelope.Event{}, f.err
+	}
+	f.sent = append(f.sent, d)
+	if f.replay {
+		for _, have := range f.got {
+			if have.RoomID == a.RoomID && have.RunID == a.RunID && have.EventID == a.EventID {
+				return have, envelope.Event{}, nil
+			}
+		}
 	}
 	f.got, f.drafts = append(f.got, a), append(f.drafts, d)
 	a.State = store.ApprovalPending
@@ -133,7 +143,7 @@ func TestApprovalRequests(t *testing.T) {
 			s.RoomPolicy = nil
 			if c.policy != nil {
 				p := *c.policy
-				s.RoomPolicy = func(id string) wire.ApprovalPolicy {
+				s.RoomPolicy = func(_ context.Context, id string) wire.ApprovalPolicy {
 					if id != room {
 						t.Fatalf("policy of %s", id)
 					}
@@ -305,4 +315,39 @@ func TestStreamDeliversDecisions(t *testing.T) {
 	defer stop2()
 	defer time.AfterFunc(5*time.Second, stop2).Stop()
 	expectPing(t, sc2) // both decisions acknowledged up to ref 3: nothing replays
+}
+
+// B7: the draft's key is the harness event id and the deadline runs on the
+// server's clock, so a retried request replays instead of drafting twice.
+func TestApprovalRequestRetryReplays(t *testing.T) {
+	s, _, w := newServer(t)
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	f := &fakeApprovals{replay: true}
+	s.Approvals = f
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	s.Limits = Limits{Rate: 1000, Burst: 1000, InFlight: 10}
+	h := s.Routes()
+	post := func(eventID string) wire.ApprovalAck {
+		rec := call(t, h, http.MethodPost, "/v1/bridge/approvals", "run:"+runA, request(eventID, "c1", "forge.pr", map[string]any{}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request: %d %s", rec.Code, rec.Body)
+		}
+		var ack wire.ApprovalAck
+		if err := json.Unmarshal(rec.Body.Bytes(), &ack); err != nil {
+			t.Fatal(err)
+		}
+		return ack
+	}
+	first, second := post("e42"), post("e42")
+	post("e43")
+	if first.ApprovalID != second.ApprovalID || len(f.got) != 2 {
+		t.Fatalf("a retry made a second approval: %q then %q, %d stored", first.ApprovalID, second.ApprovalID, len(f.got))
+	}
+	if want := now.Add(30 * time.Minute); !second.ExpiresAt.Equal(want) {
+		t.Fatalf("expires %v, want %v on the server clock", second.ExpiresAt, want)
+	}
+	if a, b, c := f.sent[0], f.sent[1], f.sent[2]; a.OriginSeq <= 0 || a.OriginSeq != b.OriginSeq || a.OriginSeq == c.OriginSeq {
+		t.Fatalf("the key must be positive, stable per event id and distinct across ids: %d %d %d", a.OriginSeq, b.OriginSeq, c.OriginSeq)
+	}
 }

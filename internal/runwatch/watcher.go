@@ -32,6 +32,8 @@ type Watcher struct {
 	gone    []func(context.Context, Run)
 	changed []func(context.Context, Run)
 	removed []func(context.Context, Run)
+	// synced reports that the AgentRun cache has delivered its first list; nil before Register.
+	synced func() bool
 }
 
 // New returns an empty Watcher.
@@ -107,6 +109,14 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	}
 }
 
+// SetSynced installs the report that this watcher holds every run (Register does it).
+// Until it says true, a run the watcher lacks is unknown, not dead.
+func (w *Watcher) SetSynced(f func() bool) {
+	w.mu.Lock()
+	w.synced = f
+	w.mu.Unlock()
+}
+
 // Get returns the run's last known state, terminal or not.
 func (w *Watcher) Get(id string) (Run, bool) {
 	w.mu.RLock()
@@ -115,10 +125,18 @@ func (w *Watcher) Get(id string) (Run, bool) {
 	return r, ok
 }
 
-// Live returns the run only while it is live.
-func (w *Watcher) Live(id string) (Run, bool) {
-	r, ok := w.Get(id)
-	return r, ok && r.Live()
+// Live returns the run only while it is live. known is false for a run the watcher
+// lacks before its cache has synced (this replica may simply lag the API server). Once
+// synced, an absent run is known and dead: it was deleted.
+func (w *Watcher) Live(id string) (run Run, live, known bool) {
+	w.mu.RLock()
+	r, ok := w.runs[id]
+	synced := w.synced
+	w.mu.RUnlock()
+	if ok {
+		return r, r.Live(), true
+	}
+	return Run{}, false, synced != nil && synced()
 }
 
 // InRoom returns the watched runs naming room, terminal ones included.
@@ -169,10 +187,12 @@ func Register(ctx context.Context, c informerSource, w *Watcher) (synced func() 
 	if err != nil {
 		return nil, fmt.Errorf("runwatch: agentrun event handler: %w", err)
 	}
-	if reg == nil { // an informer without registrations: its own sync is all there is
-		return inf.HasSynced, nil
+	synced = inf.HasSynced
+	if reg != nil { // without a registration the informer's own sync is all there is
+		synced = reg.HasSynced
 	}
-	return reg.HasSynced, nil
+	w.SetSynced(synced)
+	return synced, nil
 }
 
 func handler(ctx context.Context, w *Watcher) toolscache.ResourceEventHandlerFuncs {

@@ -104,7 +104,7 @@ func TestWireRuns(t *testing.T) {
 	}
 
 	inf.Add(runClaim("7f3cq2xz", "3kq7x2ma", "Running"))
-	if _, live := rw.watch.Live("7f3cq2xz"); !live {
+	if _, live, _ := rw.watch.Live("7f3cq2xz"); !live {
 		t.Fatal("every replica mirrors a run for bridge admission")
 	}
 	if got := store.snapshot(); len(got) != 0 {

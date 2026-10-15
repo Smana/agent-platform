@@ -254,6 +254,11 @@ func markHandled(t *v1alpha1.Task, id int64) {
 	}
 }
 
+// retrySkew widens "posted since the phase began": c.At is GitHub's clock and PhaseSince the
+// factory's, and the two can disagree by seconds. A comment just before the escalation by the
+// factory's reckoning still counts; one already acted on is in Status.Handled and never counts twice.
+const retrySkew = time.Minute
+
 // cmdRetry asks for a fresh run of an escalated task (§6.3).
 const cmdRetry = "/factory retry"
 
@@ -274,7 +279,7 @@ func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR,
 	ok := false
 	for _, c := range all {
 		if c.Edited || !r.Cfg.IsMaintainer(c.Author) || slices.Contains(t.Status.Handled, c.ID) || !commandLine(c.Body, verb) ||
-			(t.Status.PhaseSince != nil && !c.At.After(t.Status.PhaseSince.Time)) {
+			(t.Status.PhaseSince != nil && !c.At.After(t.Status.PhaseSince.Add(-retrySkew))) {
 			continue
 		}
 		if !ok || c.At.After(found.At) {

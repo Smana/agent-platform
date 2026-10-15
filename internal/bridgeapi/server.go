@@ -89,7 +89,7 @@ type Hub interface {
 
 // Liveness answers whether a run is live; *runwatch.Watcher implements it.
 type Liveness interface {
-	Live(runID string) (runwatch.Run, bool)
+	Live(runID string) (run runwatch.Run, live, known bool)
 }
 
 // Server is the :8443 API. Log, Redactor, Runs, Systems and Watch are required;
@@ -102,7 +102,7 @@ type Server struct {
 	Watch    Liveness
 	// RoomPolicy, when set, is the room's approval policy handed out at hello and
 	// read for each approval's deadline (phase 5); unset means attended.
-	RoomPolicy func(roomID string) wire.ApprovalPolicy
+	RoomPolicy func(ctx context.Context, roomID string) wire.ApprovalPolicy
 	// Approvals records approval requests (phase 5); unset answers 503.
 	Approvals Approvals
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
@@ -260,8 +260,8 @@ func (s *Server) bridgeAuth(w http.ResponseWriter, r *http.Request) (authn.Princ
 		fail(w, http.StatusUnauthorized, wire.ReasonUnauthenticated)
 		return p, runwatch.Run{}, false
 	}
-	run, ok := s.Watch.Live(p.RunID)
-	if !ok {
+	run, live, _ := s.Watch.Live(p.RunID)
+	if !live {
 		fail(w, http.StatusForbidden, wire.ReasonRunNotLive)
 		return p, run, false
 	}
@@ -295,8 +295,10 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
 	// agrees (review I7). A holder keeps it while its run is live (ruling SBB).
 	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, func(_ context.Context, id string) bool {
-		_, live := s.Watch.Live(id)
-		return live
+		// An unknown holder is kept until this replica's run cache has synced
+		// (review 2026-10-15, B8).
+		_, live, known := s.Watch.Live(id)
+		return live || !known
 	})
 	switch {
 	case errors.Is(err, store.ErrNoRoom):
@@ -328,7 +330,7 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.RoomPolicy != nil {
-		res.Approvals = s.RoomPolicy(run.Room)
+		res.Approvals = s.RoomPolicy(ctx, run.Room)
 	}
 	reply(w, http.StatusOK, res)
 }
@@ -497,7 +499,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	defer done()
 	// The run may have ended between bridgeAuth and attach, and its Drop found no
 	// stream to end: check again now that a Drop would find this one.
-	if _, live := s.Watch.Live(run.ID); !live {
+	if _, live, _ := s.Watch.Live(run.ID); !live {
 		fail(w, http.StatusForbidden, wire.ReasonRunNotLive)
 		return
 	}

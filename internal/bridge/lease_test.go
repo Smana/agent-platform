@@ -127,8 +127,8 @@ func (runTokens) Authenticate(r *http.Request) (authn.Principal, error) {
 // liveRuns holds every run live, in leaseRoom.
 type liveRuns struct{}
 
-func (liveRuns) Live(id string) (runwatch.Run, bool) {
-	return runwatch.Run{ID: id, Room: leaseRoom, Role: "implementer", Phase: "Running"}, true
+func (liveRuns) Live(id string) (runwatch.Run, bool, bool) {
+	return runwatch.Run{ID: id, Room: leaseRoom, Role: "implementer", Phase: "Running"}, true, true
 }
 
 // leaseRig is a real bridge for run "runa0001" pushing to the real broker API

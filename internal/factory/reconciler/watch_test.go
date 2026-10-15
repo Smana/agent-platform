@@ -495,6 +495,32 @@ func TestOnlyAMaintainersFreshCommandRetries(t *testing.T) {
 	}
 }
 
+// GitHub stamps a comment with its clock, the factory stamps PhaseSince with its own: a retry
+// within retrySkew of the escalation counts, one older does not, and a consumed one never
+// counts twice.
+func TestRetryToleratesClockSkew(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ago     time.Duration // before now; the escalation is 10 minutes before now
+		handled []int64
+		want    string
+	}{
+		"30s before the escalation":        {10*time.Minute + 30*time.Second, nil, v1alpha1.PhaseQueued},
+		"2m before the escalation":         {12 * time.Minute, nil, v1alpha1.PhaseEscalated},
+		"1s after the escalation":          {10*time.Minute - time.Second, nil, v1alpha1.PhaseQueued},
+		"30s before, but already consumed": {10*time.Minute + 30*time.Second, []int64{95}, v1alpha1.PhaseEscalated},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := escalatedTask(false)
+			tk.Status.Handled = tc.handled
+			g := newRig(t, tk, roomOf("3buqdlot"))
+			g.f.SetComments(7, retryBy(95, "Smana", tc.ago))
+			if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != tc.want {
+				t.Fatalf("%s, want %s", got.Status.Phase, tc.want)
+			}
+		})
+	}
+}
+
 // A command on the pull request counts too, on its own line among others; the newest maintainer's
 // is the one narrated, and every new one is acted on once.
 func TestTheNewestRetryOnTheIssueOrThePR(t *testing.T) {

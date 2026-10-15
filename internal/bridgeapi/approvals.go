@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"net/http"
 	"slices"
 	"time"
@@ -54,11 +55,11 @@ func approvalTTL(p wire.ApprovalPolicy) time.Duration {
 }
 
 // policy is the room's approval policy, attended when unknown.
-func (s *Server) policy(roomID string) wire.ApprovalPolicy {
+func (s *Server) policy(ctx context.Context, roomID string) wire.ApprovalPolicy {
 	if s.RoomPolicy == nil {
 		return wire.ApprovalPolicy{Profile: "attended"}
 	}
-	return s.RoomPolicy(roomID)
+	return s.RoomPolicy(ctx, roomID)
 }
 
 func validApproval(in wire.ApprovalRequest) bool {
@@ -69,7 +70,8 @@ func validApproval(in wire.ApprovalRequest) bool {
 // approval serves POST /v1/bridge/approvals: a pending action whose class the
 // room's policy sends to its approvers (§6). The action is redacted and stored
 // as the card shows it (T3). The prompters are read here, so a failed read
-// refuses the request rather than weaken four-eyes.
+// refuses the request rather than weaken four-eyes. The draft's key is the
+// harness event id, so a retried request replays its event (review 2026-10-15, B7).
 func (s *Server) approval(w http.ResponseWriter, r *http.Request) {
 	p, run, ok := s.bridgeAuth(w, r)
 	if !ok {
@@ -109,14 +111,23 @@ func (s *Server) approval(w http.ResponseWriter, r *http.Request) {
 	}
 	a, _, err := s.Approvals.RequestApproval(ctx, store.Approval{ID: ulid.Make().String(), RoomID: run.Room, RunID: run.ID,
 		EventID: in.EventID, CallID: in.CallID, Class: in.Class, Action: action, Prompters: prompters,
-		ExpiresAt: time.Now().Add(approvalTTL(s.policy(run.Room)))},
+		ExpiresAt: s.now().Add(approvalTTL(s.policy(ctx, run.Room)))},
 		envelope.Draft{Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: p.ID, Role: run.Role}, Origin: envelope.OriginHarness,
-			OriginClient: "agent:" + run.ID + ":approvals", OriginSeq: time.Now().UnixNano(), Redactions: rules})
+			OriginClient: "agent:" + run.ID + ":approvals", OriginSeq: originSeq(in.EventID), Redactions: rules})
 	if err != nil {
 		s.logFailure(w, err, "request an approval", "room", run.Room, "run", run.ID, "class", in.Class)
 		return
 	}
 	reply(w, http.StatusOK, wire.ApprovalAck{ApprovalID: a.ID, ExpiresAt: a.ExpiresAt.UTC()})
+}
+
+// originSeq is the draft's idempotency key within the run's approvals client:
+// a positive, stable hash of the harness event id, so a retried request
+// replays its event instead of appending a second draft (review 2026-10-15, B7).
+func originSeq(eventID string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(eventID)) // hash.Hash.Write never fails
+	return int64(h.Sum64() >> 1)
 }
 
 // isObject reports whether raw is a JSON object.

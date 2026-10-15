@@ -141,7 +141,7 @@ func TestWatcherFiresGoneOnceForTerminalRevokedOrDeleted(t *testing.T) {
 	if len(changed) != 5 {
 		t.Fatalf("OnChange fires on every upsert of a run: %v", changed)
 	}
-	if _, ok := w.Live("7f3cq2xz"); ok {
+	if _, live, _ := w.Live("7f3cq2xz"); live {
 		t.Fatal("terminal run reported live")
 	}
 	if r, ok := w.Get("7f3cq2xz"); !ok || r.Phase != "Succeeded" {
@@ -416,7 +416,7 @@ func TestRegisterFeedsTheWatcherFromTheInformer(t *testing.T) {
 
 	running := claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", "")
 	inf.Add(running)
-	if _, ok := w.Live("7f3cq2xz"); !ok {
+	if _, live, _ := w.Live("7f3cq2xz"); !live {
 		t.Fatal("an added run is not live")
 	}
 	inf.Update(running, claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Revoked", "manual"))
@@ -460,5 +460,22 @@ func TestReadsTheTaskURL(t *testing.T) {
 	}})
 	if !ok || r.TaskURL != "https://github.com/Smana/cloud-native-ref/pull/12" || r.Repository != "Smana/cloud-native-ref" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestLiveTellsUnknownFromDead(t *testing.T) {
+	w := New()
+	synced := false
+	w.SetSynced(func() bool { return synced })
+	if _, live, known := w.Live("nosuchrn"); live || known {
+		t.Fatalf("before sync, an absent run: live %v known %v", live, known)
+	}
+	w.Upsert(t.Context(), claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", ""))
+	if _, live, known := w.Live("7f3cq2xz"); live || !known {
+		t.Fatalf("terminal run: live %v known %v", live, known)
+	}
+	synced = true
+	if _, live, known := w.Live("nosuchrn"); live || !known {
+		t.Fatalf("after sync, an absent run: live %v known %v", live, known)
 	}
 }
