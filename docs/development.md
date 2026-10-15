@@ -8,7 +8,7 @@ test harness mirrors the cluster, and the checks around a migration.
 ## The store test harness
 
 Store tests start `postgres:18-alpine` with testcontainers, so they need a running Docker daemon.
-The harness (`internal/store/testdb_test.go`, AP-1) does what CNPG and Atlas do on the cluster:
+The harness (`internal/store/testdb_test.go`) does what CNPG and Atlas do on the cluster:
 
 | Step | Mirrors |
 |---|---|

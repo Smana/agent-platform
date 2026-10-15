@@ -3,7 +3,7 @@
 The Go services behind SP2 collaboration rooms: `room-broker` (the log of record, its API and
 the `Room` controller) and `room-bridge` (the sidecar that mirrors a run's harness into its
 room); and SP3's `agent-factory` (the `Task` reconciler that turns an issue label into a
-narrated run, the issue poller and the run meter). Architecture and ports: [README](README.md). Prerequisites, commits, migrations and
+narrated run, the issue poller and the run meter). Architecture and ports: [README](README.md) and [docs/architecture.md](docs/architecture.md). Prerequisites, commits, migrations and
 releases: `CONTRIBUTING.md`.
 
 ## Quality gate: run before every commit
@@ -22,11 +22,12 @@ task check      # exit 0, or it is not done
 | `crd:check` | `crd:gen`, then `git diff --exit-code -- config/crd api charts` | a committed CRD, deepcopy or the chart's CRD copy that differs from what the types generate |
 | `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 | `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
+| `docs` | `hack/docs.sh` | a reader page with a per-row status tag, or a dead relative link or anchor |
 | `ui:test` | `npm ci`, `tsc --noEmit`, `vitest run` in `web/` | a type error or a failing UI test |
 | `ui:check` | `web/`'s build into `internal/humanapi/ui/dist/` | a committed bundle that differs from what `web/` builds, or a built file not committed |
 
 CI's `check` job runs the same `task check`; `analyze` (CodeQL) is the other required check.
-Store tests use testcontainers, so from phase 1 `task test` needs a running Docker daemon.
+Store tests use testcontainers, so `task test` needs a running Docker daemon.
 
 **Lint through `task lint`, never a bare `golangci-lint run`.** A v1 binary often sits earlier
 on PATH (`go install …/golangci-lint` drops one into `$GOPATH/bin`), and v1 cannot read a v2
@@ -119,23 +120,16 @@ packages that need a newer one.
 - **Traces: the factory has them, the rooms side does not yet.** The factory emits one root span
   per task, and its spans reach the trace router with no allowlist (O-1 M3): ids, tier, phase and
   a reason code only, never issue text; `internal/factory/tracing` and the rooms client pin it.
+  The rooms client adds a client span per broker call (`broker <method> <route>`, the room id,
+  the status) on the same exporter, and sends W3C `traceparent` to the broker.
   The room broker and bridge have no span and propagate no `traceparent`; a tracked follow-up adds
   OTel spans across bridge → broker → store and outbound calls, W3C `traceparent` on every hop.
   When they land, spans carry ids (room, run, seq), event types and end reasons, never payload
   text or an error message that could echo it.
 
-### Added with first use, not before
-
-| Package | Lands with |
-|---|---|
-| `internal/httpx` | the first outbound call (JWKS fetch, bridge → broker) |
-| `internal/logging` | the first binary that logs |
-| OTel setup and `rooms_build_info` | the first metric or span |
-| `internal/app` | the first binary with real wiring |
-
 ## Package map
 
-By pipeline stage. ✓ exists today; a number is the SP2 phase that adds it.
+By pipeline stage. Every package below exists.
 
 ```mermaid
 flowchart LR
@@ -146,37 +140,37 @@ flowchart LR
   store --> mcp["mcp :8090"]
 ```
 
-| Stage | Package | Contract | Status |
-|---|---|---|---|
-| Entry | `cmd/room-broker` | `serve` and `retention` subcommands | ✓ |
-| Entry | `cmd/room-bridge` | the sidecar binary | ✓ |
-| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client | ✓ |
-| Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it | ✓ |
-| Entry | `internal/app` | wiring per binary, the only importer of every adapter | ✓ |
-| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation | ✓ |
-| Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env | ✓ |
-| Entry | `internal/version` | build version stamped by `-ldflags` | ✓ |
-| Ingress | `internal/bridge` | harness adapter over loopback, event mapping, status, uploader, SSE consumer | 1, 4, 5 |
-| Ingress | `internal/wire` | bridge and browser frames: the types both ends of a connection share | 1, 2 |
-| Ingress | `internal/authn` | offline JWT verification for runs, system callers and humans; principal mapping | 1, 2 |
-| Log | `internal/envelope` | C4 v1 event types, payload builders, validation, limits | 1 |
-| Log | `internal/redact` | gitleaks detection over every JSON string of a payload | 1 |
-| Log | `internal/store` + `migrations/` | append, range, cursors, seal; the only package that speaks SQL | 1, 4, 5, 6 |
-| Rooms | `api/v1alpha1` | `Room` types and deepcopy; CRD generated into `config/crd/` | 1 |
-| Rooms | `internal/runwatch` | `AgentRun` informer: liveness, membership, run events, end reason | 1 |
-| Rooms | `internal/roomctrl` | `Room` reconciler: row, seq 1, finalizer, status projection | 1 |
-| API | `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals | 1, 4, 5 |
-| API | `internal/mcp` | `:8090` MCP server, the `room_*` tools | 3 |
-| API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments | 3 |
-| API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
-| API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache | ✓ |
-| Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
-| Viewers | `internal/policy` | the §1 permission matrix | 2 |
-| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render | ✓ |
-| Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed | ✓ |
-| Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI | 2 |
-| Viewers | `web/` | TypeScript UI and its vitest suite | 2 |
-| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves | ✓ |
+| Stage | Package | Contract |
+|---|---|---|
+| Entry | `cmd/room-broker` | `serve` and `retention` subcommands |
+| Entry | `cmd/room-bridge` | the sidecar binary |
+| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client |
+| Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
+| Entry | `internal/app` | wiring per binary, the only importer of every adapter |
+| Entry | `internal/config` | the broker's config file: strict decode, defaults, validation |
+| Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env |
+| Entry | `internal/version` | build version stamped by `-ldflags` |
+| Ingress | `internal/bridge` | harness adapter over loopback, event mapping, status, uploader, SSE consumer |
+| Ingress | `internal/wire` | bridge and browser frames: the types both ends of a connection share |
+| Ingress | `internal/authn` | offline JWT verification for runs, system callers and humans; principal mapping |
+| Log | `internal/envelope` | C4 v1 event types, payload builders, validation, limits |
+| Log | `internal/redact` | gitleaks detection over every JSON string of a payload |
+| Log | `internal/store` + `migrations/` | append, range, cursors, seal; the only package that speaks SQL |
+| Rooms | `api/v1alpha1` | `Room` types and deepcopy; CRD generated into `config/crd/` |
+| Rooms | `internal/runwatch` | `AgentRun` informer: liveness, membership, run events, end reason |
+| Rooms | `internal/roomctrl` | `Room` reconciler: row, seq 1, finalizer, status projection |
+| API | `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals |
+| API | `internal/mcp` | `:8090` MCP server, the `room_*` tools |
+| API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments |
+| API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters |
+| API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache |
+| Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down |
+| Viewers | `internal/policy` | the §1 permission matrix |
+| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
+| Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
+| Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI |
+| Viewers | `web/` | TypeScript UI and its vitest suite |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves |
 
 The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; its chart,
 `charts/agent-factory`, ships the `Task` CRD.
@@ -193,6 +187,7 @@ The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; 
 | Out | `internal/factory/forge`, `internal/factory/narrate` | GitHub as the factory App (`internal/factory/forge/forgetest`: its test-only fake); narration, at least once |
 | Out | `internal/factory/rooms` | the broker's system API over TLS |
 | Ops | `internal/factory/meter`, `internal/factory/fmetrics`, `internal/factory/tracing` | the run meter; the §7 metrics; one root span per task |
+| API | `internal/factory/api` | the run-request API, `POST /v1/runs` (the chart's `api` port, `:8082`) |
 
 ## Seams
 

@@ -1,8 +1,8 @@
 # Operations
 
 Operate rooms through three windows: the **`Room` CR's status** (`kubectl get room -n agent-system`),
-the broker's **metrics and alerts**, and **SQL on the log**. Nothing here is deployed yet: the
-manifests land with cloud-native-ref's S1 (phase 1) and grow with each later phase.
+the broker's **metrics and alerts**, and **SQL on the log**. The manifests live in cloud-native-ref.
+The factory's signals are [at the end](#the-factory).
 
 ## Health at a glance
 
@@ -25,46 +25,45 @@ over 60 s; it never depends on the broker.
 
 ## Metrics
 
-Scraped from `:9090/metrics` by a `VMServiceScrape` (S1). The §9 set, plus four the alerts need and a
-build-info gauge. All are defined in phase 1; the last column is the phase whose
-feature a metric measures. Ruling AC: the broker records them through the OpenTelemetry metric API
-with a Prometheus exporter that adds no suffix, so the names below are exposed byte for byte.
+Scraped from `:9090/metrics` by a `VMServiceScrape`. The broker records them through the
+OpenTelemetry metric API with a Prometheus exporter that adds no suffix, so the names below are
+exposed byte for byte.
 `rooms`, `rooms_approvals_pending` and `rooms_last_event_timestamp_seconds` come from the Room
 controller, which runs on the leader only. A room keeps its last values until its next successful
 reconcile, so a database outage freezes them rather than emptying them, and it leaves them once its
 `Room` is gone. The append counters see every writer: the bridge API, the controller and the run
 events.
 
-| Metric | Type | Labels | Meaning | Phase |
-|---|---|---|---|---|
-| `rooms_build_info` | gauge | `version` | Always 1; carries the running version | 1 |
-| `rooms` | gauge | `phase` | Rooms per phase | 1 |
-| `rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended | 1 |
-| `rooms_append_seconds` | histogram | — | Append latency | 1 |
-| `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease | 1 |
-| `rooms_redactions_total` | counter | `rule` | Secrets redacted | 1 |
-| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip | 1 |
-| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it (Ruling AF). Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive (Ruling AQ); a failed refresh leaves it, so it ages only while the issuer is unreachable. The human issuer has no series until its first fetch: the broker starts without it | 1 |
-| `rooms_connections` | gauge | `kind` | Open connections | 2 |
-| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable`, `protocol` (a malformed or oversize frame, or a first frame that is not `hello`, or none within 10 s), `access_revoked` and `access_unverified` (D7's re-check on an open socket) | 2 |
-| `rooms_participants` | gauge | — | Live participants | 2 |
-| `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; SC-12 wants p95 < 0.5 s | 2 |
-| `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose | 2 |
-| `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) | 2 |
-| `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` | 3 |
-| `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries | 4 |
-| `rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` | 5 |
-| `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval in an open room, set by the leader's approval sweep every 30 s; 0 on a replica that stopped leading | 5 |
-| `rooms_approval_decision_seconds` | histogram | — | Request to decision | 5 |
+| Metric | Type | Labels | Meaning |
+|---|---|---|--- |
+| `rooms_build_info` | gauge | `version` | Always 1; carries the running version |
+| `rooms` | gauge | `phase` | Rooms per phase |
+| `rooms_events_appended_total` | counter | `type`, `origin` | Durable events appended |
+| `rooms_append_seconds` | histogram | — | Append latency |
+| `rooms_append_errors_total` | counter | — | Appends that failed on the database: not refusals of the value (SQLSTATE class 22), the room or the lease |
+| `rooms_redactions_total` | counter | `rule` | Secrets redacted |
+| `rooms_last_event_timestamp_seconds` | gauge | `room` | Last durable event of each room with a `Running` run, whatever its phase: 30 silent minutes turn such a room `AwaitingHuman`, and the series must outlive that flip |
+| `rooms_authn_jwks_last_refresh_timestamp_seconds` | gauge | `issuer` | Last successful JWKS fetch per issuer. Held keys stop verifying 24 h after it. Every replica refreshes each issuer hourly, with jitter, whether or not tokens arrive; a failed refresh leaves it, so it ages only while the issuer is unreachable. The human issuer has no series until its first fetch: the broker starts without it |
+| `rooms_connections` | gauge | `kind` | Open connections |
+| `rooms_connections_dropped_total` | counter | `reason` | Connections the broker closed: `reauth`, `slow_consumer`, `write_timeout` (a live peer took no frame within 10 s), `ping_timeout`, `shutdown`, `log_unavailable`, `protocol` (a malformed or oversize frame, or a first frame that is not `hello`, or none within 10 s), `access_revoked` and `access_unverified` (the room-access re-check on an open socket) |
+| `rooms_participants` | gauge | `kind` | Live participants. `kind="run"`: live runs naming a room, counted by every replica's `AgentRun` watch, so aggregate with `max`, never `sum`. `kind="human"`: open viewer WebSockets on this replica, so `sum` across replicas |
+| `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; the target is p95 < 0.5 s |
+| `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose |
+| `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, …) |
+| `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` |
+| `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries |
+| `rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` |
+| `rooms_approvals_oldest_pending_seconds` | gauge | — | Age of the oldest undecided approval in an open room, set by the leader's approval sweep every 30 s; 0 on a replica that stopped leading |
+| `rooms_approval_decision_seconds` | histogram | — | Request to decision |
 
-Two more count what bridges tell their rooms. Nothing dials into a sandbox (C4), so the bridge serves
+Two more count what bridges tell their rooms. Nothing dials into a sandbox, so the bridge serves
 no metrics: the broker counts these events as it appends them, and exports them on `:9090` with the
-rest (Ruling AP). Neither carries a run or room label.
+rest. Neither carries a run or room label.
 
-| Metric | Type | Labels | Meaning | Phase |
-|---|---|---|---|---|
-| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not | 1 |
-| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way | 1 |
+| Metric | Type | Labels | Meaning |
+|---|---|---|--- |
+| `rooms_bridge_harness_stalls_total` | counter | `reason` | Stalls on the harness log (`event_too_large`, `cursor_lost`, `next_page_unreadable`): a bridge's `state_changed{harness_error}` with that code, told once per stall; the cursor holds. The broker cannot tell a harness's own `ConversationErrorEvent` from a stall when its code is one of these three, so that one is counted too; any other code is not |
+| `rooms_bridge_items_stubbed_total` | counter | `reason` | Harness items kept as a stub in their slot, by why, from exactly this set: `refused` (the broker answered `400` to a lone item; the bridge's `harness_event{harnessKind: refused}`), `invalid_value` (the store rejected a value, SQLSTATE class 22, such as `\u0000` in tool output), `key_collision` (redaction refused keys that are one once case-folded or NUL-stripped), `oversize` (the bridge's or the store's size stub). A harness event whose own kind is one of these names is counted the same way |
 
 ## Alerts
 
@@ -72,16 +71,16 @@ One `VMRule`, `agent-rooms`, inside the `agent-platform` umbrella: silent while 
 suspended. Every rule carries `runbook_url` and `dashboard` annotations, which a cloud-native-ref
 test enforces.
 
-| Alert | Fires when | For | First step | Phase |
-|---|---|---|---|---|
-| `RoomBrokerDown` | No broker replica is up | 5 min | `kubectl get pods -n agent-system -l app.kubernetes.io/name=room-broker`. Runs keep working and their bridges buffer; nothing reaches the log | 1 |
-| `RoomLogAppendErrors` | Any append failed on the database in 10 min | 10 min | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` | 1 |
-| `RoomRedactionsSpike` | More than 20 secrets redacted in 15 min | — | An agent is handling credentials: find the rooms with [the redactions query](#reading-the-log-with-sql) | 1 |
-| `RoomLogDiskFilling` | The log's volume is over 80 % | 15 min | Shorten `spec.retention` on busy rooms, or grow `storageSize` on `SQLInstance xplane-rooms` | 1 |
-| `RoomStalled` | A room with a `Running` run has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) | 1 |
-| `RoomRejectedActionsSpike` | More than 30 actions refused in 10 min | — | Someone is probing, or the UI disagrees with the policy | 2 |
-| `RoomVerdictsNotReachingGitHub` | Posting errors, and no successful post in 30 min | 30 min | The factory App's key at `agents/factory-app`; egress to `api.github.com` | 3 |
-| `RoomApprovalPendingTooLong` | An approval has waited over 15 min; reaches Slack through Alertmanager | — | Decide it; an unattended room auto-denies at `approvals.ttl` | 5 |
+| Alert | Fires when | For | First step |
+|---|---|---|--- |
+| `RoomBrokerDown` | No broker replica is up | 5 min | `kubectl get pods -n agent-system -l app.kubernetes.io/name=room-broker`. Runs keep working and their bridges buffer; nothing reaches the log |
+| `RoomLogAppendErrors` | Any append failed on the database in 10 min | 10 min | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` |
+| `RoomRedactionsSpike` | More than 20 secrets redacted in 15 min | — | An agent is handling credentials: find the rooms with [the redactions query](#reading-the-log-with-sql) |
+| `RoomLogDiskFilling` | The log's volume is over 80 % | 15 min | Shorten `spec.retention` on busy rooms, or grow `storageSize` on `SQLInstance xplane-rooms` |
+| `RoomStalled` | A room with a `Running` run has had no event for 30 min | — | Its run is `Running` but silent: read the bridge's logs (below) |
+| `RoomRejectedActionsSpike` | More than 30 actions refused in 10 min | — | Someone is probing, or the UI disagrees with the policy |
+| `RoomVerdictsNotReachingGitHub` | Posting errors, and no successful post in 30 min | 30 min | The factory App's key at `agents/factory-app`; egress to `api.github.com` |
+| `RoomApprovalPendingTooLong` | An approval has waited over 15 min; reaches Slack through Alertmanager | — | Decide it; undecided, it is denied at 30 min (attended) or `approvals.ttl` (unattended) |
 
 Bridge logs:
 
@@ -91,7 +90,7 @@ kubectl logs -n agents -l agents.ogenki.io/run-id=<runId> -c room-bridge
 
 ## Reading the log with SQL
 
-Until the web UI (phase 2), the owner reads rooms with SQL and the system API. Read only: the log
+The web UI and `roomctl` read rooms; SQL is for what they do not show. Read only: the log
 is the audit trail, and a hand-made write defeats it. Run queries as `rooms_broker` where you can,
 so the database refuses a mistaken write.
 
@@ -103,13 +102,13 @@ ROOM=3kq7x2ma
 | Question | Query |
 |---|---|
 | The transcript | `$PSQL "SELECT seq, type, actor_id, left(payload::text, 120) FROM events WHERE room_id = '$ROOM' ORDER BY seq"` |
-| Is it gapless (SC-1)? | `$PSQL "SELECT max(seq) = count(*) FROM events WHERE room_id = '$ROOM'"` → `t` |
+| Is it gapless? | `$PSQL "SELECT max(seq) = count(*) FROM events WHERE room_id = '$ROOM'"` → `t` |
 | Why did each run end? | `$PSQL "SELECT run_id, payload->>'phase', payload->>'reason' FROM events WHERE room_id = '$ROOM' AND payload->>'kind' = 'run_phase' AND payload->>'phase' <> 'Running' ORDER BY seq"` |
 | Latest redactions | `$PSQL "SELECT room_id, seq, redactions FROM events WHERE redactions <> '{}' ORDER BY ts DESC LIMIT 20"` |
-| Who holds the bridge lease? | `$PSQL "SELECT bridge_run FROM rooms WHERE room_id = '$ROOM'"`  (`rooms.bridge_seen_at` is unused since this change; a later release drops it) |
+| Who holds the bridge lease? | `$PSQL "SELECT bridge_run FROM rooms WHERE room_id = '$ROOM'"` (`bridge_seen_at` is no longer written; a later migration drops it) |
 | Concurrent-run refusals | `$PSQL "SELECT seq, payload FROM events WHERE room_id = '$ROOM' AND payload->>'kind' = 'limit'"` |
 | Sealed and when | `$PSQL "SELECT sealed, closed_at, retention, last_seq, bytes FROM rooms WHERE room_id = '$ROOM'"` |
-| Append-only, proven (SC-10) | `$PSQL "SET ROLE rooms_broker; UPDATE events SET payload = '{}' WHERE room_id = '$ROOM'"` → `permission denied for table events` |
+| Append-only, proven | `$PSQL "SET ROLE rooms_broker; UPDATE events SET payload = '{}' WHERE room_id = '$ROOM'"` → `permission denied for table events` |
 
 ## The system API from a terminal
 
@@ -123,8 +122,8 @@ curl -s --cacert ca.crt -H "Authorization: Bearer $TOKEN" \
   "https://room-broker.agent-system.svc:8443/v1/rooms/$ROOM/events?afterSeq=0&limit=100"
 ```
 
-`ca.crt` is the platform CA (`openbao-ca`, the same one `room-broker-ca` copies). The allowlist
-ships empty; adding an entry is a config change and a broker restart. Remove a probe's entry, pod
+`ca.crt` is the platform CA (`openbao-ca`, the same one `room-broker-ca` copies). Adding an entry
+to `systemPrincipals` is a config change and a broker restart. Remove a probe's entry, pod
 and ServiceAccount when you are done.
 
 ## Retention
@@ -138,16 +137,20 @@ kubectl logs -n agent-system job/retention-check          # one "purged expired 
 kubectl delete job -n agent-system retention-check
 ```
 
+Each room's purge runs under its own `statement_timeout` of 10 minutes (`SET LOCAL`, the purge
+transaction only), not the broker's 15 s. Keep the CronJob's `activeDeadlineSeconds`, if it sets
+one, above 10 minutes, or the job is killed before a large room's purge can finish.
+
 Change a room's retention through `Room.spec.retention` before the room is created: the log copies it
-into the room's row once, and Ruling Y makes that value immutable.
+into the room's row once, and the database keeps that value immutable.
 
 ## Backups and rebuilds
 
 | Item | Setting |
 |---|---|
 | Backups | CNPG daily at 02:00 to the cluster's CNPG backup bucket, through the Barman Cloud plugin; WAL archived continuously |
-| First deploy | No recovery source: nothing exists to recover (ruling P8) |
-| After a day of real rooms | Promote a seed with cloud-native-ref's `cnpg-promote-seed.sh` and set `objectStoreRecovery.path: rooms-<date>` on the claim (phase 2) |
+| First deploy | No recovery source: nothing exists to recover |
+| After a day of real rooms | Promote a seed with cloud-native-ref's `cnpg-promote-seed.sh` and set `objectStoreRecovery.path: rooms-<date>` on the claim |
 | Before every teardown | Promote a fresh seed; events after the last promoted seed are lost on a rebuild |
 
 The log's volume is 20 Gi on one instance. A spot interruption stalls rooms but loses nothing that
@@ -158,59 +161,98 @@ the harnesses still hold.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Broker `CrashLoopBackOff` right after a config change | The config file failed strict parsing (unknown key, a `subPattern` without one capture group) | Read the first log line, fix `room-broker-config` |
-| Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or the `atlasSchema.ref` branch is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at `main` once the AP branch has merged |
+| Broker never passes `/startupz` | The Atlas migration has not run: CNPG has not created the login roles yet, or `atlasSchema.ref` names a branch that is gone | `kubectl get atlasmigration -n agent-system`; the operator retries once the roles exist. Point `ref` at the broker image's release tag |
 | Bridge `hello` gets `503 no_room` | The `Room` has not been reconciled, so its row does not exist | `kubectl get room -n agent-system <id>`; the bridge retries |
 | Bridge gets `503 log_unavailable` | The database is down or refused the call | `kubectl get cluster -n agent-system xplane-rooms-cnpg-cluster` |
 | Bridge gets `401 unauthenticated` | Wrong audience, an issuer not in `runIssuers`, or the broker cannot fetch the JWKS | Check the run's `room-token` audience (`room-broker`), the issuer, and the broker's egress to the JWKS host |
 | Bridge gets `403 run_not_live` | The run is terminal, revoked or deleted, or the watch has not seen it yet | Expected at the end of a run; otherwise check `kubectl get agentrun -n agents` |
 | Bridge gets `409 room_busy`; the log has `limit{concurrent_run}` | A second run joined a room whose first run is still live | Nothing to do: its harness waits behind `room-bridge gate`. If the room is still busy after 3 minutes, the pod fails before the harness runs and the run ends `room_busy`. The holder frees the room once its run ends |
-| A room run's pod is `Init:Error`; `room-bridge gate` logs `the room refused this run` | The room stayed busy for 3 minutes, or is sealed | Expected (F15). Start the run again once the holder has ended |
+| A room run's pod is `Init:Error`; `room-bridge gate` logs `the room refused this run` | The room stayed busy for 3 minutes, or is sealed | Expected. Start the run again once the holder has ended |
 | Bridge gets `410 sealed` | The room is closed or full | Start a new room; a full room means a run far beyond normal size |
 | A room run's pod waits in `ContainerCreating` | The `room-broker-ca` Secret is not in `agents`: the bridge mounts it, and the mount is not optional | `kubectl describe pod -n agents <pod>` names the missing Secret; `kubectl get externalsecret -n agents room-broker-ca` |
-| Bridge refuses to start: URL not `https://`, or no CA in the file | The composition predates GP-18 | Pin a composition with CC-S2 |
+| Bridge refuses to start: URL not `https://`, or no CA in the file | The composition is older than the bridge's TLS requirement | Pin a composition package that mounts `room-broker-ca` and sets `BROKER_CA_FILE` |
 | Bridge logs `x509: certificate signed by unknown authority` | The CA it trusts is not the one that signed the broker's certificate | Compare `room-broker-ca` with the `openbao` issuer's CA |
-| JWKS or identity-provider calls time out on gcp-0 only | A port-scoped egress rule to the cluster's own gateway is dropped by the socket-LB hairpin | Keep the `toEntities: [all]` rule without ports (ruling P11a) |
+| JWKS or identity-provider calls time out on gcp-0 only | A port-scoped egress rule to the cluster's own gateway is dropped by the socket-LB hairpin | Keep the `toEntities: [all]` rule without ports |
 | A run ends `agent_error`; the harness log has `agent-run error: LLMServiceUnavailableError` | The model path failed three times in about 30 s: a provider or gateway outage, not one blip | The harness's `agent-run model retry` lines show the attempts. Retry policy: [harness README](../images/agent-harness/README.md#model-errors). A `429` is never retried: check the run's budget first |
 | A run ends `pod_lost` | The pod died before the harness finished and before its deadline | Expected for evictions; `deadline` means it hit `maxMinutes` |
-| Duplicate harness events after a bridge restart | The harness skipped an unreadable event file (ruling P35) | A known limit, confined to that run; nothing to repair |
+| Duplicate harness events after a bridge restart | The harness skipped an unreadable event file | A known limit, confined to that run; nothing to repair |
 | `RoomStalled` | The run is silent: a stuck harness, or a bridge that lost the broker | Bridge logs; the harness's step log in VictoriaLogs |
-| A migration that builds an index `CONCURRENTLY` failed (`20260929120000_verdicts`, `20261001130000_delivery_indexes`, `20261001140000_brief_index`, `20261005130000_approval_indexes`), or `\d events` in `psql` shows the index `INVALID` | `CREATE INDEX CONCURRENTLY` runs outside a transaction: a failure leaves an `INVALID` index behind, and the re-run refuses with "already exists" | Drop it by hand before the migration is retried: as `rooms_owner`, `DROP INDEX CONCURRENTLY <index>;` (`events_agent_verdicts`, `events_deliveries`, `events_acks`, `events_brief`, `approvals_pending`, `events_decisions`, `events_decision_acks` or `events_tool_results`), then let the Atlas operator re-run it |
-| Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key (ruling SZ): each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
-| `agent_factory_github_up` is 0; factory loops log GitHub errors and no task advances, while the replicas stay `Ready` | GitHub is down, or the App key is refused. Readiness ignores GitHub on purpose (#58): unready replicas would serve nothing more, and the PDB's `unhealthyPodEvictionPolicy: AlwaysAllow` (Kubernetes 1.27+) never blocks a drain either way. The gauge is 1 while any GitHub call succeeded in the last 3 minutes, on each replica, and `FactoryGitHubUnreachable` (`agent_factory_github_up == 0` for 10m) pages on it | Check GitHub's status and the App key (`agent-factory-github`); the loops recover by themselves when GitHub returns |
-| Factory `CrashLoopBackOff`; the log says `merger App key ... is missing` | The Secrets are hard prerequisites whenever any merge class is `live` or `shadow` (deciding it reads checks through the merger, R16): the optional mount lets the pod start, and the binary then refuses, so a missing key is a crash loop with a clear log line, no longer `ContainerCreating` | Create the `agent-factory-merger` Secret (keys `app_id`, `private_key`), or turn every class off: with none live or in shadow the key is optional and the merger fails closed. A task at the merge gate then waits for a maintainer (`merge_gate_off`) |
+| A migration that builds an index `CONCURRENTLY` failed (`20260929120000_verdicts`, `20261001130000_delivery_indexes`, `20261001140000_brief_index`, `20261005130000_approval_indexes`, `20261008120000_task_facts_index`), or `\d events` in `psql` shows the index `INVALID` | `CREATE INDEX CONCURRENTLY` runs outside a transaction: a failure leaves an `INVALID` index behind, and the re-run refuses with "already exists" | Drop it by hand before the migration is retried: as `rooms_owner`, `DROP INDEX CONCURRENTLY <index>;` (`events_agent_verdicts`, `events_deliveries`, `events_acks`, `events_brief`, `approvals_pending`, `events_decisions`, `events_decision_acks`, `events_tool_results` or `events_task_facts`), then let the Atlas operator re-run it |
+| Verdicts stay in the room, `rooms_verdict_posts_total{result="error"}` rises | GitHub is failing or refusing the App's key: each verdict backs off from 15 s to 15 min, and a tick stops after two failures in a row | The broker's `verdict not posted yet` logs; the key at `agents/factory-app`. A verdict older than 24 h is recorded as `verdict_not_posted{reason: expired}` |
+
+## Upgrades
+
+| Change | How |
+|---|---|
+| Broker image | Pin the new digest in the `App` claim **and** the retention CronJob together; re-vendor `crd-rooms.yaml` from the same ref; move `atlasSchema.ref` to the same release tag |
+| New migration | Ships with the image that needs it: move `atlasSchema.ref` in the same commit as the digest. `/startupz` checks only that the first migration ran, so it does not hold a broker back from a later one |
+| Bridge image | A new `_BRIDGE_IMAGE` digest in crossplane-configuration, then that package's pin in cloud-native-ref. Runs pick it up at creation; a running run keeps its bridge |
+| Config | Edit `room-broker-config`, then `kubectl rollout restart deployment/room-broker -n agent-system`: the broker reads it once |
+| Factory run-request API port | The chart serves `POST /v1/runs` on `:8082` (Service and container port `api`), plaintext inside the mesh; the RunLore intake stays on `:8080`, and the broker's `:8443` is the only TLS listener. Releases before it served the API on `:8443`: move the factory config's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do |
+| Factory | Pin the chart's version and digest in `ocirepo-agent-factory.yaml` and the image in the factory's values, from the same release. The `HelmRelease` sets `crds: CreateReplace`, since Helm alone never upgrades the `Task` CRD in the chart's `crds/` |
+| CRD | Vendored with every pin. `task check` fails when the committed CRD differs from what the Go types generate |
+
+## The factory
+
+What the factory does, its labels, budgets, merge gate and kill switch, is in
+[the factory](factory.md). This section is what an operator watches. The factory serves its
+metrics on `:9090` (the chart's `metrics` port), next to its probes.
+
+### Factory metrics
+
+Defined in `internal/factory/fmetrics` (and `agent_factory_build_info` in `internal/metrics`). The
+leader alone reports `agent_factory_tasks`, `agent_factory_kill_switch_engaged` and
+`agent_factory_task_phase_seconds`, read from its cache at scrape time; a failed read leaves them
+absent rather than 0.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `agent_factory_build_info` | gauge | `version` | Always 1; carries the running version |
+| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier` | Tasks by state |
+| `agent_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
+| `agent_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
+| `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template` | From intake to the pull request opening |
+| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome` | `auto_merged`, `human_merged`, `closed`, `reverted` |
+| `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class` | Tokens per finished task |
+| `agent_factory_budget_remaining_tokens` | gauge | `principal` | Tokens the principal has left today |
+| `agent_factory_budget_cap_tokens` | gauge | `principal` | The principal's daily token cap |
+| `agent_factory_human_interventions_total` | counter | `kind` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
+| `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
+| `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
+| `agent_factory_intake_errors_total` | counter | `source` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
+| `agent_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
+| `agent_factory_run_revocations_total` | counter | `reason`, `limit` | Runs the factory revoked; `limit` when the run meter did it (below) |
+| `agent_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
+| `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost when it ended |
+| `agent_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
+| `agent_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
+| `agent_factory_meter_usage_read_errors_total` | counter | — | Meter ticks whose usage read failed: no cap was checked on them |
+| `agent_factory_meter_last_success_timestamp_seconds` | gauge | — | When the meter last read usage and settled it in the day's ledger; set by the leader only, so alert on its max across pods. A tick whose ledger write fails sets nothing: it still revokes runs at their own caps, but the daily budgets wait and the increase is retried whole on the next tick |
+| `agent_factory_resumes_total` | counter | `reason` | Runs resumed after their pod was `Disrupted` or `PodLost` |
+| `agent_factory_rooms_closed_at_cap_total` | counter | `reason` | Rooms closed at the cap (below): `human_driver`, `facts_due` |
+| `agent_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |
+| `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
+| `agent_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
+
+A label value outside its known set is recorded as `other`.
+
+### Factory alerts
+
+| Alert | Fires when | For | First step |
+|---|---|---|---|
+| `FactoryGitHubUnreachable` | `agent_factory_github_up == 0` | 10 min | GitHub's status and the App key (`agent-factory-github`): [below](#factory-failures) |
+
+### Factory failures
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `agent_factory_github_up` is 0; factory loops log GitHub errors and no task advances, while the replicas stay `Ready` | GitHub is down, or the App key is refused. Readiness ignores GitHub on purpose: unready replicas would serve nothing more, and the PDB's `unhealthyPodEvictionPolicy: AlwaysAllow` (Kubernetes 1.27+) never blocks a drain either way. The gauge is 1 while any GitHub call succeeded in the last 3 minutes, on each replica, and `FactoryGitHubUnreachable` (`agent_factory_github_up == 0` for 10m) pages on it | Check GitHub's status and the App key (`agent-factory-github`); the loops recover by themselves when GitHub returns |
+| Factory `CrashLoopBackOff`; the log says `merger App key ... is missing` | The Secrets are hard prerequisites whenever any merge class is `live` or `shadow` (deciding it reads checks through the merger): the optional mount lets the pod start, and the binary then refuses, so a missing key is a crash loop with a clear log line, no longer `ContainerCreating` | Create the `agent-factory-merger` Secret (keys `app_id`, `private_key`), or turn every class off: with none live or in shadow the key is optional and the merger fails closed. A task at the merge gate then waits for a maintainer (`merge_gate_off`) |
 | Factory `POST /intake/runlore` answers `503 intake_unconfigured`; `agent_factory_intake_errors_total{source="runlore"}` rises and the log warns once a minute | The `agent-factory-intake` Secret is absent or empty (the mount is optional): the intake refuses everything instead of running open. It is a hard prerequisite whenever RunLore is meant to feed the factory | Create the Secret (key `token`); the token is re-read per request, no restart |
 
-## Escalated tasks expire
+### Budget signals
 
-An Escalated task waits for a maintainer (`/factory retry`) or for its pull request to end. `caps.escalatedHours` in the factory config bounds that wait: omitted is 168 (a week), `0` is no limit, a negative value fails the rollout. Past it the task is Stopped with reason `escalation_expired` and says so on its issue. Its pull request is left as it is (no stale label, no close). A task whose room a person drives never expires while they drive; a retry already asked for wins over the limit.
-
-## Run and task budgets
-
-The run meter (`internal/factory/meter`) revokes a run at its tier's run cap with reason `budget-run`. Before each run of a task, the reconciler checks that the task cap still has room for one whole run; if it does not, the task is escalated with reason `budget-task` (when `budgets.enforceTask` is set) or counted in shadow (when it is not). With `meter.prices` set, both caps are in USD, so a cache read is charged at its own rate instead of as a full input token. Without prices, both caps stay in tokens (`runTokens`, `taskTokens`) as before.
-
-| Setting | Effect |
-|---|---|
-| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the tier's logical model (`agent-default`). `cacheWrite` defaults to `input`. A price must be positive |
-| `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's run and task caps in USD. When omitted while prices are set, each defaults to its token cap counted as reference tokens at $1.70 per million (D11). Run caps: light $0.51, standard $2.55, frontier $6.80. Task caps: light $1.02, standard $5.10, frontier $13.60. `taskUSD` may not be below `runUSD` |
-| `meter.query` | Must keep `gen_ai_token_type` in its `by` clause: `sum by (ar_agent, gen_ai_token_type) (gen_ai_client_token_usage_sum{…, gen_ai_token_type=~"input\|cached_input\|cache_creation_input\|output"})`. The token counts still mean `input + output` |
-
-A run's cost is `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`, all divided by 10⁶.
-
-At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
-
-- **Run cap.** The v2 cohort's implementer runs cost $0.58–0.70 for 1.54–1.69 M tokens, well under $2.55. The same volume with no cache hit costs $2.30–2.49, so the run cap stops an uncached run at about 1.8 M tokens.
-- **Task cap.** A pair task of 4.7 M tokens at 95 % cache reads costs $1.78 of its $5.10. Uncached, the same task costs $6.77.
-
-A run or task capped in USD is no longer held to `runTokens` or `taskTokens`. The gateway's B1 ceiling (5 M) still bounds a run's raw tokens.
-
-The meter hands each run's cost to the reconciler (`meter.Costs`). The reconciler records it in the Task status as `runs[].costMicroUSD`, with the total in `usage.costMicroUSD`. A record keeps its last cost after its claim is gone, just as it keeps its tokens. A task stays on its `taskTokens` cap in two cases:
-
-- A run the meter cannot price (`runs[].unpriced`).
-- A run with tokens and no cost, such as a task started before this release.
-
-Its USD cost is never counted as $0.
-
-**The daily budgets stay in raw tokens for now.** That covers `budgets.factoryDaily`, `budgets.humanDaily` (`principal-day`) and the gateway's fleet bucket (`fleet`, B2). A cache-heavy day therefore reaches them sooner than its cost would suggest.
+The budget model, prices and caps are in [the factory's budgets](factory.md#budgets).
 
 | Signal | Meaning |
 |---|---|
@@ -218,29 +260,24 @@ Its USD cost is never counted as $0.
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A run's claim names a model with no price (a config changed under a live run). The run is capped at `runTokens`. The log says `run capped in tokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
-| `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling` (B1), `fleet` (B2) or `principal-day`. The `revoked` annotation keeps C5's reason, because the composition maps each value to a phase |
+| `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
 | `agent_factory_run_cost_usd{tier}` | A priced run's cost when it ended. `agent_factory_run_budget_usd{tier}` is the run cap |
 
-A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a run spent before that reset; the Task status keeps the costs already recorded.
+A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no
+annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a
+run spent before that reset; the Task status keeps the costs already recorded
+(`runs[].costMicroUSD`, `usage.costMicroUSD`).
 
-## Finished rooms close
+### Finished rooms close
 
-A finished task's room closes once its outbox, settle, facts and revert window are done, and while no person drives it. The last two waits are capped a day after the task ended: past that the room closes anyway, a person still driving it included, and `agent_factory_rooms_closed_at_cap_total{reason="human_driver"|"facts_due"}` counts it (#92).
+A finished task's room closes once its outbox, settle, facts and revert window are done, and while
+no person drives it. The last two waits are capped a day after the task ended: past that the room
+closes anyway, a person still driving it included, and `agent_factory_rooms_closed_at_cap_total`
+counts it.
 
-## Kill switch
+### Escalated tasks and the kill switch
 
-A hand-made stop must be a fresh object: `kubectl create configmap agent-factory-stop -n agent-system`. `kubectl apply` over a stop the control issue made keeps its `agents.ogenki.io/stop-source: control-issue` annotation, so removing `factory/stop` from the issue lifts it.
-
-## Rollout: the run-request API port
-
-The factory's run-request API (`api.listen`, Service port `api`) serves plaintext HTTP on `:8082` inside the mesh; the RunLore intake stays on `:8080` and the broker's `:8443` is the only TLS listener. Before this change the API sat on `:8443`. The platform composition's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) must move to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do.
-
-## Upgrades
-
-| Change | How |
-|---|---|
-| Broker image | Pin the new digest in the `App` claim **and** the retention CronJob together; re-vendor `crd-rooms.yaml` from the same ref; move `atlasSchema.ref` if the release adds migrations |
-| New migration | Ships with the image that needs it: move `atlasSchema.ref` in the same commit as the digest. `/startupz` checks only that the first migration ran, so it does not hold a broker back from a later one |
-| Bridge image | A new `_BRIDGE_IMAGE` digest in crossplane-configuration, then that package's pin in cloud-native-ref. Runs pick it up at creation; a running run keeps its bridge |
-| Config | Edit `room-broker-config`, then `kubectl rollout restart deployment/room-broker -n agent-system`: the broker reads it once |
-| CRD | Vendored with every pin. From AP-1, `task check` fails when the committed CRD differs from what the Go types generate |
+How long an escalated task waits (`caps.escalatedHours`) and how to engage or lift the stop are in
+[the factory](factory.md#escalation-reminders-and-stale-tasks) and
+[its kill switch](factory.md#the-kill-switch). An operator's stop is a fresh object:
+`kubectl create configmap agent-factory-stop -n agent-system`.
