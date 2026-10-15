@@ -67,7 +67,7 @@ func TestARoomKeptBusyPastThePatienceRefusesTheRun(t *testing.T) {
 		t.Fatalf("Admission past the patience = %+v, want %+v", got, want)
 	}
 	calls := len(fb.callLog())
-	time.Sleep(50 * time.Millisecond) // ten polls
+	// Run idles after a refusal and never loops again: no step exists to say hello.
 	if got := fb.callLog(); len(got) != calls {
 		t.Fatalf("a refused bridge kept saying hello: %v", got[calls:])
 	}

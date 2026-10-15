@@ -111,13 +111,9 @@ func TestAHumanClassWaitsForTheDecision(t *testing.T) {
 }
 
 func waitFor(t *testing.T, cond func() bool) {
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	eventually(ctx, t, "the condition holds", cond)
 }
 
 const waiting = "waiting_for_confirmation"
@@ -703,7 +699,7 @@ func TestTheBridgeConfirmsThroughItsHooks(t *testing.T) {
 	eventually(ctx, t, "the step is answered and logged", func() bool {
 		return len(f.responded()) == 1 && slices.Contains(statusKinds(fb), "policy_decision c1 forge.other deny")
 	})
-	time.Sleep(50 * time.Millisecond) // ten more polls, each still waiting
+	f.polls(ctx, t, 10) // ten more polls, each still waiting
 	stop()
 	if r := f.responded(); len(r) != 1 || r[0] {
 		t.Fatalf("answered %v", r)
@@ -754,7 +750,7 @@ func TestTheBridgeAnswersOnlyOnceTheLogIsRead(t *testing.T) {
 	confirming(r)
 	ctx, stop := r.run(t)
 	eventually(ctx, t, "the step is answered", func() bool { return len(f.responded()) == 1 })
-	time.Sleep(50 * time.Millisecond)
+	f.polls(ctx, t, 10)
 	stop()
 	if r := f.responded(); len(r) != 1 || r[0] {
 		t.Fatalf("answered %v: the push alone was read and accepted", r)
@@ -950,7 +946,7 @@ func TestAlwaysConfirmIsRetriedUntilTaken(t *testing.T) {
 	f.refuse = 0
 	f.mu.Unlock()
 	eventually(ctx, t, "the policy is taken", func() bool { _, _, p := f.snapshot(); return p == "AlwaysConfirm" })
-	time.Sleep(50 * time.Millisecond)
+	f.polls(ctx, t, 10)
 	stop()
 	if _, n := f.policySet(); n != 1 {
 		t.Fatalf("set %d times once taken", n)

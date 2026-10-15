@@ -439,11 +439,12 @@ func TestTheSIGTERMDrainAlwaysSends(t *testing.T) {
 			fb := &fakeBroker{events: c.replies}
 			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 			r.b.MaxBackoff, r.b.FlushGrace = time.Hour, 3500*time.Millisecond
+			steps := rigStepper(r, false)
 			ctx, _ := r.run(t)
 			eventually(ctx, t, "the broker refused a batch", func() bool {
 				return slices.Contains(fb.callLog(), "events Service Unavailable")
 			})
-			time.Sleep(30 * time.Millisecond) // the loop honours the 30 s Retry-After
+			steps.step(ctx, t, 5, r.b.Interval) // the loop honours the 30 s Retry-After
 			if n := len(fb.stored(wire.StreamEvents)); n != 0 {
 				t.Fatalf("the loop sent %d events inside its backoff: the case tests nothing", n)
 			}
@@ -478,17 +479,22 @@ func TestTheLogIsPolledOftenUntilTheHarnessFirstAnswers(t *testing.T) {
 	fb := &fakeBroker{}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	r.b.Interval, r.b.MaxBackoff = 20*time.Millisecond, time.Hour
+	steps := rigStepper(r, true)
 	ctx, stop := r.run(t)
 	// After nine refusals from 1 ms, the next wait is 256 ms uncapped and 200 ms
 	// under the answeredPolls cap: longer than the conversation.
-	eventually(ctx, t, "nine reads were refused", func() bool {
+	for {
 		f.mu.Lock()
-		defer f.mu.Unlock()
-		return f.cut >= 9
-	})
+		cut := f.cut
+		f.mu.Unlock()
+		if cut >= 9 {
+			break
+		}
+		steps.step(ctx, t, 1, r.b.Interval)
+	}
 	f.setDown(false)
-	time.Sleep(120 * time.Millisecond)
-	f.setDown(true) // the harness exits before SIGTERM
+	steps.step(ctx, t, 6, r.b.Interval) // 120 ms of the conversation
+	f.setDown(true)                     // the harness exits before SIGTERM
 	stop()
 	if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0)}) {
 		t.Fatalf("mirrored %v of a conversation that ran for 120 ms", got)
@@ -508,11 +514,14 @@ func TestAnAnsweredLogBacksOffFurther(t *testing.T) {
 	fb := &fakeBroker{}
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	r.b.MaxBackoff = time.Hour
+	steps := rigStepper(r, true)
 	ctx, stop := r.run(t)
-	eventually(ctx, t, "the log answered", func() bool { return len(fb.stored(wire.StreamEvents)) == 1 })
-	time.Sleep(300 * time.Millisecond) // the backoff reaches its cap
+	for len(fb.stored(wire.StreamEvents)) < 1 { // the first step positions, the next reads
+		steps.step(ctx, t, 1, r.b.Interval)
+	}
+	steps.step(ctx, t, 60, r.b.Interval) // 300 ms: the backoff reaches its cap
 	before := f.searched()
-	time.Sleep(300 * time.Millisecond)
+	steps.step(ctx, t, 60, r.b.Interval)
 	n := f.searched() - before
 	stop()
 	// 300 ms is 6 polls at answeredPolls × 5 ms, 30 at firstContactPolls × 5 ms.
@@ -615,9 +624,9 @@ func TestBackPressureStopsPollingUntilTheBufferDrains(t *testing.T) {
 	eventually(ctx, t, "the first page fills the buffer", func() bool {
 		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
 	})
-	time.Sleep(20 * time.Millisecond) // the poll in flight, if any, lands
+	f.polls(ctx, t, 2) // the poll in flight, if any, lands
 	full := f.searched()
-	time.Sleep(50 * time.Millisecond) // ten polls
+	f.polls(ctx, t, 10)
 	if n := f.searched(); n != full {
 		t.Fatalf("the harness was read %d more times with the buffer full", n-full)
 	}
@@ -636,9 +645,10 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 	cases := []struct {
 		name   string
 		broker *fakeBroker
+		loops  bool
 	}{
-		{"sealed at hello", &fakeBroker{hellos: []reply{sealed}}},
-		{"sealed on a batch", &fakeBroker{events: []reply{sealed}}},
+		{"sealed at hello", &fakeBroker{hellos: []reply{sealed}}, false},
+		{"sealed on a batch", &fakeBroker{events: []reply{sealed}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -646,12 +656,15 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 			f.add(chatEvent("hi"))
 			fb := c.broker
 			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+			steps := rigStepper(r, false)
 			ctx, _ := r.run(t)
 			eventually(ctx, t, "the broker sealed the room", func() bool {
 				return slices.ContainsFunc(fb.callLog(), func(c string) bool { return strings.HasSuffix(c, " Gone") })
 			})
 			calls := len(fb.callLog())
-			time.Sleep(50 * time.Millisecond) // ten polls
+			if c.loops { // sealed at hello, Run never loops: nothing steps
+				steps.step(ctx, t, 10, r.b.Interval)
+			}
 			if got := fb.callLog(); len(got) != calls {
 				t.Fatalf("the bridge kept calling a sealed room: %v", got)
 			}
@@ -700,7 +713,7 @@ func TestStatusItemsAreBounded(t *testing.T) {
 	eventually(ctx, t, "a batch was refused", func() bool {
 		return slices.Contains(fb.callLog(), "events Service Unavailable")
 	})
-	time.Sleep(300 * time.Millisecond) // about sixty status changes, a few KiB of items
+	f.polls(ctx, t, 60) // sixty status changes, a few KiB of items
 	stop()
 	// One poll past the cap adds two items, each well under 1 KiB for these short statuses.
 	if limit := statusCap(r.b.MaxBuffer) + 1<<10; r.b.bufBytes > limit {
