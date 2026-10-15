@@ -100,3 +100,23 @@ func (s *Store) LastTaskState(ctx context.Context, roomID string, after int64) (
 	}
 	return p, nil
 }
+
+// LastEventAt is when each room's log last moved, for the rooms in ids that exist. One query:
+// the room list reads it for every row it shows.
+func (s *Store) LastEventAt(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	rows, err := s.pool.Query(ctx, `SELECT room_id, last_event_at FROM rooms WHERE room_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: last event at: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var id string
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, fmt.Errorf("store: last event at: %w", err)
+		}
+		out[id] = at
+	}
+	return out, rows.Err()
+}

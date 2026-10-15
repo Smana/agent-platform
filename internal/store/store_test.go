@@ -271,3 +271,18 @@ func TestPoolBoundsEverySession(t *testing.T) {
 		})
 	}
 }
+
+func TestLastEventAtReadsEveryRoomInOneCall(t *testing.T) {
+	s, _, _, _ := open(t)
+	ctx := context.Background()
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "aaaaaaa2", Driver: "system:factory", Retention: 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LastEventAt(ctx, []string{room, "aaaaaaa2", "nosuchrm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[room].IsZero() || got["aaaaaaa2"].IsZero() {
+		t.Fatalf("got %v: want the two rooms' seq-1 times, nothing for the unknown id", got)
+	}
+}

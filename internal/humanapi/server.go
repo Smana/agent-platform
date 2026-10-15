@@ -65,6 +65,8 @@ type Log interface {
 	// LastTaskState is the room's last task facts above seq after, for the room list's hold
 	// need (#78): its wait reason is not projected into the Room status.
 	LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error)
+	// LastEventAt is when each listed room's log last moved, for the room list.
+	LastEventAt(ctx context.Context, roomIDs []string) (map[string]time.Time, error)
 }
 
 // Hub is the fan-out hub's subscription side; *fanout.Hub implements it.
