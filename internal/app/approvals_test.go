@@ -13,6 +13,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -139,14 +140,39 @@ func TestRoomPolicy(t *testing.T) {
 		Spec: v1alpha1.RoomSpec{Approvals: v1alpha1.Approvals{Profile: "unattended", TTL: "90m", FourEyes: true,
 			Overrides: map[string]string{"forge.pr": "human"}}}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(room).Build()
-	got := roomPolicy(c, "agent-system")("3kq7x2ma")
+	got := roomPolicy(c, "agent-system")(context.Background(), "3kq7x2ma")
 	if got.Profile != "unattended" || got.TTL != "90m" || got.Overrides["forge.pr"] != "human" || len(got.Overrides) != 1 {
 		t.Fatalf("policy %+v", got)
 	}
-	for _, p := range []wire.ApprovalPolicy{roomPolicy(c, "agent-system")("abcdefgh"), roomPolicy(c, "elsewhere")("3kq7x2ma")} {
+	for _, p := range []wire.ApprovalPolicy{roomPolicy(c, "agent-system")(context.Background(), "abcdefgh"), roomPolicy(c, "elsewhere")(context.Background(), "3kq7x2ma")} {
 		if p.Profile != "attended" || p.TTL != "" {
 			t.Fatalf("an unreadable Room: %+v", p)
 		}
+	}
+}
+
+// blockingReader is a client.Reader whose Get blocks until its ctx ends.
+type blockingReader struct{ client.Reader }
+
+func (blockingReader) Get(ctx context.Context, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// The lookup runs under the caller's context: an already-cancelled one returns
+// the attended default at once instead of waiting out policyTimeout.
+func TestRoomPolicyHonoursTheCallersContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan wire.ApprovalPolicy, 1)
+	go func() { done <- roomPolicy(blockingReader{}, "agent-system")(ctx, "3kq7x2ma") }()
+	select {
+	case p := <-done:
+		if p.Profile != "attended" || p.TTL != "" {
+			t.Fatalf("policy %+v, want the attended default", p)
+		}
+	case <-time.After(policyTimeout / 2):
+		t.Fatal("the lookup ignored the caller's cancelled context")
 	}
 }
 
@@ -207,7 +233,7 @@ func TestBridgeAPIIsWired(t *testing.T) {
 	if s.RoomPolicy == nil {
 		t.Fatal("no RoomPolicy: hello says attended and unattended rooms would wait 30 min")
 	}
-	if p := s.RoomPolicy("3kq7x2ma"); p.Profile != "unattended" || p.TTL != "90m" {
+	if p := s.RoomPolicy(context.Background(), "3kq7x2ma"); p.Profile != "unattended" || p.TTL != "90m" {
 		t.Fatal("the Room's approval policy is not wired: unattended rooms would wait 30 min")
 	}
 	if s.Approvals != l || s.Log != l || s.Redactor != red {

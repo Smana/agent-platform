@@ -55,11 +55,11 @@ func approvalTTL(p wire.ApprovalPolicy) time.Duration {
 }
 
 // policy is the room's approval policy, attended when unknown.
-func (s *Server) policy(roomID string) wire.ApprovalPolicy {
+func (s *Server) policy(ctx context.Context, roomID string) wire.ApprovalPolicy {
 	if s.RoomPolicy == nil {
 		return wire.ApprovalPolicy{Profile: "attended"}
 	}
-	return s.RoomPolicy(roomID)
+	return s.RoomPolicy(ctx, roomID)
 }
 
 func validApproval(in wire.ApprovalRequest) bool {
@@ -111,7 +111,7 @@ func (s *Server) approval(w http.ResponseWriter, r *http.Request) {
 	}
 	a, _, err := s.Approvals.RequestApproval(ctx, store.Approval{ID: ulid.Make().String(), RoomID: run.Room, RunID: run.ID,
 		EventID: in.EventID, CallID: in.CallID, Class: in.Class, Action: action, Prompters: prompters,
-		ExpiresAt: s.now().Add(approvalTTL(s.policy(run.Room)))},
+		ExpiresAt: s.now().Add(approvalTTL(s.policy(ctx, run.Room)))},
 		envelope.Draft{Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: p.ID, Role: run.Role}, Origin: envelope.OriginHarness,
 			OriginClient: "agent:" + run.ID + ":approvals", OriginSeq: originSeq(in.EventID), Redactions: rules})
 	if err != nil {

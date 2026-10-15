@@ -96,9 +96,9 @@ func sweepApprovals(ctx context.Context, l approvalLog, leading func() bool, old
 
 // roomPolicy is a room's approval policy from its Room, for the bridge's hello
 // and each approval's deadline. An unreadable Room is attended: the shorter wait.
-func roomPolicy(rooms client.Reader, ns string) func(string) wire.ApprovalPolicy {
-	return func(room string) wire.ApprovalPolicy {
-		ctx, cancel := context.WithTimeout(context.Background(), policyTimeout)
+func roomPolicy(rooms client.Reader, ns string) func(context.Context, string) wire.ApprovalPolicy {
+	return func(ctx context.Context, room string) wire.ApprovalPolicy {
+		ctx, cancel := context.WithTimeout(ctx, policyTimeout)
 		defer cancel()
 		var r v1alpha1.Room
 		if err := rooms.Get(ctx, client.ObjectKey{Namespace: ns, Name: room}, &r); err != nil {

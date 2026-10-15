@@ -102,7 +102,7 @@ type Server struct {
 	Watch    Liveness
 	// RoomPolicy, when set, is the room's approval policy handed out at hello and
 	// read for each approval's deadline (phase 5); unset means attended.
-	RoomPolicy func(roomID string) wire.ApprovalPolicy
+	RoomPolicy func(ctx context.Context, roomID string) wire.ApprovalPolicy
 	// Approvals records approval requests (phase 5); unset answers 503.
 	Approvals Approvals
 	// PingEvery is the stream's keep-alive period; 0 means 30 s.
@@ -330,7 +330,7 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.RoomPolicy != nil {
-		res.Approvals = s.RoomPolicy(run.Room)
+		res.Approvals = s.RoomPolicy(ctx, run.Room)
 	}
 	reply(w, http.StatusOK, res)
 }

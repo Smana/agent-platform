@@ -143,7 +143,7 @@ func TestApprovalRequests(t *testing.T) {
 			s.RoomPolicy = nil
 			if c.policy != nil {
 				p := *c.policy
-				s.RoomPolicy = func(id string) wire.ApprovalPolicy {
+				s.RoomPolicy = func(_ context.Context, id string) wire.ApprovalPolicy {
 					if id != room {
 						t.Fatalf("policy of %s", id)
 					}
