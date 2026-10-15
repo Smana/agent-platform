@@ -8,11 +8,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/wire"
 )
@@ -218,5 +220,92 @@ func TestStreamReplayPages(t *testing.T) {
 	log.mu.Unlock()
 	if reads != 3 {
 		t.Fatalf("the replay read the log %d times, want 3 pages of 2", reads)
+	}
+}
+
+// blockingWriter is a stream's response writer whose event frames block until
+// released: a bridge that stopped reading mid-frame.
+type blockingWriter struct {
+	header  http.Header
+	pinged  chan struct{} // capacity 1: a ping was written
+	writing chan string   // each event frame as its write starts
+	release chan struct{} // closed: event frames complete
+}
+
+func (b *blockingWriter) Header() http.Header { return b.header }
+func (b *blockingWriter) WriteHeader(int)     {}
+func (b *blockingWriter) Flush()              {}
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	if strings.HasPrefix(string(p), "event:") {
+		b.writing <- string(p)
+		<-b.release
+		return len(p), nil
+	}
+	select {
+	case b.pinged <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
+// Like the WebSocket, the stream frees an event's share of the hub's budget only
+// once the write took it: a bridge stalled on a write is a slow consumer.
+func TestStreamHoldsTheBudgetUntilTheWrite(t *testing.T) {
+	s, log, w := newServer(t)
+	s.Ticker = make(manualTicker).new
+	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+	hub, ok := s.Hub.(*fanout.Hub)
+	if !ok {
+		t.Fatalf("hub %T", s.Hub)
+	}
+	witness, err := hub.Subscribe(t.Context(), room) // at the default budget
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Unsubscribe(witness)
+	one := len(steering("a", runA))
+	hub.Budget = one + one/2     // the stream's: one event fits, two do not
+	offered := func(seq int64) { // the hub's pass offered seq to every subscriber
+		t.Helper()
+		for got := int64(0); got < seq; {
+			select {
+			case ev := <-witness.C:
+				witness.Sent(ev)
+				got = ev.Seq
+			case <-time.After(5 * time.Second):
+				t.Fatalf("seq %d never offered", seq)
+			}
+		}
+		probe, err := hub.Subscribe(t.Context(), room) // waits out the pass's lock
+		if err != nil {
+			t.Fatal(err)
+		}
+		hub.Unsubscribe(probe)
+	}
+	bw := &blockingWriter{header: http.Header{}, pinged: make(chan struct{}, 1), writing: make(chan string, 2), release: make(chan struct{})}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/bridge/stream", nil)
+	req.Header.Set("Authorization", "Bearer run:"+runA)
+	served := make(chan struct{})
+	go func() { s.Routes().ServeHTTP(bw, req); close(served) }()
+	select {
+	case <-bw.pinged: // subscribed and past the replay: event 1 comes from the hub
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream never opened")
+	}
+	human(t, log, 1, envelope.Message, steering("a", runA))
+	select {
+	case <-bw.writing: // the stream holds event 1, mid-write
+	case <-time.After(5 * time.Second):
+		t.Fatal("event 1 never written")
+	}
+	human(t, log, 2, envelope.Message, steering("b", runA))
+	offered(2)
+	close(bw.release)
+	select {
+	case <-served:
+	case f := <-bw.writing:
+		t.Fatalf("the stream wrote %q past its budget", f)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream outlived its budget")
 	}
 }
