@@ -50,6 +50,8 @@ type bridgeConfig struct {
 	// branch is the run's branch (CC-S5). Unset, every push is forge.other.
 	branch string
 	egress map[string]bool // the run's egress profiles
+	// readOnlyMCP is MCP_READ_ONLY_TOOLS: the <server>__<tool> names that classify as plain.
+	readOnlyMCP map[string]bool
 }
 
 func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
@@ -65,9 +67,12 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 		healthAddr: or("HEALTH_ADDR", defaultHealthAddr)}
 	c.memLimitSet = getenv("GOMEMLIMIT") != ""
 	c.branch, c.egress = getenv("BRANCH"), map[string]bool{}
-	for p := range strings.SplitSeq(getenv("EGRESS_PROFILES"), ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			c.egress[p] = true
+	c.readOnlyMCP = map[string]bool{}
+	for k, dst := range map[string]map[string]bool{"EGRESS_PROFILES": c.egress, "MCP_READ_ONLY_TOOLS": c.readOnlyMCP} {
+		for p := range strings.SplitSeq(getenv(k), ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				dst[p] = true
+			}
 		}
 	}
 	var missing []error
@@ -158,7 +163,7 @@ func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridge
 		log.Warn("BRANCH is unset: every git push is forge.other, the run's own branch included (CC-S5)")
 	}
 	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
-		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress}}
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
 	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
 	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }

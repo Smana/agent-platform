@@ -14,8 +14,28 @@ func shell(cmd string) json.RawMessage {
 	return b
 }
 
+// readOnlyTools is the read-only set these tests configure, as a composition would.
+var readOnlyTools = map[string]bool{"flux-operator-mcp__get_kubernetes_resources": true, "room-broker__room_verdict": true,
+	"mcp-victoriametrics__query": true, "mcp-victorialogs__hits": true}
+
+func TestTheReadOnlyMCPSetIsConfiguration(t *testing.T) {
+	c := Classifier{ReadOnlyMCP: map[string]bool{"flux-operator-mcp__get_flux_instance": true}}
+	for tool, want := range map[string]Class{
+		"flux-operator-mcp__get_flux_instance":               Plain,
+		"agent-router__flux-operator-mcp__get_flux_instance": Plain,
+		"mcp-victorialogs__query":                            MCPWrite,
+	} {
+		if got := c.Classify(tool, json.RawMessage(`{}`), "LOW"); got != want {
+			t.Errorf("%s: got %q want %q", tool, got, want)
+		}
+	}
+	if got := (Classifier{}).Classify("flux-operator-mcp__get_flux_instance", json.RawMessage(`{}`), "LOW"); got != MCPWrite {
+		t.Errorf("zero classifier: got %q, want mcp.write (fail closed)", got)
+	}
+}
+
 func TestClassify(t *testing.T) {
-	c := Classifier{Branch: "agent/3kq7x2ma", Egress: map[string]bool{"pypi": true}}
+	c := Classifier{Branch: "agent/3kq7x2ma", Egress: map[string]bool{"pypi": true}, ReadOnlyMCP: readOnlyTools}
 	for _, tc := range []struct {
 		tool   string
 		action json.RawMessage
@@ -46,7 +66,7 @@ func TestClassify(t *testing.T) {
 
 // The branches TestClassify leaves open: each case kills a mutant of classify.go.
 func TestClassifyEdges(t *testing.T) {
-	c := Classifier{Branch: "agent/3kq7x2ma", Egress: map[string]bool{"pypi": true}}
+	c := Classifier{Branch: "agent/3kq7x2ma", Egress: map[string]bool{"pypi": true}, ReadOnlyMCP: readOnlyTools}
 	for _, tc := range []struct {
 		tool, cmd, risk string
 		want            Class
