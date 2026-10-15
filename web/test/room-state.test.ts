@@ -132,10 +132,21 @@ describe("RoomState", () => {
     expect(s.latest()?.text).toBe('edit {"path":"a.go"}');
     s.apply(agentEv(4, "tool_call", { callId: "c3", tool: "edit", args: { content: "x".repeat(500) } }));
     expect(s.latest()?.text).toHaveLength(120);
-    s.apply(ev(5, "message", { kind: "chat", text: "a human says", delivery: "none" }));
-    expect(s.latest()).toMatchObject({ seq: 5, status: "message" });
-    s.apply({ ...ev(6, "message", { kind: "chat", text: "broker note", delivery: "none" }), actor: { kind: "system", id: "system:room-broker" } });
-    expect(s.latest()?.seq).toBe(5);
+    for (const [seq, callId] of [[5, "c2"], [6, "c3"]] as const) s.apply(agentEv(seq, "tool_result", { callId, status: "ok" }));
+    s.apply(ev(7, "message", { kind: "chat", text: "a human says", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 7, status: "message" });
+    s.apply({ ...ev(8, "message", { kind: "chat", text: "broker note", delivery: "none" }), actor: { kind: "system", id: "system:room-broker" } });
+    expect(s.latest()?.seq).toBe(7);
+  });
+  it("holds the Now line on a running call over a later message, until its result", () => {
+    const s = new RoomState();
+    s.apply(agentEv(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "go test ./..." } }));
+    s.apply(ev(2, "message", { kind: "chat", text: "how is it going?", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 1, text: "terminal go test ./...", status: "running" });
+    s.apply(agentEv(3, "tool_result", { callId: "c1", status: "error", output: "FAIL" }));
+    expect(s.latest()).toMatchObject({ seq: 1, status: "error" }); // the result is the latest activity
+    s.apply(agentEv(4, "message", { kind: "chat", text: "Tests fail.", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 4, status: "message" });
   });
   it("keeps the latest when a result lands for an older call", () => {
     const s = new RoomState();
