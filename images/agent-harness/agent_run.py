@@ -50,6 +50,9 @@ MAX_POLL_ERRORS = 5
 TOKEN_CACHE = os.environ.get("GIT_TOKEN_CACHE", "/run/agent/git/token.json")
 GITHUB_TOKEN = re.compile(r"gh[posu]_[A-Za-z0-9_]{20,}")
 REDACTED = "[REDACTED:github-token]"
+# One line per model-call retry, written by agent-server (site/sitecustomize.py, #99). /tmp is the
+# pod's emptyDir; the agent can write there too, so the count is a signal, never a control.
+RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
 
 
 def redact(text: str) -> str:
@@ -146,7 +149,8 @@ def build_request(env: dict, task: str, rules: str) -> dict:
         base_url=env["LLM_BASE_URL"],
         api_key=PLACEHOLDER_KEY,
         usage_id="agent",
-        # A budget 429 is terminal (design section 5); never retry it.
+        # A budget 429 is terminal (design section 5), and the SDK's retry cannot leave it out.
+        # agent-server retries a transient error itself (#99, site/sitecustomize.py).
         num_retries=0,
         input_cost_per_token=float(env.get("LLM_INPUT_USD_PER_MTOK", DEFAULT_INPUT_USD_PER_MTOK)) / 1e6,
         output_cost_per_token=float(env.get("LLM_OUTPUT_USD_PER_MTOK", DEFAULT_OUTPUT_USD_PER_MTOK)) / 1e6,
@@ -448,6 +452,14 @@ class ProgressNotes:
         return True
 
 
+def model_retries() -> int:
+    try:
+        with open(RETRY_LOG) as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
 class StepLog:
     """Prints each new agent step to stdout, one line each, so `kubectl logs -c
     harness` shows what the agent is doing, and VictoriaLogs keeps it after the
@@ -510,7 +522,7 @@ class StepLog:
         return None
 
     def summary(self) -> None:
-        print("agent-run summary: %d steps" % self.steps, flush=True)
+        print("agent-run summary: %d steps, %d model retries" % (self.steps, model_retries()), flush=True)
         if self.last_message:
             print("agent-run final message:\n" + self.last_message[:8000], flush=True)
 
@@ -694,6 +706,7 @@ def server_env(env: dict) -> dict:
     out = dict(env)
     out.setdefault("OH_SECRET_KEY", secrets.token_urlsafe(32))
     out["PYTHONPATH"] = os.pathsep.join(p for p in (SITE_DIR, env.get("PYTHONPATH")) if p)
+    out["AGENT_RUN_RETRY_LOG"] = RETRY_LOG
     return out
 
 

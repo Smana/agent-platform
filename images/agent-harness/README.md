@@ -8,7 +8,29 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `git_credential_agent.py` → `git-credential-agent` | git credential helper; exchanges through identity-proxy `:4001`, caches in memory; `agent-run` calls its `revoke` on exit |
 | `gh` | gh with that token in `GH_TOKEN`; `gh pr create` (or `new`) then appends the provenance footer (`pr_footer.py`, SP2 design §5) |
 | `commit-msg` | adds `Agent-Run: $RUN_ID`, `Agent-Task: $TASK_ID` when set, and `Agent-Checkpoint: disruption` on agent-run's SIGTERM checkpoint |
-| `site/sitecustomize.py` | agent-server's start-up hook (F29): a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (envoyproxy/ai-gateway#2715) |
+| `site/sitecustomize.py` | agent-server's start-up hook: a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (F29, envoyproxy/ai-gateway#2715); a transient model error is retried (#99, below) |
+
+## Model errors
+
+A model call that fails ends the run (`execution_status=error`, the run's end reason `agent_error`), except
+for a transient error, which agent-server retries first (#99, owner decision OD-7):
+
+| Error | Retried | Why |
+|---|---|---|
+| `503`, or Envoy's `upstream connect error or disconnect/reset before headers` under any status | yes | nothing reached the model, so nothing is spent twice |
+| connection refused or reset (litellm reports it as a `500` caused by `APIConnectionError`) | yes | the same |
+| `429` | **never** | it can be the gateway's own budget throttle; a retry would hammer the budget |
+| a timeout, any other `4xx` or `5xx` | no | a timeout would outlast the bound; the rest is not transient |
+
+Three attempts at most, 10 s then 20 s apart (30 s of backoff, inside OD-7's 60 s). After the third the run
+escalates exactly as before, with the same `agent-run error: LLMServiceUnavailableError …` line. The SDK's own
+retry stays off (`num_retries=0`: it would retry a `429`), and so does the one inside litellm's OpenAI client,
+which had retried twice in about 1.5 s, a `429` included.
+
+Each retry logs `agent-run model retry <n>/2 in <s>s: <exception> <message>`, and the run's last line counts
+them: `agent-run summary: <steps> steps, <retries> model retries`. A provider having a bad day shows up there
+while its runs still finish. The count is read from `/tmp`, which the agent can write, so it is a signal and
+never a control.
 
 The `Agent-*` namespace is the harness's. In a commit message or a PR body, any line the model wrote that
 starts with an `agent-…:` key, in any case and after any line break a renderer honours, is prefixed
