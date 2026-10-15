@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -775,6 +776,88 @@ func TestARestartedBridgeStillAnswersThePendingStep(t *testing.T) {
 	stop()
 	if r := f.responded(); r[0] {
 		t.Fatalf("answered %v", r)
+	}
+}
+
+// A broker outage never stops the sandbox (§3): with the buffer full, the
+// bridge still reads the harness for the confirmation loop and answers a local
+// verdict itself; a human decision waits for the broker, past the outage. Each
+// event reaches OnRaw once, so an action already settled is never pending again.
+func TestAFullBufferStillAnswersLocalVerdicts(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "running"}
+	for range 10 {
+		f.add(chatEvent(strings.Repeat("x", 1<<10)))
+	}
+	fb := &fakeBroker{hold: true, resume: wire.Resume{Approvals: wire.ApprovalPolicy{Profile: "attended"}}}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.MaxBuffer = 2 << 10 // one page of two events fills it
+	c := confirming(r)
+	var rawMu sync.Mutex
+	raw := map[string]int{}
+	r.b.OnRaw = func(e RawEvent) {
+		rawMu.Lock()
+		raw[e.ID]++
+		rawMu.Unlock()
+		c.Observe(e)
+	}
+	park := func(ev map[string]any) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.status = waiting
+		ev["id"] = "e" + strconv.Itoa(len(f.events)+1)
+		f.events = append(f.events, ev)
+	}
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the first page fills the buffer", func() bool {
+		return f.searched() > 0 && slices.Contains(fb.callLog(), "events Service Unavailable")
+	})
+
+	park(actionEvent("c1", "git push origin agent/3kq7x2ma")) // allow under attended
+	eventually(ctx, t, "the allow-class action is accepted locally", func() bool { return len(f.responded()) == 1 })
+	if got := f.responded(); !got[0] {
+		t.Fatalf("answered %v: want the allow-class action accepted", got)
+	}
+	f.add(map[string]any{"kind": "ObservationEvent", "source": "environment", "tool_call_id": "c1"})
+
+	park(actionEvent("c2", "gh pr create --fill")) // forge.pr: a human decides
+	eventually(ctx, t, "the approval is asked", func() bool {
+		fb.mu.Lock()
+		defer fb.mu.Unlock()
+		return len(fb.approvals) == 1
+	})
+	time.Sleep(50 * time.Millisecond) // ten polls, still under back-pressure
+	if got := f.responded(); len(got) != 1 {
+		t.Fatalf("a human-class action was answered without the broker: %v", got)
+	}
+
+	fb.set(func(b *fakeBroker) { b.hold = false })
+	eventually(ctx, t, "every event lands", func() bool { return len(fb.stored(wire.StreamEvents)) == 13 })
+	time.Sleep(50 * time.Millisecond) // ten polls past the outage
+	if got := f.responded(); len(got) != 1 {
+		t.Fatalf("the human-class action was answered before its decision: %v", got)
+	}
+	if err := c.Decision(ctx, wire.Decision{ApprovalID: "ap-c2", Allow: true, Ref: 7}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(ctx, t, "the decision is applied", func() bool { return len(f.responded()) == 2 })
+	stop()
+	if got := f.responded(); !got[1] {
+		t.Fatalf("answered %v: approved means accept", got)
+	}
+	rawMu.Lock()
+	defer rawMu.Unlock()
+	for id, n := range raw {
+		if n != 1 {
+			t.Errorf("OnRaw saw %s %d times", id, n)
+		}
+	}
+	if len(raw) != 13 {
+		t.Errorf("OnRaw saw %d events, want 13", len(raw))
+	}
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.approvals) != 1 || fb.approvals[0].CallID != "c2" {
+		t.Fatalf("approvals %v", fb.approvals)
 	}
 }
 

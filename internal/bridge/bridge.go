@@ -107,8 +107,9 @@ const statusItemsPerPoll = 2
 
 // statusCap is where status items stop too (review N1). They pass MaxBuffer,
 // since a transition missed is a turn lost, but a lease lost for good must not
-// grow the buffer for as long as the pod lives. Events are read only below
-// MaxBuffer, so a poll never runs with the buffer this full.
+// grow the buffer for as long as the pod lives. Events are mapped only below
+// MaxBuffer; past it a read for the confirmation loop buffers nothing, so the
+// heap then holds at most this cap, its last status items and one Next.
 func statusCap(maxBuffer int) int { return 2 * maxBuffer }
 
 // nextPeakBytes is what one Next holds while it runs: maxPages retained
@@ -264,9 +265,12 @@ type Bridge struct {
 	// Interval is the poll period; zero means 1 s.
 	Interval time.Duration
 	// MaxBuffer caps the encoded bytes waiting for the broker; past it the
-	// harness's events are not read (back-pressure), so the buffer holds at
+	// harness's events are not mapped (back-pressure), so the buffer holds at
 	// most MaxBuffer plus one poll's items. Status changes are still recorded
 	// up to twice MaxBuffer. Zero means DefaultMaxBuffer.
+	//
+	// Past the cap the bridge stops buffering, not reading: local policy
+	// verdicts are still answered; human decisions wait for the broker.
 	MaxBuffer int
 	// FlushGrace bounds the drain after SIGTERM; zero means 25 s.
 	FlushGrace time.Duration
@@ -311,6 +315,7 @@ type Bridge struct {
 	resumeAt   int64 // the log's AfterHarnessSeq at the first hello
 	positioned bool  // the cursor is past what the log holds
 	cursor     Cursor
+	ahead      Cursor // how far a read past the cap handed events to OnRaw
 	status     StatusTracker
 	stall      string // the stall reason the room was last told, "" once the log moves
 	pollAt     time.Time
@@ -596,11 +601,12 @@ func (b *Bridge) step(ctx context.Context) {
 }
 
 // pollEvents reads and maps the harness events after the cursor, unless the
-// buffer is full: the harness keeps its own store meanwhile. It reports that
-// the read reached the log's end.
+// buffer is full: the harness keeps its own store meanwhile, and only the
+// confirmation loop reads ahead. It reports that OnRaw saw every event up to
+// the log's end.
 func (b *Bridge) pollEvents(ctx context.Context) bool {
 	if b.bufBytes >= b.MaxBuffer {
-		return false
+		return b.readAhead(ctx)
 	}
 	if !b.positioned {
 		b.position(ctx)
@@ -609,7 +615,7 @@ func (b *Bridge) pollEvents(ctx context.Context) bool {
 	evs, next, end, err := b.Harness.next(ctx, b.cursor)
 	start := b.cursor.Count
 	for i, e := range evs {
-		if b.OnRaw != nil {
+		if b.OnRaw != nil && start+int64(i)+1 > b.ahead.Count { // a read ahead handed it over already
 			b.OnRaw(e)
 		}
 		for k, m := range Map(e, b.RunID) {
@@ -618,6 +624,30 @@ func (b *Bridge) pollEvents(ctx context.Context) bool {
 		}
 	}
 	b.cursor = next // Next advances over exactly the events it returned, error or not
+	b.harnessRead(ctx, err)
+	return end && err == nil
+}
+
+// readAhead is the read past the cap: it hands the events after both cursors
+// to OnRaw and maps nothing, so the confirmation loop still answers what policy
+// decides alone while the broker is away (§3); the cursor stays, and the
+// events are mapped once the buffer drains. It reads only while the harness
+// has stopped, as it does when a step waits on a verdict: a running harness
+// waits on nothing. It reports that it reached the log's end.
+func (b *Bridge) readAhead(ctx context.Context) bool {
+	if !b.positioned || b.OnStatus == nil || b.lastStatus == "" || b.lastStatus == statusRunning {
+		return false
+	}
+	if b.ahead.Count < b.cursor.Count {
+		b.ahead = b.cursor
+	}
+	evs, next, end, err := b.Harness.next(ctx, b.ahead)
+	if b.OnRaw != nil {
+		for _, e := range evs {
+			b.OnRaw(e)
+		}
+	}
+	b.ahead = next // Next advances over exactly the events it returned, error or not
 	b.harnessRead(ctx, err)
 	return end && err == nil
 }
