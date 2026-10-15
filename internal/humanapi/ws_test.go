@@ -1381,7 +1381,8 @@ func TestRefusedConnectionIsNotAParticipant(t *testing.T) {
 		// The upgrade may succeed before the server closes with 1001.
 		closed(t, c)
 	}
-	time.Sleep(100 * time.Millisecond)
+	// No wait needed: the refusal (an HTTP error or the 1001 close) is sent after track
+	// returned false, and count runs only after track succeeds, so nothing can follow.
 	if out := scrape(t, e); strings.Contains(out, `rooms_participants{kind="human"} 1`) ||
 		strings.Contains(out, `rooms_participants{kind="human"} -1`) {
 		t.Fatalf("a refused connection was counted:\n%s", out)
