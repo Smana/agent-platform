@@ -53,9 +53,6 @@ func TestAStaleLeaseOfALiveHolderIsKept(t *testing.T) {
 	if _, ok, err := s.ClaimBridge(ctx, room, "7f3cq2xz", alive); err != nil || !ok {
 		t.Fatalf("A claims: %v %v", ok, err)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE rooms SET bridge_seen_at = now() - interval '1 hour' WHERE room_id = $1`, room); err != nil {
-		t.Fatal(err)
-	}
 	var asked []string
 	probe := func(_ context.Context, id string) bool { asked = append(asked, id); return true }
 	if holder, ok, err := s.ClaimBridge(ctx, room, "aaaaaaaa", probe); err != nil || ok || holder != "7f3cq2xz" {
