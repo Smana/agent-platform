@@ -31,6 +31,8 @@
 
   --destructive: #d22323;
   --destructive-foreground: #ffffff;
+  /* Text on the error chip's 10% tint: --destructive is 4.47:1 there. */
+  --destructive-text: #d02323;
 
   /* Brand navy header/dark surfaces */
   --brand-navy: #002538;
@@ -82,6 +84,8 @@
 
   --destructive: #f37171; /* was #f26363: 4.13:1 on the card, under AA */
   --destructive-foreground: #002538;
+  /* Text on the error chip's 10% tint: --destructive is 4.13:1 there. */
+  --destructive-text: #f47e7e;
 
   --brand-navy: #002538;
   --brand-navy-foreground: #f2f2f2;
@@ -124,6 +128,7 @@ a { color: var(--link); }
 }
 .page-dock {
   bottom: 0; z-index: 2;
+  font-variant-numeric: tabular-nums;
   background: var(--card); color: var(--card-foreground);
   border-top: 1px solid var(--border);
 }
@@ -212,7 +217,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .chip-error {
-  color: var(--destructive);
+  color: var(--destructive-text);
   background: color-mix(in srgb, var(--destructive) 10%, var(--card));
   border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
 }
@@ -237,7 +242,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .pol-deny, .pol-denied, .pol-expired {
-  color: var(--destructive);
+  color: var(--destructive-text);
   border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
 }
 .verdict-changes {

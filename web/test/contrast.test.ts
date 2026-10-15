@@ -27,6 +27,8 @@ const pairs = (t: Record<string, string>) => [
   ["ok chip text on its tint", t["--success-text"], mix(t["--success"], t["--card"], 0.12), 4.5],
   ["running chip text on its tint", t["--link"], mix(t["--primary"], t["--card"], 0.10), 4.5],
   ["destructive text on a card", t["--destructive"], t["--card"], 4.5],
+  ["error chip text on its tint", t["--destructive-text"], mix(t["--destructive"], t["--card"], 0.10), 4.5],
+  ["deny pill text on a tool row", t["--destructive-text"], t["--card"], 4.5],
   ["warning text on its tint", t["--warning-foreground"], mix(t["--warning"], t["--card"], 0.18), 4.5],
   ["primary button text", t["--primary-foreground"], t["--primary"], 4.5],
   ["the header's text", t["--brand-navy-foreground"], t["--brand-navy"], 4.5],
