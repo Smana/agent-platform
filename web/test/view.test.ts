@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nav } from "../src/api";
-import { listRooms, newRoomForm, RoomLog } from "../src/view";
+import { listRooms, newRoomForm, RoomLog, rowCells, sortRooms } from "../src/view";
 
 const row = (text: string) => { const p = document.createElement("p"); p.textContent = text; return p; };
 
@@ -42,7 +42,7 @@ describe("listRooms", () => {
     ]) {
       const el = app();
       await listRooms(el, fail as typeof fetch);
-      expect(el.textContent).toMatch(/^rooms unavailable/);
+      expect(el.textContent).toMatch(/^The room list is unavailable/);
     }
   });
   it("links each room", async () => {
@@ -60,16 +60,61 @@ describe("listRooms", () => {
       { id: "d66mo4b4", phase: "Idle", owner: "human:1", driver: "", dataClass: "internal", lastSeq: 95, needsYou: 0 },
     ];
     await listRooms(el, (() => Promise.resolve(new Response(JSON.stringify(rows)))) as typeof fetch);
-    const [first, second] = [...el.querySelectorAll("li")].map((li) => li.textContent);
-    expect(first).toContain("#2266");
-    expect(first).toContain("<img src=x onerror=alert(1)>");
-    expect(first).toContain("Reviewing");
-    expect(first).toContain("PR #2267");
-    expect(first).toContain("2 need you");
+    const [first, second] = [...el.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+    expect(first).toEqual(["2", "#2266 <img src=x onerror=alert(1)>", "Smana/a", "Reviewing", "#2267", "—", "yacoriey"]);
     expect(el.querySelector("img")).toBeNull();
-    expect(second).toContain("d66mo4b4");
-    expect(second).toContain("Idle");
-    expect(second).not.toMatch(/need you|PR #/);
+    expect(second).toEqual(["", "Room d66mo4b4", "", "Idle", "", "—", "d66mo4b4"]);
+    expect(el.querySelectorAll("th[scope=col]").length).toBe(7);
+  });
+  it("renders a zero lastEventAt as a dash, never 1970", () => {
+    const base = { id: "a", phase: "Idle", owner: "", driver: "", dataClass: "", lastSeq: 1 };
+    const now = new Date("2026-10-15T10:00:00Z");
+    expect(rowCells({ ...base, lastEventAt: "0001-01-01T00:00:00Z" }, now).last).toBe("");
+    expect(rowCells({ ...base, lastEventAt: "2026-10-15T09:00:00Z" }, now).last).toBe("1 h ago");
+  });
+});
+
+describe("the room table", () => {
+  const app = () => document.createElement("div");
+  const rows = [
+    { id: "d66mo4b4", phase: "Idle", owner: "human:5", driver: "human:5", dataClass: "public", lastSeq: 95, repository: "o/a", needsYou: 0, lastEventAt: "2026-10-15T09:00:00Z" },
+    { id: "3kq7x2ma", phase: "Active", owner: "human:2", driver: "human:2", dataClass: "internal", lastSeq: 142, repository: "o/b", issue: 74, title: "Chat view", task: "Implementing", pr: 77, needsYou: 2, lastEventAt: "2026-10-15T08:00:00Z" },
+    { id: "k2p9rt4v", phase: "Active", owner: "human:2", driver: "system:factory", dataClass: "public", lastSeq: 318, repository: "o/a", issue: 81, title: "Bump mako", task: "Reviewing", pr: 83, needsYou: 0, lastEventAt: "2026-10-15T09:30:00Z" },
+  ];
+  it("sorts needs-you first, then the most recent activity", () => {
+    expect(sortRooms(rows).map((r) => r.id)).toEqual(["3kq7x2ma", "k2p9rt4v", "d66mo4b4"]);
+  });
+  it("renders one row per room with the task first and a needs pill", async () => {
+    const get = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("needs_me=1") ? [rows[1]] : rows), { status: 200 }));
+    const root = app();
+    await listRooms(root, get as unknown as typeof fetch);
+    const cells = [...root.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+    expect(cells[0][0]).toBe("2");
+    expect(cells[0][1]).toBe("#74 Chat view");
+    expect(cells[0][2]).toBe("o/b");
+    expect(cells[2][1]).toBe("Room d66mo4b4");
+    expect(root.querySelector("thead")?.textContent).toContain("Last activity");
+    (root.querySelector('input[name="needsMe"]') as HTMLInputElement).click();
+    await vi.waitFor(() => expect(root.querySelectorAll("tbody tr").length).toBe(1));
+    expect(get).toHaveBeenLastCalledWith(expect.stringContaining("needs_me=1"), expect.anything());
+  });
+  it("filters by repository with the API's repo param", async () => {
+    const get = vi.fn(async () => new Response(JSON.stringify(rows), { status: 200 }));
+    const root = app();
+    await listRooms(root, get as unknown as typeof fetch);
+    const sel = root.querySelector('select[name="repo"]') as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toEqual(["", "o/a", "o/b"]);
+    sel.value = "o/a";
+    sel.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(get).toHaveBeenLastCalledWith("/api/rooms?repo=o%2Fa", expect.anything()));
+  });
+  it("keeps the new-room form behind a button and the CLI setup below the table", async () => {
+    const root = app();
+    await listRooms(root, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);
+    expect((root.querySelector("form.new-room") as HTMLElement).hidden).toBe(true);
+    (root.querySelector('button[data-act="new-room"]') as HTMLButtonElement).click();
+    expect((root.querySelector("form.new-room") as HTMLElement).hidden).toBe(false);
+    expect(root.lastElementChild?.className).toBe("cli-setup");
   });
 });
 

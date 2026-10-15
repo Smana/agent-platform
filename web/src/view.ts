@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { api, nav, SignInRequired } from "./api";
+import { ago } from "./summary";
+import { mountThemeButton, type ThemeController } from "./theme";
 
 // The page keeps the newest maxRows rows; older ones leave the page, never the log.
 export const maxRows = 5000;
@@ -34,47 +36,172 @@ export class RoomLog {
   }
 }
 
-// One row of GET /api/rooms (docs/api.md).
+// One row of GET /api/rooms (docs/api.md). lastEventAt is omitted for a room with no event.
 export interface RoomRow {
   id: string; phase: string; owner: string; driver: string; dataClass: string; lastSeq: number;
   repository?: string; issue?: number; title?: string; task?: string; pr?: number; needsYou?: number;
+  lastEventAt?: string;
 }
 
-// rowText is a room list row: the task it works on when it has one, else the room alone (#50).
-export function rowText(row: RoomRow): string {
-  const task = [row.issue ? `#${row.issue}` : "", row.title ?? "", row.task ?? "", row.pr ? `PR #${row.pr}` : ""].filter(Boolean);
-  const need = row.needsYou ? [`${row.needsYou} need you`] : [];
-  const head = task.length ? task : [row.phase || "Open"];
-  return [...head, ...need, row.id, `${row.lastSeq} events`, `owner ${row.owner}`].join(" · ");
+// lastMs is a row's last event in ms, 0 when omitted, zero or unreadable (never 1970 on screen).
+function lastMs(row: RoomRow): number {
+  const t = Date.parse(row.lastEventAt ?? "");
+  return isNaN(t) || t < Date.UTC(2000, 0, 1) ? 0 : t;
 }
 
-// listRooms renders the room list and the new-room form, or why it cannot: a 401
-// signs in again; an expired session may also reach fetch as a redirect to the IdP,
-// so a failed fetch or a body that is not JSON.
-export async function listRooms(app: HTMLElement, get: typeof fetch = fetch) {
-  let rooms: RoomRow[];
-  try {
-    const r = await api("/api/rooms", {}, get);
-    if (!r.ok) {
-      app.textContent = `rooms unavailable: ${r.status}`;
-      return;
+// sortRooms puts the rooms that need a human first, then the most recent activity, then the id.
+export function sortRooms(rows: RoomRow[]): RoomRow[] {
+  return [...rows].sort((a, b) =>
+    (b.needsYou ?? 0) - (a.needsYou ?? 0) || lastMs(b) - lastMs(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+// rowCells is a room's table cells as text: the task it works on when it has one, else the room alone (#50).
+export function rowCells(row: RoomRow, now: Date): { needs: string; task: string; repo: string; phase: string; pr: string; last: string; id: string } {
+  const t = lastMs(row);
+  return {
+    needs: row.needsYou ? String(row.needsYou) : "",
+    task: row.issue ? [`#${row.issue}`, row.title ?? ""].filter(Boolean).join(" ") : `Room ${row.id}`,
+    repo: row.repository ?? "",
+    phase: row.task || row.phase || "Open",
+    pr: row.pr ? `#${row.pr}` : "",
+    last: t ? ago(new Date(t).toISOString(), now.getTime()) : "",
+    id: row.id,
+  };
+}
+
+export interface RoomFilters { mine?: boolean; needsMe?: boolean; repo?: string }
+
+function roomsURL(f: RoomFilters): string {
+  const q = new URLSearchParams();
+  if (f.mine) q.set("mine", "1");
+  if (f.needsMe) q.set("needs_me", "1");
+  if (f.repo) q.set("repo", f.repo);
+  const s = q.toString();
+  return s ? `/api/rooms?${s}` : "/api/rooms";
+}
+
+function cell(tag: "td" | "th", ...kids: (Node | string)[]): HTMLElement {
+  const c = document.createElement(tag);
+  if (tag === "th") c.scope = "col";
+  c.append(...kids);
+  return c;
+}
+
+function roomRow(row: RoomRow, now: Date): HTMLTableRowElement {
+  const c = rowCells(row, now);
+  const needs = cell("td");
+  if (c.needs) {
+    const pill = document.createElement("span");
+    pill.className = "needs-pill";
+    pill.textContent = c.needs;
+    pill.title = `${c.needs} need you`;
+    needs.append(pill);
+  }
+  const a = document.createElement("a");
+  a.href = `/r/${encodeURIComponent(row.id)}`;
+  a.textContent = c.task;
+  const last = cell("td", c.last || "—");
+  const t = lastMs(row);
+  if (t) last.title = new Date(t).toLocaleString();
+  const code = document.createElement("code");
+  code.textContent = c.id;
+  const tr = document.createElement("tr");
+  tr.append(needs, cell("td", a), cell("td", c.repo), cell("td", c.phase), cell("td", c.pr), last, cell("td", code));
+  return tr;
+}
+
+// listRooms renders the room list as a table, the filters and the new-room form, or why it
+// cannot: a 401 signs in again; an expired session may also reach fetch as a redirect to
+// the IdP, so a failed fetch or a body that is not JSON.
+export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, filters: RoomFilters = {}, theme?: ThemeController) {
+  const fetchRooms = async (f: RoomFilters, say: (msg: string) => void = (m) => { app.textContent = m; }): Promise<RoomRow[] | undefined> => {
+    try {
+      const r = await api(roomsURL(f), {}, get);
+      if (!r.ok) {
+        say(`The room list is unavailable (${r.status}). Retry.`);
+        return;
+      }
+      return (await r.json()) as RoomRow[];
+    } catch (e) {
+      say(e instanceof SignInRequired ? "signing in again…"
+        : `The room list is unavailable (reload to sign in again): ${e instanceof Error ? e.message : String(e)}`);
     }
-    rooms = (await r.json()) as RoomRow[];
-  } catch (e) {
-    app.textContent = e instanceof SignInRequired ? "signing in again…"
-      : `rooms unavailable (reload to sign in again): ${e instanceof Error ? e.message : String(e)}`;
-    return;
+  };
+  const first = await fetchRooms(filters);
+  if (!first) return;
+
+  const header = document.createElement("header");
+  header.className = "page-header";
+  const h1 = document.createElement("h1");
+  h1.textContent = "Rooms";
+  header.append(h1);
+  if (theme) mountThemeButton(header, theme);
+
+  const check = (name: string, label: string, on?: boolean) => {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = name;
+    input.checked = !!on;
+    const l = document.createElement("label");
+    l.append(input, ` ${label}`);
+    return { input, label: l };
+  };
+  const mine = check("mine", "mine", filters.mine);
+  const needsMe = check("needsMe", "needs me", filters.needsMe);
+  const repo = document.createElement("select");
+  repo.name = "repo";
+  repo.setAttribute("aria-label", "repository");
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "all repositories";
+  repo.append(all);
+  for (const name of [...new Set(first.map((r) => r.repository).filter((r): r is string => !!r))].sort()) {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    repo.append(o);
   }
-  const ul = document.createElement("ul");
-  for (const row of rooms) {
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = `/r/${encodeURIComponent(row.id)}`;
-    a.textContent = rowText(row);
-    li.append(a);
-    ul.append(li);
-  }
-  app.replaceChildren(newRoomForm(get), cliSetup(get), ul);
+  repo.value = filters.repo ?? "";
+  const form = newRoomForm(get);
+  form.hidden = true;
+  const add = document.createElement("button");
+  add.type = "button";
+  add.dataset.act = "new-room";
+  add.textContent = "New room";
+  add.onclick = () => { form.hidden = !form.hidden; };
+  const tools = document.createElement("div");
+  tools.className = "list-tools";
+  const notice = document.createElement("span");
+  notice.className = "notice";
+  notice.setAttribute("role", "status");
+  tools.append(mine.label, needsMe.label, repo, add, notice);
+
+  const table = document.createElement("table");
+  table.className = "rooms";
+  const head = document.createElement("tr");
+  head.append(...["Needs you", "Task", "Repository", "Phase", "PR", "Last activity", "Room"].map((h) => cell("th", h)));
+  const thead = document.createElement("thead");
+  thead.append(head);
+  const tbody = document.createElement("tbody");
+  table.append(thead, tbody);
+  const fill = (rows: RoomRow[]) => {
+    const now = new Date();
+    tbody.replaceChildren(...sortRooms(rows).map((r) => roomRow(r, now)));
+  };
+  fill(first);
+
+  let seq = 0; // a slow answer to an older filter never overwrites a newer one
+  const refetch = async () => {
+    const mark = ++seq;
+    notice.textContent = "";
+    const rows = await fetchRooms({ mine: mine.input.checked, needsMe: needsMe.input.checked, repo: repo.value || undefined },
+      (m) => { if (mark === seq) notice.textContent = m; });
+    if (rows && mark === seq) fill(rows);
+  };
+  // click, not change: a checkbox's change event needs a connected element; click fires either way.
+  for (const e of [mine.input, needsMe.input]) e.addEventListener("click", () => void refetch());
+  repo.addEventListener("change", () => void refetch());
+
+  app.replaceChildren(header, tools, table, form, cliSetup(get));
 }
 
 export const roomId = /^[a-z2-7]{8}$/;

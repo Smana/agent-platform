@@ -391,3 +391,15 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Room list */
+.page-header h1 { margin: 0; font-size: 18px; }
+.list-tools { display: flex; gap: 12px; align-items: center; padding: 8px 16px; flex-wrap: wrap; }
+.list-tools .notice { color: var(--destructive); }
+table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collapse; background: var(--card); box-shadow: var(--shadow-border); border-radius: 8px; }
+.rooms th, .rooms td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.rooms th { font-size: 12px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
+.rooms .needs-pill { background: var(--warning); color: var(--brand-navy); border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 12px; }
+@media (max-width: 600px) {
+  .rooms th:nth-child(n+4), .rooms td:nth-child(n+4) { display: none; }
+}
