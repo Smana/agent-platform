@@ -12,6 +12,7 @@ import (
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
+// stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).
 // It replays what the run has not acknowledged, from the log, then follows the
 // room's hub: a delivery is derived from the log, so it survives a broker
 // restart, a replica change and a bridge restart alike (§2 Steering).

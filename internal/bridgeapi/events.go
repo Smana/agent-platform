@@ -148,5 +148,3 @@ const (
 func refusedStub(t envelope.Type, why string) json.RawMessage {
 	return envelope.Must(map[string]any{"refused": true, "type": t, "reason": why})
 }
-
-// stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).
