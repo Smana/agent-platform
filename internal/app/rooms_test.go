@@ -55,6 +55,10 @@ func (*fakeActLog) DriverSeen(context.Context, string, string, bool) error { ret
 
 func (*fakeActLog) OpenApprovals(context.Context, string) ([]store.Approval, error) { return nil, nil }
 
+func (*fakeActLog) LastEventAt(context.Context, []string) (map[string]time.Time, error) {
+	return nil, nil
+}
+
 func (*fakeActLog) LastTaskState(context.Context, string, int64) (json.RawMessage, error) {
 	return nil, nil
 }

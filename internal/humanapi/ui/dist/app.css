@@ -31,12 +31,17 @@
 
   --destructive: #d22323;
   --destructive-foreground: #ffffff;
+  /* Text on the error chip's 10% tint: --destructive is 4.47:1 there. */
+  --destructive-text: #d02323;
 
   /* Brand navy header/dark surfaces */
   --brand-navy: #002538;
   --brand-navy-foreground: #f2f2f2;
 
-  --placeholder: #8a8a8a;
+  --placeholder: #6b6b6b;
+  --link: #00639c; /* text-weight ocean blue: --primary is 4.6:1 on white but fails on the haze page */
+  --success-text: #3a7410;
+  --warning-border: #b36f00;
 
   /* Elevation: a layered transparent shadow lifts a card off whatever surface
      ends up underneath; a border colour doesn't. Structural borders stay borders. */
@@ -77,13 +82,18 @@
   /* Light amber, not deep navy: warning text renders on a faint warning tint. */
   --warning-foreground: #f5c97f;
 
-  --destructive: #f26363;
+  --destructive: #f37171; /* was #f26363: 4.13:1 on the card, under AA */
   --destructive-foreground: #002538;
+  /* Text on the error chip's 10% tint: --destructive is 4.13:1 there. */
+  --destructive-text: #f47e7e;
 
   --brand-navy: #002538;
   --brand-navy-foreground: #f2f2f2;
 
-  --placeholder: #7f93a1;
+  --placeholder: #9db0bc;
+  --link: #4db3e8;
+  --success-text: #7fcf3a;
+  --warning-border: #ed9d13;
 
   /* Layered depth shadows are invisible against navy — collapse to the ring. */
   --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
@@ -105,24 +115,36 @@ body {
 h1, h2, h3, h4 { text-wrap: balance; }
 p, li { text-wrap: pretty; }
 
-a { color: var(--primary); }
+a { color: var(--link); }
 
-/* The page chrome: a brand-navy header, a card footer holding the counters. */
-header, footer { padding: 8px 16px; position: sticky; }
-header {
-  top: 0; z-index: 1;
-  display: flex; gap: 12px; align-items: baseline;
+/* The page chrome: a brand-navy header, a docked footer. Class-scoped: the chat's
+   <header class="msg-head"> and the raw view's <header class="ev-head"> are headers too,
+   and the bare selector made each of them a sticky navy bar (review 2026-10-15, U1). */
+.page-header, .page-dock { padding: 8px 16px; position: sticky; }
+.page-header {
+  top: 0; z-index: 2;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start;
   background: var(--brand-navy); color: var(--brand-navy-foreground);
 }
-header .title { overflow-wrap: anywhere; }
-footer {
-  bottom: 0;
-  font-family: ui-monospace, monospace;
+/* The dock: the composer on the left (the text over its row: deliver to, the notice, send),
+   the act notice, the theme button and the connection on the right; one column on a phone. */
+.page-dock {
+  bottom: 0; z-index: 2;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: end;
+  font-variant-numeric: tabular-nums;
   background: var(--card); color: var(--card-foreground);
   border-top: 1px solid var(--border);
 }
-footer .status { float: right; color: var(--muted-foreground); }
-footer[data-status="live"] .status { color: var(--success); }
+.page-dock .composer { display: grid; gap: 6px; min-width: 0; }
+.page-dock textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px; resize: vertical; }
+.composer-row, .dock-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; min-width: 0; }
+.dock-meta { justify-content: flex-end; }
+.page-dock .status { color: var(--muted-foreground); font-family: ui-monospace, monospace; }
+.page-dock[data-status="live"] .status { color: var(--success-text); }
+.page-dock .notice { color: var(--destructive); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .page-dock { grid-template-columns: minmax(0, 1fr); } .dock-meta { justify-content: space-between; } }
+/* Not live: under the strip, why and when the page retries. */
+.banner { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
 main { padding: 8px 16px 16px; max-width: 100%; }
 
 button {
@@ -134,14 +156,46 @@ button:hover { box-shadow: var(--shadow-border-hover); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
-header button { background: transparent; color: var(--brand-navy-foreground); }
+.page-header button { background: transparent; color: var(--brand-navy-foreground); }
+
+/* The title strip (strip.ts): rows of the header, on brand navy, so every chip and link
+   takes the header's text token rather than the card's. */
+.strip { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.strip-title { font-size: 18px; margin: 0; font-weight: 600; }
+.strip-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.page-header .chip {
+  color: var(--brand-navy-foreground); background: transparent;
+  border-color: color-mix(in srgb, var(--brand-navy-foreground) 45%, var(--brand-navy));
+}
+.page-header a { color: var(--brand-navy-foreground); text-decoration: underline; }
+.meter-bar {
+  display: inline-block; width: 64px; height: 6px; border-radius: 3px; vertical-align: middle;
+  background: color-mix(in srgb, var(--brand-navy-foreground) 20%, transparent); position: relative;
+}
+.meter-bar::after { content: ""; position: absolute; inset: 0; width: var(--fill, 0%); background: var(--accent); border-radius: 3px; }
+.waiting, .closed { font-size: 13px; color: var(--brand-navy-foreground); opacity: .9; }
+.strip-head { display: grid; gap: 4px; min-width: 0; }
+.strip-tail:empty { display: none; }
+/* The Now line: a button that reads as a line of text, so it takes the reader to the row. */
+.strip-now { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 13px; color: var(--brand-navy-foreground); }
+.page-header .now-link {
+  border: 0; padding: 0; text-align: left; font-size: 13px; overflow-wrap: anywhere;
+  color: var(--brand-navy-foreground); background: transparent;
+}
+.page-header .now-link:hover { box-shadow: none; text-decoration: underline; }
+.now-hint { font-style: italic; }
+.page-header .needs-pill {
+  background: var(--warning); color: var(--brand-navy);
+  border: 0; border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 12px;
+}
+.strip-conn { font-size: 12px; font-family: ui-monospace, monospace; }
 .theme-toggle { margin-left: auto; font-size: 12px; }
 .theme-toggle { margin-left: 0; }
 
 /* Chat view */
 .msg { margin: 12px 0; max-width: 72ch; }
 .msg-head { color: var(--muted-foreground); font-size: 12px; display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
-.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 11px; white-space: nowrap; }
+.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 12px; white-space: nowrap; }
 .bubble {
   background: var(--card); color: var(--card-foreground);
   border-radius: 4px 12px 12px 12px; padding: 6px 12px;
@@ -164,26 +218,26 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 .tool summary::-webkit-details-marker { display: none; }
 .tool.st-rejected, .tool.st-error { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--destructive) 65%, var(--card)); }
 .tool.st-rejected { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--warning) 80%, var(--card)); }
-.t-name { color: var(--primary); font-weight: 600; }
+.t-name { color: var(--link); font-weight: 600; }
 .t-cmd { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; flex: 1 1 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool[open] .t-cmd { white-space: normal; overflow-wrap: anywhere; }
 .t-body { border-top: 1px solid var(--border); padding: 6px 10px; }
-.t-sec { color: var(--placeholder); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
-.t-meta { color: var(--placeholder); font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
+.t-sec { color: var(--placeholder); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
+.t-meta { color: var(--placeholder); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
 .t-body pre, .other pre { background: var(--muted); border-radius: 6px; padding: 6px 8px; }
 
 /* Chips and badges: a tinted pill, the status token for its text. */
 .chip, .pol {
-  font-size: 11px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
+  font-size: 12px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
   border: 1px solid var(--border); color: var(--muted-foreground);
 }
 .chip-ok {
-  color: var(--success);
+  color: var(--success-text);
   background: color-mix(in srgb, var(--success) 12%, var(--card));
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .chip-error {
-  color: var(--destructive);
+  color: var(--destructive-text);
   background: color-mix(in srgb, var(--destructive) 10%, var(--card));
   border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
 }
@@ -195,7 +249,7 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 /* A message for the room prompts no agent: a neutral chip, the others amber (R09). */
 .chip-delivery.dl-none { color: var(--muted-foreground); background: none; border-color: var(--border); }
 .chip-running {
-  color: var(--primary);
+  color: var(--link);
   background: color-mix(in srgb, var(--primary) 10%, var(--card));
   border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
 }
@@ -204,11 +258,11 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
   @keyframes pulse { 50% { opacity: .45; } }
 }
 .pol-allow, .pol-approved, .verdict-approve {
-  color: var(--success);
+  color: var(--success-text);
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .pol-deny, .pol-denied, .pol-expired {
-  color: var(--destructive);
+  color: var(--destructive-text);
   border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
 }
 .verdict-changes {
@@ -224,6 +278,20 @@ header button { background: transparent; color: var(--brand-navy-foreground); }
 .sys { font-style: italic; }
 .sys::before { content: "·"; }
 .mk-harness_error .mark-text, .mk-limit .mark-text { color: var(--destructive); }
+.mark { max-width: 72ch; }
+/* U7: a run of plumbing rows reads as one "· N changes" line, open on click. */
+.fold { color: var(--muted-foreground); font-size: 12px; margin: 6px 0; max-width: 72ch; }
+.fold > summary { cursor: pointer; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold-body { padding-left: 14px; }
+/* An actor's colour, keyed on its id: decoration beside the name, which carries the meaning. */
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: -2px; flex: none; align-self: center; }
+.swatch-0 { background: var(--primary); }
+.swatch-1 { background: var(--accent); }
+.swatch-2 { background: var(--warning); }
+.swatch-3 { background: var(--destructive); }
+.swatch-4 { background: var(--link); }
+.swatch-5 { background: var(--muted-foreground); }
 .other { max-width: 72ch; color: var(--muted-foreground); }
 .other summary { cursor: pointer; }
 
@@ -235,15 +303,32 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow
 .status-error, .status-rejected { color: var(--destructive); }
 /* An audit note, not an alarm: the warning foreground reads on both schemes. */
 .redacted { color: var(--warning-foreground); font-size: 12px; }
-footer .notice { margin-left: 12px; color: var(--destructive); font-family: inherit; }
 
 /* Controls (unchanged behaviour, platform palette) */
 /* hidden must win over a flex display: the controls toggle it, never re-mount (R10). */
 [hidden] { display: none !important; }
-.controls { padding: 8px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; background: var(--background); }
-.controls .composer, .controls .driver, .controls form, .new-room { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.controls textarea { flex: 1 1 100%; box-sizing: border-box; font: inherit; padding: 6px; }
+.controls { padding: 0 16px 8px; display: grid; background: var(--background); }
+.controls .driver, .controls form, .new-room { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .controls input, .new-room input { flex: 1 1 12em; min-width: 0; }
+/* Named groups (U8): Run, Driver, the queue, Room behind a toggle. */
+.controls .group, .controls .group-queue { border-top: 1px solid var(--border); padding: 8px 0; min-width: 0; }
+.controls h2, .controls .group-room > summary, .controls .group-label {
+  font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted-foreground); margin: 0 0 6px; font-weight: 600;
+}
+.controls .group-room > summary { cursor: pointer; margin: 0; }
+.controls .group-room[open] > summary { margin-bottom: 6px; }
+.controls .group-room > * + * { margin-top: 6px; }
+.controls label.field { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; flex: 1 1 12em; min-width: 0; }
+.controls label.field > span { color: var(--muted-foreground); font-size: 13px; }
+.composer-row label.field { display: inline-flex; gap: 6px; align-items: center; min-width: 0; }
+.composer-row label.field > span { color: var(--muted-foreground); font-size: 13px; }
+.composer-row select { max-width: 100%; }
+.controls .advanced { flex: 1 1 100%; }
+.controls .advanced > summary { cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.members { margin: 0; padding-left: 18px; } .members li { overflow-wrap: anywhere; }
+.stop { margin: 0; } .stop code { font-family: ui-monospace, monospace; }
+.confirm { display: inline-flex; gap: 6px; }
+button.destructive { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
 input, select, textarea {
   font: inherit;
   background: var(--card); color: var(--card-foreground);
@@ -251,15 +336,29 @@ input, select, textarea {
 }
 input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .queue { margin: 0; padding-left: 18px; } .queue li span { overflow-wrap: anywhere; margin-right: 6px; }
-/* Approvals: the amber accent and subtle panel background, on the platform palette. */
-.approvals { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.approval { border: 1px solid var(--warning); border-radius: 4px; padding: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.approval-head { flex-basis: 100%; font-weight: 600; overflow-wrap: anywhere; }
-.approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
+/* The needs-you panel, under the strip: approval cards lead with their command, the JSON
+   behind a toggle; approve is the primary button, deny the destructive outline. */
+.needs { padding: 8px 16px; display: grid; gap: 6px; max-width: 100%; }
+.needs h2 { margin: 0; font-size: 1em; }
+.approvals, .needs-other { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.needs-other li { overflow-wrap: anywhere; }
+.approval { border: 1px solid var(--warning-border); border-radius: 6px; padding: 8px 12px; display: grid; gap: 6px;
+  background: var(--card); color: var(--card-foreground); min-width: 0; }
+.approval-command { font: 14px ui-monospace, monospace; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-meta { color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.approval-json > summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; }
+.approval-json pre { margin: 4px 0 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
+.approval-decide { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.approval-decide input { flex: 1 1 12em; min-width: 0; }
+button.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+button.deny { color: var(--destructive-text); border-color: var(--destructive-text); }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
-.fork-here { margin-left: 8px; font-size: 11px; padding: 0 6px; opacity: 0.55; }
-.fork-here:hover, .fork-here:focus-visible { opacity: 1; }
+.fork-here { font-size: 12px; padding: 0 6px; }
+/* U7: fork here sits in a toolbar beside a message or a handoff, shown on hover and focus. */
+.row { position: relative; max-width: 72ch; }
+.row-tools { position: absolute; right: -4px; top: 0; opacity: 0; }
+.row:hover .row-tools, .row:focus-within .row-tools { opacity: 1; }
 .fork { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--background); }
 .fork form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .fork input { flex: 1 1 12em; min-width: 0; }
@@ -268,16 +367,15 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .new-room .hint { flex-basis: 100%; color: var(--muted-foreground); font-size: 12px; }
 .gone { padding: 16px; }
 
-/* Room page lead: status, needs you, actions, notes. Wraps at phone width, never scrolls sideways. */
+/* Room page lead: the notes. Wraps at phone width, never scrolls sideways. */
 .summary { padding: 8px 16px; display: grid; gap: 8px; max-width: 100%; overflow-wrap: anywhere; }
-.summary-block { border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; background: var(--card); color: var(--card-foreground); }
-.summary-block h2 { margin: 0 0 4px; font-size: 1em; }
-.summary-block p { margin: 2px 0; }
-.summary-block ul { margin: 0; padding-left: 18px; }
-.summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
-.summary-needs-you { border-color: var(--warning); }
 .summary-error { color: var(--destructive); margin: 0; }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
+.notes { overflow-wrap: anywhere; }
+.notes .note-latest { margin: 0; }
+.notes .note-latest .hint { margin-left: 8px; }
+.notes details > summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; }
+.notes ul { margin: 4px 0 0; padding-left: 18px; }
 .raw-events { margin-top: 8px; }
 .raw-events > summary { cursor: pointer; padding: 4px 0; }
 
@@ -287,4 +385,16 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Room list */
+.page-header h1 { margin: 0; font-size: 18px; }
+.list-tools { display: flex; gap: 12px; align-items: center; padding: 8px 16px; flex-wrap: wrap; }
+.list-tools .notice { color: var(--destructive-text); }
+table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collapse; background: var(--card); box-shadow: var(--shadow-border); border-radius: 8px; }
+.rooms th, .rooms td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.rooms th { font-size: 12px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
+.rooms .needs-pill { background: var(--warning); color: var(--brand-navy); border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 12px; }
+@media (max-width: 600px) {
+  .rooms th:nth-child(n+4), .rooms td:nth-child(n+4) { display: none; }
 }

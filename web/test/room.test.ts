@@ -10,6 +10,9 @@ const theme = { mode: "light" as const, cycle: () => "light" as const };
 const snapshot = (you: Partial<Snapshot["you"]> = {}): Snapshot => ({ roomId: "3kq7x2ma", phase: "Open", driver: "human:a",
   driverEpoch: 1, dataClass: "internal", you: { principal: "human:b", role: "collaborator", approver: false, driver: false, webUI: true, ...you } });
 
+// A state frame whose run is live: its agent is present (RoomState.running).
+const live = (you: Partial<Snapshot["you"]> = {}): Snapshot => ({ ...snapshot(you), runs: [{ id: "ikely2yk", role: "implementer", phase: "Running" }] });
+
 const event = (seq: number, type: string, payload: unknown) => ({ type: "event", event: { v: 1, id: String(seq), seq,
   roomId: "3kq7x2ma", actor: { kind: "system", id: "system:room-broker" }, type, origin: "broker", ts: "2026-10-06T10:00:00Z",
   redactions: [], payload } });
@@ -28,20 +31,172 @@ function page(get?: typeof fetch) {
     last().recv({ type: "sync", fromSeq: 1, throughSeq });
     for (const f of replay) last().recv(f);
   };
-  const title = () => app.querySelector(".title")?.textContent;
-  return { app, sockets, last, join, title };
+  const phase = () => app.querySelector(".chip-phase")?.textContent;
+  return { app, sockets, last, join, phase };
 }
 
 describe("the room page", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  const agent = (seq: number, type: string, payload: unknown, ts = "2026-10-06T10:00:00Z") => {
+    const f = event(seq, type, payload);
+    return { ...f, event: { ...f.event, ts, actor: { kind: "agent", id: "agent:ikely2yk", role: "implementer" }, origin: "bridge" } };
+  };
+
+  it("says what the agent does now, its age kept current every second", () => {
+    vi.setSystemTime(Date.parse("2026-10-06T10:00:05Z"));
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run yet");
+    p.last().recv(event(1, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    p.last().recv(agent(2, "tool_call", { callId: "c1", tool: "terminal", args: { command: "go test ./..." } }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 5 s ago");
+    vi.advanceTimersByTime(3000);
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 8 s ago");
+    p.last().recv(agent(3, "tool_result", { callId: "c1", status: "error", output: "FAIL" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · error · 8 s ago");
+  });
+
+  it("takes the Now line's click to its row and opens it", () => {
+    const p = page();
+    document.body.append(p.app); // the row is found in the page, as in a browser
+    try {
+      p.join(live(), 0);
+      p.last().recv(agent(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
+      const row = p.app.querySelector<HTMLDetailsElement>('.view-chat details[data-seq="1"]')!;
+      let scrolled = 0;
+      row.scrollIntoView = () => { scrolled++; };
+      expect(row.open).toBe(false);
+      p.app.querySelector<HTMLButtonElement>(".now-link")!.click();
+      expect(scrolled).toBe(1);
+      expect(row.open).toBe(true);
+      expect(document.activeElement).toBe(row); // the keyboard lands there too
+      expect(row.tabIndex).toBe(-1);
+    } finally { p.app.remove(); }
+  });
+
+  // U7: the Now link and the needs-you call link land on a visible row beside folded
+  // plumbing, and a folded row's seq still resolves (its fold exposes the seqs it holds).
+  it("takes the Now link and the call link to a visible row beside a folded group", () => {
+    const p = page();
+    document.body.append(p.app);
+    try {
+      p.join(live({ approver: true }), 0);
+      p.last().recv(event(1, "turn", { turnId: "t1", phase: "started" }));
+      p.last().recv(event(2, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
+      p.last().recv(agent(3, "tool_call", { callId: "c1", tool: "terminal", args: { command: "git push" } }));
+      p.last().recv(event(4, "state_changed", { kind: "policy_decision", decision: "ask", callId: "c1" }));
+      p.last().recv(event(5, "turn", { turnId: "t1", phase: "waiting" }));
+      p.last().recv(event(6, "state_changed", { kind: "harness_status", status: "waiting_for_confirmation", previous: "running" }));
+      p.last().recv(agent(7, "approval_requested", { approvalId: "ap1", callId: "c1", class: "forge.other",
+        action: { command: "git push" }, expiresAt: "2026-10-06T11:00:00Z" }));
+      const chat = p.app.querySelector<HTMLElement>(".view-chat")!;
+      expect([...chat.querySelectorAll("details.fold")].map((f) => f.querySelector("summary")?.textContent)).toEqual(["· turn t1 · 2 changes", "· turn t1 · 2 changes"]);
+      expect(chat.querySelector('details.fold [data-seq="5"]')).not.toBeNull();
+      const row = chat.querySelector<HTMLDetailsElement>('details.tool[data-seq="3"]')!;
+      expect(row.closest(".fold")).toBeNull();
+      let scrolled = 0;
+      row.scrollIntoView = () => { scrolled++; };
+      p.app.querySelector<HTMLButtonElement>(".now-link")!.click();
+      expect(row.open).toBe(true);
+      row.open = false;
+      const link = p.app.querySelector<HTMLAnchorElement>("a.approval-call")!;
+      expect(link.hidden).toBe(false);
+      expect(link.textContent).toBe("see the call #3");
+      (document.activeElement as HTMLElement).blur();
+      link.click();
+      expect(row.open).toBe(true);
+      expect(scrolled).toBe(2);
+      expect(document.activeElement).toBe(row);
+    } finally { p.app.remove(); }
+  });
+
+  it("names the viewer's own messages 'you', from the state frame", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    const f = event(1, "message", { kind: "chat", text: "mine", delivery: "none" });
+    p.last().recv({ ...f, event: { ...f.event, actor: { kind: "human", id: "human:b" } } });
+    expect(p.app.querySelector(".view-chat .msg-head .who")?.textContent).toBe("you");
+  });
+
+  // Review focus 2: the call row went at the cap; its result alone heads the Now line.
+  it("shows a result whose call the page dropped, and its click finds nothing without throwing", () => {
+    const p = page();
+    p.join(live(), 0);
+    p.last().recv(agent(1, "tool_result", { callId: "gone", status: "ok", output: "done\nmore" }));
+    expect(p.app.querySelector(".now")?.textContent).toMatch(/^Now ▸ done · ok · /);
+    expect(() => p.app.querySelector<HTMLButtonElement>(".now-link")!.click()).not.toThrow();
+  });
+
+  // Q2: once the run's agent leaves, the page says no run is on, names the last activity,
+  // stops ageing the run and offers no steering.
+  it("says there is no run once the agent leaves, and offers no steering", () => {
+    vi.setSystemTime(Date.parse("2026-10-06T10:00:05Z"));
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const steer = () => p.app.querySelector<HTMLOptionElement>('select[name="delivery"] option[value="steering"]')!;
+    p.last().recv(event(1, "message", { kind: "chat", text: "anyone?", delivery: "none" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run yet"); // a human's message starts no run
+    expect(steer().hidden).toBe(true);
+    p.last().recv(event(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    p.last().recv(agent(3, "message", { kind: "chat", text: "on it", delivery: "none" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ on it · message · 5 s ago");
+    expect([steer().hidden, steer().disabled]).toEqual([false, false]);
+    p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
+    p.last().recv(event(4, "participant", { principal: "agent:ikely2yk", change: "left" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run · last: on it · 5 s ago");
+    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+    expect([steer().hidden, steer().disabled]).toEqual([true, true]);
+    expect(p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value).toBe(""); // a steer with no run: chosen again
+    expect(p.app.querySelector("#delivery-notice")?.textContent).toMatch(/no run/i);
+  });
+
+  it("moves the focus to the needs-you panel from its pill", () => {
+    const p = page();
+    document.body.append(p.app);
+    try {
+      p.join(live({ approver: true }), 0);
+      p.last().recv(agent(1, "approval_requested", { approvalId: "ap1", callId: "c1", class: "forge.other",
+        action: { command: "git push" }, expiresAt: "2026-10-06T11:00:00Z" }));
+      const panel = p.app.querySelector<HTMLElement>("section.needs")!;
+      panel.scrollIntoView = () => {};
+      p.app.querySelector<HTMLButtonElement>(".needs-pill")!.click();
+      expect(document.activeElement).toBe(panel);
+    } finally { p.app.remove(); }
+  });
+
+  // One owned timer per mounted room: a re-mount over the same app leaves the old one no tick.
+  it("keeps one refresh timer per mounted page, across re-mounts", () => {
+    const app = document.createElement("div");
+    const mount = () => mountRoom(app, "3kq7x2ma", theme, { socket: (url) => new FakeSocket(url), random: () => 0,
+      get: (async () => new Response("", { status: 503 })) as unknown as typeof fetch });
+    mount();
+    vi.advanceTimersByTime(1000);
+    const one = vi.getTimerCount();
+    for (let n = 0; n < 3; n++) mount();
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBe(one);
+    app.replaceChildren(); // the page left the app: its timer goes too
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBe(one - 1);
+  });
+
+  it("styles only the page chrome as a header: a message head is not sticky navy (U1)", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    p.last().recv(event(1, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    expect(p.app.querySelector("header.page-header")).not.toBeNull();
+    expect(p.app.querySelector("header.msg-head")?.classList.contains("page-header")).toBe(false);
+  });
+
   it("heads the page with the room's phase as the log moves it (R10)", () => {
     const p = page();
     p.join(snapshot(), 0);
-    expect(p.title()).toMatch(/^3kq7x2ma · Open · internal · /);
+    expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
+    expect(p.phase()).toBe("Open");
     p.last().recv(event(1, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
-    expect(p.title()).toMatch(/^3kq7x2ma · Closed · internal · /);
+    expect(p.phase()).toBe("Closed");
   });
 
   // Every reader may fork (policy Fork): a chat row's "fork here" opens the panel at
@@ -100,12 +255,15 @@ describe("the room page", () => {
   it("stops on a room the list misses three refusals in a row, with one answer for both cases", async () => {
     const l = lists([], ["3kq7x2ma"], [], [], []);
     const p = page(l.get);
+    const banner = () => p.app.querySelector<HTMLElement>(".banner")!;
     for (let n = 1; n <= 4; n++) { // absent, then listed (which starts the count over), then absent twice
       p.last().drop(1006);
       await flush();
+      // Spec "No such room": the page says it is checking during the tries.
+      expect(banner().textContent).toMatch(n === 2 ? /^Reconnecting/ : /^Checking the room…$/); // listed: the count starts over
       vi.advanceTimersByTime(30_000); // past any backoff: the re-dial continues
       expect(p.sockets).toHaveLength(n + 1);
-      expect(p.app.querySelector(".title")).not.toBeNull();
+      expect(p.app.querySelector("h1")).not.toBeNull();
     }
     p.last().drop(1006); // the third absent answer in a row
     await flush();
@@ -143,26 +301,28 @@ describe("the room page", () => {
     expect(p.sockets).toHaveLength(4);
   });
 
-  // Review M3: an ack clears what an act said, never a notice the controls set
-  // meanwhile, such as a lost token's.
+  // Review M3: an ack clears what an act said, never the lost token's notice, which
+  // now sits beside the select it is about.
   it("keeps the lost token's notice past the ack of the give that lost it", () => {
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
-    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    const notice = () => p.app.querySelector("footer .act-notice")!.textContent;
+    const beside = () => p.app.querySelector("#delivery-notice")!.textContent;
     p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
     p.app.querySelector<HTMLInputElement>('[name="giveTo"]')!.value = "human:c";
     p.app.querySelector<HTMLButtonElement>('[data-act="driver_give"]')!.click();
     const give = p.last().sent.at(-1) as { clientSeq: number };
     p.last().recv(event(1, "driver", { from: "human:a", to: "human:c", epoch: 2, reason: "given" }));
     const choose = "You no longer hold the driver token: choose where this message goes.";
-    expect(notice()).toBe(choose);
+    expect(beside()).toBe(choose);
     p.last().recv({ type: "ack", clientSeq: give.clientSeq, seq: 1 });
-    expect(notice()).toBe(choose);
-    // A refusal is an act's own: the next accepted ack clears it.
+    expect(beside()).toBe(choose);
+    // A refusal is an act's own: the next accepted ack clears it, and only it.
     p.last().recv({ type: "ack", clientSeq: give.clientSeq + 1, rejected: "rate_limited" });
     expect(notice()).toMatch(/^Too many actions/);
     p.last().recv({ type: "ack", clientSeq: give.clientSeq + 2, seq: 2 });
     expect(notice()).toBe("");
+    expect(beside()).toBe(choose);
   });
 
   // Re-review N2: a connection the broker accepted proves the room readable, so the
@@ -182,7 +342,7 @@ describe("the room page", () => {
     vi.advanceTimersByTime(30_000);
     await refuse();
     await refuse();
-    expect(p.app.querySelector(".title")).not.toBeNull();
+    expect(p.app.querySelector("h1")).not.toBeNull();
     expect(p.sockets).toHaveLength(6);
     p.last().drop(1006); // the third in a row since the open
     await flush();
@@ -195,7 +355,7 @@ describe("the room page", () => {
   it("clears the lost token's notice once the human picks a delivery and sends", () => {
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
-    const notice = () => p.app.querySelector("footer .notice")!.textContent;
+    const notice = () => p.app.querySelector("#delivery-notice")!.textContent;
     const delivery = p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!;
     const text = p.app.querySelector<HTMLTextAreaElement>('textarea[name="text"]')!;
     const send = p.app.querySelector<HTMLButtonElement>('[data-act="message"]')!;
@@ -218,8 +378,11 @@ describe("the room page", () => {
   });
 
   it("announces its notices politely (R10)", () => {
-    const notice = page().app.querySelector("footer .notice")!;
-    expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+    const p = page();
+    p.join(snapshot(), 0);
+    for (const notice of [p.app.querySelector("footer .act-notice")!, p.app.querySelector("#delivery-notice")!]) {
+      expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+    }
   });
 
   // The summary leads the page; the raw stream is collapsed and shares the one socket.
@@ -227,12 +390,12 @@ describe("the room page", () => {
   // otherwise refetch the whole fold every second (R27).
   it("leads with the summary, refetched at most once a second on summary events, over the one socket", async () => {
     const sum = { apiVersion: "summary/v1", room: "3kq7x2ma", url: "u", status: { phase: "Open", run: null, budget: null, pr: null, issue: null, lastVerdict: null },
-      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor: "seq:0" };
+      needsYou: [], actions: [], notes: { untrusted: true, items: [{ at: "2026-10-06T10:00:00Z", run: "ikely2yk", text: "reading" }] }, cursor: "seq:0" };
     const get = vi.fn(async () => new Response(JSON.stringify(sum), { status: 200 })) as unknown as typeof fetch;
     const p = page(get);
     await vi.advanceTimersByTimeAsync(0);
     expect(get).toHaveBeenCalledTimes(1);
-    expect(p.app.querySelector('.summary [data-block="status"]')).not.toBeNull();
+    expect(p.app.querySelector('.summary [data-block="notes"]')).not.toBeNull();
     expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
     p.join(snapshot(), 0);
     p.last().recv(event(1, "message", { kind: "chat", text: "a", delivery: "none" }));
@@ -256,6 +419,22 @@ describe("the room page", () => {
     expect(p.app.querySelector(".view-chat")!.textContent).toContain("still here");
   });
 
+  // Review focus 1: the strip needs no summary; the state frame alone heads the page.
+  it("renders the strip from the state frame when the summary cannot be fetched", async () => {
+    const p = page(() => Promise.resolve(new Response("", { status: 503 })));
+    expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true); // before join: no empty heading
+    p.join(snapshot(), 0);
+    await vi.runOnlyPendingTimersAsync();
+    expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true);
+    expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
+    expect(p.phase()).toBe("Open");
+    expect(p.app.querySelector(".chip-driver")?.textContent).toBe("driver: human:a");
+    expect(p.app.querySelector(".chip-you")?.textContent).toBe("you: collaborator");
+    expect(p.app.querySelector(".summary-error")?.textContent).toMatch(/unavailable/);
+    p.last().recv(event(1, "message", { kind: "chat", text: "still flowing", delivery: "none" }));
+    expect(p.app.querySelector(".view-chat")!.textContent).toContain("still flowing");
+  });
+
   // R23: only the raw log is collapsed; chat and composer stay in view.
   it("keeps the chat and the composer visible with the raw events closed", () => {
     const p = page();
@@ -264,7 +443,58 @@ describe("the room page", () => {
     expect(p.app.querySelector("details.raw-events .view-chat")).toBeNull();
     expect(p.app.querySelector("details.raw-events")!.contains(p.app.querySelector('textarea[name="text"]'))).toBe(false);
     expect(p.app.querySelector<HTMLElement>("section.controls")!.hidden).toBe(false);
-    expect(p.app.querySelector<HTMLElement>(".composer")!.hidden).toBe(false);
+    expect(p.app.querySelector<HTMLElement>("footer .composer")!.hidden).toBe(false);
+  });
+
+  it("docks the composer at the bottom and disables Send while reconnecting or sealed", () => {
+    const p = page();
+    p.join(snapshot({ role: "collaborator" }), 0);
+    const dock = p.app.querySelector("footer.page-dock")!;
+    expect(dock.querySelector("textarea")).not.toBeNull();
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(false);
+    expect(p.app.querySelector<HTMLElement>(".banner")!.hidden).toBe(true);
+    p.last().drop(1006);
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(p.app.querySelector(".banner")?.textContent).toMatch(/^Reconnecting in \d+ s: connection lost$/);
+    expect(p.app.querySelector<HTMLElement>(".banner")!.hidden).toBe(false);
+    expect(p.app.querySelector(".banner")!.previousElementSibling).toBe(p.app.querySelector("header.page-header"));
+  });
+
+  it("reads live with its event count in the dock, and the protocol counters on the raw log", () => {
+    const p = page();
+    expect(p.app.querySelector("footer .status")?.textContent).toBe("connecting…");
+    p.join(snapshot(), 0, event(1, "message", { kind: "chat", text: "a", delivery: "none" }), event(2, "message", { kind: "chat", text: "b", delivery: "none" }));
+    expect(p.app.querySelector("footer .status")?.textContent).toBe("live · 2 events");
+    expect(p.app.querySelector("details.raw-events > summary")?.textContent).toBe("Raw events · seq 2 · gaps 0 · dups 0");
+    expect(p.app.querySelector("footer .theme-toggle")).not.toBeNull(); // the theme button moved to the dock
+    expect(p.app.querySelector("header .theme-toggle")).toBeNull();
+  });
+
+  // Review focus 5.
+  it("keeps a steering draft and moves the notice beside the select when the token is lost (review focus 5)", () => {
+    const p = page();
+    p.join(snapshot({ role: "collaborator", driver: true }), 0);
+    const dock = p.app.querySelector("footer.page-dock")!;
+    const text = dock.querySelector("textarea") as HTMLTextAreaElement;
+    const delivery = dock.querySelector('select[name="delivery"]') as HTMLSelectElement;
+    text.value = "turn left"; delivery.value = "steering";
+    p.last().recv(event(1, "driver", { from: "human:b", to: "human:c", epoch: 2 }));
+    expect(text.value).toBe("turn left");
+    expect(delivery.value).toBe("");
+    expect(delivery.getAttribute("aria-describedby")).toBe("delivery-notice");
+    expect(dock.querySelector("#delivery-notice")?.textContent).toMatch(/choose where this message goes/);
+    expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("reads Closed by whom in the strip and hides the composer", () => {
+    const p = page();
+    p.join(snapshot({ role: "owner" }), 0);
+    p.last().recv({ ...event(1, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }), event: { ...event(1, "state_changed", {}).event,
+      actor: { kind: "human", id: "human:b" }, payload: { kind: "room_phase", phase: "Closed", reason: "owner" } } });
+    expect(p.app.querySelector(".closed")?.textContent).toMatch(/^Closed .* by you$/);
+    expect((p.app.querySelector("footer.page-dock textarea") as HTMLElement).hidden).toBe(true);
+    expect(p.app.querySelector<HTMLElement>(".group-run")!.hidden).toBe(true);
+    expect(p.app.querySelector<HTMLElement>(".group-driver")!.hidden).toBe(true);
   });
 
   // R24: the broker's link is <room>#<approvalId>; it lands on that approval's card.
@@ -292,20 +522,67 @@ describe("the room page", () => {
       p.app.remove();
     });
 
-    it("does nothing, and does not throw, for a non-approver", () => {
+    // A watcher sees the panel read-only (spec D3): the link lands on the card, focusing nothing.
+    it("focuses nothing, and does not throw, for a non-approver", () => {
       location.hash = "#01M4A";
       const p = page();
       document.body.append(p.app);
       expect(() => p.join(snapshot({ role: "watcher" }), 0, requested(1, "01M4A"))).not.toThrow();
-      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      expect(p.app.querySelector("#approval-01M4A button")).toBeNull();
+      expect(p.app.querySelector("#approval-01M4A")?.contains(document.activeElement)).toBe(false);
       p.app.remove();
+    });
+  });
+
+  describe("the needs-you panel", () => {
+    const requested = (seq: number, id: string) => event(seq, "approval_requested", { approvalId: id, callId: "c1", class: "forge.pr",
+      action: { command: "git push" }, expiresAt: "2099-01-01T00:00:00Z" });
+    const pill = (p: ReturnType<typeof page>) => p.app.querySelector(".needs-pill")?.textContent;
+
+    it("heads the lead, between the strip and the chat", () => {
+      const p = page();
+      p.join(snapshot({ role: "owner" }), 0, requested(1, "01M4A"));
+      const kids = [...p.app.children];
+      const panel = p.app.querySelector("section.needs")!;
+      // Only the reconnecting banner, hidden while live, sits between the strip and the panel.
+      expect(kids.indexOf(panel)).toBe(kids.indexOf(p.app.querySelector("header")!) + 2);
+      expect(kids[kids.indexOf(panel) - 1].className).toBe("banner");
+      expect(kids.indexOf(panel)).toBeLessThan(kids.indexOf(p.app.querySelector("main")!));
+      expect(panel.querySelector("#approval-01M4A .approval-command")?.textContent).toBe("git push");
+    });
+
+    // The pill and the panel agree: approver OR owner decides (policy Decide).
+    it("counts an approval in the pill for an owner who is no approver, and not for a collaborator", () => {
+      const o = page();
+      o.join(snapshot({ role: "owner", approver: false }), 0, requested(1, "01M4A"));
+      expect(pill(o)).toBe("Needs you · 1");
+      const c = page();
+      c.join(snapshot({ role: "collaborator", approver: false }), 0, requested(1, "01M4A"));
+      expect(pill(c)).toBeUndefined();
+    });
+
+    // Review focus 3: a decide that lost the race is refused already_decided; the card
+    // leaves on the approval_decided event, with no dead button left behind.
+    it("drops a card whose decide lost the race once the log decides it", () => {
+      const p = page();
+      p.join(snapshot({ approver: true }), 0, requested(1, "01M4A"));
+      p.app.querySelector<HTMLButtonElement>("#approval-01M4A [data-act=approve]")!.click();
+      const act = p.last().sent.at(-1) as { clientSeq: number; action: unknown };
+      expect(act.action).toEqual({ kind: "decide", approvalId: "01M4A", decision: "approved" });
+      p.last().recv({ type: "ack", clientSeq: act.clientSeq, rejected: "already_decided" });
+      expect(p.app.querySelector("footer .act-notice")?.textContent).toBe("Another approver decided first.");
+      p.last().recv(event(2, "approval_decided", { approvalId: "01M4A", decision: "denied" }));
+      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      expect(p.app.querySelector("[data-act=approve]")).toBeNull();
+      expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true);
+      expect(pill(p)).toBeUndefined();
     });
   });
 
   describe("summary refresh", () => {
     const sum = (phase: string, cursor: string) => ({ apiVersion: "summary/v1", room: "3kq7x2ma", url: "u",
       status: { phase, run: null, budget: null, pr: null, issue: null, lastVerdict: null },
-      needsYou: [], actions: [], notes: { untrusted: true, items: [] }, cursor });
+      needsYou: [], actions: [], notes: { untrusted: true, items: [{ at: "2026-10-06T10:00:00Z", run: "ikely2yk", text: "reading" }] }, cursor });
     const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
     const tick = async () => { await vi.advanceTimersByTimeAsync(1000); };
     const note = (p: ReturnType<typeof page>, n: number) => p.last().recv(event(n, "message", { kind: "progress", text: "x", delivery: "none" }));
@@ -317,7 +594,7 @@ describe("the room page", () => {
       p.join(snapshot(), 0);
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('.summary [data-block="status"]')!.textContent).toContain("Running");
+      expect(p.phase()).toBe("Running");
       const err = p.app.querySelector<HTMLElement>(".summary-error")!;
       expect(err.hidden).toBe(false);
       expect(err.textContent).toMatch(/cannot be verified/);
@@ -334,7 +611,7 @@ describe("the room page", () => {
       await vi.advanceTimersByTimeAsync(0);
       late[0](ok(sum("Older", "seq:1")));
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')!.textContent).toContain("Newer");
+      expect(p.phase()).toBe("Newer");
     });
 
     // C1: the broker omits a PR's reviewers until someone reviews (omitempty).
@@ -342,7 +619,7 @@ describe("the room page", () => {
       const { want } = JSON.parse(readFileSync(join(__dirname, "../../internal/summary/testdata/normal.json"), "utf8"));
       const p = page((async () => ok(want)) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("#2239");
+      expect(p.app.querySelector(".page-header")?.textContent).toContain("#2239");
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
     });
 
@@ -358,23 +635,27 @@ describe("the room page", () => {
       } });
       const p = page((async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')).toBeNull();
+      expect(p.app.querySelector('[data-block="notes"]')).toBeNull();
+      expect(p.phase()).toBeUndefined();
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(false);
       p.join(snapshot(), 0);
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("Running");
+      expect(p.phase()).toBe("Running");
+      expect(p.app.querySelector('[data-block="notes"]')).not.toBeNull();
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
     });
 
     it("does not rebuild the blocks when the summary is unchanged", async () => {
       const p = page((async () => ok(sum("Running", "seq:1"))) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      const first = p.app.querySelector('[data-block="status"]');
+      const first = p.app.querySelector('[data-block="notes"]');
       p.join(snapshot(), 0);
+      const h1 = p.app.querySelector("h1");
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('[data-block="status"]')).toBe(first);
+      expect(p.app.querySelector('[data-block="notes"]')).toBe(first);
+      expect(p.app.querySelector("h1")).toBe(h1); // nor the strip, whose PR link may hold the focus
     });
   });
 });

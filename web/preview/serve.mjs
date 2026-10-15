@@ -16,6 +16,7 @@ const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
   ".jsonl": "application/x-ndjson; charset=utf-8",
 };
 
@@ -29,5 +30,6 @@ createServer((req, res) => {
   res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream" });
   createReadStream(file).pipe(res);
 }).listen(port, "127.0.0.1", () => {
-  console.log(`room UI preview: http://127.0.0.1:${port}/preview/preview.html   (add ?live to replay)`);
+  console.log(`room log preview:  http://127.0.0.1:${port}/preview/preview.html   (add ?live to replay)`);
+  console.log(`room page preview: http://127.0.0.1:${port}/preview/full.html   (add ?theme=dark for the dark palette)`);
 });

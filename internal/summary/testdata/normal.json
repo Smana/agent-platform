@@ -10,9 +10,11 @@
        "budget":{"usedTokens":189093,"limitTokens":1500000},
        "issue":{"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
        "pr":{"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"}}},
-    {"v":1,"id":"e4","seq":4,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"agent","id":"agent:cf4ato2x","role":"implementer"},"type":"message","origin":"harness","ts":"2026-10-07T19:12:10Z","redactions":[],
+    {"v":1,"id":"e4","seq":4,"roomId":"26zfnuxm","actor":{"kind":"system","id":"system:room-broker"},"type":"participant","origin":"broker","ts":"2026-10-07T19:11:50Z","redactions":[],
+     "payload":{"principal":"agent:cf4ato2x","change":"joined","role":"implementer"}},
+    {"v":1,"id":"e5","seq":5,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"agent","id":"agent:cf4ato2x","role":"implementer"},"type":"message","origin":"harness","ts":"2026-10-07T19:12:10Z","redactions":[],
      "payload":{"kind":"progress","text":"found both versions on line 12-13, fixing","delivery":"none"}},
-    {"v":1,"id":"e5","seq":5,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"system","id":"system:policy"},"type":"approval_requested","origin":"broker","ts":"2026-10-07T19:15:00Z","redactions":[],
+    {"v":1,"id":"e6","seq":6,"roomId":"26zfnuxm","runId":"cf4ato2x","actor":{"kind":"system","id":"system:policy"},"type":"approval_requested","origin":"broker","ts":"2026-10-07T19:15:00Z","redactions":[],
      "payload":{"approvalId":"01M4A","callId":"c1","class":"forge.pr","action":{"command":"git push to agent/26zfnuxm"},"expiresAt":"2026-10-07T19:45:00Z"}}
   ],
   "viewer": {"role": "owner", "approver": true, "driver": true, "webUI": true},
@@ -40,6 +42,6 @@
     "notes": {"untrusted": true, "items": [
       {"at":"2026-10-07T19:12:10Z","run":"cf4ato2x","text":"found both versions on line 12-13, fixing"}
     ]},
-    "cursor": "seq:5"
+    "cursor": "seq:6"
   }
 }

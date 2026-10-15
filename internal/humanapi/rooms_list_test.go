@@ -4,8 +4,10 @@ package humanapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/fanout"
@@ -47,5 +49,32 @@ func TestRoomListCarriesTheTask(t *testing.T) {
 	}
 	if got := rowsOf("?needs_me=1", admin("boss")); len(got) != 1 || got[roomID].ID == "" {
 		t.Fatalf("needs_me: %+v", got)
+	}
+}
+
+// The list says when each room's log last moved; a failing read leaves the field out and the list intact.
+func TestRoomListCarriesLastEventAt(t *testing.T) {
+	at := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	var log *memLog
+	e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		log = v.memLog
+		s.Rooms = roomClient(t, repoRoom(roomID, "Smana/a"))
+	})
+	rows := func() []roomRow {
+		t.Helper()
+		code, body := get(t, e, "/api/rooms", admin("boss"))
+		var rows []roomRow
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &rows) != nil || len(rows) != 1 {
+			t.Fatalf("%d %s", code, body)
+		}
+		return rows
+	}
+	log.lastEventAt = map[string]time.Time{roomID: at}
+	if got := rows()[0].LastEventAt; !got.Equal(at) {
+		t.Fatalf("lastEventAt = %v, want %v", got, at)
+	}
+	log.lastEventAtErr = errors.New("db down")
+	if got := rows()[0].LastEventAt; !got.IsZero() {
+		t.Fatalf("a failed read must leave lastEventAt zero, got %v", got)
 	}
 }

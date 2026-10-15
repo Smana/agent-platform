@@ -23,8 +23,8 @@ func TestRenderSummaryPrintsTheReasonAndNextStep(t *testing.T) {
 		`"reason":"CI stayed red after the fix runs","next":"a maintainer comments `+"`/factory retry`"+` on the issue",`+
 		`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42","title":"fix the CA"}},`+
 		`"needsYou":[],"actions":[],"notes":{"untrusted":true,"items":[]},"cursor":"seq:3"}`)
-	want := "phase: Escalated[2J\n" +
-		"issue #42 https://github.com/Smana/a/issues/42 \"fix the CA\"\n" +
+	want := "task: #42 \"fix the CA\"\nphase: Escalated[2J\n" +
+		"issue #42 https://github.com/Smana/a/issues/42\n" +
 		"why: CI stayed red after the fix runs\n" +
 		"next: a maintainer comments `/factory retry` on the issue\n" +
 		"needs you: none\ncursor: seq:3\n"

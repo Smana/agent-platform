@@ -1,0 +1,18 @@
+{
+  "roomId": "3kq7x2ma",
+  "phase": "Active",
+  "driver": "human:291847362183",
+  "driverEpoch": 3,
+  "dataClass": "internal",
+  "you": { "principal": "human:291847362183", "role": "owner", "approver": true, "driver": true, "webUI": true },
+  "queue": [
+    { "ref": 1, "author": "human:291847362183", "text": "After the push, run the full test suite once more." },
+    { "ref": 2, "author": "human:291847362184", "text": "Please keep the commit message short." }
+  ],
+  "approvals": [
+    { "approvalId": "01M4A", "runId": "ikely2yk", "callId": "call_-7231403244767930900", "class": "forge.other",
+      "action": { "kind": "TerminalAction", "command": "git push origin agent/ibbay5ud" },
+      "expiresAt": "2026-10-04T14:30:00Z", "seq": 14 }
+  ],
+  "sealed": false
+}

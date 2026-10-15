@@ -40,7 +40,8 @@ const roomctlUsage = `usage: roomctl <command>
   rooms [--repo owner/name] [--mine] [--needs-me] [--json]
                                   the rooms you can read, with each task's issue, title, phase and PR. --mine: the tasks of
                                   issues you filed or labelled, PRs you authored or review.
-                                  --needs-me: an approval you could decide
+                                  --needs-me: an approval you could decide, a task held on your room,
+                                  or a PR waiting for your merge
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
@@ -144,7 +145,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		var f roomctl.RoomFilter
 		fs.StringVar(&f.Repo, "repo", "", "only this repository, owner/name")
 		fs.BoolVar(&f.Mine, "mine", false, "only the tasks of issues you filed or labelled, PRs you authored or review")
-		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms with an approval you could decide")
+		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms with an approval you could decide, a task held on your room, or a PR waiting for your merge")
 		fs.BoolVar(&f.JSON, "json", false, "print the broker's rows as is")
 		pos, err := flags(fs, args)
 		if err != nil || len(pos) != 0 {

@@ -50,18 +50,20 @@ var groups = policy.Groups{Admin: "agents-admin", Member: member}
 // number (1-based, the hub's reads included) has taken its mark; from read
 // driverFrom on, driver is the room's driver.
 type memLog struct {
-	mu          sync.Mutex
-	evs         []envelope.Event
-	roomErr     error
-	appendAfter int
-	driverFrom  int
-	driver      string
-	roomReads   int
-	queue       []store.Queued
-	queueErr    error
-	sealed      bool
-	approvals   []store.Approval
-	approvalErr error
+	mu             sync.Mutex
+	evs            []envelope.Event
+	roomErr        error
+	appendAfter    int
+	driverFrom     int
+	driver         string
+	roomReads      int
+	queue          []store.Queued
+	queueErr       error
+	sealed         bool
+	approvals      []store.Approval
+	approvalErr    error
+	lastEventAt    map[string]time.Time
+	lastEventAtErr error
 }
 
 func (m *memLog) Queue(context.Context, string) ([]store.Queued, error) {
@@ -74,6 +76,18 @@ func (m *memLog) OpenApprovals(context.Context, string) ([]store.Approval, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.approvals, m.approvalErr
+}
+
+func (m *memLog) LastEventAt(_ context.Context, ids []string) (map[string]time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]time.Time{}
+	for _, id := range ids {
+		if at, ok := m.lastEventAt[id]; ok {
+			out[id] = at
+		}
+	}
+	return out, m.lastEventAtErr
 }
 
 // LastTaskState is the log's last task facts above after, as the store's query reads them.

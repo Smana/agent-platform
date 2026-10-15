@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -145,14 +146,16 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
-	ID         string `json:"id"`
-	Phase      string `json:"phase"`
-	Owner      string `json:"owner"`
-	Driver     string `json:"driver"`
-	DataClass  string `json:"dataClass"`
-	LastSeq    int64  `json:"lastSeq"`
-	Repository string `json:"repository"`
-	NeedsMe    bool   `json:"needsMe"`
+	ID        string `json:"id"`
+	Phase     string `json:"phase"`
+	Owner     string `json:"owner"`
+	Driver    string `json:"driver"`
+	DataClass string `json:"dataClass"`
+	LastSeq   int64  `json:"lastSeq"`
+	// LastEventAt is when the room's log last moved; absent when the room has no events or it could not be read.
+	LastEventAt time.Time `json:"lastEventAt,omitzero"`
+	Repository  string    `json:"repository"`
+	NeedsMe     bool      `json:"needsMe"`
 	// The task the room works on (#50): Phase above is the room's, Task the task's.
 	Issue    int      `json:"issue,omitempty"`
 	Title    string   `json:"title,omitempty"`
@@ -311,6 +314,27 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
+	s.stampLastEvent(ctx, out)
 	w.Header().Set(accessHeader, access)
 	writeJSON(w, out)
+}
+
+// stampLastEvent sets each row's LastEventAt from one store read for every listed room. The list
+// does not fail on it: an unread time leaves the field zero.
+func (s *Server) stampLastEvent(ctx context.Context, rows []roomRow) {
+	if len(rows) == 0 {
+		return
+	}
+	ids := make([]string, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+	}
+	at, err := s.Log.LastEventAt(ctx, ids)
+	if err != nil {
+		s.log().Warn("room list: last event unread", "err", err)
+		return
+	}
+	for i := range rows {
+		rows[i].LastEventAt = at[rows[i].ID]
+	}
 }

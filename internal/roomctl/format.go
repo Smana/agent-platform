@@ -29,7 +29,7 @@ func printable(s string) string {
 func Line(ev envelope.Event) string {
 	who := ev.Actor.ID
 	if ev.Actor.Role != "" {
-		who += " (" + ev.Actor.Role + ")"
+		who = ev.Actor.Role + " (" + ev.Actor.ID + ")"
 	}
 	var p map[string]any
 	_ = json.Unmarshal(ev.Payload, &p)

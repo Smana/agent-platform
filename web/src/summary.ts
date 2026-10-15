@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The room page's lead blocks, rendered from the broker's summary/v1 JSON
-// (GET /api/rooms/{id}/summary): status, needs you, what you can do, the agents'
-// notes. Every string here may be agent-written, so all of it goes in as text. A field
-// the broker omits when empty (omitempty, omitzero) is optional here, and its part is skipped.
+// The room page's summary parts, rendered from the broker's summary/v1 JSON
+// (GET /api/rooms/{id}/summary): the merges and holds the needs-you panel lists
+// (needs.ts) and the agents' notes; the status heads the page in the title strip (strip.ts). Every string here may be agent-written, so all of
+// it goes in as text. A field the broker omits when empty (omitempty, omitzero) is
+// optional here, and its part is skipped.
 
 import { api } from "./api";
 import type { RoomEvent } from "./conn";
@@ -56,54 +57,31 @@ export function changesSummary(e: RoomEvent): boolean {
 }
 
 // Agent-written URLs become a link only when https; anything else stays text.
-function safeLink(text: string, url: string): Node {
+export function safeLink(text: string, url: string): Node {
   try {
     if (new URL(url).protocol === "https:") return el("a", { href: url, textContent: text, rel: "noopener noreferrer", target: "_blank" });
   } catch { /* not a URL: text */ }
   return document.createTextNode(`${text} (${url})`);
 }
 
-function when(iso: string): string {
+export function when(iso: string): string {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
-function block(name: string, title: string, ...body: Node[]): HTMLElement {
-  const s = el("section", { className: `summary-block summary-${name}` });
-  s.dataset.block = name;
-  s.append(el("h2", { textContent: title }), ...body);
-  return s;
+// ago reads a timestamp relative to now: "12 s ago", "4 min ago", "2 h ago".
+export function ago(iso: string, now: number): string {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const s = Math.max(0, Math.floor((now - t) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  return `${Math.floor(s / 3600)} h ago`;
 }
 
-function line(...parts: (string | Node)[]): HTMLElement {
-  const p = el("p");
-  p.append(...parts);
-  return p;
-}
-
-function statusBlock(st: Summary["status"]): HTMLElement {
-  const rows: HTMLElement[] = [line(`Phase: ${st.phase}`)];
-  const r = st.run;
-  const run = r ? [r.id, r.role, r.trigger, r.startedAt && `since ${when(r.startedAt)}`].filter(Boolean).join(" · ") : "none";
-  rows.push(line(`Run: ${run}`));
-  if (st.budget) rows.push(line(`Budget: ${st.budget.usedTokens} / ${st.budget.limitTokens} tokens`));
-  const by = (who?: string) => (who ? ` by ${who}` : "");
-  if (st.pr) {
-    const reviewers = st.pr.reviewers ?? [];
-    rows.push(line("PR: ", safeLink(`#${st.pr.number}`, st.pr.url), by(st.pr.author),
-      reviewers.length ? ` · reviewers ${reviewers.join(", ")}` : ""));
-  }
-  if (st.issue) {
-    rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), st.issue.title ? ` ${st.issue.title}` : "", by(st.issue.author)));
-  }
-  if (st.reason) rows.push(line(`Why: ${st.reason}`));
-  if (st.next) rows.push(line(`Next: ${st.next}`));
-  if (st.lastVerdict) rows.push(line(`Last verdict: ${st.lastVerdict.verdict} by ${st.lastVerdict.by} · ${when(st.lastVerdict.at)}`));
-  return block("status", "Status", ...rows);
-}
-
-// focusApproval reveals the existing approval card for id and focuses its Approve
-// button. False when there is no card (a non-approver has none, or it is decided).
+// focusApproval reveals the approval card for id in the needs-you panel and focuses its
+// Approve button, or its first control. False when there is no card (it is decided, or
+// its request has not arrived yet).
 export function focusApproval(id: string): boolean {
   const card = document.getElementById(approvalAnchor(id));
   if (!card) return false;
@@ -112,51 +90,44 @@ export function focusApproval(id: string): boolean {
   return true;
 }
 
-function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
-  const ul = el("ul");
-  for (const n of items) {
-    if (n.kind === "hold") { // the page is the room: nothing to link to
-      ul.append(el("li", { textContent: `Hold: ${n.what}` }));
-      continue;
-    }
+// needsItems is the summary's merges and holds, one list item each; the approvals come
+// from the live log instead (needs.ts), so the summary's approval entries are skipped.
+export function needsItems(s: Summary): HTMLLIElement[] {
+  const out: HTMLLIElement[] = [];
+  for (const n of s.needsYou) {
+    if (n.kind === "hold") out.push(el("li", { textContent: `Hold: ${n.what}` })); // the page is the room: nothing to link to
     if (n.kind === "merge") { // the PR is on GitHub: link out, https only
       const li = el("li");
       li.append(`Merge: ${n.what} · `, safeLink("open the PR", n.url));
-      ul.append(li);
-      continue;
+      out.push(li);
     }
-    const a = el("a", { href: `#${approvalAnchor(n.id)}`, textContent: "Review and decide" });
-    // Reveal the existing approval card; the page keeps one decide path.
-    a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };
-    const li = el("li");
-    li.append(`Approval: ${n.what} · `, n.deadline ? `decide by ${when(n.deadline)} · ` : "", a);
-    ul.append(li);
   }
-  return block("needs-you", "Needs you", ul);
+  return out;
 }
 
-function actionsBlock(actions: Summary["actions"]): HTMLElement {
-  if (!actions.length) return block("actions", "What you can do", line("Nothing here beyond reading."));
-  const ul = el("ul");
-  for (const a of actions) {
-    const li = el("li");
-    li.append(a.what);
-    if (a.cli) li.append(" ", el("code", { textContent: a.cli }));
-    ul.append(li);
+// renderNotes renders the agents' notes (oldest first in the summary): the latest on one
+// line, labelled as the agent's claim, and the earlier ones, newest first, behind a
+// "Notes (N)" toggle. No notes, no block.
+export function renderNotes(root: HTMLElement, s: Summary, now = Date.now()): void {
+  const items = s.notes.items;
+  if (!items.length) {
+    root.replaceChildren();
+    return;
   }
-  return block("actions", "What you can do", ul);
-}
-
-function notesBlock(n: Summary["notes"]): HTMLElement {
-  const ul = el("ul");
-  for (const i of n.items) ul.append(el("li", { textContent: `${when(i.at)} · ${i.run}: ${i.text}` }));
-  return block("notes", "Notes", el("p", { className: "hint", textContent: "The agents' claims, not verified." }),
-    n.items.length ? ul : line("No notes yet."));
-}
-
-export function renderSummary(root: HTMLElement, s: Summary): void {
-  const blocks = [statusBlock(s.status)];
-  if (s.needsYou.length) blocks.push(needsYouBlock(s.needsYou));
-  blocks.push(actionsBlock(s.actions), notesBlock(s.notes));
-  root.replaceChildren(...blocks);
+  const last = items[items.length - 1];
+  const box = el("div", { className: "notes" });
+  box.dataset.block = "notes";
+  const latest = el("p", { className: "note-latest" });
+  latest.append(el("span", { textContent: [last.run, ago(last.at, now), last.text].filter(Boolean).join(" · ") }),
+    el("span", { className: "hint", textContent: "the agent's claim" }));
+  box.append(latest);
+  const rest = items.slice(0, -1).reverse();
+  if (rest.length) {
+    const ul = el("ul");
+    for (const i of rest) ul.append(el("li", { textContent: `${when(i.at)} · ${i.run}: ${i.text}` }));
+    const d = el("details");
+    d.append(el("summary", { textContent: `Notes (${rest.length})` }), ul);
+    box.append(d);
+  }
+  root.replaceChildren(box);
 }

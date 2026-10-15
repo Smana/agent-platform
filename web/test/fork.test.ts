@@ -94,7 +94,7 @@ describe("mountFork", () => {
 describe("ChatView fork buttons", () => {
   const ev = (seq: number, type: string, payload: unknown): RoomEvent => ({ v: 1, id: `id${seq}`, seq, roomId: "3kq7x2ma",
     actor: { kind: "agent", id: "agent:ikely2yk" }, type, origin: "harness", ts: "2026-10-04T14:00:00Z", redactions: [], payload });
-  it("offers fork here on every row, at the last seq the row shows", () => {
+  it("offers fork here on messages and handoffs only, at their seq (U7)", () => {
     const el = document.createElement("div");
     const asked: number[] = [];
     const v = new ChatView(el, 100, (seq) => asked.push(seq));
@@ -102,10 +102,11 @@ describe("ChatView fork buttons", () => {
     v.apply(ev(2, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
     v.apply(ev(3, "state_changed", { kind: "run_phase", phase: "Running" }));
     v.apply(ev(4, "tool_result", { callId: "c1", status: "ok", output: "x" }));
+    v.apply(ev(5, "handoff", { fromRole: "implementer", toRole: "reviewer", summary: "done" }));
     const buttons = [...el.querySelectorAll<HTMLButtonElement>('button[data-act="fork"]')];
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(2);
     for (const b of buttons) b.click();
-    expect(asked).toEqual([1, 4, 3]);
+    expect(asked).toEqual([1, 5]);
   });
   it("has none without a fork handler", () => {
     const el = document.createElement("div");

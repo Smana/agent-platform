@@ -11,4 +11,4 @@ const app = document.getElementById("app")!;
 const theme = initTheme();
 
 const m = location.pathname.match(/^\/r\/([a-z2-7]{8})$/);
-if (m) mountRoom(app, m[1], theme); else void listRooms(app);
+if (m) mountRoom(app, m[1], theme); else void listRooms(app, fetch, {}, theme);

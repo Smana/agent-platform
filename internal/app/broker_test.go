@@ -450,6 +450,10 @@ func (fakeRoomLog) Queue(context.Context, string) ([]store.Queued, error) { retu
 
 func (fakeRoomLog) OpenApprovals(context.Context, string) ([]store.Approval, error) { return nil, nil }
 
+func (fakeRoomLog) LastEventAt(context.Context, []string) (map[string]time.Time, error) {
+	return nil, nil
+}
+
 func (fakeRoomLog) LastTaskState(context.Context, string, int64) (json.RawMessage, error) {
 	return nil, nil
 }

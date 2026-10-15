@@ -89,8 +89,9 @@ describe("renderEvent (T10)", () => {
     inert(el);
     expect(el.querySelector("img")).toBeNull();
     expect(el.querySelector("button")).toBeNull();
-    expect(el.querySelector(".approval-head")?.textContent).toMatch(/^approval: forge\.pr · run 7f3cq2xz · call call_97 · expires /);
-    expect(el.querySelector("pre")?.textContent).toBe(JSON.stringify({ command: "<img src=x onerror=alert(1)>" }, null, 2));
+    expect(el.querySelector(".approval-command")?.textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(el.querySelector(".approval-meta")?.textContent).toMatch(/^forge\.pr · run 7f3cq2xz · call call_97 · expires /);
+    expect(el.querySelector(".approval-json pre")?.textContent).toBe(JSON.stringify({ command: "<img src=x onerror=alert(1)>" }, null, 2));
     const d = renderEvent(ev("approval_decided", { approvalId: "ap1", decision: "denied", reason: "<b>not</b> this branch" }, "human:apr"));
     expect(d.querySelector(".decision-denied")?.textContent).toBe("denied · <b>not</b> this branch");
     expect(d.querySelector("b")).toBeNull();
@@ -99,7 +100,7 @@ describe("renderEvent (T10)", () => {
   it("badges a message with its delivery, one per value", () => {
     const badge = (payload: object) =>
       renderEvent(ev("message", { kind: "chat", text: "x", ...payload })).querySelector(".chip-delivery")?.textContent;
-    expect(badge({ delivery: "none" })).toBe("chat");
+    expect(badge({ delivery: "none" })).toBeUndefined(); // the room only: no chip (U7)
     expect(badge({ delivery: "queued" })).toBe("queued");
     expect(badge({ delivery: "steering", to: ["agent:7f3cq2xz"] })).toBe("steering → agent:7f3cq2xz");
     const d = renderEvent(ev("state_changed", { kind: "delivered", ref: 1846, runId: "7f3cq2xz" }));

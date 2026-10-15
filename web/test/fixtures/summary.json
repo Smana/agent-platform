@@ -1,0 +1,30 @@
+{
+  "apiVersion": "summary/v1",
+  "room": "3kq7x2ma",
+  "url": "https://rooms.example/r/3kq7x2ma",
+  "status": {
+    "phase": "Implementing",
+    "run": { "id": "ikely2yk", "role": "implementer", "startedAt": "2026-10-04T14:00:02Z" },
+    "budget": { "usedTokens": 189093, "limitTokens": 1500000 },
+    "pr": { "number": 77, "url": "https://github.com/o/r/pull/77" },
+    "issue": { "number": 74, "url": "https://github.com/o/r/issues/74", "title": "Chat view: pair tool calls" },
+    "lastVerdict": null,
+    "reason": "the policy needs a maintainer's approval",
+    "next": "an approver decides"
+  },
+  "needsYou": [
+    { "kind": "approval", "id": "01M4A", "what": "git push origin agent/ibbay5ud", "deadline": "2026-10-04T14:30:00Z", "url": "https://rooms.example/r/3kq7x2ma#approval-01M4A" },
+    { "kind": "merge", "id": "pr-77", "what": "PR #77 is green and waits for a maintainer", "url": "https://github.com/o/r/pull/77" }
+  ],
+  "actions": [],
+  "notes": {
+    "untrusted": true,
+    "items": [
+      { "at": "2026-10-04T14:00:01Z", "run": "ikely2yk", "text": "Read the issue: the chat view should pair each tool call with its result." },
+      { "at": "2026-10-04T14:00:03Z", "run": "ikely2yk", "text": "Two files change: the pairing in the view and its test." },
+      { "at": "2026-10-04T14:00:04Z", "run": "ikely2yk", "text": "Tests pass locally; committing the branch." },
+      { "at": "2026-10-04T14:00:05Z", "run": "ikely2yk", "text": "The push needs an approval; waiting for an approver." }
+    ]
+  },
+  "cursor": "seq:27"
+}

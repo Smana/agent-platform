@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,27 @@ func stamp(t, now time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+// tokens reads a token count at a glance, as the page does: 189093 -> "189 k", 1500000 -> "1.5 M".
+// A count that would round to "1000 k" reads "1 M".
+func tokens(n int64) string {
+	switch {
+	case n < 1000:
+		return strconv.FormatInt(n, 10)
+	case n < 999_500:
+		return fmt.Sprintf("%d k", (n+500)/1000)
+	}
+	return strconv.FormatFloat(float64((n+50_000)/100_000)/10, 'f', -1, 64) + " M"
+}
+
+// budgetText is "budget: 189 k / 1.5 M (13 %)"; the percentage needs a limit.
+func budgetText(used, limit int64) string {
+	s := "budget: " + tokens(used) + " / " + tokens(limit)
+	if limit > 0 {
+		s += fmt.Sprintf(" (%d %%)", (100*used+limit/2)/limit)
+	}
+	return s
+}
+
 // RenderSummary prints a summary/v1 body for a terminal. Approvals are links and
 // never a command (ruling P18); the commands printed are the ones the broker
 // already filtered by the caller's standing. Times are UTC, dated unless on now's day.
@@ -37,23 +59,26 @@ func RenderSummary(w io.Writer, raw []byte, now time.Time) error {
 		return fmt.Errorf("status: the broker's answer: %w", err)
 	}
 	var b strings.Builder
+	if i := s.Status.Issue; i != nil {
+		fmt.Fprintf(&b, "task: #%d", i.Number)
+		if i.Title != "" {
+			fmt.Fprintf(&b, " %q", oneLine(i.Title))
+		}
+		b.WriteString("\n")
+	}
 	head := []string{"phase: " + oneLine(s.Status.Phase)}
 	if r := s.Status.Run; r != nil {
 		head = append(head, fmt.Sprintf("run: %s (%s)", oneLine(r.ID), oneLine(r.Role)))
 	}
 	if u := s.Status.Budget; u != nil {
-		head = append(head, fmt.Sprintf("budget: %d/%d", u.UsedTokens, u.LimitTokens))
+		head = append(head, budgetText(u.UsedTokens, u.LimitTokens))
 	}
 	b.WriteString(strings.Join(head, "  ") + "\n")
 	if p := s.Status.PR; p != nil {
 		fmt.Fprintf(&b, "PR #%d %s\n", p.Number, oneLine(p.URL))
 	}
 	if i := s.Status.Issue; i != nil {
-		fmt.Fprintf(&b, "issue #%d %s", i.Number, oneLine(i.URL))
-		if i.Title != "" {
-			fmt.Fprintf(&b, " %q", oneLine(i.Title))
-		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "issue #%d %s\n", i.Number, oneLine(i.URL))
 	}
 	if s.Status.Reason != "" {
 		fmt.Fprintf(&b, "why: %s\n", oneLine(s.Status.Reason))

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { changesSummary, fetchSummary, renderSummary, type Summary } from "../src/summary";
+import { changesSummary, fetchSummary, needsItems, renderNotes, type Summary } from "../src/summary";
 
 const base = (): Summary => ({
   apiVersion: "summary/v1", room: "3kq7x2ma", url: "https://rooms.example/r/3kq7x2ma",
@@ -21,34 +21,76 @@ const base = (): Summary => ({
 
 const render = (s: Summary) => {
   const root = document.createElement("div");
-  renderSummary(root, s);
+  renderNotes(root, s);
   return root;
 };
+const needs = (s: Summary) => {
+  const ul = document.createElement("ul");
+  ul.append(...needsItems(s));
+  return ul;
+};
 
-describe("renderSummary", () => {
-  it("orders the blocks: status, needs you, actions, notes", () => {
+describe("renderNotes", () => {
+  it("renders the notes block alone: needs you lives in the panel (needs.ts)", () => {
     const r = render(base());
-    expect([...r.querySelectorAll("section")].map((s) => s.dataset.block)).toEqual(["status", "needs-you", "actions", "notes"]);
-    expect(r.querySelector('[data-block="status"]')?.textContent).toContain("Running");
-    expect(r.querySelector('[data-block="status"]')?.textContent).toContain("1200 / 50000");
+    expect([...r.children].map((s) => (s as HTMLElement).dataset.block)).toEqual(["notes"]);
   });
 
-  it("renders a sealed room: Sealed phase and the empty actions state", () => {
+  // U7: the latest note on one line, labelled the agent's claim; the rest behind a toggle.
+  it("shows the latest note inline and the rest behind Notes (N)", () => {
     const s = base();
-    s.status.phase = "Sealed";
-    s.needsYou = [];
-    s.actions = [];
-    const r = render(s);
-    expect(r.querySelector('[data-block="status"]')?.textContent).toContain("Phase: Sealed");
-    expect(r.querySelector('[data-block="actions"]')?.textContent).toContain("Nothing here beyond reading.");
-    expect(r.querySelector('[data-block="needs-you"]')).toBeNull();
+    s.notes.items = [
+      { at: "2026-10-08T10:01:00Z", run: "run-1", text: "reading the repo" },
+      { at: "2026-10-08T10:03:00Z", run: "run-1", text: "running the tests" },
+      { at: "2026-10-08T10:05:00Z", run: "ikely2yk", text: "Quoting the last three commits" },
+    ];
+    const root = document.createElement("div");
+    renderNotes(root, s, Date.parse("2026-10-08T10:07:00Z"));
+    const latest = root.querySelector(".notes > p.note-latest")!;
+    expect(latest.firstChild?.textContent).toBe("ikely2yk · 2 min ago · Quoting the last three commits");
+    expect(latest.querySelector(".hint")?.textContent).toBe("the agent's claim");
+    const d = root.querySelector<HTMLDetailsElement>(".notes > details")!;
+    expect(d.open).toBe(false);
+    expect(d.querySelector("summary")?.textContent).toBe("Notes (2)");
+    expect([...d.querySelectorAll("li")].map((l) => l.textContent)).toEqual([
+      expect.stringContaining("run-1: running the tests"), expect.stringContaining("run-1: reading the repo")]);
+  });
+  it("has no toggle for a single note, and no block at all without notes", () => {
+    const one = render(base());
+    expect(one.querySelector(".note-latest")).not.toBeNull();
+    expect(one.querySelector("details")).toBeNull();
+    const s = base();
+    s.notes.items = [];
+    expect(render(s).children).toHaveLength(0);
   });
 
+  it("renders agent text as text, never as markup", () => {
+    const s = base();
+    const evil = "<img src=x onerror=alert(1)>";
+    s.notes.items[0].text = evil;
+    const r = render(s);
+    expect(r.querySelector("img")).toBeNull();
+    expect(r.querySelector('[data-block="notes"]')?.textContent).toContain(evil);
+  });
+
+  it("labels notes as the agent's claim", () => {
+    expect(render(base()).querySelector('[data-block="notes"]')?.textContent).toMatch(/agent's claim/i);
+  });
+
+  it("shows a watcher no action buttons", () => {
+    const s = base();
+    s.actions = [];
+    s.needsYou = [];
+    expect(render(s).querySelectorAll("button")).toHaveLength(0);
+  });
+});
+
+describe("needsItems", () => {
   // N3: a hold is no approval: it says what releases it, with no decide link.
   it("renders a hold as what releases it", () => {
     const s = base();
     s.needsYou = [{ kind: "hold", id: "waiting_human_driver", what: "hand the driver back", url: "https://rooms.example/r/3kq7x2ma" }];
-    const block = render(s).querySelector('[data-block="needs-you"]')!;
+    const block = needs(s);
     expect(block.textContent).toContain("Hold: hand the driver back");
     expect(block.textContent).not.toMatch(/Approval|Review and decide/);
     expect(block.querySelector("a")).toBeNull();
@@ -58,104 +100,36 @@ describe("renderSummary", () => {
   it("renders a merge with its instruction and the PR link", () => {
     const s = base();
     s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7: tick bypass", url: "https://github.com/o/r/pull/7" }];
-    const block = render(s).querySelector('[data-block="needs-you"]')!;
+    const block = needs(s);
     expect(block.textContent).toContain("Merge: merge PR #7: tick bypass");
     expect(block.querySelector("a")?.getAttribute("href")).toBe("https://github.com/o/r/pull/7");
     expect(block.textContent).not.toMatch(/Review and decide/);
   });
 
-  // #59: a waiting phase says why and what comes next; #50: the issue's title.
-  it("shows the reason, the next step and the issue title", () => {
-    const s = base();
-    s.status.reason = "CI stayed red after the fix runs";
-    s.status.next = "a maintainer comments /factory retry";
-    s.status.issue!.title = "fix the CA";
-    const text = render(s).querySelector('[data-block="status"]')!.textContent;
-    expect(text).toContain("Why: CI stayed red after the fix runs");
-    expect(text).toContain("Next: a maintainer comments /factory retry");
-    expect(text).toContain("fix the CA");
-    const none = render(base()).querySelector('[data-block="status"]')!.textContent;
-    expect(none).not.toMatch(/Why:|Next:/);
-  });
-
-  it("omits Needs you when nothing needs you", () => {
+  // The approvals come from the live log, as cards (needs.test.ts): the summary's are skipped.
+  it("skips approvals, and is empty when nothing needs you", () => {
+    expect(needsItems(base())).toHaveLength(0);
     const s = base();
     s.needsYou = [];
-    expect(render(s).querySelector('[data-block="needs-you"]')).toBeNull();
+    expect(needsItems(s)).toHaveLength(0);
   });
 
   it("renders agent text as text, never as markup", () => {
     const s = base();
     const evil = "<img src=x onerror=alert(1)>";
-    s.notes.items[0].text = evil;
-    s.status.lastVerdict!.verdict = evil;
-    s.needsYou[0].what = evil;
-    s.actions[0].what = evil;
-    s.actions[1].cli = evil;
-    s.status.pr!.author = evil;
-    const r = render(s);
-    expect(r.querySelector("img")).toBeNull();
-    expect(r.querySelector('[data-block="notes"]')?.textContent).toContain(evil);
-  });
-
-  it("labels notes as the agents' claims", () => {
-    expect(render(base()).querySelector('[data-block="notes"]')?.textContent).toMatch(/agents' claims/i);
+    s.needsYou = [{ kind: "merge", id: "7", what: evil, url: "https://github.com/o/r/pull/7" }, { kind: "hold", id: "h", what: evil, url: "u" }];
+    const block = needs(s);
+    expect(block.querySelector("img")).toBeNull();
+    expect(block.textContent).toContain(evil);
   });
 
   it("links only https URLs", () => {
     const s = base();
-    s.status.pr!.url = "javascript:alert(1)";
-    s.status.issue!.url = "http://insecure.example/3";
-    const r = render(s);
+    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7", url: "javascript:alert(1)" }];
+    const r = needs(s);
     const hrefs = [...r.querySelectorAll("a")].map((a) => a.getAttribute("href"));
     expect(hrefs.some((h) => h?.startsWith("javascript:") || h?.startsWith("http:"))).toBe(false);
-    expect(r.querySelector('[data-block="status"]')?.textContent).toContain("javascript:alert(1)");
-  });
-
-  it("shows a watcher no action buttons", () => {
-    const s = base();
-    s.actions = [];
-    s.needsYou = [];
-    expect(render(s).querySelectorAll("button")).toHaveLength(0);
-  });
-
-  it("links an approval to the existing control and shows no command", () => {
-    const r = render(base());
-    const a = r.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!;
-    expect(a.getAttribute("href")).toBe("#approval-ap1");
-    expect(r.querySelector('[data-block="needs-you"] code')).toBeNull();
-    expect(r.querySelector('[data-block="needs-you"]')?.textContent).toContain("run kubectl apply");
-  });
-
-  // The broker omits empty optional fields (omitempty, omitzero): a part it left out is skipped.
-  it("skips the parts the broker omits", () => {
-    const s = base();
-    s.status.run = { id: "run-1", role: "implementer" };
-    s.status.pr = { number: 7, url: "https://github.com/o/r/pull/7" };
-    s.status.issue = { number: 3, url: "https://github.com/o/r/issues/3" };
-    s.status.lastVerdict = null;
-    s.needsYou = [{ kind: "approval", id: "ap1", what: "git push", url: "https://rooms.example/r/3kq7x2ma#ap1" }];
-    const r = render(s);
-    const status = r.querySelector('[data-block="status"]')!.textContent!;
-    expect(status).toContain("Run: run-1 · implementer");
-    expect(status).not.toMatch(/undefined|since|by |reviewers/);
-    expect(r.querySelector('[data-block="needs-you"]')!.textContent).not.toMatch(/undefined|decide by/);
-  });
-
-  it("focuses the existing approval control on click", () => {
-    const doc = document.createElement("div");
-    document.body.append(doc);
-    const card = document.createElement("div");
-    card.id = "approval-ap1";
-    const approve = document.createElement("button");
-    card.append(approve);
-    doc.append(card);
-    const root = render(base());
-    doc.append(root);
-    card.scrollIntoView = () => {};
-    root.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!.click();
-    expect(document.activeElement).toBe(approve);
-    doc.remove();
+    expect(r.textContent).toContain("javascript:alert(1)");
   });
 });
 
@@ -191,8 +165,8 @@ describe("the broker's golden summaries", () => {
   it.each(files)("%s renders every part it carries", (f) => {
     const { want } = JSON.parse(readFileSync(join(dir, f), "utf8")) as { want: Summary };
     const r = render(want);
-    expect(r.querySelector('[data-block="status"]')?.textContent).toContain(`Phase: ${want.status.phase}`);
-    if (want.status.pr) expect(r.textContent).toContain(`#${want.status.pr.number}`);
+    r.append(needs(want));
+    for (const n of want.needsYou) if (n.kind !== "approval") expect(r.textContent).toContain(n.what);
     for (const n of want.notes.items) expect(r.textContent).toContain(n.text);
     expect(r.textContent).not.toMatch(/undefined|null|NaN|Invalid Date/);
   });
