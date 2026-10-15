@@ -3,7 +3,9 @@
 package summary_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"reflect"
@@ -16,6 +18,8 @@ import (
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/summary"
 )
+
+var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.json want fields from the current fold")
 
 var goldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts"}
 
@@ -37,8 +41,52 @@ func TestFoldGolden(t *testing.T) {
 			v := policy.Subject{Kind: envelope.ActorHuman, Role: policy.ParseRole(tc.Viewer.Role),
 				Approver: tc.Viewer.Approver, Driver: tc.Viewer.Driver, WebUI: tc.Viewer.WebUI}
 			got := summary.View(summary.Fold(tc.Events), "26zfnuxm", "https://rooms.example/r/26zfnuxm", v, 0, tc.Now)
+			if *updateGolden {
+				rewriteWant(t, "testdata/"+name+".json", tc.Want, got)
+				return
+			}
 			assertJSONEqual(t, tc.Want, got)
 		})
+	}
+}
+
+// rewriteWant replaces the file's trailing "want" member with got, indented, leaving every byte
+// before it (events, viewer, now) untouched. A want that already equals got is not rewritten, so
+// hand-formatting survives until the fold really changes.
+func rewriteWant(t *testing.T, path string, want json.RawMessage, got any) {
+	t.Helper()
+	var w, g any
+	var enc bytes.Buffer
+	e := json.NewEncoder(&enc)
+	e.SetEscapeHTML(false) // keep "<text>" readable in the golden
+	if err := e.Encode(got); err != nil {
+		t.Fatal(err)
+	}
+	b := bytes.TrimSpace(enc.Bytes())
+	if err := json.Unmarshal(want, &w); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &g); err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(w, g) {
+		return
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.LastIndex(src, []byte("\n  \"want\":"))
+	if i < 0 {
+		t.Fatalf("%s: no top-level \"want\" member", path)
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, b, "  ", "  "); err != nil {
+		t.Fatal(err)
+	}
+	next := string(src[:i]) + "\n  \"want\": " + out.String() + "\n}\n"
+	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
