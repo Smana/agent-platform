@@ -507,7 +507,8 @@ func refused(err error) bool {
 	return errors.Is(err, websocket.ErrMessageTooBig) || errors.As(err, &syntax) || errors.As(err, &typ)
 }
 
-// ping checks the peer every PingEvery; no pong within PongWait ends the connection.
+// ping checks the peer one PingEvery after the previous beat finished, so the cadence is
+// PingEvery plus the beat's own work; no pong within PongWait ends the connection.
 // On the same beat it re-runs D7 (rulings R17, R21).
 func (v *viewer) ping() {
 	for {

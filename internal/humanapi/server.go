@@ -118,7 +118,9 @@ type Server struct {
 	// MaxLifetime caps a connection below its token's expiry (1 h): ZITADEL's
 	// tokens live 12 h by default, and this bounds a revoked member's socket.
 	MaxLifetime time.Duration
-	// Now is the clock the token-expiry check and the summary read; nil means time.Now.
+	// Now is the clock the token-expiry check and the summary read, and the session
+	// lifetime is computed from it (min of the token's remaining life and MaxLifetime) before
+	// being handed to Timer; nil means time.Now.
 	// Deadlines handed to the runtime (the route's write deadline, a context's) stay on
 	// its own clock: a fake one there would expire a request before it starts, or never.
 	Now func() time.Time
@@ -136,6 +138,9 @@ type Server struct {
 
 // Routes is the :8080 handler.
 func (s *Server) Routes() http.Handler {
+	if s.Actor != nil && s.Actor.Now == nil {
+		s.Actor.Now = s.Now // one clock for the Server and its actions
+	}
 	mux := http.NewServeMux()
 	index, assets := http.NotFoundHandler(), http.NotFoundHandler()
 	if s.UI != nil {

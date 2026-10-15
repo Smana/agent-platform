@@ -800,6 +800,8 @@ func TestFourEyes(t *testing.T) {
 	log.approvals = map[string]store.Approval{"ap1": pendingApproval("ap1", room.Name)}
 	var waited []time.Duration
 	a.OnDecided = func(d time.Duration) { waited = append(waited, d) }
+	later := time.Now().Add(time.Hour)
+	a.Now = func() time.Time { return later } // the request is an hour old, however long the test takes
 	decide := Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"}
 	if f := act(a, room, "human:own", 1, nil, decide); f.Rejected != "four_eyes" {
 		t.Fatalf("the prompter decides: %+v", f)
@@ -807,7 +809,7 @@ func TestFourEyes(t *testing.T) {
 	if f := act(a, room, "human:apr", 1, nil, decide); f.Rejected != "" || f.Seq == 0 {
 		t.Fatalf("another approver: %+v", f)
 	}
-	if len(waited) != 1 || waited[0] < time.Minute {
+	if len(waited) != 1 || waited[0] < time.Hour {
 		t.Fatalf("decision waits %v", waited)
 	}
 	// Four-eyes off, the owner may decide what they prompted.

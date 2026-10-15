@@ -572,3 +572,16 @@ func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
 		t.Fatalf("an admin's socket consulted the gate's caches %d times", n)
 	}
 }
+
+// The Server's clock decides a token's expiry: one stepped past the principal's exp is refused.
+func TestThePrincipalExpiresOnTheServersClock(t *testing.T) {
+	now := time.Now()
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Now = func() time.Time { return now } })
+	if code, _ := get(t, e, "/api/rooms", header("dev1")); code != http.StatusOK {
+		t.Fatalf("a live token: %d", code)
+	}
+	now = now.Add(2 * time.Hour) // headerAuth's token lives 1 h
+	if code, _ := get(t, e, "/api/rooms", header("dev1")); code != http.StatusUnauthorized {
+		t.Fatalf("an expired token: %d, want 401", code)
+	}
+}
