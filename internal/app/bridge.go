@@ -162,6 +162,12 @@ func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridge
 		// branch waits on approvers or is denied (Finding A).
 		log.Warn("BRANCH is unset: every git push is forge.other, the run's own branch included (CC-S5)")
 	}
+	if len(cfg.readOnlyMCP) == 0 {
+		// Fail-closed, so nothing else shows it: the room tools wait on approvers too.
+		log.Warn("MCP_READ_ONLY_TOOLS is unset: every MCP tool is mcp.write, the room tools included")
+	} else {
+		log.Info("read-only MCP tools configured", "count", len(cfg.readOnlyMCP))
+	}
 	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
 		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
