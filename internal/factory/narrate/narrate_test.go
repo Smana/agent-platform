@@ -16,12 +16,13 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
-const bot = "ogenki-agent-factory[bot]" // forge.Fake's author, config.factoryLogin
+const bot = "ogenki-agent-factory[bot]" // forgetest.Fake's author, config.factoryLogin
 
 func task() *v1alpha1.Task {
 	return &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"},
@@ -142,7 +143,7 @@ func TestTokensAndReasons(t *testing.T) {
 
 // R22: one comment per event, even across a crash between posting and recording.
 func TestPostIsIdempotent(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	n := Narrator{Forge: f, Login: bot}
 	tk := task()
 	e := Event{Key: "pr-opened", Body: "Run 7f3cq2xz opened #12."}
@@ -176,7 +177,7 @@ func TestPostIsIdempotent(t *testing.T) {
 // Anyone can comment on a public issue: a marker only counts in the factory's own comments, so
 // nobody can silence a narration by posting it first.
 func TestAMarkerCountsOnlyInTheFactorysComments(t *testing.T) {
-	f := &scripted{Fake: forge.NewFake(), recent: []forge.Comment{
+	f := &scripted{Fake: forgetest.NewFake(), recent: []forge.Comment{
 		{Author: "someone", Body: "hi " + Marker("3buqdlot", "pr-opened")},
 		{Author: "ogenki-agent-factory", Body: Marker("3buqdlot", "pr-opened")}, // a user, not the App
 	}}
@@ -195,8 +196,8 @@ func TestAMarkerCountsOnlyInTheFactorysComments(t *testing.T) {
 
 func TestAFailedCallRecordsNothing(t *testing.T) {
 	for name, f := range map[string]*scripted{
-		"listing fails": {Fake: forge.NewFake(), listErr: errors.New("502")},
-		"posting fails": {Fake: forge.NewFake(), postErr: errors.New("502")},
+		"listing fails": {Fake: forgetest.NewFake(), listErr: errors.New("502")},
+		"posting fails": {Fake: forgetest.NewFake(), postErr: errors.New("502")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := task()
@@ -209,7 +210,7 @@ func TestAFailedCallRecordsNothing(t *testing.T) {
 }
 
 func TestNarratorNeedsItsLogin(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	if err := (Narrator{Forge: f}).PostOnce(t.Context(), 7, "3buqdlot", Event{Key: "k", Body: "x"}); err == nil || len(f.Comments(7)) != 0 {
 		t.Fatal("without the factory's login no marker can be trusted")
 	}
@@ -217,7 +218,7 @@ func TestNarratorNeedsItsLogin(t *testing.T) {
 
 // The CRD holds 512 keys (review I3): the oldest go, the newest stay.
 func TestNarratedStaysBounded(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	n := Narrator{Forge: f, Login: bot}
 	tk := task()
 	for i := range MaxNarrated + 40 {
@@ -232,7 +233,7 @@ func TestNarratedStaysBounded(t *testing.T) {
 }
 
 type scripted struct {
-	*forge.Fake
+	*forgetest.Fake
 	recent           []forge.Comment
 	listErr, postErr error
 }
@@ -324,7 +325,7 @@ func TestARestartReplaysTheSameClientSeq(t *testing.T) {
 // cap, every room message still gets its own, increasing clientSeq.
 func TestEveryClientSeqIsDistinctAndIncreasingPastTheCap(t *testing.T) {
 	p := &poster{}
-	n := Narrator{Forge: forge.NewFake(), Login: bot}
+	n := Narrator{Forge: forgetest.NewFake(), Login: bot}
 	tk := task()
 	for i := range MaxNarrated + 88 {
 		if err := n.Post(t.Context(), tk, 7, Event{Key: fmt.Sprintf("k%d", i), Body: "x"}); err != nil {

@@ -18,10 +18,11 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 )
 
 type flakyForge struct {
-	*forge.Fake
+	*forgetest.Fake
 	down bool
 }
 
@@ -58,7 +59,7 @@ func TestProbeTheEndIsNarratedAfterAnOutage(t *testing.T) {
 
 // landedForge posts the comment and then reports an error, once: the double failure SO names.
 type landedForge struct {
-	*forge.Fake
+	*forgetest.Fake
 	lie bool
 }
 

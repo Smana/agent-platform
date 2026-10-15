@@ -12,6 +12,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 )
 
 // #57: with every class off the merger key is optional, and the renovate-red probe, which reads
@@ -20,7 +21,7 @@ func TestRenovateProbeSkipsWithoutAMerger(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
 	now := time.Date(2026, 10, 5, 6, 20, 0, 0, time.UTC)
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	f.SetOpenPRs(forge.PRSummary{Number: 40, Author: "renovate[bot]", Created: now.Add(-48 * time.Hour)})
 	cfg := schedulerCfg()
 	cfg.Classes = nil

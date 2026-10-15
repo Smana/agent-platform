@@ -21,16 +21,16 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
 
-func runlore(t *testing.T) (*RunLore, client.Client, *forge.Fake) {
+func runlore(t *testing.T) (*RunLore, client.Client, *forgetest.Fake) {
 	t.Helper()
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
 	c := fake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&v1alpha1.Task{}).Build()
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	return &RunLore{Forge: f, Client: c, Namespace: "agent-system", Token: func() string { return "s3cret" },
 		Stopped: func(context.Context) bool { return false }, Now: func() time.Time { return time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC) },
 		Errors: &counter{},

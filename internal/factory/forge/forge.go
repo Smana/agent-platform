@@ -240,7 +240,4 @@ type Merger interface {
 	RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error)
 }
 
-var (
-	_ Merger = (*GitHub)(nil)
-	_ Merger = (*Fake)(nil)
-)
+var _ Merger = (*GitHub)(nil)
