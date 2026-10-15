@@ -125,7 +125,7 @@ func (s *Store) requestApproval(ctx context.Context, a Approval, d envelope.Draf
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, envelope.Event{}, err
 	}
-	ev, dup, err := s.appendTx(ctx, tx, d, fence{bridgeRun: a.RunID})
+	ev, dup, err := s.appendTx(ctx, tx, d, fence{bridgeRun: a.RunID}, false)
 	if err != nil {
 		return Approval{}, envelope.Event{}, err
 	}
@@ -242,7 +242,7 @@ func (s *Store) closeTx(ctx context.Context, tx pgx.Tx, id, state, by, reason st
 	}
 	d.RoomID, d.RunID, d.Type = a.RoomID, a.RunID, envelope.ApprovalDecided
 	d.Payload = envelope.Must(envelope.ApprovalDecidedPayload{ApprovalID: id, Decision: state, Reason: reason})
-	ev, dup, err := s.appendTx(ctx, tx, d, fence{})
+	ev, dup, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err == nil && dup {
 		err = ErrKeyConflict
 	}

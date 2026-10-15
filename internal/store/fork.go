@@ -131,7 +131,7 @@ func (s *Store) fork(ctx context.Context, src string, upTo int64, r NewRoom, d e
 	if _, err := tx.Exec(ctx, forkQueueSQL, src, r.ID, upTo); err != nil {
 		return envelope.Event{}, err
 	}
-	ev, _, err := s.appendTx(ctx, tx, d, fence{})
+	ev, _, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err != nil {
 		return envelope.Event{}, err
 	}

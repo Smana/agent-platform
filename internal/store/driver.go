@@ -108,7 +108,7 @@ func (s *Store) changeDriver(ctx context.Context, roomID string, expect int64, t
 	}
 	payload.From = from
 	d.Payload = envelope.Must(payload)
-	ev, _, err := s.appendTx(ctx, tx, d, fence{})
+	ev, _, err := s.appendTx(ctx, tx, d, fence{}, true) // the key was checked under this lock
 	if err != nil {
 		return envelope.Event{}, false, err
 	}
