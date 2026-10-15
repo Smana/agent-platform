@@ -22,6 +22,11 @@ check "mountPath: /etc/agent-factory-oidc" "the client ids where config.api.clie
 check "value: /etc/agent-factory/config/config.yaml" "FACTORY_CONFIG names the rendered config"
 check "mountPath: /etc/agent-factory/config" "the config mounted where FACTORY_CONFIG points"
 check "name: api" "the run-request API port"
+api_port="$(yq 'select(.kind == "Service") | .spec.ports[] | select(.name == "api") | .port' <<<"$out")"
+intake_port="$(yq 'select(.kind == "Service") | .spec.ports[] | select(.name == "intake") | .port' <<<"$out")"
+[ "$api_port" = 8082 ] || { echo "FAIL: the run-request API Service port is 8082, got '$api_port'" >&2; fail=1; }
+[ "$api_port" != "$intake_port" ] || { echo "FAIL: the api and intake ports must differ" >&2; fail=1; }
+check "containerPort: 8082" "the run-request API container port"
 check "name: intake" "the RunLore intake port (FA-8)"
 check "secretName: agent-factory-intake" "the intake bearer token Secret (FA-8)"
 check "mountPath: /etc/agent-factory-intake" "the intake token where config.runlore.tokenFile reads it"

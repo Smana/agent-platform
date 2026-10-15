@@ -100,7 +100,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `systemPrincipals` | `{<sub>: <principal>}`. Ships empty; SP3 adds `system:serviceaccount:agent-system:agent-factory: system:factory` | 1 |
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build (Ruling AS-a); the group names are literals | 2, 6 |
 | `human.access` | `{readerFile, ttl}`: room visibility follows GitHub (D7). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms | local-first UX |
-| `factoryURL` | SP3's run API. Unset: `start_run` returns a manifest for the owner to apply | 4 |
+| `factoryURL` | SP3's run API, plaintext on the factory Service's `api` port, `:8082` (the broker's `:8443` is the TLS listener). Unset: `start_run` returns a manifest for the owner to apply | 4 |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}` (GP-18). Re-read when they change | 1 |
 
 | Broker environment | Meaning | Phase |
