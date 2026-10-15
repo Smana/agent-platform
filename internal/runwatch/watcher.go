@@ -51,6 +51,8 @@ func (w *Watcher) OnGone(f func(context.Context, Run)) {
 // OnLive registers f for the count of live runs naming a room: +1 when a run
 // enters that set, -1 when it leaves (terminal, revoked or deleted). A run is
 // counted at most once, whatever the updates, resyncs and deletes that follow.
+// Register f before the informer starts: a Remove of a run it never saw counted
+// would otherwise drive the value negative.
 func (w *Watcher) OnLive(f func(context.Context, int64)) {
 	w.mu.Lock()
 	w.live = append(w.live, f)

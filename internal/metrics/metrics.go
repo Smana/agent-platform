@@ -93,7 +93,8 @@ func (e *Exporter) Shutdown(ctx context.Context) error { return e.provider.Shutd
 // never a payload field, and room only on the gauge of rooms with a Running run.
 type Set struct {
 	// Participants is rooms_participants: live participants, by kind (run: a live
-	// run naming a room; human: an open viewer WebSocket).
+	// run naming a room, counted by every replica's informer, so aggregate with
+	// max, not sum; human: an open viewer WebSocket on this replica).
 	Participants metric.Int64UpDownCounter
 	// Connections is rooms_connections{kind}: open viewer connections (phase 2).
 	Connections metric.Int64UpDownCounter

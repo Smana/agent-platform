@@ -1370,3 +1370,20 @@ func TestSocketsGone(t *testing.T) {
 		}
 	})
 }
+
+// A connection refused by track (the shutdown began) never touches
+// rooms_participants: no +1 to pair with a -1.
+func TestRefusedConnectionIsNotAParticipant(t *testing.T) {
+	e := setup(t)
+	e.srv.socketsGone()
+	c, _, err := connect(t, e, header("human:own"))
+	if err == nil {
+		// The upgrade may succeed before the server closes with 1001.
+		closed(t, c)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if out := scrape(t, e); strings.Contains(out, `rooms_participants{kind="human"} 1`) ||
+		strings.Contains(out, `rooms_participants{kind="human"} -1`) {
+		t.Fatalf("a refused connection was counted:\n%s", out)
+	}
+}

@@ -174,9 +174,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	api.Queue = logStore // the system queue routes (SP3 R9)
 	rw.watch.OnGone(api.Drop)
-	rw.watch.OnLive(func(ctx context.Context, d int64) {
-		m.Participants.Add(ctx, d, metric.WithAttributes(attribute.String("kind", "run")))
-	})
+	countLiveRuns(rw.watch, m)
 	hub, err := fanoutHub(st, st, m, log)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
@@ -364,4 +362,13 @@ func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener, drain tim
 		return fmt.Errorf("shut down %s: %w", ln.Addr(), shut)
 	}
 	return nil
+}
+
+// countLiveRuns feeds rooms_participants{kind="run"} from the watch. Call it
+// before the informer starts: a Remove of a run the count never saw would drive
+// the value negative.
+func countLiveRuns(w *runwatch.Watcher, m *metrics.Set) {
+	w.OnLive(func(ctx context.Context, d int64) {
+		m.Participants.Add(ctx, d, metric.WithAttributes(attribute.String("kind", "run")))
+	})
 }

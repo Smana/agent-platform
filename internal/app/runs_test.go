@@ -298,3 +298,26 @@ func TestRefreshJWKS(t *testing.T) {
 		t.Fatal("refreshJWKS did not stop with its context")
 	}
 }
+
+// rooms_participants{kind="run"} follows the watch: a live run with a roomRef
+// counts, and its deletion uncounts it.
+func TestCountLiveRuns(t *testing.T) {
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := metrics.New(exp.Meter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := runwatch.New()
+	countLiveRuns(w, m)
+	w.Upsert(t.Context(), runClaim("7f3cq2xz", "3kq7x2ma", "Running"))
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_participants{kind=\"run\"} 1\n") {
+		t.Fatalf("a live run is not counted:\n%s", body)
+	}
+	w.Remove(t.Context(), runClaim("7f3cq2xz", "3kq7x2ma", "Running"))
+	if body := scrape(t, exp.Handler()); !strings.Contains(body, "rooms_participants{kind=\"run\"} 0\n") {
+		t.Fatalf("a deleted run is still counted:\n%s", body)
+	}
+}
