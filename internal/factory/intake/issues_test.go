@@ -647,3 +647,23 @@ func TestLiftingTheStopIsPreconditioned(t *testing.T) {
 		t.Fatalf("the delete carries no UID and resourceVersion precondition: %+v", pre.Preconditions)
 	}
 }
+
+// The pass that publishes the stop starts no Task, even while the reader's cache (Stopped) does
+// not yet hold the object it just wrote.
+func TestThePassThatEngagesTheStopCreatesNoTask(t *testing.T) {
+	f := forge.NewFake()
+	labelled(f, 7, "Smana")
+	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
+	p, c := poller(t, f) // Stopped stays false: the lagging cache
+	p.Cfg.ControlIssue = 1
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var l v1alpha1.TaskList
+	if err := c.List(context.Background(), &l); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Items) != 0 {
+		t.Fatalf("a Task was created in the pass that engaged the stop: %d", len(l.Items))
+	}
+}
