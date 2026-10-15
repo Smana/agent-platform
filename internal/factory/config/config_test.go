@@ -489,3 +489,53 @@ func TestTracingEndpoint(t *testing.T) {
 		t.Fatal("no tracing block: tracing off")
 	}
 }
+
+// Deployment facts come from the file; an omitted key keeps the platform's value, so a file
+// that predates the keys loads unchanged and hashes as before.
+func TestDeploymentFactsDefaultAndOverride(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.API.Groups.Admin != "agents-admin" || c.API.Groups.Member != "agents-member" {
+		t.Fatalf("omitted api.groups default to the platform's: %+v", c.API.Groups)
+	}
+	raw := strings.Replace(good, "api:", "api:\n  groups: {admin: ops-admin, member: ops-member}", 1)
+	raw += "schedules:\n  - {name: renovate-red, cron: \"0 6 * * 1\", class: review, text: Fix red PRs., probe: renovate-red}\n" +
+		"  - {name: other, cron: \"0 6 * * 1\", class: review, text: Fix, probe: renovate-red, probeAuthor: \"mend[bot]\"}\n"
+	if raw == good {
+		t.Fatal("the edit did not apply")
+	}
+	o, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.API.Groups.Admin != "ops-admin" || o.API.Groups.Member != "ops-member" {
+		t.Fatalf("api.groups: %+v", o.API.Groups)
+	}
+	if o.Schedules[0].ProbeAuthor != "renovate[bot]" || o.Schedules[1].ProbeAuthor != "mend[bot]" {
+		t.Fatalf("probeAuthor defaults to renovate[bot]: %+v", o.Schedules)
+	}
+}
+
+func TestValidateNamesAMissingDeploymentFact(t *testing.T) {
+	for name, edit := range map[string]struct {
+		f   func(*Config)
+		err string
+	}{
+		"member group": {func(c *Config) { c.API.Groups.Member = "" }, "api.groups.member is required"},
+		"admin group":  {func(c *Config) { c.API.Groups.Admin = "" }, "api.groups.admin is required"},
+		"probe author": {func(c *Config) { c.Schedules[0].ProbeAuthor = "" }, "schedule a: probeAuthor is required"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, err := Parse([]byte(good + "schedules:\n  - {name: a, cron: \"0 6 * * 1\", class: review, text: Fix, probe: renovate-red}\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			edit.f(c)
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), edit.err) {
+				t.Errorf("err = %v, want one naming %q", err, edit.err)
+			}
+		})
+	}
+}

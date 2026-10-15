@@ -118,7 +118,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		key := taskid.ScheduleKey(e.Name, slot)
 		text := e.Text
 		if e.Probe != "" {
-			found, detail, err := s.probe(ctx, e.Probe)
+			found, detail, err := s.probe(ctx, e.Probe, e.ProbeAuthor)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", e.Name, err))
 				continue
@@ -150,7 +150,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 
 // probe: renovate-red lists open Renovate PRs whose checks have been red for more than 24 h —
 // bumps the factory can land itself when Renovate's own branch went stale.
-func (s *Scheduler) probe(ctx context.Context, name string) (bool, string, error) {
+func (s *Scheduler) probe(ctx context.Context, name, author string) (bool, string, error) {
 	if name != "renovate-red" {
 		return false, "", fmt.Errorf("intake: unknown probe %q", name)
 	}
@@ -163,7 +163,7 @@ func (s *Scheduler) probe(ctx context.Context, name string) (bool, string, error
 	}
 	var red []string
 	for _, p := range prs {
-		if p.Author != "renovate[bot]" || s.Now().Sub(p.Created) < 24*time.Hour {
+		if p.Author != author || s.Now().Sub(p.Created) < 24*time.Hour {
 			continue
 		}
 		c, err := s.Merger.PullRequestChecks(ctx, p.Number)

@@ -37,4 +37,9 @@ intakeSecret: agent-factory-intake
 # than in tokens, defaulting tiers.<tier>.runUSD and taskUSD to runTokens and taskTokens × $1.70/M;
 # meter.query must then group by gen_ai_token_type (docs/operations.md#run-and-task-budgets). Example:
 #   meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}}
+# Deployment facts, each defaulting to the platform's value when omitted (a file that predates
+# them loads unchanged): api.groups names the two groups the run API admits, and a schedule's
+# probeAuthor the login whose PRs its probe reads. Example:
+#   api: {groups: {admin: agents-admin, member: agents-member}}
+#   schedules: [{name: renovate-red, ..., probe: renovate-red, probeAuthor: "renovate[bot]"}]
 config: {}
