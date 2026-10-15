@@ -34,7 +34,7 @@ type Watcher struct {
 	removed []func(context.Context, Run)
 	// synced reports that the AgentRun cache has delivered its first list; nil before Register.
 	synced func() bool
-	live    []func(context.Context, int64)
+	live   []func(context.Context, int64)
 }
 
 // New returns an empty Watcher.
