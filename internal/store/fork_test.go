@@ -214,8 +214,8 @@ func TestAForkCarriesWhatLeftTheQueueAfterItsPoint(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.leave(t, s, q.Seq) // after the point, before the fork
-			if got, _ := s.Queue(ctx, room); len(got) != 0 {
-				t.Fatalf("the move left %+v queued in the source", got)
+			if got, err := s.Queue(ctx, room); err != nil || len(got) != 0 {
+				t.Fatalf("the move left %+v queued in the source, %v", got, err)
 			}
 			by := envelope.Draft{Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: "human:bob"}, Origin: envelope.OriginClient,
 				OriginClient: "human:bob:s1", OriginSeq: 1, Payload: []byte(`{}`), Type: envelope.StateChanged}

@@ -63,6 +63,12 @@ const forkQueueSQL = `INSERT INTO queue (room_id, ref, author, text, state)
 // as the broker's role, under the grants and triggers every append meets: the
 // row starts empty, and nothing in src changes, a sealed src included. A prefix
 // over MaxForkEvents or MaxForkBytes is refused with ErrForkTooLarge.
+//
+// The fork also carries the source's queue as it stood at upTo: the messages
+// queued by then and not yet taken out of the queue, each queued again in the
+// fork. One gap: a row consumed through POST /v1/rooms/{id}/queue/consume
+// (Store.SetQueued) leaves no event to date it, so it is carried only while it
+// is still queued; consumed that way after upTo and before the fork, it is not.
 func (s *Store) Fork(ctx context.Context, src string, upTo int64, r NewRoom, d envelope.Draft, fields map[string]any) (envelope.Event, error) {
 	if r.Retention < MinRetention {
 		return envelope.Event{}, fmt.Errorf("store: fork room %s: %w", r.ID, ErrInvalidRetention)
