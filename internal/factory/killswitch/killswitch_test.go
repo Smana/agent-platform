@@ -38,3 +38,19 @@ func TestAReadErrorIsNotAYes(t *testing.T) {
 		t.Fatalf("on=%v err=%v", on, err)
 	}
 }
+
+// Engaged reads only the published stop object: a PublishIssue made through another client
+// leaves a reader holding no object running, and no process-local flag says otherwise.
+func TestEngagedReadsOnlyThePublishedObject(t *testing.T) {
+	other := fake.NewClientBuilder().Build()
+	if err := PublishIssue(t.Context(), other, "agent-system", true); err != nil {
+		t.Fatal(err)
+	}
+	reader := fake.NewClientBuilder().Build()
+	if on, err := Engaged(t.Context(), reader, "agent-system"); on || err != nil {
+		t.Fatalf("a reader without the object: on=%v err=%v", on, err)
+	}
+	if on, err := Engaged(t.Context(), other, "agent-system"); !on || err != nil {
+		t.Fatalf("a reader with the object: on=%v err=%v", on, err)
+	}
+}

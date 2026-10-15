@@ -545,7 +545,6 @@ func TestRevertLabelReachesADoneTask(t *testing.T) {
 }
 
 func TestControlIssue(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	f := forge.NewFake()
 	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
 	f.SetLabeled(LabelStop, forge.Item{Number: 1})
@@ -564,7 +563,6 @@ func TestControlIssue(t *testing.T) {
 // object, which each replica reads, so a process that never saw the label (a follower, or the
 // next leader) still refuses.
 func TestTheControlIssueStopReachesAnotherProcess(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	ctx := context.Background()
 	f := forge.NewFake()
 	f.SetIssue(forge.Issue{Number: 1, Labels: []string{LabelStop}})
@@ -573,7 +571,6 @@ func TestTheControlIssueStopReachesAnotherProcess(t *testing.T) {
 	if err := p.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	killswitch.SetIssue(false) // another process: no in-memory flag
 	if on, _ := killswitch.Engaged(ctx, c, "agent-system"); !on {
 		t.Fatal("a replica that did not poll must still see the issue stop")
 	}
@@ -591,7 +588,6 @@ func TestTheControlIssueStopReachesAnotherProcess(t *testing.T) {
 
 // The label's removal must not lift a stop a human set by hand.
 func TestRemovingTheLabelKeepsAHandMadeStop(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	f := forge.NewFake()
 	f.SetIssue(forge.Issue{Number: 1})
 	p, c := poller(t, f, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system"}})
@@ -606,7 +602,6 @@ func TestRemovingTheLabelKeepsAHandMadeStop(t *testing.T) {
 
 // A failed publish is reported, but the same pass still serves the revert label.
 func TestAFailedPublishDoesNotSkipReverts(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot", Namespace: "agent-system"},
 		Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseDone, PullRequest: &v1alpha1.PullRequestRef{Number: 12, AutoMerged: true}}}
 	f := forge.NewFake()
@@ -634,7 +629,6 @@ func TestAFailedPublishDoesNotSkipReverts(t *testing.T) {
 
 // Lifting the stop deletes only the object it read: one replaced since is an operator's.
 func TestLiftingTheStopIsPreconditioned(t *testing.T) {
-	defer killswitch.SetIssue(false)
 	f := forge.NewFake()
 	f.SetIssue(forge.Issue{Number: 1})
 	p, c := poller(t, f, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: killswitch.ConfigMap, Namespace: "agent-system",

@@ -7,7 +7,6 @@ package killswitch
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,18 +24,9 @@ const AnnotationSource = "agents.ogenki.io/stop-source"
 // SourceIssue is the AnnotationSource of the stop object the poller publishes.
 const SourceIssue = "control-issue"
 
-var issueStop atomic.Bool
-
-// SetIssue records whether the pinned control issue carries factory/stop (§6.1). The poller
-// sets it every minute; the label's removal is how a human resumes.
-func SetIssue(on bool) { issueStop.Store(on) }
-
 // Engaged reports whether the stop object exists. Callers pause intake on an error too, but
 // stop tasks only on a definite yes: a transient API error must not revoke every run.
 func Engaged(ctx context.Context, c client.Reader, ns string) (bool, error) {
-	if issueStop.Load() {
-		return true, nil
-	}
 	var cm corev1.ConfigMap
 	err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: ConfigMap}, &cm)
 	switch {

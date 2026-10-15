@@ -150,7 +150,6 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 			return err
 		}
 		on := slices.Contains(iss.Labels, LabelStop)
-		killswitch.SetIssue(on)
 		// A failed publish must not hold back the stop labels and reverts of this pass.
 		publishErr = killswitch.PublishIssue(ctx, p.Client, p.Namespace, on)
 	}
