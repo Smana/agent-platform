@@ -231,6 +231,10 @@ A finished task's room closes once its outbox, settle, facts and revert window a
 
 A hand-made stop must be a fresh object: `kubectl create configmap agent-factory-stop -n agent-system`. `kubectl apply` over a stop the control issue made keeps its `agents.ogenki.io/stop-source: control-issue` annotation, so removing `factory/stop` from the issue lifts it.
 
+## Rollout: the run-request API port
+
+The factory's run-request API (`api.listen`, Service port `api`) serves plaintext HTTP on `:8082` inside the mesh; the RunLore intake stays on `:8080` and the broker's `:8443` is the only TLS listener. Before this change the API sat on `:8443`. The platform composition's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) must move to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do.
+
 ## Upgrades
 
 | Change | How |

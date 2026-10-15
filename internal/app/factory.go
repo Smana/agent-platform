@@ -66,7 +66,7 @@ const (
 )
 
 // RunFactory runs agent-factory (SP3): the Task reconciler, the issue poller, the run meter
-// and the stop's sweep on the leader; the run-request API on :8443, :9090 metrics and probes
+// and the stop's sweep on the leader; the run-request API on :8082 (plaintext inside the mesh; the broker's :8443 is the TLS listener), :9090 metrics and probes
 // and the GitHub ping on every replica. getenv reads FACTORY_CONFIG and POD_NAMESPACE. A
 // config that does not load fails the start, so a bad config fails the rollout rather than
 // the running factory (§4).
