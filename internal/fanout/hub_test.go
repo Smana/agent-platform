@@ -28,6 +28,8 @@ type memLog struct {
 	ranges atomic.Int32
 	gate   chan struct{}
 	fails  atomic.Int32
+	// started, when set, gets a tick as each read begins (before the gate).
+	started chan struct{}
 }
 
 func (m *memLog) add(n int) int64 {
@@ -41,6 +43,12 @@ func (m *memLog) add(n int) int64 {
 
 func (m *memLog) Range(ctx context.Context, _ string, after int64, limit int) ([]envelope.Event, error) {
 	m.ranges.Add(1)
+	if m.started != nil {
+		select {
+		case m.started <- struct{}{}:
+		default:
+		}
+	}
 	if n := m.fails.Load(); n > 0 && m.fails.CompareAndSwap(n, n-1) {
 		return nil, errors.New("connection reset by peer")
 	}
@@ -412,7 +420,7 @@ func TestAStalledViewerIsDroppedAtItsChannelCap(t *testing.T) {
 // A read that started before its room was forgotten and subscribed again must
 // not offer the new viewer what it already holds from the log (review M7, F6).
 func TestAReadForAForgottenRoomIsDiscarded(t *testing.T) {
-	log, b := &memLog{gate: make(chan struct{})}, newBus()
+	log, b := &memLog{gate: make(chan struct{}), started: make(chan struct{}, 1)}, newBus()
 	h := New(log, b, discard)
 	ctx := run(t, h)
 	waitOpened(t, b)
@@ -420,12 +428,10 @@ func TestAReadForAForgottenRoomIsDiscarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for log.ranges.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the first read never started")
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-log.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first read never started")
 	}
 	log.add(5)
 	h.Unsubscribe(first)
@@ -442,7 +448,7 @@ func TestAReadForAForgottenRoomIsDiscarded(t *testing.T) {
 // A failed read is logged and retried by the next poll with the listener still
 // up: the notification that prompted it is not repeated.
 func TestFailedReadIsRetried(t *testing.T) {
-	log, b := &memLog{}, newBus()
+	log, b := &rangedLog{memLog: &memLog{}, ranged: make(chan struct{}, 1)}, newBus()
 	var logs syncBuffer
 	h := New(log, b, slog.New(slog.NewTextHandler(&logs, nil)))
 	h.PollEvery = 20 * time.Millisecond
@@ -452,7 +458,11 @@ func TestFailedReadIsRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond) // the subscribe's own read has run
+	select { // the subscribe's own read has run
+	case <-log.ranged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the subscribe never read the log")
+	}
 	log.fails.Store(1)
 	b.publish(roomID, log.add(2))
 	drain(t, sub, 1, 2)
@@ -486,7 +496,10 @@ func (s *syncBuffer) Bytes() []byte {
 func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	log, b := &memLog{}, newBus()
 	h := New(log, b, discard)
-	ctx := run(t, h)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
 	waitOpened(t, b)
 	sub, err := h.Subscribe(ctx, roomID)
 	if err != nil {
@@ -497,7 +510,12 @@ func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	h.Unsubscribe(sub)
 	before := log.ranges.Load()
 	b.publish(roomID, log.add(1))
-	time.Sleep(100 * time.Millisecond)
+	cancel() // stop the hub and wait for it: nothing can still be about to read
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hub did not stop")
+	}
 	if n := log.ranges.Load(); n != before {
 		t.Fatalf("%d reads for a room nobody watches", n-before)
 	}

@@ -81,11 +81,19 @@ func TestRunBridge(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
+			started := make(chan struct{}, 1)
 			if c.want == "" {
-				// The broker is unreachable: the bridge keeps saying hello until ctx ends.
-				go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+				// The broker is unreachable: the bridge keeps saying hello until ctx
+				// ends, which is when it has logged that it started.
+				go func() {
+					select {
+					case <-started:
+						cancel()
+					case <-ctx.Done():
+					}
+				}()
 			}
-			err := RunBridge(ctx, slog.New(slog.DiscardHandler), func(k string) string { return c.env[k] })
+			err := RunBridge(ctx, slog.New(startedHandler{started}), func(k string) string { return c.env[k] })
 			switch {
 			case c.want == "" && err != nil:
 				t.Fatalf("RunBridge = %v", err)
@@ -97,6 +105,23 @@ func TestRunBridge(t *testing.T) {
 		})
 	}
 }
+
+// startedHandler signals the bridge's "room-bridge starting" line, logged just
+// before its loop runs, and drops every record.
+type startedHandler struct{ started chan struct{} }
+
+func (startedHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h startedHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == "room-bridge starting" {
+		select {
+		case h.started <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+func (h startedHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h startedHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestHealthz(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
