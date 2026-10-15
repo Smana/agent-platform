@@ -439,7 +439,7 @@ func TestTheSIGTERMDrainAlwaysSends(t *testing.T) {
 			fb := &fakeBroker{events: c.replies}
 			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 			r.b.MaxBackoff, r.b.FlushGrace = time.Hour, 3500*time.Millisecond
-			steps := rigStepper(r, false)
+			steps := rigStepper(r, false) // real clock: the Retry-After is 30 s ahead of it
 			ctx, _ := r.run(t)
 			eventually(ctx, t, "the broker refused a batch", func() bool {
 				return slices.Contains(fb.callLog(), "events Service Unavailable")
@@ -481,7 +481,7 @@ func TestTheLogIsPolledOftenUntilTheHarnessFirstAnswers(t *testing.T) {
 	r.b.Interval, r.b.MaxBackoff = 20*time.Millisecond, time.Hour
 	steps := rigStepper(r, true)
 	ctx, stop := r.run(t)
-	// After nine refusals from 1 ms, the next wait is 256 ms uncapped and 200 ms
+	// On the fake clock: after nine refusals from 1 ms, the next wait is 256 ms uncapped and 200 ms
 	// under the answeredPolls cap: longer than the conversation.
 	for {
 		f.mu.Lock()
@@ -493,11 +493,11 @@ func TestTheLogIsPolledOftenUntilTheHarnessFirstAnswers(t *testing.T) {
 		steps.step(ctx, t, 1, r.b.Interval)
 	}
 	f.setDown(false)
-	steps.step(ctx, t, 6, r.b.Interval) // 120 ms of the conversation
+	steps.step(ctx, t, 6, r.b.Interval) // 120 ms of fake time
 	f.setDown(true)                     // the harness exits before SIGTERM
 	stop()
 	if got := seqs(t, fb.stored(wire.StreamEvents)); !slices.Equal(got, []int64{SeqFor(1, 0), SeqFor(2, 0), SeqFor(3, 0)}) {
-		t.Fatalf("mirrored %v of a conversation that ran for 120 ms", got)
+		t.Fatalf("mirrored %v of a conversation that ran for 120 ms of fake time", got)
 	}
 }
 
@@ -519,14 +519,14 @@ func TestAnAnsweredLogBacksOffFurther(t *testing.T) {
 	for len(fb.stored(wire.StreamEvents)) < 1 { // the first step positions, the next reads
 		steps.step(ctx, t, 1, r.b.Interval)
 	}
-	steps.step(ctx, t, 60, r.b.Interval) // 300 ms: the backoff reaches its cap
+	steps.step(ctx, t, 60, r.b.Interval) // 300 ms of fake time: the backoff reaches its cap
 	before := f.searched()
 	steps.step(ctx, t, 60, r.b.Interval)
 	n := f.searched() - before
 	stop()
-	// 300 ms is 6 polls at answeredPolls × 5 ms, 30 at firstContactPolls × 5 ms.
+	// 300 ms of fake time is 6 polls at answeredPolls × 5 ms, 30 at firstContactPolls × 5 ms.
 	if n < 1 || n > 12 {
-		t.Fatalf("%d reads of a failing log in 300 ms, want about 6", n)
+		t.Fatalf("%d reads of a failing log in 300 ms of fake time, want about 6", n)
 	}
 }
 
@@ -656,17 +656,21 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 			f.add(chatEvent("hi"))
 			fb := c.broker
 			r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
-			steps := rigStepper(r, false)
+			var steps *stepper
+			var waits *tickCounter
+			if c.loops {
+				steps = rigStepper(r, false) // real clock: the steps only have to run
+			} else {
+				waits = &tickCounter{}
+				r.b.Ticker = waits.ticker
+			}
 			ctx, _ := r.run(t)
 			eventually(ctx, t, "the broker sealed the room", func() bool {
 				return slices.ContainsFunc(fb.callLog(), func(c string) bool { return strings.HasSuffix(c, " Gone") })
 			})
 			calls := len(fb.callLog())
-			if c.loops { // sealed at hello, Run never loops: nothing steps
+			if c.loops {
 				steps.step(ctx, t, 10, r.b.Interval)
-			}
-			if got := fb.callLog(); len(got) != calls {
-				t.Fatalf("the bridge kept calling a sealed room: %v", got)
 			}
 			if !r.b.Healthy(time.Now().Add(2 * unreachableFail)) {
 				t.Fatal("a sealed room made the bridge unhealthy: the kubelet would restart it for nothing")
@@ -676,6 +680,14 @@ func TestASealedRoomStopsTheBridge(t *testing.T) {
 			case <-r.done:
 			case <-time.After(time.Second):
 				t.Fatal("Run did not return on SIGTERM")
+			}
+			// Run has returned, so nothing runs behind these checks. Sealed at hello,
+			// it never took a step: no wait, no harness read.
+			if got := fb.callLog(); len(got) != calls {
+				t.Fatalf("the bridge kept calling a sealed room: %v", got)
+			}
+			if !c.loops && (waits.n.Load() != 0 || f.searched() != 0) {
+				t.Fatalf("a bridge sealed at hello stepped: %d waits, %d harness reads", waits.n.Load(), f.searched())
 			}
 			if n := len(fb.stored(wire.StreamEvents)); n != 0 {
 				t.Fatalf("%d events reached a sealed room", n)

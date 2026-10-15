@@ -126,10 +126,9 @@ type Bridge struct {
 	Meter metric.Meter
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// Ticker times the loop's wait between two steps: it returns the channel
-	// a tick arrives on, and its stop. Nil means
-	// a one-shot timer per wait (the call is made for each wait); tests
-	// inject one they step.
+	// Ticker times the loop's wait between two steps; it is called once per
+	// wait and returns the channel a tick arrives on and its stop. Tests inject
+	// it; nil means a one-shot timer per wait.
 	Ticker func(d time.Duration) (<-chan time.Time, func())
 
 	// The stream's hooks. An error ends the stream, which is re-dialled and

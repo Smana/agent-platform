@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -409,4 +410,13 @@ func (s *stepper) step(ctx context.Context, t *testing.T, n int, interval time.D
 		}
 		s.idle(ctx, t)
 	}
+}
+
+// tickCounter is a Ticker that never ticks and counts the waits the loop starts:
+// a bridge that never reaches its loop leaves it at zero.
+type tickCounter struct{ n atomic.Int32 }
+
+func (c *tickCounter) ticker(time.Duration) (<-chan time.Time, func()) {
+	c.n.Add(1)
+	return nil, func() {}
 }

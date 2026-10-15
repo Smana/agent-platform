@@ -51,6 +51,8 @@ func TestARoomKeptBusyPastThePatienceRefusesTheRun(t *testing.T) {
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	clock := &fakeClock{t: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
 	r.b.Now = clock.now
+	waits := &tickCounter{}
+	r.b.Ticker = waits.ticker
 	ctx, _ := r.run(t)
 
 	eventually(ctx, t, "the broker answers room_busy twice", func() bool { return len(fb.callLog()) >= 2 })
@@ -67,12 +69,14 @@ func TestARoomKeptBusyPastThePatienceRefusesTheRun(t *testing.T) {
 		t.Fatalf("Admission past the patience = %+v, want %+v", got, want)
 	}
 	calls := len(fb.callLog())
-	// Run idles after a refusal and never loops again: no step exists to say hello.
+	// Run has returned once done closes, so nothing runs behind the checks below.
+	r.cancel()
+	<-r.done
 	if got := fb.callLog(); len(got) != calls {
 		t.Fatalf("a refused bridge kept saying hello: %v", got[calls:])
 	}
-	if f.searched() != 0 {
-		t.Fatal("a refused bridge read the harness")
+	if waits.n.Load() != 0 || f.searched() != 0 {
+		t.Fatalf("a refused bridge stepped: %d waits, %d harness reads", waits.n.Load(), f.searched())
 	}
 	if !r.b.Healthy(time.Now()) {
 		t.Fatal("a refused run made the bridge unhealthy: the kubelet would restart it for nothing")
