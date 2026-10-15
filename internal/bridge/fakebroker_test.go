@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -346,3 +347,76 @@ func (r *rig) counter(t *testing.T, name, reason string) int64 {
 }
 
 func payloadHas(it wire.Item, s string) bool { return strings.Contains(string(it.Payload), s) }
+
+// stepper is the loop's ticker under a test's control: the bridge takes one step
+// per tick and none on its own (its first step needs no tick).
+type stepper struct {
+	ch      chan time.Time
+	waits   chan struct{} // one entry each time the loop starts waiting for a tick
+	waiting bool          // the loop is known to be waiting
+	clock   *fakeClock    // advanced by the interval before each tick, when set
+}
+
+func newStepper() *stepper {
+	return &stepper{ch: make(chan time.Time), waits: make(chan struct{}, 1<<16)}
+}
+
+func (s *stepper) ticker(time.Duration) (<-chan time.Time, func()) {
+	select {
+	case s.waits <- struct{}{}:
+	default:
+	}
+	return s.ch, func() {}
+}
+
+// rigStepper gives the rig's bridge a stepper, and a fake clock when withClock.
+func rigStepper(r *rig, withClock bool) *stepper {
+	s := newStepper()
+	if withClock {
+		s.clock = &fakeClock{t: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+		r.b.Now = s.clock.now
+	}
+	r.b.Ticker = s.ticker
+	return s
+}
+
+// idle waits until the loop has ended its step and waits for a tick.
+func (s *stepper) idle(ctx context.Context, t *testing.T) {
+	t.Helper()
+	if s.waiting {
+		return
+	}
+	select {
+	case <-s.waits:
+		s.waiting = true
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for the loop to wait")
+	}
+}
+
+// step runs n loop steps, each to its end: a tick, then the wait for the next.
+func (s *stepper) step(ctx context.Context, t *testing.T, n int, interval time.Duration) {
+	t.Helper()
+	for range n {
+		s.idle(ctx, t)
+		if s.clock != nil {
+			s.clock.add(interval)
+		}
+		select {
+		case s.ch <- time.Now():
+			s.waiting = false
+		case <-ctx.Done():
+			t.Fatal("timed out stepping the loop")
+		}
+		s.idle(ctx, t)
+	}
+}
+
+// tickCounter is a Ticker that never ticks and counts the waits the loop starts:
+// a bridge that never reaches its loop leaves it at zero.
+type tickCounter struct{ n atomic.Int32 }
+
+func (c *tickCounter) ticker(time.Duration) (<-chan time.Time, func()) {
+	c.n.Add(1)
+	return nil, func() {}
+}

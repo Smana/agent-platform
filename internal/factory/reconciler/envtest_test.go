@@ -71,15 +71,13 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runs.GVK())
 	var got v1alpha1.Task
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+	eventually(func() bool {
 		if c.Get(ctx, types.NamespacedName{Namespace: runs.Namespace, Name: runs.Name(runID("3buqdlot", 0))}, u) != nil {
-			continue
+			return false
 		}
-		if c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && got.Status.Phase == v1alpha1.PhaseImplementing &&
-			u.GetLabels()[runs.LabelTask] == "3buqdlot" {
-			break
-		}
-	}
+		return c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && got.Status.Phase == v1alpha1.PhaseImplementing &&
+			u.GetLabels()[runs.LabelTask] == "3buqdlot"
+	})
 	if got.Status.Phase != v1alpha1.PhaseImplementing || u.GetLabels()[runs.LabelTask] != "3buqdlot" {
 		t.Fatalf("no AgentRun, or the task never reached Implementing: %q %v", got.Status.Phase, u.GetLabels())
 	}
@@ -121,10 +119,28 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	if err := c.Status().Update(ctx, u); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		if c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && len(got.Status.Runs) == 1 && got.Status.Runs[0].Phase == "Succeeded" {
-			return
+	if !eventually(func() bool {
+		return c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && len(got.Status.Runs) == 1 && got.Status.Runs[0].Phase == "Succeeded"
+	}) {
+		t.Fatalf("the run's phase never reached its task: %+v", got.Status.Runs)
+	}
+}
+
+// eventually polls cond every 200 ms for up to 20 s. A real API server has no
+// event to wait on from here, so this is the one bounded poll in these tests.
+func eventually(cond func() bool) bool {
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	for {
+		if cond() {
+			return true
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			return cond()
 		}
 	}
-	t.Fatalf("the run's phase never reached its task: %+v", got.Status.Runs)
 }

@@ -78,6 +78,8 @@ type memLog struct {
 	touches   int // lease renewals
 	// deliveryReads counts the replay's reads of the log.
 	deliveryReads int
+	// ranged, when set, gets the last seq of each hub read that returned events.
+	ranged chan int64
 }
 
 func newMemLog() *memLog {
@@ -133,6 +135,12 @@ func (m *memLog) Range(_ context.Context, roomID string, after int64, limit int)
 	for _, e := range m.events[roomID] {
 		if e.Seq > after && len(out) < limit {
 			out = append(out, e)
+		}
+	}
+	if m.ranged != nil && len(out) > 0 {
+		select {
+		case m.ranged <- out[len(out)-1].Seq:
+		default:
 		}
 	}
 	return out, nil

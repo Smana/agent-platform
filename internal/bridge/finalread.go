@@ -49,18 +49,28 @@ func (b *Bridge) FinalRead(ctx context.Context) (FinalReadResult, error) {
 	}
 }
 
+// ticker is Ticker, or a one-shot timer: the loop waits one period per step, and a step's own
+// duration is part of the period, as before.
+func (b *Bridge) ticker(d time.Duration) (<-chan time.Time, func()) {
+	if b.Ticker != nil {
+		return b.Ticker(d)
+	}
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
+}
+
 // idle waits out the poll interval, serving on the loop, the only goroutine that touches the buffer
 // and the cursor, the final reads that arrive meanwhile. It reports false once ctx ends.
 func (b *Bridge) idle(ctx context.Context) bool {
-	t := time.NewTimer(b.Interval)
-	defer t.Stop()
+	tick, stop := b.ticker(b.Interval)
+	defer stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		case req := <-b.finals():
 			req.done <- b.serveFinalRead(req.ctx)
-		case <-t.C:
+		case <-tick:
 			return true
 		}
 	}

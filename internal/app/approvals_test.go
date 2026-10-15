@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,68 +30,113 @@ import (
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
-// fakeApprovalLog records the sweep's calls, in order.
+// fakeApproval is one pending approval the fake log holds: answered by a result already
+// logged, or past its deadline, or neither; age is how long it has waited.
+type fakeApproval struct {
+	id            string
+	answered, due bool
+	age           time.Duration
+}
+
+// fakeApprovalLog is an approvals log with state: the sweep closes approvals in it, and a test
+// reads what was closed (and why) and what is still open.
 type fakeApprovalLog struct {
 	mu                      sync.Mutex
-	calls                   []string
+	pending                 []fakeApproval
+	closed                  map[string]string // approval id -> "superseded" | "expired"
 	supersedeErr, expireErr error
-	oldest                  time.Duration
 	oldestErr               error
 }
 
-func (f *fakeApprovalLog) record(c string) {
+func (f *fakeApprovalLog) close(reason string, want func(fakeApproval) bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, c)
+	if err != nil {
+		return
+	}
+	if f.closed == nil {
+		f.closed = map[string]string{}
+	}
+	for _, a := range f.pending {
+		if _, done := f.closed[a.id]; !done && want(a) {
+			f.closed[a.id] = reason
+		}
+	}
 }
 
 func (f *fakeApprovalLog) SupersedeAnswered(context.Context) ([]envelope.Event, error) {
-	f.record("supersede")
+	f.close("superseded", func(a fakeApproval) bool { return a.answered }, f.supersedeErr)
 	return nil, f.supersedeErr
 }
 
 func (f *fakeApprovalLog) ExpireDue(context.Context) ([]envelope.Event, error) {
-	f.record("expire")
+	f.close("expired", func(a fakeApproval) bool { return a.due }, f.expireErr)
 	return nil, f.expireErr
 }
 
+// OldestPending is the longest wait among the approvals no sweep has closed.
 func (f *fakeApprovalLog) OldestPending(context.Context) (time.Duration, int, error) {
-	f.record("oldest")
-	return f.oldest, 1, f.oldestErr
-}
-
-func (f *fakeApprovalLog) got() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return strings.Join(f.calls, " ")
+	var oldest time.Duration
+	n := 0
+	for _, a := range f.pending {
+		if _, done := f.closed[a.id]; !done {
+			n++
+			oldest = max(oldest, a.age)
+		}
+	}
+	return oldest, n, f.oldestErr
 }
 
-// One sweep: superseded first, then expired, then the oldest pending age; a
-// failure does not stop the next step, and a replica that stops leading stops.
+func (f *fakeApprovalLog) closedSet() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.closed)
+}
+
+// One sweep: answered approvals are superseded, due ones expired, then the oldest still-pending
+// age is exported; a failure does not stop the next step, and a replica that stops leading stops.
 func TestSweepApprovals(t *testing.T) {
 	quiet := slog.New(slog.DiscardHandler)
 	always := func() bool { return true }
+	pending := []fakeApproval{
+		{id: "answered", answered: true, age: 2 * time.Minute},
+		{id: "due", due: true, age: time.Minute},
+		{id: "open", age: 90 * time.Second},
+	}
 	for _, c := range []struct {
 		name    string
 		l       *fakeApprovalLog
 		leading func() bool
-		calls   string
+		closed  map[string]string
 		gauge   []float64
 	}{
-		{"every step", &fakeApprovalLog{oldest: 90 * time.Second}, always, "supersede expire oldest", []float64{90}},
-		{"a failed supersede still expires", &fakeApprovalLog{supersedeErr: errors.New("down")}, always, "supersede expire oldest", []float64{0}},
-		{"a failed expiry still measures", &fakeApprovalLog{expireErr: errors.New("down"), oldest: time.Minute}, always, "supersede expire oldest", []float64{60}},
-		{"an unreadable age leaves the gauge", &fakeApprovalLog{oldestErr: errors.New("down")}, always, "supersede expire oldest", nil},
-		{"a replica that stops leading stops", &fakeApprovalLog{}, func() bool { return false }, "supersede", nil},
-		{"or stops before measuring", &fakeApprovalLog{}, onlyOnce(), "supersede expire", nil},
+		{"every step", &fakeApprovalLog{pending: pending}, always,
+			map[string]string{"answered": "superseded", "due": "expired"}, []float64{90}},
+		{"a failed supersede still expires", &fakeApprovalLog{pending: pending, supersedeErr: errors.New("down")}, always,
+			map[string]string{"due": "expired"}, []float64{120}},
+		{"a failed expiry still measures", &fakeApprovalLog{pending: pending, expireErr: errors.New("down")}, always,
+			map[string]string{"answered": "superseded"}, []float64{90}},
+		{"an unreadable age leaves the gauge", &fakeApprovalLog{pending: pending, oldestErr: errors.New("down")}, always,
+			map[string]string{"answered": "superseded", "due": "expired"}, nil},
+		{"a replica that stops leading stops", &fakeApprovalLog{pending: pending}, func() bool { return false },
+			map[string]string{"answered": "superseded"}, nil},
+		{"or stops before measuring", &fakeApprovalLog{pending: pending}, onlyOnce(),
+			map[string]string{"answered": "superseded", "due": "expired"}, nil},
+		// The order is the contract: a call that has its result is answered, whatever its
+		// deadline, so supersede must run before expiry or this one would be closed as expired.
+		{"answered and past its deadline is superseded, not expired",
+			&fakeApprovalLog{pending: []fakeApproval{{id: "both", answered: true, due: true}}}, always,
+			map[string]string{"both": "superseded"}, []float64{0}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var gauge []float64
 			sweepApprovals(t.Context(), c.l, c.leading, func(_ context.Context, v float64) { gauge = append(gauge, v) }, quiet)
-			if got := c.l.got(); got != c.calls {
-				t.Fatalf("calls %q, want %q", got, c.calls)
+			if got := c.l.closedSet(); !maps.Equal(got, c.closed) {
+				t.Fatalf("closed %v, want %v", got, c.closed)
 			}
-			if len(gauge) != len(c.gauge) || (len(gauge) == 1 && gauge[0] != c.gauge[0]) {
+			if !slices.Equal(gauge, c.gauge) {
 				t.Fatalf("gauge %v, want %v", gauge, c.gauge)
 			}
 		})
@@ -99,7 +146,7 @@ func TestSweepApprovals(t *testing.T) {
 // The sweep runs on the leader only, every 30 s; a replica that stops leading
 // exports no stale age.
 func TestApprovalLoop(t *testing.T) {
-	l := &fakeApprovalLog{oldest: 20 * time.Minute}
+	l := &fakeApprovalLog{pending: []fakeApproval{{id: "open", age: 20 * time.Minute}}}
 	tick := make(chan time.Time)
 	var mu sync.Mutex
 	var gauge []float64
@@ -223,7 +270,8 @@ func TestBridgeAPIIsWired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &fakeBrokerLog{fakeApprovalLog: &fakeApprovalLog{}}
+	l := &fakeBrokerLog{fakeApprovalLog: &fakeApprovalLog{pending: []fakeApproval{
+		{id: "answered", answered: true}, {id: "due", due: true}}}}
 	var added []manager.Runnable
 	add := func(r manager.Runnable) error { added = append(added, r); return nil }
 	s, err := bridgeAPI(l, red, nil, nil, nil, rooms, "agent-system", add, m, slog.New(slog.DiscardHandler))
@@ -245,8 +293,8 @@ func TestBridgeAPIIsWired(t *testing.T) {
 	}
 	loop.active.Store(true)
 	loop.run(t.Context())
-	if got := l.got(); got != "supersede expire oldest" {
-		t.Fatalf("the leader runs %q, not the approval sweep", got)
+	if got := l.closedSet(); !maps.Equal(got, map[string]string{"answered": "superseded", "due": "expired"}) {
+		t.Fatalf("the leader closed %v: it does not run the approval sweep", got)
 	}
 	refuse := func(manager.Runnable) error { return errors.New("manager started") }
 	if _, err := bridgeAPI(l, red, nil, nil, nil, rooms, "agent-system", refuse, m, slog.New(slog.DiscardHandler)); err == nil {

@@ -146,6 +146,9 @@ func TestStreamRefusesWithoutItsMark(t *testing.T) {
 func TestStreamSendsTheSeamOnce(t *testing.T) {
 	s, log, w := newServer(t)
 	s.Ticker = make(manualTicker).new
+	log.mu.Lock()
+	log.ranged = make(chan int64, 16) // the hub's poll already runs
+	log.mu.Unlock()
 	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
 	var once sync.Once
 	s.LastAck = func(ctx context.Context, r, run string) (int64, error) {
@@ -159,7 +162,13 @@ func TestStreamSendsTheSeamOnce(t *testing.T) {
 	defer time.AfterFunc(5*time.Second, stop).Stop()
 	expectFrame(t, sc, wire.EventDeliver, `{"ref":1,"text":"seam"}`)
 	expectPing(t, sc)
-	time.Sleep(100 * time.Millisecond) // the hub offers seq 1 to the buffer
+	for seen := int64(0); seen < 1; { // the hub's worker has read seq 1; it offers it to the buffer before reading again
+		select {
+		case seen = <-log.ranged:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the hub never read seq 1")
+		}
+	}
 	human(t, log, 2, envelope.Message, steering("next", runA))
 	expectFrame(t, sc, wire.EventDeliver, `{"ref":2,"text":"next"}`)
 }

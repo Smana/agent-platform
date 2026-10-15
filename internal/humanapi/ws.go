@@ -62,6 +62,24 @@ var (
 	errUnverified   = errors.New(dropUnverified)
 )
 
+// withLifetime is context.WithTimeout on the Server's timer: past d the context ends with
+// context.DeadlineExceeded as its cause, which names the end "reauth". The stop it returns
+// waits for the watcher goroutine.
+func (s *Server) withLifetime(parent context.Context, d time.Duration) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	fired, stop := s.timer(d)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-fired:
+			cancel(context.DeadlineExceeded)
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { stop(); cancel(nil); <-done }
+}
+
 func or(d, def time.Duration) time.Duration {
 	if d > 0 {
 		return d
@@ -210,7 +228,7 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	defer s.untrack(&cancel)
 	s.count(base, 1)
 	defer s.count(base, -1)
-	life, stopLife := context.WithTimeout(life, min(time.Until(p.Expiry), or(s.MaxLifetime, defaultMaxLifetime)))
+	life, stopLife := s.withLifetime(life, min(p.Expiry.Sub(s.now()), or(s.MaxLifetime, defaultMaxLifetime)))
 	defer stopLife()
 
 	// session scopes the connection's clientSeq, its acts' idempotency key.
@@ -489,16 +507,17 @@ func refused(err error) bool {
 	return errors.Is(err, websocket.ErrMessageTooBig) || errors.As(err, &syntax) || errors.As(err, &typ)
 }
 
-// ping checks the peer every PingEvery; no pong within PongWait ends the connection.
+// ping checks the peer one PingEvery after the previous beat finished, so the cadence is
+// PingEvery plus the beat's own work; no pong within PongWait ends the connection.
 // On the same beat it re-runs D7 (rulings R17, R21).
 func (v *viewer) ping() {
-	t := time.NewTicker(or(v.s.PingEvery, defaultPingEvery))
-	defer t.Stop()
 	for {
+		beat, stop := v.s.timer(or(v.s.PingEvery, defaultPingEvery))
 		select {
 		case <-v.life.Done():
+			stop()
 			return
-		case <-t.C:
+		case <-beat:
 		}
 		if v.gated && !v.readable() {
 			return

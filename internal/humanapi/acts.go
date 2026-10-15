@@ -97,6 +97,9 @@ type Actor struct {
 	// OnDecided observes a human decision's wait since its request
 	// (rooms_approval_decision_seconds).
 	OnDecided func(time.Duration)
+	// Now is the clock OnDecided's wait is measured on; nil means time.Now. Server.Routes
+	// hands it the Server's own when this one is unset.
+	Now func() time.Time
 	// Logger records one line per act, accepted or refused (nil: none).
 	Logger *slog.Logger
 
@@ -104,6 +107,13 @@ type Actor struct {
 	limiters map[string]*rate.Limiter
 	forks    map[string]*rate.Limiter
 	prs      prpattern.Cache // the rooms' repositories' PR patterns
+}
+
+func (a *Actor) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 // The rejections an ack carries (docs/api.md).
@@ -457,7 +467,7 @@ func (a *Actor) decide(ctx context.Context, p authn.Principal, room *v1alpha1.Ro
 	}
 	ev, _, err := a.Log.Decide(ctx, ap.ID, act.Decision, p.ID, why, d)
 	if err == nil && ap.State == store.ApprovalPending && a.OnDecided != nil { // a replay was observed once already
-		a.OnDecided(time.Since(ap.RequestedAt))
+		a.OnDecided(a.now().Sub(ap.RequestedAt))
 	}
 	return done(ev, err)
 }

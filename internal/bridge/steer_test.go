@@ -155,24 +155,24 @@ func TestADeliveryIsAcknowledgedInTheLog(t *testing.T) {
 	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
 	steer := &Steering{Harness: r.b.Harness, RunID: runID, Push: r.b.Push}
 	r.b.OnDeliver = steer.Deliver
-	_, stop := r.run(t)
+	ctx, stop := r.run(t)
 	defer stop()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	acked := func() (wire.Item, bool) {
 		for _, it := range fb.stored(wire.StreamStatus) {
 			if strings.Contains(string(it.Payload), `"kind":"delivered"`) {
-				if it.Seq <= 9 {
-					t.Fatalf("the ack reuses a status seq the log holds: %d", it.Seq)
-				}
-				if sent, _, _ := f.snapshot(); len(sent) != 1 || sent[0] != "use v2" {
-					t.Fatalf("sent %v", sent)
-				}
-				return
+				return it, true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		return wire.Item{}, false
 	}
-	t.Fatal("the delivery was never acknowledged")
+	eventually(ctx, t, "the delivery is acknowledged", func() bool { _, ok := acked(); return ok })
+	it, _ := acked()
+	if it.Seq <= 9 {
+		t.Fatalf("the ack reuses a status seq the log holds: %d", it.Seq)
+	}
+	if sent, _, _ := f.snapshot(); len(sent) != 1 || sent[0] != "use v2" {
+		t.Fatalf("sent %v", sent)
+	}
 }
 
 // Review M15: an event's data lines are bounded together, not only one by one;
