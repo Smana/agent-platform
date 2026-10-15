@@ -75,8 +75,9 @@ func TestPurgeExpired(t *testing.T) {
 	}
 }
 
-// B9: a 100 000-event room must not need one DELETE under the session's
-// statement_timeout: the purge goes in batches, each far below it.
+// B9: a room past the 100 000-event limit (n = 120 000) is purged even when the
+// session's statement_timeout (200 ms here) is far too short for its DELETE:
+// retention sets its own timeout, purgeStatementTimeout, on its transaction.
 func TestPurgeExpiredBigRoom(t *testing.T) {
 	ctx := t.Context()
 	s, _, retention, super := open(t)

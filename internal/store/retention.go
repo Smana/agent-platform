@@ -21,8 +21,9 @@ const expired = `sealed AND closed_at IS NOT NULL AND closed_at < now() - retent
 const purgeStatementTimeout = 10 * time.Minute
 
 // PurgeExpired deletes every expired room's log, then its row, one room per
-// transaction, so each stays bounded by the room limits (100 000 events) under
-// the session's statement_timeout. It runs as rooms_retention; the broker's role
+// transaction, so each stays bounded by the room limits (100 000 events). Each
+// transaction runs under its own purgeStatementTimeout (SET LOCAL), not the
+// session's statement_timeout. It runs as rooms_retention; the broker's role
 // holds no DELETE and fails. Every table referencing rooms (queue, approvals) is
 // deleted before the room's row.
 func (s *Store) PurgeExpired(ctx context.Context) (rooms, events int64, err error) {
