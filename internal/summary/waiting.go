@@ -18,6 +18,10 @@ const maxReason = 200
 // (envelope.TaskFacts.Validate).
 var repoRE = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/[0-9]+$`)
 
+// Repo is the owner/name the task facts' PR or issue URL names, or "": the
+// repository the stop and merge commands pass as --repo.
+func Repo(f *envelope.TaskFacts) string { return repoOf(f) }
+
 // repoOf is the repository a task's issue or pull request lives in, "" when the facts name neither.
 // Every generated gh command passes it as --repo: run from another checkout, the command would
 // otherwise act on that checkout's issue of the same number (#59).

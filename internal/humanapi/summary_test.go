@@ -3,17 +3,22 @@
 package humanapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/summary"
 )
 
 func logEvent(seq int64, typ envelope.Type, actor envelope.Actor, payload any) envelope.Event {
@@ -295,5 +300,36 @@ func TestMineSurvivesAnUnresolvableRoom(t *testing.T) {
 	}
 	if n := w.links - before; n > maxLoginTries {
 		t.Fatalf("%d link reads, cap %d", n, maxLoginTries)
+	}
+}
+
+// The missing-repository warning reads the task facts, never the rendered need text.
+func TestWarnNoRepository(t *testing.T) {
+	owner := policy.Subject{Kind: envelope.ActorHuman, ID: "human:own", Role: policy.Owner}
+	issue := &envelope.IssueFact{Number: 7, URL: "https://github.com/Smana/ref/issues/7"}
+	merge := summary.Summary{NeedsYou: []summary.Need{{Kind: "merge", What: "mentions --repo but has none"}}}
+	for _, c := range []struct {
+		name string
+		v    summary.Summary
+		f    *envelope.TaskFacts
+		sub  policy.Subject
+		warn bool
+	}{
+		{"an issue with its repository", summary.Summary{}, &envelope.TaskFacts{Issue: issue}, owner, false},
+		{"an issue with no repository, for its owner", summary.Summary{}, &envelope.TaskFacts{Issue: &envelope.IssueFact{Number: 7}}, owner, true},
+		{"an issue with no repository, for a watcher", summary.Summary{}, &envelope.TaskFacts{Issue: &envelope.IssueFact{Number: 7}},
+			policy.Subject{Kind: envelope.ActorHuman, ID: "human:w", Role: policy.Watcher}, false},
+		{"a merge need with no repository, whatever its text says", merge, &envelope.TaskFacts{PR: &envelope.PRFact{Number: 3}}, owner, true},
+		{"a merge need with its repository", merge, &envelope.TaskFacts{PR: &envelope.PRFact{Number: 3, URL: "https://github.com/Smana/ref/pull/3"}}, owner, false},
+		{"no facts", summary.Summary{}, nil, owner, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			s := &Server{Logger: slog.New(slog.NewTextHandler(&buf, nil))}
+			s.warnNoRepository(c.v, c.f, roomID, c.sub)
+			if got := strings.Contains(buf.String(), "name no repository"); got != c.warn {
+				t.Fatalf("warned %v, want %v: %q", got, c.warn, buf.String())
+			}
+		})
 	}
 }
