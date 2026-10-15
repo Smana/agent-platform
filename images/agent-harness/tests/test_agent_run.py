@@ -49,6 +49,27 @@ class BuildRequestTest(unittest.TestCase):
         self.assertEqual(self.body["conversation_id"], ENV["CONVERSATION_ID"])
         self.assertEqual(self.body["workspace"]["working_dir"], "/workspace/repo")
 
+    def test_mcp_calls_carry_the_run_spans_traceparent(self):
+        # cloud-native-ref#2283: without it each gateway /mcp span is its own root.
+        from opentelemetry.sdk.trace import TracerProvider
+        span = TracerProvider().get_tracer("t").start_span("agent-run")
+        sc = span.get_span_context()
+        platform = agent_run.build_request(ENV, "t", "r", span)["agent"]["mcp_config"]["platform"]
+        self.assertEqual(platform["headers"], {"traceparent": "00-%032x-%016x-01" % (sc.trace_id, sc.span_id)})
+        self.assertRegex(platform["headers"]["traceparent"], agent_run.TRACEPARENT)
+        # agent-server hands the header to fastmcp's client as given, not redacted.
+        from openhands.sdk import Agent
+        from openhands.sdk.mcp.utils import _prepare_mcp_config
+        agent = Agent.model_validate(agent_run.build_request(ENV, "t", "r", span)["agent"])
+        prepared = _prepare_mcp_config(agent.mcp_config)
+        self.assertEqual(prepared.mcpServers["platform"].headers, platform["headers"])
+
+    def test_no_traceparent_without_a_valid_span(self):
+        from opentelemetry import trace
+        for span in (None, trace.INVALID_SPAN):
+            platform = agent_run.build_request(ENV, "t", "r", span)["agent"]["mcp_config"]["platform"]
+            self.assertNotIn("headers", platform, span)
+
     def test_calls_are_priced_without_a_litellm_lookup(self):
         llm = self.body["agent"]["llm"]
         self.assertAlmostEqual(llm["input_cost_per_token"], 1.40e-6)
@@ -472,6 +493,13 @@ class ProgressNotesTest(unittest.TestCase):
         self.notes.flush()
         self.assertEqual(FakeMCP.calls[-1]["params"]["name"], "room-broker__room_progress")
 
+    def test_an_agentgateway_prefixed_tool_name_is_found(self):
+        # ADR-0053: agentgateway joins backend and tool with one underscore.
+        FakeMCP.tool = "room-broker_room_progress"
+        self.run_ok("git status")
+        self.notes.flush()
+        self.assertEqual(FakeMCP.calls[-1]["params"]["name"], "room-broker_room_progress")
+
     def test_an_event_stream_reply_is_read(self):
         FakeMCP.sse = True
         self.run_ok("git status")
@@ -870,7 +898,7 @@ DRIVER = (
     "agent_run.AGENT_SERVER = 'http://127.0.0.1:' + sys.argv[1]\n"
     "agent_run.SERVER_CMD = [sys.executable, '-c', sys.argv[2], sys.argv[1], sys.argv[3], sys.argv[4]]\n"
     "agent_run.clone = lambda env: None\n"
-    "agent_run.build_request = lambda env, task, rules: {}\n"
+    "agent_run.build_request = lambda env, task, rules, span=None: {}\n"
     "agent_run.POLL_INTERVAL_S = 0.2\n"
     "agent_run.FLUSH_WAIT_S = 0\n"
     "sys.exit(agent_run.main())\n"
@@ -882,7 +910,7 @@ DISRUPTION_DRIVER = (
     "agent_run.AGENT_SERVER = 'http://127.0.0.1:' + sys.argv[1]\n"
     "agent_run.SERVER_CMD = [sys.executable, '-c', sys.argv[2], sys.argv[1], sys.argv[3], sys.argv[4]]\n"
     "agent_run.clone = lambda env: None\n"
-    "agent_run.build_request = lambda env, task, rules: {}\n"
+    "agent_run.build_request = lambda env, task, rules, span=None: {}\n"
     "agent_run.POLL_INTERVAL_S = 0.2\n"
     "agent_run.CHECKPOINT_S = float(sys.argv[6])\n"
     "def checkpoint(env, deadline):\n"
