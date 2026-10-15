@@ -30,11 +30,12 @@ func stamp(t, now time.Time) string {
 }
 
 // tokens reads a token count at a glance, as the page does: 189093 -> "189 k", 1500000 -> "1.5 M".
+// A count that would round to "1000 k" reads "1 M".
 func tokens(n int64) string {
 	switch {
 	case n < 1000:
 		return strconv.FormatInt(n, 10)
-	case n < 1_000_000:
+	case n < 999_500:
 		return fmt.Sprintf("%d k", (n+500)/1000)
 	}
 	return strconv.FormatFloat(float64((n+50_000)/100_000)/10, 'f', -1, 64) + " M"

@@ -500,7 +500,7 @@ cursor: seq:142
 	}
 }
 
-// The skill reports "needs you: none" as the spec words it, and the task's issue is part of its status.
+// status leads with the task's issue and reads the budget as the page does.
 func TestStatusLeadsWithTheTaskAndReadsTheBudget(t *testing.T) {
 	raw := []byte(`{"apiVersion":"summary/v1","room":"r","url":"u","status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},
 		"budget":{"usedTokens":189093,"limitTokens":1500000},"pr":null,"issue":{"number":74,"url":"https://github.com/o/r/issues/74","title":"Chat view: pair tool calls"},
@@ -518,6 +518,32 @@ func TestStatusLeadsWithTheTaskAndReadsTheBudget(t *testing.T) {
 	}
 }
 
+// Token counts round to the unit a reader expects at each boundary, as the page's fmtTokens does:
+// a count that rounds to 1000 k reads 1 M.
+func TestBudgetTextBoundaries(t *testing.T) {
+	cases := []struct {
+		name        string
+		used, limit int64
+		want        string
+	}{
+		{"under a thousand", 999, 1_500_000, "budget: 999 / 1.5 M (0 %)"},
+		{"a thousand", 1000, 1_500_000, "budget: 1 k / 1.5 M (0 %)"},
+		{"just under the M rounding", 999_499, 1_500_000, "budget: 999 k / 1.5 M (67 %)"},
+		{"rounds up to a million", 999_500, 1_500_000, "budget: 1 M / 1.5 M (67 %)"},
+		{"a million", 1_000_000, 1_500_000, "budget: 1 M / 1.5 M (67 %)"},
+		{"a million and a half", 1_500_000, 1_500_000, "budget: 1.5 M / 1.5 M (100 %)"},
+		{"zero limit", 5000, 0, "budget: 5 k / 0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := budgetText(tc.used, tc.limit); got != tc.want {
+				t.Fatalf("budgetText(%d, %d) = %q, want %q", tc.used, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
+// The skill reports "needs you: none" as the spec words it, and the task's issue is part of its status.
 func TestRenderSummaryPrintsTheIssueAndNoNeeds(t *testing.T) {
 	body := `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"u","status":{"phase":"Queued",` +
 		`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],` +
