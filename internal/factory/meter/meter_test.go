@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
@@ -540,4 +541,65 @@ func TestRecentlyThrottled(t *testing.T) {
 	if _, err := (VL{URL: srv.URL, Query: "q"}).RecentlyThrottled(ctx); err == nil {
 		t.Error("the audited httpx client is required, never a hand-rolled one")
 	}
+}
+
+// A ledger that cannot be written delays the daily budget, never a run's own cap (review
+// 2026-10-15, F2); the increase is paid once when the ledger recovers.
+func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
+	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	var fail bool
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
+		ledgerDay(t, "20260927", map[string]int64{"human:a": 100}, nil)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if fail {
+					return errors.New("configmap busy")
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	t.Run("an over-cap run is revoked and the failure reported", func(t *testing.T) {
+		fail = true
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+			{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 1000, Principal: "human:a", Created: day}}}
+		var succeeded, remaining bool
+		m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1500}, Ledger: c, Namespace: "agent-system",
+			Now: func() time.Time { return day }, OnSucceeded: func(context.Context, time.Time) { succeeded = true },
+			Remaining: func(string, int64, int64) { remaining = true }}
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the ledger failure is still reported")
+		}
+		if got := st.patches["aaaaaaaa"][runs.AnnRevoked]; got != ReasonBudgetRun {
+			t.Fatalf("revoked = %q, want %q: the run cap waited for the ledger", got, ReasonBudgetRun)
+		}
+		if succeeded || remaining {
+			t.Fatalf("succeeded=%v remaining=%v: the meter looked healthy", succeeded, remaining)
+		}
+	})
+
+	t.Run("an increase missed while the ledger failed is paid once after it recovers", func(t *testing.T) {
+		fail = true
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
+			{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 100_000, Tokens: 500, Principal: "human:b", Created: day}}}
+		src := source{"bbbbbbbb": 500}
+		m := &Meter{Runs: st, Source: src, Ledger: c, Namespace: "agent-system", Now: func() time.Time { return day }}
+		if err := m.Tick(t.Context()); err != nil { // no growth: nothing to write
+			t.Fatal(err)
+		}
+		src["bbbbbbbb"] = 800
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the failing write is reported")
+		}
+		fail = false
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 300 {
+			t.Fatalf("ledger %v, want human:b 300 (the increase once)", spent)
+		}
+	})
 }
