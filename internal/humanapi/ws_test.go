@@ -1332,3 +1332,39 @@ func TestServeRefusesAMissingDependency(t *testing.T) {
 		t.Fatal("served without a WebClient")
 	}
 }
+
+// The drain waits for the sockets exactly: at once with none open, and until the
+// last one is untracked otherwise, never on a poll.
+func TestSocketsGone(t *testing.T) {
+	t.Run("returns at once with no socket open", func(t *testing.T) {
+		s := &Server{}
+		select {
+		case <-s.socketsGone():
+		case <-time.After(time.Second):
+			t.Fatal("the wait did not return with no socket open")
+		}
+	})
+	t.Run("waits for the last socket and refuses new ones", func(t *testing.T) {
+		s := &Server{}
+		_, cancel := context.WithCancelCause(t.Context())
+		if !s.track(&cancel) {
+			t.Fatal("track refused before the shutdown")
+		}
+		gone := s.socketsGone()
+		_, late := context.WithCancelCause(t.Context())
+		if s.track(&late) {
+			t.Fatal("track admitted a socket after the wait began")
+		}
+		select {
+		case <-gone:
+			t.Fatal("the wait returned with a socket open")
+		case <-time.After(50 * time.Millisecond):
+		}
+		s.untrack(&cancel)
+		select {
+		case <-gone:
+		case <-time.After(time.Second):
+			t.Fatal("the wait did not return after the last socket ended")
+		}
+	})
+}

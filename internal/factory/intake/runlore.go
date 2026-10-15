@@ -156,7 +156,8 @@ func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.Errors != nil {
 			h.Errors.IntakeError(r.Context(), "runlore")
 		}
-		h.log().Warn("runlore intake failed", "alert", f.AlertName, "resource", f.ResourceRef, "err", err)
+		// The finding's alert and resource are attacker-influenced: log the key's task name, never them.
+		h.log().Warn("runlore intake failed", "task", taskid.Name(taskid.RunloreKey(f.AlertName, f.ResourceRef)), "err", err)
 		reply(w, http.StatusServiceUnavailable, map[string]string{"error": "intake_failed"})
 		return
 	}

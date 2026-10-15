@@ -59,7 +59,7 @@ func (s *Store) enqueue(ctx context.Context, d envelope.Draft, author, text stri
 		return envelope.Event{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ev, dup, err := s.appendTx(ctx, tx, d, fence{})
+	ev, dup, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err != nil {
 		return envelope.Event{}, err
 	}
@@ -198,7 +198,7 @@ func (s *Store) recordRunRequest(ctx context.Context, d envelope.Draft, runID st
 	if err := d.Validate(); err != nil {
 		return envelope.Event{}, err
 	}
-	ev, _, err := s.appendTx(ctx, tx, d, fence{})
+	ev, _, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err != nil {
 		return envelope.Event{}, err
 	}
@@ -290,7 +290,7 @@ func (s *Store) promote(ctx context.Context, roomID string, ref int64, driver st
 		roomID, ref, runID); err != nil {
 		return envelope.Event{}, err
 	}
-	ev, _, err := s.appendTx(ctx, tx, d, fence{driver: driver, epoch: epoch})
+	ev, _, err := s.appendTx(ctx, tx, d, fence{driver: driver, epoch: epoch}, false)
 	if err != nil {
 		return envelope.Event{}, err
 	}
@@ -344,7 +344,7 @@ func (s *Store) remove(ctx context.Context, roomID string, ref int64, d envelope
 	if _, err := tx.Exec(ctx, `UPDATE queue SET state = 'removed' WHERE room_id = $1 AND ref = $2`, roomID, ref); err != nil {
 		return envelope.Event{}, err
 	}
-	ev, _, err := s.appendTx(ctx, tx, d, fence{})
+	ev, _, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err != nil {
 		return envelope.Event{}, err
 	}

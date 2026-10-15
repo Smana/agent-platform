@@ -115,13 +115,36 @@ func (s *Server) track(cancel *context.CancelCauseFunc) bool {
 		s.conns = map[*context.CancelCauseFunc]struct{}{}
 	}
 	s.conns[cancel] = struct{}{}
+	// Under mu and before closing: every Add happens before socketsGone's Wait.
+	s.sockets.Add(1)
 	return true
 }
 
 func (s *Server) untrack(cancel *context.CancelCauseFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.conns[cancel]; !ok {
+		return
+	}
 	delete(s.conns, cancel)
+	s.sockets.Done()
+}
+
+// socketsGone refuses new connections and closes the channel it returns once
+// every tracked one has been untracked.
+func (s *Server) socketsGone() <-chan struct{} {
+	s.mu.Lock()
+	// Set here as well as in closeAll, which net/http runs on its own goroutine:
+	// no track may Add once the Wait below can start.
+	s.closing = true
+	s.mu.Unlock()
+	gone := make(chan struct{})
+	// Past a drain timeout no one reads gone: this waiter is left for process exit.
+	go func() {
+		s.sockets.Wait()
+		close(gone)
+	}()
+	return gone
 }
 
 func (s *Server) open() int {

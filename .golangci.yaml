@@ -37,6 +37,8 @@ linters:
           msg: log through the injected *slog.Logger, or write to the io.Writer you were given
         - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
           msg: log through the injected *slog.Logger; return the error instead of exiting
+        - pattern: ^slog\.(Debug|Info|Warn|Error|Log|LogAttrs|Default|SetDefault|With)(Context)?$
+          msg: log through the injected *slog.Logger, never the process default
         - pattern: ^time\.Sleep$
           msg: inject a clock, or select on ctx.Done() and a timer, so shutdown and tests stay fast
   exclusions:

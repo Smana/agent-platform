@@ -68,7 +68,8 @@ packages that need a newer one.
   one place.
 - **`log/slog` only, injected.** Constructors take a `*slog.Logger`; library code never calls
   `slog.Default()`. JSON in the cluster, text locally, format and level overridable by env.
-  `forbidigo` bans `fmt.Print*` and `log.Print|Fatal|Panic*` outside `cmd/` and tests.
+  `forbidigo` bans `fmt.Print*`, `log.Print|Fatal|Panic*` and the process-default logger (the
+  `slog.*` package functions) outside `cmd/` and tests.
 - **Strict config.** One `Load(path)`: decode rejecting unknown fields
   (`yaml.Decoder.KnownFields(true)` / `json.Decoder.DisallowUnknownFields`), then the one
   `ApplyDefaults`, then `Validate()`. A typo fails startup. Secrets are referenced by env-var
@@ -168,6 +169,7 @@ flowchart LR
 | API | `internal/mcp` | `:8090` MCP server, the `room_*` tools | 3 |
 | API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments | 3 |
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters | 4 |
+| API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache | ✓ |
 | Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down | 2 |
 | Viewers | `internal/policy` | the §1 permission matrix | 2 |
 | Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render | ✓ |

@@ -125,7 +125,7 @@ func (s *Store) requestApproval(ctx context.Context, a Approval, d envelope.Draf
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, envelope.Event{}, err
 	}
-	ev, dup, err := s.appendTx(ctx, tx, d, fence{bridgeRun: a.RunID})
+	ev, dup, err := s.appendTx(ctx, tx, d, fence{bridgeRun: a.RunID}, false)
 	if err != nil {
 		return Approval{}, envelope.Event{}, err
 	}
@@ -154,7 +154,8 @@ func (s *Store) Decide(ctx context.Context, approvalID, decision, by, reason str
 	if decision != ApprovalApproved && decision != ApprovalDenied {
 		return envelope.Event{}, Approval{}, fmt.Errorf("store: decide approval %s: %w", approvalID, ErrBadDecision)
 	}
-	ev, a, err := s.closeApproval(ctx, approvalID, decision, by, reason, d)
+	// A replayed decision answers with its stored event: dup is not an error here.
+	ev, a, _, err := s.closeApproval(ctx, approvalID, decision, by, reason, d)
 	if err != nil {
 		return envelope.Event{}, a, fmt.Errorf("store: decide approval %s: %w", approvalID, err)
 	}
@@ -171,38 +172,41 @@ func brokerClose(approvalID string) envelope.Draft {
 // brokerActor closes approvals that expired or were superseded.
 const brokerActor = "system:room-broker"
 
-func (s *Store) closeApproval(ctx context.Context, id, state, by, reason string, d envelope.Draft) (envelope.Event, Approval, error) {
+// closeApproval closes approval id as state. Its bool reports a replay of d's key:
+// the event is the one the first close stored, not a new one.
+func (s *Store) closeApproval(ctx context.Context, id, state, by, reason string, d envelope.Draft) (envelope.Event, Approval, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return envelope.Event{}, Approval{}, err
+		return envelope.Event{}, Approval{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var roomID string
 	if err := tx.QueryRow(ctx, `SELECT room_id FROM approvals WHERE approval_id = $1`, id).Scan(&roomID); errors.Is(err, pgx.ErrNoRows) {
-		return envelope.Event{}, Approval{}, ErrNoApproval
+		return envelope.Event{}, Approval{}, false, ErrNoApproval
 	} else if err != nil {
-		return envelope.Event{}, Approval{}, err
+		return envelope.Event{}, Approval{}, false, err
 	}
 	sealed, _, err := lockRoom(ctx, tx, roomID)
 	if err != nil {
-		return envelope.Event{}, Approval{}, err
+		return envelope.Event{}, Approval{}, false, err
 	}
 	d.RoomID = roomID
 	// Before the seal and the state: the retry of a decision that won sees it won.
 	if prev, dup, err := stored(ctx, tx, d); err != nil {
-		return envelope.Event{}, Approval{}, err
+		return envelope.Event{}, Approval{}, false, err
 	} else if dup {
-		return replayedDecision(ctx, tx, prev, id)
+		ev, a, err := replayedDecision(ctx, tx, prev, id)
+		return ev, a, true, err
 	}
 	if sealed { // its approvals stay as they are (approvals_are_their_events)
-		return envelope.Event{}, Approval{}, ErrSealed
+		return envelope.Event{}, Approval{}, false, ErrSealed
 	}
 	human := state == ApprovalApproved || state == ApprovalDenied
 	if human {
 		var answered, ended bool
 		if err := tx.QueryRow(ctx, `SELECT `+answeredSQL+`, `+endedSQL+` FROM approvals a WHERE a.approval_id = $1 AND a.state = 'pending'`,
 			id).Scan(&answered, &ended); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return envelope.Event{}, Approval{}, err
+			return envelope.Event{}, Approval{}, false, err
 		}
 		if answered || ended { // too late for anyone: close it for what it is, then refuse
 			why := reasonSuperseded
@@ -210,19 +214,19 @@ func (s *Store) closeApproval(ctx context.Context, id, state, by, reason string,
 				why = reasonRunEnded
 			}
 			if _, _, err := s.closeTx(ctx, tx, id, ApprovalSuperseded, brokerActor, why, brokerClose(id)); err != nil {
-				return envelope.Event{}, Approval{}, err
+				return envelope.Event{}, Approval{}, false, err
 			}
 			if err := tx.Commit(ctx); err != nil {
-				return envelope.Event{}, Approval{}, err
+				return envelope.Event{}, Approval{}, false, err
 			}
-			return envelope.Event{}, Approval{}, ErrAlreadyDecided
+			return envelope.Event{}, Approval{}, false, ErrAlreadyDecided
 		}
 	}
 	ev, a, err := s.closeTx(ctx, tx, id, state, by, reason, d)
 	if err != nil {
-		return envelope.Event{}, a, err
+		return envelope.Event{}, a, false, err
 	}
-	return ev, a, tx.Commit(ctx)
+	return ev, a, false, tx.Commit(ctx)
 }
 
 // closeTx moves a pending approval to state and appends its approval_decided,
@@ -238,7 +242,7 @@ func (s *Store) closeTx(ctx context.Context, tx pgx.Tx, id, state, by, reason st
 	}
 	d.RoomID, d.RunID, d.Type = a.RoomID, a.RunID, envelope.ApprovalDecided
 	d.Payload = envelope.Must(envelope.ApprovalDecidedPayload{ApprovalID: id, Decision: state, Reason: reason})
-	ev, dup, err := s.appendTx(ctx, tx, d, fence{})
+	ev, dup, err := s.appendTx(ctx, tx, d, fence{}, false)
 	if err == nil && dup {
 		err = ErrKeyConflict
 	}
@@ -296,10 +300,12 @@ func (s *Store) closeAll(ctx context.Context, query, state, reason string) ([]en
 	}
 	var out []envelope.Event
 	for _, id := range ids {
-		ev, _, err := s.closeApproval(ctx, id, state, brokerActor, reason, brokerClose(id))
+		ev, _, dup, err := s.closeApproval(ctx, id, state, brokerActor, reason, brokerClose(id))
 		switch {
 		case errors.Is(err, ErrAlreadyDecided), errors.Is(err, ErrSealed):
 			continue // decided or sealed since the read
+		case err == nil && dup:
+			continue // another sweep closed it since the read: its event is not ours to report
 		case err != nil:
 			return out, fmt.Errorf("store: close approval %s %s: %w", id, state, err)
 		}

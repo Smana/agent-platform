@@ -8,7 +8,6 @@ package summary
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
 	"time"
@@ -276,8 +275,6 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		if repo := repoOf(st.Facts); repo != "" {
 			s.Actions = append(s.Actions, Action{Kind: "stop", What: "stop this task",
 				CLI: fmt.Sprintf("gh issue edit %d --repo %s --add-label %s", st.Facts.Issue.Number, repo, stopLabel)})
-		} else {
-			slog.Warn("summary: no repository for the stop command", "room", room)
 		}
 	}
 	return s

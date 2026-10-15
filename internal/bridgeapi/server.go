@@ -589,9 +589,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-sub.Dropped:
 			return // the bridge re-dials and resumes from its last ack
 		case ev := <-sub.C:
-			sub.Sent(ev)
 			ping = false
-			if ev.Seq > after && !send(ev) { // at or below the mark, the replay sent it
+			// At or below the mark, the replay sent it.
+			ok := ev.Seq <= after || send(ev)
+			sub.Sent(ev) // only now, as the WebSocket: the budget covers what the bridge has not taken
+			if !ok {
 				return
 			}
 		case <-tick:

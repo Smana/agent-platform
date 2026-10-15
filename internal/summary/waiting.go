@@ -4,7 +4,6 @@ package summary
 
 import (
 	"fmt"
-	"log/slog"
 	"regexp"
 	"slices"
 
@@ -18,6 +17,10 @@ const maxReason = 200
 // repoRE reads owner/name out of a validated github.com issue or pull request URL
 // (envelope.TaskFacts.Validate).
 var repoRE = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/[0-9]+$`)
+
+// Repo is the owner/name the task facts' PR or issue URL names, or "": the
+// repository the stop and merge commands pass as --repo.
+func Repo(f *envelope.TaskFacts) string { return repoOf(f) }
 
 // repoOf is the repository a task's issue or pull request lives in, "" when the facts name neither.
 // Every generated gh command passes it as --repo: run from another checkout, the command would
@@ -55,7 +58,6 @@ func urlOfIssue(i *envelope.IssueFact) string {
 // checkout it runs from (#59).
 func MergeHow(repo string, n int) string {
 	if repo == "" {
-		slog.Warn("summary: no repository for a merge command", "pr", n)
 		return fmt.Sprintf("a maintainer with admin on the repository merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page", n)
 	}
 	return fmt.Sprintf("a maintainer with admin on %s merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page, or run `gh pr merge %d --squash --admin --repo %s`",

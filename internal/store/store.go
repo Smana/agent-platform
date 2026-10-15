@@ -172,7 +172,7 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, f fence) (envelope
 		return envelope.Event{}, false, fmt.Errorf("store: append to room %s: %w", d.RoomID, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	ev, dup, err := s.appendTx(ctx, tx, d, f)
+	ev, dup, err := s.appendTx(ctx, tx, d, f, false)
 	if err == nil && !dup {
 		err = tx.Commit(ctx)
 	}
@@ -182,7 +182,9 @@ func (s *Store) append(ctx context.Context, d envelope.Draft, f fence) (envelope
 	return ev, dup, nil
 }
 
-func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fence) (envelope.Event, bool, error) {
+// appendTx appends d inside the caller's transaction. checked skips the
+// idempotency lookup the caller already made under the room's row lock.
+func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fence, checked bool) (envelope.Event, bool, error) {
 	if len(d.Payload) > envelope.MaxPayload {
 		d.Payload = envelope.Oversize(d.Type, len(d.Payload))
 	}
@@ -201,8 +203,12 @@ func (s *Store) appendTx(ctx context.Context, tx pgx.Tx, d envelope.Draft, f fen
 		return envelope.Event{}, false, err
 	}
 	// Before the seal check: a retry of the append that sealed the room is a duplicate.
-	if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
-		return existing, dup, err
+	// checked: the caller looked the key up in this transaction, under this lock,
+	// and found none; no writer of the room can store it since.
+	if !checked {
+		if existing, dup, err := stored(ctx, tx, d); err != nil || dup {
+			return existing, dup, err
+		}
 	}
 	if sealed {
 		return envelope.Event{}, false, ErrSealed

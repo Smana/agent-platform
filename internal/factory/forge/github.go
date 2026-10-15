@@ -82,7 +82,9 @@ func Connect(ctx context.Context, o Options) (*GitHub, error) {
 		github.WithUserAgent(o.UserAgent)); err != nil {
 		return nil, fmt.Errorf("forge: %w", err)
 	}
-	g.v4 = githubv4.NewEnterpriseClient(api.JoinPath("graphql").String(), hc)
+	v4hc := *hc
+	v4hc.Transport = statusRT{base: hc.Transport}
+	g.v4 = githubv4.NewEnterpriseClient(api.JoinPath("graphql").String(), &v4hc)
 	if _, err := g.tokens.get(ctx); err != nil {
 		return nil, fmt.Errorf("forge: %w", err)
 	}
@@ -611,14 +613,17 @@ func (g *GitHub) Merge(ctx context.Context, nodeID, head string) error {
 	if err == nil {
 		return nil
 	}
-	// githubv4 puts the HTTP status in the error text; these two refusals are decisions, not
-	// transport failures, so they read as the sentinels the reconciler branches on.
-	s := err.Error()
-	switch {
-	case strings.Contains(s, "409"):
-		return fmt.Errorf("forge: merge: %w", ErrHeadMoved)
-	case strings.Contains(s, "405"):
-		return fmt.Errorf("forge: merge: %w", ErrNotMergeable)
+	// These two refusals are decisions, not transport failures, so they read as the sentinels
+	// the reconciler branches on. The status comes from the response (statusRT), never from
+	// the error text, which a GraphQL message can fill with anything.
+	var se *statusError
+	if errors.As(err, &se) {
+		switch se.code {
+		case http.StatusConflict:
+			return fmt.Errorf("forge: merge: %w", ErrHeadMoved)
+		case http.StatusMethodNotAllowed:
+			return fmt.Errorf("forge: merge: %w", ErrNotMergeable)
+		}
 	}
 	return wrap("merge", err)
 }

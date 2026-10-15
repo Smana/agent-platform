@@ -112,6 +112,30 @@ func TestExpiry(t *testing.T) {
 	}
 }
 
+// Two leaders' sweeps that both read the same approval as due append one close
+// between them: the second finds the first's key and reports no new event.
+func TestTwoSweepsCloseAnApprovalOnce(t *testing.T) {
+	s, _, _, _ := open(t)
+	holdBridge(t, s, room, approvalRun)
+	if _, _, err := s.RequestApproval(t.Context(), approval("ap1", "e1", "c1", -time.Second), approvalDraft()); err != nil {
+		t.Fatal(err)
+	}
+	// Both sweeps' reads saw ap1 pending: the query ignores its state, as a read
+	// taken before the other sweep's commit would.
+	const stale = `SELECT approval_id FROM approvals WHERE approval_id = 'ap1'`
+	var out []envelope.Event
+	for range 2 {
+		evs, err := s.closeAll(t.Context(), stale, ApprovalExpired, reasonExpired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, evs...)
+	}
+	if len(out) != 1 {
+		t.Fatalf("two sweeps reported %d closes, want 1: %+v", len(out), out)
+	}
+}
+
 // 5.2 contract 1: one approval per (room, run, eventId), stored, so it survives a
 // broker restart; never per callId, which a model provider may reuse.
 func TestRequestApprovalIsIdempotentPerEvent(t *testing.T) {
