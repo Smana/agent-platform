@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -145,7 +146,7 @@ func (s *Server) roomMessage(w http.ResponseWriter, r *http.Request) {
 		ClientSeq int64                `json:"clientSeq"`
 	}
 	if err := decodeStrict(r.Body, &in); err != nil ||
-		in.Kind != envelope.KindTaskState || in.ClientSeq <= 0 || len(in.Text) > envelope.MaxHumanMessage {
+		in.Kind != envelope.KindTaskState || in.ClientSeq <= 0 || strings.TrimSpace(in.Text) == "" || len(in.Text) > envelope.MaxHumanMessage {
 		fail(w, http.StatusBadRequest, wire.ReasonBadMessage)
 		return
 	}

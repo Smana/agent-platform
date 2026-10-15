@@ -87,7 +87,7 @@ func DecideArm(in ArmInputs) ArmDecision {
 	}
 	class := in.Task.Spec.PredictedClass
 	state, creator := in.Checks.StatusOf("policy-bot: main")
-	if creator != in.Cfg.Merge.PolicyBotLogin {
+	if !forge.SameLogin(creator, in.Cfg.Merge.PolicyBotLogin) {
 		return human("policy_absent", "") // policy-bot down, or a status someone else posted
 	}
 	switch state {
@@ -97,7 +97,7 @@ func DecideArm(in ArmInputs) ArmDecision {
 	default:
 		return human("policy_pending", "review")
 	}
-	if in.PR.Author != in.Cfg.AgentsLogin {
+	if !forge.SameLogin(in.PR.Author, in.Cfg.AgentsLogin) {
 		return human("not_agent_authored", "")
 	}
 	for _, rv := range in.PR.Reviews {

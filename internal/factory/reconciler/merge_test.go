@@ -159,6 +159,17 @@ func TestShadowNarratesAndNeverArms(t *testing.T) {
 	}
 }
 
+func TestMergedByLoginCaseIsIgnored(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.reconcile(t, "3buqdlot", 1)
+	g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", MergedBy: "Ogenki-agent-merger[bot]", MergeCommitSHA: "m1"})
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseVerifying || !tk.Status.PullRequest.AutoMerged {
+		t.Fatalf("%s autoMerged=%v", tk.Status.Phase, tk.Status.PullRequest.AutoMerged)
+	}
+}
+
 func TestArmMergeVerifyDone(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
 	g.f.SetChecks(12, green("SUCCESS"))

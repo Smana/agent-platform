@@ -412,7 +412,7 @@ func (r *Reconciler) thread(ctx context.Context, t *v1alpha1.Task, pr forge.PR) 
 func (r *Reconciler) postedAt(t *v1alpha1.Task, thread []forge.Comment, key string) (time.Time, bool) {
 	marker := narrate.Marker(t.Name, key)
 	for _, c := range thread {
-		if strings.EqualFold(c.Author, r.Cfg.FactoryLogin) && strings.Contains(c.Body, marker) {
+		if forge.SameLogin(c.Author, r.Cfg.FactoryLogin) && strings.Contains(c.Body, marker) {
 			return c.At, true
 		}
 	}

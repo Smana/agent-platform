@@ -314,7 +314,7 @@ func (g *GitHub) AgentPulls(ctx context.Context) ([]AgentPull, error) {
 			continue
 		}
 		// A deleted head repository is nobody's branch: never the factory's.
-		own := p.HeadRepository != nil && p.HeadRepository.Owner.Login == g.owner && p.HeadRepository.Name == g.name
+		own := p.HeadRepository != nil && SameLogin(p.HeadRepository.Owner.Login, g.owner) && p.HeadRepository.Name == g.name
 		ap := AgentPull{Number: p.Number, HeadRef: p.HeadRefName, Fork: !own}
 		for _, l := range p.Labels.Nodes {
 			ap.Labels = append(ap.Labels, l.Name)

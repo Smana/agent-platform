@@ -3,6 +3,7 @@
 package policy
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
@@ -186,5 +187,23 @@ func TestIsAdmin(t *testing.T) {
 		if got := c.groups.IsAdmin(c.p); got != c.want {
 			t.Errorf("%s: IsAdmin = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// Every action has an explicit answer for a system actor: nothing is granted by omission (T7).
+// The allowed set is what the wired callers use: Read, Chat and Queue are the system API's
+// reads, posts and queued messages (internal/bridgeapi/system.go), StartRun is the factory's
+// admission check (internal/factory/api/server.go). Fork, Invite and Close are the section 1 matrix's system grants, kept explicit.
+func TestASystemActorIsGrantedNothingByDefault(t *testing.T) {
+	all := []Action{Read, Chat, Queue, Steer, Interrupt, Decide, DriverRequest, DriverGive, DriverTake,
+		PromoteQueued, RemoveQueued, StartRun, Fork, Invite, Close}
+	granted := []Action{Read, Chat, Queue, StartRun, Fork, Invite, Close}
+	sys := Subject{Kind: envelope.ActorSystem, ID: "system:factory"}
+	for _, a := range all {
+		t.Run(string(a), func(t *testing.T) {
+			if want := slices.Contains(granted, a); Allowed(sys, a) != want {
+				t.Errorf("Allowed(system:factory, %v) = %v, want %v", a, !want, want)
+			}
+		})
 	}
 }

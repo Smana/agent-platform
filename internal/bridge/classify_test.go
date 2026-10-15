@@ -158,7 +158,9 @@ func TestClassifyEdges(t *testing.T) {
 		{"terminal", "gh pr create --body-file - <<EOF\nplain text\nEOF", "LOW", ForgePR},
 		{"terminal", "gh pr create --body-file - <<EOF\n$(date)\nEOF", "LOW", ForgeOther},
 		{"terminal", "gh pr create --body-file - <<EOF\nsee `date`\nEOF", "LOW", ForgeOther},
-		{"terminal", "cat > f <<-EOF\n\tgit push origin main\n\tEOF\ngit push origin agent/3kq7x2ma", "LOW", ForgePush},
+		{"terminal", "cat > f <<-EOF\n\techo hello\n\tEOF\ngit push origin agent/3kq7x2ma", "LOW", ForgePush},
+		// a forge write inside a written file outranks the real agent-branch push (fail closed)
+		{"terminal", "cat > f <<-EOF\n\tgit push origin main\n\tEOF\ngit push origin agent/3kq7x2ma", "LOW", ForgeOther},
 		{"terminal", "cat > f <<EOF\ngit push origin main\nEOF\nnpm install x", "LOW", EgressNew}, // the line after the body is read
 		{"terminal", "bash <<EOF\ngit push origin main\nEOF", "LOW", ForgeOther},
 		{"terminal", "bash <<'EOF'\ngit push origin agent/3kq7x2ma\nEOF", "LOW", ForgePush},

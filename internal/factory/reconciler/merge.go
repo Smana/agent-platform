@@ -32,7 +32,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	switch pr.State {
 	case "MERGED": // a maintainer merged it through the bypass…
-		if pr.MergedBy != r.Cfg.Merge.MergerLogin {
+		if !forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
 			// R41: a human merge records when, so it counts in the class's breaker window.
 			now := metav1.NewTime(r.Now())
@@ -209,7 +209,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
 		return true, nil
 	}
-	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || creator != r.Cfg.Merge.PolicyBotLogin {
+	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || !forge.SameLogin(creator, r.Cfg.Merge.PolicyBotLogin) {
 		return false, nil
 	}
 	r.backToGate(t, why, "reentered_policy", pr.HeadSHA)
@@ -398,7 +398,7 @@ func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head s
 	}
 	want := ps[0].After // newest first
 	for _, p := range ps {
-		if p.Actor == "" || p.Actor != r.Cfg.AgentsLogin || p.After != want {
+		if p.Actor == "" || !forge.SameLogin(p.Actor, r.Cfg.AgentsLogin) || p.After != want {
 			return pushStranger, nil
 		}
 		if p.Type == "branch_creation" {
@@ -540,7 +540,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 	case pr.State == "MERGED":
 		now := metav1.NewTime(r.Now())
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
-		ref.AutoMerged = pr.MergedBy == r.Cfg.Merge.MergerLogin // AutoMerged: merged by the merger App (R52)
+		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
 		if !ref.AutoMerged {
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
