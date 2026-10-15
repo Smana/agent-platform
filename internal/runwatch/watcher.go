@@ -32,18 +32,12 @@ type Watcher struct {
 	gone    []func(context.Context, Run)
 	changed []func(context.Context, Run)
 	removed []func(context.Context, Run)
-	// deleted remembers the runs this watcher saw deleted, oldest first in deletedOrder,
-	// capped at maxDeleted: a deleted run is known and dead, not unknown (see Live).
-	deleted      map[string]struct{}
-	deletedOrder []string
+	// synced reports that the AgentRun cache has delivered its first list; nil before Register.
+	synced func() bool
 }
 
-// maxDeleted bounds the tombstones. A run is deleted long after its lease holder's
-// bridge ended, and a room is taken over on its next hello, so a few thousand is ample.
-const maxDeleted = 4096
-
 // New returns an empty Watcher.
-func New() *Watcher { return &Watcher{runs: map[string]Run{}, deleted: map[string]struct{}{}} }
+func New() *Watcher { return &Watcher{runs: map[string]Run{}} }
 
 // OnGone registers f for a run that stops being live (terminal, revoked or
 // deleted). It fires once per run.
@@ -100,7 +94,6 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	w.mu.Lock()
 	old, had := w.runs[r.ID]
 	delete(w.runs, r.ID)
-	w.tombstone(r.ID)
 	gone, removed := slices.Clone(w.gone), slices.Clone(w.removed)
 	w.mu.Unlock()
 	if !had {
@@ -116,17 +109,12 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	}
 }
 
-// tombstone records a deleted run. The caller holds w.mu.
-func (w *Watcher) tombstone(id string) {
-	if _, ok := w.deleted[id]; ok {
-		return
-	}
-	if len(w.deletedOrder) >= maxDeleted {
-		delete(w.deleted, w.deletedOrder[0])
-		w.deletedOrder = w.deletedOrder[1:]
-	}
-	w.deleted[id] = struct{}{}
-	w.deletedOrder = append(w.deletedOrder, id)
+// SetSynced installs the report that this watcher holds every run (Register does it).
+// Until it says true, a run the watcher lacks is unknown, not dead.
+func (w *Watcher) SetSynced(f func() bool) {
+	w.mu.Lock()
+	w.synced = f
+	w.mu.Unlock()
 }
 
 // Get returns the run's last known state, terminal or not.
@@ -137,17 +125,18 @@ func (w *Watcher) Get(id string) (Run, bool) {
 	return r, ok
 }
 
-// Live returns the run only while it is live. known tells a run this watcher has no
-// record of (live and known both false: its cache may lag the API server) from one it
-// saw end or be deleted (live false, known true).
+// Live returns the run only while it is live. known is false for a run the watcher
+// lacks before its cache has synced (this replica may simply lag the API server). Once
+// synced, an absent run is known and dead: it was deleted.
 func (w *Watcher) Live(id string) (run Run, live, known bool) {
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	if r, ok := w.runs[id]; ok {
+	r, ok := w.runs[id]
+	synced := w.synced
+	w.mu.RUnlock()
+	if ok {
 		return r, r.Live(), true
 	}
-	_, gone := w.deleted[id]
-	return Run{}, false, gone
+	return Run{}, false, synced != nil && synced()
 }
 
 // InRoom returns the watched runs naming room, terminal ones included.
@@ -198,10 +187,12 @@ func Register(ctx context.Context, c informerSource, w *Watcher) (synced func() 
 	if err != nil {
 		return nil, fmt.Errorf("runwatch: agentrun event handler: %w", err)
 	}
-	if reg == nil { // an informer without registrations: its own sync is all there is
-		return inf.HasSynced, nil
+	synced = inf.HasSynced
+	if reg != nil { // without a registration the informer's own sync is all there is
+		synced = reg.HasSynced
 	}
-	return reg.HasSynced, nil
+	w.SetSynced(synced)
+	return synced, nil
 }
 
 func handler(ctx context.Context, w *Watcher) toolscache.ResourceEventHandlerFuncs {

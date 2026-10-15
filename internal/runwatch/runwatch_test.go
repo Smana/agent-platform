@@ -464,34 +464,18 @@ func TestReadsTheTaskURL(t *testing.T) {
 }
 
 func TestLiveTellsUnknownFromDead(t *testing.T) {
-	ctx := t.Context()
 	w := New()
+	synced := false
+	w.SetSynced(func() bool { return synced })
 	if _, live, known := w.Live("nosuchrn"); live || known {
-		t.Fatalf("unknown run: live %v known %v", live, known)
+		t.Fatalf("before sync, an absent run: live %v known %v", live, known)
 	}
-	w.Upsert(ctx, claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", ""))
+	w.Upsert(t.Context(), claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Failed", ""))
 	if _, live, known := w.Live("7f3cq2xz"); live || !known {
 		t.Fatalf("terminal run: live %v known %v", live, known)
 	}
-	w.Upsert(ctx, claim("xplane-run-aaaaaaaa", "3kq7x2ma", "Running", ""))
-	w.Remove(ctx, claim("xplane-run-aaaaaaaa", "3kq7x2ma", "Running", ""))
-	if _, live, known := w.Live("aaaaaaaa"); live || !known {
-		t.Fatalf("deleted run is known and dead: live %v known %v", live, known)
-	}
-}
-
-func TestDeletedRunsAreRememberedWithinABound(t *testing.T) {
-	w := New()
-	for i := range maxDeleted + 10 {
-		w.tombstone(fmt.Sprintf("%08d", i))
-	}
-	if len(w.deleted) != maxDeleted || len(w.deletedOrder) != maxDeleted {
-		t.Fatalf("tombstones %d/%d, want %d", len(w.deleted), len(w.deletedOrder), maxDeleted)
-	}
-	if _, _, known := w.Live(fmt.Sprintf("%08d", 0)); known {
-		t.Fatal("the oldest tombstone should have been evicted")
-	}
-	if _, _, known := w.Live(fmt.Sprintf("%08d", maxDeleted+9)); !known {
-		t.Fatal("the newest tombstone is missing")
+	synced = true
+	if _, live, known := w.Live("nosuchrn"); live || !known {
+		t.Fatalf("after sync, an absent run: live %v known %v", live, known)
 	}
 }

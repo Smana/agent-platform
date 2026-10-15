@@ -1272,7 +1272,7 @@ func TestAStreamNobodyReadsEnds(t *testing.T) {
 func TestAnUnknownLeaseHolderKeepsItsLease(t *testing.T) {
 	s, log, w := newServer(t)
 	w.Upsert(t.Context(), agentRun(runB, room, "Running"))
-	log.leases[room] = runA // runA is not in this replica's cache
+	log.leases[room] = runA // runA is not in this replica's cache, which has not synced
 	rec := call(t, s.Routes(), http.MethodPost, "/v1/bridge/hello", "run:"+runB, nil)
 	if rec.Code != http.StatusConflict || reason(t, rec) != wire.ReasonRoomBusy {
 		t.Fatalf("hello against an unknown holder: %d %s", rec.Code, rec.Body)
@@ -1282,13 +1282,12 @@ func TestAnUnknownLeaseHolderKeepsItsLease(t *testing.T) {
 	}
 }
 
-// A deleted holder is known and dead: its lease is taken over (nothing else expires it, ruling SBB).
-func TestADeletedLeaseHolderIsTakenOver(t *testing.T) {
-	s, _, w := newServer(t)
-	h := s.Routes()
-	w.Upsert(t.Context(), agentRun(runA, room, "Running"))
+// After sync, a holder absent from the cache was deleted: its lease is taken over (nothing
+// else expires it, ruling SBB).
+func TestAnAbsentLeaseHolderIsTakenOverAfterSync(t *testing.T) {
+	s, log, w := newServer(t)
+	w.SetSynced(func() bool { return true })
 	w.Upsert(t.Context(), agentRun(runB, room, "Running"))
-	hello(t, h, runA)
-	w.Remove(t.Context(), agentRun(runA, room, "Running"))
-	hello(t, h, runB)
+	log.leases[room] = runA
+	hello(t, s.Routes(), runB)
 }

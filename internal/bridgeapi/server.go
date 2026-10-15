@@ -295,8 +295,8 @@ func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
 	// Ruling P17: the room's bridge lease, in the log's database so that every replica
 	// agrees (review I7). A holder keeps it while its run is live (ruling SBB).
 	holder, took, err := s.Log.ClaimBridge(ctx, run.Room, run.ID, func(_ context.Context, id string) bool {
-		// An unknown holder is kept: this replica's cache may lag the API server
-		// (review 2026-10-15, B8). A holder seen ended or deleted is known and dead.
+		// An unknown holder is kept until this replica's run cache has synced
+		// (review 2026-10-15, B8).
 		_, live, known := s.Watch.Live(id)
 		return live || !known
 	})
