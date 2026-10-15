@@ -138,8 +138,20 @@ def close_conversation(cid: str) -> None:
     time.sleep(FLUSH_WAIT_S)
 
 
-def build_request(env: dict, task: str, rules: str) -> dict:
-    """The StartConversationRequest body, as plain JSON."""
+def span_traceparent(span) -> str | None:
+    """The W3C traceparent naming span, or None when there is no valid span (tracing off)."""
+    sc = span.get_span_context() if span else None
+    if not sc or not sc.is_valid:
+        return None
+    return "00-%032x-%016x-01" % (sc.trace_id, sc.span_id)
+
+
+def build_request(env: dict, task: str, rules: str, span=None) -> dict:
+    """The StartConversationRequest body, as plain JSON.
+
+    The platform MCP entry carries the run span's traceparent (cloud-native-ref#2283), so the
+    gateway's /mcp spans join the run's trace instead of each starting its own.
+    """
     from openhands.sdk import LLM
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.tools.preset.default import get_default_agent
@@ -165,7 +177,11 @@ def build_request(env: dict, task: str, rules: str) -> dict:
     # call. Safe to expose: it is the placeholder above.
     plain = {"expose_secrets": True}
     agent = get_default_agent(llm=llm, cli_mode=True).model_dump(mode="json", context=plain)
-    agent["mcp_config"] = {"platform": {"url": env["MCP_URL"], "transport": "http"}}
+    platform = {"url": env["MCP_URL"], "transport": "http"}
+    tp = span_traceparent(span)
+    if tp:
+        platform["headers"] = {"traceparent": tp}
+    agent["mcp_config"] = {"platform": platform}
     request = StartConversationRequest.model_validate({
         "conversation_id": env.get("CONVERSATION_ID") or str(uuid.uuid4()),
         "workspace": {"working_dir": REPO_DIR},
@@ -438,8 +454,9 @@ class ProgressNotes:
                                     "clientInfo": {"name": "agent-run", "version": "1"}})
             self.rpc("notifications/initialized", notify=True)
             names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
-            # The gateway may prefix the backend's name (<backend>__<tool>).
-            self.tool = next((n for n in names if n == "room_progress" or n.endswith("__room_progress")), None)
+            # The gateway may prefix the backend's name: <backend>__<tool> (Agent Router) or
+            # <backend>_<tool> (agentgateway, ADR-0053); the suffix covers both.
+            self.tool = next((n for n in names if n == "room_progress" or n.endswith("_room_progress")), None)
             if self.tool is None:
                 self.failures = NOTE_FAILURES
                 raise RuntimeError("room_progress is not exposed to this run")
@@ -725,7 +742,7 @@ def main() -> int:
         wait_ready()
         resumed = clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
-            request = build_request(env, t.read(), r.read())
+            request = build_request(env, t.read(), r.read(), span)
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)

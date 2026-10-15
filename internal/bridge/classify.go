@@ -76,13 +76,19 @@ var builtins = map[string]bool{"terminal": true, "execute_bash": true, "file_edi
 	"task_tracker": true, "think": true, "finish": true, "browser": true}
 
 // readOnly reports whether the run's configured read-only set holds the tool.
-// It matches the last server__tool pair, so a prefix the harness adds cannot
-// hide the server, and a bare tool name never matches. The set is the
-// composition's (MCP_READ_ONLY_TOOLS): the harness event carries no
-// readOnlyHint, and an empty set makes every MCP tool mcp.write.
+// It matches the last server__tool pair (Agent Router) or, in the last segment,
+// server_tool (agentgateway, ADR-0053), so a prefix the harness adds cannot
+// hide the server, and a bare tool name never matches. Server names hold no
+// underscore, so the first one ends the server. The set is the composition's
+// (MCP_READ_ONLY_TOOLS): the harness event carries no readOnlyHint, and an
+// empty set makes every MCP tool mcp.write.
 func (c Classifier) readOnly(tool string) bool {
 	p := strings.Split(tool, "__")
-	return len(p) >= 2 && c.ReadOnlyMCP[p[len(p)-2]+"__"+p[len(p)-1]]
+	if len(p) >= 2 && c.ReadOnlyMCP[p[len(p)-2]+"__"+p[len(p)-1]] {
+		return true
+	}
+	server, name, ok := strings.Cut(p[len(p)-1], "_")
+	return ok && c.ReadOnlyMCP[server+"__"+name]
 }
 
 func set(s ...string) map[string]bool {

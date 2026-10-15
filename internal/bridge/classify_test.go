@@ -34,6 +34,29 @@ func TestTheReadOnlyMCPSetIsConfiguration(t *testing.T) {
 	}
 }
 
+// ADR-0053: agentgateway names federated tools <server>_<tool>, Agent Router
+// <server>__<tool>. Both are read-only during the cutover; a harness prefix
+// still cannot hide the server, and a bare name never matches.
+func TestReadOnlyAcceptsBothGatewayNamings(t *testing.T) {
+	c := Classifier{ReadOnlyMCP: map[string]bool{"room-broker__room_read": true, "mcp-victorialogs__hits": true,
+		"mcp-victoriametrics__query": true}}
+	for name, want := range map[string]bool{
+		"room-broker__room_read":               true,
+		"room-broker_room_read":                true,
+		"platform__mcp-victorialogs_hits":      true,
+		"agent-router__mcp-victorialogs__hits": true,
+		"mcp-victoriametrics_query":            true,
+		"room_read":                            false,
+		"file_editor":                          false,
+		"unknown-server_query":                 false,
+		"platform__room-broker_room_write":     false,
+	} {
+		if got := c.readOnly(name); got != want {
+			t.Errorf("readOnly(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestClassify(t *testing.T) {
 	c := Classifier{Branch: "agent/3kq7x2ma", Egress: map[string]bool{"pypi": true}, ReadOnlyMCP: readOnlyTools}
 	for _, tc := range []struct {
