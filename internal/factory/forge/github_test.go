@@ -179,6 +179,9 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			case strings.Contains(string(b), `"expectedHeadOid":"def456"`):
 				w.WriteHeader(http.StatusConflict) // GitHub checks the head at merge time (R52)
 				_, _ = io.WriteString(w, `{"errors":[{"message":"Head sha does not match expected"}]}`)
+			case strings.Contains(string(b), `"expectedHeadOid":"text409"`):
+				// 200 with GraphQL errors whose text mentions a status: not a conflict.
+				_, _ = io.WriteString(w, `{"errors":[{"message":"build 4095 of 405 failed with 409 files"}]}`)
 			case strings.Contains(string(b), `"expectedHeadOid":"blocked"`):
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				_, _ = io.WriteString(w, `{"errors":[{"message":"Merge pull request not allowed"}]}`)
@@ -789,6 +792,10 @@ func TestMergeChecksTheHeadAtMergeTime(t *testing.T) {
 	}
 	if err := r.g.Merge(ctx, "PR_1", "blocked"); !errors.Is(err, ErrNotMergeable) {
 		t.Fatalf("a refused merge: %v", err)
+	}
+	err := r.g.Merge(ctx, "PR_1", "text409")
+	if err == nil || errors.Is(err, ErrHeadMoved) || errors.Is(err, ErrNotMergeable) {
+		t.Fatalf("a 409 in the error text is not a conflict: %v", err)
 	}
 	if err := r.g.Merge(ctx, "PR_1", ""); err == nil {
 		t.Fatal("a merge without the decided head would merge whatever landed since")
