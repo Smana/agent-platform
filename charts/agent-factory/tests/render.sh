@@ -47,8 +47,13 @@ check "mountPath: /etc/agent-factory-merger" "the merger key (R16) where config.
 # Review M4: exactly the verbs the code uses.
 check "verbs: [get, list, watch, create, update, patch]" "tasks without delete"
 check "verbs: [get, create, update]" "leases: what leader election calls"
-check "resourceNames: [agent-factory-stop]" "configmaps: a name-bounded rule for the stop object"
-check "verbs: [get, list, create, update, delete]" "day ledgers: R50's admission and the meter's settle"
+# ConfigMaps: one rule, bounded by the Role's namespace (the release's own, so no metadata.namespace
+# in the render). A resourceNames rule would be subsumed by the ledger rule's wider one.
+role=$(yq eval-all 'select(.kind == "Role" and .metadata.namespace == null)' - <<<"$out")
+n=$(yq '[.rules[] | select(.resources[] == "configmaps")] | length' - <<<"$role")
+[ "$n" = 1 ] || { echo "FAIL: want one configmaps rule, got $n" >&2; fail=1; }
+yq -e '.rules[] | select(.resources[] == "configmaps") | ((has("resourceNames") | not) and ((.verbs | sort | join(",")) == "create,delete,get,list,update,watch"))' - <<<"$role" >/dev/null \
+  || { echo "FAIL: the configmaps rule: no resourceNames, verbs = stop object's watch + R50 ledgers" >&2; fail=1; }
 if grep -qF "resources: [secrets]" <<<"$out"; then
   echo "FAIL: the factory never reads Secrets through the API" >&2; fail=1
 fi
