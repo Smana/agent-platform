@@ -817,7 +817,8 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 	send(t, c, hello(nil, 0))
 	read(t, c)
 	eventually(t, "the connection is counted", func() bool {
-		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 1`)
+		out := scrape(t, e)
+		return strings.Contains(out, `rooms_connections{kind="human"} 1`) && strings.Contains(out, `rooms_participants{kind="human"} 1`)
 	})
 	start := time.Now()
 	cancel()
@@ -828,7 +829,8 @@ func TestServeClosesConnectionsOnShutdown(t *testing.T) {
 		t.Fatalf("serve: %v after %s", err, time.Since(start))
 	}
 	eventually(t, "the connection is uncounted", func() bool {
-		return strings.Contains(scrape(t, e), `rooms_connections{kind="human"} 0`)
+		out := scrape(t, e)
+		return strings.Contains(out, `rooms_connections{kind="human"} 0`) && strings.Contains(out, `rooms_participants{kind="human"} 0`)
 	})
 }
 
@@ -1367,4 +1369,22 @@ func TestSocketsGone(t *testing.T) {
 			t.Fatal("the wait did not return after the last socket ended")
 		}
 	})
+}
+
+// A connection refused by track (the shutdown began) never touches
+// rooms_participants: no +1 to pair with a -1.
+func TestRefusedConnectionIsNotAParticipant(t *testing.T) {
+	e := setup(t)
+	e.srv.socketsGone()
+	c, _, err := connect(t, e, header("human:own"))
+	if err == nil {
+		// The upgrade may succeed before the server closes with 1001.
+		closed(t, c)
+	}
+	// No wait needed: the refusal (an HTTP error or the 1001 close) is sent after track
+	// returned false, and count runs only after track succeeds, so nothing can follow.
+	if out := scrape(t, e); strings.Contains(out, `rooms_participants{kind="human"} 1`) ||
+		strings.Contains(out, `rooms_participants{kind="human"} -1`) {
+		t.Fatalf("a refused connection was counted:\n%s", out)
+	}
 }
