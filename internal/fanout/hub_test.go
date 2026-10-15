@@ -398,7 +398,7 @@ func TestAStalledViewerIsDroppedAtItsChannelCap(t *testing.T) {
 		}
 	})
 	const batch = 1000
-	for i := range 5 { // 5000 events: past the 4096-slot channel
+	for i := range 5 { // 5000 events: past the 1024-slot channel
 		b.publish(roomID, log.add(batch))
 		drain(t, live, int64(i*batch+1), batch)
 	}
@@ -500,5 +500,19 @@ func TestUnsubscribeForgetsTheRoom(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if n := log.ranges.Load(); n != before {
 		t.Fatalf("%d reads for a room nobody watches", n-before)
+	}
+}
+
+func TestSubscriberChannelIsSmall(t *testing.T) {
+	log, b := &memLog{}, newBus()
+	h := New(log, b, discard)
+	ctx := run(t, h)
+	waitOpened(t, b)
+	sub, err := h.Subscribe(ctx, roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cap(sub.C); got != subChan {
+		t.Fatalf("cap(sub.C) = %d, want %d", got, subChan)
 	}
 }

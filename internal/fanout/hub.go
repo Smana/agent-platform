@@ -26,6 +26,11 @@ import (
 // pageSize bounds one log read.
 const pageSize = 500
 
+// subChan is a viewer's channel capacity: two of fetch's pages. A full channel
+// drops the viewer, so it must hold a page burst from a consumer that is still
+// draining; Budget, not this, is the bound on pending bytes.
+const subChan = 1024
+
 // Reader is the log's read side.
 type Reader interface {
 	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
@@ -99,7 +104,8 @@ type room struct {
 type Hub struct {
 	// PollEvery is the poll period while the listener is down (default 1 s).
 	PollEvery time.Duration
-	// Budget is a viewer's pending bytes before it is dropped (default 2 MiB).
+	// Budget is the bound on bytes pending per viewer before it is dropped (default
+	// 2 MiB); the channel holds at most 1024 events and a full one counts as slow.
 	Budget int
 	// MinBackoff and MaxBackoff bound the reconnect wait, which doubles per
 	// failed session and gains up to a quarter of jitter (default 1 s and 30 s).
@@ -142,7 +148,7 @@ func (h *Hub) Subscribe(ctx context.Context, roomID string) (*Sub, error) {
 		}
 		last = st.LastSeq
 	}
-	c, d := make(chan envelope.Event, 4096), make(chan struct{})
+	c, d := make(chan envelope.Event, subChan), make(chan struct{})
 	s := &Sub{C: c, Dropped: d, room: roomID, c: c, dropped: d, budget: h.Budget}
 	h.mu.Lock()
 	rm, ok := h.rooms[roomID]
