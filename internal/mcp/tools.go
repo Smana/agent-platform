@@ -206,7 +206,7 @@ func readRoom(ctx context.Context, log Log, room string, since int64, limit int)
 // it is a pull request of the run's repository. A reviewer's always is (ruling
 // P24). It comes from the AgentRun, never from the model's arguments.
 func pullRequestOf(prs *prpattern.Cache, r runwatch.Run) string {
-	// An empty Repository matches nothing: no pull request URL has "//pull/".
+	// An empty Repository matches nothing: prpattern gives it an empty Set.
 	if prs.For(r.Repository).IsTask(r.TaskURL) {
 		return r.TaskURL
 	}

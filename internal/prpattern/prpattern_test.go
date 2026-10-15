@@ -49,4 +49,12 @@ func TestCache(t *testing.T) {
 			t.Errorf("Mention = %q", got)
 		}
 	})
+	t.Run("an empty repository matches no pull request", func(t *testing.T) {
+		var c Cache
+		s := c.For("")
+		const url = "https://github.com//pull/1"
+		if s.IsPR(url) || s.IsTask(url) || s.Mention("see "+url) != "" {
+			t.Fatalf("repository \"\" matched %s", url)
+		}
+	})
 }

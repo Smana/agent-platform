@@ -15,7 +15,8 @@ import (
 // call and not kept.
 const maxRepositories = 256
 
-// Set is one repository's pull-request patterns.
+// Set is one repository's pull-request patterns. Its zero value, the empty
+// repository's, matches nothing.
 type Set struct {
 	mention *regexp.Regexp // a PR URL inside text, its number 1 to 10 digits
 	url     *regexp.Regexp // exactly a PR URL, its number 1 to 10 digits
@@ -23,14 +24,19 @@ type Set struct {
 }
 
 // Mention is the first pull request of the repository text names, or "".
-func (s *Set) Mention(text string) string { return s.mention.FindString(text) }
+func (s *Set) Mention(text string) string {
+	if s.mention == nil {
+		return ""
+	}
+	return s.mention.FindString(text)
+}
 
 // IsPR reports whether url is exactly a pull request of the repository.
-func (s *Set) IsPR(url string) bool { return s.url.MatchString(url) }
+func (s *Set) IsPR(url string) bool { return s.url != nil && s.url.MatchString(url) }
 
 // IsTask reports whether url is exactly a pull request of the repository whose
 // number has no leading zero: a run's task URL.
-func (s *Set) IsTask(url string) bool { return s.task.MatchString(url) }
+func (s *Set) IsTask(url string) bool { return s.task != nil && s.task.MatchString(url) }
 
 // Cache holds compiled Sets by repository. The zero value is ready to use.
 type Cache struct {
@@ -56,7 +62,9 @@ func (c *Cache) For(repository string) *Set {
 }
 
 func compile(repository string) *Set {
-	// An empty repository matches nothing: no pull request URL has "//pull/".
+	if repository == "" { // its patterns would match the crafted ".../github.com//pull/1"
+		return &Set{}
+	}
 	base := `https://github\.com/` + regexp.QuoteMeta(repository) + `/pull/`
 	return &Set{
 		mention: regexp.MustCompile(base + `[0-9]{1,10}\b`),
