@@ -6,11 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,17 +16,13 @@ import (
 
 	"golang.org/x/time/rate"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/brief"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/prpattern"
-	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
@@ -518,243 +512,4 @@ func (a *Actor) invite(ctx context.Context, room *v1alpha1.Room, st store.RoomSt
 	d.Payload = envelope.Must(envelope.ParticipantPayload{Principal: act.Principal, Change: "role_changed",
 		Role: act.MemberRole, Approver: act.Approver})
 	return done3(a.Log.Append(ctx, d))
-}
-
-// runRoles are the roles a human starts (§1); egressProfile a profile's name.
-var (
-	runRoles      = map[string]bool{"implementer": true, "reviewer": true, "tester": true, "triager": true}
-	egressProfile = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-)
-
-const (
-	maxEgressProfiles = 8
-	// pendingRunTTL is how long a requested run that has not joined holds the
-	// room: long enough for the owner to apply a rendered claim by hand.
-	pendingRunTTL = 10 * time.Minute
-)
-
-// busy reports whether the room has a run: a Running one, or one requested
-// within pendingRunTTL that has not joined and that the watch does not know
-// (review 4.4 I2). A run the watch knows is judged by its phase instead.
-func (a *Actor) busy(ctx context.Context, room string) (bool, error) {
-	if _, running := a.running(room); running {
-		return true, nil // one Running run per room (D7)
-	}
-	pending, err := a.Log.PendingRuns(ctx, room, pendingRunTTL)
-	if err != nil {
-		return false, err
-	}
-	known := map[string]bool{}
-	for _, r := range a.Runs.InRoom(room) {
-		known[r.ID] = true
-	}
-	for _, id := range pending {
-		if !known[id] {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// isRunRequest reports whether ev is a start_run's record.
-func isRunRequest(ev envelope.Event) bool {
-	var p struct {
-		Kind string `json:"kind"`
-	}
-	return ev.Type == envelope.StateChanged && json.Unmarshal(ev.Payload, &p) == nil && p.Kind == "run_requested"
-}
-
-// validRun reports whether act names a role a human starts, egress profiles by
-// name and never in an internal room (T5: the factory refuses them, and its 400
-// would read as factory_unavailable), and a PR only for a reviewer and only of
-// the room's repository.
-func (a *Actor) validRun(room *v1alpha1.Room, act Action) bool {
-	if !runRoles[act.Role] || len(act.EgressProfiles) > maxEgressProfiles ||
-		(room.Spec.DataClass == "internal" && len(act.EgressProfiles) > 0) ||
-		(act.PRURL != "" && (act.Role != "reviewer" || !a.prs.For(room.Spec.Repository).IsPR(act.PRURL))) {
-		return false
-	}
-	for _, e := range act.EgressProfiles {
-		if !egressProfile.MatchString(e) {
-			return false
-		}
-	}
-	return true
-}
-
-// startRun requests the room's next run (§1 The brief, ruling P24) and records
-// it, with the queued messages its brief quoted, as state_changed{run_requested}.
-// The ack's result is the rendered claim before SP3. A replayed clientSeq acks
-// the record without asking again, and without the result.
-func (a *Actor) startRun(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
-	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
-	if !a.validRun(room, act) {
-		return fail(rejectBadAction)
-	}
-	if a.Requester == nil {
-		return fail(rejectNoFactory)
-	}
-	// Before the request: a run lives outside the log, so a replay must never ask twice.
-	switch prev, dup, err := a.Log.Stored(ctx, d); {
-	case err != nil:
-		return fail(rejectLogUnavailable)
-	case dup && !isRunRequest(prev):
-		return fail(rejectBadAction)
-	case dup:
-		return prev, nil, ""
-	}
-	switch busy, err := a.busy(ctx, room.Name); {
-	case err != nil:
-		return fail(rejectLogUnavailable)
-	case busy:
-		return fail(rejectRoomBusy)
-	}
-	evs, err := a.Log.BriefSources(ctx, room.Name) // the latest agent handoff and verdict only (review 4.4 M3, I3)
-	if err != nil {
-		return fail(rejectLogUnavailable)
-	}
-	forked, err := a.forkPoint(ctx, room)
-	if err != nil {
-		return fail(rejectLogUnavailable)
-	}
-	evs = append(evs, forked...)
-	queued, err := a.Log.Queue(ctx, room.Name)
-	if err != nil {
-		return fail(rejectLogUnavailable)
-	}
-	req := runrequest.Request{Role: act.Role, Repository: room.Spec.Repository, BaseRef: brief.LastCommit(evs),
-		Branch: "agent/" + room.Name, DataClass: room.Spec.DataClass, RoomRef: room.Name, Principal: p.ID,
-		AccessToken: p.AccessToken, EgressProfiles: act.EgressProfiles,
-		// The act's own key (review 4.4 I1): a retry after a failed record asks
-		// for the same run, which the factory answers with the same runId.
-		IdempotencyKey: d.RoomID + ":" + d.OriginClient + ":" + strconv.FormatInt(d.OriginSeq, 10)}
-	if req.BaseRef == "" {
-		req.BaseRef = "main"
-	}
-	var refs []int64
-	if act.Role == "reviewer" { // ruling P24: its task is the PR, and the queue waits for a brief
-		if req.TaskURL = act.PRURL; req.TaskURL == "" {
-			req.TaskURL = brief.LastPR(evs, a.prs.For(room.Spec.Repository))
-		}
-		if req.TaskURL == "" {
-			return fail(rejectNeedsPR)
-		}
-	} else {
-		var quoted int
-		req.TaskText, quoted = brief.Build(room.Name, act.Role, evs, queued, runrequest.NewID())
-		for _, q := range queued[:quoted] {
-			refs = append(refs, q.Ref)
-		}
-	}
-	res, err := a.Requester.Request(ctx, req)
-	switch {
-	case errors.Is(err, runrequest.ErrBudget):
-		return fail(rejectOverBudget)
-	case errors.Is(err, runrequest.ErrForbidden):
-		return fail(rejectNotPermitted)
-	case err != nil || !envelope.ValidID(res.RunID):
-		return fail(rejectNoFactory)
-	}
-	fields := map[string]any{"role": act.Role, "via": res.Via, "baseRef": req.BaseRef}
-	if req.TaskURL != "" {
-		fields["taskUrl"] = req.TaskURL // which PR the reviewer got (review 4.4 I3), checked by IsPR
-	}
-	ev, err := a.Log.RecordRunRequest(ctx, d, res.RunID, refs, fields)
-	if err != nil {
-		return fail(reason(err))
-	}
-	return ev, res.Manifest, ""
-}
-
-// ForkedFrom annotates a forked Room with <source room>@<seq>; roomctrl owns it, since the
-// Room's task status must skip the copied prefix.
-const ForkedFrom = roomctrl.ForkedFrom
-
-// maxNote bounds a fork's note, which its forked_from event carries.
-const maxNote = 1 << 10
-
-// fork branches the room at act.Seq into a new room the forker owns and drives
-// (§5): the log prefix with its seqs, then state_changed{forked_from} with the
-// commit at that seq, then, for a role, the new room's first run, on its own
-// branch and the forker's token. Nothing is written to the source room, so a
-// sealed one forks too, for its owners. The source's approvals carry over for
-// its owners; anyone else gets, class by class, the stricter of them and a new
-// room's (ruling M2). The ack's result is {roomId, run?, runError?}: a run that
-// fails leaves the fork made.
-func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
-	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
-	note := strings.TrimSpace(act.Note)
-	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !a.validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
-		return fail(rejectBadAction) // the owner must be one the Room CRD admits
-	}
-	if a.forkLimited(p.ID) {
-		return fail(rejectRateLimited)
-	}
-	retention, err := roomctrl.ParseRetention(room.Spec.Retention)
-	if err != nil || a.Rooms == nil {
-		return fail(rejectLogUnavailable)
-	}
-	evs, err := a.Log.BriefSourcesThrough(ctx, room.Name, act.Seq)
-	if err != nil {
-		return fail(rejectLogUnavailable)
-	}
-	fields := map[string]any{}
-	if commit := brief.LastCommit(evs); commit != "" {
-		fields["commit"] = commit // the fork's first baseRef, and its PR's Forked-from line
-	}
-	if note != "" {
-		if note, d.Redactions, err = a.redactText(ctx, note); err != nil {
-			return fail(rejectLogUnavailable)
-		}
-		fields["note"] = note
-	}
-	id := runrequest.NewID()
-	ev, err := a.Log.Fork(ctx, room.Name, act.Seq, store.NewRoom{ID: id, Driver: p.ID, Retention: retention}, d, fields)
-	switch {
-	case errors.Is(err, store.ErrBadSeq):
-		return fail(rejectBadAction)
-	case errors.Is(err, store.ErrForkTooLarge):
-		return fail(rejectTooLarge)
-	case err != nil:
-		return fail(rejectLogUnavailable)
-	}
-	approvals := *room.Spec.Approvals.DeepCopy()
-	if !owner {
-		// A new room's policy is the CRD's default: createRoom sets none.
-		s := bridge.Stricter(wire.ApprovalPolicy{Profile: approvals.Profile, Overrides: approvals.Overrides}, wire.ApprovalPolicy{})
-		approvals.Profile, approvals.Overrides = s.Profile, s.Overrides
-	}
-	child := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: room.Namespace,
-		Annotations: map[string]string{ForkedFrom: fmt.Sprintf("%s@%d", room.Name, act.Seq)}},
-		Spec: v1alpha1.RoomSpec{Owner: p.ID, Driver: p.ID, DataClass: room.Spec.DataClass, Repository: room.Spec.Repository,
-			Approvals: approvals, Retention: room.Spec.Retention}}
-	if err := a.Rooms.Create(ctx, child); err != nil {
-		// A row no Room projects is never closed, so retention would never purge it.
-		_ = a.Log.CloseRoom(ctx, id, "fork failed: no Room")
-		if apierrors.IsAlreadyExists(err) {
-			return fail(rejectConflict)
-		}
-		return fail(rejectLogUnavailable)
-	}
-	result := map[string]any{"roomId": id}
-	if act.Role != "" {
-		fd := envelope.Draft{RoomID: id, Actor: d.Actor, Origin: d.Origin, OriginClient: d.OriginClient + ":fork", OriginSeq: d.OriginSeq}
-		_, claim, why := a.startRun(ctx, p, child, Action{Role: act.Role, PRURL: act.PRURL, EgressProfiles: act.EgressProfiles}, fd)
-		result["run"] = claim
-		if why != "" {
-			result["runError"] = why
-		}
-	}
-	return ev, envelope.Must(result), ""
-}
-
-// forkPoint is a forked room's state_changed{forked_from}, the event after the
-// prefix its annotation names, for the brief's Forked-from line; nothing for
-// any other room. One read by seq, never a scan of the log.
-func (a *Actor) forkPoint(ctx context.Context, room *v1alpha1.Room) ([]envelope.Event, error) {
-	seq := roomctrl.ForkSeq(room)
-	if seq == 0 {
-		return nil, nil
-	}
-	return a.Log.Range(ctx, room.Name, seq, 1)
 }
