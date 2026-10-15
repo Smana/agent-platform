@@ -11,6 +11,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 )
 
 // R51: a cluster rebuild loses Tasks, not their pull requests. An open PR from an agent branch,
@@ -18,7 +19,7 @@ import (
 // factory/orphaned and narrated once — it is human-only now, and the restart is a fresh
 // factory/ready, never an adoption (R52: the branch and the footer are forgeable hints).
 func TestOrphanedPullRequestsAreLabelledOnce(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	f.SetAgentPulls(
 		forge.AgentPull{Number: 21, HeadRef: "agent/abcdefgh", Labels: []string{"factory/class:review"}, Fork: true},
 		forge.AgentPull{Number: 22, HeadRef: "agent/bbbbbbbb", Labels: []string{"factory/class:review"}},
@@ -54,7 +55,7 @@ func TestOrphanedPullRequestsAreLabelledOnce(t *testing.T) {
 // The narration is the marker's to dedup, not the label's: a pull request that already carries
 // factory/orphaned is not labelled again, and the comment is not repeated.
 func TestAnOrphanIsNotRelabelledOrRenarrated(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	f.SetAgentPulls(forge.AgentPull{Number: 22, HeadRef: "agent/bbbbbbbb", Labels: []string{"factory/class:review"}})
 	p, _ := poller(t, f)
 	for range 2 {

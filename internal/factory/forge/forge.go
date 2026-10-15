@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package forge is the factory's view of GitHub, through the factory's own App (C6): one
-// repository per instance (OD-6). GitHub is the adapter, Fake the double for the packages that
+// repository per instance (OD-6). GitHub is the adapter, forgetest holds the test double for the packages that
 // consume it; each consumer declares the interface it needs (AGENTS.md) — Merger is the one
 // exception the owner ruled (2026-09-27; R16), because its key must reach only the factory, and a
 // seam defined here keeps it out of every consumer's hands. Logins are REST-shaped: a bot is
@@ -240,7 +240,4 @@ type Merger interface {
 	RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error)
 }
 
-var (
-	_ Merger = (*GitHub)(nil)
-	_ Merger = (*Fake)(nil)
-)
+var _ Merger = (*GitHub)(nil)

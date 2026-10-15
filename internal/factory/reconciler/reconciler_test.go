@@ -32,6 +32,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -322,7 +323,7 @@ func cfg() *config.Config {
 type rig struct {
 	r       *Reconciler
 	c       client.Client
-	f       *forge.Fake
+	f       *forgetest.Fake
 	runs    *fakeRuns
 	log     *fakeLog
 	metrics *fakeMetrics
@@ -340,7 +341,7 @@ func newRig(t *testing.T, objs ...client.Object) *rig {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithStatusSubresource(&v1alpha1.Task{}, &roomv1.Room{}).WithObjects(objs...).Build()
 	seeingMeter(t, c)
-	g := &rig{c: c, f: forge.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
+	g := &rig{c: c, f: forgetest.NewFake(), runs: newRuns(), log: &fakeLog{}, metrics: &fakeMetrics{}}
 	g.r = &Reconciler{Client: c, Ledger: c, Namespace: "agent-system", Cfg: cfg(), Forge: g.f, Merger: g.f, Runs: g.runs, Rooms: g.log,
 		Triage: triage.Static{Cfg: cfg()}, Metrics: g.metrics,
 		Now: func() time.Time { return now }, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler)}

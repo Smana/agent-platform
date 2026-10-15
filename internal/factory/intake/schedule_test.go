@@ -14,6 +14,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
 
@@ -41,7 +42,7 @@ func schedulerCfg() *config.Config {
 		}}
 }
 
-func scheduler(f *forge.Fake, c *fake.ClientBuilder, stopped func(context.Context) bool,
+func scheduler(f *forgetest.Fake, c *fake.ClientBuilder, stopped func(context.Context) bool,
 	now time.Time, cfg *config.Config) *Scheduler {
 	return &Scheduler{Forge: f, Merger: f, Client: c.Build(), Namespace: "agent-system", Now: func() time.Time { return now },
 		Stopped: stopped, Errors: &counter{}, Cfg: cfg}
@@ -52,7 +53,7 @@ func TestSchedulerCreatesOneTaskPerSlot(t *testing.T) {
 	_ = v1alpha1.AddToScheme(s)
 	c := fake.NewClientBuilder().WithScheme(s)
 	now := time.Date(2026, 10, 5, 6, 20, 0, 0, time.UTC)
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	sch := scheduler(f, c, func(context.Context) bool { return false }, now, schedulerCfg())
 	for i := 0; i < 2; i++ {
 		if err := sch.Tick(context.Background()); err != nil {
@@ -88,7 +89,7 @@ func TestSchedulerCreatesOneTaskPerSlot(t *testing.T) {
 func TestSchedulerIgnoresOldSlots(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	// Tuesday 06:20: the Monday slot is a day old, and only a slot of the last hour fires.
 	sch := scheduler(f, fake.NewClientBuilder().WithScheme(s),
 		func(context.Context) bool { return false }, time.Date(2026, 10, 13, 6, 20, 0, 0, time.UTC),
@@ -108,7 +109,7 @@ func TestSchedulerIgnoresOldSlots(t *testing.T) {
 func TestSchedulerStoppedPauses(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = v1alpha1.AddToScheme(s)
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	sch := scheduler(f, fake.NewClientBuilder().WithScheme(s),
 		func(context.Context) bool { return true }, time.Date(2026, 10, 5, 6, 20, 0, 0, time.UTC), schedulerCfg())
 	if err := sch.Tick(context.Background()); err != nil {

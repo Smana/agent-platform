@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package forge
+// Package forgetest holds the in-memory forge fake for the tests of the packages that consume
+// one. Only tests import it: the factory binary never links it.
+package forgetest
 
 import (
 	"context"
@@ -10,7 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/factory/forge"
 )
+
+// The fake has the Merger's method set too.
+var _ forge.Merger = (*Fake)(nil)
 
 // Fake is an in-memory forge for the tests of the packages that consume one. It has GitHub's
 // method set; Now stamps its comments (time.Now when nil).
@@ -18,26 +25,26 @@ type Fake struct {
 	Now func() time.Time
 
 	mu           sync.Mutex
-	labeled      map[string][]Item
-	events       map[int][]LabelEvent
-	issues       map[int]Issue
-	prs          map[int]PR
+	labeled      map[string][]forge.Item
+	events       map[int][]forge.LabelEvent
+	issues       map[int]forge.Issue
+	prs          map[int]forge.PR
 	branches     map[string]int
-	comments     map[int][]Comment
+	comments     map[int][]forge.Comment
 	added        map[int][]string
 	removed      map[int][]string
 	cut          map[int]bool
 	closed       map[int]bool
-	agentPulls   []AgentPull
-	checks       map[int]Checks
-	commitChecks map[string][]Check
-	commits      map[int][]Commit
+	agentPulls   []forge.AgentPull
+	checks       map[int]forge.Checks
+	commitChecks map[string][]forge.Check
+	commits      map[int][]forge.Commit
 	commitsCut   map[int]bool
-	activity     map[string][]Push
+	activity     map[string][]forge.Push
 	activityErr  map[string]error
 	filesBase    map[string]string
 	filesHead    map[string]string
-	open         []PRSummary
+	open         []forge.PRSummary
 	created      []string
 	armed        []string
 	reruns       []int64
@@ -51,36 +58,36 @@ type Fake struct {
 
 // NewFake returns an empty Fake.
 func NewFake() *Fake {
-	return &Fake{labeled: map[string][]Item{}, events: map[int][]LabelEvent{}, issues: map[int]Issue{},
-		prs: map[int]PR{}, branches: map[string]int{}, comments: map[int][]Comment{}, added: map[int][]string{},
+	return &Fake{labeled: map[string][]forge.Item{}, events: map[int][]forge.LabelEvent{}, issues: map[int]forge.Issue{},
+		prs: map[int]forge.PR{}, branches: map[string]int{}, comments: map[int][]forge.Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
-		checks: map[int]Checks{}, commitChecks: map[string][]Check{}, commits: map[int][]Commit{}, commitsCut: map[int]bool{},
-		activity: map[string][]Push{}, activityErr: map[string]error{}}
+		checks: map[int]forge.Checks{}, commitChecks: map[string][]forge.Check{}, commits: map[int][]forge.Commit{}, commitsCut: map[int]bool{},
+		activity: map[string][]forge.Push{}, activityErr: map[string]error{}}
 }
 
 // SetLabeled sets the items Labeled returns for label.
-func (f *Fake) SetLabeled(label string, items ...Item) {
+func (f *Fake) SetLabeled(label string, items ...forge.Item) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.labeled[label] = items
 }
 
 // SetEvents sets issue n's label events.
-func (f *Fake) SetEvents(n int, evs ...LabelEvent) {
+func (f *Fake) SetEvents(n int, evs ...forge.LabelEvent) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events[n] = evs
 }
 
 // SetIssue stores an issue under its number.
-func (f *Fake) SetIssue(i Issue) {
+func (f *Fake) SetIssue(i forge.Issue) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.issues[i.Number] = i
 }
 
 // SetPR stores a pull request under its number.
-func (f *Fake) SetPR(p PR) {
+func (f *Fake) SetPR(p forge.PR) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prs[p.Number] = p
@@ -94,14 +101,14 @@ func (f *Fake) SetBranch(branch string, n int) {
 }
 
 // SetAgentPulls sets the open agent-branch pull requests AgentPulls returns (R51's orphan scan).
-func (f *Fake) SetAgentPulls(ps ...AgentPull) {
+func (f *Fake) SetAgentPulls(ps ...forge.AgentPull) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.agentPulls = slices.Clone(ps)
 }
 
 // AgentPulls implements the forge's AgentPulls.
-func (f *Fake) AgentPulls(context.Context) ([]AgentPull, error) {
+func (f *Fake) AgentPulls(context.Context) ([]forge.AgentPull, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.agentPulls), nil
@@ -133,24 +140,24 @@ func (f *Fake) Removed(n int) []string {
 }
 
 // Labeled implements the forge's Labeled.
-func (f *Fake) Labeled(_ context.Context, label string) ([]Item, error) {
+func (f *Fake) Labeled(_ context.Context, label string) ([]forge.Item, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.labeled[label]), nil
 }
 
 // LabelEvents implements the forge's LabelEvents.
-func (f *Fake) LabelEvents(_ context.Context, n int, label string) ([]LabelEvent, error) {
+func (f *Fake) LabelEvents(_ context.Context, n int, label string) ([]forge.LabelEvent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []LabelEvent
+	var out []forge.LabelEvent
 	for _, e := range f.events[n] {
 		if e.Label == label {
 			out = append(out, e)
 		}
 	}
 	if f.cut[n] {
-		return out, ErrEventsTruncated
+		return out, forge.ErrEventsTruncated
 	}
 	return out, nil
 }
@@ -163,12 +170,12 @@ func (f *Fake) SetEventsTruncated(n int) {
 }
 
 // Issue implements the forge's Issue.
-func (f *Fake) Issue(_ context.Context, n int) (Issue, error) {
+func (f *Fake) Issue(_ context.Context, n int) (forge.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i, ok := f.issues[n]
 	if !ok {
-		return Issue{}, fmt.Errorf("issue %d not found", n)
+		return forge.Issue{}, fmt.Errorf("issue %d not found", n)
 	}
 	return i, nil
 }
@@ -182,12 +189,12 @@ func (f *Fake) Comment(_ context.Context, n int, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	f.comments[n] = append(f.comments[n], Comment{ID: f.nextID, Author: "ogenki-agent-factory[bot]", Body: body, At: now()})
+	f.comments[n] = append(f.comments[n], forge.Comment{ID: f.nextID, Author: "ogenki-agent-factory[bot]", Body: body, At: now()})
 	return nil
 }
 
 // RecentComments implements the forge's RecentComments.
-func (f *Fake) RecentComments(_ context.Context, n int) ([]Comment, error) {
+func (f *Fake) RecentComments(_ context.Context, n int) ([]forge.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.comments[n]), nil
@@ -214,7 +221,7 @@ func (f *Fake) RemoveLabel(_ context.Context, n int, label string) error {
 	defer f.mu.Unlock()
 	f.removed[n] = append(f.removed[n], label)
 	f.calls = append(f.calls, fmt.Sprintf("remove-label %d %s", n, label))
-	f.labeled[label] = slices.DeleteFunc(f.labeled[label], func(i Item) bool { return i.Number == n })
+	f.labeled[label] = slices.DeleteFunc(f.labeled[label], func(i forge.Item) bool { return i.Number == n })
 	return nil
 }
 
@@ -270,25 +277,25 @@ func (f *Fake) Closed(n int) bool {
 }
 
 // SetComments replaces a thread's comments, for commands written by other users.
-func (f *Fake) SetComments(n int, cs ...Comment) {
+func (f *Fake) SetComments(n int, cs ...forge.Comment) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.comments[n] = slices.Clone(cs)
 }
 
 // PullRequest implements the forge's PullRequest.
-func (f *Fake) PullRequest(_ context.Context, n int) (PR, error) {
+func (f *Fake) PullRequest(_ context.Context, n int) (forge.PR, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.prs[n]
 	if !ok {
-		return PR{}, fmt.Errorf("pull request %d not found", n)
+		return forge.PR{}, fmt.Errorf("pull request %d not found", n)
 	}
 	return p, nil
 }
 
 // SetCommits sets pull request n's commits, oldest first, as PullRequestCommits returns them.
-func (f *Fake) SetCommits(n int, cs ...Commit) {
+func (f *Fake) SetCommits(n int, cs ...forge.Commit) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commits[n] = slices.Clone(cs)
@@ -303,7 +310,7 @@ func (f *Fake) SetCommitsTruncated(n int) {
 
 // PullRequestCommits implements the forge's PullRequestCommits. Unset, a pull request's commits
 // are its head alone, so a test that never pushes more reads what GitHub would.
-func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]Commit, error) {
+func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]forge.Commit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cs, ok := f.commits[n]
@@ -312,16 +319,16 @@ func (f *Fake) PullRequestCommits(_ context.Context, n int) ([]Commit, error) {
 		if !found {
 			return nil, fmt.Errorf("pull request %d not found", n)
 		}
-		cs = []Commit{{SHA: p.HeadSHA, Author: p.Author, Message: p.HeadMessage}}
+		cs = []forge.Commit{{SHA: p.HeadSHA, Author: p.Author, Message: p.HeadMessage}}
 	}
 	if f.commitsCut[n] {
-		return slices.Clone(cs), ErrCommitsTruncated
+		return slices.Clone(cs), forge.ErrCommitsTruncated
 	}
 	return slices.Clone(cs), nil
 }
 
 // SetActivity sets branch's activity, newest first, as BranchActivity returns it.
-func (f *Fake) SetActivity(branch string, ps ...Push) {
+func (f *Fake) SetActivity(branch string, ps ...forge.Push) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.activity[branch] = slices.Clone(ps)
@@ -337,7 +344,7 @@ func (f *Fake) SetActivityErr(branch string, err error) {
 // BranchActivity implements the forge's BranchActivity. Unset, a branch is its pull request's
 // head, created by the pull request's author — the agents App in the reconciler's rigs — so the
 // push check passes: a test that never calls SetActivity does not exercise it (#76's tests do).
-func (f *Fake) BranchActivity(_ context.Context, branch string) ([]Push, error) {
+func (f *Fake) BranchActivity(_ context.Context, branch string) ([]forge.Push, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.activityErr[branch]; err != nil {
@@ -348,21 +355,21 @@ func (f *Fake) BranchActivity(_ context.Context, branch string) ([]Push, error) 
 	}
 	for _, p := range f.prs {
 		if p.HeadRef == branch {
-			return []Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA}}, nil
+			return []forge.Push{{Type: "branch_creation", Actor: p.Author, Before: strings.Repeat("0", 40), After: p.HeadSHA}}, nil
 		}
 	}
 	return nil, nil
 }
 
 // SetChecks sets pull request n's head-commit rollup, as PullRequestChecks returns it.
-func (f *Fake) SetChecks(n int, c Checks) {
+func (f *Fake) SetChecks(n int, c forge.Checks) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checks[n] = c
 }
 
 // SetCommitChecks sets the check runs sha carries, as CommitChecks returns them.
-func (f *Fake) SetCommitChecks(sha string, cs ...Check) {
+func (f *Fake) SetCommitChecks(sha string, cs ...forge.Check) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commitChecks[sha] = cs
@@ -384,7 +391,7 @@ func (f *Fake) Files(context.Context, string, string) (map[string]string, map[st
 }
 
 // SetOpenPRs sets the open pull requests OpenPullRequests returns.
-func (f *Fake) SetOpenPRs(ps ...PRSummary) {
+func (f *Fake) SetOpenPRs(ps ...forge.PRSummary) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.open = ps
@@ -439,7 +446,7 @@ func (f *Fake) Merge(_ context.Context, nodeID, head string) error {
 			continue
 		}
 		if p.HeadSHA != head {
-			return fmt.Errorf("forge: fake: %w: %s is at %s, not %s", ErrHeadMoved, nodeID, p.HeadSHA, head)
+			return fmt.Errorf("forge: fake: %w: %s is at %s, not %s", forge.ErrHeadMoved, nodeID, p.HeadSHA, head)
 		}
 		p.State, p.MergeCommitSHA, p.MergedBy = "MERGED", head, "ogenki-agent-merger[bot]"
 		f.prs[n] = p
@@ -450,14 +457,14 @@ func (f *Fake) Merge(_ context.Context, nodeID, head string) error {
 }
 
 // PullRequestChecks implements the Merger's PullRequestChecks.
-func (f *Fake) PullRequestChecks(_ context.Context, n int) (Checks, error) {
+func (f *Fake) PullRequestChecks(_ context.Context, n int) (forge.Checks, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.checks[n], nil
 }
 
 // CommitChecks implements the Merger's CommitChecks.
-func (f *Fake) CommitChecks(_ context.Context, sha string) ([]Check, error) {
+func (f *Fake) CommitChecks(_ context.Context, sha string) ([]forge.Check, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.commitChecks[sha]), nil
@@ -506,15 +513,15 @@ func (f *Fake) DisableAutoMerge(_ context.Context, nodeID string) error {
 }
 
 // RevertPR implements the Merger's RevertPR: every call opens the next numbered revert.
-func (f *Fake) RevertPR(_ context.Context, nodeID, title, _ string) (Revert, error) {
+func (f *Fake) RevertPR(_ context.Context, nodeID, title, _ string) (forge.Revert, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reverts = append(f.reverts, nodeID+" "+title)
-	return Revert{Number: 900 + len(f.reverts), URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
+	return forge.Revert{Number: 900 + len(f.reverts), URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
 }
 
 // OpenPullRequests implements the forge's OpenPullRequests.
-func (f *Fake) OpenPullRequests(context.Context) ([]PRSummary, error) {
+func (f *Fake) OpenPullRequests(context.Context) ([]forge.PRSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.open), nil

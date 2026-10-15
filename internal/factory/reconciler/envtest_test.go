@@ -21,7 +21,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/tracing"
 	"github.com/Smana/agent-platform/internal/factory/triage"
@@ -53,7 +53,7 @@ func TestEnvtestTaskToRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r := &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: forge.NewFake(), Runs: runs.Client{C: c},
+	r := &Reconciler{Client: c, Namespace: "agent-system", Cfg: cfg(), Forge: forgetest.NewFake(), Runs: runs.Client{C: c},
 		Rooms: &fakeLog{}, Triage: triage.Static{Cfg: cfg()}, Metrics: &fakeMetrics{},
 		Now: time.Now, Nonce: func() string { return "n0nce234" }, Log: slog.New(slog.DiscardHandler),
 		Trace: &fakeSink{}}

@@ -190,7 +190,7 @@ The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; 
 | Tasks | `api/factory/v1alpha1` | `Task` types and deepcopy; CRD generated into `config/crd/` |
 | Tasks | `internal/factory/triage`, `internal/factory/reconciler` | template, tier and budget; the `Task` state machine |
 | Tasks | `internal/factory/runs`, `internal/factory/killswitch` | the `AgentRun` claim; the stop object |
-| Out | `internal/factory/forge`, `internal/factory/narrate` | GitHub as the factory App; narration, at least once |
+| Out | `internal/factory/forge`, `internal/factory/narrate` | GitHub as the factory App (`internal/factory/forge/forgetest`: its test-only fake); narration, at least once |
 | Out | `internal/factory/rooms` | the broker's system API over TLS |
 | Ops | `internal/factory/meter`, `internal/factory/fmetrics`, `internal/factory/tracing` | the run meter; the §7 metrics; one root span per task |
 

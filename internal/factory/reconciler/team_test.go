@@ -20,6 +20,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
@@ -810,7 +811,7 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 	red := green("SUCCESS")
 	red.Runs[1].State = "FAILURE"
 	// fixRun is the fix run rid(2) finished at head2, the branch's activity as set has it.
-	fixRun := func(t *testing.T, set func(f *forge.Fake)) *rig {
+	fixRun := func(t *testing.T, set func(f *forgetest.Fake)) *rig {
 		t.Helper()
 		g := approvedPairAtTheGate(t)
 		g.f.SetChecks(12, red)
@@ -823,7 +824,7 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 		g.finish(rid(2), "Succeeded", "agent_finished")
 		return g
 	}
-	fixed := func(t *testing.T, set func(f *forge.Fake)) *v1alpha1.Task {
+	fixed := func(t *testing.T, set func(f *forgetest.Fake)) *v1alpha1.Task {
 		t.Helper()
 		return fixRun(t, set).reconcile(t, "3buqdlot", 2)
 	}
@@ -845,8 +846,8 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 			t.Fatalf("reviewed again: %s %s", tk.Status.Phase, tk.Status.Reason)
 		}
 	}
-	activity := func(ps ...forge.Push) func(*forge.Fake) {
-		return func(f *forge.Fake) { f.SetActivity(branch, ps...) }
+	activity := func(ps ...forge.Push) func(*forgetest.Fake) {
+		return func(f *forgetest.Fake) { f.SetActivity(branch, ps...) }
 	}
 	t.Run("a human's push carrying a copied trailer", func(t *testing.T) {
 		handedOff(t, fixed(t, activity(forge.Push{Type: "push", Actor: bot, Before: human, After: head2},
@@ -873,7 +874,7 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 			forge.Push{Type: "push", Actor: bot, Before: head1, After: human})))
 	})
 	t.Run("a history past the page cap", func(t *testing.T) {
-		handedOff(t, fixed(t, func(f *forge.Fake) { f.SetActivityErr(branch, forge.ErrActivityTruncated) }))
+		handedOff(t, fixed(t, func(f *forgetest.Fake) { f.SetActivityErr(branch, forge.ErrActivityTruncated) }))
 	})
 	// GitHub records a push a little after it lands: a history wholly the App's whose newest move is
 	// not the head yet waits, unchanged, until pushRecordGrace after the fix run finished.
@@ -903,7 +904,7 @@ func TestEveryPushToACIFixedPRIsTheFactorys(t *testing.T) {
 		handedOff(t, g.reconcile(t, "3buqdlot", 1))
 	})
 	t.Run("a read GitHub refuses is retried", func(t *testing.T) {
-		g := fixRun(t, func(f *forge.Fake) { f.SetActivityErr(branch, errors.New("forge: list branch activity: 502")) })
+		g := fixRun(t, func(f *forgetest.Fake) { f.SetActivityErr(branch, errors.New("forge: list branch activity: 502")) })
 		if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 			t.Fatal("the read error is returned for a retry")
 		}

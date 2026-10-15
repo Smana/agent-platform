@@ -22,6 +22,7 @@ import (
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -674,7 +675,7 @@ func TestAPostedReminderWritesNothingMore(t *testing.T) {
 }
 
 // silentForge is a forge whose comments all fail, as in a GitHub outage.
-type silentForge struct{ *forge.Fake }
+type silentForge struct{ *forgetest.Fake }
 
 func (silentForge) Comment(context.Context, int, string) error { return errors.New("github is down") }
 
@@ -880,6 +881,8 @@ func TestAnOlderReviewDoesNotShortenTheWait(t *testing.T) {
 }
 
 // Review mutant β: the label goes on before the close, so a replay reads a closed PR as stale.
+// The order is the contract here, and state cannot show it (both orders end labelled and closed),
+// so this is the one place the fake's call order is asserted.
 func TestTheStaleLabelPrecedesTheClose(t *testing.T) {
 	g := newRig(t, staleTask(15*24*time.Hour))
 	g.f.SetPR(pr12())
@@ -891,7 +894,7 @@ func TestTheStaleLabelPrecedesTheClose(t *testing.T) {
 }
 
 // refusingForge refuses every close, as GitHub does without pull_requests: write.
-type refusingForge struct{ *forge.Fake }
+type refusingForge struct{ *forgetest.Fake }
 
 func (refusingForge) ClosePR(context.Context, int) error {
 	return errors.New("403 Resource not accessible by integration")
@@ -906,9 +909,12 @@ func TestARefusedCloseTakesTheLabelOff(t *testing.T) {
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the refusal is returned")
 	}
-	if tk := g.reconcile(t, "3buqdlot", 0); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman ||
-		!slices.Equal(g.f.Calls(), []string{"add-labels 12 factory/stale", "remove-label 12 factory/stale"}) {
-		t.Fatalf("%s %q", tk.Status.Phase, g.f.Calls())
+	if tk := g.reconcile(t, "3buqdlot", 0); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
+		t.Fatalf("phase %s", tk.Status.Phase)
+	}
+	if !slices.Equal(g.f.Added(12), []string{"factory/stale"}) || !slices.Equal(g.f.Removed(12), []string{"factory/stale"}) || g.f.Closed(12) {
+		t.Fatalf("added %q removed %q closed %v: the label goes on, comes off, and the PR stays open",
+			g.f.Added(12), g.f.Removed(12), g.f.Closed(12))
 	}
 }
 

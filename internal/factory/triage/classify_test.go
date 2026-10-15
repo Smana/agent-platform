@@ -13,6 +13,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 )
 
 func TestMatrix(t *testing.T) { // §2
@@ -75,7 +76,7 @@ func issueTask() *v1alpha1.Task {
 }
 
 func TestClassifyUsesAMaintainersClassLabel(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	f.SetIssue(forge.Issue{Number: 7, Labels: []string{"class:docs-links"}})
 	f.SetEvents(7, forge.LabelEvent{Actor: "Smana", Label: "class:docs-links", At: time.Now()})
 	c7 := &fakeC7{resp: C7Response{Tier: "light", Confidence: 0.91, Classifier: "semantic-router", Fallback: "none",
@@ -94,7 +95,7 @@ func TestClassifyUsesAMaintainersClassLabel(t *testing.T) {
 }
 
 func TestClassifyFallsBackAndIgnoresStrangersLabels(t *testing.T) {
-	f := forge.NewFake()
+	f := forgetest.NewFake()
 	f.SetIssue(forge.Issue{Number: 7, Labels: []string{"class:docs-links"}})
 	f.SetEvents(7, forge.LabelEvent{Actor: "someone", Label: "class:docs-links", At: time.Now()})
 	d, err := Classify{Cfg: testCfg(), C: &fakeC7{err: errors.New("timeout")}, Forge: f}.Triage(context.Background(), issueTask())
@@ -111,7 +112,7 @@ func TestControlGroupRunsAtFrontier(t *testing.T) {
 	cfg := testCfg()
 	cfg.Triage.ControlPercent = 100
 	d, _ := Classify{Cfg: cfg, C: &fakeC7{resp: C7Response{Tier: "light", Classifier: "semantic-router", Fallback: "none"}},
-		Forge: forge.NewFake()}.Triage(context.Background(), &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Source: v1alpha1.Source{Kind: "schedule"}, DataClass: "public"}})
+		Forge: forgetest.NewFake()}.Triage(context.Background(), &v1alpha1.Task{Spec: v1alpha1.TaskSpec{Source: v1alpha1.Source{Kind: "schedule"}, DataClass: "public"}})
 	if !d.Classification.Control || d.Classification.Tier != "light" || d.Budget.Tier != "frontier" {
 		t.Fatalf("the classifier's answer is recorded as-is; the budget acts at frontier (OD-14): %+v", d)
 	}
