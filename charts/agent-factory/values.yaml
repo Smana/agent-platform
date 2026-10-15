@@ -6,40 +6,14 @@ replicas: 2
 resources:
   requests: {cpu: 100m, memory: 256Mi}
   limits: {cpu: 500m, memory: 512Mi}
-# The factory App's key (keys app_id, private_key), from the agents-secrets store. Mounted at
-# /etc/agent-factory-github: config.github.{appIDFile,privateKeyFile} name the files there.
+# Secrets, their keys and mount paths, and the merger-key prerequisite: README.md#prerequisites.
 githubSecret: agent-factory-github
-# HARD PREREQUISITE for both mergerSecret and intakeSecret whenever any merge class is live or in
-# shadow (the shipped config has two in shadow): the mounts are optional so that a factory with every
-# class off starts without them, but a live or shadow class makes the binary refuse to start without
-# the merger key. That is now a CrashLoopBackOff with a clear log line, no longer ContainerCreating.
-# Without the intake token the RunLore intake answers 503 to every request.
-# The merger App's key (R16): arming, reverts, checks. Keys app_id, private_key, mounted at
-# /etc/agent-factory-merger: config.github.{mergerAppIDFile,mergerKeyFile}. No other workload
-# mounts it (review C1: the group bit plus fsGroup is what makes it readable at all).
+# HARD PREREQUISITE when any merge class is live or in shadow: README.md#prerequisites.
 mergerSecret: agent-factory-merger
-# The broker's CA (key ca.crt, ruling SC), mounted at /etc/agent-factory/openbao-ca: config.broker.caFile.
 brokerCASecret: openbao-ca
-# The broker's system API audience (SP2 ruling P3). The token is at
-# /var/run/secrets/agents/rooms/token: config.broker.tokenFile.
+# Audience of the projected token for the broker's system API.
 roomsAudience: rooms-system
-# The ZITADEL client ids the API accepts tokens from (rooms-proxy, roomctl). Ids, not secrets.
 oidcSecret: agent-factory-oidc
-# The RunLore intake's bearer token (key token), from the agents-secrets store. Mounted at
-# /etc/agent-factory-intake: config.runlore.tokenFile names the file there (FA-8).
 intakeSecret: agent-factory-intake
-# The factory config (internal/factory/config), rendered verbatim to
-# /etc/agent-factory/config/config.yaml. A gate path. An empty config fails the start (§4).
-# caps.escalatedHours (#61): how long a task may wait Escalated for a maintainer before it is
-# Stopped. Omitted: 168 (a week). 0: no limit. A room a person drives never expires. Example:
-#   caps: {escalatedHours: 72}
-# meter.prices (USD per million tokens, by the tier's model) caps each run and task in USD rather
-# than in tokens, defaulting tiers.<tier>.runUSD and taskUSD to runTokens and taskTokens × $1.70/M;
-# meter.query must then group by gen_ai_token_type (docs/operations.md#run-and-task-budgets). Example:
-#   meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}}
-# Deployment facts, each defaulting to the platform's value when omitted (a file that predates
-# them loads unchanged): api.groups names the two groups the run API admits, and a schedule's
-# probeAuthor the login whose PRs its probe reads. Example:
-#   api: {groups: {admin: agents-admin, member: agents-member}}
-#   schedules: [{name: renovate-red, ..., probe: renovate-red, probeAuthor: "renovate[bot]"}]
+# The factory config, rendered verbatim: README.md#config, docs/factory.md#the-config-file.
 config: {}

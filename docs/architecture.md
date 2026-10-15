@@ -1,31 +1,39 @@
 # Architecture
 
-Two binaries. **`room-broker`** is a stateless service in `agent-system`: it owns the `Room` CRD,
-authenticates every writer, redacts and sequences events, and stores each room's log in Postgres.
-**`room-bridge`** is a native sidecar in every `AgentRun` pod that names a room: it polls the harness
-on loopback and pushes its events to the broker over TLS on `:8443`. **Nothing dials into a
-sandbox**; every connection from the `agents` namespace is one the pod opens (C4).
+Four binaries and one image. **`agent-factory`** turns a labelled GitHub issue into a narrated run
+and merges the result through its gate. **`room-broker`** is the log of record: it owns the `Room`
+CRD, authenticates every writer, redacts and sequences events, and stores each room's log in
+Postgres. **`room-bridge`** is a native sidecar in every `AgentRun` pod that names a room: it polls
+the harness on loopback and pushes its events to the broker over TLS on `:8443`. **`roomctl`** is
+the terminal client for people. **`agent-harness`** is the image the run executes in (OpenHands
+agent-server, `gh`, the pull-request footer). Nothing dials into a sandbox: every connection from
+the `agents` namespace is one the pod opens.
 
 ## Components
 
-| Component | Runs | Does | Status |
-|---|---|---|---|
-| `room-broker` | Deployment `room-broker` in `agent-system`, from an `App` claim. 1 replica in phase 1, 2 with a PDB from phase 2 | The log of record, the Room controller, the `:8443`, `:8080`, `:8090` and `:9090` listeners, the retention job (`room-broker retention`) | AP-1 |
-| `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream | AP-1 |
-| Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log | AP-1 |
-| `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons | AP-1 |
-| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room | AP-1; the claim S1 (planned) |
-| `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#the-room-crd)) | AP-1 |
-| Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) | Planned, phase 2 / AP-2 |
-| Web UI | Embedded in the broker, TypeScript, behind oauth2-proxy | Watch, then post, steer, approve and fork | Planned, phases 2–6 |
-| `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve (ruling P18) | Phase 6 / AP-6 |
+| Component | Runs | Does |
+|---|---|---|
+| `agent-factory` | Deployment in `agent-system`, two replicas, one leading; chart `charts/agent-factory` | Reconciles the `Task` CRD, polls maintainer-labelled issues, answers `POST /v1/runs` on `:8082` (plaintext inside the mesh), meters each run, narrates on the issue, runs the merge gate |
+| `room-broker` | Deployment `room-broker` in `agent-system`, from an `App` claim; two replicas with a PDB | The log of record, the Room controller, the `:8443`, `:8080`, `:8090` and `:9090` listeners, the retention job (`room-broker retention`) |
+| `room-bridge` | Native sidecar (`restartPolicy: Always`) after `identity-proxy`, in every run pod with `spec.roomRef` | Mirrors the harness into the room; carries steering, interrupts and decisions back over one SSE stream |
+| `agent-harness` | The run container of the `AgentRun` pod | The agent itself; it opens the pull request with `gh pr create` and the provenance footer (`images/agent-harness/pr_footer.py`) |
+| Room controller | Inside the broker, reconciling `Room` CRs | Creates the room's log row and its first event, projects `status`, runs the finalizer that seals the log |
+| `AgentRun` watch | Inside the broker, on every replica | Admits bridges of live runs only, drops a run's connections when it ends, records joins, phases and end reasons |
+| Log store | CNPG `SQLInstance xplane-rooms`, database `rooms` | Append-only events, one gapless `seq` per room |
+| `Room` CRD | `agents.ogenki.io/v1alpha1`, namespaced | The room's policy and projected status ([reference](concepts.md#reference-the-room-crd)) |
+| `Task` CRD | `charts/agent-factory`, shipped with the factory | One issue's state machine, from `Received` to `Done` ([factory](factory.md)) |
+| Fan-out | Postgres `LISTEN`/`NOTIFY` on channel `rooms_events`, one listener connection per replica | Every append notifies `"<room> <last_seq>"` in its own transaction, so only committed events are announced. Each replica reads a notified room once for all its viewers, and polls every second while its listener is down ([connection budget](#connection-budget)) |
+| Web UI | Embedded in the broker (`web/`, TypeScript), behind oauth2-proxy | Watch a room, post, steer, approve, fork, invite and close |
+| `roomctl` | A CLI on a developer's machine | Watch, post, queue and fork from a terminal; never steer or approve |
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
   human["Human browser<br/>(tailnet + ZITADEL)"] -->|"Tailscale Gateway<br/>rooms.&lt;private domain&gt;"| proxy["oauth2-proxy"]
-  proxy -->|":8080 · ID + access token<br/>phase 2"| broker
+  cli["roomctl"] --> proxy
+  proxy -->|":8080 · ID + access token"| broker
+  gh["GitHub"]
 
   subgraph agents["namespace agents · gVisor · default-deny CNP"]
     subgraph pod["AgentRun sandbox pod"]
@@ -35,85 +43,87 @@ flowchart LR
     end
   end
   bridge -->|":8443 TLS · run token<br/>POST up, SSE down"| broker
+  harness -->|"gh pr create"| gh
 
   subgraph sys["namespace agent-system"]
+    factory["agent-factory<br/>(system caller)"]
     broker["room-broker<br/>+ Room controller<br/>+ AgentRun watch"]
     pg[("CNPG xplane-rooms<br/>log of record")]
-    factory["SP3 factory<br/>(system caller)"]
   end
   factory -->|":8443 system API<br/>rooms-system token"| broker
-  harness -.->|"MCP room_* · phase 3"| router["agent-router Gateway"]
+  factory -->|"factory App · merger App"| gh
+  harness -.->|"MCP room_*"| router["agent-router Gateway"]
   router -.->|":8090 injected key + x-ar-agent"| broker
 
   broker -->|"append-only role"| pg
-  pg -.->|"NOTIFY rooms_events · phase 2"| broker
+  pg -.->|"NOTIFY rooms_events"| broker
   broker <-->|"watch Room CRs (CRUD)<br/>watch AgentRuns (read, delete)"| kube["Kubernetes API"]
 ```
 
 | Boundary | Crossed by | Control |
 |---|---|---|
-| Sandbox → broker | The bridge's `POST` and SSE on `:8443` | TLS (GP-18); an audience-bound run token checked offline, then a live `AgentRun` watch; the run CNP opens this egress only when `roomRef` is set; the bridge lease admits one run per room |
+| Sandbox → broker | The bridge's `POST` and SSE on `:8443` | TLS; an audience-bound run token checked offline, then a live `AgentRun` watch; the run CNP opens this egress only when `roomRef` is set; the bridge lease admits one run per room |
 | Harness → bridge | Nothing: the bridge calls the harness, on loopback | The harness never holds the room token: only the bridge container mounts it |
-| Human → broker | oauth2-proxy → `:8080` | ZITADEL SSO, agent groups, re-validated ID and access tokens, `Origin` check, `SameSite=Strict` cookie (phase 2) |
-| Agent tools → broker | `agent-router` → `:8090` | The gateway authenticates the run and injects a key; the broker derives the run from `x-ar-agent` and its role from the `AgentRun`, never from a header (phase 3) |
+| Human → broker | oauth2-proxy → `:8080`, for the web UI and `roomctl` alike | ZITADEL SSO, agent groups, re-validated ID and access tokens; the web UI adds an `Origin` check and a `SameSite=Strict` cookie, `roomctl` sends a bearer token |
+| Agent tools → broker | `agent-router` → `:8090` | The gateway authenticates the run and injects a key; the broker derives the run from `x-ar-agent` and its role from the `AgentRun`, never from a header |
 | System callers → broker | `:8443` system API | Audience `rooms-system`, and `sub` in an explicit allowlist |
-| Broker → database | Postgres `:5432` | The `rooms_broker` role: append and read events; no update or delete. Ruling Y moves the remaining guarantees into the database |
-| Broker → Kubernetes | The API server | Read and delete `AgentRun`s, never create (C3); CRUD on `Room`s; no cluster-admin |
+| Factory → GitHub | The factory App and the merger App, each a key in `agents-secrets` | The factory merges only as the merger App, squash, at the head it decided on. The repository's ruleset blocks a plain merge; the merger App and a repository admin bypass it |
+| Broker → database | Postgres `:5432` | The `rooms_broker` role: append and read events; no update or delete |
+| Broker → Kubernetes | The API server | Read and delete `AgentRun`s, never create; CRUD on `Room`s; no cluster-admin |
 
-## One run's life
+## One task's life
 
-A room is created, a run joins it, its events stream in, it hands off and ends, and the room is
-eventually sealed and purged. Steps marked *(phase N)* are planned; the rest is phase 1.
+A maintainer labels an issue; the factory opens a room, starts runs in it, narrates on the issue
+and merges when the gate allows. The pull request is opened by the run, not by the factory.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant O as Owner or SP3 factory
-  participant K as Kubernetes API
+  participant M as Maintainer
+  participant GH as GitHub
+  participant F as agent-factory
   participant BR as room-broker
-  participant PG as Postgres log
-  participant B as room-bridge
-  participant H as harness
-  participant R as agent-router
+  participant P as AgentRun pod (bridge, harness)
 
-  O->>K: create Room 3kq7x2ma
-  K-->>BR: Room reconcile
-  BR->>PG: insert room row, append seq 1 state_changed{room_phase: Open}
-  O->>K: create AgentRun with roomRef 3kq7x2ma
-  K-->>BR: AgentRun watch (leader)
-  BR->>PG: participant{joined}, then state_changed{run_phase: Running}
-  B->>BR: POST /v1/bridge/hello (run token)
-  BR->>BR: verify JWT offline, AgentRun live, claim the room's bridge lease
-  BR-->>B: resume {afterHarnessSeq, afterStatusSeq}
-  B->>BR: GET /v1/bridge/stream (SSE, held open)
-  loop every second
-    B->>H: GET events/search, GET status
-    B->>BR: POST /v1/bridge/events (batch)
-    BR->>BR: redact every string
-    BR->>PG: append, one transaction per item, gapless seq
-    BR-->>B: ack {afterHarnessSeq, afterStatusSeq}
+  M->>GH: label the issue
+  F->>GH: poll maintainer-labelled issues
+  F->>F: create the Task, triage template, tier and budget
+  F->>BR: create the Room CR (Kubernetes API, reconciled by the broker)
+  F->>P: create the implementer AgentRun with roomRef
+  P->>BR: bridge mirrors the harness into the room
+  P->>GH: gh pr create, with the provenance footer
+  F->>GH: narrate on the issue: PR, room link
+  F->>P: create the reviewer AgentRun in the same room
+  P->>BR: reviewer verdict (approve or changes)
+  BR->>GH: verdict comment on the PR
+  F->>GH: read checks
+  alt gate allows, CI green
+    F->>GH: merge as the merger App
+  else a maintainer is needed
+    F->>GH: narrate: waiting for a maintainer
+    M->>BR: review, steer or approve in the web UI (roomctl: watch, post, queue and fork)
+    M->>GH: merge, or ask for changes
   end
-  Note over B,BR: nothing pushed for 30 s: an empty batch renews the lease
-  H->>R: room_handoff(reviewer, summary, commit) (phase 3)
-  R->>BR: MCP on :8090
-  BR->>PG: handoff{fromRole, toRole, summary, commit, branch}
-  H-->>B: conversation finished
-  Note over B: on SIGTERM, flush what is left within 25 s
-  K-->>BR: AgentRun Succeeded
-  BR->>PG: state_changed{run_phase: Succeeded, reason: agent_finished}, participant{left}
-  BR->>B: drop the run's streams
-  O->>K: delete Room (or the owner closes it, phase 4)
-  K-->>BR: finalizer: delete the room's runs, seal the log
-  BR->>PG: final state_changed{room_phase: Closed}, sealed, closed_at = now()
-  Note over PG: retention job purges it once spec.retention has elapsed
+  Note over F,P: a lost sandbox is resumed from the room's log in a fresh run
+  F->>GH: narrate the outcome on the issue
 ```
 
+| Step | What happens | Detail |
+|---|---|---|
+| 1. Label | A maintainer labels the issue | [factory](factory.md) |
+| 2. Implementer run | The factory starts a run in a new room; the run opens the pull request | [concepts](concepts.md) |
+| 3. Reviewer verdict | A reviewer run in the same room reads the diff and records a verdict | [room log](room-log.md) |
+| 4. CI | The factory waits for the required checks | [factory](factory.md) |
+| 5. Wait for a maintainer | Outside the auto-merge classes the task is `AwaitingHuman` | [factory](factory.md) |
+| 6. Review and revise | A person steers in the room, or requests changes on the pull request (queued as the room's message); the next run starts from the brief | [concepts](concepts.md) |
+| 7. Resume a lost sandbox | The next run rebuilds its context from the log | [room log](room-log.md) |
+| 8. Approve and merge | The merger App merges, or a maintainer does | [security](security.md) |
+
 A second run whose bridge says hello while the first is live gets `409 room_busy`, and the broker
-appends `state_changed{kind: limit, reason: concurrent_run}` (ruling P17). The lease holds the work,
-not only the log (F15): `room-bridge gate`, an init container between the bridge and the harness,
-starts the harness only once the bridge holds the lease. A room still busy after 3 minutes fails the
-pod before the harness runs, and the run ends `room_busy`. Before SP3 ships, the owner starts each
-run with `task agent:run -- --room <id>`; the broker never creates one.
+appends `state_changed{kind: limit, reason: concurrent_run}`. The lease holds the work, not only
+the log: `room-bridge gate`, an init container between the bridge and the harness, starts the
+harness only once the bridge holds the lease. A room still busy after 3 minutes fails the pod
+before the harness runs, and the run ends `room_busy`.
 
 ```mermaid
 sequenceDiagram
@@ -136,18 +146,22 @@ sequenceDiagram
 
 ## Replicas and the leader
 
-Any replica serves any room. The replicas elect one leader through a Kubernetes lease named
-`room-broker`.
+Any replica serves any room. The broker's replicas elect one leader through a Kubernetes lease named
+`room-broker`; the factory's through `agent-factory.agents.ogenki.io`.
 
 | Work | Who does it | Why |
 |---|---|---|
-| Serve bridges, the system API, humans and tools | Every replica | Stateless; the database serialises writers per room |
-| Cut a run's connections when it ends | Every replica | Each holds its own connections |
-| Append run lifecycle events (`participant`, `run_phase`) | The leader | Every step has a fixed idempotency key, so a new leader replays without writing twice |
-| Project `Room.status` | The leader, every 15 s and on phase changes (ruling P21) | One status write per event would load the API server |
-| Post verdicts to GitHub | The leader, sweeping every 15 s (phase 3) | One comment per verdict, marked so a new leader never posts twice |
-| Expire a lapsed human driver's lease, back to the room's system holder | The leader, sweeping every 30 s (phase 4) | Each change is keyed on its epoch and re-checks the lapse under the room's row lock, so a new leader never moves a token twice |
-| Deliver new events to viewers | Every replica, for its own viewers (phase 2) | Each `LISTEN`s once; notifications coalesce per room, so one read serves every viewer |
+| Serve bridges, the system API, humans and tools | Every broker replica | Stateless; the database serialises writers per room |
+| Cut a run's connections when it ends | Every broker replica | Each holds its own connections |
+| Append run lifecycle events (`participant`, `run_phase`) | The broker leader | Every step has a fixed idempotency key, so a new leader replays without writing twice |
+| Project `Room.status` | The broker leader, every 15 s and on phase changes | One status write per event would load the API server |
+| Post verdicts to GitHub | The broker leader, sweeping every 15 s | One comment per verdict, marked so a new leader never posts twice |
+| Expire a lapsed human driver's lease, back to the room's system holder | The broker leader, sweeping every 30 s | Each change is keyed on its epoch and re-checks the lapse under the room's row lock, so a new leader never moves a token twice |
+| Deliver new events to viewers | Every broker replica, for its own viewers | Each `LISTEN`s once; notifications coalesce per room, so one read serves every viewer |
+| Poll issues, reconcile `Task`s, sweep the stop object | The factory leader | One poller means one snapshot and one deduplication |
+| Meter runs and tasks | The factory leader | One reading of the usage query per interval |
+| Narrate on issues (the outbox) | The factory leader | At least once, so a comment carries a marker and is never posted twice |
+| Probe GitHub, serve `POST /v1/runs`, `:9090` metrics | Every factory replica | A follower must report its own view of GitHub and answer requests |
 
 ### Connection budget
 
@@ -169,7 +183,7 @@ events.
 | Failure | Behaviour |
 |---|---|
 | Broker unreachable at start | The bridge retries `hello` with backoff up to 5 s, forever. The sandbox never stops for it |
-| Broker or database down mid-run | The bridge buffers up to 8 MiB, then stops polling (back-pressure) and resumes from the log's cursor |
+| Broker or database down mid-run | The bridge buffers up to 8 MiB, then stops polling (back-pressure) and resumes from the log's cursor. Past the cap it still answers what the policy decides alone (allow, deny); a step that needs a human waits, unasked, until the buffer drains, rather than being rejected for the outage |
 | Bridge restarted | `hello` returns the last stored cursor; re-sent items are dropped by their idempotency key |
 | Harness cold start (agent-server ~85 s under gVisor) | A failed harness read waits at most 2 poll intervals until the harness first answers, then at most 10 |
 | Conversation ends | Each status change reads the harness log to its end at once, before agent-run stops agent-server |
@@ -177,56 +191,92 @@ events.
 | Room sealed (`410`) | The bridge stops mirroring |
 | A run ends or is revoked | Its connections are dropped on the watch event, not at a later token check |
 
-A replayed harness event keeps its key: event *i* owns item keys `4i … 4i+3` (at most four C4 items
-per harness event). One known limit (ruling P35): if the harness skips an event file it cannot read,
+A replayed harness event keeps its key: event *i* owns item keys `4i … 4i+3` (at most four log items
+per harness event). One known limit: if the harness skips an event file it cannot read,
 a restarted bridge can miss that event or re-append later ones under new keys.
 
 ## Code layout
 
 The code follows Go conventions and a clean architecture modelled on
-[RunLore](https://github.com/Smana/runlore). [AGENTS.md](../AGENTS.md) owns the full standard; four
+[RunLore](https://github.com/Smana/runlore). [AGENTS.md](../AGENTS.md) owns the full standard; five
 rules shape the tree.
 
 | Rule | In practice |
 |---|---|
 | Packages split by domain or pipeline stage, never by layer | `envelope`, `redact`, `store`, `authn`, `runwatch`, `roomctrl`, `bridgeapi`, `bridge`, `policy`, `fanout`, `humanapi`, `mcp`: no `service/`, `repository/` or `handler/` |
-| `cmd/<bin>` stays thin | `cmd/room-broker`, `cmd/room-bridge` and `cmd/roomctl` parse arguments and dispatch; the wiring lives in `internal/app` (Ruling AC: the plan's task 1.12 wires the broker in `cmd/room-broker`, and moves there instead) |
+| `cmd/<bin>` stays thin | `cmd/room-broker`, `cmd/room-bridge`, `cmd/roomctl` and `cmd/agent-factory` parse arguments and dispatch; the wiring lives in `internal/app` |
 | Interfaces are declared on the consumer side | A package asks for the few methods it calls (the bridge API's `Log`, the controller's `Store`) instead of importing a wide type |
 | The store is the only SQL adapter | Nothing outside `internal/store` writes SQL, the retention job's `DELETE`s included |
 | One egress client | Every outbound HTTP call goes through `internal/httpx`; a lint rule bans the bare `net/http` helpers elsewhere |
 
-| Package | Stage | Phase |
+Broker, bridge and CLI, by pipeline stage:
+
+| Package | Stage |
+|---|---|
+| `cmd/room-broker` | `serve` and `retention` subcommands |
+| `cmd/room-bridge` | The sidecar binary |
+| `cmd/roomctl`, `internal/roomctl` | The human CLI and its client |
+| `internal/roomctl/skill` | The embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
+| `internal/app` | Wiring per binary, the only importer of every adapter |
+| `internal/config` | The broker's config file: strict decode, defaults, validation |
+| `internal/logging` | A binary's `*slog.Logger`: JSON or text, level by env |
+| `internal/version` | Build version stamped by `-ldflags` |
+| `internal/httpx` | The one audited egress client: timeouts, a redirect cap, no credential header across hosts |
+| `internal/bridge` | The sidecar: harness adapter over loopback, event mapping, status, uploader, SSE consumer |
+| `internal/wire` | Bridge and browser frames: the types both ends of a connection share |
+| `internal/authn` | Offline JWT verification for runs, system callers and humans; principal mapping |
+| `internal/envelope` | Event types, payload builders, validation, limits |
+| `internal/redact` | Secret detection over every JSON string of a payload |
+| `internal/store` (+ `migrations/`) | Append, range, cursors, seal; the only package that speaks SQL |
+| `api/v1alpha1` | The `Room` types and deepcopy; the CRD is generated into `config/crd/` |
+| `internal/runwatch` | The `AgentRun` informer: liveness, membership, run events, end reason |
+| `internal/roomctrl` | The `Room` reconciler: row, first event, finalizer, status projection |
+| `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals |
+| `internal/mcp` | `:8090` MCP server, the `room_*` tools |
+| `internal/github`, `internal/verdictpost` | The factory App client; the leader's verdict comments |
+| `internal/brief`, `internal/runrequest` | The fenced brief; manifest and factory run requesters |
+| `internal/prpattern` | A repository's pull-request URL patterns, compiled once per repository in a bounded cache |
+| `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down |
+| `internal/policy` | The permission matrix |
+| `internal/summary` | The pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
+| `internal/ghidentity`, `internal/repoaccess` | A member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
+| `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI |
+| `web/` | TypeScript UI and its vitest suite |
+| `internal/metrics` | The metric set and the Prometheus exporter room-broker serves |
+
+The factory, by the same stages. Its wiring is `internal/app/factory.go`.
+
+| Stage | Package | Contract |
 |---|---|---|
-| `internal/envelope` | The C4 types, validation and limits | 1 |
-| `internal/redact` | Secret detection over every JSON string | 1 |
-| `internal/store` (+ `migrations/`) | The Postgres log: append, range, cursors, seal, lease; later driver, queue, approvals, fork | 1, 4, 5, 6 |
-| `internal/authn` | Offline JWT for runs, system callers and humans | 1, 2 |
-| `internal/runwatch` | The `AgentRun` watch: liveness, membership, run events, end reasons | 1 |
-| `internal/roomctrl` | The `Room` reconciler: row, first event, finalizer, status | 1 |
-| `internal/wire` | Bridge and browser frames | 1, 2 |
-| `internal/bridgeapi` | The `:8443` handlers | 1, 4, 5 |
-| `internal/bridge` | The sidecar: harness adapter, mapping, uploader, SSE consumer, classifier | 1, 4, 5 |
-| `internal/config`, `internal/metrics` | The broker's config file and metric set | 1 |
-| `internal/policy`, `internal/fanout`, `internal/humanapi` | The §1 matrix, the LISTEN/NOTIFY fan-out hub, the `:8080` API and UI | 2 onwards |
-| `internal/mcp`, `internal/github`, `internal/verdictpost` | Room tools, the factory App client, verdict comments | 3 |
-| `internal/brief`, `internal/runrequest` | The fenced brief, run requests | 4 |
-| `api/v1alpha1` | The `Room` types; `config/crd/` holds the generated CRD | 1 |
-| `internal/app` | The wiring of each binary and subcommand: `serve`, `retention`, the bridge, `roomctl` (Ruling AC) | 1, 6 |
-| `internal/httpx` | The one audited egress client: timeouts, a redirect cap, no credential header across hosts. It arrives with the first outbound call (the JWKS fetch, task 1.6) | 1 |
+| Entry | `cmd/agent-factory` | The binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
+| Entry | `internal/factory/config` | The factory's config file: strict decode, defaults, validation, its hash |
+| Intake | `internal/factory/intake` | The issue poller: maintainer labels, snapshots, dedup, stop labels |
+| Intake | `internal/factory/sanitize`, `internal/factory/taskid` | Untrusted text defused to a fixpoint; task names and ids |
+| Tasks | `api/factory/v1alpha1` | The `Task` types and deepcopy; CRD generated into `config/crd/` |
+| Tasks | `internal/factory/triage`, `internal/factory/reconciler` | Template, tier and budget; the `Task` state machine |
+| Tasks | `internal/factory/runs`, `internal/factory/killswitch` | The `AgentRun` claim; the stop object |
+| Out | `internal/factory/forge`, `internal/factory/narrate` | GitHub as the factory App (`internal/factory/forge/forgetest`: its test-only fake); narration, at least once |
+| Out | `internal/factory/rooms` | The broker's system API over TLS |
+| Ops | `internal/factory/meter`, `internal/factory/fmetrics`, `internal/factory/tracing` | The run meter; the metrics; one root span per task |
+| API | `internal/factory/api` | `POST /v1/runs` |
 
 ## Where each piece lives
 
 | Resource | Namespace | Defined in | Built from |
 |---|---|---|---|
-| `room-broker` Deployment and Service (`App` claim `room-broker`) | `agent-system` | [cloud-native-ref](https://github.com/Smana/cloud-native-ref) `infrastructure/base/room-broker/` (S1) | Image `ghcr.io/smana/room-broker`, this repo |
+| `agent-factory` Deployment, Service, PDB, RBAC and config | `agent-system` | `charts/agent-factory` here | Image `ghcr.io/smana/agent-factory`, this repo |
+| `Task` CRD | cluster; CRs in `agent-system` | `charts/agent-factory`, a copy of `config/crd/` | `api/factory/v1alpha1` here |
+| Factory secrets: `agent-factory-github`, `agent-factory-merger`, `openbao-ca`, `agent-factory-oidc`, `agent-factory-intake` | `agent-system` | Mounted per the [chart README](../charts/agent-factory/README.md), which names each secret's source | The platform's secret store |
+| `room-broker` Deployment and Service (`App` claim `room-broker`) | `agent-system` | [cloud-native-ref](https://github.com/Smana/cloud-native-ref) `infrastructure/base/room-broker/` | Image `ghcr.io/smana/room-broker`, this repo |
 | `Room` CRD | cluster; CRs in `agent-system` | Vendored by cloud-native-ref as `crd-rooms.yaml` | `api/v1alpha1`, `config/crd/` here |
-| `SQLInstance xplane-rooms` (CNPG) | `agent-system` | cloud-native-ref (S1) | Composition in [crossplane-configuration](https://github.com/Smana/crossplane-configuration) (CC-S1); migrations `internal/store/migrations/` here |
-| Retention CronJob `room-broker-retention` | `agent-system` | cloud-native-ref (S1) | The broker image, `retention` subcommand |
-| `Certificate room-broker-tls` | `agent-system` | cloud-native-ref (S1, GP-18) | cert-manager, ClusterIssuer `openbao` |
-| `room-bridge` sidecar and its `room-token` volume | `agents` | crossplane-configuration's `AgentRun` composition (CC-S2) | Image `ghcr.io/smana/room-bridge`, this repo |
-| Secret `room-broker-ca` | `agents` | cloud-native-ref ExternalSecret (S1, GP-18) | The platform's private CA |
-| CNPs, `VMServiceScrape`, `VMRule` | `agent-system`, `observability` | cloud-native-ref (S1 onwards) | — |
-| oauth2-proxy, `HTTPRoute` | `agent-system` | cloud-native-ref (S2) | — |
-| `agent-router` MCPRoute backend for `:8090` | `agent-system` | cloud-native-ref (S3) | — |
+| `SQLInstance xplane-rooms` (CNPG) | `agent-system` | cloud-native-ref | Composition in [crossplane-configuration](https://github.com/Smana/crossplane-configuration); migrations `internal/store/migrations/` here |
+| Retention CronJob `room-broker-retention` | `agent-system` | cloud-native-ref | The broker image, `retention` subcommand |
+| `Certificate room-broker-tls` | `agent-system` | cloud-native-ref | cert-manager, ClusterIssuer `openbao` |
+| `room-bridge` sidecar and its `room-token` volume | `agents` | crossplane-configuration's `AgentRun` composition | Image `ghcr.io/smana/room-bridge`, this repo |
+| `agent-harness` image | `agents` | crossplane-configuration's `AgentRun` composition | `images/agent-harness`, this repo |
+| Secret `room-broker-ca` | `agents` | cloud-native-ref ExternalSecret | The platform's private CA |
+| CNPs, `VMServiceScrape`, `VMRule` | `agent-system`, `observability` | cloud-native-ref | — |
+| oauth2-proxy, `HTTPRoute` | `agent-system` | cloud-native-ref | — |
+| `agent-router` MCPRoute backend for `:8090` | `agent-system` | cloud-native-ref | — |
 
-[Integration](integration.md) lists every pull request and pin.
+[Integration](integration.md) lists what each consumer carries and pins.

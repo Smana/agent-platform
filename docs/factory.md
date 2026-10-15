@@ -1,0 +1,474 @@
+# The factory
+
+A maintainer labels an issue; the factory turns it into a task, runs agents on it in sandboxes,
+narrates each step on the issue, and stops at its budget. The agent run opens the pull request;
+the factory watches it through CI and its merge gate. Humans steer through GitHub reviews and
+comments, or from the task's room. Only low-risk classes the config marks `live` merge
+themselves; a `shadow` class is decided the same way and never merged. cloud-native-ref's
+config runs two classes (`docs-links`, `revert`) in shadow.
+
+```mermaid
+flowchart LR
+  label["factory/ready on an issue"] --> task["Task"] --> runs["agent runs<br/>in the task's room"]
+  runs -->|"the implementer run opens it"| pr["pull request<br/>agent/&lt;task&gt;"]
+  pr --> gate{"merge gate"}
+  gate -->|"live class, every check holds"| merged["merged, then main watched"]
+  gate -->|"anything else"| human["a maintainer reviews and merges"]
+  task -. "narration" .-> issue["comments on the issue"]
+```
+
+## Triggers
+
+Every label below is read once a minute (`poll.issues`). A label a non-maintainer applied starts
+nothing; maintainers are the `maintainers` list in the [config](#the-config-file), compared
+without case.
+
+| Trigger | Effect | Who |
+|---|---|---|
+| Label `factory/ready` (`triggerLabel` in the config) on an issue | A Task is created from a sanitised snapshot of the issue's title and body, with the sha256 of the text as labelled; the label is then removed. A pull request carrying it is ignored. Re-labelling the issue later starts a new task, and supersedes (stops) an escalated one | A maintainer |
+| Label `factory/stop` on the issue or its pull request | The running task stops within a poll: its runs are revoked and deleted, the task ends `Stopped`. The label is removed once it hit a task; with no task running it stays, so a task started later stops at once. Anyone else's is removed and answered | A maintainer |
+| Label `factory/revert` on an auto-merged pull request, within `merge.revertWindow` | The factory opens a revert pull request through the merger App and the task ends `Reverted`; the class counts the revert towards its [breaker](#the-merge-gate). A human merge is never reverted | A maintainer |
+| Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
+| Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer |
+| A **Request changes** review on the task's pull request | Queued in the room; the next implementer run revises on the same branch with the review in its brief, then the pull request goes straight back to the maintainer | A maintainer |
+| Label `factory/stop` on the control issue (`controlIssue`), or the `agent-factory-stop` ConfigMap | Every task stops, intake pauses; see [The kill switch](#the-kill-switch) | A maintainer, an operator |
+| A schedule (`schedules[]`) | A task per cron slot (5 fields, UTC), once, when the slot is under an hour old. With `probe: renovate-red`, only when an open pull request by `probeAuthor` (default `renovate[bot]`) older than 24 h has a red check (read through the merger App); up to five join the text | The factory itself |
+| `POST /intake/runlore` | An `investigate` task from a RunLore finding, and a public issue labelled `factory/proposed` that links the room; see [the API](#the-factorys-api) | RunLore |
+
+A `factory/ready` the factory will not act on is answered once on the issue and removed:
+
+| Reason | Means |
+|---|---|
+| `unauthorised_labeller` | The latest label is not a maintainer's |
+| `edited_after_label` | The title or body changed after the label: re-apply it |
+| `task_active` | A task for this issue is still running |
+| `unsanitisable` | The text could not be made safe for an agent to read: simplify its markup |
+
+The factory also writes labels of its own:
+
+| Label | On | Means |
+|---|---|---|
+| `factory/class:<class>` | The task's pull request, once found | The class triage predicted |
+| `factory/stale` | A pull request it closed | No maintainer activity for 14 days |
+| `factory/orphaned` | An open `agent/<id>` pull request whose task no longer exists (a cluster rebuild) | Human-only from now on; re-label the issue `factory/ready` to start again. Nothing is ever adopted from it |
+| `factory/proposed` | An issue the RunLore intake opened | A finding under investigation |
+
+## A task's life
+
+A task's phase is in `kubectl get tasks` and in its room's summary. Any open phase goes to
+`Stopped` on `factory/stop`, the kill switch or a superseding `factory/ready`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Received
+  Received --> Rejected: text too long, daily task cap
+  Received --> Triaged: tier, template, class, budget
+  Triaged --> Queued: room created
+  Queued --> Implementing: implementer or triager run
+  Queued --> Reviewing: reviewer or tester run
+  Queued --> AwaitingHuman: human commit, pull request ended
+  Implementing --> Queued: next verifier, lost sandbox resumed
+  Implementing --> AwaitingCI: solo template done
+  Implementing --> AwaitingHuman: revision a maintainer asked for
+  Implementing --> NoOp: no pull request, nothing to change
+  Implementing --> Done: triager proposal ready
+  Reviewing --> Queued: next verifier, changes, no verdict
+  Reviewing --> AwaitingCI: approved
+  AwaitingCI --> Queued: CI fix run, maintainer review
+  AwaitingCI --> AutoMerging: live class merged by the gate
+  AwaitingCI --> AwaitingHuman: handed to a maintainer
+  AutoMerging --> Verifying: merged by the merger App
+  AutoMerging --> AwaitingCI: head moved
+  AwaitingCI --> Done: a maintainer merged
+  AwaitingCI --> Closed: pull request closed
+  AutoMerging --> Done: a maintainer merged
+  AutoMerging --> Closed: pull request closed
+  Verifying --> Done: main green for merge.verifyFor
+  Verifying --> Reverted: main red, factory/revert
+  Done --> Reverted: factory/revert in the window
+  AwaitingHuman --> Queued: Request changes
+  AwaitingHuman --> AwaitingCI: transient hand-off cleared
+  AwaitingHuman --> Done: a maintainer merged
+  AwaitingHuman --> Closed: closed, or stale
+  Queued --> Escalated: task budget spent
+  Implementing --> Escalated: run failed, stuck, lost
+  Reviewing --> Escalated: rounds spent, no verdict
+  AwaitingCI --> Escalated: CI red after fixes, secret found
+  Escalated --> Queued: /factory retry
+  Escalated --> Triaged: /factory retry, no room yet
+  Escalated --> Stopped: caps.escalatedHours passed
+  Escalated --> Done: a maintainer merged
+  Escalated --> Closed: pull request closed
+  Rejected --> [*]
+  NoOp --> [*]
+  Done --> [*]
+  Reverted --> [*]
+  Closed --> [*]
+  Stopped --> [*]
+```
+
+`Rejected`, `NoOp`, `Done`, `Reverted`, `Closed` and `Stopped` are final; a pull request merged or
+closed by hand ends the task from any phase that watches it. `Merged` is in the CRD's enum but no
+transition sets it: an auto-merge goes from `AutoMerging` to `Verifying`. A task counts against
+`caps.activeTasks` while it is `Implementing`, `Reviewing`, `AwaitingCI`, `AutoMerging` or
+`Verifying`.
+
+### When the factory waits for you
+
+The room page and `roomctl status` show the reason and the next step below; the factory's issue
+comments use the same words.
+
+**Queued:** the next run waits. Next step, unless the row says otherwise: nothing to do, the run
+starts once the room and the factory are free.
+
+| Reason | Why |
+|---|---|
+| `waiting_run_slot` | Every one of `caps.concurrentRuns` factory runs is live |
+| `waiting_active_tasks` | `caps.activeTasks` tasks are active |
+| `waiting_review_wip` | `caps.awaitingHumanWIP` tasks already wait on a maintainer; only a task's first run of a class that is not live waits for this |
+| `waiting_daily_budget` | `budgets.factoryDaily` is spent. It resumes after 00:00 UTC |
+| `waiting_meter_blind` | The meter cannot read usage, so the daily cap cannot be checked |
+| `waiting_room_log` | The room's log is not open on the broker yet |
+| `waiting_broker_permission` | The broker does not let the factory write to rooms yet |
+| `waiting_human_driver` | A person drives the room. Next step: hand the driver back, or let the lease lapse |
+| `waiting_room_busy` | Another run in the room is still going. Next step: end it, or wait for it |
+| `rereview_verdict_stale` | The head moved after the approval, so a new review run is queued |
+
+**AwaitingCI:** the merge gate reads the pull request. Next step: nothing to do.
+
+| Reason | Why |
+|---|---|
+| `ci_pending` | A required check (`merge.requiredChecks`) has not finished |
+| `ci_rerun` | A cancelled required check was re-run (at most `merge.checkReruns` per head) |
+| `reentered_policy` | Back from a `policy_pending` or `policy_absent` hand-off: policy-bot now passes the head it was handed off at |
+| `reentered_head_reported` | Back from a `head_unreported` hand-off: the room now reports the head as a commit of the task's run |
+| `reentered_ci_green` | Back from a `ci_cancelled` hand-off: the required checks are now green on the same head |
+| `head_moved` | A commit landed after the decision; the new head is decided again |
+
+**AwaitingHuman:** the pull request is a maintainer's. Next step, unless the row says otherwise:
+a maintainer reviews and merges it. The repository's ruleset blocks a plain merge, so a maintainer
+with admin ticks "bypass rules" on the pull request, or runs
+`gh pr merge <n> --squash --admin --repo <owner/name>`; the comment names the exact command. A
+**Request changes** review sends the task back for a revision instead.
+
+| Reason | Why |
+|---|---|
+| *(none)* | A revision a maintainer asked for is pushed |
+| `merge_gate_off` | No class is live or in shadow, so the factory does not gate the pull request |
+| `policy_pending` | policy-bot's `policy-bot: main` status needs a maintainer's approval |
+| `policy_absent` | policy-bot has not evaluated the pull request, or the status is not from `merge.policyBotLogin` |
+| `maintainer_approved` | A maintainer approved it: a human merges it |
+| `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
+| `not_mergeable` | GitHub refused the merge as the pull request stands |
+| `not_agent_authored` | The pull request is not from `agentsLogin` |
+| `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or a `docs-links` or `revert` diff changed more than link targets |
+| `no_approving_verdict` | The template has a reviewer and its verdict is not approve |
+| `head_unreported` | The room never reported the current head as a commit of the task's run |
+| `verdict_stale` | The approval was for an older head. Next step: review the current head, or the factory asks for a new review |
+| `foreign_trailer` | The head commit's `Agent-Run` trailer names another task's run |
+| `human_commit_in_pr` | It holds a commit no run of the task pushed, so the factory neither fixes nor merges on top of it |
+| `class_paused` | The class's breaker tripped after reverts |
+| `auto_merge_cap` | `merge.autoMergesPerDay` is reached |
+| `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
+| `ci_cancelled` | A required check was cancelled and re-running it did not settle it |
+
+The gate compares GitHub logins (`agentsLogin`, `factoryLogin`, `merge.policyBotLogin`,
+`merge.mergerLogin`) case-insensitively, as GitHub does.
+
+`policy_pending`, `policy_absent`, `head_unreported` and `ci_cancelled` go back to the merge gate by
+themselves when their input clears, on the same head and with no maintainer review or comment
+since, up to three times per task.
+
+**Escalated:** the factory could not finish. Next step, unless the row says otherwise: a
+maintainer comments `/factory retry` on the issue, or pushes to the branch. The comment mentions
+every maintainer.
+
+| Reason | Why |
+|---|---|
+| `stuck` | The run showed no room activity for 10 minutes |
+| `deadline` | The run hit its wall-clock limit (`tiers.<tier>.runMinutes`) |
+| `agent_error`, `agent_stuck` | The agent stopped on an error, or said it was stuck |
+| `pod_lost`, `Disrupted`, `PodLost`, `PodFailed` | The sandbox failed or was lost and was not resumed. A sandbox lost to its node is resumed by itself, up to `resume.maxPerTask` times |
+| `resumes_exhausted`, `resume_budget` | The sandbox was lost again, and no resume or no budget is left |
+| `run_unschedulable` | The cluster did not admit the run within `caps.maxPendingMinutes` |
+| `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
+| `revoked` | The run was stopped by hand |
+| `budget-run` | The run spent its run cap |
+| `budget-principal` | The factory's daily token budget is spent |
+| `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
+| `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
+| `budget-task` | The task cap has no room for another whole run |
+| `ci_red` | CI stayed red after `merge.fixRuns` fix runs; the comment names the failing checks |
+| `secret_scan_red` | The secret scan (`merge.leakScanCheck`) found a live credential. Next step: a maintainer revokes the key and closes the pull request; the factory does not retry |
+| `review_rounds_exhausted` | The reviewer still asked for changes after `maxReviewRounds`; its last verdict is posted on the pull request |
+| `no_verdict` | The last review run ended without a verdict the factory can act on, with no round left |
+| `room_log_unreadable` | The room's log, which holds the verdict, could not be read |
+| `foreign_room` | A room of the task's name exists and is not the factory's |
+
+A task ends with one of these:
+
+| Phase | Reasons |
+|---|---|
+| `Done` | `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: open a new issue with the text you approve and label it) |
+| `NoOp` | `no_pr` (the run opened no pull request), `no_action` (the triager found nothing to change). Add detail and re-apply `factory/ready` |
+| `Rejected` | `text_too_long` (over `caps.maxTextBytes`), `daily_task_cap` (`caps.tasksPerDay`). Fix it and re-apply `factory/ready` |
+| `Closed` | `pr_closed`, `stale` |
+| `Stopped` | `stopped_by_label`, `stopped_by_annotation`, `superseded`, `kill_switch`, `escalation_expired` |
+| `Reverted` | `main_red`, `revert_requested` |
+
+## Narration
+
+The factory App comments on the task's issue, or on its pull request when it has none: a run's
+start (id, branch, budget, the room link, how to stop it), the pull request, each revision, CI fix
+and resume, each hand-off with its reason and the merge command, and the end with the tokens used.
+Each comment carries a hidden marker and is posted at least once and never twice, from an outbox
+written with the transition that caused it. Comments hold the factory's own words and ids, never
+text a user wrote. The task's room gets the issue snapshot as its first `task_state` message, then
+the task's facts (phase, reason, current run, budget, issue and pull request), which the room page
+and `roomctl status` show.
+
+## Triage: tiers, templates, classes
+
+Triage runs once, in `Received`. A classifier (`triage.classifierURL`) picks the tier; an error or
+a timeout falls back to `standard` and never blocks. `triage.controlPercent` of tasks run at
+`frontier` whatever it says.
+
+| Tier | Holds (`tiers.<tier>`) |
+|---|---|
+| `light`, `standard`, `frontier` | `model` (a gateway logical name: `agent-default`, `tier-light`, `tier-standard`, `tier-frontier`), `runMinutes` (1–480), `runTokens` (1–5,000,000), `taskTokens` (at least `runTokens`), and `runUSD`, `taskUSD` |
+
+A template is a team: its roles (`implementer`, `reviewer`, `tester`, `triager`) run one after
+another on one branch, and only the implementer writes. `templates.<name>.roles` and
+`maxReviewRounds` are config; the four names are fixed by the CRD.
+
+| Template | Picked when |
+|---|---|
+| `investigate` | The task came from RunLore; its data class is forced to `internal` |
+| `solo` | Class `docs-links`, tier below `frontier` |
+| `pair` | Class `docs-links` at `frontier`, or any other class below `frontier` |
+| `trio` | Any other class at `frontier` |
+
+A template whose only role is `triager` proposes and never writes: its proposal stays in the room
+until a maintainer publishes it as a new issue. The reviewer runs on the other tier than the
+implementer: `standard` after `frontier`, `frontier` otherwise.
+
+A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
+a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`
+is implicit and never declared. Each class is `live` (auto-merges), `shadow` (decided, never
+merged), or neither (a label only).
+
+## Budgets
+
+The run meter revokes a run at its run cap (`budget-run`). Before every run, the task cap must
+still hold one whole run: if not, the task escalates as `budget-task` when `budgets.enforceTask`
+is set (the default), and is only counted when it is not. A run lost to its sandbox is resumed
+only within the cap, whatever `enforceTask` says.
+
+With `meter.prices` set, both caps are in USD, so a cache read costs its own rate rather than a
+full input token. A tier that omits `runUSD` or `taskUSD` then caps at its token cap counted at
+$1.70 per million: the `standard` tier's 1.5 M and 3 M tokens become $2.55 and $5.10. Without
+prices both caps stay in tokens.
+
+| Setting | Effect |
+|---|---|
+| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the tier's logical model. `cacheWrite` defaults to `input`. Each price must be positive |
+| `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's caps in USD; `taskUSD` may not be below `runUSD`. A tier with either set and no price for its model fails the rollout: an unpriced run would cost $0 |
+| `meter.query` | Must group by `gen_ai_token_type` (`input`, `cached_input`, `cache_creation_input`, `output`), or no run can be priced and every run is capped in tokens |
+
+A run's cost is `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`, divided by 10⁶.
+
+At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
+
+- **Run cap.** Implementer runs of 1.54–1.69 M tokens cost $0.58–0.70, well under $2.55. The same
+  volume with no cache hit costs $2.30–2.49, so the cap stops an uncached run near 1.8 M tokens.
+- **Task cap.** A `pair` task of 4.7 M tokens at 95 % cache reads costs $1.78 of its $5.10.
+  Uncached, the same task costs $6.77.
+
+A task falls back to `taskTokens` while any of its runs is unpriced (`runs[].unpriced`) or has
+tokens and no cost: a cost is never counted as $0. The gateway's per-run ceiling (5 M tokens)
+still bounds a run's raw tokens. The daily budgets, `budgets.factoryDaily` and
+`budgets.humanDaily`, stay in raw tokens. The metrics for each cap are in
+[Operations](operations.md#budget-signals).
+
+## The merge gate
+
+Once a task is ready, the gate reads the pull request in `AwaitingCI` and checks, in order;
+every "no" goes to a human. Row 12 is read last, only when the others would merge or post a
+shadow decision. With no class `live` or `shadow` it reads nothing and hands off as
+`merge_gate_off`.
+
+| # | Check | If it fails |
+|---|---|---|
+| 1 | The secret scan (`merge.leakScanCheck`) is not red | Escalated, `secret_scan_red` |
+| 2 | Every `merge.requiredChecks` is green | Red: a fix run, up to `merge.fixRuns`, then `ci_red`. Cancelled: re-run, up to `merge.checkReruns`. Pending: wait |
+| 3 | `policy-bot: main` is green, posted by `merge.policyBotLogin` | `policy_absent`, `policy_pending`, `gate_path` |
+| 4 | The author is `agentsLogin`, and no maintainer approved it | `not_agent_authored`, `maintainer_approved` |
+| 5 | The class is `live` or `shadow` | `class_mismatch` |
+| 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
+| 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
+| 8 | For `docs-links` and `revert`: the diff changes only link targets, each staying relative, on its https host, or moving to web.archive.org | `class_mismatch` |
+| 9 | The class's breaker has not tripped | `class_paused` |
+| 10 | Under `merge.autoMergesPerDay` today | `auto_merge_cap` |
+| 11 | The class is `live` | `shadow_would_arm`: the decision is posted, nothing is merged |
+| 12 | Every push to the branch was the agents App's | `human_commit_in_pr` |
+
+When every check holds on a live class, the merger App merges the decided head; GitHub refuses
+the merge if the head moved, and the new head is decided again. The task then watches
+`merge.verifyChecks` on the merge commit for `merge.verifyFor`: red reverts, green ends `Done`. A
+maintainer's `factory/revert` within `merge.revertWindow` reverts too. The revert pull request
+auto-merges only while the `revert` class is live; otherwise a maintainer merges it.
+
+The breaker: a class whose newest `merge.breaker.window` merges hold `merge.breaker.maxReverts`
+reverts goes back to human review, whatever the config. Maintainers' merges of that class refill
+the window, so clean ones lift it. Each revert is announced on the control issue.
+
+## Escalation, reminders and stale tasks
+
+A maintainer's review reaches the next run once queued: the factory re-reads the pull request just
+before that run starts, so a review submitted while the task waits joins it, and a review already
+dismissed is skipped. A review dismissed after it was queued still drives that run.
+
+| Input | Effect |
+|---|---|
+| A maintainer's comment with `/factory retry` alone on a line, outside a code fence, on an escalated task's issue or pull request, posted after it escalated (up to a minute before, by the factory's clock, still counts: GitHub's clock and the factory's may differ) | A fresh run through `Queued` and its caps, within 5 minutes (escalated tasks are polled every 5 minutes). Edited comments, and anyone else's, are ignored without an answer. After `review_rounds_exhausted` or `no_verdict` the rounds stay spent: the retry buys one revision and one review |
+| No maintainer activity on an `AwaitingHuman` pull request for 48 h: no review, no comment on it or on the issue, no push without an `Agent-Run` trailer | One reminder mentioning the maintainers, per quiet spell. A spell never restarts earlier than one already reminded. An approved pull request's reminder says it waits for a merge |
+| The same for 14 days, at least 24 h after that reminder, and the latest maintainer review is not an approval | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`). An approved pull request is never closed. A refused close takes the label off again |
+| An escalated task with no retry for `caps.escalatedHours` (default 168, `0` for no limit) | The task ends `Stopped` (`escalation_expired`) and says so; its pull request is left as it is. A task whose room a person drives never expires while they drive, and a retry already asked for wins |
+
+## The kill switch
+
+The stop object is the ConfigMap `agent-factory-stop` in the factory's namespace, deliberately not
+in Git so Flux never reverts it; its content is ignored. While it exists:
+
+- every open task ends `Stopped` (`kill_switch`), its runs revoked and deleted;
+- every live `AgentRun` in `agents` is revoked and deleted every 15 seconds, human-requested ones
+  included;
+- intake pauses: no new task from labels, schedules or RunLore (`503 factory_stopped`), and
+  `POST /v1/runs` answers `503 kill_switch`. `factory/stop` and `factory/revert` labels are still
+  honoured.
+
+A maintainer engages it with `factory/stop` on the control issue (`controlIssue`): each poll
+creates the object, annotated `agents.ogenki.io/stop-source: control-issue`, and the poll that sees
+the label admits no new task in that same pass. Removing the label deletes the object, but only an
+object the poller made. An operator's stop must be a fresh object, which
+the label never lifts:
+
+```bash
+kubectl create configmap agent-factory-stop -n <factory namespace>
+```
+
+`kubectl apply` over an object the control issue made keeps its annotation, so removing the label
+lifts it. One task stops with the annotation `agents.ogenki.io/stop: "true"` on its Task.
+
+## Reference
+
+### The Task CRD
+
+`tasks.agents.ogenki.io/v1alpha1`, namespaced, created by the factory at runtime and never
+committed to Git. Its name is an 8-character id (`[a-z2-7]{8}`) derived from the source's key, so
+creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
+
+| Field | Meaning |
+|---|---|
+| `spec.source.kind` | `issue`, `runlore` or `schedule` |
+| `spec.source.ref` | `owner/name#n`, `<alert>/<resource>`, or the schedule's name |
+| `spec.source.key` | The idempotency key the name derives from |
+| `spec.source.requestedBy` | `github:<login>`, `system:runlore` or `system:scheduler` |
+| `spec.source.trust` | `untrusted` text is fenced as data for the agent; `trusted` (schedules) is not |
+| `spec.source.contentSHA256` | sha256 of the text as labelled |
+| `spec.repository` | `owner/name` |
+| `spec.issue` | The issue the factory narrates on; 0 for none |
+| `spec.issueAuthor` | The issue's author, for the room list's "mine" filter |
+| `spec.text` | The sanitised snapshot; admission caps it at `caps.maxTextBytes` |
+| `spec.dataClass` | `public` or `internal`; every run of the task gets it |
+| `spec.predictedClass` | The merge class triage predicted. Intent, not authority: only the gate merges |
+| `spec.template` | `solo`, `pair`, `trio` or `investigate` |
+| `spec.budget` | `tier`, `model`, `runTokens` (≤ 5,000,000), `taskTokens`, `runMinutes` (≤ 480), `runMicroUSD`, `taskMicroUSD` (0: the token caps) |
+| `status.phase`, `status.reason`, `status.phaseSince` | The phase above, why, and since when |
+| `status.classification` | The classifier's `tier`, `confidence`, `classifier`, `fallback` (`none`, `default`, `static`), `shadow` verdicts, `control` (forced to `frontier`) and `fit` (scored at the end) |
+| `status.runs[]` | Each run: `id`, `role`, `trigger` (`initial`, `review`, `human`, `ci`, `retry`, `resume`), `round`, `phase`, `reason`, `verdict`, `tokens`, `costMicroUSD`, `unpriced`, `startSeq`, `headSHA`, `started`, `finished` |
+| `status.roomRef` | The task's room, named like the task |
+| `status.pullRequest` | `number`, `url`, `nodeID`, `headSHA`, `mergeCommitSHA`, `mergedBy`, `autoMerged`, `armedAt`, `mergedAt`, `revertNumber`, `author`, `reviewers` |
+| `status.usage` | `tokens` and `costMicroUSD` summed over the runs; never drops |
+| `status.usageSettled` | The meter's late readings had their window and the total is final |
+| `status.reviewRounds`, `status.fixRuns`, `status.retries`, `status.resumes` | Counters behind `maxReviewRounds`, `merge.fixRuns`, `/factory retry` and `resume.maxPerTask` |
+| `status.checkReruns`, `status.checkRerunsHead` | Re-runs of cancelled checks, per head |
+| `status.gateReentries` | Returns from a transient hand-off to the gate (at most 3) |
+| `status.verdict` | The last review's effective verdict: `approve`, `changes` or `none` |
+| `status.narrated`, `status.outbox` | Keys of the comments posted; comments still owed |
+| `status.roomSeq`, `status.facts` | The task's message sequence in its room; the facts last written there |
+| `status.nextTrigger`, `status.nextRole` | Why the next run exists; the verifier it is for |
+| `status.handled` | GitHub review and comment ids already acted on |
+| `status.configHash` | The config that triaged the task |
+| `status.lastActivity` | The running run's last room event, for stuck detection |
+| `status.trace` | The task's root span ids |
+
+| Metadata | Meaning |
+|---|---|
+| Annotation `agents.ogenki.io/stop` | Stop this task: `true` by hand, `label` from `factory/stop`, `superseded` by a new `factory/ready` |
+| Annotation `agents.ogenki.io/revert` | A maintainer's `factory/revert` |
+| Label `agents.ogenki.io/issue` | The issue number |
+| Label `agents.ogenki.io/source-key` | Groups a RunLore finding's tasks |
+
+### The config file
+
+YAML, the chart's `config` value, rendered to `/etc/agent-factory/config/config.yaml`. Unknown keys
+fail the start, every problem is reported at once, and the file is a gate path: only a
+human-authored pull request changes it. Source: `internal/factory/config/config.go`.
+
+| Key | Holds | Default |
+|---|---|---|
+| `repository` | `owner/name` the factory works on | Required |
+| `maintainers` | GitHub logins that may label, retry and review; never a bot | Required |
+| `triggerLabel` | The start label, `factory/ready` | Required |
+| `controlIssue` | The issue whose `factory/stop` is the global stop | `0`: none |
+| `factoryLogin`, `agentsLogin` | The factory App's login (narration) and the agents App's (pull requests) | Required |
+| `roomsURL` | `https://<host>` of the rooms UI, linked in comments | Required |
+| `broker` | `url` (https only), `caFile`, `tokenFile` | Required |
+| `github` | `appIDFile`, `privateKeyFile`; `mergerAppIDFile`, `mergerKeyFile` (both or neither; required once a class is live or shadow) | Required |
+| `poll` | `issues`, `tasks`, `meter`: durations such as `"60s"` | Required, positive |
+| `defaults` | `template`, `tier`, `dataClass`, `predictedClass` | Required |
+| `triage` | `classifierURL`, `controlPercent` (0–100) | Required |
+| `classes` | `<name>: {live, shadow}`, never both; `docs-links` and `revert` required, `review` never declared | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
+| `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
+| `templates` | `<name>: {roles, maxReviewRounds}`; every template but a lone `triager` has an `implementer` | Required |
+| `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
+| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000 |
+| `resume` | `maxPerTask` (1–5) | 2 |
+| `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
+| `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
+| `api` | `listen` (the chart's `api` port is `:8082`), `repositories`, `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals` | Required but `groups` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values |
+| `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap` | Required |
+| `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red`, and `probeAuthor` the login whose open PRs it reads | None; `probeAuthor` defaults to `renovate[bot]` |
+
+### The factory's API
+
+Both endpoints serve on every replica.
+
+**`POST /v1/runs`**, on `api.listen` (the chart's `api` port, 8082, plaintext inside the mesh; the broker's `:8443` is the TLS listener): a person's or an allowlisted
+system's run request. Source: `internal/factory/api/server.go`.
+
+| | |
+|---|---|
+| Auth | `Authorization: Bearer`: a human's token from `api.humanIssuer`, issued to one of the `api.clientIDFiles` clients (the rooms UI's proxy or `roomctl`), and the human in one of the two groups `api.groups` names; or a token from `api.systemIssuer` for audience `agent-factory`, its subject in `api.systemPrincipals`. Internal data and the `triager` role are for admins only |
+| Body | `role`, `repository` (in `api.repositories`), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
+| `Idempotency-Key` | The same key from the same caller within 24 h answers the first `201` with `Idempotent-Replayed: true` and creates nothing. Same key, different body: `422 idempotency_key_reused`. A key whose run another caller owns: `409 idempotency_key_collision`. Over 255 bytes: `400 bad_idempotency_key`. Two first requests with one key either side of 00:00 UTC make two runs |
+| `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |
+| `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room` |
+| `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch` |
+| `409`, `429` | `room_busy`, `branch_busy`, `run_busy`; `over_budget` |
+| `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed` |
+
+**`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore
+finding. Source: `internal/factory/intake/runlore.go`.
+
+| | |
+|---|---|
+| Auth | `Authorization: Bearer <token>`, compared with the file at `runlore.tokenFile`, re-read on every request |
+| Body | `{title, verdict, confidence, alert_name, resource_ref, severity, cluster, text}`, at most 256 KiB; `alert_name` and `resource_ref` required |
+| `201` | `{task, issue}`: a task and a public issue labelled `factory/proposed`. The issue names the alert, resource and room, never the finding |
+| `200` | `{duplicate: true, task}`: a task for this alert and resource is still open |
+| `202` | `{accepted: false, reason: below_threshold}`: the verdict is not `action_required` or `action_suggested`, or the confidence is under `runlore.minConfidence` |
+| `400`, `401`, `429` | `bad_finding`; `unauthenticated`; `runlore_daily_cap` (`runlore.dailyCap` a UTC day) |
+| `503` | `intake_unconfigured` (the token file is missing or empty: the intake is off, never open), `factory_stopped`, `intake_failed` |

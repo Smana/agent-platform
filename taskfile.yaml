@@ -12,6 +12,7 @@ tasks:
       - task: crd:check
       - task: chart:check
       - task: migrations
+      - task: docs
       - task: ui:test
       - task: ui:check
 
@@ -29,6 +30,12 @@ tasks:
     desc: golangci-lint v2 (the mise pin, never a stale v1 on PATH) under go.mod's toolchain.
     cmds:
       - hack/lint.sh
+
+  docs:
+    desc: Reader pages carry no per-row status tags, and every relative link and anchor resolves.
+    cmds:
+      - bash hack/docs_test.sh
+      - bash hack/docs.sh
 
   vuln:
     desc: Known vulnerabilities reachable from our code, the stdlib included.

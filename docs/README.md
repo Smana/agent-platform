@@ -1,55 +1,37 @@
 # agent-platform documentation
 
-These pages explain what the room broker and the room bridge do, how they are built, how they plug
-into the platform, and how to run and change them. **Most of it is not built yet**: every section
-says whether it describes code on `main`, code under review, or a plan, and names the phase that
-delivers it.
-
-## Status tags
-
-| Tag | Meaning |
-|---|---|
-| **shipped** | Merged on `main` |
-| **AP-1** | Written and tested on the phase-1 branch (`feat/room-log`), not merged yet. Today: tasks 1.1–1.5 (envelope, redaction, schema, store, `Room` CRD) |
-| **AP-1, Ruling Y** | Designed and being implemented on the phase-1 branch (see [room log](room-log.md#the-guarantees)) |
-| **AP-1 (planned, task 1.N)** | In AP-1's scope, not written yet |
-| **planned, phase N / AP-N** | Specified in the design and plan, not written. `AP-N` is the pull request in this repository that delivers it |
-| **planned, S*N* / CC-S*N*** | Not written; delivered by that pull request in cloud-native-ref or crossplane-configuration |
-
-Phases follow the implementation plan's numbering, which differs from the design's: see
-[roadmap](roadmap.md#phase-numbering).
+The reference for the broker, the bridge, the factory, the CLI and the web UI; the platform's docs site holds the overview and the status.
 
 ## Pages
 
 | Page | Answers |
 |---|---|
-| [Concepts](concepts.md) | What a room, run, driver, handoff, seal, lease or envelope is; the `Room` CRD's fields |
-| [Architecture](architecture.md) | Components, trust boundaries, one run's life, where each piece is deployed and which repository owns it |
-| [Event envelope](event-envelope.md) | The C4 envelope every log entry uses, its payloads, limits and an example of each event type |
-| [Room log](room-log.md) | The Postgres schema, the guarantees the database enforces, sealing, retention, the bridge lease and Atlas migrations |
-| [API](api.md) | The `:8443` bridge and system API, the `:8080` human API and the `:8090` room tools, with their errors and limits |
-| [Security](security.md) | Threat model, identities, TLS, redaction, database roles, network policy and the supply chain |
-| [Integration](integration.md) | What cloud-native-ref and crossplane-configuration deploy, and which pre-release pins which |
-| [Operations](operations.md) | Metrics, alerts, retention, backups, reading the log with SQL, common failures, upgrades |
-| [Development](development.md) | Where the workflow and coding standard live, the store test harness, checks around a migration |
-| [Roadmap](roadmap.md) | Phases 0 to 7, their pull requests across the three repositories, and where each stands |
+| [Concepts](concepts.md) | The vocabulary of rooms and the factory; the room's phases; the Room CRD |
+| [Architecture](architecture.md) | The four binaries, the trust boundaries, one task's life, where each piece runs |
+| [The factory](factory.md) | What a label starts, the Task lifecycle, triage and budgets, the merge gate, escalation, the kill switch; the Task CRD, the config file, the factory's API |
+| [roomctl](roomctl.md) | Install and verify, configure, every command, the factory-handoff skill |
+| [Web UI](web-ui.md) | The room list, the room page, what each standing may do |
+| [Event envelope](event-envelope.md) | The C4 envelope, its payloads and limits |
+| [Room log](room-log.md) | The schema, the guarantees the database enforces, sealing, retention, migrations |
+| [API](api.md) | The broker's four listeners, their errors and limits |
+| [Security](security.md) | Threat model, identities, TLS, redaction, database roles, network, supply chain |
+| [Integration](integration.md) | What this repo ships and what each consumer pins; the broker's config |
+| [Operations](operations.md) | Metrics, alerts, SQL on the log, retention, backups, failures; the factory's signals |
+| [Development](development.md) | The store test harness, migrations, the web build and preview |
+| [Roadmap](roadmap.md) | What shipped, what is open |
 
-## Reading order
+## Reading paths
 
 | You are | Read |
 |---|---|
-| New to the project | [Concepts](concepts.md) → [Architecture](architecture.md) → [Roadmap](roadmap.md) |
-| Operating a cluster | [Architecture](architecture.md) → [Integration](integration.md) → [Operations](operations.md) → [Security](security.md) |
-| Changing the code | [Development](development.md) → [Event envelope](event-envelope.md) → [Room log](room-log.md) → [API](api.md) → [Security](security.md) |
+| New here | [README](../README.md) → [Concepts](concepts.md) → [Architecture](architecture.md) |
+| A maintainer with a factory issue or PR | [The factory](factory.md) → [Web UI](web-ui.md) → [Concepts](concepts.md) |
+| A developer who wants the CLI | [roomctl](roomctl.md) → [Web UI](web-ui.md) |
+| Operating a cluster | [Architecture](architecture.md) → [Integration](integration.md) → [chart README](../charts/agent-factory/README.md) → [Operations](operations.md) → [Security](security.md) |
+| Changing the code | [AGENTS.md](../AGENTS.md) → [Development](development.md) → [Event envelope](event-envelope.md) → [Room log](room-log.md) → [API](api.md) |
 
-## Sources
-
-This guide restates, it does not decide. Where the sources disagree, the amendments recorded while
-executing the plan override the plan's rulings, which override the plan text and the design.
-
-| Source | Holds |
-|---|---|
-| [SP2 design: collaboration rooms](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-collaboration-rooms-design.md) | The room model, protocol, security model, Appendix A payloads and Appendix C roles |
-| [Agent Factory programme design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-factory-design.md) | Contracts C1–C7, including C4, the event envelope |
-| [SP2 implementation plan](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/plans/2026-09-27-agent-collaboration-rooms-plan.md) | Tasks, the pre-flight rulings P1–P40 and the PR map |
-| Amendments applied while executing | **GP-18**: TLS on `:8443` on both clouds. **Ruling Y**: the database-enforced guarantees of the log. **P33 lifted for this repository**: its pull requests merge to `main` when green. The plan on `main` predates the first two |
+Design sources: the [rooms design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-collaboration-rooms-design.md),
+the [factory design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-dark-factory-design.md),
+the [programme design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-factory-design.md)
+and the [local-first UX design](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-10-08-agent-factory-local-first-ux-design.md).
+The ruling ids in code comments point into their plans.
