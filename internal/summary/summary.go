@@ -58,7 +58,7 @@ type State struct {
 	Sealed    string              // "" while open; "Closed" (CloseRoom) or "Sealed" (MaxEvents)
 	LastSeq   int64
 	RoomPhase string
-	Running   bool // an agent run joined and has not left
+	Agents    map[string]bool // agent principals that joined and have not left: the runs present now
 }
 
 // Verdict is the latest reviewer or tester verdict.
@@ -139,6 +139,9 @@ func (st *State) Add(evs []envelope.Event) {
 	if st.Pending == nil {
 		st.Pending = map[string]Approval{}
 	}
+	if st.Agents == nil {
+		st.Agents = map[string]bool{}
+	}
 	for _, ev := range evs {
 		st.LastSeq = max(st.LastSeq, ev.Seq)
 		switch ev.Type {
@@ -156,8 +159,14 @@ func (st *State) Add(evs []envelope.Event) {
 			}
 		case envelope.Participant:
 			var p envelope.ParticipantPayload
-			if json.Unmarshal(ev.Payload, &p) == nil && strings.HasPrefix(p.Principal, "agent:") {
-				st.Running = p.Change == "joined"
+			if json.Unmarshal(ev.Payload, &p) != nil || !strings.HasPrefix(p.Principal, "agent:") {
+				continue
+			}
+			switch p.Change { // role_changed neither starts nor ends a run
+			case "joined":
+				st.Agents[p.Principal] = true
+			case "left":
+				delete(st.Agents, p.Principal)
 			}
 		case envelope.Message:
 			var m envelope.MessagePayload
@@ -208,7 +217,7 @@ func foldState(st *State, ev envelope.Event) {
 	case "forked_from":
 		// What came before is the source's log, copied (store.Fork): its task, approvals, verdict
 		// and notes are not the fork's, and its seal, if any, did not close the new room.
-		*st = State{Pending: map[string]Approval{}, LastSeq: st.LastSeq, RoomPhase: "Open"}
+		*st = State{Pending: map[string]Approval{}, Agents: map[string]bool{}, LastSeq: st.LastSeq, RoomPhase: "Open"}
 	}
 }
 
@@ -273,7 +282,8 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
 			CLI: fmt.Sprintf("roomctl post %s --queue '<text>'", room)})
 	}
-	if policy.Allowed(sub, policy.Steer) && (st.Facts != nil && st.Facts.Run != nil || st.Running) { // web-only in the matrix (P18); needs a run
+	// Web-only in the matrix (P18), and only while an agent is present: the facts' run outlives it.
+	if policy.Allowed(sub, policy.Steer) && len(st.Agents) > 0 {
 		s.Actions = append(s.Actions, Action{Kind: "steer", What: "steer the running agent"})
 	}
 	// No dedicated stop right exists: stopping closes the task, which is the owner's (Close).

@@ -404,11 +404,15 @@ func TestASealedRoomCarriesNoWaitingLine(t *testing.T) {
 	}
 }
 
-// Steering needs something to steer: a run the facts name, or an agent that joined and has not left.
+// Steering needs something to steer now: an agent that joined and has not left. Facts naming a run
+// do not count: they outlive the run (Q2).
 func TestSteerNeedsARunningRun(t *testing.T) {
 	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
 	join := ev(1, envelope.Participant, broker, map[string]any{"principal": "agent:cf4ato2x", "change": "joined", "role": "implementer"})
 	leave := ev(2, envelope.Participant, broker, map[string]any{"principal": "agent:cf4ato2x", "change": "left"})
+	join2 := ev(3, envelope.Participant, broker, map[string]any{"principal": "agent:b7reviewr", "change": "joined", "role": "reviewer"})
+	leave2 := ev(4, envelope.Participant, broker, map[string]any{"principal": "agent:b7reviewr", "change": "left"})
+	roleChanged := ev(5, envelope.Participant, broker, map[string]any{"principal": "agent:cf4ato2x", "change": "role_changed", "role": "reviewer"})
 	cases := []struct {
 		name string
 		evs  []envelope.Event
@@ -417,8 +421,11 @@ func TestSteerNeedsARunningRun(t *testing.T) {
 		{"empty room", nil, false},
 		{"agent joined", []envelope.Event{join}, true},
 		{"agent left", []envelope.Event{join, leave}, false},
-		{"facts name a run", []envelope.Event{ev(3, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"},
-			envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Implementing", Run: &envelope.RunFact{ID: "cf4ato2x", Role: "implementer"}}))}, true},
+		{"facts name a run but no agent present", []envelope.Event{ev(3, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"},
+			envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Implementing", Run: &envelope.RunFact{ID: "cf4ato2x", Role: "implementer"}}))}, false},
+		{"one of two agents left", []envelope.Event{join, join2, leave2}, true},
+		{"both agents left", []envelope.Event{join, join2, leave, leave2}, false},
+		{"a role change is no join", []envelope.Event{join, leave, roleChanged}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
