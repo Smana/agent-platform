@@ -123,6 +123,7 @@ type Server struct {
 	perUser map[string]int
 	perRoom map[string]map[string]int
 	conns   map[*context.CancelCauseFunc]struct{}
+	sockets sync.WaitGroup // one per tracked connection: the drain waits on it
 	closing bool
 }
 
@@ -188,11 +189,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, drain time.Duration
 		shut = errors.Join(shut, err)
 	}
 	// Shutdown does not wait for hijacked connections: wait for their handlers.
-	for s.open() > 0 && dctx.Err() == nil {
-		select {
-		case <-dctx.Done():
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-s.socketsGone():
+	case <-dctx.Done():
 	}
 	// Past the drain the process exits under them: those viewers see 1006, not 1001.
 	if n := s.open(); n > 0 {
