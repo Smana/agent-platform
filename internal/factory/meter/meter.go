@@ -2,7 +2,8 @@
 
 // Package meter is the run meter (§4, C3, C5): every poll.meter, on every run, it writes the
 // usage annotation the composition projects into status.usage.tokens, and revokes a live run at
-// its cap: budget-run for the run's own, budget-fleet for a gateway 429 of the fleet bucket,
+// its cap: budget-run for the run's own (in USD when its tier sets runUSD, OD-6 (b), else in
+// tokens), budget-fleet for a gateway 429 of the fleet bucket,
 // budget-principal for the principal's day when budgets.enforcePrincipal (R13, C5). The day's
 // spend is the R50 ledger's, appended here tick by tick (R07); Crossplane owns AgentRun status,
 // so this writes annotations only. Every run is metered, human-launched ones included.
@@ -13,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,6 +45,22 @@ const (
 	ReasonBudgetPrincipal = "budget-principal"
 )
 
+// The limit behind a revocation. The reason stays C5's closed set, since the composition maps
+// each value to a phase, so the limit goes to the log and the revocations metric instead.
+const (
+	LimitRunUSD         = "run-usd"
+	LimitRunTokens      = "run-tokens"
+	LimitGatewayCeiling = "gateway-ceiling" // B1
+	LimitFleet          = "fleet"           // B2
+	LimitPrincipalDay   = "principal-day"
+)
+
+// Why a run whose tier caps in USD is capped in tokens instead.
+const (
+	FallbackUnpriced = "unpriced" // its claim's model has no meter.prices entry
+	FallbackUntyped  = "untyped"  // meter.query does not group by gen_ai_token_type
+)
+
 // ledgerRetention is how long a day's ledger survives: a month of budget plus a week's margin
 // for an operator's audit. Older days are deleted by the meter, its only writer after them.
 const ledgerRetention = 35 * 24 * time.Hour
@@ -62,9 +81,56 @@ type Store interface {
 	Annotate(ctx context.Context, id string, kv map[string]string) error
 }
 
-// Source reads each run's raw token counter, keyed by run id; VM implements it.
+// Usage is a run's raw counters. Tokens is what the token caps count: input plus output, or an
+// untyped series' value. Input includes CacheRead and CacheWrite, as the gateway reports it.
+type Usage struct {
+	Tokens, Input, CacheRead, CacheWrite, Output int64
+	// Typed: the reading carried gen_ai_token_type, so it can be priced.
+	Typed bool
+}
+
+// Source reads each run's raw counters, keyed by run id; VM implements it.
 type Source interface {
-	RunTokens(ctx context.Context) (map[string]int64, error)
+	RunUsage(ctx context.Context) (map[string]Usage, error)
+}
+
+// Cost is what the meter knows of a run's USD cost: MicroUSD once a typed reading priced it,
+// or Why it cannot be priced (FallbackUnpriced, FallbackUntyped).
+type Cost struct {
+	MicroUSD int64
+	Why      string
+}
+
+// Costs hands each tick's run costs to the reconciler, which sums a task's for its USD cap
+// (OD-6 (b)). Safe for concurrent use: the meter writes it, the reconciler reads it.
+type Costs struct {
+	mu sync.RWMutex
+	m  map[string]Cost
+}
+
+// Get is a run's cost as of the meter's last tick; false when the meter has no word on it.
+func (c *Costs) Get(id string) (Cost, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.m[id]
+	return v, ok
+}
+
+func (c *Costs) put(m map[string]Cost) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = m
+}
+
+// cost prices a typed reading in micro-USD: tokens times USD per million is micro-USD.
+func cost(p config.Price, u Usage) int64 {
+	write := p.CacheWrite
+	if write == 0 {
+		write = p.Input
+	}
+	fresh := max(0, u.Input-u.CacheRead-u.CacheWrite)
+	return int64(math.Round(float64(fresh)*p.Input + float64(u.CacheRead)*p.CacheRead +
+		float64(u.CacheWrite)*write + float64(u.Output)*p.Output))
 }
 
 // Meter is a leader-only manager.Runnable. Tick is not safe for concurrent use: Start is its one
@@ -79,11 +145,23 @@ type Meter struct {
 	// B1Ceiling is the gateway's per-run ceiling (config.RunTokenCeiling): a 429 at or above it
 	// is the run spending its own bucket, below it the fleet's (R13). Zero: never name B1.
 	B1Ceiling int64
-	Every     time.Duration
+	// Prices are meter.prices, by model; RunUSD each tier's USD run cap (config.Tier.RunUSD). A
+	// run of a tier with a cap is revoked on its USD cost, not its MaxTokens, when its model is
+	// priced and its reading typed; otherwise on MaxTokens, reported through OnFallback.
+	Prices map[string]config.Price
+	RunUSD map[string]float64
+	// Costs receives each tick's run costs, for the task cap; nil: nobody reads them.
+	Costs *Costs
+	Every time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// OnRevoke is told of each revocation written, with its reason: fmetrics.Set.Revoked.
-	OnRevoke func(ctx context.Context, reason string)
+	// OnRevoke is told of each revocation written, with its reason and the limit that fired:
+	// fmetrics.Set.RunRevoked.
+	OnRevoke func(ctx context.Context, reason, limit string)
+	// OnCost is told of a priced run's USD cost when the meter, having seen it live, sees it end;
+	// OnFallback of a run of a USD-capped tier capped in tokens instead, once per run.
+	OnCost     func(ctx context.Context, tier string, usd float64)
+	OnFallback func(ctx context.Context, why string)
 	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
 	Remaining func(principal string, remaining, limit int64)
 	// OnUsageError is told of each failed usage read; OnSucceeded of each tick that metered,
@@ -110,11 +188,18 @@ type Meter struct {
 	dropped map[string]bool      // ended runs whose reservation was dropped
 	orphans map[string]time.Time // unclaimed reservations, by when this meter first saw them
 	pruned  string               // the last UTC day whose old ledgers were deleted
+	live    map[string]bool      // priced runs seen live, whose cost OnCost reports at their end
+	fell    map[string]bool      // runs whose fallback was reported
 }
 
 type reading struct {
 	raw, total int64
 	paid       int64 // the total already appended to a day's ledger
+	// The USD total in micro-dollars, kept like the tokens' but in memory alone: the factory's
+	// patch limit admits no new annotation, so a failover after a counter reset forgets what
+	// the run spent before that reset.
+	usdRaw, usd int64
+	usdKnown    bool
 }
 
 // NeedLeaderElection is true: two meters would each add the same increase.
@@ -153,8 +238,44 @@ func (m *Meter) total(r runs.Run, raw int64, seen bool) int64 {
 	case raw >= prev.raw:
 		t = hw + (raw - prev.raw)
 	}
-	m.last[r.ID] = reading{raw: raw, total: t, paid: prev.paid}
+	prev.raw, prev.total = raw, t
+	m.last[r.ID] = prev
 	return t
+}
+
+// spend is a run's monotonic USD total from its raw cost, as total is for tokens.
+func (m *Meter) spend(id string, raw int64, seen bool) int64 {
+	if m.last == nil {
+		m.last = map[string]reading{}
+	}
+	e := m.last[id]
+	if !seen {
+		return e.usd
+	}
+	switch {
+	case !e.usdKnown:
+		e.usd = raw
+	case raw >= e.usdRaw:
+		e.usd += raw - e.usdRaw
+	}
+	e.usdRaw, e.usdKnown = raw, true
+	m.last[id] = e
+	return e.usd
+}
+
+// usdCap is the run's cap in micro-USD, or 0 and why it is capped in tokens instead ("" for a
+// tier with no USD cap).
+func (m *Meter) usdCap(r runs.Run, u Usage, seen bool) (int64, string) {
+	c := m.RunUSD[r.Tier]
+	switch _, priced := m.Prices[r.Model]; {
+	case c <= 0:
+		return 0, ""
+	case !priced:
+		return 0, FallbackUnpriced
+	case seen && !u.Typed:
+		return 0, FallbackUntyped
+	}
+	return int64(math.Round(c * 1e6)), ""
 }
 
 // forget drops the memory of runs that no longer exist.
@@ -168,9 +289,11 @@ func (m *Meter) forget(all []runs.Run) {
 			delete(m.last, id)
 		}
 	}
-	for id := range m.dropped {
-		if !live[id] {
-			delete(m.dropped, id)
+	for _, set := range []map[string]bool{m.dropped, m.live, m.fell} {
+		for id := range set {
+			if !live[id] {
+				delete(set, id)
+			}
 		}
 	}
 }
@@ -209,7 +332,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("meter: list runs: %w", err)
 	}
-	used, err := m.Source.RunTokens(ctx)
+	used, err := m.Source.RunUsage(ctx)
 	if err != nil {
 		if m.OnUsageError != nil {
 			m.OnUsageError(ctx)
@@ -231,20 +354,45 @@ func (m *Meter) Tick(ctx context.Context) error {
 	defer m.forget(all)
 	day := m.now().UTC().Format(api.LedgerDayLayout)
 	totals := make(map[string]int64, len(all))
+	usd := map[string]int64{}
+	caps := map[string]int64{}
+	costs := map[string]Cost{}
 	delta := map[string]int64{}
 	pending := map[string]int64{}
 	for _, r := range all {
-		raw, seen := used[r.ID]
+		u, seen := used[r.ID]
 		paid := r.Tokens // a meter with no memory starts paid at the annotation: its writer appended it
 		if e, known := m.last[r.ID]; known {
 			paid = e.paid
 		}
-		t := m.total(r, raw, seen) // never the raw counter (R12)
+		t := m.total(r, u.Tokens, seen) // never the raw counter (R12)
 		totals[r.ID] = t
+		if p, priced := m.Prices[r.Model]; priced {
+			typed := seen && u.Typed
+			var raw int64
+			if typed {
+				raw = cost(p, u)
+			}
+			switch v := m.spend(r.ID, raw, typed); {
+			case m.last[r.ID].usdKnown:
+				usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
+			case seen: // never a typed reading: no cost
+				costs[r.ID] = Cost{Why: FallbackUntyped}
+			}
+		} else {
+			costs[r.ID] = Cost{Why: FallbackUnpriced}
+		}
+		var why string
+		if caps[r.ID], why = m.usdCap(r, u, seen); why != "" {
+			m.fallback(ctx, r, why)
+		}
 		if inc := t - paid; inc > 0 { // the increase since this run's last settled reading (R07)
 			delta[r.Principal] += inc
 			pending[r.ID] = t
 		}
+	}
+	if m.Costs != nil {
+		m.Costs.put(costs)
 	}
 	spent, err := m.settle(ctx, day, delta) // budget-principal reads the ledger, not the live runs (R07)
 	if err != nil {
@@ -267,11 +415,13 @@ func (m *Meter) Tick(ctx context.Context) error {
 		if n > r.Tokens {
 			kv[runs.AnnUsage] = strconv.FormatInt(n, 10)
 		}
+		var limit string
 		if !runs.Terminal(r.Phase) && r.Revoked == "" {
-			if reason := m.revocation(r, n, hit[r.ID], spent[r.Principal]); reason != "" {
-				kv[runs.AnnRevoked] = reason
+			if reason, l := m.revocation(r, n, usd[r.ID], caps[r.ID], hit[r.ID], spent[r.Principal]); reason != "" {
+				kv[runs.AnnRevoked], limit = reason, l
 			}
 		}
+		m.observeCost(ctx, r, usd)
 		if len(kv) == 0 {
 			continue
 		}
@@ -280,11 +430,12 @@ func (m *Meter) Tick(ctx context.Context) error {
 			continue
 		}
 		if why := kv[runs.AnnRevoked]; why != "" {
-			m.log().Info("run revoked", "run", r.ID, "tokens", n, "reason", why)
+			m.log().Info("run revoked", "run", r.ID, "tokens", n, "usd", float64(usd[r.ID])/1e6,
+				"cap_usd", float64(caps[r.ID])/1e6, "reason", why, "limit", limit)
 			if m.OnRevoke != nil {
-				m.OnRevoke(ctx, why)
+				m.OnRevoke(ctx, why, limit)
 			}
-			if over := n - r.MaxTokens; why == ReasonBudgetRun && r.MaxTokens > 0 && over > 0 && m.OnOvershoot != nil {
+			if over := n - r.MaxTokens; why == ReasonBudgetRun && limit != LimitRunUSD && r.MaxTokens > 0 && over > 0 && m.OnOvershoot != nil {
 				m.OnOvershoot(ctx, over)
 			}
 		}
@@ -362,19 +513,59 @@ func (m *Meter) settle(ctx context.Context, day string, delta map[string]int64) 
 	return nil, fmt.Errorf("meter: the %s ledger stayed busy", day)
 }
 
-// revocation names why a live run must stop, in the order the design lists the caps (C5).
-func (m *Meter) revocation(r runs.Run, tokens int64, throttled bool, principalToday int64) string {
+// revocation names why a live run must stop, and the limit that fired, in the order the design
+// lists the caps (C5). A run capped in USD is not held to its MaxTokens: pricing cache reads at
+// their own rate is the point (OD-3), and B1 still bounds its raw tokens at the gateway.
+func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool, principalToday int64) (reason, limit string) {
 	switch {
-	case r.MaxTokens > 0 && tokens >= r.MaxTokens:
-		return ReasonBudgetRun
+	case capUSD > 0 && usd >= capUSD:
+		return ReasonBudgetRun, LimitRunUSD
+	case capUSD <= 0 && r.MaxTokens > 0 && tokens >= r.MaxTokens:
+		return ReasonBudgetRun, LimitRunTokens
 	case throttled && m.B1Ceiling > 0 && tokens >= m.B1Ceiling:
-		return ReasonBudgetRun // B1, the gateway's per-run ceiling
+		return ReasonBudgetRun, LimitGatewayCeiling
 	case throttled:
-		return ReasonBudgetFleet // B2, the only other bucket on agent-router (R13)
+		return ReasonBudgetFleet, LimitFleet // B2, the only other bucket on agent-router (R13)
 	case m.Budgets.EnforcePrincipal && principalToday >= m.dailyCap(r.Principal):
-		return ReasonBudgetPrincipal
+		return ReasonBudgetPrincipal, LimitPrincipalDay
 	}
-	return ""
+	return "", ""
+}
+
+// fallback reports, once per live run, that its tier's USD cap could not apply. Never silent:
+// an unpriced run metered at $0 would never stop.
+func (m *Meter) fallback(ctx context.Context, r runs.Run, why string) {
+	if runs.Terminal(r.Phase) || m.fell[r.ID] {
+		return
+	}
+	if m.fell == nil {
+		m.fell = map[string]bool{}
+	}
+	m.fell[r.ID] = true
+	m.log().Warn("run capped in tokens: its tier's USD cap cannot be priced", "run", r.ID, "tier", r.Tier,
+		"model", r.Model, "why", why, "max_tokens", r.MaxTokens)
+	if m.OnFallback != nil {
+		m.OnFallback(ctx, why)
+	}
+}
+
+// observeCost reports a priced run's cost once, at the first tick that sees it ended after one
+// that saw it live: a run that ended before this meter started is not counted again.
+func (m *Meter) observeCost(ctx context.Context, r runs.Run, usd map[string]int64) {
+	v, priced := usd[r.ID]
+	switch {
+	case !priced:
+	case !runs.Terminal(r.Phase):
+		if m.live == nil {
+			m.live = map[string]bool{}
+		}
+		m.live[r.ID] = true
+	case m.live[r.ID]:
+		delete(m.live, r.ID)
+		if m.OnCost != nil {
+			m.OnCost(ctx, r.Tier, float64(v)/1e6)
+		}
+	}
 }
 
 func (m *Meter) dailyCap(principal string) int64 {

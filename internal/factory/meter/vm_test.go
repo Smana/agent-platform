@@ -43,9 +43,25 @@ func TestVMParsesTheVector(t *testing.T) {
 		{"metric":{"ar_agent":"system:serviceaccount:agents:xplane-run-ffffffff"},"value":[1727430000,"1e30"]},
 		{"metric":{"ar_agent":"system:serviceaccount:agents:xplane-run-gggggggg"},"value":[1727430000,42]},
 		{"metric":{"ar_agent":"system:serviceaccount:agents:xplane-run-hhhhhhhhh"},"value":[1727430000,"7"]}]}}`)
-	got, err := v.RunTokens(t.Context())
-	if err != nil || len(got) != 2 || got["7f3cq2xz"] != 12345 || got["aaaaaaaa"] != 1500 {
+	got, err := v.RunUsage(t.Context())
+	if err != nil || len(got) != 2 || got["7f3cq2xz"] != (Usage{Tokens: 12345}) || got["aaaaaaaa"] != (Usage{Tokens: 1500}) {
 		t.Fatalf("only runs' service accounts, with a finite, non-negative count that fits: %v %v", got, err)
+	}
+}
+
+// A query grouped by gen_ai_token_type reads each type; the token caps still count input + output.
+func TestVMReadsTokenTypes(t *testing.T) {
+	const run = `"ar_agent":"system:serviceaccount:agents:xplane-run-7f3cq2xz"`
+	v := vmServer(t, http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[
+		{"metric":{`+run+`,"gen_ai_token_type":"input"},"value":[1727430000,"1631496"]},
+		{"metric":{`+run+`,"gen_ai_token_type":"cached_input"},"value":[1727430000,"1552384"]},
+		{"metric":{`+run+`,"gen_ai_token_type":"cache_creation_input"},"value":[1727430000,"7"]},
+		{"metric":{`+run+`,"gen_ai_token_type":"output"},"value":[1727430000,"30304"]},
+		{"metric":{`+run+`,"gen_ai_token_type":"reasoning"},"value":[1727430000,"999"]}]}}`)
+	got, err := v.RunUsage(t.Context())
+	want := Usage{Tokens: 1_661_800, Input: 1_631_496, CacheRead: 1_552_384, CacheWrite: 7, Output: 30_304, Typed: true}
+	if err != nil || got["7f3cq2xz"] != want {
+		t.Fatalf("got %+v %v, want %+v", got, err, want)
 	}
 }
 
@@ -61,12 +77,12 @@ func TestVMRefusesWhatIsNotAnAnswer(t *testing.T) {
 		"an oversize body": {http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[` + strings.Repeat(" ", maxVMReply) + `]}}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := vmServer(t, c.code, c.body).RunTokens(t.Context()); err == nil {
+			if _, err := vmServer(t, c.code, c.body).RunUsage(t.Context()); err == nil {
 				t.Fatal("accepted")
 			}
 		})
 	}
-	_, err := vmServer(t, http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[`+strings.Repeat(" ", maxVMReply)+`]}}`).RunTokens(t.Context())
+	_, err := vmServer(t, http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[`+strings.Repeat(" ", maxVMReply)+`]}}`).RunUsage(t.Context())
 	if !errors.Is(err, httpx.ErrBodyTooLarge) {
 		t.Fatalf("err = %v", err)
 	}

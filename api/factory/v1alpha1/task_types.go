@@ -117,6 +117,14 @@ type Budget struct {
 	// +kubebuilder:validation:Maximum=480
 	// +optional
 	RunMinutes int64 `json:"runMinutes,omitempty"`
+	// The USD caps in micro-dollars (OD-6 (b)): a run's, and the task's in place of TaskTokens
+	// while every run of the task is priced. 0: the token caps.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	RunMicroUSD int64 `json:"runMicroUSD,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	TaskMicroUSD int64 `json:"taskMicroUSD,omitempty"`
 }
 
 // TaskStatus is the task's audit record: the whole §4 record, including the fields later
@@ -315,6 +323,13 @@ type RunRecord struct {
 	Verdict string `json:"verdict,omitempty"`
 	// +optional
 	Tokens int64 `json:"tokens,omitempty"`
+	// The run's cost in micro-dollars, cache reads at their own rate, as the meter priced it.
+	// +optional
+	CostMicroUSD int64 `json:"costMicroUSD,omitempty"`
+	// Why the meter could not price the run: its task is then held to TaskTokens.
+	// +kubebuilder:validation:Enum=unpriced;untyped
+	// +optional
+	Unpriced string `json:"unpriced,omitempty"`
 	// The room's lastSeq when the run was created: verdicts are read after it.
 	// +optional
 	StartSeq int64 `json:"startSeq,omitempty"`
@@ -371,6 +386,9 @@ type Usage struct {
 	// Σ of the task's run usage; it never drops (SP1 §2).
 	// +optional
 	Tokens int64 `json:"tokens,omitempty"`
+	// Σ of the task's run costs, in micro-dollars.
+	// +optional
+	CostMicroUSD int64 `json:"costMicroUSD,omitempty"`
 }
 
 // Narration is one pending comment. Its key is the comment's idempotency key: in status.narrated
