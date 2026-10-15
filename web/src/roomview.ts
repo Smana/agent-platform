@@ -11,6 +11,7 @@ import { RoomLog } from "./view";
 
 export interface Views {
   apply(ev: RoomEvent): void;
+  rowFor(callId: string): HTMLElement | undefined; // a call's chat row, while the page holds it
 }
 
 // mountViews fills main with the chat and the collapsed raw log. fork, when set,
@@ -35,5 +36,6 @@ export function mountViews(main: HTMLElement, fork?: (seq: number) => void): Vie
       chat.apply(ev);
       raw.put(ev.seq, renderEvent(ev));
     },
+    rowFor: (callId) => chat.rowFor(callId),
   };
 }

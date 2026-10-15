@@ -23,8 +23,8 @@ const rejections: Record<string, string> = {
   too_large: "Forking here copies over 5,000 events or 32 MiB. Fork from an earlier message.",
 };
 
-// The element id of an approval's card: the room page's summary links here instead of
-// offering a second way to decide.
+// The element id of an approval's card in the needs-you panel: the broker's
+// <room>#<approvalId> link lands here.
 export const approvalAnchor = (approvalId: string) => `approval-${approvalId}`;
 
 export function rejection(reason: string): string {
@@ -40,7 +40,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial
   return Object.assign(document.createElement(tag), props);
 }
 
-function button(label: string, act: string, onClick: () => void): HTMLButtonElement {
+export function button(label: string, act: string, onClick: () => void): HTMLButtonElement {
   const b = el("button", { type: "button", textContent: label });
   b.dataset.act = act;
   b.onclick = onClick;
@@ -63,7 +63,7 @@ interface Row { key: string; sig: string; build: () => HTMLElement }
 
 // keyed renders rows into list, rebuilding a row only when its sig changes and
 // moving none already in place: the row a human is in keeps its focus (R10).
-function keyed(list: HTMLElement) {
+export function keyed(list: HTMLElement) {
   const held = new Map<string, { sig: string; node: HTMLElement }>();
   return (rows: Row[]) => {
     const keys = new Set(rows.map((r) => r.key));
@@ -97,17 +97,23 @@ export function claimText(result: unknown): string {
   return `# Before SP3 the owner creates the run (C3):\nkubectl create -f - <<'EOF'\n${JSON.stringify(result, null, 2)}\nEOF`;
 }
 
-// approvalCard shows one approval, read-only: the class, the run, the deadline,
-// and the raw action as text (T3). render.ts shows an approval_requested event with it.
+// approvalCard shows one approval, read-only: the command it would run first (the
+// call's own, else its class), then the class, the run and the deadline, and the raw
+// action as text behind a toggle (T3). render.ts shows an approval_requested event with
+// it; the needs-you panel (needs.ts) adds the link to the call and the decide controls.
 export function approvalCard(a: { class: string; runId?: string; callId: string; action: unknown; expiresAt: string },
   tag: "li" | "div" = "div"): HTMLElement {
   const li = el(tag, { className: "approval" });
   const due = new Date(a.expiresAt);
   // Today's deadline shows its time; another day's, its date too (R11).
   const when = isNaN(due.getTime()) ? "?" : due.toDateString() === new Date().toDateString() ? due.toLocaleTimeString() : due.toLocaleString();
+  const command = (a.action as { command?: unknown } | null)?.command;
+  const json = el("details", { className: "approval-json" });
+  json.append(el("summary", { textContent: "action" }), el("pre", { textContent: JSON.stringify(a.action ?? null, null, 2) }));
   li.append(
-    el("div", { className: "approval-head", textContent: `approval: ${a.class}${a.runId ? " · run " + a.runId : ""} · call ${a.callId} · expires ${when}` }),
-    el("pre", { className: "approval-action", textContent: JSON.stringify(a.action ?? null, null, 2) }),
+    el("pre", { className: "approval-command", textContent: typeof command === "string" && command ? command : a.class }),
+    el("div", { className: "approval-meta", textContent: `${a.class}${a.runId ? " · run " + a.runId : ""} · expires ${when}` }),
+    json,
   );
   return li;
 }
@@ -118,8 +124,9 @@ export function hasControls(you: Snapshot["you"]): boolean {
   return you.role !== "watcher" || you.approver;
 }
 
-// mountControls renders what a collaborator and up, or an approver, can do: the composer, the queue,
-// the driver token, interrupt, and hand to role. Room text goes in as text only (T10).
+// mountControls renders what a collaborator and up can do: the composer, the queue,
+// the driver token, interrupt, and hand to role. Approvals are decided in the needs-you
+// panel (needs.ts). Room text goes in as text only (T10).
 // The buttons follow the policy (internal/policy); the broker still decides.
 // say sets the footer's notice.
 export function mountControls(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"], say: (text: string) => void) {
@@ -156,26 +163,6 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       return li;
     } };
   }));
-
-  // One card per pending approval (§6): its class, the raw action as text, never
-  // agent prose (T3), and its deadline. Approvers and owners decide; the broker
-  // still checks four-eyes and who decided first.
-  const approvals = el("ul", { className: "approvals" });
-  const approvalRows = keyed(approvals);
-  const canDecide = () => !state.sealed && (you.approver || isOwner()); // else the broker answers sealed or not_permitted
-  const renderApprovals = () => approvalRows(state.approvals().map((a) => ({ key: a.approvalId, sig: String(canDecide()), build: () => {
-    const li = approvalCard(a, "li");
-    li.id = approvalAnchor(a.approvalId);
-    if (!canDecide()) return li;
-    const reason = named(el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" }), "reason for the decision (optional)");
-    const decide = (decision: string) => () => {
-      const action: Record<string, unknown> = { kind: "decide", approvalId: a.approvalId, decision };
-      if (reason.value.trim()) action.reason = reason.value.trim();
-      send(action);
-    };
-    li.append(reason, button("approve", "approve", decide("approved")), button("deny", "deny", decide("denied")));
-    return li;
-  } })));
 
   // The driver's fields stay mounted and toggle hidden: a refresh never takes the
   // focus or the text of a field the human is in (R10).
@@ -251,7 +238,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   manifest.append(claim, button("copy", "copy", () => void navigator.clipboard?.writeText(claim.textContent ?? "")));
 
   // Mounted once: refresh toggles hidden, never re-mounts (R10).
-  root.replaceChildren(approvals, driver, composer, queue, hand, admin, manifest);
+  root.replaceChildren(driver, composer, queue, hand, admin, manifest);
   const showResult = (result: unknown) => {
     if (!result) return;
     claim.textContent = claimText(result);
@@ -266,7 +253,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
         delivery.value = "";
         say(choose);
       }
-      // A watcher who is an approver gets the approval cards only (policy Decide).
+      // A watcher who is an approver decides in the needs-you panel, and gets nothing here.
       const watcher = you.role === "watcher";
       for (const e of [driver, composer, queue]) e.hidden = watcher;
       hand.hidden = watcher || !(isDriver() || isOwner());
@@ -275,7 +262,6 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       if (admin.hidden) closer.textContent = closeLabel;
       renderDriver();
       renderQueue();
-      renderApprovals();
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,

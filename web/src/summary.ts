@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The room page's summary blocks, rendered from the broker's summary/v1 JSON
-// (GET /api/rooms/{id}/summary): needs you and the agents' notes; the status heads the
-// page in the title strip (strip.ts). Every string here may be agent-written, so all of
+// The room page's summary parts, rendered from the broker's summary/v1 JSON
+// (GET /api/rooms/{id}/summary): the merges and holds the needs-you panel lists
+// (needs.ts) and the agents' notes; the status heads the page in the title strip (strip.ts). Every string here may be agent-written, so all of
 // it goes in as text. A field the broker omits when empty (omitempty, omitzero) is
 // optional here, and its part is skipped.
 
@@ -82,8 +82,9 @@ function line(...parts: (string | Node)[]): HTMLElement {
   return p;
 }
 
-// focusApproval reveals the existing approval card for id and focuses its Approve
-// button. False when there is no card (a non-approver has none, or it is decided).
+// focusApproval reveals the approval card for id in the needs-you panel and focuses its
+// Approve button, or its first control. False when there is no card (it is decided, or
+// its request has not arrived yet).
 export function focusApproval(id: string): boolean {
   const card = document.getElementById(approvalAnchor(id));
   if (!card) return false;
@@ -92,27 +93,19 @@ export function focusApproval(id: string): boolean {
   return true;
 }
 
-function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
-  const ul = el("ul");
-  for (const n of items) {
-    if (n.kind === "hold") { // the page is the room: nothing to link to
-      ul.append(el("li", { textContent: `Hold: ${n.what}` }));
-      continue;
-    }
+// needsItems is the summary's merges and holds, one list item each; the approvals come
+// from the live log instead (needs.ts), so the summary's approval entries are skipped.
+export function needsItems(s: Summary): HTMLLIElement[] {
+  const out: HTMLLIElement[] = [];
+  for (const n of s.needsYou) {
+    if (n.kind === "hold") out.push(el("li", { textContent: `Hold: ${n.what}` })); // the page is the room: nothing to link to
     if (n.kind === "merge") { // the PR is on GitHub: link out, https only
       const li = el("li");
       li.append(`Merge: ${n.what} · `, safeLink("open the PR", n.url));
-      ul.append(li);
-      continue;
+      out.push(li);
     }
-    const a = el("a", { href: `#${approvalAnchor(n.id)}`, textContent: "Review and decide" });
-    // Reveal the existing approval card; the page keeps one decide path.
-    a.onclick = (e) => { if (focusApproval(n.id)) e.preventDefault(); };
-    const li = el("li");
-    li.append(`Approval: ${n.what} · `, n.deadline ? `decide by ${when(n.deadline)} · ` : "", a);
-    ul.append(li);
   }
-  return block("needs-you", "Needs you", ul);
+  return out;
 }
 
 function notesBlock(n: Summary["notes"]): HTMLElement {
@@ -122,7 +115,7 @@ function notesBlock(n: Summary["notes"]): HTMLElement {
     n.items.length ? ul : line("No notes yet."));
 }
 
-export function renderSummary(root: HTMLElement, s: Summary): void {
-  const blocks = s.needsYou.length ? [needsYouBlock(s.needsYou)] : [];
-  root.replaceChildren(...blocks, notesBlock(s.notes));
+// renderNotes renders the agents' notes, labelled as their claims.
+export function renderNotes(root: HTMLElement, s: Summary): void {
+  root.replaceChildren(notesBlock(s.notes));
 }

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The room page: the header, the chat and raw views, the controls and the
-// footer, all fed by one RoomConnection.
+// The room page: the header, the needs-you panel, the notes, the chat and raw views,
+// the controls and the footer, all fed by one RoomConnection.
 
 import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
-import { changesSummary, fetchSummary, focusApproval, renderSummary, type Summary } from "./summary";
+import { mountNeeds } from "./needs";
+import { changesSummary, fetchSummary, focusApproval, renderNotes, type Summary } from "./summary";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
@@ -20,6 +21,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const header = document.createElement("header");
   header.className = "page-header";
   const strip = mountStrip(header);
+  const needsPanel = document.createElement("section");
   const lead = document.createElement("section");
   lead.className = "summary";
   // The blocks and the error line are separate, so a failed refresh adds a line and
@@ -44,11 +46,19 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const status = document.createElement("span");
   status.className = "status";
   footer.append(counters, notice, status);
-  app.replaceChildren(header, lead, main, section, forkPanel, footer);
+  app.replaceChildren(header, needsPanel, lead, main, section, forkPanel, footer);
   const views = mountViews(main, (seq) => fork.open(seq));
   mountThemeButton(header, theme);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
+  const sender = {
+    send: (f: Record<string, unknown>) => {
+      const sent = pending.send(conn, f);
+      sayAct(sent ? "" : "Not connected: the action was not sent. Retry once the room is live.");
+      return sent;
+    },
+  };
+  const needsPanelView = mountNeeds(needsPanel, sender, state, () => snap?.you, views);
   let controls: ReturnType<typeof mountControls> | undefined;
   const say = (text: string) => { notice.textContent = text; };
   // What an act said (a refusal, not connected, a lost act): an ack clears only that,
@@ -63,17 +73,11 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let mark = 0; // the latest state frame's throughSeq
   let summary: Summary | undefined;
   let connection = "connecting…";
-  // What needs you: the approvals you may decide, then the summary's merges and holds.
-  const needs = () => (snap?.you.approver ? state.approvals().length : 0) +
-    (summary?.needsYou.filter((n) => n.kind === "merge" || n.kind === "hold").length ?? 0);
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: undefined, summary: sum, needs: needs(), connection, now: state.latest() });
-  strip.onNeedsClick(() => {
-    const to = blocks.querySelector<HTMLElement>('[data-block="needs-you"]') ?? section.querySelector<HTMLElement>(".approval");
-    to?.scrollIntoView?.({ block: "start" });
-  });
+    sealedBy: undefined, summary: sum, needs: needsPanelView.count(), connection, now: state.latest() });
+  strip.onNeedsClick(() => needsPanel.scrollIntoView?.({ block: "start" }));
   // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
   // call's row, which carries the call's seq). A row gone at the cap finds nothing.
   strip.onNowClick((seq) => {
@@ -110,8 +114,9 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       rendered = n;
       const key = JSON.stringify(sum);
       if (key !== shown) {
-        refreshStrip(sum); // first: a strip that throws leaves the summary as it was
-        renderSummary(blocks, sum);
+        needsPanelView.setSummary(sum); // first: the strip's count reads it
+        refreshStrip(sum); // a strip that throws leaves the notes as they were
+        renderNotes(blocks, sum);
         summary = sum;
         shown = key;
       }
@@ -125,7 +130,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   const scheduleSummary = () => { refreshTimer ??= setTimeout(loadSummary, 1000); };
   // The broker's link is <room>#<approvalId> (roomctl status, the summary's needsYou url).
   // The card appears once the replay delivers its request, so the landing is retried on
-  // each controls refresh until it lands. A non-approver has no card: nothing happens.
+  // each panel refresh until it lands. A viewer who may not decide has a read-only card:
+  // the landing shows it and focuses nothing.
   let landed = false;
   const land = () => {
     if (landed) return;
@@ -142,21 +148,23 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       mark = throughSeq;
       absent = 0; // the broker let us in: the room is readable
       state.reset(s, throughSeq);
+      needsPanelView.refresh();
       refreshStrip();
       if (!hasControls(s.you)) {
         controls = you = undefined;
         section.replaceChildren();
-        return;
+      } else {
+        if (you && controls) Object.assign(you, s.you);
+        else controls = mountControls(section, sender, state, (you = { ...s.you }), say);
+        controls.refresh();
       }
-      if (you && controls) Object.assign(you, s.you);
-      else controls = mountControls(section, sender, state, (you = { ...s.you }), say);
-      controls.refresh();
       land();
     },
     onEvent: (e) => {
       views.apply(e);
       if (changesSummary(e)) scheduleSummary();
       state.apply(e);
+      needsPanelView.refresh();
       refreshStrip();
       controls?.refresh();
       land();
@@ -169,6 +177,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       if (f.rejected) sayAct(rejection(f.rejected)); else clearAct();
       controls?.onAck(f);
       fork.onAck(f);
+      needsPanelView.refresh();
     },
     // Refused before it opened: an expired session (a 401 from the list signs in
     // again), a broker restarting, or a room this caller cannot read. Only the list
@@ -209,13 +218,6 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
   }, o);
   const pending = new PendingActs(sayAct);
-  const sender = {
-    send: (f: Record<string, unknown>) => {
-      const sent = pending.send(conn, f);
-      sayAct(sent ? "" : "Not connected: the action was not sent. Retry once the room is live.");
-      return sent;
-    },
-  };
   const fork = mountFork(forkPanel, sender, state);
   refreshStrip();
   loadSummary();

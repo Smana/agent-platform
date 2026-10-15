@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { changesSummary, fetchSummary, renderSummary, type Summary } from "../src/summary";
+import { changesSummary, fetchSummary, needsItems, renderNotes, type Summary } from "../src/summary";
 
 const base = (): Summary => ({
   apiVersion: "summary/v1", room: "3kq7x2ma", url: "https://rooms.example/r/3kq7x2ma",
@@ -21,48 +21,25 @@ const base = (): Summary => ({
 
 const render = (s: Summary) => {
   const root = document.createElement("div");
-  renderSummary(root, s);
+  renderNotes(root, s);
   return root;
 };
+const needs = (s: Summary) => {
+  const ul = document.createElement("ul");
+  ul.append(...needsItems(s));
+  return ul;
+};
 
-describe("renderSummary", () => {
-  // The status heads the page in the title strip (strip.test.ts); actions left with the status card.
-  it("orders the blocks: needs you, notes", () => {
+describe("renderNotes", () => {
+  it("renders the notes block alone: needs you lives in the panel (needs.ts)", () => {
     const r = render(base());
-    expect([...r.querySelectorAll("section")].map((s) => s.dataset.block)).toEqual(["needs-you", "notes"]);
-  });
-
-  // N3: a hold is no approval: it says what releases it, with no decide link.
-  it("renders a hold as what releases it", () => {
-    const s = base();
-    s.needsYou = [{ kind: "hold", id: "waiting_human_driver", what: "hand the driver back", url: "https://rooms.example/r/3kq7x2ma" }];
-    const block = render(s).querySelector('[data-block="needs-you"]')!;
-    expect(block.textContent).toContain("Hold: hand the driver back");
-    expect(block.textContent).not.toMatch(/Approval|Review and decide/);
-    expect(block.querySelector("a")).toBeNull();
-  });
-
-  // #51: a merge waiting on the maintainer, with how to merge under the ruleset and a link to the PR.
-  it("renders a merge with its instruction and the PR link", () => {
-    const s = base();
-    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7: tick bypass", url: "https://github.com/o/r/pull/7" }];
-    const block = render(s).querySelector('[data-block="needs-you"]')!;
-    expect(block.textContent).toContain("Merge: merge PR #7: tick bypass");
-    expect(block.querySelector("a")?.getAttribute("href")).toBe("https://github.com/o/r/pull/7");
-    expect(block.textContent).not.toMatch(/Review and decide/);
-  });
-
-  it("omits Needs you when nothing needs you", () => {
-    const s = base();
-    s.needsYou = [];
-    expect(render(s).querySelector('[data-block="needs-you"]')).toBeNull();
+    expect([...r.querySelectorAll("section")].map((s) => s.dataset.block)).toEqual(["notes"]);
   });
 
   it("renders agent text as text, never as markup", () => {
     const s = base();
     const evil = "<img src=x onerror=alert(1)>";
     s.notes.items[0].text = evil;
-    s.needsYou[0].what = evil;
     const r = render(s);
     expect(r.querySelector("img")).toBeNull();
     expect(r.querySelector('[data-block="notes"]')?.textContent).toContain(evil);
@@ -72,52 +49,59 @@ describe("renderSummary", () => {
     expect(render(base()).querySelector('[data-block="notes"]')?.textContent).toMatch(/agents' claims/i);
   });
 
-  it("links only https URLs", () => {
-    const s = base();
-    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7", url: "javascript:alert(1)" }];
-    const r = render(s);
-    const hrefs = [...r.querySelectorAll("a")].map((a) => a.getAttribute("href"));
-    expect(hrefs.some((h) => h?.startsWith("javascript:") || h?.startsWith("http:"))).toBe(false);
-    expect(r.querySelector('[data-block="needs-you"]')?.textContent).toContain("javascript:alert(1)");
-  });
-
   it("shows a watcher no action buttons", () => {
     const s = base();
     s.actions = [];
     s.needsYou = [];
     expect(render(s).querySelectorAll("button")).toHaveLength(0);
   });
+});
 
-  it("links an approval to the existing control and shows no command", () => {
-    const r = render(base());
-    const a = r.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!;
-    expect(a.getAttribute("href")).toBe("#approval-ap1");
-    expect(r.querySelector('[data-block="needs-you"] code')).toBeNull();
-    expect(r.querySelector('[data-block="needs-you"]')?.textContent).toContain("run kubectl apply");
-  });
-
-  // The broker omits empty optional fields (omitempty, omitzero): a part it left out is skipped.
-  it("skips the parts the broker omits", () => {
+describe("needsItems", () => {
+  // N3: a hold is no approval: it says what releases it, with no decide link.
+  it("renders a hold as what releases it", () => {
     const s = base();
-    s.needsYou = [{ kind: "approval", id: "ap1", what: "git push", url: "https://rooms.example/r/3kq7x2ma#ap1" }];
-    const r = render(s);
-    expect(r.querySelector('[data-block="needs-you"]')!.textContent).not.toMatch(/undefined|decide by/);
+    s.needsYou = [{ kind: "hold", id: "waiting_human_driver", what: "hand the driver back", url: "https://rooms.example/r/3kq7x2ma" }];
+    const block = needs(s);
+    expect(block.textContent).toContain("Hold: hand the driver back");
+    expect(block.textContent).not.toMatch(/Approval|Review and decide/);
+    expect(block.querySelector("a")).toBeNull();
   });
 
-  it("focuses the existing approval control on click", () => {
-    const doc = document.createElement("div");
-    document.body.append(doc);
-    const card = document.createElement("div");
-    card.id = "approval-ap1";
-    const approve = document.createElement("button");
-    card.append(approve);
-    doc.append(card);
-    const root = render(base());
-    doc.append(root);
-    card.scrollIntoView = () => {};
-    root.querySelector<HTMLAnchorElement>('[data-block="needs-you"] a')!.click();
-    expect(document.activeElement).toBe(approve);
-    doc.remove();
+  // #51: a merge waiting on the maintainer, with how to merge under the ruleset and a link to the PR.
+  it("renders a merge with its instruction and the PR link", () => {
+    const s = base();
+    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7: tick bypass", url: "https://github.com/o/r/pull/7" }];
+    const block = needs(s);
+    expect(block.textContent).toContain("Merge: merge PR #7: tick bypass");
+    expect(block.querySelector("a")?.getAttribute("href")).toBe("https://github.com/o/r/pull/7");
+    expect(block.textContent).not.toMatch(/Review and decide/);
+  });
+
+  // The approvals come from the live log, as cards (needs.test.ts): the summary's are skipped.
+  it("skips approvals, and is empty when nothing needs you", () => {
+    expect(needsItems(base())).toHaveLength(0);
+    const s = base();
+    s.needsYou = [];
+    expect(needsItems(s)).toHaveLength(0);
+  });
+
+  it("renders agent text as text, never as markup", () => {
+    const s = base();
+    const evil = "<img src=x onerror=alert(1)>";
+    s.needsYou = [{ kind: "merge", id: "7", what: evil, url: "https://github.com/o/r/pull/7" }, { kind: "hold", id: "h", what: evil, url: "u" }];
+    const block = needs(s);
+    expect(block.querySelector("img")).toBeNull();
+    expect(block.textContent).toContain(evil);
+  });
+
+  it("links only https URLs", () => {
+    const s = base();
+    s.needsYou = [{ kind: "merge", id: "7", what: "merge PR #7", url: "javascript:alert(1)" }];
+    const r = needs(s);
+    const hrefs = [...r.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs.some((h) => h?.startsWith("javascript:") || h?.startsWith("http:"))).toBe(false);
+    expect(r.textContent).toContain("javascript:alert(1)");
   });
 });
 
@@ -153,7 +137,8 @@ describe("the broker's golden summaries", () => {
   it.each(files)("%s renders every part it carries", (f) => {
     const { want } = JSON.parse(readFileSync(join(dir, f), "utf8")) as { want: Summary };
     const r = render(want);
-    for (const n of want.needsYou) expect(r.textContent).toContain(n.what);
+    r.append(needs(want));
+    for (const n of want.needsYou) if (n.kind !== "approval") expect(r.textContent).toContain(n.what);
     for (const n of want.notes.items) expect(r.textContent).toContain(n.text);
     expect(r.textContent).not.toMatch(/undefined|null|NaN|Invalid Date/);
   });

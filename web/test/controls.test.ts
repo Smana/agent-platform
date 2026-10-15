@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
-import { approvalCard, hasControls, mountControls, rejection } from "../src/controls";
+import { hasControls, mountControls, rejection } from "../src/controls";
 import { RoomState } from "../src/room-state";
 import { newRoomForm } from "../src/view";
 
@@ -242,7 +242,8 @@ describe("refresh", () => {
   it("keeps the focused field across refreshes", () => {
     const approvals = [{ approvalId: "ap1", runId: "7f3cq2xz", callId: "c3", class: "forge.pr", action: {},
       expiresAt: "2026-10-01T10:30:00Z", seq: 3 }];
-    for (const [who, name] of [["human:a", "text"], ["human:a", "giveTo"], ["human:o", "takeReason"], ["human:a", "decisionReason"]]) {
+    // The approval's reason field moved to the needs-you panel (needs.test.ts).
+    for (const [who, name] of [["human:a", "text"], ["human:a", "giveTo"], ["human:o", "takeReason"]]) {
       const c = setup(you(who, "owner"));
       c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
       c.controls.refresh();
@@ -277,93 +278,37 @@ describe("accessible names", () => {
   });
 });
 
-describe("approval cards", () => {
-  const pending = (id: string, seq: number, action: unknown = { command: "gh pr create" }) => ({ approvalId: id, runId: "7f3cq2xz",
-    callId: "call_" + seq, class: "forge.pr", action, expiresAt: "2026-10-01T10:30:00Z", seq });
-  const withApprovals = (who: You, ...approvals: ReturnType<typeof pending>[]) => {
-    const c = setup(who);
-    c.state.reset({ driver: "human:a", driverEpoch: 4, approvals }, 10);
+// The approval cards moved to the needs-you panel (needs.test.ts); the controls keep none.
+describe("approvals", () => {
+  const pending = { approvalId: "ap1", runId: "7f3cq2xz", callId: "call_3", class: "forge.pr", action: {},
+    expiresAt: "2026-10-01T10:30:00Z", seq: 3 };
+
+  it("leave the controls: no card, no decide button", () => {
+    const c = setup(you("human:own", "owner"));
+    c.state.reset({ driver: "human:a", driverEpoch: 4, approvals: [pending] }, 10);
     c.controls.refresh();
-    return c;
-  };
-
-  it("shows the raw action as text, never markup (T3)", () => {
-    const hostile = { command: '<img src=x onerror="alert(1)">', body: "**not** markdown" };
-    const c = withApprovals({ ...you("human:apr", "collaborator"), approver: true }, pending("ap1", 3, hostile));
-    const card = c.root.querySelector("ul.approvals li")!;
-    expect(c.root.querySelector("img")).toBeNull();
-    expect(card.querySelector("strong")).toBeNull();
-    expect(card.querySelector("pre")!.textContent).toBe(JSON.stringify(hostile, null, 2));
-    expect(card.querySelector(".approval-head")!.textContent).toMatch(/^approval: forge\.pr · run 7f3cq2xz · call call_3 · expires /);
-  });
-
-  it("lets approvers and owners approve or deny, with a reason", () => {
-    const c = withApprovals({ ...you("human:apr", "collaborator"), approver: true }, pending("ap1", 3), pending("ap2", 5));
-    const cards = [...c.root.querySelectorAll("ul.approvals li")];
-    expect(cards).toHaveLength(2);
-    cards[0].querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
-    cards[1].querySelector<HTMLInputElement>('[name="decisionReason"]')!.value = "  wrong branch ";
-    c.controls.refresh(); // a typed reason survives a re-render
-    c.root.querySelectorAll("ul.approvals li")[1].querySelector<HTMLButtonElement>('[data-act="deny"]')!.click();
-    expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" },
-      { kind: "decide", approvalId: "ap2", decision: "denied", reason: "wrong branch" }]);
-
-    const o = withApprovals(you("human:own", "owner"), pending("ap1", 3));
-    expect(o.btn("approve")).not.toBeNull();
-  });
-
-  it("offers no decision to others, nor in a sealed room", () => {
-    const c = withApprovals(you("human:col", "collaborator"), pending("ap1", 3));
-    expect(c.root.querySelector("ul.approvals li pre")).not.toBeNull();
+    expect(c.root.querySelector(".approval")).toBeNull();
     expect(c.btn("approve")).toBeNull();
-    expect(c.btn("deny")).toBeNull();
-    const s = setup(you("human:own", "owner"));
-    s.state.reset({ driver: "human:a", driverEpoch: 4, approvals: [pending("ap1", 3)], sealed: true }, 10);
-    s.controls.refresh();
-    expect(s.root.querySelector("ul.approvals li pre")).not.toBeNull();
-    expect(s.btn("approve")).toBeNull();
   });
 
-  // Review 5.3 I2: policy Decide is the approver flag, whatever the room role.
-  it("gives a watcher who approves the cards and their buttons, and nothing else", () => {
-    const c = withApprovals({ ...you("human:wat", "watcher"), approver: true }, pending("ap1", 3));
-    expect([...c.root.children].filter(shown).map((e) => e.className)).toEqual(["approvals"]);
+  // Review 5.3 I2: policy Decide is the approver flag, whatever the room role; a watcher
+  // who approves decides in the panel and gets nothing in the controls.
+  it("give a watcher who approves nothing else", () => {
+    const c = setup({ ...you("human:wat", "watcher"), approver: true });
+    c.state.reset({ driver: "human:a", driverEpoch: 4, approvals: [pending] }, 10);
+    c.controls.refresh();
+    expect([...c.root.children].filter(shown).map((e) => e.className)).toEqual([]);
     expect(shown(c.field("text"))).toBe(false);
     expect(c.btn("driver_request")).toBeNull();
-    c.btn("approve")!.click();
-    expect(c.acts()).toEqual([{ kind: "decide", approvalId: "ap1", decision: "approved" }]);
     expect(hasControls({ ...you("human:wat", "watcher"), approver: true })).toBe(true);
     expect(hasControls(you("human:wat", "watcher"))).toBe(false); // a plain watcher gets nothing
     expect(hasControls(you("human:col", "collaborator"))).toBe(true);
     // Promoted to collaborator by an invite: the state frame updates you in place.
     const who = { ...you("human:wat", "watcher"), approver: true };
-    const p = withApprovals(who, pending("ap1", 3));
+    const p = setup(who);
     who.role = "collaborator";
     p.controls.refresh();
     expect(shown(p.field("text"))).toBe(true);
-  });
-
-  // R11: a deadline on another day shows its date, not a bare time.
-  it("dates a deadline that is not today", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 9, 1, 9, 0));
-    try {
-      const head = (due: Date) => approvalCard({ class: "forge.pr", callId: "c", action: {}, expiresAt: due.toISOString() })
-        .querySelector(".approval-head")!.textContent;
-      const today = new Date(2026, 9, 1, 10, 30);
-      const tomorrow = new Date(2026, 9, 2, 10, 30);
-      expect(head(today)).toBe(`approval: forge.pr · call c · expires ${today.toLocaleTimeString()}`);
-      expect(head(tomorrow)).toBe(`approval: forge.pr · call c · expires ${tomorrow.toLocaleString()}`);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("drops a card once decided", () => {
-    const c = withApprovals(you("human:own", "owner"), pending("ap1", 3));
-    c.state.apply({ ...queued(11, "human:own", ""), type: "approval_decided", payload: { approvalId: "ap1", decision: "approved" } });
-    c.controls.refresh();
-    expect(c.root.querySelectorAll("ul.approvals li")).toHaveLength(0);
   });
 
   it("explains a refused decision", () => {

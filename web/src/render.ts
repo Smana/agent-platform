@@ -149,7 +149,7 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
       row.append(d);
       break;
     }
-    case "approval_requested": // the card, read-only: deciding is the controls' (§6)
+    case "approval_requested": // the card, read-only: deciding is the needs-you panel's (§6)
       row.append(approvalCard({ class: String(p.class ?? ""), runId: ev.runId, callId: String(p.callId ?? ""), action: p.action,
         expiresAt: String(p.expiresAt ?? "") }));
       break;

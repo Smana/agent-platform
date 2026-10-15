@@ -294,11 +294,22 @@ input, select, textarea {
 }
 input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .queue { margin: 0; padding-left: 18px; } .queue li span { overflow-wrap: anywhere; margin-right: 6px; }
-/* Approvals: the amber accent and subtle panel background, on the platform palette. */
-.approvals { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.approval { border: 1px solid var(--warning); border-radius: 4px; padding: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.approval-head { flex-basis: 100%; font-weight: 600; overflow-wrap: anywhere; }
-.approval-action { flex-basis: 100%; margin: 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
+/* The needs-you panel, under the strip: approval cards lead with their command, the JSON
+   behind a toggle; approve is the primary button, deny the destructive outline. */
+.needs { padding: 8px 16px; display: grid; gap: 6px; max-width: 100%; }
+.needs h2 { margin: 0; font-size: 1em; }
+.approvals, .needs-other { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.needs-other li { overflow-wrap: anywhere; }
+.approval { border: 1px solid var(--warning-border); border-radius: 6px; padding: 8px 12px; display: grid; gap: 6px;
+  background: var(--card); color: var(--card-foreground); min-width: 0; }
+.approval-command { font: 14px ui-monospace, monospace; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-meta { color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.approval-json > summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; }
+.approval-json pre { margin: 4px 0 0; background: var(--muted); padding: 6px; overflow-x: auto; max-height: 16em; border-radius: 6px; }
+.approval-decide { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.approval-decide input { flex: 1 1 12em; min-width: 0; }
+button.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+button.deny { color: var(--destructive-text); border-color: var(--destructive-text); }
 .manifest pre { background: var(--muted); padding: 8px; border-radius: 6px; }
 .new-room { padding: 8px 16px; } .new-room .notice { color: var(--destructive); }
 .fork-here { margin-left: 8px; font-size: 12px; padding: 0 6px; opacity: 0.55; }
@@ -311,14 +322,13 @@ input::placeholder, textarea::placeholder { color: var(--placeholder); }
 .new-room .hint { flex-basis: 100%; color: var(--muted-foreground); font-size: 12px; }
 .gone { padding: 16px; }
 
-/* Room page lead: status, needs you, actions, notes. Wraps at phone width, never scrolls sideways. */
+/* Room page lead: the notes. Wraps at phone width, never scrolls sideways. */
 .summary { padding: 8px 16px; display: grid; gap: 8px; max-width: 100%; overflow-wrap: anywhere; }
 .summary-block { border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; background: var(--card); color: var(--card-foreground); }
 .summary-block h2 { margin: 0 0 4px; font-size: 1em; }
 .summary-block p { margin: 2px 0; }
 .summary-block ul { margin: 0; padding-left: 18px; }
 .summary-block code { background: var(--muted); padding: 0 4px; border-radius: 4px; white-space: pre-wrap; }
-.summary-needs-you { border-color: var(--warning-border); }
 .summary-error { color: var(--destructive); margin: 0; }
 .summary .hint { color: var(--muted-foreground); font-size: 12px; }
 .raw-events { margin-top: 8px; }

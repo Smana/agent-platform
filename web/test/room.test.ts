@@ -374,13 +374,58 @@ describe("the room page", () => {
       p.app.remove();
     });
 
-    it("does nothing, and does not throw, for a non-approver", () => {
+    // A watcher sees the panel read-only (spec D3): the link lands on the card, focusing nothing.
+    it("focuses nothing, and does not throw, for a non-approver", () => {
       location.hash = "#01M4A";
       const p = page();
       document.body.append(p.app);
       expect(() => p.join(snapshot({ role: "watcher" }), 0, requested(1, "01M4A"))).not.toThrow();
-      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      expect(p.app.querySelector("#approval-01M4A button")).toBeNull();
+      expect(p.app.querySelector("#approval-01M4A")?.contains(document.activeElement)).toBe(false);
       p.app.remove();
+    });
+  });
+
+  describe("the needs-you panel", () => {
+    const requested = (seq: number, id: string) => event(seq, "approval_requested", { approvalId: id, callId: "c1", class: "forge.pr",
+      action: { command: "git push" }, expiresAt: "2099-01-01T00:00:00Z" });
+    const pill = (p: ReturnType<typeof page>) => p.app.querySelector(".needs-pill")?.textContent;
+
+    it("heads the lead, between the strip and the chat", () => {
+      const p = page();
+      p.join(snapshot({ role: "owner" }), 0, requested(1, "01M4A"));
+      const kids = [...p.app.children];
+      const panel = p.app.querySelector("section.needs")!;
+      expect(kids.indexOf(panel)).toBe(kids.indexOf(p.app.querySelector("header")!) + 1);
+      expect(kids.indexOf(panel)).toBeLessThan(kids.indexOf(p.app.querySelector("main")!));
+      expect(panel.querySelector("#approval-01M4A .approval-command")?.textContent).toBe("git push");
+    });
+
+    // The pill and the panel agree: approver OR owner decides (policy Decide).
+    it("counts an approval in the pill for an owner who is no approver, and not for a collaborator", () => {
+      const o = page();
+      o.join(snapshot({ role: "owner", approver: false }), 0, requested(1, "01M4A"));
+      expect(pill(o)).toBe("Needs you · 1");
+      const c = page();
+      c.join(snapshot({ role: "collaborator", approver: false }), 0, requested(1, "01M4A"));
+      expect(pill(c)).toBeUndefined();
+    });
+
+    // Review focus 3: a decide that lost the race is refused already_decided; the card
+    // leaves on the approval_decided event, with no dead button left behind.
+    it("drops a card whose decide lost the race once the log decides it", () => {
+      const p = page();
+      p.join(snapshot({ approver: true }), 0, requested(1, "01M4A"));
+      p.app.querySelector<HTMLButtonElement>("#approval-01M4A [data-act=approve]")!.click();
+      const act = p.last().sent.at(-1) as { clientSeq: number; action: unknown };
+      expect(act.action).toEqual({ kind: "decide", approvalId: "01M4A", decision: "approved" });
+      p.last().recv({ type: "ack", clientSeq: act.clientSeq, rejected: "already_decided" });
+      expect(p.app.querySelector("footer .notice")?.textContent).toBe("Another approver decided first.");
+      p.last().recv(event(2, "approval_decided", { approvalId: "01M4A", decision: "denied" }));
+      expect(p.app.querySelector("#approval-01M4A")).toBeNull();
+      expect(p.app.querySelector("[data-act=approve]")).toBeNull();
+      expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true);
+      expect(pill(p)).toBeUndefined();
     });
   });
 

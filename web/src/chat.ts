@@ -225,6 +225,9 @@ export class ChatView {
   // fork, when set, gives every row a "fork here" at the last seq it shows.
   constructor(private el: HTMLElement, private cap = maxRows, private fork?: (seq: number) => void) {}
 
+  // rowFor is the row of a call the page still holds, for a link to it.
+  rowFor(callId: string): HTMLElement | undefined { return this.rows.get(this.calls.get(callId)?.seq ?? -1); }
+
   apply(ev: RoomEvent) {
     const p = ev.payload ?? {};
     switch (ev.type) {
