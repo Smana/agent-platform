@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -60,7 +61,12 @@ type Sink interface {
 }
 
 // Exporter turns a recorded Task into its span and exports it.
-type Exporter struct{ exp sdktrace.SpanExporter }
+type Exporter struct {
+	exp sdktrace.SpanExporter
+
+	once sync.Once
+	tp   *sdktrace.TracerProvider
+}
 
 // New exports task spans through exp.
 func New(exp sdktrace.SpanExporter) *Exporter { return &Exporter{exp: exp} }
@@ -76,6 +82,17 @@ func NewOTLP(ctx context.Context, endpoint string) (*Exporter, error) {
 		return nil, fmt.Errorf("otlp trace exporter: %w", err)
 	}
 	return New(exp), nil
+}
+
+// Provider is a tracer provider that batches its spans into this exporter's own span exporter,
+// so a client's spans (the rooms client's) reach the collector the task spans do, with no second
+// connection. It is built on first use; Shutdown flushes it before closing the exporter.
+func (e *Exporter) Provider() *sdktrace.TracerProvider {
+	e.once.Do(func() {
+		e.tp = sdktrace.NewTracerProvider(sdktrace.WithBatcher(e.exp),
+			sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", "agent-factory"))))
+	})
+	return e.tp
 }
 
 // reasonRE is a reason code: the reconciler's own, or a broker's run end reason.
@@ -149,4 +166,9 @@ func (k *keeper) Shutdown(context.Context) error                  { return nil }
 func (k *keeper) ForceFlush(context.Context) error                { return nil }
 
 // Shutdown flushes and closes the exporter.
-func (e *Exporter) Shutdown(ctx context.Context) error { return e.exp.Shutdown(ctx) }
+func (e *Exporter) Shutdown(ctx context.Context) error {
+	if e.tp != nil { // set by Provider's once; Shutdown runs after the last user of the provider
+		return e.tp.Shutdown(ctx) // flushes, then shuts the exporter it wraps
+	}
+	return e.exp.Shutdown(ctx)
+}

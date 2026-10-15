@@ -45,7 +45,7 @@ func (s *Store) ClaimBridge(ctx context.Context, roomID, runID string, live func
 		if alive {
 			return holder, false, nil
 		}
-		tag, err := s.pool.Exec(ctx, `UPDATE rooms SET bridge_run = $3, bridge_seen_at = now()
+		tag, err := s.pool.Exec(ctx, `UPDATE rooms SET bridge_run = $3
 			WHERE room_id = $1 AND bridge_run = $2`, roomID, holder, runID)
 		if err != nil {
 			return "", false, fmt.Errorf("store: claim the bridge of room %s: %w", roomID, err)
@@ -77,20 +77,24 @@ func (s *Store) claimFree(ctx context.Context, roomID, runID string) (string, bo
 	if holder != nil && *holder != runID {
 		return *holder, false, nil
 	}
-	if _, err := tx.Exec(ctx, `UPDATE rooms SET bridge_run = $2, bridge_seen_at = now() WHERE room_id = $1`, roomID, runID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE rooms SET bridge_run = $2 WHERE room_id = $1`, roomID, runID); err != nil {
 		return "", false, err
 	}
 	return runID, true, tx.Commit(ctx)
 }
 
-// TouchBridge renews the lease of the run that holds it. held is false when another
-// run took it: that bridge is displaced, and its appends fail with ErrLeaseLost.
+// TouchBridge reports whether runID still holds the room's lease. held is false when
+// another run took it: that bridge is displaced, and its appends fail with ErrLeaseLost.
 func (s *Store) TouchBridge(ctx context.Context, roomID, runID string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE rooms SET bridge_seen_at = now() WHERE room_id = $1 AND bridge_run = $2`, roomID, runID)
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM rooms WHERE room_id = $1 AND bridge_run = $2`, roomID, runID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("store: touch the bridge of room %s: %w", roomID, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return true, nil
 }
 
 // IsDataError reports a value PostgreSQL refuses outright (SQLSTATE class 22, such as

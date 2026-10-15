@@ -141,17 +141,20 @@ func TestPingerPingsAtOnceThenEveryPeriod(t *testing.T) {
 // reconciler would call. A configured endpoint gives an exporter without dialling it: an
 // unreachable collector loses spans, never the factory's start.
 func TestTaskSink(t *testing.T) {
-	sink, shutdown, err := taskSink(t.Context(), "")
-	if err != nil || sink != nil {
-		t.Fatalf("tracing off: %v %v", sink, err)
+	sink, tp, shutdown, err := taskSink(t.Context(), "")
+	if err != nil || sink != nil || tp != nil {
+		t.Fatalf("tracing off: %v %v %v", sink, tp, err)
 	}
 	shutdown(t.Context())
-	sink, shutdown, err = taskSink(t.Context(), "127.0.0.1:1")
+	sink, tp, shutdown, err = taskSink(t.Context(), "127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := sink.(*tracing.Exporter); !ok {
 		t.Fatalf("tracing on: %T", sink)
+	}
+	if tp == nil { // F15: the rooms client's provider, or its spans are dead
+		t.Fatal("tracing on: no tracer provider for the rooms client")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()

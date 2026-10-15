@@ -24,7 +24,7 @@ erDiagram
     timestamptz driver_acted_at "holder's last action (phase 4)"
     timestamptz last_event_at
     text bridge_run "bridge lease holder, a run id"
-    timestamptz bridge_seen_at
+    timestamptz bridge_seen_at "unused since the lease stopped stamping it; a later release drops it"
     boolean sealed
     timestamptz closed_at
     interval retention "default 90 days"
@@ -195,7 +195,7 @@ One `Running` run per room (spec §1) is enforced where every replica can see it
 |---|---|
 | `hello` | `ClaimBridge` locks the row. Another run keeps the lease for as long as it is live in the `AgentRun` watch, however long since its bridge was seen (ruling SBB): a quiet or cut-off bridge may still have a harness at work. Otherwise the caller takes it |
 | Refused | `409 room_busy`, and one `state_changed{kind: limit, reason: concurrent_run, running: <holder>}` |
-| Renewal | Every batch the holder pushes updates `bridge_seen_at`, fenced like an append. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
+| Renewal | Every batch the holder pushes checks that it still holds the lease: an unlocked `SELECT` on (room, run) in `TouchBridge`, nothing is stamped. Only an append checks under the row lock. A bridge with nothing to push for 30 s sends an empty batch, so a displaced bridge learns it within 30 s. Time alone never frees the lease |
 | A run that ended | Frees the lease at once |
 | A holder whose pod died | Blocks the room until its run ends: a lost pod ends the run `PodLost` (F12), and a hung one ends at its deadline |
 | Fencing (Ruling Y) | Each append checks, under the same row lock, that the caller's run still holds the lease; a displaced bridge gets `409` and appends nothing |

@@ -1,2 +1,4 @@
 web/node_modules/
 web/preview/preview.js
+__pycache__/
+*.pyc

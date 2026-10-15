@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -103,11 +104,17 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	defer shutdownMetrics(ctx, log, exp)
+	sink, tp, shutdownTrace, err := taskSink(ctx, cfg.Tracing.OTLPEndpoint)
+	if err != nil {
+		return err
+	}
+	defer shutdownTrace(context.WithoutCancel(ctx))
+
 	roots, err := rooms.LoadCA(cfg.Broker.CAFile)
 	if err != nil {
 		return err
 	}
-	broker, err := rooms.New(cfg.Broker.URL, cfg.Broker.TokenFile, httpx.New(brokerTimeout, roots), nil)
+	broker, err := rooms.New(cfg.Broker.URL, cfg.Broker.TokenFile, httpx.New(brokerTimeout, roots), tp)
 	if err != nil {
 		return err
 	}
@@ -128,12 +135,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
-
-	sink, shutdownTrace, err := taskSink(ctx, cfg.Tracing.OTLPEndpoint)
-	if err != nil {
-		return err
-	}
-	defer shutdownTrace(context.WithoutCancel(ctx))
 
 	mgr, err := newFactoryManager(log, ns)
 	if err != nil {
@@ -302,15 +303,15 @@ func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (f
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface
 // otherwise, never a typed nil the reconciler would call. The exporter dials lazily: an
 // unreachable collector loses spans, never the factory's start.
-func taskSink(ctx context.Context, endpoint string) (tracing.Sink, func(context.Context), error) {
+func taskSink(ctx context.Context, endpoint string) (tracing.Sink, trace.TracerProvider, func(context.Context), error) {
 	if endpoint == "" {
-		return nil, func(context.Context) {}, nil
+		return nil, nil, func(context.Context) {}, nil
 	}
 	exp, err := tracing.NewOTLP(ctx, endpoint)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return exp, func(ctx context.Context) {
+	return exp, exp.Provider(), func(ctx context.Context) {
 		dctx, cancel := context.WithTimeout(ctx, traceDrain)
 		defer cancel()
 		_ = exp.Shutdown(dctx)

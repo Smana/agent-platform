@@ -170,3 +170,26 @@ func TestMintNeverReturnsAZeroId(t *testing.T) {
 		t.Fatalf("zero draws are redrawn: %s %s", tr, sp)
 	}
 }
+
+// F15: the provider handed to clients batches into the exporter's own span exporter, so their
+// spans leave through the same pipeline as the task spans.
+func TestProviderExportsThroughTheExporter(t *testing.T) {
+	mem := tracetest.NewInMemoryExporter()
+	e := New(mem)
+	tp := e.Provider()
+	if e.Provider() != tp {
+		t.Fatal("Provider built a second provider")
+	}
+	_, span := tp.Tracer("rooms").Start(t.Context(), "broker GET /x")
+	span.End()
+	if err := tp.ForceFlush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := mem.GetSpans()
+	if len(got) != 1 || got[0].Name != "broker GET /x" {
+		t.Fatalf("spans: %+v", got)
+	}
+	if err := e.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
