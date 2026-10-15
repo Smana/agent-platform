@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -57,6 +58,7 @@ type State struct {
 	Sealed    string              // "" while open; "Closed" (CloseRoom) or "Sealed" (MaxEvents)
 	LastSeq   int64
 	RoomPhase string
+	Running   bool // an agent run joined and has not left
 }
 
 // Verdict is the latest reviewer or tester verdict.
@@ -152,6 +154,11 @@ func (st *State) Add(evs []envelope.Event) {
 			if json.Unmarshal(ev.Payload, &a) == nil {
 				delete(st.Pending, a.ApprovalID) // approved, denied, expired or superseded
 			}
+		case envelope.Participant:
+			var p envelope.ParticipantPayload
+			if json.Unmarshal(ev.Payload, &p) == nil && strings.HasPrefix(p.Principal, "agent:") {
+				st.Running = p.Change == "joined"
+			}
 		case envelope.Message:
 			var m envelope.MessagePayload
 			if json.Unmarshal(ev.Payload, &m) != nil {
@@ -230,7 +237,6 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.Status.Phase, s.Status.Run, s.Status.Budget, s.Status.PR, s.Status.Issue = f.Phase, f.Run, f.Budget, f.PR, f.Issue
 	}
 	s.Status.LastVerdict = st.Verdict
-	s.Status.Reason, s.Status.Next = waiting(st.Facts)
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
 	for _, n := range st.Notes {
@@ -240,8 +246,9 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	}
 	if st.Sealed != "" {
 		s.Status.Phase = st.Sealed // the sealed room refuses new facts, so the last task phase would be stale
-		return s                   // read-only: no needs, no actions
+		return s                   // read-only: no wait, no needs, no actions
 	}
+	s.Status.Reason, s.Status.Next = waiting(st.Facts)
 	// Deciding happens in the web UI: judge "could decide" as the web UI would, so a CLI caller
 	// still learns an approval is needed, with a link and no command (D4).
 	web := sub
@@ -266,7 +273,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
 			CLI: fmt.Sprintf("roomctl post %s --queue '<text>'", room)})
 	}
-	if policy.Allowed(sub, policy.Steer) { // Steer is web-only in the matrix (P18)
+	if policy.Allowed(sub, policy.Steer) && (st.Facts != nil && st.Facts.Run != nil || st.Running) { // web-only in the matrix (P18); needs a run
 		s.Actions = append(s.Actions, Action{Kind: "steer", What: "steer the running agent"})
 	}
 	// No dedicated stop right exists: stopping closes the task, which is the owner's (Close).

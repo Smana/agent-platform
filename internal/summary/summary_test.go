@@ -295,7 +295,9 @@ func TestAHumanHoldNeedsWhoeverCanReleaseIt(t *testing.T) {
 }
 
 func TestSteeringHasNoCLIAndIsWebOnly(t *testing.T) {
-	web := summary.View(summary.Fold(nil), "r", "u", driverWeb(), 0, time.Now())
+	running := summary.Fold([]envelope.Event{ev(1, envelope.Participant, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		map[string]any{"principal": "agent:cf4ato2x", "change": "joined"})})
+	web := summary.View(running, "r", "u", driverWeb(), 0, time.Now())
 	steer := false
 	for _, a := range web.Actions {
 		if a.Kind == "steer" {
@@ -310,7 +312,7 @@ func TestSteeringHasNoCLIAndIsWebOnly(t *testing.T) {
 	}
 	cli := driverWeb()
 	cli.WebUI = false
-	for _, a := range summary.View(summary.Fold(nil), "r", "u", cli, 0, time.Now()).Actions {
+	for _, a := range summary.View(running, "r", "u", cli, 0, time.Now()).Actions {
 		if a.Kind == "steer" {
 			t.Fatal("a CLI caller is offered steering")
 		}
@@ -385,5 +387,45 @@ func assertJSONEqual(t *testing.T, want json.RawMessage, got any) {
 	_ = json.Unmarshal(b, &g)
 	if !reflect.DeepEqual(w, g) {
 		t.Fatalf("summary mismatch\nwant %s\ngot  %s", want, b)
+	}
+}
+
+// A sealed room refuses new facts, so its last wait reason is history, not a status.
+func TestASealedRoomCarriesNoWaitingLine(t *testing.T) {
+	factory := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}
+	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
+	evs := []envelope.Event{
+		ev(1, envelope.StateChanged, factory, envelope.TaskStatePayload(envelope.TaskFacts{Phase: "AwaitingHuman", Reason: "policy_pending"})),
+		ev(2, envelope.StateChanged, broker, envelope.StatePayload("room_phase", map[string]any{"phase": "Closed", "reason": "owner"})),
+	}
+	s := summary.View(summary.Fold(evs), "r", "u", owner(), 0, time.Now())
+	if s.Status.Reason != "" || s.Status.Next != "" {
+		t.Fatalf("a sealed room waits: reason %q next %q", s.Status.Reason, s.Status.Next)
+	}
+}
+
+// Steering needs something to steer: a run the facts name, or an agent that joined and has not left.
+func TestSteerNeedsARunningRun(t *testing.T) {
+	broker := envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}
+	join := ev(1, envelope.Participant, broker, map[string]any{"principal": "agent:cf4ato2x", "change": "joined", "role": "implementer"})
+	leave := ev(2, envelope.Participant, broker, map[string]any{"principal": "agent:cf4ato2x", "change": "left"})
+	cases := []struct {
+		name string
+		evs  []envelope.Event
+		want bool
+	}{
+		{"empty room", nil, false},
+		{"agent joined", []envelope.Event{join}, true},
+		{"agent left", []envelope.Event{join, leave}, false},
+		{"facts name a run", []envelope.Event{ev(3, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"},
+			envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Implementing", Run: &envelope.RunFact{ID: "cf4ato2x", Role: "implementer"}}))}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := slices.Contains(actionKinds(summary.View(summary.Fold(tc.evs), "r", "u", driverWeb(), 0, time.Now())), "steer")
+			if got != tc.want {
+				t.Fatalf("steer offered = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
