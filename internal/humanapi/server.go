@@ -310,6 +310,6 @@ func (s *Server) dropped(ctx context.Context, reason string) {
 
 func (s *Server) lag(ctx context.Context, ev envelope.Event) {
 	if s.Metrics != nil {
-		s.Metrics.FanoutLag.Record(ctx, time.Since(ev.TS).Seconds())
+		s.Metrics.FanoutLag.Record(ctx, s.now().Sub(ev.TS).Seconds())
 	}
 }

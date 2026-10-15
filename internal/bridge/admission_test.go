@@ -71,7 +71,11 @@ func TestARoomKeptBusyPastThePatienceRefusesTheRun(t *testing.T) {
 	calls := len(fb.callLog())
 	// Run has returned once done closes, so nothing runs behind the checks below.
 	r.cancel()
-	<-r.done
+	select {
+	case <-r.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
 	if got := fb.callLog(); len(got) != calls {
 		t.Fatalf("a refused bridge kept saying hello: %v", got[calls:])
 	}
