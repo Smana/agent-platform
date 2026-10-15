@@ -212,6 +212,7 @@ func (r *Reconciler) observe(ctx context.Context, t *v1alpha1.Task) (runs.Run, b
 		return runs.Run{}, false, err
 	}
 	x, found := absorb(t, all)
+	r.price(ctx, t)
 	return x, found, nil
 }
 

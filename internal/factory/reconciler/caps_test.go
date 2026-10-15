@@ -427,7 +427,13 @@ func (meterStore) Annotate(context.Context, string, map[string]string) error { r
 
 type meterSource map[string]int64
 
-func (s meterSource) RunTokens(context.Context) (map[string]int64, error) { return s, nil }
+func (s meterSource) RunUsage(context.Context) (map[string]meter.Usage, error) {
+	out := make(map[string]meter.Usage, len(s))
+	for id, n := range s {
+		out[id] = meter.Usage{Tokens: n}
+	}
+	return out, nil
+}
 
 // #78: the reservation's key is the run's deterministic id (R48), so a replay after a lost write
 // reserves nothing twice, and the meter that settles the run drops it once: a meter restarted

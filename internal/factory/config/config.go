@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,6 +29,10 @@ import (
 const (
 	// RunTokenCeiling is the gateway's per-run ceiling and SP1's XRD maximum (C3, C5).
 	RunTokenCeiling = 5_000_000
+	// RefUSDPerMToken is design D11's reference token, $1.70 per million: a tier that sets no
+	// runUSD or taskUSD while meter.prices is set caps at its runTokens or taskTokens of it, so
+	// the standard tier's 1.5 M and 3 M become $2.55 and $5.10 (OD-6 (b), J-AC1).
+	RefUSDPerMToken = 1.70
 	// MaxTextCeiling leaves room for the preamble in AgentRun task.text (16384, R6).
 	MaxTextCeiling = 14336
 	// maxRunMinutes is SP1's XRD maximum for budget.maxMinutes.
@@ -186,12 +191,34 @@ type Breaker struct {
 	MaxReverts int `json:"maxReverts"`
 }
 
-// Tier is a model and its budgets.
+// Tier is a model and its budgets. RunUSD and TaskUSD cap a run and a task in USD, priced by
+// meter.prices, in place of RunTokens and TaskTokens; 0 keeps the token cap. With meter.prices
+// set each defaults to RefUSD of its token cap.
 type Tier struct {
-	Model      string `json:"model"`
-	RunTokens  int64  `json:"runTokens"`
-	TaskTokens int64  `json:"taskTokens"`
-	RunMinutes int64  `json:"runMinutes"`
+	Model      string  `json:"model"`
+	RunTokens  int64   `json:"runTokens"`
+	TaskTokens int64   `json:"taskTokens"`
+	RunMinutes int64   `json:"runMinutes"`
+	RunUSD     float64 `json:"runUSD,omitempty"`
+	TaskUSD    float64 `json:"taskUSD,omitempty"`
+}
+
+// RefUSD is tokens reference tokens, in USD to the cent.
+func RefUSD(tokens int64) float64 {
+	return math.Round(float64(tokens)*RefUSDPerMToken/1e4) / 100
+}
+
+// MicroUSD is usd in the micro-dollars the Task CRD and the meter count in.
+func MicroUSD(usd float64) int64 { return int64(math.Round(usd * 1e6)) }
+
+// Price is a model's list price in USD per million tokens of each type the gateway reports.
+// The gateway's input count includes the cache reads and writes, so each is priced once.
+type Price struct {
+	Input     float64 `json:"input"`
+	CacheRead float64 `json:"cacheRead"`
+	// CacheWrite prices cache_creation_input; omitted, the input rate (Z.ai bills no write).
+	CacheWrite float64 `json:"cacheWrite,omitempty"`
+	Output     float64 `json:"output"`
 }
 
 // Template is a team: the roles run in order on one branch.
@@ -248,6 +275,9 @@ type Meter struct {
 	// ThrottleQuery is the LogsQL that names them: the last minutes of 429s with Envoy's RL
 	// flag on agent-router, grouped by the verified identity header.
 	ThrottleQuery string `json:"throttleQuery"`
+	// Prices are by the tier's logical model (C5), since the run's claim names that one. Pricing
+	// a run also needs Query grouped by gen_ai_token_type; an untyped reply meters in tokens.
+	Prices map[string]Price `json:"prices,omitempty"`
 }
 
 // Tracing is where task spans go (R46): the trace collector's platform port. Empty: tracing off.
@@ -341,6 +371,17 @@ func Parse(raw []byte) (*Config, error) {
 	if c.Resume.MaxPerTask == 0 {
 		c.Resume.MaxPerTask = defaultResumesPerTask
 	}
+	if len(c.Meter.Prices) > 0 { // without prices, a tier keeps its token cap (one release of compatibility)
+		for name, t := range c.Tiers {
+			if t.RunUSD == 0 {
+				t.RunUSD = RefUSD(t.RunTokens)
+			}
+			if t.TaskUSD == 0 {
+				t.TaskUSD = RefUSD(t.TaskTokens)
+			}
+			c.Tiers[name] = t
+		}
+	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
@@ -414,6 +455,7 @@ func (c *Config) Validate() error {
 			bad("%s must be positive", p.key)
 		}
 	}
+	finite := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 	for _, name := range tiers() {
 		t, ok := c.Tiers[name]
 		switch {
@@ -427,6 +469,26 @@ func (c *Config) Validate() error {
 			bad("tier %s: taskTokens below runTokens", name)
 		case t.RunMinutes < 1 || t.RunMinutes > maxRunMinutes:
 			bad("tier %s: runMinutes must be 1..%d", name, maxRunMinutes)
+		case !finite(t.RunUSD) || t.RunUSD < 0:
+			bad("tier %s: runUSD must be a positive amount", name)
+		case !finite(t.TaskUSD) || t.TaskUSD < 0:
+			bad("tier %s: taskUSD must be a positive amount", name)
+		case t.TaskUSD > 0 && t.TaskUSD < t.RunUSD:
+			bad("tier %s: taskUSD below runUSD", name)
+		case t.RunUSD > 0 || t.TaskUSD > 0:
+			// Refused rather than metered at $0: a cap nothing reaches.
+			if _, ok := c.Meter.Prices[t.Model]; !ok {
+				bad("tier %s: runUSD and taskUSD need meter.prices.%s", name, t.Model)
+			}
+		}
+	}
+	for model, p := range c.Meter.Prices {
+		switch {
+		case !slices.Contains(models(), model):
+			bad("meter.prices: %q is not a C5 logical name", model)
+		case !finite(p.Input) || !finite(p.CacheRead) || !finite(p.Output) || !finite(p.CacheWrite) ||
+			p.Input <= 0 || p.CacheRead <= 0 || p.Output <= 0 || p.CacheWrite < 0:
+			bad("meter.prices.%s: input, cacheRead and output must be positive, cacheWrite 0 or more", model)
 		}
 	}
 	if len(c.Tiers) != len(tiers()) {

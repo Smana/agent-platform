@@ -50,9 +50,11 @@ func NewVM(rawURL, query string, hc *http.Client) (*VM, error) {
 	return &VM{base: u, query: query, hc: hc}, nil
 }
 
-// RunTokens is each run's raw token counter, by run id. A series that is not a run's, or whose
-// value is not a finite, non-negative count, is no reading.
-func (v *VM) RunTokens(ctx context.Context) (map[string]int64, error) {
+// RunUsage is each run's raw counters, by run id. A series that is not a run's, or whose value is
+// not a finite, non-negative count, is no reading. A series labelled gen_ai_token_type counts
+// as its type (reasoning, a subset of output, and unknown types are ignored); an unlabelled one
+// is the token count itself, so an untyped query meters as before.
+func (v *VM) RunUsage(ctx context.Context) (map[string]Usage, error) {
 	target := v.base.JoinPath("api/v1/query")
 	target.RawQuery = url.Values{"query": {v.query}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
@@ -87,7 +89,7 @@ func (v *VM) RunTokens(ctx context.Context) (map[string]int64, error) {
 	if body.Status != "success" || body.Data.ResultType != "vector" {
 		return nil, fmt.Errorf("meter: query: status %q, result %q: want a success and a vector", body.Status, body.Data.ResultType)
 	}
-	out := map[string]int64{}
+	out := map[string]Usage{}
 	for _, s := range body.Data.Result {
 		m := runSA.FindStringSubmatch(s.Metric["ar_agent"])
 		if m == nil {
@@ -98,7 +100,24 @@ func (v *VM) RunTokens(ctx context.Context) (map[string]int64, error) {
 		if err != nil || math.IsNaN(f) || f < 0 || f > maxReading {
 			continue
 		}
-		out[m[1]] += int64(f)
+		u, n := out[m[1]], int64(f)
+		switch typ, typed := s.Metric["gen_ai_token_type"]; {
+		case !typed:
+			u.Tokens += n
+		case typ == "input":
+			u.Input += n
+			u.Tokens += n
+			u.Typed = true
+		case typ == "output":
+			u.Output += n
+			u.Tokens += n
+			u.Typed = true
+		case typ == "cached_input":
+			u.CacheRead += n
+		case typ == "cache_creation_input":
+			u.CacheWrite += n
+		}
+		out[m[1]] = u
 	}
 	return out, nil
 }

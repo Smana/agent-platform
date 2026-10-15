@@ -53,11 +53,17 @@ func (s *store) Annotate(_ context.Context, id string, kv map[string]string) err
 
 type source map[string]int64
 
-func (s source) RunTokens(context.Context) (map[string]int64, error) { return s, nil }
+func (s source) RunUsage(context.Context) (map[string]Usage, error) {
+	out := make(map[string]Usage, len(s))
+	for id, n := range s {
+		out[id] = Usage{Tokens: n}
+	}
+	return out, nil
+}
 
 type broken struct{}
 
-func (broken) RunTokens(context.Context) (map[string]int64, error) {
+func (broken) RunUsage(context.Context) (map[string]Usage, error) {
 	return nil, errors.New("vmsingle down")
 }
 
@@ -75,7 +81,7 @@ func TestTick(t *testing.T) {
 	var revoked []string
 	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1000, "bbbbbbbb": 400, "cccccccc": 5000, "dddddddd": 500,
 		"eeeeeeee": 1300, "ffffffff": 9_000_000, "hhhhhhhh": 999},
-		OnRevoke: func(_ context.Context, r string) { revoked = append(revoked, r) }}
+		OnRevoke: func(_ context.Context, r, _ string) { revoked = append(revoked, r) }}
 	if err := m.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +219,7 @@ func TestAFailedAnnotationIsNotARevocation(t *testing.T) {
 	st := &store{patches: map[string]map[string]string{}, fail: map[string]bool{"aaaaaaaa": true}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 10}, {ID: "bbbbbbbb", Phase: "Running", MaxTokens: 10}}}
 	var revoked int
-	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 20, "bbbbbbbb": 20}, OnRevoke: func(context.Context, string) { revoked++ }}
+	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 20, "bbbbbbbb": 20}, OnRevoke: func(context.Context, string, string) { revoked++ }}
 	if err := m.Tick(t.Context()); err == nil {
 		t.Fatal("the failure is reported")
 	}
@@ -228,10 +234,10 @@ type signalling struct {
 	next  chan int64
 }
 
-func (s signalling) RunTokens(context.Context) (map[string]int64, error) {
+func (s signalling) RunUsage(context.Context) (map[string]Usage, error) {
 	v := <-s.next
 	s.reads <- v
-	return map[string]int64{"aaaaaaaa": v}, nil
+	return map[string]Usage{"aaaaaaaa": {Tokens: v}}, nil
 }
 
 func TestStartTicksAtOnceThenEveryPeriodUntilCancelled(t *testing.T) {

@@ -46,11 +46,11 @@ type switchable struct {
 	down bool
 }
 
-func (s *switchable) RunTokens(ctx context.Context) (map[string]int64, error) {
+func (s *switchable) RunUsage(ctx context.Context) (map[string]Usage, error) {
 	if s.down {
 		return nil, errors.New("vmsingle down")
 	}
-	return s.source.RunTokens(ctx)
+	return s.source.RunUsage(ctx)
 }
 
 // #54: a failed usage read is counted and stamps nothing, so admission under an enforced cap
