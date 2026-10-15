@@ -118,6 +118,13 @@ type Server struct {
 	// MaxLifetime caps a connection below its token's expiry (1 h): ZITADEL's
 	// tokens live 12 h by default, and this bounds a revoked member's socket.
 	MaxLifetime time.Duration
+	// Now is the clock the token-expiry check and the summary read; nil means time.Now.
+	// Deadlines handed to the runtime (the route's write deadline, a context's) stay on
+	// its own clock: a fake one there would expire a request before it starts, or never.
+	Now func() time.Time
+	// Timer starts the lifetime cap and each ping's wait: it returns the channel that
+	// fires after d and a stop. Nil means time.NewTimer; tests step their own.
+	Timer func(d time.Duration) (fired <-chan time.Time, stop func() bool)
 
 	mu      sync.Mutex
 	perUser map[string]int
@@ -203,6 +210,21 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, drain time.Duration
 	return nil
 }
 
+func (s *Server) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+func (s *Server) timer(d time.Duration) (<-chan time.Time, func() bool) {
+	if s.Timer != nil {
+		return s.Timer(d)
+	}
+	t := time.NewTimer(d)
+	return t.C, t.Stop
+}
+
 func (s *Server) log() *slog.Logger {
 	if s.Logger == nil {
 		return slog.New(slog.DiscardHandler)
@@ -213,7 +235,7 @@ func (s *Server) log() *slog.Logger {
 // principal authenticates and admits r, or writes the refusal.
 func (s *Server) principal(w http.ResponseWriter, r *http.Request) (authn.Principal, bool) {
 	p, err := s.Humans.Authenticate(r)
-	if err == nil && !p.Expiry.After(time.Now()) {
+	if err == nil && !p.Expiry.After(s.now()) {
 		// Inside the verifier's leeway: already past min(exp, 1 h) (review M9).
 		err = fmt.Errorf("%w: expired", authn.ErrUnauthenticated)
 	}

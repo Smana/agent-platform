@@ -6,7 +6,6 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -56,7 +55,7 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		last = page[len(page)-1].Seq
 	}
-	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, time.Now())
+	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, s.now())
 	s.warnNoRepository(view, fold.Facts, id, sub)
 	writeJSON(w, view)
 }

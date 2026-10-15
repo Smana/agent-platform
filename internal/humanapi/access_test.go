@@ -500,13 +500,18 @@ func openAs(t *testing.T, e env, h http.Header) *pumped {
 	return p
 }
 
-func fastPings(s *Server, _ *fanout.Hub, _ *hubView) { s.PingEvery = 10 * time.Millisecond }
-
-// rechecked waits for two more of the socket's re-checks: each reads the clock of both caches.
-func rechecked(t *testing.T, w *gitHubWorld) {
+// rechecked steps the ping until the socket has re-checked D7 again: each re-check reads the
+// clock of both caches.
+func rechecked(t *testing.T, w *gitHubWorld, timers *fakeTimers) {
 	t.Helper()
 	from := w.checked()
-	eventually(t, "a re-check on the ping's beat", func() bool { return w.checked() >= from+4 })
+	for range 5 {
+		timers.beat(t)
+		if w.checked() >= from+4 {
+			return
+		}
+	}
+	t.Fatal("no re-check on the ping's beat")
 }
 
 // R17, R21: an open socket re-runs the D7 gate on every ping, against the cache, so a revoked
@@ -524,16 +529,18 @@ func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := world(map[string][]string{"Smana/a": {"dev1"}})
-			e := setup(t, abc(t), w.option(), fastPings)
+			timers := newFakeTimers(30 * time.Second)
+			e := setup(t, abc(t), w.option(), timers.option)
 			p := openAs(t, e, header("dev1"))
-			rechecked(t, w)
+			rechecked(t, w, timers)
 			w.set(func() { tc.change(w); w.now = w.now.Add(4 * time.Minute) })
-			rechecked(t, w)
+			rechecked(t, w, timers)
 			e.log.add(1)
 			if f := p.next(t); f.Type != wire.FrameEvent || f.Event.Seq != 11 {
 				t.Fatalf("a fresh cached answer must keep the stream: %+v", f)
 			}
 			w.set(func() { w.now = w.now.Add(time.Minute) }) // the cached answers are a TTL old
+			take(t, timers.pings, "ping").c <- time.Time{}   // the beat that cuts it
 			if code, reason := p.closed(t); code != tc.code || reason != tc.reason {
 				t.Fatalf("closed %d %q, want %d %q", code, reason, tc.code, tc.reason)
 			}
@@ -550,10 +557,13 @@ func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 // Admins bypass D7 at connect, and so on an open socket: the gate is never consulted.
 func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
 	w := world(map[string][]string{})
-	e := setup(t, abc(t), w.option(), fastPings)
+	timers := newFakeTimers(30 * time.Second)
+	e := setup(t, abc(t), w.option(), timers.option)
 	p := openAs(t, e, admin("boss"))
 	w.set(func() { w.down, w.now = true, w.now.Add(time.Hour) })
-	time.Sleep(100 * time.Millisecond) // ten pings
+	for range 10 {
+		timers.beat(t)
+	}
 	e.log.add(1)
 	if f := p.next(t); f.Type != wire.FrameEvent || f.Event.Seq != 11 {
 		t.Fatalf("%+v", f)

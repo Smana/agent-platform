@@ -1279,8 +1279,14 @@ func TestEverySubscriptionIsReleased(t *testing.T) {
 
 // MaxLifetime caps a connection whose token outlives it, closing 4001 (review M1).
 func TestTheLifetimeCap(t *testing.T) {
-	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.MaxLifetime = 200 * time.Millisecond })
+	timers := newFakeTimers(30 * time.Second)
+	e := setup(t, timers.option, func(s *Server, _ *fanout.Hub, _ *hubView) { s.MaxLifetime = 200 * time.Millisecond })
 	c := dial(t, e, "dev", hello(nil, 0)) // the token lives 1 h
+	if lifetime := take(t, timers.caps, "lifetime"); lifetime.d != 200*time.Millisecond {
+		t.Fatalf("the cap runs %s, want MaxLifetime", lifetime.d)
+	} else {
+		lifetime.c <- time.Time{}
+	}
 	if code, reason := closed(t, c); code != closeReauth || reason != "reauth" {
 		t.Fatalf("closed %d %q", code, reason)
 	}
