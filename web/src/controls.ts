@@ -101,8 +101,9 @@ export function claimText(result: unknown): string {
 // call's own, else its class), then the class, the run and the deadline, and the raw
 // action as text behind a toggle (T3). render.ts shows an approval_requested event with
 // it; the needs-you panel (needs.ts) adds the link to the call and the decide controls.
+// withCall puts the call id in the meta line, for the raw log, where no link reaches the call.
 export function approvalCard(a: { class: string; runId?: string; callId: string; action: unknown; expiresAt: string },
-  tag: "li" | "div" = "div"): HTMLElement {
+  tag: "li" | "div" = "div", withCall = false): HTMLElement {
   const li = el(tag, { className: "approval" });
   const due = new Date(a.expiresAt);
   // Today's deadline shows its time; another day's, its date too (R11).
@@ -112,7 +113,7 @@ export function approvalCard(a: { class: string; runId?: string; callId: string;
   json.append(el("summary", { textContent: "action" }), el("pre", { textContent: JSON.stringify(a.action ?? null, null, 2) }));
   li.append(
     el("pre", { className: "approval-command", textContent: typeof command === "string" && command ? command : a.class }),
-    el("div", { className: "approval-meta", textContent: `${a.class}${a.runId ? " · run " + a.runId : ""} · expires ${when}` }),
+    el("div", { className: "approval-meta", textContent: `${a.class}${a.runId ? " · run " + a.runId : ""}${withCall ? " · call " + a.callId : ""} · expires ${when}` }),
     json,
   );
   return li;

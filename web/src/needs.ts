@@ -21,7 +21,9 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
   root.setAttribute("aria-labelledby", "needs-title");
   const approvals = el("ul", { className: "approvals" });
   const other = el("ul", { className: "needs-other" });
-  root.replaceChildren(el("h2", { id: "needs-title", textContent: "Needs you" }), approvals, other);
+  const title = el("h2", { id: "needs-title", textContent: "Needs you" });
+  root.replaceChildren(title, approvals, other);
+  root.hidden = true; // until something needs showing: never an empty heading
   const rows = keyed(approvals);
   // Approvers and owners decide (policy Decide); a sealed room answers every act sealed.
   // The broker still checks four-eyes and who decided first.
@@ -33,8 +35,9 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
     li.id = approvalAnchor(a.approvalId);
     const command = li.querySelector<HTMLElement>(".approval-command")!;
     command.id = `${li.id}-command`;
-    // A same-page link to the call's row, shown while the chat holds that row.
-    const link = el("a", { className: "approval-call", href: "#", textContent: "see the call" });
+    // A same-page link to the call's row, shown while the chat holds that row; refresh
+    // names it by the row's seq, which also tells two cards' links apart.
+    const link = el("a", { className: "approval-call", href: "#" });
     link.dataset.callId = a.callId;
     link.onclick = (e) => {
       e.preventDefault();
@@ -70,7 +73,16 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
       rows(pending.map((a) => ({ key: a.approvalId, sig: String(decide), build: () => card(a, decide) })));
       // A call's row comes and goes (it leaves at the chat's cap): the link follows it
       // without a rebuild, which would drop a reason being typed.
-      for (const l of approvals.querySelectorAll<HTMLAnchorElement>("a.approval-call")) l.hidden = !chat.rowFor(l.dataset.callId ?? "");
+      for (const l of approvals.querySelectorAll<HTMLAnchorElement>("a.approval-call")) {
+        const row = chat.rowFor(l.dataset.callId ?? "");
+        l.hidden = !row;
+        const text = row ? `see the call #${row.dataset.seq ?? "?"}` : "see the call";
+        if (l.textContent !== text) l.textContent = text;
+      }
+      // A viewer who decides nothing here and has no merge or hold reads the cards as
+      // someone else's turn.
+      const heading = panel.count() > 0 ? "Needs you" : "Waiting for an approver";
+      if (title.textContent !== heading) title.textContent = heading;
       root.hidden = pending.length === 0 && others === 0;
     },
     setSummary(s: Summary): void {

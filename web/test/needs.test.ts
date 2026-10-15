@@ -13,7 +13,7 @@ const sum = (needs: Summary["needsYou"]): Summary => ({ apiVersion: "summary/v1"
   notes: { untrusted: true, items: [] }, cursor: "seq:1" });
 function mount(state = new RoomState(), sent: Record<string, unknown>[] = []) {
   const root = document.createElement("section");
-  const row = document.createElement("details"); row.dataset.callId = "c9";
+  const row = document.createElement("details"); row.dataset.callId = "c9"; row.dataset.seq = "12";
   const needs = mountNeeds(root, { send: (f) => { sent.push(f); return true; } }, state, () => you, { rowFor: (id) => (id === "c9" ? row : undefined) });
   return { root, needs, sent, row };
 }
@@ -25,7 +25,8 @@ describe("the needs-you panel", () => {
     const card = root.querySelector("#approval-01M4A")!;
     expect(card.querySelector(".approval-command")?.textContent).toBe("git push origin agent/ibbay5ud");
     expect(card.querySelector("details.approval-json pre")?.textContent).toContain('"timeout": 600');
-    expect(card.querySelector("a.approval-call")?.textContent).toBe("see the call");
+    expect(card.querySelector("a.approval-call")?.textContent).toBe("see the call #12");
+    expect(root.querySelector("h2")?.textContent).toBe("Needs you");
     expect(card.querySelector('button[data-act="approve"]')?.classList.contains("primary")).toBe(true);
     expect(card.querySelector('input[name="decisionReason"]')?.getAttribute("aria-label")).toBe("reason for the decision (optional)");
     expect(needs.count()).toBe(1);
@@ -60,6 +61,21 @@ describe("the needs-you panel", () => {
     // The pill counts what the viewer may decide: a read-only card is shown, not counted.
     expect(needs.count()).toBe(0);
     expect(root.hidden).toBe(false);
+    expect(root.querySelector("h2")?.textContent).toBe("Waiting for an approver");
+  });
+
+  // Fix round 1: no empty heading before the first refresh, nor in a room that never connects.
+  it("starts hidden, before any refresh", () => {
+    expect(mount().root.hidden).toBe(true);
+  });
+
+  // A hold or a merge needs this viewer even when it may not decide the approvals.
+  it("heads the panel Needs you for a merge or a hold, whoever decides the approvals", () => {
+    const state = new RoomState(); state.reset({ driver: "human:a", driverEpoch: 1, approvals: [approval] }, 20);
+    const root = document.createElement("section");
+    const needs = mountNeeds(root, { send: () => true }, state, () => ({ ...you, role: "collaborator", approver: false }), { rowFor: () => undefined });
+    needs.setSummary(sum([{ kind: "hold", id: "waiting_human_driver", what: "hand the driver back", url: "u" }]));
+    expect(root.querySelector("h2")?.textContent).toBe("Needs you");
   });
 
   // The strip's pill and the panel agree: approver OR owner may decide.

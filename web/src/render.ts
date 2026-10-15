@@ -155,7 +155,7 @@ export function renderEvent(ev: RoomEvent): HTMLElement {
     }
     case "approval_requested": // the card, read-only: deciding is the needs-you panel's (§6)
       row.append(approvalCard({ class: String(p.class ?? ""), runId: ev.runId, callId: String(p.callId ?? ""), action: p.action,
-        expiresAt: String(p.expiresAt ?? "") }));
+        expiresAt: String(p.expiresAt ?? "") }, "div", true));
       break;
     case "approval_decided":
       row.append(el("div", `decision decision-${cls(p.decision)}`, [p.decision, p.reason ?? ""].filter(Boolean).join(" · ")));

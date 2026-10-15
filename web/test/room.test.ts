@@ -97,6 +97,7 @@ describe("the room page", () => {
       row.open = false;
       const link = p.app.querySelector<HTMLAnchorElement>("a.approval-call")!;
       expect(link.hidden).toBe(false);
+      expect(link.textContent).toBe("see the call #3");
       link.click();
       expect(row.open).toBe(true);
       expect(scrolled).toBe(2);
@@ -368,8 +369,10 @@ describe("the room page", () => {
   // Review focus 1: the strip needs no summary; the state frame alone heads the page.
   it("renders the strip from the state frame when the summary cannot be fetched", async () => {
     const p = page(() => Promise.resolve(new Response("", { status: 503 })));
+    expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true); // before join: no empty heading
     p.join(snapshot(), 0);
     await vi.runOnlyPendingTimersAsync();
+    expect(p.app.querySelector<HTMLElement>("section.needs")!.hidden).toBe(true);
     expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
     expect(p.phase()).toBe("Open");
     expect(p.app.querySelector(".chip-driver")?.textContent).toBe("driver: human:a");
