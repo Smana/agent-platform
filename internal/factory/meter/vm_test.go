@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/httpx"
 )
 
@@ -112,5 +114,27 @@ func TestNewVMRefuses(t *testing.T) {
 		if _, err := NewVM(u, "Q", hc); err != nil {
 			t.Fatalf("%s: %v", u, err)
 		}
+	}
+}
+
+// The gateway's input series includes the cache tokens (docs/operations.md, run and task budgets):
+// cost prices the difference as fresh input. A reply read from testdata pins the contract end to end.
+func TestCostFollowsTheGatewaySeries(t *testing.T) {
+	raw, err := os.ReadFile("testdata/query_reply.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := parseUsage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := usage["cf4ato2x"]
+	if u.Input != 1_000_000 || u.CacheRead != 800_000 || u.CacheWrite != 50_000 || u.Output != 100_000 || !u.Typed {
+		t.Fatalf("usage %+v", u)
+	}
+	p := config.Price{Input: 1.40, CacheRead: 0.26, CacheWrite: 1.40, Output: 4.40}
+	// fresh 150,000 x 1.40 + 800,000 x 0.26 + 50,000 x 1.40 + 100,000 x 4.40 = 928,000 micro-USD
+	if got := cost(p, u); got != 928_000 {
+		t.Fatalf("cost = %d micro-USD, want 928000", got)
 	}
 }

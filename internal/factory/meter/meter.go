@@ -82,7 +82,8 @@ type Store interface {
 }
 
 // Usage is a run's raw counters. Tokens is what the token caps count: input plus output, or an
-// untyped series' value. Input includes CacheRead and CacheWrite, as the gateway reports it.
+// untyped series' value. `Input` is the gateway's `input` series, which **includes** `cached_input`
+// and `cache_creation_input`; `cost` subtracts them to price fresh input.
 type Usage struct {
 	Tokens, Input, CacheRead, CacheWrite, Output int64
 	// Typed: the reading carried gen_ai_token_type, so it can be priced.

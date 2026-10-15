@@ -1,0 +1,13 @@
+{
+  "_note": "hand-written from docs/operations.md; replace with a recorded reply",
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {"metric": {"ar_agent": "system:serviceaccount:agents:xplane-run-cf4ato2x", "gen_ai_token_type": "input"}, "value": [1727430000, "1000000"]},
+      {"metric": {"ar_agent": "system:serviceaccount:agents:xplane-run-cf4ato2x", "gen_ai_token_type": "cached_input"}, "value": [1727430000, "800000"]},
+      {"metric": {"ar_agent": "system:serviceaccount:agents:xplane-run-cf4ato2x", "gen_ai_token_type": "cache_creation_input"}, "value": [1727430000, "50000"]},
+      {"metric": {"ar_agent": "system:serviceaccount:agents:xplane-run-cf4ato2x", "gen_ai_token_type": "output"}, "value": [1727430000, "100000"]}
+    ]
+  }
+}
