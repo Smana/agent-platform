@@ -111,7 +111,9 @@ func (systems) Authenticate(r *http.Request) (authn.Principal, error) {
 
 type noRuns struct{}
 
-func (noRuns) Live(string) (runwatch.Run, bool) { return runwatch.Run{}, false }
+func (noRuns) Live(string) (runwatch.Run, bool, bool) {
+	return runwatch.Run{}, false, false
+}
 
 // The client against the broker's own handler, not a copy of it: bridgeapi's routes, strict
 // decoding, status codes and wire reasons are the contract.

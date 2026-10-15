@@ -71,7 +71,7 @@ type Tool struct {
 
 // Runs is the liveness check on every request; *runwatch.Watcher implements it.
 type Runs interface {
-	Live(id string) (runwatch.Run, bool)
+	Live(id string) (run runwatch.Run, live, known bool)
 }
 
 // Server is the :8090 handler. Key, Runs and SubPatterns (every run issuer's,
@@ -178,8 +178,8 @@ func (s *Server) caller(w http.ResponseWriter, r *http.Request) (runwatch.Run, b
 		w.WriteHeader(http.StatusForbidden)
 		return runwatch.Run{}, false
 	}
-	run, ok := s.Runs.Live(id)
-	if !ok || !envelope.ValidID(run.Room) {
+	run, live, _ := s.Runs.Live(id)
+	if !live || !envelope.ValidID(run.Room) {
 		s.reject(r.Context(), "run_not_live")
 		w.WriteHeader(http.StatusForbidden)
 		return runwatch.Run{}, false

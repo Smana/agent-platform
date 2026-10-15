@@ -180,8 +180,8 @@ func TestOnlyTheRouterWithTheKeyAndAVerifiedRun(t *testing.T) {
 // refuse an id that is not a C2 id.
 type anyRun struct{}
 
-func (anyRun) Live(id string) (runwatch.Run, bool) {
-	return runwatch.Run{ID: id, Room: "3kq7x2ma", Role: "reviewer", Phase: "Running"}, true
+func (anyRun) Live(id string) (runwatch.Run, bool, bool) {
+	return runwatch.Run{ID: id, Room: "3kq7x2ma", Role: "reviewer", Phase: "Running"}, true, true
 }
 
 func TestTheSubjectMustNameAC2Id(t *testing.T) {

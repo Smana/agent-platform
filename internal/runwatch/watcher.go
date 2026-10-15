@@ -32,10 +32,18 @@ type Watcher struct {
 	gone    []func(context.Context, Run)
 	changed []func(context.Context, Run)
 	removed []func(context.Context, Run)
+	// deleted remembers the runs this watcher saw deleted, oldest first in deletedOrder,
+	// capped at maxDeleted: a deleted run is known and dead, not unknown (see Live).
+	deleted      map[string]struct{}
+	deletedOrder []string
 }
 
+// maxDeleted bounds the tombstones. A run is deleted long after its lease holder's
+// bridge ended, and a room is taken over on its next hello, so a few thousand is ample.
+const maxDeleted = 4096
+
 // New returns an empty Watcher.
-func New() *Watcher { return &Watcher{runs: map[string]Run{}} }
+func New() *Watcher { return &Watcher{runs: map[string]Run{}, deleted: map[string]struct{}{}} }
 
 // OnGone registers f for a run that stops being live (terminal, revoked or
 // deleted). It fires once per run.
@@ -92,6 +100,7 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	w.mu.Lock()
 	old, had := w.runs[r.ID]
 	delete(w.runs, r.ID)
+	w.tombstone(r.ID)
 	gone, removed := slices.Clone(w.gone), slices.Clone(w.removed)
 	w.mu.Unlock()
 	if !had {
@@ -107,6 +116,19 @@ func (w *Watcher) Remove(ctx context.Context, u *unstructured.Unstructured) {
 	}
 }
 
+// tombstone records a deleted run. The caller holds w.mu.
+func (w *Watcher) tombstone(id string) {
+	if _, ok := w.deleted[id]; ok {
+		return
+	}
+	if len(w.deletedOrder) >= maxDeleted {
+		delete(w.deleted, w.deletedOrder[0])
+		w.deletedOrder = w.deletedOrder[1:]
+	}
+	w.deleted[id] = struct{}{}
+	w.deletedOrder = append(w.deletedOrder, id)
+}
+
 // Get returns the run's last known state, terminal or not.
 func (w *Watcher) Get(id string) (Run, bool) {
 	w.mu.RLock()
@@ -115,10 +137,17 @@ func (w *Watcher) Get(id string) (Run, bool) {
 	return r, ok
 }
 
-// Live returns the run only while it is live.
-func (w *Watcher) Live(id string) (Run, bool) {
-	r, ok := w.Get(id)
-	return r, ok && r.Live()
+// Live returns the run only while it is live. known tells a run this watcher has no
+// record of (live and known both false: its cache may lag the API server) from one it
+// saw end or be deleted (live false, known true).
+func (w *Watcher) Live(id string) (run Run, live, known bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if r, ok := w.runs[id]; ok {
+		return r, r.Live(), true
+	}
+	_, gone := w.deleted[id]
+	return Run{}, false, gone
 }
 
 // InRoom returns the watched runs naming room, terminal ones included.
