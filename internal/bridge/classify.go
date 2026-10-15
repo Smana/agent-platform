@@ -10,7 +10,8 @@
 // runner's included), a shell nested twice, a git or gh write mentioned where no
 // command starts.
 //
-// What it cannot see, and leaves Plain (S9): script files (bash x.sh, source
+// What it cannot see, and leaves Plain (S9): script files written earlier (a
+// script written by a heredoc in the same command is scanned; bash x.sh, source
 // x.sh, . x.sh, a Makefile, an interpreter given a file, a git hook), config
 // written by file edit (.git/config or ~/.gitconfig through file_editor), git
 // aliases already in such a file, HTTP clients other than gh (curl with
@@ -924,7 +925,7 @@ func wordTexts(w []word) []string {
 // write. Splitting on = reaches `alias p='git push …'` (N2).
 func mentionsForge(text []string) bool {
 	t := strings.Fields(strings.NewReplacer("`", " ", "$(", " ", "(", " ", ")", " ", "'", " ", `"`, " ",
-		"=", " ").Replace(strings.Join(text, " ")))
+		"=", " ", ";", " ", "&", " ", "|", " ", "<", " ", ">", " ", "\n", " ", "+", " ").Replace(strings.Join(text, " ")))
 	for i, w := range t {
 		switch path.Base(w) {
 		case "git":

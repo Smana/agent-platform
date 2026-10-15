@@ -126,12 +126,16 @@ func TestReviewBattery(t *testing.T) {
 		{"N5", `git push -o ">" origin agent/3kq7x2ma`, ForgeOther},
 		{"N5", "git push origin agent/3kq7x2ma '2>x'", ForgeOther},
 
-		// N6: interpreters fed a heredoc are scanned; script files are a residual.
+		// N6: interpreters fed a heredoc are scanned; a script written by a heredoc in the same command is scanned; files written earlier are a residual.
 		{"N6", "python3 <<'EOF'\nimport os\nos.system('git push origin main')\nEOF", ForgeOther},
 		{"N6", "node <<'EOF'\nrequire('child_process').execSync('gh pr merge 1')\nEOF", ForgeOther},
 		{"N6", "python3 <<'EOF'\nprint('hello')\nEOF", Plain},
 		{"N6", "python3 -c \"import subprocess; subprocess.run(['git', 'push', 'origin', 'main'])\"", ForgeOther},
 		{"N6", "cat <<'EOF' > x.sh\ngit push origin main\nEOF\nbash x.sh", ForgeOther},
+		{"N6", "cat <<'EOF' > x.sh\ncd r&&git push origin main\nEOF\nbash x.sh", ForgeOther},
+		{"N6", "cat <<'EOF' > x.sh\ntrue;git push origin main\nEOF\nbash x.sh", ForgeOther},
+		{"N6", "python3 <<'EOF'\nos.system('true;git push origin main')\nEOF", ForgeOther},
+		{"N6", "git apply <<'EOF'\n+git push origin main\nEOF", ForgeOther},
 		{"N6", "source ./push.sh", Plain}, // residual (file header)
 		{"N6", ". ./push.sh", Plain},      // residual (file header)
 
