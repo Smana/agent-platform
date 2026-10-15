@@ -98,6 +98,17 @@ describe("the room table", () => {
     await vi.waitFor(() => expect(root.querySelectorAll("tbody tr").length).toBe(1));
     expect(get).toHaveBeenLastCalledWith(expect.stringContaining("needs_me=1"), expect.anything());
   });
+  it("says no room matches a filter that leaves none, in one row across the table", async () => {
+    const get = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("mine=1") ? [] : rows), { status: 200 }));
+    const root = app();
+    await listRooms(root, get as unknown as typeof fetch);
+    (root.querySelector('input[name="mine"]') as HTMLInputElement).click();
+    await vi.waitFor(() => expect(root.querySelector("tbody")?.textContent).toBe("No rooms match"));
+    expect(root.querySelector("tbody td")?.getAttribute("colspan")).toBe("7");
+    const empty = app();
+    await listRooms(empty, (async () => new Response("[]", { status: 200 })) as unknown as typeof fetch);
+    expect(empty.querySelector("tbody")?.textContent).toBe("No rooms you can read yet");
+  });
   it("filters by repository with the API's repo param", async () => {
     const get = vi.fn(async () => new Response(JSON.stringify(rows), { status: 200 }));
     const root = app();

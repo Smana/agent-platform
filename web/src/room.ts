@@ -5,7 +5,7 @@
 // fed by one RoomConnection.
 
 import { api } from "./api";
-import { reveal } from "./chat";
+import { focusRow } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountComposer, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
@@ -83,8 +83,14 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let actSaid = "";
   const sayAct = (text: string) => { say((actSaid = text)); };
   const clearAct = () => { if (notice.textContent === actSaid) sayAct(""); };
-  // Refusals in a row the room list answered without this room (R11).
+  // Refusals in a row the room list answered without this room (R11); while any, the
+  // page says it is checking the room rather than reconnecting.
   let absent = 0;
+  let checking = false;
+  const showBanner = () => {
+    banner.hidden = connection === "live" && !checking;
+    banner.textContent = banner.hidden ? "" : checking ? "Checking the room…" : connection.charAt(0).toUpperCase() + connection.slice(1);
+  };
   let snap: Snapshot | undefined;
   let mark = 0; // the latest state frame's throughSeq
   let summary: Summary | undefined;
@@ -94,16 +100,20 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: state.closed, summary: sum, needs: needsPanelView.count(), connection, now: state.latest() });
-  strip.onNeedsClick(() => needsPanel.scrollIntoView?.({ block: "start" }));
+    sealedBy: state.closed, sealed: state.sealed, summary: sum, needs: needsPanelView.count(), connection,
+    now: state.latest(), running: state.running(), ran: state.ran() });
+  // The pill takes the reader, and the keyboard focus, to the panel.
+  strip.onNeedsClick(() => {
+    needsPanel.scrollIntoView?.({ block: "start" });
+    needsPanel.tabIndex = -1;
+    needsPanel.focus({ preventScroll: true });
+  });
   // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
   // call's row, which carries the call's seq). A row gone at the cap finds nothing. The
-  // row opens, and so does every fold or raw log around it.
+  // row opens, and so does every fold or raw log around it; the focus moves to it.
   strip.onNowClick((seq) => {
     const row = main.querySelector<HTMLElement>(`.view-chat [data-seq="${seq}"]`) ?? main.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
-    if (!row) return;
-    reveal(row);
-    row.scrollIntoView?.({ block: "center" });
+    if (row) focusRow(row);
   });
   // The strip's ages (the Now line's, the run's) move with the clock: one timer per
   // mounted page, rewriting them in place every second. It stops with the page, and on
@@ -131,11 +141,11 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       rendered = n;
       const key = JSON.stringify(sum);
       if (key !== shown) {
-        needsPanelView.setSummary(sum); // first: the strip's count reads it
+        summary = sum; // first: a controls group mounted by a render below, or the next tick, reads it
+        needsPanelView.setSummary(sum); // before the strip: its count reads it
         controls?.setSummary(sum);
         refreshStrip(sum); // a strip that throws leaves the notes as they were
         renderNotes(blocks, sum);
-        summary = sum;
         shown = key;
       }
       summaryError.hidden = true;
@@ -165,6 +175,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       snap = s;
       mark = throughSeq;
       absent = 0; // the broker let us in: the room is readable
+      checking = false;
+      showBanner();
       state.reset(s, throughSeq);
       needsPanelView.refresh();
       refreshStrip();
@@ -221,9 +233,15 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       const rooms = (await r.json()) as { id: string }[];
       if (rooms.some((row) => row.id === id)) {
         absent = 0;
+        checking = false;
+        showBanner();
         return;
       }
-      if (++absent < 3) return;
+      if (++absent < 3) {
+        checking = true;
+        showBanner();
+        return;
+      }
       conn.stop();
       stopped = true;
       removeEventListener("hashchange", onHash);
@@ -246,8 +264,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       footer.dataset.status = s.startsWith("reconnecting") ? "reconnecting" : s;
       connection = s;
       showStatus();
-      banner.hidden = s === "live";
-      banner.textContent = banner.hidden ? "" : s.charAt(0).toUpperCase() + s.slice(1);
+      showBanner();
       composer?.setLive(s === "live");
       refreshStrip();
       pending.status(s);

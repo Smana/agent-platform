@@ -5,12 +5,13 @@
 // policy's decisions hang off that row as badges, and state_changed/turn become
 // slim timeline markers. The raw stream stays one toggle away (roomview.ts).
 // Plumbing (markers and system lines that say nothing the reader acts on) folds:
-// a run of consecutive plumbing rows reads as one "· N changes" line, open on click.
+// a run of consecutive plumbing rows reads as one "· turn <id> · N changes" line (the
+// turn named when the run holds one), open on click.
 // The same untrusted-text rules as render.ts hold: DOM nodes and textContent only.
 
 import type { RoomEvent } from "./conn";
 import { deliveryChip, handoffHead, markdown, stateHead } from "./render";
-import { maxRows } from "./view";
+import { maxRows } from "./limits";
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -159,6 +160,7 @@ function marker(ev: RoomEvent): HTMLElement {
   const kind = ev.type === "turn" ? "turn" : String(p.kind ?? "");
   const row = el("div", `mark mk-${cls(kind)}`);
   row.dataset.seq = String(ev.seq);
+  if (ev.type === "turn" && p.turnId) row.dataset.turn = String(p.turnId); // names its fold
   let text: string;
   switch (ev.type === "turn" ? "turn" : p.kind) {
     case "turn":
@@ -259,15 +261,33 @@ export function reveal(row: HTMLElement): void {
   for (let n: HTMLElement | null = row; n; n = n.parentElement) if (n instanceof HTMLDetailsElement) n.open = true;
 }
 
+// focusRow takes the reader to row: opened, scrolled to, and focused, so a keyboard user
+// continues from there. A row is no tab stop: tabindex -1 only lets the link focus it.
+export function focusRow(row: HTMLElement): void {
+  reveal(row);
+  row.scrollIntoView?.({ block: "center" });
+  if (!row.hasAttribute("tabindex")) row.tabIndex = -1;
+  row.focus({ preventScroll: true });
+}
+
 const body = (fold: HTMLElement) => fold.querySelector<HTMLElement>(":scope > .fold-body")!;
 
+// label writes a fold's line: the first turn it holds, when it holds one, and its count.
+// The turn stays on the fold, so a row appended to it needs no walk of its rows.
+function label(fold: HTMLElement, turn = body(fold).querySelector<HTMLElement>(":scope > [data-turn]")?.dataset.turn) {
+  const n = body(fold).childElementCount;
+  if (turn) fold.dataset.turn = turn;
+  else delete fold.dataset.turn;
+  fold.querySelector(":scope > summary")!.textContent = turn ? `· turn ${turn} · ${n} changes` : `· ${n} changes`;
+}
+
 // tidy keeps a fold honest after a row left it: an empty one goes, one with a single
-// row gives the row back to the stream, else its count is rewritten.
+// row gives the row back to the stream, else its line is rewritten.
 function tidy(fold: HTMLElement) {
-  const rows = [...body(fold).children];
-  if (rows.length === 0) fold.remove();
-  else if (rows.length === 1) fold.replaceWith(rows[0]);
-  else fold.querySelector(":scope > summary")!.textContent = `· ${rows.length} changes`;
+  const inner = body(fold);
+  if (inner.childElementCount === 0) fold.remove();
+  else if (inner.childElementCount === 1) fold.replaceWith(inner.firstElementChild!);
+  else label(fold);
 }
 
 // ChatView holds the log as a conversation, newest rows last. A resume can
@@ -405,6 +425,7 @@ export class ChatView {
     while (a > 0 && this.isPlumbing(a - 1)) a--;
     while (b < this.seqs.length - 1 && this.isPlumbing(b + 1)) b++;
     const items = this.seqs.slice(a, b + 1).map((s) => this.rows.get(s)!);
+    const held = new Set<Element>(items);
     const after = b + 1 < this.seqs.length ? this.top(this.rows.get(this.seqs[b + 1])!) : null;
     const sources = new Set(items.map((n) => this.foldOf(n)).filter((f): f is HTMLElement => !!f));
     if (items.length === 1) {
@@ -415,7 +436,7 @@ export class ChatView {
       }
       return;
     }
-    let target = [...sources].find((f) => [...body(f).children].every((c) => items.includes(c as HTMLElement)));
+    let target = [...sources].find((f) => [...body(f).children].every((c) => held.has(c)));
     if (!target) {
       target = el("details", "fold");
       (target as HTMLDetailsElement).open = [...sources].some((f) => (f as HTMLDetailsElement).open);
@@ -426,6 +447,17 @@ export class ChatView {
     if (target.parentElement !== this.el || target.nextElementSibling !== after) this.el.insertBefore(target, after);
     for (const f of sources) if (f !== target) tidy(f);
     tidy(target);
+  }
+
+  // joinsLastFold appends row, the newest, to the fold holding the row before it, when
+  // that row ends the fold: no regroup, which would walk the whole run (O(n²) on a replay).
+  private joinsLastFold(i: number, row: HTMLElement): boolean {
+    const prev = i > 0 ? this.rows.get(this.seqs[i - 1]) : undefined;
+    const fold = prev && this.foldOf(prev);
+    if (!fold || body(fold).lastElementChild !== prev) return false;
+    body(fold).append(row);
+    label(fold, fold.dataset.turn ?? row.dataset.turn);
+    return true;
   }
 
   private put(seq: number, row: HTMLElement) {
@@ -439,11 +471,16 @@ export class ChatView {
     let i = this.seqs.length;
     while (i > 0 && this.seqs[i - 1] > seq) i--; // from the end: live events land there
     const next = i < this.seqs.length ? this.top(this.rows.get(this.seqs[i])!) : null;
-    this.el.insertBefore(row, next);
     this.seqs.splice(i, 0, seq);
     this.rows.set(seq, row);
-    if (row.dataset.plumbing === "1") this.regroup(i);
-    else {
+    if (row.dataset.plumbing === "1") {
+      // The live path: a plumbing row after a fold's last row joins it, in constant time.
+      if (next !== null || !this.joinsLastFold(i, row)) {
+        this.el.insertBefore(row, next);
+        this.regroup(i);
+      }
+    } else {
+      this.el.insertBefore(row, next);
       this.regroup(i - 1);
       this.regroup(i + 1);
     }

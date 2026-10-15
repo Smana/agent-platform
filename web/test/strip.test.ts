@@ -181,6 +181,89 @@ describe("the title strip", () => {
     expect(h.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
     expect(h.textContent).not.toMatch(/undefined|driver:/);
   });
+
+  // Q2: after a run ends the page says so, and the Now line names the last activity.
+  describe("with no agent present", () => {
+    const hi = { seq: 3, text: "hi", status: "ok" as const, ts: "2026-10-04T13:59:58Z" };
+    const at = () => Date.parse("2026-10-04T14:00:00Z");
+    it.each([
+      ["a room that never ran, a human's message aside", { ran: false, summary: summary({ run: null }), now: { ...hi, status: "message" as const } }, "No run yet"],
+      ["a run that ended, with its last activity", { ran: true, now: hi }, "No run · last: hi · 2 s ago"],
+      ["a run that ended with no activity seen", { ran: true, now: undefined }, "No run"],
+    ])("%s", (_name, over, want) => {
+      const h = document.createElement("header");
+      const strip = mountStrip(h, at);
+      strip.update(input({ running: false, ...over }));
+      expect(h.querySelector(".now")?.textContent).toBe(want);
+      expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+      expect(h.querySelector(".chip-run")).toBeNull(); // the facts' run is over: no ageing chip
+    });
+    it("links the last activity to its row", () => {
+      const h = document.createElement("header");
+      const strip = mountStrip(h, at);
+      let clicked = 0;
+      strip.onNowClick((seq) => { clicked = seq; });
+      strip.update(input({ running: false, ran: true, now: hi }));
+      h.querySelector<HTMLButtonElement>(".now-link")!.click();
+      expect(clicked).toBe(3);
+    });
+    it("names the run again once an agent joins", () => {
+      const h = document.createElement("header");
+      const strip = mountStrip(h, () => Date.parse("2026-10-04T14:04:30Z"));
+      strip.update(input({ running: false, ran: true, now: hi }));
+      strip.update(input({ running: true, ran: true, now: hi }));
+      expect(h.querySelector(".now")?.textContent).toBe("Now ▸ hi · ok · 4 min ago");
+      expect(h.querySelector(".chip-run")?.textContent).toBe("implementer · ikely2yk · 4 min");
+    });
+  });
+  it("shows the last verdict, as roomctl status does", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: summary({ lastVerdict: { by: "reviewer", verdict: "changes_requested", at: "2026-10-04T13:00:00Z" } }) }));
+    expect(h.querySelector(".chip-verdict")?.textContent).toBe("last verdict: reviewer changes_requested");
+    strip.update(input());
+    expect(h.querySelector(".chip-verdict")).toBeNull();
+  });
+  it("reads Waiting or Closed before the Now line, as the spec draws it", () => {
+    const { h, strip } = mount();
+    strip.update(input({ now: { seq: 1, text: "hi", status: "message", ts: new Date().toISOString() } }));
+    const order = [...h.querySelector(".strip")!.children].map((c) => c.className);
+    expect(order).toEqual(["strip-head", "strip-tail", "strip-now"]);
+  });
+  it("keeps the title, the chips and a focused pill in place when only the count or the connection moves", () => {
+    const { h, strip } = mount();
+    document.body.append(h);
+    try {
+      strip.update(input({ needs: 1 }));
+      const [h1, pr, pill] = [h.querySelector("h1"), h.querySelector(".chip-pr"), h.querySelector<HTMLButtonElement>(".needs-pill")!];
+      pill.focus();
+      strip.update(input({ needs: 2, connection: "reconnecting in 2 s: connection lost" }));
+      expect(h.querySelector("h1")).toBe(h1);
+      expect(h.querySelector(".chip-pr")).toBe(pr);
+      expect(h.querySelector(".needs-pill")).toBe(pill);
+      expect(pill.textContent).toBe("Needs you · 2");
+      expect(document.activeElement).toBe(pill);
+      expect(h.querySelector(".strip-conn")?.textContent).toBe("reconnecting in 2 s: connection lost");
+      strip.update(input({ needs: 0 }));
+      expect(h.querySelector(".needs-pill")).toBeNull();
+      strip.update(input({ needs: 3 }));
+      expect(h.querySelector(".needs-pill")?.textContent).toBe("Needs you · 3");
+      expect(h.querySelector(".strip-chips")!.lastElementChild?.className).toBe("strip-conn"); // the pill sits before it
+    } finally {
+      h.remove();
+    }
+  });
+  it.each([["Closed", "Closed"], ["Sealed", "Sealed"]])("says %s when sealed with no known closer", (phase, want) => {
+    const { h, strip } = mount();
+    strip.update(input({ sealed: true, summary: summary({ phase, reason: undefined, next: undefined }) }));
+    expect(h.querySelector(".closed")?.textContent).toBe(want);
+  });
+  it("says Closed from the room phase alone when no summary says more", () => {
+    const { h, strip } = mount();
+    strip.update(input({ sealed: true, phase: "Closed", summary: undefined }));
+    expect(h.querySelector(".closed")?.textContent).toBe("Closed");
+    strip.update(input({ sealed: true, phase: "Active", summary: undefined }));
+    expect(h.querySelector(".closed")?.textContent).toBe("Sealed");
+  });
 });
 
 // One fixture for Go and TS: the broker's own golden summaries, read where internal/summary keeps them.
@@ -199,7 +282,14 @@ describe("the broker's golden summaries in the strip", () => {
 });
 
 describe("formatting", () => {
-  it.each([[0, "0"], [999, "999"], [189093, "189 k"], [1500000, "1.5 M"], [4000000, "4 M"]])("fmtTokens(%d) = %s", (n, s) => expect(fmtTokens(n)).toBe(s));
+  // The same boundaries as roomctl's tokens() (internal/roomctl TestBudgetTextBoundaries).
+  it.each([[0, "0"], [999, "999"], [1000, "1 k"], [189093, "189 k"], [999_499, "999 k"], [999_500, "1 M"], [1_000_000, "1 M"],
+    [1_500_000, "1.5 M"], [4000000, "4 M"]])("fmtTokens(%d) = %s", (n, s) => expect(fmtTokens(n)).toBe(s));
+  it("reads a zero limit without a percentage", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: summary({ budget: { usedTokens: 5000, limitTokens: 0 } }) }));
+    expect(h.querySelector(".chip-budget")?.textContent?.trim()).toBe("5 k / 0");
+  });
   it("shortens a principal and keeps a short one", () => {
     expect(shortPrincipal("human:291847362183")).toBe("human:2918…");
     expect(shortPrincipal("system:factory")).toBe("system:factory");

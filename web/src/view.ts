@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { api, nav, SignInRequired } from "./api";
+import { maxRows } from "./limits";
 import { ago } from "./summary";
 import { mountThemeButton, type ThemeController } from "./theme";
-
-// The page keeps the newest maxRows rows; older ones leave the page, never the log.
-export const maxRows = 5000;
 
 // A room's rows by seq, in seq order on the page. A resume the broker clamped can
 // resend a seq: its row is replaced in place, never doubled, and one no longer held
@@ -196,7 +194,14 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
   table.append(thead, tbody);
   const fill = (rows: RoomRow[]) => {
     const now = new Date();
-    tbody.replaceChildren(...sortRooms(rows).map((r) => roomRow(r, now)));
+    if (rows.length > 0) return tbody.replaceChildren(...sortRooms(rows).map((r) => roomRow(r, now)));
+    // An empty table says why: a filter that leaves nothing, or no room at all.
+    const filtered = mine.input.checked || needsMe.input.checked || !!repo.value;
+    const td = cell("td", filtered ? "No rooms match" : "No rooms you can read yet");
+    td.setAttribute("colspan", String(head.childElementCount));
+    const tr = document.createElement("tr");
+    tr.append(td);
+    tbody.replaceChildren(tr);
   };
   fill(first);
 

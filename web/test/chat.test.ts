@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { ChatView, reveal } from "../src/chat";
+import { describe, expect, it, vi } from "vitest";
+import { ChatView, reveal, swatchClass } from "../src/chat";
 import type { RoomEvent } from "../src/conn";
 
 const ev = (seq: number, type: string, payload: unknown, actor: { kind: string; id: string; role?: string } = { kind: "agent", id: "agent:ikely2yk", role: "implementer" }): RoomEvent => ({
@@ -229,7 +229,7 @@ describe("ChatView noise rules (U7)", () => {
     view.apply(ev(5, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
     const rows = [...el.children];
     expect(rows.map((r) => r.className.split(" ")[0])).toEqual(["fold", "msg", "mark"]);
-    expect(rows[0].querySelector("summary")?.textContent).toBe("· 3 changes");
+    expect(rows[0].querySelector("summary")?.textContent).toBe("· turn t1 · 3 changes");
     expect(rows[0].querySelectorAll(".mark, .sys").length).toBe(3);
   });
   it("never folds a harness error or a seal, and keeps a replaced seq in place (review focus 4)", () => {
@@ -270,7 +270,11 @@ describe("ChatView noise rules (U7)", () => {
     view.apply(ev(2, "message", { kind: "chat", text: "yo", delivery: "none" }, { kind: "human", id: "human:291847362183" }));
     const heads = [...el.querySelectorAll(".msg-head .who")].map((h) => h.textContent);
     expect(heads).toEqual(["implementer · ikely2yk", "you"]);
-    expect(el.querySelector(".msg-head .swatch")).not.toBeNull();
+    // One fixed colour per actor, the same on every row: six classes keyed on the id.
+    const swatches = [...el.querySelectorAll(".msg-head .swatch")].map((s) => s.className);
+    expect(swatches).toEqual([`swatch ${swatchClass("agent:ikely2yk")}`, `swatch ${swatchClass("human:291847362183")}`]);
+    expect(swatchClass("agent:ikely2yk")).toMatch(/^swatch-[0-5]$/);
+    expect(swatchClass("agent:ikely2yk")).toBe(swatchClass("agent:ikely2yk"));
     expect(el.querySelector("time")?.getAttribute("datetime")).toBe("2026-10-04T14:00:01Z");
   });
 });
@@ -286,7 +290,7 @@ describe("ChatView folds", () => {
     for (const s of [1, 2, 3]) view.apply(turn(s));
     for (const s of [2, 1, 3]) view.apply(turn(s)); // a clamped resume, out of order
     expect(shape(el)).toEqual(["fold(1,2,3)"]);
-    expect(el.querySelector(".fold summary")?.textContent).toBe("· 3 changes");
+    expect(el.querySelector(".fold summary")?.textContent).toBe("· turn t1 · 3 changes");
     for (const s of [1, 2, 3]) expect(el.querySelectorAll(`[data-seq="${s}"]`)).toHaveLength(1);
   });
   it("splits a fold when a message lands between its rows, and joins a marker landing between two", () => {
@@ -331,6 +335,32 @@ describe("ChatView folds", () => {
     expect(shape(el)).toEqual(["fold(2,3)", "4"]);
     v.apply(msg(5));
     expect(shape(el)).toEqual(["3", "4", "5"]);
+  });
+  it("names the fold by its turn when it holds one, else by its count alone", () => {
+    const { el, view } = mount();
+    view.apply(ev(1, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
+    view.apply(ev(2, "state_changed", { kind: "harness_status", status: "idle", previous: "running" }));
+    expect(el.querySelector(".fold summary")?.textContent).toBe("· 2 changes");
+    view.apply(ev(3, "turn", { turnId: "t7", phase: "started" }));
+    expect(el.querySelector(".fold summary")?.textContent).toBe("· turn t7 · 3 changes");
+    view.apply(ev(4, "turn", { turnId: "t8", phase: "started" }));
+    expect(el.querySelector(".fold summary")?.textContent).toBe("· turn t7 · 4 changes"); // the first turn names it
+  });
+  // A replay of a long run of markers must not re-child the fold on every row (O(n²)).
+  it("appends a live plumbing row to its fold without re-laying the fold", () => {
+    const { el, view } = mount();
+    for (const s of [1, 2, 3]) view.apply(turn(s));
+    const fold = el.querySelector<HTMLElement>(".fold")!;
+    const inner = fold.querySelector<HTMLElement>(".fold-body")!;
+    const relaid = vi.spyOn(inner, "replaceChildren");
+    for (let s = 4; s <= 200; s++) view.apply(turn(s));
+    expect(relaid).not.toHaveBeenCalled();
+    expect(el.querySelector(".fold")).toBe(fold);
+    expect(inner.childElementCount).toBe(200);
+    expect(fold.querySelector("summary")?.textContent).toBe("· turn t1 · 200 changes");
+    view.apply(msg(201));
+    view.apply(turn(202));
+    expect(shape(el).slice(1)).toEqual(["201", "202"]);
   });
   it("reveal opens the fold that holds a row, so a link to its seq lands on a visible row", () => {
     const { el, view } = mount();

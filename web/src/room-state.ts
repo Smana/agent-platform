@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { RoomEvent } from "./conn";
-import { maxRows } from "./view";
+import { maxRows } from "./limits";
 
 export interface Queued { ref: number; author: string; text: string }
 // The latest activity, for the strip's Now line: a tool call (running until its result
@@ -25,6 +25,12 @@ export class RoomState {
   // each with the principal of the run that owns it (agent:<runId>).
   private calls = new Map<string, { l: Latest; owner: string }>();
   private members_ = new Map<string, Member>();
+  // The agents present now (Q2): agent principals that joined and have not left. A
+  // role change neither starts nor ends a run. ran_ says one ever was, in what the page saw.
+  private agents = new Set<string>();
+  private ran_ = false;
+  // Whether the latest state frame named the runs: at or below its mark, it decides who is present.
+  private runsAtMark = false;
   sealed = false;
   // Who closed the room and when: the close's own event. A limit seals with no closer.
   closed?: { who: string; at: string };
@@ -33,8 +39,8 @@ export class RoomState {
 
   // reset takes a state frame. Its queue is the store's at the mark: a page's tail
   // of 500 events rarely reaches back to what was queued for the next run.
-  reset(s: { driver: string; driverEpoch: number; phase?: string; queue?: Queued[]; sealed?: boolean; approvals?: Approval[] },
-    throughSeq: number) {
+  reset(s: { driver: string; driverEpoch: number; phase?: string; queue?: Queued[]; sealed?: boolean; approvals?: Approval[];
+    runs?: { id: string; role?: string; phase: string }[] }, throughSeq: number) {
     this.driver = s.driver;
     this.phase = s.phase ?? "";
     this.driverEpoch = s.driverEpoch;
@@ -42,6 +48,15 @@ export class RoomState {
     this.queued = new Map((s.queue ?? []).map((q) => [q.ref, { ref: q.ref, author: q.author, text: q.text }]));
     this.pending = new Map((s.approvals ?? []).map((a) => [a.approvalId, { ...a }]));
     this.through = throughSeq;
+    // A seal is for good: who closed it still holds while the frame says sealed.
+    if (!this.sealed) this.closed = undefined;
+    // A clamped replay may never resend the results of calls at or below the mark: they end.
+    this.release((c) => c.l.seq <= throughSeq);
+    this.runsAtMark = s.runs !== undefined;
+    if (s.runs) {
+      this.agents = new Set(s.runs.filter((r) => !terminal.has(r.phase)).map((r) => `agent:${r.id}`));
+      this.ran_ ||= s.runs.length > 0;
+    }
   }
 
   apply(ev: RoomEvent) {
@@ -63,7 +78,11 @@ export class RoomState {
         if (typeof p.callId === "string") {
           this.calls.delete(p.callId); // a resent call moves to the newest end
           this.calls.set(p.callId, { l: call, owner: ev.runId ? `agent:${ev.runId}` : ev.actor.id });
-          if (this.calls.size > maxCalls) this.calls.delete(this.calls.keys().next().value!);
+          if (this.calls.size > maxCalls) { // gone from the page: no result will reach its row
+            const [id, oldest] = this.calls.entries().next().value!;
+            oldest.l.status = "ended";
+            this.calls.delete(id);
+          }
         }
         break;
       }
@@ -119,10 +138,16 @@ export class RoomState {
           this.release(() => true);
         }
         // A run's terminal phase (runwatch: run_phase <terminal>, then its agent leaves).
-        if (p.kind === "run_phase" && p.phase !== "Running" && ev.runId) this.release((o) => o === `agent:${ev.runId}`);
+        if (p.kind === "run_phase" && p.phase !== "Running" && ev.runId) this.release((c) => c.owner === `agent:${ev.runId}`);
         break;
       case "participant":
-        if (p.change === "left" && typeof p.principal === "string") this.release((o) => o === p.principal);
+        if (p.change === "left" && typeof p.principal === "string") this.release((c) => c.owner === p.principal);
+        if (typeof p.principal === "string" && p.principal.startsWith("agent:") && !(this.runsAtMark && ev.seq <= this.through)) {
+          if (p.change === "joined") {
+            this.agents.add(p.principal);
+            this.ran_ = true;
+          } else if (p.change === "left") this.agents.delete(p.principal);
+        }
         // The members list is humans only: a run's agent is in the strip and the stream.
         if (typeof p.principal === "string" && p.principal.startsWith("human:")) {
           if (p.change === "left") this.members_.delete(p.principal);
@@ -131,6 +156,10 @@ export class RoomState {
         break;
     }
   }
+
+  // running is whether an agent is present now; ran, whether one ever was.
+  running(): boolean { return this.agents.size > 0; }
+  ran(): boolean { return this.ran_; }
 
   members(): Member[] { return [...this.members_.values()].sort((a, b) => a.principal.localeCompare(b.principal)); }
 
@@ -145,11 +174,11 @@ export class RoomState {
     return l && { ...l };
   }
 
-  // release ends the open calls whose owner matches: a run that ended before its result
-  // leaves the call ended, so it no longer holds the Now line as running.
-  private release(owned: (owner: string) => boolean) {
+  // release ends the open calls that match: a run that ended before its result leaves
+  // the call ended, so it no longer holds the Now line as running.
+  private release(match: (c: { l: Latest; owner: string }) => boolean) {
     for (const [id, c] of this.calls) {
-      if (!owned(c.owner)) continue;
+      if (!match(c)) continue;
       c.l.status = "ended";
       this.calls.delete(id);
     }
@@ -164,6 +193,9 @@ export class RoomState {
 
   approvals(): Approval[] { return [...this.pending.values()].sort((a, b) => a.seq - b.seq); }
 }
+
+// A run's terminal phases (internal/runwatch Terminal): its agent is gone.
+const terminal = new Set(["Succeeded", "Failed", "BudgetExhausted", "Revoked"]);
 
 const maxCalls = maxRows; // the chat's row cap: an open call older than that is gone from the page too
 

@@ -107,6 +107,8 @@ describe("mountControls", () => {
 
   it("offers steering to the driver only", () => {
     const c = setup(you("human:b", "collaborator"));
+    c.state.apply({ ...queued(0, "system:room-broker", ""), type: "participant", payload: { principal: "agent:r1", change: "joined" } });
+    c.controls.refresh();
     const steer = c.wrap.querySelector<HTMLOptionElement>('option[value="steering"]')!;
     expect(steer.disabled).toBe(true);
     c.state.apply({ ...queued(1, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:b", epoch: 5, reason: "given" } });
@@ -206,10 +208,10 @@ describe("mountControls", () => {
   it("lets an owner take the token, with a reason", () => {
     const c = setup(you("human:o", "owner"));
     expect(c.btn("driver_request")).not.toBeNull(); // asking first is still open to an owner
-    c.btn("driver_take")!.click();
-    c.btn("driver_take")!.click(); // confirmed, but no reason given: nothing sent
-    expect(c.sent).toHaveLength(0);
+    c.btn("driver_take")!.click(); // no reason given: it asks for one before it arms
     expect(c.notices.at(-1)).toBe("Say why you take the driver token.");
+    expect(c.btn("driver_take")!.textContent).toBe("take");
+    expect(c.sent).toHaveLength(0);
     c.field<HTMLInputElement>("takeReason").value = "the driver is away";
     c.btn("driver_take")!.click();
     expect(c.sent).toHaveLength(0); // the first click asks
@@ -310,6 +312,104 @@ describe("the control groups", () => {
     span.remove();
   });
 
+  // A focused cancel that the timeout removes hands the focus to its button, not the page.
+  it("keeps the focus on the confirm when the cancel goes at the timeout", () => {
+    vi.useFakeTimers();
+    const span = confirmButton("interrupt", "interrupt", () => {});
+    document.body.append(span);
+    try {
+      const b = span.querySelector<HTMLButtonElement>('button[data-act="interrupt"]')!;
+      b.click();
+      span.querySelector<HTMLButtonElement>('[data-act="interrupt-cancel"]')!.focus();
+      vi.advanceTimersByTime(10_000);
+      expect(document.activeElement).toBe(b);
+    } finally { span.remove(); }
+  });
+
+  // MUST: an armed confirm whose control is hidden disarms, so a re-shown one asks again.
+  it("disarms interrupt, take, close and steer now whenever they are hidden", () => {
+    const owner = setup(you("human:a", "owner")); // human:a drives
+    owner.state.apply({ ...queued(1, "human:a", "go"), type: "message", payload: { kind: "chat", text: "go", delivery: "queued" } });
+    owner.state.apply({ ...queued(2, "system:room-broker", ""), type: "participant", payload: { principal: "agent:r1", change: "joined" } });
+    owner.controls.refresh();
+    const arm = (act: string) => owner.root.querySelector<HTMLButtonElement>(`button[data-act="${act}"]`)!;
+    for (const act of ["interrupt", "promote_queued", "close"]) arm(act).click();
+    expect(arm("interrupt").textContent).toBe("confirm: interrupt");
+    // The token moves away: interrupt hides, take shows; a watcher role hides the queue.
+    owner.state.apply({ ...queued(3, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:z", epoch: 9, reason: "given" } });
+    owner.controls.refresh();
+    owner.state.apply({ ...queued(4, "human:z", ""), type: "driver", payload: { from: "human:z", to: "human:a", epoch: 10, reason: "given" } });
+    owner.controls.refresh();
+    expect(arm("interrupt").textContent).toBe("interrupt");
+    expect(owner.root.querySelector('[data-act="interrupt-cancel"]')).toBeNull();
+    // Room's toggle closed hides close.
+    const room = owner.root.querySelector<HTMLDetailsElement>("details.group-room")!;
+    room.open = true;
+    arm("close").click();
+    room.open = false;
+    room.dispatchEvent(new Event("toggle"));
+    expect(arm("close").textContent).toBe("close room");
+    // A seal hides the driver group: take disarms with it.
+    const t = setup(you("human:o", "owner"));
+    t.field<HTMLInputElement>("takeReason").value = "away";
+    t.root.querySelector<HTMLButtonElement>('button[data-act="driver_take"]')!.click();
+    t.state.apply({ ...queued(5, "system:room-broker", ""), type: "state_changed", payload: { kind: "room_phase", phase: "Closed" } });
+    t.controls.refresh();
+    expect(t.root.querySelector('button[data-act="driver_take"]')!.textContent).toBe("take");
+    // The queue hides for a watcher: its steer now disarms.
+    const w = { ...you("human:a", "owner") };
+    const q = setup(w);
+    q.state.apply({ ...queued(1, "human:a", "go"), type: "message", payload: { kind: "chat", text: "go", delivery: "queued" } });
+    q.controls.refresh();
+    q.root.querySelector<HTMLButtonElement>('button[data-act="promote_queued"]')!.click();
+    w.role = "watcher";
+    q.controls.refresh();
+    w.role = "owner";
+    q.controls.refresh();
+    expect(q.root.querySelector('button[data-act="promote_queued"]')!.textContent).toBe("steer now");
+  });
+
+  // WCAG 2.5.3: a field's accessible name holds the label a sighted human reads.
+  it("names every labelled field with its visible label first", () => {
+    const { wrap } = mountOwner();
+    const labels = [...wrap.querySelectorAll("label")];
+    expect(labels.length).toBeGreaterThan(5);
+    for (const l of labels) {
+      const field = l.querySelector<HTMLElement>("input, select, textarea")!;
+      const visible = [...l.childNodes].filter((n) => n !== field).map((n) => n.textContent).join("").trim().toLowerCase();
+      const name = field.getAttribute("aria-label")?.toLowerCase() ?? visible;
+      expect(name.startsWith(visible), `${visible} → ${name}`).toBe(true);
+    }
+  });
+
+  // Spec: the delivery notice sits beside the select it is about.
+  it("puts the delivery notice right after the Deliver to field", () => {
+    const { dock } = mountOwner();
+    const select = dock.querySelector('select[name="delivery"]')!;
+    const notice = dock.querySelector("#delivery-notice")!;
+    expect(select.closest("label")!.nextElementSibling).toBe(notice);
+    expect(select.getAttribute("aria-describedby")).toBe("delivery-notice");
+  });
+
+  // Spec: a principal shows short, the full id as its title, as in the strip.
+  it("shows the driver, the members and the queue's authors short, the full id as a title", () => {
+    const c = setup(you("human:a", "owner"), "human:291847362183");
+    c.state.apply({ ...queued(1, "human:291847362183", "go"), type: "message", payload: { kind: "chat", text: "go", delivery: "queued" } });
+    c.state.apply({ ...queued(2, "system:room-broker", ""), type: "participant", payload: { principal: "human:999999999999", change: "joined", role: "watcher" } });
+    c.controls.refresh();
+    const holder = c.root.querySelector(".driver-holder")!;
+    expect(holder.textContent).toBe("driver: human:2918…");
+    expect(holder.querySelector("[title]")?.getAttribute("title")).toBe("human:291847362183");
+    const member = c.root.querySelector(".members li")!;
+    expect(member.textContent).toBe("human:9999… · watcher");
+    expect(member.querySelector("[title]")?.getAttribute("title")).toBe("human:999999999999");
+    const item = c.root.querySelector(".queue li")!;
+    expect(item.textContent).toMatch(/^#1 human:2918…: go/);
+    expect(item.querySelector("[title]")?.getAttribute("title")).toBe("human:291847362183");
+    const mine = setup(you("human:a", "owner"));
+    expect(mine.root.querySelector(".driver-holder")!.textContent).toBe("driver: you");
+  });
+
   it("shows the PR URL only for a reviewer and the egress field under advanced", () => {
     const { root } = mountOwner();
     const role = root.querySelector('select[name="role"]') as HTMLSelectElement;
@@ -340,7 +440,7 @@ describe("the control groups", () => {
 
   it("names the driver without its epoch", () => {
     const { root } = mountOwner();
-    expect(root.querySelector(".driver-holder")?.textContent).toBe("driver: human:a (you)");
+    expect(root.querySelector(".driver-holder")?.textContent).toBe("driver: you");
   });
 
   it("lists the members as text and hides the Room group from anyone but an owner", () => {
@@ -348,7 +448,8 @@ describe("the control groups", () => {
     const o = mountOwner();
     o.state.apply(ev(2, "participant", { principal: hostile, change: "joined", role: "collaborator", approver: true }));
     o.controls.refresh();
-    expect(o.root.querySelector("ul.members")?.textContent).toBe(`${hostile} · collaborator · approver`);
+    expect(o.root.querySelector("ul.members")?.textContent).toBe("human:<img… · collaborator · approver");
+    expect(o.root.querySelector("ul.members [title]")?.getAttribute("title")).toBe(hostile); // the full id, as text
     expect(o.root.querySelector("img")).toBeNull();
     const c = setup(you("human:c", "collaborator"));
     expect(c.root.querySelector<HTMLElement>(".group-room")!.hidden).toBe(true);

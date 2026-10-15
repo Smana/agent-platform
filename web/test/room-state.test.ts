@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { maxRows } from "../src/limits";
 import { RoomState } from "../src/room-state";
 
 const ev = (seq: number, type: string, payload: unknown, causedBy?: number) =>
@@ -202,5 +203,57 @@ describe("RoomState", () => {
     expect(s.members()).toEqual([{ principal: "human:a", role: "owner", approver: true }, { principal: "human:b", role: "watcher", approver: false }]);
     s.apply(ev(5, "participant", { principal: "human:a", change: "left" }));
     expect(s.members().map((m) => m.principal)).toEqual(["human:b"]);
+  });
+
+  // Q2: the agents present now, from joined and left only.
+  it("knows the agents present from their joins and leaves, not from role changes", () => {
+    const s = new RoomState();
+    const part = (seq: number, principal: string, change: string) => ev(seq, "participant", { principal, change, role: "implementer" });
+    expect([s.running(), s.ran()]).toEqual([false, false]);
+    s.apply(part(1, "agent:a", "joined"));
+    s.apply(part(2, "agent:b", "joined"));
+    s.apply(part(3, "agent:a", "left"));
+    expect(s.running()).toBe(true); // b is still here
+    s.apply(part(4, "agent:b", "role_changed"));
+    s.apply(part(5, "agent:b", "left"));
+    s.apply(part(6, "agent:b", "role_changed"));
+    expect([s.running(), s.ran()]).toEqual([false, true]);
+    s.apply(part(7, "human:h", "joined"));
+    expect(s.running()).toBe(false);
+  });
+  it("takes the agents present from the state frame's live runs, events past its mark on top", () => {
+    const s = new RoomState();
+    s.reset({ driver: "", driverEpoch: 0, runs: [{ id: "a", role: "implementer", phase: "Running" }, { id: "b", role: "reviewer", phase: "Succeeded" }] }, 10);
+    expect([s.running(), s.ran()]).toEqual([true, true]);
+    s.apply(ev(5, "participant", { principal: "agent:a", change: "left" })); // at or below the mark: the frame decides
+    expect(s.running()).toBe(true);
+    s.apply(ev(11, "participant", { principal: "agent:a", change: "left" }));
+    expect(s.running()).toBe(false);
+    s.reset({ driver: "", driverEpoch: 0, runs: [{ id: "b", role: "reviewer", phase: "Failed" }] }, 12);
+    expect([s.running(), s.ran()]).toEqual([false, true]);
+  });
+  it("ends at a state frame the calls opened at or below its mark: a clamped replay may never resend their results", () => {
+    const s = new RoomState();
+    s.apply(agentEv(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "sleep 1" } }));
+    s.reset({ driver: "", driverEpoch: 0 }, 5);
+    expect(s.latest()?.status).toBe("ended");
+    s.apply(agentEv(6, "tool_call", { callId: "c2", tool: "terminal", args: { command: "ls" } }));
+    s.reset({ driver: "", driverEpoch: 0 }, 5); // a call past the mark stays open
+    expect(s.latest()).toMatchObject({ seq: 6, status: "running" });
+  });
+  it("forgets who closed the room at a state frame that is not sealed", () => {
+    const s = new RoomState();
+    s.apply(ev(1, "state_changed", { kind: "room_phase", phase: "Closed" }));
+    expect(s.closed).toBeDefined();
+    s.reset({ driver: "", driverEpoch: 0, sealed: true }, 1);
+    expect(s.closed).toBeDefined(); // a seal is for good: the closer still holds
+    s.reset({ driver: "", driverEpoch: 0, sealed: false }, 1);
+    expect(s.closed).toBeUndefined();
+  });
+  it("lets a call that leaves at the cap no longer hold the Now line", () => {
+    const s = new RoomState();
+    for (let i = 0; i <= maxRows; i++) s.apply(agentEv(i + 1, "tool_call", { callId: `c${i}`, tool: "t", args: { command: String(i) } }));
+    for (let i = 1; i <= maxRows; i++) s.apply(agentEv(maxRows + 1 + i, "tool_result", { callId: `c${i}`, status: "ok" }));
+    expect(s.latest()).toMatchObject({ text: `t ${maxRows}`, status: "ok" }); // c0 went at the cap: it holds nothing
   });
 });

@@ -10,6 +10,9 @@ const theme = { mode: "light" as const, cycle: () => "light" as const };
 const snapshot = (you: Partial<Snapshot["you"]> = {}): Snapshot => ({ roomId: "3kq7x2ma", phase: "Open", driver: "human:a",
   driverEpoch: 1, dataClass: "internal", you: { principal: "human:b", role: "collaborator", approver: false, driver: false, webUI: true, ...you } });
 
+// A state frame whose run is live: its agent is present (RoomState.running).
+const live = (you: Partial<Snapshot["you"]> = {}): Snapshot => ({ ...snapshot(you), runs: [{ id: "ikely2yk", role: "implementer", phase: "Running" }] });
+
 const event = (seq: number, type: string, payload: unknown) => ({ type: "event", event: { v: 1, id: String(seq), seq,
   roomId: "3kq7x2ma", actor: { kind: "system", id: "system:room-broker" }, type, origin: "broker", ts: "2026-10-06T10:00:00Z",
   redactions: [], payload } });
@@ -46,11 +49,12 @@ describe("the room page", () => {
     const p = page();
     p.join(snapshot(), 0);
     expect(p.app.querySelector(".now")?.textContent).toBe("No run yet");
-    p.last().recv(agent(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "go test ./..." } }));
+    p.last().recv(event(1, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    p.last().recv(agent(2, "tool_call", { callId: "c1", tool: "terminal", args: { command: "go test ./..." } }));
     expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 5 s ago");
     vi.advanceTimersByTime(3000);
     expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 8 s ago");
-    p.last().recv(agent(2, "tool_result", { callId: "c1", status: "error", output: "FAIL" }));
+    p.last().recv(agent(3, "tool_result", { callId: "c1", status: "error", output: "FAIL" }));
     expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · error · 8 s ago");
   });
 
@@ -58,7 +62,7 @@ describe("the room page", () => {
     const p = page();
     document.body.append(p.app); // the row is found in the page, as in a browser
     try {
-      p.join(snapshot(), 0);
+      p.join(live(), 0);
       p.last().recv(agent(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
       const row = p.app.querySelector<HTMLDetailsElement>('.view-chat details[data-seq="1"]')!;
       let scrolled = 0;
@@ -67,6 +71,8 @@ describe("the room page", () => {
       p.app.querySelector<HTMLButtonElement>(".now-link")!.click();
       expect(scrolled).toBe(1);
       expect(row.open).toBe(true);
+      expect(document.activeElement).toBe(row); // the keyboard lands there too
+      expect(row.tabIndex).toBe(-1);
     } finally { p.app.remove(); }
   });
 
@@ -76,7 +82,7 @@ describe("the room page", () => {
     const p = page();
     document.body.append(p.app);
     try {
-      p.join(snapshot({ approver: true }), 0);
+      p.join(live({ approver: true }), 0);
       p.last().recv(event(1, "turn", { turnId: "t1", phase: "started" }));
       p.last().recv(event(2, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
       p.last().recv(agent(3, "tool_call", { callId: "c1", tool: "terminal", args: { command: "git push" } }));
@@ -86,7 +92,7 @@ describe("the room page", () => {
       p.last().recv(agent(7, "approval_requested", { approvalId: "ap1", callId: "c1", class: "forge.other",
         action: { command: "git push" }, expiresAt: "2026-10-06T11:00:00Z" }));
       const chat = p.app.querySelector<HTMLElement>(".view-chat")!;
-      expect([...chat.querySelectorAll("details.fold")].map((f) => f.querySelector("summary")?.textContent)).toEqual(["· 2 changes", "· 2 changes"]);
+      expect([...chat.querySelectorAll("details.fold")].map((f) => f.querySelector("summary")?.textContent)).toEqual(["· turn t1 · 2 changes", "· turn t1 · 2 changes"]);
       expect(chat.querySelector('details.fold [data-seq="5"]')).not.toBeNull();
       const row = chat.querySelector<HTMLDetailsElement>('details.tool[data-seq="3"]')!;
       expect(row.closest(".fold")).toBeNull();
@@ -98,9 +104,11 @@ describe("the room page", () => {
       const link = p.app.querySelector<HTMLAnchorElement>("a.approval-call")!;
       expect(link.hidden).toBe(false);
       expect(link.textContent).toBe("see the call #3");
+      (document.activeElement as HTMLElement).blur();
       link.click();
       expect(row.open).toBe(true);
       expect(scrolled).toBe(2);
+      expect(document.activeElement).toBe(row);
     } finally { p.app.remove(); }
   });
 
@@ -115,10 +123,47 @@ describe("the room page", () => {
   // Review focus 2: the call row went at the cap; its result alone heads the Now line.
   it("shows a result whose call the page dropped, and its click finds nothing without throwing", () => {
     const p = page();
-    p.join(snapshot(), 0);
+    p.join(live(), 0);
     p.last().recv(agent(1, "tool_result", { callId: "gone", status: "ok", output: "done\nmore" }));
     expect(p.app.querySelector(".now")?.textContent).toMatch(/^Now ▸ done · ok · /);
     expect(() => p.app.querySelector<HTMLButtonElement>(".now-link")!.click()).not.toThrow();
+  });
+
+  // Q2: once the run's agent leaves, the page says no run is on, names the last activity,
+  // stops ageing the run and offers no steering.
+  it("says there is no run once the agent leaves, and offers no steering", () => {
+    vi.setSystemTime(Date.parse("2026-10-06T10:00:05Z"));
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const steer = () => p.app.querySelector<HTMLOptionElement>('select[name="delivery"] option[value="steering"]')!;
+    p.last().recv(event(1, "message", { kind: "chat", text: "anyone?", delivery: "none" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run yet"); // a human's message starts no run
+    expect(steer().hidden).toBe(true);
+    p.last().recv(event(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    p.last().recv(agent(3, "message", { kind: "chat", text: "on it", delivery: "none" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ on it · message · 5 s ago");
+    expect([steer().hidden, steer().disabled]).toEqual([false, false]);
+    p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
+    p.last().recv(event(4, "participant", { principal: "agent:ikely2yk", change: "left" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run · last: on it · 5 s ago");
+    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+    expect([steer().hidden, steer().disabled]).toEqual([true, true]);
+    expect(p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value).toBe(""); // a steer with no run: chosen again
+    expect(p.app.querySelector("#delivery-notice")?.textContent).toMatch(/no run/i);
+  });
+
+  it("moves the focus to the needs-you panel from its pill", () => {
+    const p = page();
+    document.body.append(p.app);
+    try {
+      p.join(live({ approver: true }), 0);
+      p.last().recv(agent(1, "approval_requested", { approvalId: "ap1", callId: "c1", class: "forge.other",
+        action: { command: "git push" }, expiresAt: "2026-10-06T11:00:00Z" }));
+      const panel = p.app.querySelector<HTMLElement>("section.needs")!;
+      panel.scrollIntoView = () => {};
+      p.app.querySelector<HTMLButtonElement>(".needs-pill")!.click();
+      expect(document.activeElement).toBe(panel);
+    } finally { p.app.remove(); }
   });
 
   // One owned timer per mounted room: a re-mount over the same app leaves the old one no tick.
@@ -210,9 +255,12 @@ describe("the room page", () => {
   it("stops on a room the list misses three refusals in a row, with one answer for both cases", async () => {
     const l = lists([], ["3kq7x2ma"], [], [], []);
     const p = page(l.get);
+    const banner = () => p.app.querySelector<HTMLElement>(".banner")!;
     for (let n = 1; n <= 4; n++) { // absent, then listed (which starts the count over), then absent twice
       p.last().drop(1006);
       await flush();
+      // Spec "No such room": the page says it is checking during the tries.
+      expect(banner().textContent).toMatch(n === 2 ? /^Reconnecting/ : /^Checking the room…$/); // listed: the count starts over
       vi.advanceTimersByTime(30_000); // past any backoff: the re-dial continues
       expect(p.sockets).toHaveLength(n + 1);
       expect(p.app.querySelector("h1")).not.toBeNull();
@@ -384,7 +432,7 @@ describe("the room page", () => {
     expect(p.app.querySelector(".chip-you")?.textContent).toBe("you: collaborator");
     expect(p.app.querySelector(".summary-error")?.textContent).toMatch(/unavailable/);
     p.last().recv(event(1, "message", { kind: "chat", text: "still flowing", delivery: "none" }));
-    expect(p.app.textContent).toContain("still flowing");
+    expect(p.app.querySelector(".view-chat")!.textContent).toContain("still flowing");
   });
 
   // R23: only the raw log is collapsed; chat and composer stay in view.

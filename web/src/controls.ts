@@ -48,6 +48,21 @@ export function button(label: string, act: string, onClick: () => void): HTMLBut
   return b;
 }
 
+// shortPrincipal keeps the kind and the first four characters of a long id; show the full
+// id as the element's title beside it (principalSpan).
+export function shortPrincipal(p: string): string {
+  const i = p.indexOf(":");
+  const id = p.slice(i + 1);
+  return id.length > 8 ? `${p.slice(0, i + 1)}${id.slice(0, 4)}…` : p;
+}
+
+// principalSpan is a principal as the page shows one: short, the full id as its title.
+export function principalSpan(p: string, cls = "principal"): HTMLSpanElement {
+  const s = el("span", { className: cls, textContent: shortPrincipal(p) });
+  if (s.textContent !== p) s.title = p;
+  return s;
+}
+
 // named gives a field its accessible name: a placeholder is not one (R10).
 export function named<T extends HTMLElement>(e: T, label: string): T {
   e.setAttribute("aria-label", label);
@@ -134,23 +149,30 @@ export function labelled(text: string, field: HTMLElement, cls = "field"): HTMLL
   return l;
 }
 
+// A confirm button's span, with disarm: whoever hides it puts the ask back.
+export type Confirm = HTMLSpanElement & { disarm(): void };
+
 // confirmButton is a destructive act's button: the first click asks ("confirm: label")
-// beside a cancel, the second does it. The ask goes back after 10 s or on cancel, so a
-// stale confirm never fires on a stray click. The span is a polite live region: the ask
-// is announced.
-export function confirmButton(label: string, act: string, onConfirm: () => void): HTMLSpanElement {
+// beside a cancel, the second does it. The ask goes back after 10 s, on cancel, or on
+// disarm (the control was hidden), so a stale confirm never fires on a stray click. ready,
+// when given, is checked before the ask: false keeps the button unarmed. The span is a
+// polite live region: the ask is announced.
+export function confirmButton(label: string, act: string, onConfirm: () => void, ready: () => boolean = () => true): Confirm {
   const span = el("span", { className: "confirm" });
   span.setAttribute("aria-live", "polite");
   const cancel = button("cancel", `${act}-cancel`, () => { reset(); main.focus(); });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const reset = () => {
+    const focused = document.activeElement === cancel; // the cancel goes: its focus moves to the button
     clearTimeout(timer);
     timer = undefined;
     main.textContent = label;
     cancel.remove();
+    if (focused) main.focus();
   };
   const main = button(label, act, () => {
     if (timer === undefined) {
+      if (!ready()) return;
       main.textContent = `confirm: ${label}`;
       main.after(cancel);
       timer = setTimeout(reset, confirmFor);
@@ -161,7 +183,13 @@ export function confirmButton(label: string, act: string, onConfirm: () => void)
   });
   main.classList.add("destructive");
   span.append(main);
-  return span;
+  return Object.assign(span, { disarm: () => { if (timer !== undefined) reset(); } });
+}
+
+// hiddenWithin is whether e, or an ancestor up to root, is hidden.
+function hiddenWithin(e: HTMLElement, root: HTMLElement): boolean {
+  for (let n: HTMLElement | null = e; n && n !== root.parentElement; n = n.parentElement) if (n.hidden) return true;
+  return false;
 }
 const confirmFor = 10_000;
 
@@ -187,9 +215,9 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   const run = group("group-run", "Run");
   const hand = el("form", { className: "hand" });
   const role = select("role", "Start a run as", [["implementer", "implementer"], ["reviewer", "reviewer"], ["tester", "tester"], ["triager", "triager"]]);
-  const prUrl = named(el("input", { name: "prUrl", type: "url" }), "pull request URL (reviewer only)");
+  const prUrl = named(el("input", { name: "prUrl", type: "url" }), "Pull request URL (reviewer only)");
   const prLabel = labelled("Pull request URL", prUrl);
-  const egress = named(el("input", { name: "egress" }), "egress profiles, comma-separated");
+  const egress = named(el("input", { name: "egress" }), "Egress profiles (comma-separated)");
   const advanced = el("details", { className: "advanced" });
   advanced.append(el("summary", { textContent: "advanced" }), labelled("Egress profiles (comma-separated)", egress));
   const showPr = () => { prUrl.hidden = prLabel.hidden = role.value !== "reviewer"; };
@@ -213,7 +241,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   // focus or the text of a field the human is in (R10).
   const drv = group("group-driver", "Driver");
   const holder = el("span", { className: "driver-holder" });
-  const giveTo = named(el("input", { name: "giveTo" }), "give the driver token to (human:<sub> or system:factory)");
+  const giveTo = named(el("input", { name: "giveTo" }), "Give to (the driver token, to human:<sub> or system:factory)");
   const giveLabel = labelled("Give to", giveTo);
   const give = button("give", "driver_give", () => {
     const to = giveTo.value.trim();
@@ -221,18 +249,22 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   });
   const interrupt = confirmButton("interrupt", "interrupt", () => send({ kind: "interrupt" }));
   const request = button("request the token", "driver_request", () => send({ kind: "driver_request" }));
-  const takeReason = named(el("input", { name: "takeReason", maxLength: 256 }), "why take the driver token");
+  const takeReason = named(el("input", { name: "takeReason", maxLength: 256 }), "Why take it (the driver token)");
   const takeLabel = labelled("Why take it", takeReason);
+  // The reason is checked before the ask: a confirm with nothing to send is no confirm.
   const take = confirmButton("take", "driver_take", () => {
     const reason = takeReason.value.trim();
-    if (!reason) return say("Say why you take the driver token.");
-    if (send({ kind: "driver_take", reason })) takeReason.value = "";
+    if (reason && send({ kind: "driver_take", reason })) takeReason.value = "";
+  }, () => {
+    if (takeReason.value.trim()) return true;
+    say("Say why you take the driver token.");
+    return false;
   });
   const driver = el("div", { className: "driver" });
   driver.append(holder, giveLabel, give, interrupt, request, takeLabel, take);
   drv.append(driver);
   const renderDriver = () => {
-    holder.textContent = `driver: ${state.driver}${isDriver() ? " (you)" : ""}`;
+    holder.replaceChildren("driver: ", isDriver() ? "you" : principalSpan(state.driver));
     for (const e of [giveLabel, give, interrupt]) e.hidden = !isDriver();
     request.hidden = isDriver();
     for (const e of [takeLabel, take]) e.hidden = isDriver() || !isOwner();
@@ -250,7 +282,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
     const promote = !state.sealed && isDriver();
     return { key: String(q.ref), sig: `${remove} ${promote}`, build: () => {
       const li = el("li");
-      li.append(el("span", { textContent: `#${q.ref} ${q.author}: ${q.text}` }));
+      li.append(`#${q.ref} `, principalSpan(q.author), el("span", { textContent: `: ${q.text}` }));
       if (remove) li.append(button("remove", "remove_queued", () => send({ kind: "remove_queued", ref: q.ref })));
       if (promote) li.append(confirmButton("steer now", "promote_queued", () => send({ kind: "promote_queued", ref: q.ref })));
       return li;
@@ -265,10 +297,10 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   memberList.setAttribute("aria-label", "Members");
   const memberRows = keyed(memberList);
   const inviteForm = el("form", { className: "invite" });
-  const invitee = named(el("input", { name: "invitee" }), "member to invite (human:<sub>)");
-  const memberRole = select("memberRole", "role of the invited member", [["watcher", "watcher"], ["collaborator", "collaborator"], ["owner", "owner"]]);
+  const invitee = named(el("input", { name: "invitee" }), "Invite (a member, human:<sub>)");
+  const memberRole = select("memberRole", "as (the invited member's role)", [["watcher", "watcher"], ["collaborator", "collaborator"], ["owner", "owner"]]);
   memberRole.value = "collaborator";
-  const approver = named(el("input", { name: "inviteApprover", type: "checkbox" }), "may decide approvals");
+  const approver = named(el("input", { name: "inviteApprover", type: "checkbox" }), "approver (may decide approvals)");
   const approverLabel = el("label", { textContent: " approver" });
   approverLabel.prepend(approver);
   let invited = { seq: 0, who: "" };
@@ -283,6 +315,7 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   // Closing seals the room for good: it asks first.
   const closer = confirmButton("close room", "close", () => send({ kind: "close" }));
   room.append(memberList, inviteForm, stopSlot, closer);
+  room.addEventListener("toggle", () => { if (!room.open) closer.disarm(); }); // folded away is hidden too
 
   // Mounted once: refresh toggles hidden, never re-mounts (R10).
   root.replaceChildren(run, drv, queueBox, room);
@@ -305,9 +338,15 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
       renderDriver();
       renderQueue();
       memberRows(state.members().map((m) => {
-        const text = `${m.principal} · ${m.role}${m.approver ? " · approver" : ""}`;
-        return { key: m.principal, sig: text, build: () => el("li", { textContent: text }) };
+        const rest = ` · ${m.role}${m.approver ? " · approver" : ""}`;
+        return { key: m.principal, sig: rest, build: () => {
+          const li = el("li");
+          li.append(principalSpan(m.principal), rest);
+          return li;
+        } };
       }));
+      // A confirm armed and then hidden (by the token moving, a seal, a role change) asks again.
+      for (const c of [interrupt, take, closer, ...queue.querySelectorAll<Confirm>(".confirm")]) if (hiddenWithin(c, root)) c.disarm();
     },
     // result is a start_run ack's rendered AgentRun, before SP3 (ruling P14).
     showResult,
@@ -343,6 +382,7 @@ export function mountComposer(root: HTMLElement, conn: Sender, state: RoomState,
   delivery.setAttribute("aria-describedby", "delivery-notice");
   const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
   const choose = "You no longer hold the driver token: choose where this message goes.";
+  const noRun = "No run is on now, so no agent to steer: choose where this message goes.";
   // The notice sits beside the select it is about, so the page's act notice keeps its own.
   const notice = el("span", { id: "delivery-notice", className: "notice" });
   notice.setAttribute("role", "status");
@@ -361,12 +401,14 @@ export function mountComposer(root: HTMLElement, conn: Sender, state: RoomState,
   root.replaceChildren(text, row);
   return {
     refresh() {
-      steering.disabled = !isDriver();
-      // A lost token picks no other delivery for the human: both prompt or skip an
-      // agent the human meant to reach (R09, reversing review 4.5 I3). The draft stays.
+      // Steering needs the token and an agent present now (Q2): with no run it is not offered.
+      steering.hidden = !state.running();
+      steering.disabled = !isDriver() || steering.hidden;
+      // A lost token or an ended run picks no other delivery for the human: both prompt or
+      // skip an agent the human meant to reach (R09, reversing review 4.5 I3). The draft stays.
       if (steering.disabled && delivery.value === "steering") {
         delivery.value = "";
-        notice.textContent = choose;
+        notice.textContent = isDriver() ? noRun : choose;
       }
       root.hidden = you.role === "watcher";
       text.hidden = row.hidden = state.sealed;

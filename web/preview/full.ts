@@ -81,8 +81,8 @@ async function run() {
   controls.refresh();
   composer.refresh();
   renderNotes(blocks, summary);
-  strip.update({ roomId: summary.room, snap, phase: state.phase, driver: state.driver, sealedBy: state.closed,
-    summary, needs: needs.count(), connection: "live", now: state.latest() });
+  strip.update({ roomId: summary.room, snap, phase: state.phase, driver: state.driver, sealedBy: state.closed, sealed: state.sealed,
+    summary, needs: needs.count(), connection: "live", now: state.latest(), running: state.running(), ran: state.ran() });
 }
 
 run().catch((e) => { document.body.textContent = `preview failed: ${e instanceof Error ? e.message : e}`; });
