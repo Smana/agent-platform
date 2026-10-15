@@ -10,9 +10,9 @@
 // runner's included), a shell nested twice, a git or gh write mentioned where no
 // command starts.
 //
-// What it cannot see, and leaves Plain (S9): script files written earlier (a
-// script written by a heredoc in the same command is scanned; bash x.sh, source
-// x.sh, . x.sh, a Makefile, an interpreter given a file, a git hook), config
+// What it cannot see, and leaves Plain (S9): script files written earlier (bash
+// x.sh, source x.sh, . x.sh, a Makefile, an interpreter given a file, a git
+// hook); a script written by a heredoc in the same command is scanned. Config
 // written by file edit (.git/config or ~/.gitconfig through file_editor), git
 // aliases already in such a file, HTTP clients other than gh (curl with
 // $GH_TOKEN), a runner option missing from its table (it shifts the command
@@ -296,7 +296,7 @@ func (c Classifier) line(cmd string, depth int) Class {
 
 func (c Classifier) segment(s segment, depth int) Class {
 	u := unwrap(dropRedirects(s.words))
-	cl, scan := Plain, true
+	cl, scan, bodyScan := Plain, true, true
 	for _, sc := range u.scripts {
 		if sc.expanded {
 			return ForgeOther // watch "$CMD", flock -c "$CMD" (R4)
@@ -324,6 +324,11 @@ func (c Classifier) segment(s segment, depth int) Class {
 			hc = c.eval(args, depth)
 		case head == "git":
 			hc, scan = c.git(args, u.appended, depth)
+			// A safe subcommand's heredoc is its input (a commit message), not a script.
+			// apply and am take a patch that can write an executable: still scanned.
+			if g, _ := gitArgs(args); !scan && len(g) > 0 && gitSafe[g[0].text] && g[0].text != "apply" && g[0].text != "am" {
+				bodyScan = false
+			}
 		case head == "gh":
 			hc, scan = c.gh(args, u.appended), false
 		case head == "find":
@@ -345,7 +350,7 @@ func (c Classifier) segment(s segment, depth int) Class {
 	if cl == Plain && scan && mentionsForge(wordTexts(s.words)) {
 		return ForgeOther // a git or gh write the parser could not reach: an alias, an unknown runner
 	}
-	if cl == Plain && mentionsForge(s.bodies) {
+	if cl == Plain && bodyScan && mentionsForge(s.bodies) {
 		return ForgeOther // cat <<EOF > x.sh … git push … EOF, then bash x.sh: whatever runs the file (F11)
 	}
 	return cl

@@ -135,9 +135,10 @@ func TestReviewBattery(t *testing.T) {
 		{"N6", "cat <<'EOF' > x.sh\ncd r&&git push origin main\nEOF\nbash x.sh", ForgeOther},
 		{"N6", "cat <<'EOF' > x.sh\ntrue;git push origin main\nEOF\nbash x.sh", ForgeOther},
 		{"N6", "python3 <<'EOF'\nos.system('true;git push origin main')\nEOF", ForgeOther},
-		{"N6", "git apply <<'EOF'\n+git push origin main\nEOF", ForgeOther},
-		{"N6", "source ./push.sh", Plain}, // residual (file header)
-		{"N6", ". ./push.sh", Plain},      // residual (file header)
+		{"N6", "git apply <<'EOF'\n+git push origin main\nEOF", ForgeOther},      // a patch can write an executable,
+		{"N6", "git commit -F - <<'EOF'\nci: retry git push on 503\nEOF", Plain}, // a commit message is input, not a script
+		{"N6", "source ./push.sh", Plain},                                        // residual (file header)
+		{"N6", ". ./push.sh", Plain},                                             // residual (file header)
 
 		// N7: alias and extension definitions.
 		{"N7", "gh alias set m 'pr merge'\ngh m 1", ForgeOther},
