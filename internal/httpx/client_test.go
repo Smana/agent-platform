@@ -220,3 +220,41 @@ func TestASubdomainIsAnotherHost(t *testing.T) {
 		t.Fatal("Authorization was forwarded to a subdomain")
 	}
 }
+
+func TestNewStreamingHasNoWholeExchangeTimeout(t *testing.T) {
+	c := NewStreaming(3*time.Second, nil)
+	if c.Timeout != 0 {
+		t.Fatalf("Timeout = %v, want 0", c.Timeout)
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok || tr.ResponseHeaderTimeout != 3*time.Second {
+		t.Fatalf("the headers must stay bounded by the given timeout, got %+v", c.Transport)
+	}
+}
+
+func TestNewStreamingKeepsTheEgressGuards(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/loop":
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		case "/metadata":
+			http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+		}
+	}))
+	defer origin.Close()
+	cases := map[string]struct {
+		url  string
+		want error
+	}{
+		"the redirect chain is capped":   {origin.URL + "/loop", ErrTooManyRedirects},
+		"a metadata redirect is refused": {origin.URL + "/metadata", ErrForbiddenAddress},
+		"a metadata address is refused":  {"http://169.254.169.254/", ErrForbiddenAddress},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := get(t, NewStreaming(time.Second, nil), c.url, nil); !errors.Is(err, c.want) {
+				t.Fatalf("want %v, got %v", c.want, err)
+			}
+		})
+	}
+}

@@ -70,10 +70,9 @@ func NewBroker(base, tokenFile, caFile string) (*Broker, error) {
 	if !roots.AppendCertsFromPEM(pemBytes) {
 		return nil, fmt.Errorf("bridge: the broker CA %s holds no PEM certificate", caFile)
 	}
-	stream := httpx.New(brokerTimeout, roots)
 	// The stream lives up to an hour: the context and streamIdle bound it, not
 	// a whole-exchange timeout. Headers are still bounded by the transport.
-	stream.Timeout = 0
+	stream := httpx.NewStreaming(brokerTimeout, roots)
 	return &Broker{base: strings.TrimRight(base, "/"), tokenFile: filepath.Clean(tokenFile),
 		hc: httpx.New(brokerTimeout, roots), stream: stream}, nil
 }
