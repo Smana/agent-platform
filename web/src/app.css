@@ -164,6 +164,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .meter-bar::after { content: ""; position: absolute; inset: 0; width: var(--fill, 0%); background: var(--accent); border-radius: 3px; }
 .waiting, .closed { font-size: 13px; color: var(--brand-navy-foreground); opacity: .9; }
+.strip-head { display: grid; gap: 4px; min-width: 0; }
+.strip-tail:empty { display: none; }
+/* The Now line: a button that reads as a line of text, so it takes the reader to the row. */
+.strip-now { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 13px; color: var(--brand-navy-foreground); }
+.page-header .now-link {
+  border: 0; padding: 0; text-align: left; font-size: 13px; overflow-wrap: anywhere;
+  color: var(--brand-navy-foreground); background: transparent;
+}
+.page-header .now-link:hover { box-shadow: none; text-decoration: underline; }
+.now-hint { font-style: italic; }
 .page-header .needs-pill {
   background: var(--warning); color: var(--brand-navy);
   border: 0; border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 12px;

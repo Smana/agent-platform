@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { RoomEvent } from "./conn";
+import { maxRows } from "./view";
 
 export interface Queued { ref: number; author: string; text: string }
+// The latest activity, for the strip's Now line: a tool call (running until its result
+// says ok, error or rejected), a result alone, or an agent's or a human's message.
+export interface Latest { seq: number; text: string; status: "running" | "ok" | "error" | "rejected" | "message"; ts: string }
 // A pending approval: its card. action is the raw, redacted call (T3).
 export interface Approval { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }
 
@@ -12,6 +16,9 @@ export class RoomState {
   private queued = new Map<number, Queued>();
   private pending = new Map<string, Approval>();
   private through = 0;
+  private last?: Latest;
+  // The calls still open to a result, by callId, oldest first, at most maxCalls of them.
+  private calls = new Map<string, Latest>();
   sealed = false;
   phase = "";
   constructor(public driver = "", public driverEpoch = 0) {}
@@ -40,7 +47,35 @@ export class RoomState {
           this.driverEpoch = p.epoch;
         }
         break;
+      case "tool_call": {
+        const args = p.args;
+        const what = args?.command !== undefined ? String(args.command) : args === undefined ? "" : JSON.stringify(args);
+        this.last = { seq: ev.seq, text: firstLine(`${String(p.tool ?? "")} ${what}`), status: "running", ts: ev.ts };
+        if (typeof p.callId === "string") {
+          this.calls.delete(p.callId); // a resent call moves to the newest end
+          this.calls.set(p.callId, this.last);
+          if (this.calls.size > maxCalls) this.calls.delete(this.calls.keys().next().value!);
+        }
+        break;
+      }
+      case "tool_result": {
+        const status = resultStatus(p.status);
+        const call = typeof p.callId === "string" ? this.calls.get(p.callId) : undefined;
+        // The call's own entry: if it is the latest, the line follows its status. A result
+        // whose call the page never saw (its tail began after it, or the row went at the
+        // cap) stands alone, its output's first line as the text.
+        if (call) {
+          call.status = status;
+          this.calls.delete(p.callId);
+        } else {
+          this.last = { seq: ev.seq, text: firstLine(String(p.output ?? "")) || "tool result", status, ts: ev.ts };
+        }
+        break;
+      }
       case "message":
+        if (ev.actor.kind === "agent" || ev.actor.kind === "human") {
+          this.last = { seq: ev.seq, text: firstLine(String(p.text ?? "")), status: "message", ts: ev.ts };
+        }
         // At or below the mark, the snapshot's queue decides: a message refused at
         // the room's event limit stays in the log, unqueued.
         if (p.delivery === "queued" && ev.seq > this.through) {
@@ -75,5 +110,20 @@ export class RoomState {
 
   queue(): Queued[] { return [...this.queued.values()].sort((a, b) => a.ref - b.ref); }
 
+  latest(): Latest | undefined { return this.last && { ...this.last }; }
+
   approvals(): Approval[] { return [...this.pending.values()].sort((a, b) => a.seq - b.seq); }
+}
+
+const maxCalls = maxRows; // the chat's row cap: an open call older than that is gone from the page too
+
+// firstLine keeps the line short: an edit's args can be a whole file on one line.
+function firstLine(s: string): string {
+  const l = s.trim().split("\n", 1)[0].trim();
+  return l.length > maxText ? `${l.slice(0, maxText - 1)}…` : l;
+}
+const maxText = 120;
+
+function resultStatus(s: unknown): Latest["status"] {
+  return s === "error" || s === "rejected" ? s : "ok";
 }

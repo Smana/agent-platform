@@ -36,6 +36,65 @@ describe("the room page", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  const agent = (seq: number, type: string, payload: unknown, ts = "2026-10-06T10:00:00Z") => {
+    const f = event(seq, type, payload);
+    return { ...f, event: { ...f.event, ts, actor: { kind: "agent", id: "agent:ikely2yk", role: "implementer" }, origin: "bridge" } };
+  };
+
+  it("says what the agent does now, its age kept current every second", () => {
+    vi.setSystemTime(Date.parse("2026-10-06T10:00:05Z"));
+    const p = page();
+    p.join(snapshot(), 0);
+    expect(p.app.querySelector(".now")?.textContent).toBe("No run yet");
+    p.last().recv(agent(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "go test ./..." } }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 5 s ago");
+    vi.advanceTimersByTime(3000);
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · running · 8 s ago");
+    p.last().recv(agent(2, "tool_result", { callId: "c1", status: "error", output: "FAIL" }));
+    expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ terminal go test ./... · error · 8 s ago");
+  });
+
+  it("takes the Now line's click to its row and opens it", () => {
+    const p = page();
+    document.body.append(p.app); // the row is found in the page, as in a browser
+    try {
+      p.join(snapshot(), 0);
+      p.last().recv(agent(1, "tool_call", { callId: "c1", tool: "terminal", args: { command: "ls" } }));
+      const row = p.app.querySelector<HTMLDetailsElement>('.view-chat details[data-seq="1"]')!;
+      let scrolled = 0;
+      row.scrollIntoView = () => { scrolled++; };
+      expect(row.open).toBe(false);
+      p.app.querySelector<HTMLButtonElement>(".now-link")!.click();
+      expect(scrolled).toBe(1);
+      expect(row.open).toBe(true);
+    } finally { p.app.remove(); }
+  });
+
+  // Review focus 2: the call row went at the cap; its result alone heads the Now line.
+  it("shows a result whose call the page dropped, and its click finds nothing without throwing", () => {
+    const p = page();
+    p.join(snapshot(), 0);
+    p.last().recv(agent(1, "tool_result", { callId: "gone", status: "ok", output: "done\nmore" }));
+    expect(p.app.querySelector(".now")?.textContent).toMatch(/^Now ▸ done · ok · /);
+    expect(() => p.app.querySelector<HTMLButtonElement>(".now-link")!.click()).not.toThrow();
+  });
+
+  // One owned timer per mounted room: a re-mount over the same app leaves the old one no tick.
+  it("keeps one refresh timer per mounted page, across re-mounts", () => {
+    const app = document.createElement("div");
+    const mount = () => mountRoom(app, "3kq7x2ma", theme, { socket: (url) => new FakeSocket(url), random: () => 0,
+      get: (async () => new Response("", { status: 503 })) as unknown as typeof fetch });
+    mount();
+    vi.advanceTimersByTime(1000);
+    const one = vi.getTimerCount();
+    for (let n = 0; n < 3; n++) mount();
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBe(one);
+    app.replaceChildren(); // the page left the app: its timer goes too
+    vi.advanceTimersByTime(1000);
+    expect(vi.getTimerCount()).toBe(one - 1);
+  });
+
   it("styles only the page chrome as a header: a message head is not sticky navy (U1)", () => {
     const p = page();
     p.join(snapshot(), 0);

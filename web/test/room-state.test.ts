@@ -5,6 +5,9 @@ const ev = (seq: number, type: string, payload: unknown, causedBy?: number) =>
   ({ v: 1, id: String(seq), seq, roomId: "3kq7x2ma", actor: { kind: "human", id: "human:a" }, type, origin: "client",
      ts: "2026-09-27T10:00:00Z", redactions: [], payload, causedBy });
 
+const agentEv = (seq: number, type: string, payload: unknown) =>
+  ({ ...ev(seq, type, payload), actor: { kind: "agent", id: "agent:ikely2yk", role: "implementer" } });
+
 describe("RoomState", () => {
   it("derives the queue from the log", () => {
     const s = new RoomState();
@@ -104,5 +107,43 @@ describe("RoomState", () => {
     expect(s.approvals().map((a) => a.approvalId)).toEqual(["new"]);
     s.reset({ driver: "system:factory", driverEpoch: 0 }, 700);
     expect(s.approvals()).toEqual([]);
+  });
+
+  it("tracks the latest activity: a running call, then its result, then a message", () => {
+    const s = new RoomState();
+    s.apply(agentEv(5, "tool_call", { callId: "c1", tool: "terminal", args: { command: "git status --short" } }));
+    expect(s.latest()).toMatchObject({ seq: 5, text: "terminal git status --short", status: "running" });
+    s.apply(agentEv(6, "tool_result", { callId: "c1", status: "ok", output: "" }));
+    expect(s.latest()).toMatchObject({ seq: 5, status: "ok" });
+    s.apply(agentEv(7, "message", { kind: "chat", text: "Two files changed.", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 7, text: "Two files changed.", status: "message" });
+  });
+  // Review focus 2: the page dropped the call's row at the 5,000-row cap, or its tail began between them.
+  it("shows a result whose call it never saw as the result alone (review focus 2)", () => {
+    const s = new RoomState();
+    s.apply(agentEv(9, "tool_result", { callId: "lost", status: "error", output: "boom\nat line 2" }));
+    expect(s.latest()).toMatchObject({ seq: 9, text: "boom", status: "error" });
+    s.apply(agentEv(10, "tool_result", { status: "ok" })); // no callId, no output: still no throw
+    expect(s.latest()).toMatchObject({ seq: 10, text: "tool result", status: "ok" });
+  });
+  it("names a call with no command by its args, and ignores system messages", () => {
+    const s = new RoomState();
+    s.apply(agentEv(3, "tool_call", { callId: "c2", tool: "edit", args: { path: "a.go" } }));
+    expect(s.latest()?.text).toBe('edit {"path":"a.go"}');
+    s.apply(agentEv(4, "tool_call", { callId: "c3", tool: "edit", args: { content: "x".repeat(500) } }));
+    expect(s.latest()?.text).toHaveLength(120);
+    s.apply(ev(5, "message", { kind: "chat", text: "a human says", delivery: "none" }));
+    expect(s.latest()).toMatchObject({ seq: 5, status: "message" });
+    s.apply({ ...ev(6, "message", { kind: "chat", text: "broker note", delivery: "none" }), actor: { kind: "system", id: "system:room-broker" } });
+    expect(s.latest()?.seq).toBe(5);
+  });
+  it("keeps the latest when a result lands for an older call", () => {
+    const s = new RoomState();
+    s.apply(agentEv(1, "tool_call", { callId: "a", tool: "terminal", args: { command: "make" } }));
+    s.apply(agentEv(2, "tool_call", { callId: "b", tool: "terminal", args: { command: "ls" } }));
+    s.apply(agentEv(3, "tool_result", { callId: "a", status: "rejected", output: "" }));
+    expect(s.latest()).toMatchObject({ seq: 2, status: "running" });
+    s.apply(agentEv(4, "tool_result", { callId: "b", status: "ok", output: "x" }));
+    expect(s.latest()).toMatchObject({ seq: 2, status: "ok" });
   });
 });

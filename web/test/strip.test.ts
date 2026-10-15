@@ -19,6 +19,64 @@ const input = (over: Partial<StripInput> = {}): StripInput =>
   ({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live", ...over });
 
 describe("the title strip", () => {
+  it("prints the Now line with a relative time and links to the row", () => {
+    const { h, strip } = mount();
+    let clicked = 0;
+    strip.onNowClick((seq) => { clicked = seq; });
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0, connection: "live",
+      now: { seq: 27, text: "terminal git log --oneline -3", status: "running", ts: new Date(Date.now() - 12_000).toISOString() } });
+    expect(h.querySelector(".now")?.textContent).toBe("Now ▸ terminal git log --oneline -3 · running · 12 s ago");
+    (h.querySelector(".now button") as HTMLButtonElement).click();
+    expect(clicked).toBe(27);
+  });
+  it("says there is no run when nothing is running", () => {
+    const { h, strip } = mount();
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Open", driver: snap.driver, needs: 0, connection: "live" });
+    expect(h.querySelector(".now")?.textContent).toBe("No run yet");
+  });
+  it("hints at Run only to an owner or the driver", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: undefined }));
+    expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+    strip.update(input({ summary: undefined, snap: { ...snap, you: { ...snap.you, role: "collaborator", driver: false } } }));
+    expect(h.querySelector(".now-hint")).toBeNull();
+  });
+  it("re-renders the Now line's age on the same input as the clock moves", () => {
+    let t = Date.parse("2026-10-04T14:00:00Z");
+    const h = document.createElement("header");
+    const strip = mountStrip(h, () => t);
+    const i = input({ now: { seq: 3, text: "hi", status: "message", ts: "2026-10-04T13:59:58Z" } });
+    strip.update(i);
+    expect(h.querySelector(".now")?.textContent).toBe("Now ▸ hi · message · 2 s ago");
+    t += 4 * 60_000;
+    strip.update(i);
+    expect(h.querySelector(".now")?.textContent).toBe("Now ▸ hi · message · 4 min ago");
+    t += 2 * 3600_000;
+    strip.update(i);
+    expect(h.querySelector(".now")?.textContent).toBe("Now ▸ hi · message · 2 h ago");
+  });
+  // The 1 s refresh must not rebuild the strip: a focused PR link or Now button keeps its node.
+  it("moves both ages in place, keeping every node", () => {
+    let t = Date.parse("2026-10-04T14:04:30Z");
+    const h = document.createElement("header");
+    const strip = mountStrip(h, () => t);
+    const i = input({ now: { seq: 3, text: "hi", status: "running", ts: "2026-10-04T14:04:28Z" } });
+    strip.update(i);
+    const [h1, link, btn] = [h.querySelector("h1"), h.querySelector("a"), h.querySelector(".now-link")];
+    t += 60_000;
+    strip.update(i);
+    expect(h.querySelector(".chip-run")?.textContent).toBe("implementer · ikely2yk · 5 min");
+    expect(h.querySelector(".now")?.textContent).toBe("Now ▸ hi · running · 1 min ago");
+    expect(h.querySelector("h1")).toBe(h1);
+    expect(h.querySelector("a")).toBe(link);
+    expect(h.querySelector(".now-link")).toBe(btn);
+  });
+  it("puts untrusted Now text in as text", () => {
+    const { h, strip } = mount();
+    strip.update(input({ now: { seq: 1, text: "<img src=x onerror=alert(1)>", status: "message", ts: new Date().toISOString() } }));
+    expect(h.querySelector("img")).toBeNull();
+    expect(h.querySelector(".now")?.textContent).toContain("<img src=x onerror=alert(1)>");
+  });
   it("heads the page with the issue title and sets the tab title", () => {
     const { h, strip } = mount();
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live" });

@@ -69,11 +69,28 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   // The strip renders from the state frame alone until a summary arrives: a summary
   // that cannot be fetched leaves the room's id, phase, driver and you in place.
   const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
-    sealedBy: undefined, summary: sum, needs: needs(), connection });
+    sealedBy: undefined, summary: sum, needs: needs(), connection, now: state.latest() });
   strip.onNeedsClick(() => {
     const to = blocks.querySelector<HTMLElement>('[data-block="needs-you"]') ?? section.querySelector<HTMLElement>(".approval");
     to?.scrollIntoView?.({ block: "start" });
   });
+  // The Now line's row: the chat's, else the raw log's (the chat folds a result into its
+  // call's row, which carries the call's seq). A row gone at the cap finds nothing.
+  strip.onNowClick((seq) => {
+    const row = main.querySelector<HTMLElement>(`.view-chat [data-seq="${seq}"]`) ?? main.querySelector<HTMLElement>(`[data-seq="${seq}"]`);
+    if (!row) return;
+    if (row instanceof HTMLDetailsElement) row.open = true;
+    const raw = row.closest<HTMLDetailsElement>("details.raw-events");
+    if (raw) raw.open = true;
+    row.scrollIntoView?.({ block: "center" });
+  });
+  // The strip's ages (the Now line's, the run's) move with the clock: one timer per
+  // mounted page, rewriting them in place every second. It stops with the page, and on
+  // its own once the page has left app (a re-mount or the "no such room" page replaced it).
+  const ticker = setInterval(() => {
+    if (!app.contains(header)) clearInterval(ticker);
+    else refreshStrip();
+  }, 1000);
   // The summary loads on mount, then at most once a second while events it folds arrive
   // (R27). A failed fetch shows its text on the error line and leaves the stream alone.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -171,6 +188,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       stopped = true;
       removeEventListener("hashchange", onHash);
       clearTimeout(refreshTimer);
+      clearInterval(ticker);
       const back = document.createElement("a");
       back.href = "/";
       back.textContent = "See the rooms you can read";
