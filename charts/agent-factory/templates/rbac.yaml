@@ -15,8 +15,8 @@ rules:
   - apiGroups: [agents.ogenki.io]
     resources: [rooms]
     verbs: [get, list, watch, create, delete]
-  # ConfigMaps: the stop object, R50's day ledgers (names carry the date, so resourceNames cannot
-  # bound them) and nothing else. The Role's namespace is the bound: the factory can read and
+  # ConfigMaps: the stop object, the meter heartbeat (agent-factory-meter), R50's day ledgers
+  # (names carry the date, so resourceNames cannot bound them) and nothing else. The Role's namespace is the bound: the factory can read and
   # write every ConfigMap in it, its own config included, so the namespace holds no ConfigMap it
   # must not touch. watch is for the stop object's cache.
   - apiGroups: [""]
