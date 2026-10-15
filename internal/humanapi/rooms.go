@@ -152,7 +152,7 @@ type roomRow struct {
 	Driver    string `json:"driver"`
 	DataClass string `json:"dataClass"`
 	LastSeq   int64  `json:"lastSeq"`
-	// LastEventAt is when the room's log last moved; absent when it could not be read.
+	// LastEventAt is when the room's log last moved; absent when the room has no events or it could not be read.
 	LastEventAt time.Time `json:"lastEventAt,omitzero"`
 	Repository  string    `json:"repository"`
 	NeedsMe     bool      `json:"needsMe"`
