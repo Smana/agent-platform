@@ -50,9 +50,9 @@ const (
 	brokerActor = "system:room-broker"
 )
 
-// replayPage is how many deliveries a stream's replay reads at once; a variable
-// so a test can page a short log.
-var replayPage = 500
+// defaultReplayPage is how many deliveries a stream's replay reads at once when
+// Server.ReplayPage is unset.
+const defaultReplayPage = 500
 
 // Authenticator maps a request's credential to a principal. *authn.Runs and
 // *authn.Systems implement it; authn.ErrForbidden means a valid credential for a
@@ -109,6 +109,8 @@ type Server struct {
 	PingEvery time.Duration
 	// Ticker starts the stream's keep-alive; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
+	// ReplayPage is how many deliveries a stream's replay reads at once; 0 means 500.
+	ReplayPage int
 	// StreamWriteWait bounds each write to a stream; 0 means 10 s.
 	StreamWriteWait time.Duration
 	// Hub feeds each stream its room's live events, and LastAck is where a run's
@@ -553,7 +555,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	// flush: a bridge that connects or resumes gets its pending deliveries before
 	// anything else (review M15).
 	for after < st.LastSeq {
-		evs, err := s.Log.Deliveries(ctx, run.Room, run.ID, after, st.LastSeq, replayPage)
+		evs, err := s.Log.Deliveries(ctx, run.Room, run.ID, after, st.LastSeq, s.replayPage())
 		if err != nil {
 			s.log().Warn("replay a stream", "room", run.Room, "run", run.ID, errAttr(err))
 			return // the bridge re-dials and resumes from its last ack
@@ -563,7 +565,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if len(evs) < replayPage {
+		if len(evs) < s.replayPage() {
 			after = st.LastSeq // the replay covered up to the mark: the hub carries the rest
 		}
 	}
@@ -609,4 +611,12 @@ func (s *Server) ticker(d time.Duration) (<-chan time.Time, func()) {
 	}
 	t := time.NewTicker(d)
 	return t.C, t.Stop
+}
+
+// replayPage is the replay's read size: ReplayPage, or the default when unset.
+func (s *Server) replayPage() int {
+	if s.ReplayPage > 0 {
+		return s.ReplayPage
+	}
+	return defaultReplayPage
 }
