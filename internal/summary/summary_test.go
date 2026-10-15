@@ -3,9 +3,12 @@
 package summary_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -16,6 +19,8 @@ import (
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/summary"
 )
+
+var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.json want fields from the current fold")
 
 var goldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts"}
 
@@ -37,8 +42,98 @@ func TestFoldGolden(t *testing.T) {
 			v := policy.Subject{Kind: envelope.ActorHuman, Role: policy.ParseRole(tc.Viewer.Role),
 				Approver: tc.Viewer.Approver, Driver: tc.Viewer.Driver, WebUI: tc.Viewer.WebUI}
 			got := summary.View(summary.Fold(tc.Events), "26zfnuxm", "https://rooms.example/r/26zfnuxm", v, 0, tc.Now)
+			if *updateGolden { // a flag run rewrites instead of asserting; the next plain run checks
+				if err := rewriteWant("testdata/"+name+".json", tc.Want, got); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
 			assertJSONEqual(t, tc.Want, got)
 		})
+	}
+}
+
+// rewriteWant replaces the file's trailing "want" member with got, indented, leaving every byte
+// before it (events, viewer, now) untouched. A want that already equals got is not rewritten, so
+// hand-formatting survives until the fold really changes. It writes nothing and errors when the
+// file has any member after want, which the splice would drop.
+func rewriteWant(path string, want json.RawMessage, got any) error {
+	var w, g any
+	var enc bytes.Buffer
+	e := json.NewEncoder(&enc)
+	e.SetEscapeHTML(false) // keep "<text>" readable in the golden
+	if err := e.Encode(got); err != nil {
+		return err
+	}
+	b := bytes.TrimSpace(enc.Bytes())
+	if err := json.Unmarshal(want, &w); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, &g); err != nil {
+		return err
+	}
+	if reflect.DeepEqual(w, g) {
+		return nil
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	i := bytes.LastIndex(src, []byte("\n  \"want\":"))
+	if i < 0 {
+		return fmt.Errorf("%s: no top-level \"want\" member", path)
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, b, "  ", "  "); err != nil {
+		return err
+	}
+	next := string(src[:i]) + "\n  \"want\": " + out.String() + "\n}\n"
+	if err := sameOtherMembers(src, []byte(next)); err != nil {
+		return fmt.Errorf("%s: refusing to rewrite (want must be the last member): %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+// sameOtherMembers reports an error unless a and b hold the same top-level members apart from "want".
+func sameOtherMembers(a, b []byte) error {
+	var ma, mb map[string]json.RawMessage
+	if err := json.Unmarshal(a, &ma); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, &mb); err != nil {
+		return err
+	}
+	delete(ma, "want")
+	delete(mb, "want")
+	if len(ma) != len(mb) {
+		return fmt.Errorf("members differ: %d before, %d after", len(ma), len(mb))
+	}
+	for k, va := range ma {
+		var x, y any
+		if err := json.Unmarshal(va, &x); err != nil {
+			return err
+		}
+		if vb, ok := mb[k]; !ok || json.Unmarshal(vb, &y) != nil || !reflect.DeepEqual(x, y) {
+			return fmt.Errorf("member %q lost or changed", k)
+		}
+	}
+	return nil
+}
+
+func TestRewriteWantRefusesAMemberAfterWant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "g.json")
+	const src = "{\n  \"events\": [],\n  \"want\": {\"a\": 1},\n  \"extra\": 2\n}\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteWant(path, json.RawMessage(`{"a":1}`), map[string]int{"a": 2}); err == nil {
+		t.Fatal("rewriteWant accepted a golden with a member after want")
+	}
+	if b, _ := os.ReadFile(path); string(b) != src {
+		t.Fatalf("file was modified:\n%s", b)
 	}
 }
 
