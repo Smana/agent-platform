@@ -4,7 +4,6 @@ package summary
 
 import (
 	"fmt"
-	"log/slog"
 	"regexp"
 	"slices"
 
@@ -55,7 +54,6 @@ func urlOfIssue(i *envelope.IssueFact) string {
 // checkout it runs from (#59).
 func MergeHow(repo string, n int) string {
 	if repo == "" {
-		slog.Warn("summary: no repository for a merge command", "pr", n)
 		return fmt.Sprintf("a maintainer with admin on the repository merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page", n)
 	}
 	return fmt.Sprintf("a maintainer with admin on %s merges PR #%d: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page, or run `gh pr merge %d --squash --admin --repo %s`",

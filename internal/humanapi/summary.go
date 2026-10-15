@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/policy"
@@ -55,5 +56,24 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		last = page[len(page)-1].Seq
 	}
-	writeJSON(w, summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, time.Now()))
+	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, time.Now())
+	s.warnNoRepository(view, id, sub)
+	writeJSON(w, view)
+}
+
+// warnNoRepository logs what the pure fold no longer does: the task facts name no repository, so
+// the stop action is withheld (when the viewer may close the task) or the merge need falls back
+// to the bypass-only text.
+func (s *Server) warnNoRepository(v summary.Summary, room string, sub policy.Subject) {
+	stop := false
+	for _, a := range v.Actions {
+		stop = stop || a.Kind == "stop"
+	}
+	noMerge := false
+	for _, n := range v.NeedsYou {
+		noMerge = noMerge || (n.Kind == "merge" && !strings.Contains(n.What, "--repo"))
+	}
+	if (v.Status.Issue != nil && !stop && policy.Allowed(sub, policy.Close)) || noMerge {
+		s.log().Warn("summary: task facts name no repository", "room", room)
+	}
 }
