@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The room page's lead blocks, rendered from the broker's summary/v1 JSON
-// (GET /api/rooms/{id}/summary): status, needs you, what you can do, the agents'
-// notes. Every string here may be agent-written, so all of it goes in as text. A field
-// the broker omits when empty (omitempty, omitzero) is optional here, and its part is skipped.
+// The room page's summary blocks, rendered from the broker's summary/v1 JSON
+// (GET /api/rooms/{id}/summary): needs you and the agents' notes; the status heads the
+// page in the title strip (strip.ts). Every string here may be agent-written, so all of
+// it goes in as text. A field the broker omits when empty (omitempty, omitzero) is
+// optional here, and its part is skipped.
 
 import { api } from "./api";
 import type { RoomEvent } from "./conn";
@@ -56,14 +57,14 @@ export function changesSummary(e: RoomEvent): boolean {
 }
 
 // Agent-written URLs become a link only when https; anything else stays text.
-function safeLink(text: string, url: string): Node {
+export function safeLink(text: string, url: string): Node {
   try {
     if (new URL(url).protocol === "https:") return el("a", { href: url, textContent: text, rel: "noopener noreferrer", target: "_blank" });
   } catch { /* not a URL: text */ }
   return document.createTextNode(`${text} (${url})`);
 }
 
-function when(iso: string): string {
+export function when(iso: string): string {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
@@ -79,27 +80,6 @@ function line(...parts: (string | Node)[]): HTMLElement {
   const p = el("p");
   p.append(...parts);
   return p;
-}
-
-function statusBlock(st: Summary["status"]): HTMLElement {
-  const rows: HTMLElement[] = [line(`Phase: ${st.phase}`)];
-  const r = st.run;
-  const run = r ? [r.id, r.role, r.trigger, r.startedAt && `since ${when(r.startedAt)}`].filter(Boolean).join(" · ") : "none";
-  rows.push(line(`Run: ${run}`));
-  if (st.budget) rows.push(line(`Budget: ${st.budget.usedTokens} / ${st.budget.limitTokens} tokens`));
-  const by = (who?: string) => (who ? ` by ${who}` : "");
-  if (st.pr) {
-    const reviewers = st.pr.reviewers ?? [];
-    rows.push(line("PR: ", safeLink(`#${st.pr.number}`, st.pr.url), by(st.pr.author),
-      reviewers.length ? ` · reviewers ${reviewers.join(", ")}` : ""));
-  }
-  if (st.issue) {
-    rows.push(line("Issue: ", safeLink(`#${st.issue.number}`, st.issue.url), st.issue.title ? ` ${st.issue.title}` : "", by(st.issue.author)));
-  }
-  if (st.reason) rows.push(line(`Why: ${st.reason}`));
-  if (st.next) rows.push(line(`Next: ${st.next}`));
-  if (st.lastVerdict) rows.push(line(`Last verdict: ${st.lastVerdict.verdict} by ${st.lastVerdict.by} · ${when(st.lastVerdict.at)}`));
-  return block("status", "Status", ...rows);
 }
 
 // focusApproval reveals the existing approval card for id and focuses its Approve
@@ -135,18 +115,6 @@ function needsYouBlock(items: Summary["needsYou"]): HTMLElement {
   return block("needs-you", "Needs you", ul);
 }
 
-function actionsBlock(actions: Summary["actions"]): HTMLElement {
-  if (!actions.length) return block("actions", "What you can do", line("Nothing here beyond reading."));
-  const ul = el("ul");
-  for (const a of actions) {
-    const li = el("li");
-    li.append(a.what);
-    if (a.cli) li.append(" ", el("code", { textContent: a.cli }));
-    ul.append(li);
-  }
-  return block("actions", "What you can do", ul);
-}
-
 function notesBlock(n: Summary["notes"]): HTMLElement {
   const ul = el("ul");
   for (const i of n.items) ul.append(el("li", { textContent: `${when(i.at)} · ${i.run}: ${i.text}` }));
@@ -155,8 +123,6 @@ function notesBlock(n: Summary["notes"]): HTMLElement {
 }
 
 export function renderSummary(root: HTMLElement, s: Summary): void {
-  const blocks = [statusBlock(s.status)];
-  if (s.needsYou.length) blocks.push(needsYouBlock(s.needsYou));
-  blocks.push(actionsBlock(s.actions), notesBlock(s.notes));
-  root.replaceChildren(...blocks);
+  const blocks = s.needsYou.length ? [needsYouBlock(s.needsYou)] : [];
+  root.replaceChildren(...blocks, notesBlock(s.notes));
 }

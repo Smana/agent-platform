@@ -7,10 +7,11 @@ import { api } from "./api";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
 import { hasControls, mountControls, rejection } from "./controls";
 import { mountFork } from "./fork";
-import { changesSummary, fetchSummary, focusApproval, renderSummary } from "./summary";
+import { changesSummary, fetchSummary, focusApproval, renderSummary, type Summary } from "./summary";
 import { PendingActs } from "./pending";
 import { RoomState } from "./room-state";
 import { mountViews } from "./roomview";
+import { mountStrip } from "./strip";
 import { mountThemeButton, type ThemeController } from "./theme";
 
 // mountRoom renders room id into app. get and socket are parameters so tests
@@ -18,9 +19,7 @@ import { mountThemeButton, type ThemeController } from "./theme";
 export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, o: Options & { get?: typeof fetch } = {}) {
   const header = document.createElement("header");
   header.className = "page-header";
-  const title = document.createElement("span");
-  title.className = "title";
-  header.append(title);
+  const strip = mountStrip(header);
   const lead = document.createElement("section");
   lead.className = "summary";
   // The blocks and the error line are separate, so a failed refresh adds a line and
@@ -62,9 +61,19 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   let absent = 0;
   let snap: Snapshot | undefined;
   let mark = 0; // the latest state frame's throughSeq
-  const renderHeader = () => {
-    if (snap) title.textContent = `${snap.roomId} · ${state.phase} · ${snap.dataClass} · driver ${state.driver} · you: ${snap.you.role}${snap.you.approver ? " (approver)" : ""}`;
-  };
+  let summary: Summary | undefined;
+  let connection = "connecting…";
+  // What needs you: the approvals you may decide, then the summary's merges and holds.
+  const needs = () => (snap?.you.approver ? state.approvals().length : 0) +
+    (summary?.needsYou.filter((n) => n.kind === "merge" || n.kind === "hold").length ?? 0);
+  // The strip renders from the state frame alone until a summary arrives: a summary
+  // that cannot be fetched leaves the room's id, phase, driver and you in place.
+  const refreshStrip = (sum = summary) => strip.update({ roomId: id, snap, phase: state.phase, driver: state.driver,
+    sealedBy: undefined, summary: sum, needs: needs(), connection });
+  strip.onNeedsClick(() => {
+    const to = blocks.querySelector<HTMLElement>('[data-block="needs-you"]') ?? section.querySelector<HTMLElement>(".approval");
+    to?.scrollIntoView?.({ block: "start" });
+  });
   // The summary loads on mount, then at most once a second while events it folds arrive
   // (R27). A failed fetch shows its text on the error line and leaves the stream alone.
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -84,7 +93,9 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       rendered = n;
       const key = JSON.stringify(sum);
       if (key !== shown) {
+        refreshStrip(sum); // first: a strip that throws leaves the summary as it was
         renderSummary(blocks, sum);
+        summary = sum;
         shown = key;
       }
       summaryError.hidden = true;
@@ -114,7 +125,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       mark = throughSeq;
       absent = 0; // the broker let us in: the room is readable
       state.reset(s, throughSeq);
-      renderHeader();
+      refreshStrip();
       if (!hasControls(s.you)) {
         controls = you = undefined;
         section.replaceChildren();
@@ -129,7 +140,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       views.apply(e);
       if (changesSummary(e)) scheduleSummary();
       state.apply(e);
-      renderHeader();
+      refreshStrip();
       controls?.refresh();
       land();
       // A membership change naming you: the page projects none (R10). The reconnect's
@@ -174,6 +185,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     onStatus: (s) => {
       footer.dataset.status = s;
       status.textContent = s;
+      connection = s;
+      refreshStrip();
       pending.status(s);
     },
   }, o);
@@ -186,6 +199,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
     },
   };
   const fork = mountFork(forkPanel, sender, state);
+  refreshStrip();
   loadSummary();
   conn.connect();
 }

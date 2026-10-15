@@ -119,10 +119,9 @@ a { color: var(--link); }
 .page-header, .page-dock { padding: 8px 16px; position: sticky; }
 .page-header {
   top: 0; z-index: 2;
-  display: flex; gap: 12px; align-items: baseline;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start;
   background: var(--brand-navy); color: var(--brand-navy-foreground);
 }
-.page-header .title { overflow-wrap: anywhere; }
 .page-dock {
   bottom: 0; z-index: 2;
   background: var(--card); color: var(--card-foreground);
@@ -143,6 +142,28 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
 .page-header button { background: transparent; color: var(--brand-navy-foreground); }
+
+/* The title strip (strip.ts): rows of the header, on brand navy, so every chip and link
+   takes the header's text token rather than the card's. */
+.strip { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.strip-title { font-size: 18px; margin: 0; font-weight: 600; }
+.strip-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.page-header .chip {
+  color: var(--brand-navy-foreground); background: transparent;
+  border-color: color-mix(in srgb, var(--brand-navy-foreground) 45%, var(--brand-navy));
+}
+.page-header a { color: var(--brand-navy-foreground); text-decoration: underline; }
+.meter-bar {
+  display: inline-block; width: 64px; height: 6px; border-radius: 3px; vertical-align: middle;
+  background: color-mix(in srgb, var(--brand-navy-foreground) 20%, transparent); position: relative;
+}
+.meter-bar::after { content: ""; position: absolute; inset: 0; width: var(--fill, 0%); background: var(--accent); border-radius: 3px; }
+.waiting, .closed { font-size: 13px; color: var(--brand-navy-foreground); opacity: .9; }
+.page-header .needs-pill {
+  background: var(--warning); color: var(--brand-navy);
+  border: 0; border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 12px;
+}
+.strip-conn { font-size: 12px; font-family: ui-monospace, monospace; }
 .theme-toggle { margin-left: auto; font-size: 12px; }
 .theme-toggle { margin-left: 0; }
 

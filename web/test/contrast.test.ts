@@ -30,6 +30,9 @@ const pairs = (t: Record<string, string>) => [
   ["warning text on its tint", t["--warning-foreground"], mix(t["--warning"], t["--card"], 0.18), 4.5],
   ["primary button text", t["--primary-foreground"], t["--primary"], 4.5],
   ["the header's text", t["--brand-navy-foreground"], t["--brand-navy"], 4.5],
+  ["the strip's chip borders", mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.45), t["--brand-navy"], 3],
+  ["the needs-you pill", t["--brand-navy"], t["--warning"], 4.5],
+  ["the budget meter's fill", t["--accent"], mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.20), 3],
   ["the needs-you border", t["--warning-border"], t["--card"], 3],
 ] as const;
 

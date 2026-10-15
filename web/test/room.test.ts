@@ -28,8 +28,8 @@ function page(get?: typeof fetch) {
     last().recv({ type: "sync", fromSeq: 1, throughSeq });
     for (const f of replay) last().recv(f);
   };
-  const title = () => app.querySelector(".title")?.textContent;
-  return { app, sockets, last, join, title };
+  const phase = () => app.querySelector(".chip-phase")?.textContent;
+  return { app, sockets, last, join, phase };
 }
 
 describe("the room page", () => {
@@ -47,9 +47,10 @@ describe("the room page", () => {
   it("heads the page with the room's phase as the log moves it (R10)", () => {
     const p = page();
     p.join(snapshot(), 0);
-    expect(p.title()).toMatch(/^3kq7x2ma · Open · internal · /);
+    expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
+    expect(p.phase()).toBe("Open");
     p.last().recv(event(1, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }));
-    expect(p.title()).toMatch(/^3kq7x2ma · Closed · internal · /);
+    expect(p.phase()).toBe("Closed");
   });
 
   // Every reader may fork (policy Fork): a chat row's "fork here" opens the panel at
@@ -113,7 +114,7 @@ describe("the room page", () => {
       await flush();
       vi.advanceTimersByTime(30_000); // past any backoff: the re-dial continues
       expect(p.sockets).toHaveLength(n + 1);
-      expect(p.app.querySelector(".title")).not.toBeNull();
+      expect(p.app.querySelector("h1")).not.toBeNull();
     }
     p.last().drop(1006); // the third absent answer in a row
     await flush();
@@ -190,7 +191,7 @@ describe("the room page", () => {
     vi.advanceTimersByTime(30_000);
     await refuse();
     await refuse();
-    expect(p.app.querySelector(".title")).not.toBeNull();
+    expect(p.app.querySelector("h1")).not.toBeNull();
     expect(p.sockets).toHaveLength(6);
     p.last().drop(1006); // the third in a row since the open
     await flush();
@@ -240,7 +241,7 @@ describe("the room page", () => {
     const p = page(get);
     await vi.advanceTimersByTimeAsync(0);
     expect(get).toHaveBeenCalledTimes(1);
-    expect(p.app.querySelector('.summary [data-block="status"]')).not.toBeNull();
+    expect(p.app.querySelector('.summary [data-block="notes"]')).not.toBeNull();
     expect(p.app.querySelector<HTMLDetailsElement>("details.raw-events")!.open).toBe(false);
     p.join(snapshot(), 0);
     p.last().recv(event(1, "message", { kind: "chat", text: "a", delivery: "none" }));
@@ -262,6 +263,20 @@ describe("the room page", () => {
     p.join(snapshot(), 0);
     p.last().recv(event(1, "message", { kind: "chat", text: "still here", delivery: "none" }));
     expect(p.app.querySelector(".view-chat")!.textContent).toContain("still here");
+  });
+
+  // Review focus 1: the strip needs no summary; the state frame alone heads the page.
+  it("renders the strip from the state frame when the summary cannot be fetched", async () => {
+    const p = page(() => Promise.resolve(new Response("", { status: 503 })));
+    p.join(snapshot(), 0);
+    await vi.runOnlyPendingTimersAsync();
+    expect(p.app.querySelector("h1")?.textContent).toBe("Room 3kq7x2ma");
+    expect(p.phase()).toBe("Open");
+    expect(p.app.querySelector(".chip-driver")?.textContent).toBe("driver: human:a");
+    expect(p.app.querySelector(".chip-you")?.textContent).toBe("you: collaborator");
+    expect(p.app.querySelector(".summary-error")?.textContent).toMatch(/unavailable/);
+    p.last().recv(event(1, "message", { kind: "chat", text: "still flowing", delivery: "none" }));
+    expect(p.app.textContent).toContain("still flowing");
   });
 
   // R23: only the raw log is collapsed; chat and composer stay in view.
@@ -325,7 +340,7 @@ describe("the room page", () => {
       p.join(snapshot(), 0);
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('.summary [data-block="status"]')!.textContent).toContain("Running");
+      expect(p.phase()).toBe("Running");
       const err = p.app.querySelector<HTMLElement>(".summary-error")!;
       expect(err.hidden).toBe(false);
       expect(err.textContent).toMatch(/cannot be verified/);
@@ -342,7 +357,7 @@ describe("the room page", () => {
       await vi.advanceTimersByTimeAsync(0);
       late[0](ok(sum("Older", "seq:1")));
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')!.textContent).toContain("Newer");
+      expect(p.phase()).toBe("Newer");
     });
 
     // C1: the broker omits a PR's reviewers until someone reviews (omitempty).
@@ -350,7 +365,7 @@ describe("the room page", () => {
       const { want } = JSON.parse(readFileSync(join(__dirname, "../../internal/summary/testdata/normal.json"), "utf8"));
       const p = page((async () => ok(want)) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("#2239");
+      expect(p.app.querySelector(".page-header")?.textContent).toContain("#2239");
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
     });
 
@@ -366,23 +381,27 @@ describe("the room page", () => {
       } });
       const p = page((async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      expect(p.app.querySelector('[data-block="status"]')).toBeNull();
+      expect(p.app.querySelector('[data-block="notes"]')).toBeNull();
+      expect(p.phase()).toBeUndefined();
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(false);
       p.join(snapshot(), 0);
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('[data-block="status"]')?.textContent).toContain("Running");
+      expect(p.phase()).toBe("Running");
+      expect(p.app.querySelector('[data-block="notes"]')).not.toBeNull();
       expect(p.app.querySelector<HTMLElement>(".summary-error")!.hidden).toBe(true);
     });
 
     it("does not rebuild the blocks when the summary is unchanged", async () => {
       const p = page((async () => ok(sum("Running", "seq:1"))) as unknown as typeof fetch);
       await vi.advanceTimersByTimeAsync(0);
-      const first = p.app.querySelector('[data-block="status"]');
+      const first = p.app.querySelector('[data-block="notes"]');
       p.join(snapshot(), 0);
+      const h1 = p.app.querySelector("h1");
       note(p, 1);
       await tick();
-      expect(p.app.querySelector('[data-block="status"]')).toBe(first);
+      expect(p.app.querySelector('[data-block="notes"]')).toBe(first);
+      expect(p.app.querySelector("h1")).toBe(h1); // nor the strip, whose PR link may hold the focus
     });
   });
 });
