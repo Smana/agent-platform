@@ -9,10 +9,14 @@ is_connected() stays True. Every later tool call then fails with an empty Closed
 the SDK's reconnect-once never fires. A refused reply costs the run nothing, so it is logged and
 dropped; requests and notifications are untouched. Belt and braces: agent-router is being fixed to
 answer client replies 202 itself (F29's gateway half); the harness does not depend on it.
+
+#99: one transient model error must not end the run; see patch_model_retry.
 """
+import asyncio
 import logging
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger("agent-harness.mcp")
@@ -40,6 +44,85 @@ def patch(transport, httpx, replies) -> bool:
     return True
 
 
+# OD-7: three attempts, 10 s then 20 s apart: 30 s of backoff, inside the 60 s bound.
+RETRY_WAITS_S = (10, 20)
+# Envoy's body when it cannot reach the provider. The status depends on which hop answers, so the
+# text decides.
+ENVOY_RESET = "upstream connect error or disconnect/reset before headers"
+
+
+def transient(exc, openai) -> bool:
+    """A 503, or a connection that failed before any token: safe to send again. Never a 429, which can
+    be the gateway's own budget throttle (OD-7), and never a timeout, which would outlast the bound.
+
+    The whole cause chain is read: litellm 1.93 reports a refused or reset connection as a 500
+    InternalServerError, with openai's APIConnectionError only as its cause."""
+    chain = []
+    while exc is not None and len(chain) < 10:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    if any(isinstance(e, (openai.RateLimitError, openai.APITimeoutError)) or getattr(e, "status_code", None) == 429
+           for e in chain):
+        return False
+    return any(getattr(e, "status_code", None) == 503 or isinstance(e, openai.APIConnectionError)
+               or ENVOY_RESET in str(e) for e in chain)
+
+
+def _retrying(attempt, wait, exc, kwargs, openai) -> bool:
+    """Whether to send the call again; if so, logs the retry and counts it in $AGENT_RUN_RETRY_LOG."""
+    # A stream that failed midway has already produced tokens.
+    if wait is None or kwargs.get("enable_streaming") or not transient(exc, openai):
+        return False
+    line = "agent-run model retry %d/%d in %ds: %s %s" % (
+        attempt, len(RETRY_WAITS_S), wait, type(exc).__name__, " ".join(str(exc).split())[:200])
+    print(line, file=sys.stderr, flush=True)
+    try:
+        with open(os.environ["AGENT_RUN_RETRY_LOG"], "a") as f:
+            f.write(line + "\n")
+    except (KeyError, OSError):
+        pass  # the count is best effort, the retry is not
+    return True
+
+
+def patch_model_retry(llm, openai, sleep=time.sleep, asleep=asyncio.sleep) -> bool:
+    """Wraps one model call, sync and async (agent-server's own path), to retry a transient error
+    (#99, OD-7).
+
+    The SDK's own retry (num_retries) cannot leave a 429 out, so agent-run sets it to 0. litellm's
+    OpenAI client also retried twice of its own, a 429 included, within 1.5 s: too fast for a
+    provider blip and against OD-7, so max_retries=0 turns it off."""
+    sync_call = getattr(llm, "_transport_call", None)
+    async_call = getattr(llm, "_atransport_call", None)
+    if sync_call is None or async_call is None:
+        print("agent-harness: #99 retry NOT applied: %s has no _transport_call or _atransport_call (an SDK "
+              "upgrade?); one transient model error will end the run" % llm.__name__, file=sys.stderr, flush=True)
+        return False
+
+    def _transport_call(self, **kwargs):
+        kwargs["max_retries"] = 0
+        for attempt, wait in enumerate((*RETRY_WAITS_S, None), 1):
+            try:
+                return sync_call(self, **kwargs)
+            except Exception as exc:
+                if not _retrying(attempt, wait, exc, kwargs, openai):
+                    raise
+            sleep(wait)
+
+    async def _atransport_call(self, **kwargs):
+        kwargs["max_retries"] = 0
+        for attempt, wait in enumerate((*RETRY_WAITS_S, None), 1):
+            try:
+                return await async_call(self, **kwargs)
+            except Exception as exc:
+                if not _retrying(attempt, wait, exc, kwargs, openai):
+                    raise
+            await asleep(wait)
+
+    llm._transport_call = _transport_call
+    llm._atransport_call = _atransport_call
+    return True
+
+
 def _install() -> None:
     # agent-server's children, the agent's own commands, must not load this.
     rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and os.path.abspath(p) != HERE]
@@ -53,8 +136,15 @@ def _install() -> None:
         from mcp.types import JSONRPCError, JSONRPCResponse
     except ImportError as exc:
         print("agent-harness: F29 patch NOT applied: %s" % exc, file=sys.stderr, flush=True)
-        return
-    patch(StreamableHTTPTransport, httpx, (JSONRPCResponse, JSONRPCError))
+    else:
+        patch(StreamableHTTPTransport, httpx, (JSONRPCResponse, JSONRPCError))
+    try:
+        import openai
+        from openhands.sdk.llm.llm import LLM
+    except ImportError as exc:
+        print("agent-harness: #99 retry NOT applied: %s" % exc, file=sys.stderr, flush=True)
+    else:
+        patch_model_retry(LLM, openai)
 
 
 if __name__ == "sitecustomize":
