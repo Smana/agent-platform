@@ -344,6 +344,9 @@ func (c Classifier) segment(s segment, depth int) Class {
 	if cl == Plain && scan && mentionsForge(wordTexts(s.words)) {
 		return ForgeOther // a git or gh write the parser could not reach: an alias, an unknown runner
 	}
+	if cl == Plain && mentionsForge(s.bodies) {
+		return ForgeOther // cat <<EOF > x.sh … git push … EOF, then bash x.sh: whatever runs the file (F11)
+	}
 	return cl
 }
 

@@ -131,9 +131,9 @@ func TestReviewBattery(t *testing.T) {
 		{"N6", "node <<'EOF'\nrequire('child_process').execSync('gh pr merge 1')\nEOF", ForgeOther},
 		{"N6", "python3 <<'EOF'\nprint('hello')\nEOF", Plain},
 		{"N6", "python3 -c \"import subprocess; subprocess.run(['git', 'push', 'origin', 'main'])\"", ForgeOther},
-		{"N6", "cat <<'EOF' > x.sh\ngit push origin main\nEOF\nbash x.sh", Plain}, // residual (file header)
-		{"N6", "source ./push.sh", Plain},                                         // residual (file header)
-		{"N6", ". ./push.sh", Plain},                                              // residual (file header)
+		{"N6", "cat <<'EOF' > x.sh\ngit push origin main\nEOF\nbash x.sh", ForgeOther},
+		{"N6", "source ./push.sh", Plain}, // residual (file header)
+		{"N6", ". ./push.sh", Plain},      // residual (file header)
 
 		// N7: alias and extension definitions.
 		{"N7", "gh alias set m 'pr merge'\ngh m 1", ForgeOther},
