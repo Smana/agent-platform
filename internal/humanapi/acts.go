@@ -131,9 +131,10 @@ const (
 	rejectOverBudget     = "over_budget"
 	rejectNeedsPR        = "reviewer_needs_pr"
 	rejectNoFactory      = "factory_unavailable"
-	rejectDecided        = "already_decided" // another approver decided first, or it expired or was superseded
-	rejectFourEyes       = "four_eyes"       // OD-16: the decider prompted the run
-	rejectTooLarge       = "too_large"       // a fork's prefix over the store's caps
+	rejectDecided        = "already_decided"  // another approver decided first, or it was superseded
+	rejectExpired        = "approval_expired" // the decision reached the store after the deadline
+	rejectFourEyes       = "four_eyes"        // OD-16: the decider prompted the run
+	rejectTooLarge       = "too_large"        // a fork's prefix over the store's caps
 )
 
 // maxReason bounds a take's reason, which the driver event carries.
@@ -321,6 +322,8 @@ func reason(err error) string {
 		return rejectSealed
 	case errors.Is(err, store.ErrAlreadyDecided):
 		return rejectDecided
+	case errors.Is(err, store.ErrApprovalExpired):
+		return rejectExpired
 	case errors.Is(err, store.ErrInvalidDriver), errors.Is(err, store.ErrKeyConflict), errors.Is(err, store.ErrNoApproval),
 		errors.Is(err, store.ErrBadDecision), store.IsDataError(err):
 		return rejectBadAction
@@ -440,7 +443,8 @@ func (a *Actor) message(ctx context.Context, room *v1alpha1.Room, st store.RoomS
 
 // decide records an approver's decision on one of the room's approvals (§6).
 // The store's UPDATE … WHERE pending, under the room's row lock, is the fence:
-// the first valid decision wins and a later one gets already_decided. With
+// the first valid decision wins and a later one gets already_decided; one past
+// the deadline, read under the same lock, gets approval_expired. With
 // four-eyes on, nobody who prompted the run decides (OD-16).
 func (a *Actor) decide(ctx context.Context, p authn.Principal, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, string) {
 	why := strings.TrimSpace(act.Reason)

@@ -76,7 +76,8 @@ func (l *actLog) Approval(_ context.Context, id string) (store.Approval, error) 
 	return a, nil
 }
 
-// Decide is the store's: the first decision wins, a later one is ErrAlreadyDecided.
+// Decide is the store's: the first decision wins, a later one is ErrAlreadyDecided,
+// and one on an expired approval ErrApprovalExpired.
 func (l *actLog) Decide(_ context.Context, id, decision, by, reason string, d envelope.Draft) (envelope.Event, store.Approval, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -84,6 +85,8 @@ func (l *actLog) Decide(_ context.Context, id, decision, by, reason string, d en
 	switch {
 	case !ok:
 		return envelope.Event{}, a, store.ErrNoApproval
+	case a.State == store.ApprovalExpired:
+		return envelope.Event{}, a, store.ErrApprovalExpired
 	case a.State != store.ApprovalPending:
 		return envelope.Event{}, a, store.ErrAlreadyDecided
 	}
@@ -1003,5 +1006,22 @@ func TestViewerActRefusalIsLogged(t *testing.T) {
 		if l[k] != want {
 			t.Errorf("%s = %v, want %v", k, l[k], want)
 		}
+	}
+}
+
+// A decision the store refuses as past its deadline is acked approval_expired,
+// counted under that reason, and never measured as a decision.
+func TestADecisionPastItsDeadlineIsApprovalExpired(t *testing.T) {
+	a, log, room := fixture("system:factory")
+	late := pendingApproval("ap1", room.Name)
+	late.State = store.ApprovalExpired
+	log.approvals = map[string]store.Approval{"ap1": late}
+	var rejected []string
+	var decided int
+	a.OnReject = func(_ context.Context, r string) { rejected = append(rejected, r) }
+	a.OnDecided = func(time.Duration) { decided++ }
+	f := act(a, room, "human:own", 1, nil, Action{Kind: "decide", ApprovalID: "ap1", Decision: "approved"})
+	if f.Rejected != "approval_expired" || !slices.Equal(rejected, []string{"approval_expired"}) || decided != 0 {
+		t.Fatalf("ack %+v, rejected %v, decided %d", f, rejected, decided)
 	}
 }

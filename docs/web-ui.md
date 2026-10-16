@@ -120,7 +120,7 @@ where it is decided; the raw events show the same request, read-only.
 |---|---|
 | The card | The command the call would run first (else its class), then the class, the run, when it expires, and the **raw action** as redacted text behind a toggle. Never an agent's description of it. A link takes you to the call's row while the page holds it. `approve` and `deny` with an optional reason; the card leaves once the log records a decision, whoever made it |
 | Who decides | An owner, or a member with the approver flag, in the web UI. Others see the request but no buttons |
-| First decision wins | The first valid decision stands; every later one, and an expiry or a superseded request, answers `already_decided` |
+| First decision wins | The first valid decision stands; every later one, and a superseded request, answers `already_decided`. One that reaches the broker after the deadline answers `approval_expired`, even before the sweep has closed it |
 | Four-eyes | When the room requires it, nobody who prompted the turn may decide it: not whoever requested the run, steered it, or wrote a queued message it consumed |
 | Reason | Optional, up to 1 KiB, redacted. The agent reads it |
 | Expiry | 30 minutes in an `attended` room; the room's configured delay (default 4 hours) in an `unattended` one. An expired request is denied |
@@ -162,6 +162,7 @@ A refused action shows its reason in the dock. Source: `web/src/controls.ts`.
 | `conflict` | The room changed at the same moment | Retry |
 | `log_unavailable` | The room's log is unavailable | Retry |
 | `already_decided` | Another approver decided first | Nothing |
+| `approval_expired` | The decision reached the broker after the deadline; the request was denied as expired | Nothing: the agent may ask again |
 | `four_eyes` | The room needs an approver who did not prompt the turn | Ask another approver |
 | `too_large` | The fork would copy over 5,000 events or 32 MiB | Fork from an earlier message |
 

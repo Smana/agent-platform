@@ -175,7 +175,7 @@ An approval whose `callId` already has a `tool_result` in the log after its requ
 or rejected the call), or whose run has left the room since (the broker's `participant{left}`), is
 closed as `superseded`, never left for an approver: by the leader's sweep every 30 s, or at once when
 an approver decides it. A superseded decision is never sent to the
-bridge. An expiry is decided `allow: false` with `reason: "expired"`, within 30 s of `expiresAt`.
+bridge. An expiry is decided `allow: false` with `reason: "expired"`: at the first decision attempt past `expiresAt`, else by the sweep within 30 s of it.
 
 | Status | `error` | When |
 |---|---|---|
@@ -421,7 +421,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `start_run` | `role` (`implementer`, `reviewer`, `tester`, `triager`), `prUrl?` (reviewer only, a pull request of the room's repository), `egressProfiles?` (at most 8 names) | Driver, owner. A reviewer's task is its PR, else the one the latest agent handoff or review verdict names; any other role's is the fenced brief of the latest agent handoff and verdict, which consumes the queued messages it quotes. Recorded as `state_changed{run_requested}`, with the reviewer's `taskUrl`. Without a factory requester (`via: manifest`) the ack's `result` is the rendered `AgentRun` for the owner to apply. A replayed `clientSeq` acks the record without it; one retried after a failed record (`log_unavailable`) asks for the same run under the same idempotency key, so it never creates a second one ([integration](integration.md)) |
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first |
 | `close` | `reason?` | Owner |
-| `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, an expiry or a supersede included). With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision |
+| `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, a supersede included). The deadline is checked on the database clock in the transaction that would record the decision: one past it closes the approval as `expired` and is refused `approval_expired`, whether or not the sweep has run, as is any decision on an expired approval. With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision |
 | `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s) | Watcher and up; also from `roomctl`. A sealed room forks only for its owner or an `agents-admin` (`sealed`). A new room owned and driven by the forker, with the source's data class, repository and retention and none of its members. Its approvals are the source's for the source's owners (owner, owner members, `agents-admin`); anyone else gets, class by class, the stricter of the source's and a new room's (`attended`), so an `unattended` or `allow` override never carries over to a watcher: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. The source's queue as it stood at `seq` comes along: each message queued by then and not yet promoted, removed or consumed by then is queued again in the fork (one consumed through `POST /v1/rooms/{id}/queue/consume` leaves no event to date it, so it comes along only while still queued). With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica |
 
 | `rejected` | Meaning |
@@ -441,6 +441,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `log_unavailable` | The log or the Room could not be read or written: retry |
 | `too_large` | A fork's prefix over 5,000 events or 32 MiB: fork at an earlier `seq` |
 | `already_decided` | Another approver decided first |
+| `approval_expired` | The decision reached the broker after the approval's `expiresAt`; the approval closed as `expired` |
 | `four_eyes` | The room requires an approver who did not prompt the turn |
 
 ## `:8090` — room tools
