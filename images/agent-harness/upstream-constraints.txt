@@ -2,6 +2,15 @@
 # (github.com/OpenHands/software-agent-sdk, uv.lock at tag v1.49.6), so the harness runs the set
 # upstream tested. Packages locked at two versions (per-platform forks) are left out.
 # Regenerate when the openhands-* pins in requirements.in move.
+# Deviations from that lock, each raised to the first release that fixes a GitHub advisory; drop a
+# line once upstream's lock reaches its version. Recompile requirements.txt after any edit here:
+# Dependabot bumps this file alone, and the image installs only the lock.
+#   fsspec 2026.6.0   GHSA-27vj-qcqg-25rc
+#   mako 1.4.2        GHSA-5639-2j2p-m4mx
+#   mcp 1.30.0        GHSA-84m7-p3x7-pcfv
+#   multidict 6.9.1   GHSA-54p9-h82j-f925
+#   pyjwt 2.15.0      GHSA-x33g-cr3x-6449, GHSA-42vr-xj54-vc7v (2.14.0 fixes ten more)
+#   pypdf 6.19.0      GHSA-php9-fj8v-98fj, GHSA-v247-6f48-mgcj, GHSA-w23x-9jrw-r45c (and older)
 agent-client-protocol==0.12.1
 aiofile==3.9.0
 aiofiles==25.1.0
@@ -122,7 +131,7 @@ mako==1.4.2
 markdown-it-py==4.0.0
 markdownify==1.2.0
 markupsafe==3.0.2
-mcp==1.28.1
+mcp==1.30.0
 mdurl==0.1.2
 more-itertools==10.8.0
 multidict==6.9.1
