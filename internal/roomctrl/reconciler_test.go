@@ -330,6 +330,48 @@ func TestStatusProjection(t *testing.T) {
 	}
 }
 
+type fakeSuspender struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeSuspender) Room(_ context.Context, room *v1alpha1.Room, idleSince time.Time, runs []runwatch.Run) error {
+	f.calls = append(f.calls, fmt.Sprintf("%s %s %v", room.Name, idleSince.Format(time.RFC3339), ids(runs)))
+	return f.err
+}
+
+// v2 suspend: every resync hands the trigger the room, when its log last moved and its
+// runs; a closed room's runs are left alone, and a run that moved meanwhile is retried soon.
+func TestReconcileRunsTheSuspendTrigger(t *testing.T) {
+	w := runwatch.New()
+	w.Upsert(t.Context(), agentRun("7f3cq2xz", roomID, "Running", false))
+	last := deletedAt.Add(-time.Hour)
+	for _, tc := range []struct {
+		name  string
+		st    store.RoomState
+		err   error
+		calls []string
+		res   ctrl.Result
+	}{
+		{"an open room", store.RoomState{ID: roomID, LastSeq: 3, LastEventAt: last}, nil,
+			[]string{roomID + " 2026-09-29T11:00:00Z [7f3cq2xz]"}, ctrl.Result{RequeueAfter: resync}},
+		{"a sealed room", store.RoomState{ID: roomID, LastSeq: 3, LastEventAt: last, Sealed: true}, nil, nil,
+			ctrl.Result{RequeueAfter: resync}},
+		{"a conflict", store.RoomState{ID: roomID, LastSeq: 3, LastEventAt: last},
+			apierrors.NewConflict(schema.GroupResource{Group: "cloud.ogenki.io", Resource: "agentruns"}, "xplane-run-7f3cq2xz", errors.New("moved")),
+			[]string{roomID + " 2026-09-29T11:00:00Z [7f3cq2xz]"}, ctrl.Result{RequeueAfter: conflictRetry}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sus := &fakeSuspender{err: tc.err}
+			r := &Reconciler{Client: build(newRoom()), Store: newStore(nil, tc.st), Runs: w, Now: clock(deletedAt), Suspend: sus}
+			res, err := r.Reconcile(t.Context(), request())
+			if err != nil || res != tc.res || !slices.Equal(sus.calls, tc.calls) {
+				t.Fatalf("result %+v, err %v, calls %v", res, err, sus.calls)
+			}
+		})
+	}
+}
+
 // A room sealed by its limit still reconciles: its Open event is history, not an error.
 func TestSealedRoomStillReconciles(t *testing.T) {
 	c := build(newRoom())

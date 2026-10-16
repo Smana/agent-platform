@@ -18,6 +18,15 @@ const (
 	Namespace = "agents"
 	// RevokedAnnotation carries why a run was revoked; any value makes it not live.
 	RevokedAnnotation = "agents.ogenki.io/revoked"
+	// OperatingModeAnnotation asks a suspendable run's Sandbox to be Suspended or Running
+	// (v2 warm-sandboxes design §6). The room-broker writes it and the next two; the
+	// composition reads them only when spec.suspendable is true.
+	OperatingModeAnnotation = "agents.ogenki.io/operating-mode"
+	// RemainingSecondsAnnotation is the running time the next pod gets as its deadline.
+	RemainingSecondsAnnotation = "agents.ogenki.io/remaining-seconds"
+	// ResumedAtAnnotation is when the broker last resumed the run, the start of its current
+	// pod's running time. The composition ignores it.
+	ResumedAtAnnotation = "agents.ogenki.io/resumed-at"
 	// ClaimPrefix starts every AgentRun claim's name: xplane-run-<C2 id>.
 	ClaimPrefix = "xplane-run-"
 
@@ -39,6 +48,13 @@ type Run struct {
 	MaxMinutes                                                                        int64
 	EgressProfiles                                                                    []string
 	Deleted                                                                           bool // the claim was deleted before a terminal phase (review M15)
+	// Suspendable is spec.suspendable, fixed at creation; the suspend annotations
+	// below are read whatever it says, and acted on only when it is true.
+	Suspendable                     bool
+	OperatingMode, RemainingSeconds string
+	ResumedAt                       time.Time
+	// ResourceVersion is the claim's, so a write decided on this read fails if the claim moved.
+	ResourceVersion string
 }
 
 // Terminal reports whether an AgentRun phase is final.
@@ -80,6 +96,11 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		r.MaxMinutes = defaultMaxMinutes
 	}
 	r.EgressProfiles, _, _ = unstructured.NestedStringSlice(u.Object, "spec", "egress", "profiles")
+	r.Suspendable, _, _ = unstructured.NestedBool(u.Object, "spec", "suspendable")
+	ann := u.GetAnnotations()
+	r.OperatingMode, r.RemainingSeconds = ann[OperatingModeAnnotation], ann[RemainingSecondsAnnotation]
+	r.ResumedAt, _ = time.Parse(time.RFC3339, ann[ResumedAtAnnotation])
+	r.ResourceVersion = u.GetResourceVersion()
 	return r, true
 }
 

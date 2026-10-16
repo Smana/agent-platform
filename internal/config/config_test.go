@@ -78,6 +78,24 @@ func TestLoadAccess(t *testing.T) {
 	}
 }
 
+// v2 suspend: off unless the file turns it on, and its idle threshold stays under the attended
+// approval's 30 minutes, so a run is suspended before its approval expires.
+func TestLoadSuspend(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil || c.Suspend.Enabled || c.Suspend.After.Duration != 5*time.Minute {
+		t.Fatalf("off, after 5m by default: %+v, %v", c.Suspend, err)
+	}
+	c, err = Load(write(t, valid+"suspend:\n  enabled: true\n  after: 10m\n"))
+	if err != nil || !c.Suspend.Enabled || c.Suspend.After.Duration != 10*time.Minute {
+		t.Fatalf("%+v, %v", c.Suspend, err)
+	}
+	for _, after := range []string{"30s", "26m"} {
+		if _, err := Load(write(t, valid+"suspend:\n  after: "+after+"\n")); err == nil || !strings.Contains(err.Error(), "suspend.after") {
+			t.Errorf("after %s: %v", after, err)
+		}
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	replace := func(old, repl string) string { return strings.Replace(valid, old, repl, 1) }
 	for _, c := range []struct {

@@ -275,6 +275,20 @@ func TestResumeDefault(t *testing.T) {
 	}
 }
 
+// v2 suspend: runs are never made suspendable unless the file says so.
+func TestSandboxSuspendIsOff(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil || c.Sandbox.Suspend.Enabled {
+		t.Fatalf("off by default: %+v, %v", c.Sandbox, err)
+	}
+	if c, err = Parse([]byte(good + "sandbox:\n  suspend:\n    enabled: true\n")); err != nil || !c.Sandbox.Suspend.Enabled {
+		t.Fatalf("%+v, %v", c.Sandbox, err)
+	}
+	if _, err = Parse([]byte(good + "sandbox:\n  suspend:\n    after: 5m\n")); err == nil {
+		t.Fatal("the idle threshold is the broker's, so the factory refuses it")
+	}
+}
+
 // A bad config fails its rollout (§4): unknown keys, caps above the platform's, gaps. Each
 // case names the error its own rule reports, so no rule hides behind another that fires on
 // the same edit (review I2: a rule deleted must fail a test).

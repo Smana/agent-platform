@@ -28,8 +28,10 @@ import (
 	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/agent-platform/internal/suspend"
 )
 
 func TestRunBrokerRefuses(t *testing.T) {
@@ -539,5 +541,19 @@ func TestDrainsFitTheGrace(t *testing.T) {
 	}
 	if d := max(bridgeDrain, managerDrain, humanDrain, mcpDrain) + opsDrain + metricsDrain; d >= podGrace {
 		t.Fatalf("the drains take %s, want under the %s grace", d, podGrace)
+	}
+}
+
+// v2 suspend: the trigger exists only when the config turns it on.
+func TestWithSuspend(t *testing.T) {
+	rc := &roomctrl.Reconciler{}
+	withSuspend(rc, config.SuspendConfig{After: config.Duration{Duration: 5 * time.Minute}}, nil, &meteredLog{}, slog.New(slog.DiscardHandler))
+	if rc.Suspend != nil {
+		t.Fatalf("off: %v", rc.Suspend)
+	}
+	withSuspend(rc, config.SuspendConfig{Enabled: true, After: config.Duration{Duration: 7 * time.Minute}}, nil, &meteredLog{},
+		slog.New(slog.DiscardHandler))
+	if s, ok := rc.Suspend.(*suspend.Suspender); !ok || s.After != 7*time.Minute {
+		t.Fatalf("on: %#v", rc.Suspend)
 	}
 }

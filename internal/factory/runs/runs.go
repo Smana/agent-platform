@@ -84,6 +84,8 @@ type Spec struct {
 	SourceURL, Head, RequestHash, ChargedTo                                                                                             string
 	MaxTokens, MaxMinutes, StartSeq                                                                                                     int64
 	EgressProfiles                                                                                                                      []string
+	// Suspendable is spec.suspendable (v2 suspend), written only when true: it is immutable.
+	Suspendable bool
 }
 
 var (
@@ -142,6 +144,9 @@ func Build(s Spec) *unstructured.Unstructured {
 	}
 	if s.Queue != "" {
 		spec["queueName"] = s.Queue
+	}
+	if s.Suspendable {
+		spec["suspendable"] = true
 	}
 	if len(s.EgressProfiles) > 0 {
 		profiles := make([]any, 0, len(s.EgressProfiles))

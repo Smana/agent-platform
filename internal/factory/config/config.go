@@ -77,6 +77,18 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Sandbox is how the factory's runs are sandboxed (v2 warm-sandboxes design §6).
+type Sandbox struct {
+	Suspend SandboxSuspend `json:"suspend,omitzero"`
+}
+
+// SandboxSuspend makes a run in an attended room suspendable (spec.suspendable), so the room
+// broker may suspend it while its approval waits. The broker owns the idle threshold. Off by
+// default: the flag is fixed on the claim at create.
+type SandboxSuspend struct {
+	Enabled bool `json:"enabled,omitempty"`
+}
+
 // Config is the factory's configuration.
 type Config struct {
 	// Repositories are the repositories the factory takes issues from, each with its own
@@ -116,6 +128,7 @@ type Config struct {
 	Tracing   Tracing             `json:"tracing"`
 	API       API                 `json:"api"`
 	RunLore   RunLore             `json:"runlore"`
+	Sandbox   Sandbox             `json:"sandbox,omitzero"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
