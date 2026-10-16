@@ -62,21 +62,18 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         pass
 
 
-# Two tool calls, each inside its own span, as MCPToolExecutor.call_tool's @observe makes current.
-# Prints each step span's traceparent and every finished span's parent, keyed by span id.
+# Two tool calls, each inside its own root span, as MCPToolExecutor.call_tool's @observe makes
+# current. Each step is its own trace, so a header in a step's trace was made under that step.
+# Prints each step span's traceparent.
 CLIENT = r"""
 import asyncio, json, os, sys
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-exporter = InMemorySpanExporter()
-provider = TracerProvider()
-provider.add_span_processor(SimpleSpanProcessor(exporter))
-trace.set_tracer_provider(provider)
+# Real spans, so fastmcp's own client span sits between the step and the header, as live.
+trace.set_tracer_provider(TracerProvider())
 
 async def main(url, static):
     steps = []
@@ -86,9 +83,7 @@ async def main(url, static):
                 sc = span.get_span_context()
                 steps.append("00-%032x-%016x-01" % (sc.trace_id, sc.span_id))
                 await asyncio.wait_for(client.call_tool_mcp("echo", {}), 5)
-    parents = {"%016x" % s.context.span_id: s.parent and "%016x" % s.parent.span_id
-               for s in exporter.get_finished_spans()}
-    print(json.dumps({"steps": steps, "parents": parents}), flush=True)
+    print(json.dumps({"steps": steps}), flush=True)
     os._exit(0)
 
 asyncio.run(main(sys.argv[1], sys.argv[2]))
@@ -115,20 +110,14 @@ class PerCallTraceparentTest(unittest.TestCase):
         env.pop("PYTHONPATH", None)
         return env
 
-    def descends(self, span_id, ancestor, parents):
-        while span_id and span_id != ancestor:
-            span_id = parents.get(span_id)
-        return span_id == ancestor
-
     def test_each_call_carries_the_span_that_made_it(self):
         out, sent = self.calls(agent_run.server_env(self.env()))
         self.assertEqual(len(sent), 2, Gateway.seen)
-        for step, header in zip(out["steps"], sent):
+        steps = [step.split("-")[1] for step in out["steps"]]
+        self.assertNotEqual(steps[0], steps[1], "each step is its own trace")
+        for header in sent:
             self.assertRegex(header, agent_run.TRACEPARENT)
-            self.assertEqual(header.split("-")[1], step.split("-")[1], "same trace")
-            self.assertTrue(self.descends(header.split("-")[2], step.split("-")[2], out["parents"]),
-                            "%s is not under its step %s" % (header, step))
-        self.assertNotEqual(sent[0], sent[1])
+        self.assertEqual([header.split("-")[1] for header in sent], steps, "each call is in its step's trace")
 
     def test_unpatched_every_call_carries_the_run_span(self):
         # The gap the patch closes: mcp sends the config's headers on every request.
