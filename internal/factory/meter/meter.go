@@ -149,12 +149,22 @@ func cost(p config.Price, u Usage) int64 {
 // its own price; the claim's model prices the tokens no model label names. It returns the first
 // served model with tokens and no price instead: such a run is unpriced, never $0.
 func runCost(prices map[string]config.Price, claim string, u Usage) (micro int64, unpriced string) {
+	by, unpriced := runCosts(prices, claim, u)
+	for _, v := range by {
+		micro += v
+	}
+	return micro, unpriced
+}
+
+// runCosts is runCost by the model that served the tokens, the claim's model for those no label
+// names; nil and the model when one has no price.
+func runCosts(prices map[string]config.Price, claim string, u Usage) (map[string]int64, string) {
 	models := u.Models
 	if len(models) == 0 {
 		models = map[string]ModelUsage{"": {Input: u.Input, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Output: u.Output}}
 	}
-	names := slices.Sorted(maps.Keys(models))
-	for _, name := range names {
+	out := map[string]int64{}
+	for _, name := range slices.Sorted(maps.Keys(models)) {
 		mu := models[name]
 		if mu == (ModelUsage{}) {
 			continue
@@ -164,12 +174,18 @@ func runCost(prices map[string]config.Price, claim string, u Usage) (micro int64
 		}
 		p, ok := prices[name]
 		if !ok {
-			return 0, name
+			return nil, name
 		}
-		micro += cost(p, Usage{Input: mu.Input, CacheRead: mu.CacheRead, CacheWrite: mu.CacheWrite, Output: mu.Output})
+		out[name] += cost(p, Usage{Input: mu.Input, CacheRead: mu.CacheRead, CacheWrite: mu.CacheWrite, Output: mu.Output})
 	}
-	return micro, ""
+	return out, ""
 }
+
+// endSettle is how long an ended run's cost waits before it is reported: a run's last calls reach
+// the meter a scrape interval plus VictoriaMetrics' 30 s latency offset after they happened, so
+// the first tick that sees a run ended may read it short (xplane-run-nh5tztlh: 370,526 of 507,350
+// tokens). The meter keeps annotating an ended run whatever this window; only the report waits.
+const endSettle = 2 * time.Minute
 
 // Meter is a leader-only manager.Runnable. Tick is not safe for concurrent use: Start is its one
 // caller in the binary.
@@ -198,10 +214,17 @@ type Meter struct {
 	// OnRevoke is told of each revocation written, with its reason and the limit that fired:
 	// fmetrics.Set.RunRevoked.
 	OnRevoke func(ctx context.Context, reason, limit string)
-	// OnCost is told of a priced run's USD cost when the meter, having seen it live, sees it end;
+	// OnCost is told, once, of a priced run's USD cost, in total and by the model that served it:
+	// endSettle after the meter, having seen it live, sees it end, or when it is deleted first.
 	// OnFallback of a run of a USD-capped tier capped in tokens instead, once per run.
-	OnCost     func(ctx context.Context, tier string, usd float64)
+	OnCost     func(ctx context.Context, tier string, usd float64, byModel map[string]float64)
 	OnFallback func(ctx context.Context, why string)
+	// OnLateCost is told of what a run spent after its cost was reported, by served model: a
+	// reading slower than endSettle corrects the total spend, never the reported cost.
+	OnLateCost func(ctx context.Context, byModel map[string]float64)
+	// OnSpend receives, each tick that read usage, the USD spend of every priced run whose cost
+	// is not reported yet, by run then served model: the per-run gauge.
+	OnSpend func(spend map[string]map[string]float64)
 	// OnUnpriced is told, once per run, of a model that served it with no price (J-AC4).
 	OnUnpriced func(ctx context.Context, model string)
 	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
@@ -224,15 +247,17 @@ type Meter struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	Log    *slog.Logger
 
-	last    map[string]reading   // per run: the last raw reading and the total it gave
-	mem     map[string]int64     // the day's spend when no Ledger is wired
-	memDay  string               // the UTC day mem counts; a change resets it
-	dropped map[string]bool      // ended runs whose reservation was dropped
-	orphans map[string]time.Time // unclaimed reservations, by when this meter first saw them
-	pruned  string               // the last UTC day whose old ledgers were deleted
-	live    map[string]bool      // priced runs seen live, whose cost OnCost reports at their end
-	fell    map[string]bool      // runs whose fallback was reported
-	named   map[string]bool      // run and model pairs whose missing price was reported
+	last    map[string]reading          // per run: the last raw reading and the total it gave
+	mem     map[string]int64            // the day's spend when no Ledger is wired
+	memDay  string                      // the UTC day mem counts; a change resets it
+	dropped map[string]bool             // ended runs whose reservation was dropped
+	orphans map[string]time.Time        // unclaimed reservations, by when this meter first saw them
+	pruned  string                      // the last UTC day whose old ledgers were deleted
+	live    map[string]string           // priced runs seen live, by tier: their cost is still to report
+	ended   map[string]time.Time        // live-seen runs, by when this meter first saw them ended
+	settled map[string]map[string]int64 // reported runs: the micro-USD by served model reported
+	fell    map[string]bool             // runs whose fallback was reported
+	named   map[string]bool             // run and model pairs whose missing price was reported
 }
 
 type reading struct {
@@ -241,9 +266,13 @@ type reading struct {
 	// The USD total in micro-dollars, kept like the tokens' but in memory alone: the factory's
 	// patch limit admits no new annotation, so a failover after a counter reset forgets what
 	// the run spent before that reset.
-	usdRaw, usd int64
-	usdKnown    bool
+	usd      int64
+	usdKnown bool
+	models   map[string]mono // the USD by served model: usd is their sum
 }
+
+// mono is one monotonic counter's last raw value and the total it gave.
+type mono struct{ raw, total int64 }
 
 // NeedLeaderElection is true: two meters would each add the same increase.
 func (m *Meter) NeedLeaderElection() bool { return true }
@@ -286,22 +315,32 @@ func (m *Meter) total(r runs.Run, raw int64, seen bool) int64 {
 	return t
 }
 
-// spend is a run's monotonic USD total from its raw cost, as total is for tokens.
-func (m *Meter) spend(id string, raw int64, seen bool) int64 {
+// spend is a run's monotonic USD total from its raw cost by served model, as total is for
+// tokens: each model's counter grows on its own, so a reset of one hides none of the others.
+func (m *Meter) spend(id string, raw map[string]int64) int64 {
 	if m.last == nil {
 		m.last = map[string]reading{}
 	}
 	e := m.last[id]
-	if !seen {
-		return e.usd
+	if e.models == nil {
+		e.models = map[string]mono{}
 	}
-	switch {
-	case !e.usdKnown:
-		e.usd = raw
-	case raw >= e.usdRaw:
-		e.usd += raw - e.usdRaw
+	e.usd = 0
+	for model, v := range raw {
+		p := e.models[model]
+		switch {
+		case !e.usdKnown:
+			p.total = v
+		case v >= p.raw:
+			p.total += v - p.raw
+		}
+		p.raw = v
+		e.models[model] = p
 	}
-	e.usdRaw, e.usdKnown = raw, true
+	for _, p := range e.models {
+		e.usd += p.total
+	}
+	e.usdKnown = true
 	m.last[id] = e
 	return e.usd
 }
@@ -319,11 +358,17 @@ func (m *Meter) usdCap(r runs.Run, why string) (int64, string) {
 	return int64(math.Round(c * 1e6)), ""
 }
 
-// forget drops the memory of runs that no longer exist.
-func (m *Meter) forget(all []runs.Run) {
+// forget drops the memory of runs that no longer exist, first reporting the cost of any deleted
+// before its report.
+func (m *Meter) forget(ctx context.Context, all []runs.Run) {
 	live := make(map[string]bool, len(all))
 	for _, r := range all {
 		live[r.ID] = true
+	}
+	for id := range m.live {
+		if !live[id] {
+			m.report(ctx, id)
+		}
 	}
 	for id := range m.last {
 		if !live[id] {
@@ -335,7 +380,12 @@ func (m *Meter) forget(all []runs.Run) {
 			delete(m.named, k)
 		}
 	}
-	for _, set := range []map[string]bool{m.dropped, m.live, m.fell} {
+	for id := range m.settled {
+		if !live[id] {
+			delete(m.settled, id)
+		}
+	}
+	for _, set := range []map[string]bool{m.dropped, m.fell} {
 		for id := range set {
 			if !live[id] {
 				delete(set, id)
@@ -389,7 +439,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 		if m.Ledger != nil {
 			err = errors.Join(err, m.release(ctx, all))
 		}
-		m.forget(all)
+		m.forget(ctx, all)
 		return err
 	}
 	var hit map[string]bool
@@ -399,7 +449,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 			m.log().Warn("429 lookup failed; budget-fleet cannot be named this tick", "err", err)
 		}
 	}
-	defer m.forget(all)
+	defer m.forget(ctx, all)
 	day := m.now().UTC().Format(api.LedgerDayLayout)
 	totals := make(map[string]int64, len(all))
 	usd := map[string]int64{}
@@ -424,13 +474,13 @@ func (m *Meter) Tick(ctx context.Context) error {
 		case !u.Typed:
 			why = FallbackUntyped
 		default:
-			raw, model := runCost(m.Prices, r.Model, u)
+			raw, model := runCosts(m.Prices, r.Model, u)
 			if model != "" {
 				why = FallbackUnpriced
 				m.unpriced(ctx, r, model)
 				break
 			}
-			v := m.spend(r.ID, raw, true)
+			v := m.spend(r.ID, raw)
 			usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
 		}
 		if why != "" {
@@ -496,6 +546,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 				m.OnOvershoot(ctx, over)
 			}
 		}
+	}
+	if m.OnSpend != nil {
+		m.OnSpend(m.liveSpend())
 	}
 	// The success is reported only once admission can read it: the gauge never looks healthy
 	// beside a 503 meter_blind.
@@ -644,23 +697,92 @@ func (m *Meter) unpriced(ctx context.Context, r runs.Run, model string) {
 	}
 }
 
-// observeCost reports a priced run's cost once, at the first tick that sees it ended after one
-// that saw it live: a run that ended before this meter started is not counted again.
+// observeCost reports a priced run's cost once, endSettle after the first tick that sees it
+// ended following one that saw it live: a run that ended before this meter started is not
+// counted again.
 func (m *Meter) observeCost(ctx context.Context, r runs.Run, usd map[string]int64) {
-	v, priced := usd[r.ID]
-	switch {
-	case !priced:
-	case !runs.Terminal(r.Phase):
+	if _, priced := usd[r.ID]; !priced {
+		return
+	}
+	if _, done := m.settled[r.ID]; done {
+		m.lateCost(ctx, r.ID)
+		return
+	}
+	if !runs.Terminal(r.Phase) {
 		if m.live == nil {
-			m.live = map[string]bool{}
+			m.live = map[string]string{}
 		}
-		m.live[r.ID] = true
-	case m.live[r.ID]:
-		delete(m.live, r.ID)
-		if m.OnCost != nil {
-			m.OnCost(ctx, r.Tier, float64(v)/1e6)
+		m.live[r.ID] = r.Tier
+		return
+	}
+	if _, ok := m.live[r.ID]; !ok {
+		return
+	}
+	if m.ended == nil {
+		m.ended = map[string]time.Time{}
+	}
+	since, ok := m.ended[r.ID]
+	if !ok {
+		since = m.now()
+		m.ended[r.ID] = since
+	}
+	if m.now().Sub(since) >= endSettle {
+		m.report(ctx, r.ID)
+	}
+}
+
+// report hands a live-seen run's cost to OnCost, once.
+func (m *Meter) report(ctx context.Context, id string) {
+	tier := m.live[id]
+	delete(m.live, id)
+	delete(m.ended, id)
+	e := m.last[id]
+	if !e.usdKnown {
+		return
+	}
+	if m.settled == nil {
+		m.settled = map[string]map[string]int64{}
+	}
+	at := make(map[string]int64, len(e.models))
+	by := make(map[string]float64, len(e.models))
+	for model, p := range e.models {
+		at[model], by[model] = p.total, float64(p.total)/1e6
+	}
+	m.settled[id] = at
+	if m.OnCost != nil {
+		m.OnCost(ctx, tier, float64(e.usd)/1e6, by)
+	}
+}
+
+// lateCost reports what a reported run spent since, by served model.
+func (m *Meter) lateCost(ctx context.Context, id string) {
+	at := m.settled[id]
+	late := map[string]float64{}
+	for model, p := range m.last[id].models {
+		if d := p.total - at[model]; d > 0 {
+			late[model], at[model] = float64(d)/1e6, p.total
 		}
 	}
+	if len(late) == 0 {
+		return
+	}
+	m.log().Warn("a run spent after its cost was reported: its readings trailed the settle window", "run", id, "usd_by_model", late)
+	if m.OnLateCost != nil {
+		m.OnLateCost(ctx, late)
+	}
+}
+
+// liveSpend is the USD spend of each run whose cost is still to report, by served model.
+func (m *Meter) liveSpend() map[string]map[string]float64 {
+	out := make(map[string]map[string]float64, len(m.live))
+	for id := range m.live {
+		by := map[string]float64{}
+		for model, p := range m.last[id].models {
+			by[model] = float64(p.total) / 1e6
+		}
+		out[id] = by
+	}
+	return out
 }
 
 func (m *Meter) dailyCap(principal string) int64 {

@@ -58,6 +58,10 @@ func admissionReasons() []string {
 	return []string{"repository_differs_from_the_room", "repository_differs_from_the_branch", "repository_permission", "repository_not_owned"}
 }
 
+// runRE bounds the run label to a C2 run id: the gauge holds only the runs the meter has not
+// reported yet, so its cardinality is the live runs' times the models that served them.
+var runRE = regexp.MustCompile(`^[a-z2-7]{8}$`)
+
 // modelRE bounds the model label to a backend's pinned model name (glm-5.3, claude-opus-5-5).
 var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
@@ -105,6 +109,10 @@ type Set struct {
 	owned           metric.Int64Gauge
 	refusals        metric.Int64Counter
 	unpricedModels  metric.Int64Counter
+	modelCost       metric.Float64Counter
+
+	spendMu sync.Mutex
+	spend   map[string]map[string]float64 // the meter's last live spend, run then model
 
 	// repos is the config's repository list, the repository label's only values (v2 D10).
 	mu    sync.RWMutex
@@ -234,6 +242,10 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	s.unpricedModels, err = meter.Int64Counter("agent_factory_meter_unpriced_model_runs_total",
 		metric.WithDescription("Runs a model served with no meter.prices row, by that model: AgentModelUnpriced (J-AC4)."))
 	check(err)
+	s.modelCost, err = meter.Float64Counter("agent_factory_model_cost_usd_total",
+		metric.WithDescription("USD the factory's runs spent, by the model that served them, counted when each run's cost is reported."))
+	check(err)
+	check(s.registerSpend(meter))
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader, s.repository))
 	}
@@ -387,9 +399,61 @@ func (s *Set) RunRevoked(ctx context.Context, reason, limit string) {
 		attribute.String("limit", oneOf(limit, revocationLimits()))))
 }
 
-// RunCost records a priced run's USD cost at its end: the run meter's OnCost.
-func (s *Set) RunCost(ctx context.Context, tier string, usd float64) {
+// RunCost records a priced run's USD cost at its end, in total by tier and by the model that
+// served it: the run meter's OnCost.
+func (s *Set) RunCost(ctx context.Context, tier string, usd float64, byModel map[string]float64) {
 	s.runCost.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
+	s.LateCost(ctx, byModel)
+}
+
+// LateCost adds what runs spent after their cost was reported to the by-model counter: the run
+// meter's OnLateCost.
+func (s *Set) LateCost(ctx context.Context, byModel map[string]float64) {
+	for model, v := range byModel {
+		s.modelCost.Add(ctx, v, metric.WithAttributes(attribute.String("model", boundModel(model))))
+	}
+}
+
+// RunSpend replaces the per-run spend gauge's values: the run meter's OnSpend, each tick.
+func (s *Set) RunSpend(spend map[string]map[string]float64) {
+	s.spendMu.Lock()
+	defer s.spendMu.Unlock()
+	s.spend = spend
+}
+
+// registerSpend exposes agent_factory_run_spend_usd{run,model} from the meter's last spend. Only
+// the leader meters, so only its gauge has values; a run leaves it once its cost is reported.
+func (s *Set) registerSpend(meter metric.Meter) error {
+	g, err := meter.Float64ObservableGauge("agent_factory_run_spend_usd",
+		metric.WithDescription("A run's USD spend so far, by the model that served it, until the meter reports its cost (agent_factory_run_cost_usd)."))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s.spendMu.Lock()
+		defer s.spendMu.Unlock()
+		for run, by := range s.spend {
+			if !runRE.MatchString(run) {
+				continue
+			}
+			bounded := map[string]float64{} // two models bounded to other add up
+			for model, v := range by {
+				bounded[boundModel(model)] += v
+			}
+			for model, v := range bounded {
+				o.ObserveFloat64(g, v, metric.WithAttributes(attribute.String("run", run), attribute.String("model", model)))
+			}
+		}
+		return nil
+	}, g)
+	return err
+}
+
+func boundModel(model string) string {
+	if !modelRE.MatchString(model) {
+		return other
+	}
+	return model
 }
 
 // RunBudgetUSD sets a tier's USD run cap.
@@ -407,10 +471,7 @@ func (s *Set) RunBudgetFallback(ctx context.Context, scope, why string) {
 // ModelUnpriced counts a run a model served without a price: the run meter's OnUnpriced. The
 // model is the gateway's gen_ai_request_model, a name a backend pins; any other shape is other.
 func (s *Set) ModelUnpriced(ctx context.Context, model string) {
-	if !modelRE.MatchString(model) {
-		model = other
-	}
-	s.unpricedModels.Add(ctx, 1, metric.WithAttributes(attribute.String("model", model)))
+	s.unpricedModels.Add(ctx, 1, metric.WithAttributes(attribute.String("model", boundModel(model))))
 }
 
 // Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason
