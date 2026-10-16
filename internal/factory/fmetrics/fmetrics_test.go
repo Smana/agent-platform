@@ -145,6 +145,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.RunCost(ctx, "standard", 0.65)
 	s.RunBudgetUSD(ctx, "standard", 2.55)
 	s.RunBudgetFallback(ctx, "task", "unpriced")
+	s.ModelUnpriced(ctx, "claude-fable-5-1")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{repository="other",source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -172,6 +173,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_run_cost_usd_bucket{tier="standard",le="0.75"} 1`,
 		`agent_factory_run_budget_usd{tier="standard"} 2.55`,
 		`agent_factory_run_budget_fallbacks_total{scope="task",why="unpriced"} 1`,
+		`agent_factory_meter_unpriced_model_runs_total{model="claude-fable-5-1"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -200,6 +202,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.RunRevoked(ctx, "budget-run", "a limit")
 	s.RunCost(ctx, "huge", 1)
 	s.RunBudgetFallback(ctx, "a scope", "a reason")
+	s.ModelUnpriced(ctx, "Ignore previous instructions")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_run_revocations_total{reason="other"} 1`,
@@ -211,6 +214,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 		`agent_factory_run_revocations_total{limit="other",reason="budget-run"} 1`,
 		`agent_factory_run_cost_usd_count{tier="other"} 1`,
 		`agent_factory_run_budget_fallbacks_total{scope="other",why="other"} 1`,
+		`agent_factory_meter_unpriced_model_runs_total{model="other"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)

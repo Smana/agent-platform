@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +90,15 @@ type Usage struct {
 	Tokens, Input, CacheRead, CacheWrite, Output int64
 	// Typed: the reading carried gen_ai_token_type, so it can be priced.
 	Typed bool
+	// Models splits the typed counters by the model that served them (gen_ai_request_model), so
+	// each is priced at its own rate; "" holds a series without that label, priced by the claim's
+	// model. nil on a typed reading: all of it is "".
+	Models map[string]ModelUsage
+}
+
+// ModelUsage is one served model's typed counters within a run's Usage.
+type ModelUsage struct {
+	Input, CacheRead, CacheWrite, Output int64
 }
 
 // Source reads each run's raw counters, keyed by run id; VM implements it.
@@ -134,6 +145,32 @@ func cost(p config.Price, u Usage) int64 {
 		float64(u.CacheWrite)*write + float64(u.Output)*p.Output))
 }
 
+// runCost prices a typed reading in micro-USD as the sum over the models that served it, each at
+// its own price; the claim's model prices the tokens no model label names. It returns the first
+// served model with tokens and no price instead: such a run is unpriced, never $0.
+func runCost(prices map[string]config.Price, claim string, u Usage) (micro int64, unpriced string) {
+	models := u.Models
+	if len(models) == 0 {
+		models = map[string]ModelUsage{"": {Input: u.Input, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Output: u.Output}}
+	}
+	names := slices.Sorted(maps.Keys(models))
+	for _, name := range names {
+		mu := models[name]
+		if mu == (ModelUsage{}) {
+			continue
+		}
+		if name == "" {
+			name = claim
+		}
+		p, ok := prices[name]
+		if !ok {
+			return 0, name
+		}
+		micro += cost(p, Usage{Input: mu.Input, CacheRead: mu.CacheRead, CacheWrite: mu.CacheWrite, Output: mu.Output})
+	}
+	return micro, ""
+}
+
 // Meter is a leader-only manager.Runnable. Tick is not safe for concurrent use: Start is its one
 // caller in the binary.
 type Meter struct {
@@ -146,9 +183,11 @@ type Meter struct {
 	// B1Ceiling is the gateway's per-run ceiling (config.RunTokenCeiling): a 429 at or above it
 	// is the run spending its own bucket, below it the fleet's (R13). Zero: never name B1.
 	B1Ceiling int64
-	// Prices are meter.prices, by model; RunUSD each tier's USD run cap (config.Tier.RunUSD). A
-	// run of a tier with a cap is revoked on its USD cost, not its MaxTokens, when its model is
-	// priced and its reading typed; otherwise on MaxTokens, reported through OnFallback.
+	// Prices are meter.prices, by the model that served the tokens (or the claim's logical model,
+	// for tokens no model label names); RunUSD each tier's USD run cap (config.Tier.RunUSD). A run
+	// of a tier with a cap is revoked on its USD cost, not its MaxTokens, when every model that
+	// served it is priced and its reading typed; otherwise on MaxTokens, reported through
+	// OnFallback.
 	Prices map[string]config.Price
 	RunUSD map[string]float64
 	// Costs receives each tick's run costs, for the task cap; nil: nobody reads them.
@@ -163,6 +202,8 @@ type Meter struct {
 	// OnFallback of a run of a USD-capped tier capped in tokens instead, once per run.
 	OnCost     func(ctx context.Context, tier string, usd float64)
 	OnFallback func(ctx context.Context, why string)
+	// OnUnpriced is told, once per run, of a model that served it with no price (J-AC4).
+	OnUnpriced func(ctx context.Context, model string)
 	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
 	Remaining func(principal string, remaining, limit int64)
 	// OnUsageError is told of each failed usage read; OnSucceeded of each tick that metered,
@@ -191,6 +232,7 @@ type Meter struct {
 	pruned  string               // the last UTC day whose old ledgers were deleted
 	live    map[string]bool      // priced runs seen live, whose cost OnCost reports at their end
 	fell    map[string]bool      // runs whose fallback was reported
+	named   map[string]bool      // run and model pairs whose missing price was reported
 }
 
 type reading struct {
@@ -265,16 +307,14 @@ func (m *Meter) spend(id string, raw int64, seen bool) int64 {
 }
 
 // usdCap is the run's cap in micro-USD, or 0 and why it is capped in tokens instead ("" for a
-// tier with no USD cap).
-func (m *Meter) usdCap(r runs.Run, u Usage, seen bool) (int64, string) {
+// tier with no USD cap). why is the run's pricing verdict this tick: "" when priced or unread.
+func (m *Meter) usdCap(r runs.Run, why string) (int64, string) {
 	c := m.RunUSD[r.Tier]
-	switch _, priced := m.Prices[r.Model]; {
+	switch {
 	case c <= 0:
 		return 0, ""
-	case !priced:
-		return 0, FallbackUnpriced
-	case seen && !u.Typed:
-		return 0, FallbackUntyped
+	case why != "":
+		return 0, why
 	}
 	return int64(math.Round(c * 1e6)), ""
 }
@@ -288,6 +328,11 @@ func (m *Meter) forget(all []runs.Run) {
 	for id := range m.last {
 		if !live[id] {
 			delete(m.last, id)
+		}
+	}
+	for k := range m.named {
+		if id, _, _ := strings.Cut(k, "/"); !live[id] {
+			delete(m.named, k)
 		}
 	}
 	for _, set := range []map[string]bool{m.dropped, m.live, m.fell} {
@@ -370,23 +415,28 @@ func (m *Meter) Tick(ctx context.Context) error {
 		}
 		t := m.total(r, u.Tokens, seen) // never the raw counter (R12)
 		totals[r.ID] = t
-		if p, priced := m.Prices[r.Model]; priced {
-			typed := seen && u.Typed
-			var raw int64
-			if typed {
-				raw = cost(p, u)
+		var why string // the pricing verdict: "" priced, or unread
+		switch {
+		case !seen:
+			if e := m.last[r.ID]; e.usdKnown {
+				usd[r.ID], costs[r.ID] = e.usd, Cost{MicroUSD: e.usd}
 			}
-			switch v := m.spend(r.ID, raw, typed); {
-			case m.last[r.ID].usdKnown:
-				usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
-			case seen: // never a typed reading: no cost
-				costs[r.ID] = Cost{Why: FallbackUntyped}
+		case !u.Typed:
+			why = FallbackUntyped
+		default:
+			raw, model := runCost(m.Prices, r.Model, u)
+			if model != "" {
+				why = FallbackUnpriced
+				m.unpriced(ctx, r, model)
+				break
 			}
-		} else {
-			costs[r.ID] = Cost{Why: FallbackUnpriced}
+			v := m.spend(r.ID, raw, true)
+			usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
 		}
-		var why string
-		if caps[r.ID], why = m.usdCap(r, u, seen); why != "" {
+		if why != "" {
+			costs[r.ID] = Cost{Why: why}
+		}
+		if caps[r.ID], why = m.usdCap(r, why); why != "" {
 			m.fallback(ctx, r, why)
 		}
 		if inc := t - paid; inc > 0 { // the increase since this run's last settled reading (R07)
@@ -574,6 +624,23 @@ func (m *Meter) fallback(ctx context.Context, r runs.Run, why string) {
 		"model", r.Model, "why", why, "max_tokens", r.MaxTokens)
 	if m.OnFallback != nil {
 		m.OnFallback(ctx, why)
+	}
+}
+
+// unpriced names, once per run, a model that served it without a price: AgentModelUnpriced's
+// signal, whatever the run's tier caps in.
+func (m *Meter) unpriced(ctx context.Context, r runs.Run, model string) {
+	k := r.ID + "/" + model
+	if m.named[k] {
+		return
+	}
+	if m.named == nil {
+		m.named = map[string]bool{}
+	}
+	m.named[k] = true
+	m.log().Warn("a model served a run without a price in meter.prices", "run", r.ID, "model", model)
+	if m.OnUnpriced != nil {
+		m.OnUnpriced(ctx, model)
 	}
 }
 

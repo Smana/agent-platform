@@ -398,8 +398,9 @@ type Meter struct {
 	// ThrottleQuery is the LogsQL that names them: the last minutes of 429s with Envoy's RL
 	// flag on agent-router, grouped by the verified identity header.
 	ThrottleQuery string `json:"throttleQuery"`
-	// Prices are by the tier's logical model (C5), since the run's claim names that one. Pricing
-	// a run also needs Query grouped by gen_ai_token_type; an untyped reply meters in tokens.
+	// Prices are by the model that served the tokens (gen_ai_request_model, once Query groups by
+	// it: ByModel), else by the tier's logical model (C5), which the run's claim names. Pricing a
+	// run also needs Query grouped by gen_ai_token_type; an untyped reply meters in tokens.
 	Prices map[string]Price `json:"prices,omitempty"`
 }
 
@@ -491,6 +492,16 @@ var (
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
 func roles() []string { return []string{"implementer", "reviewer", "tester", "triager"} }
+
+// modelRE is a model name as meter.prices keys it: a C5 logical name or the model a gateway
+// backend pins (glm-5.3, claude-opus-5-5).
+var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// ByModel is true when the meter's query groups by gen_ai_request_model, the model that served
+// each token: meter.prices is then read by that model, and only a series without the label by
+// the claim's logical model.
+func (m Meter) ByModel() bool { return strings.Contains(m.Query, "gen_ai_request_model") }
+
 func models() []string {
 	return []string{"agent-default", "tier-light", "tier-standard", "tier-frontier"}
 }
@@ -705,16 +716,19 @@ func (c *Config) Validate() error {
 		case t.TaskUSD > 0 && t.TaskUSD < t.RunUSD:
 			bad("tier %s: taskUSD below runUSD", name)
 		case t.RunUSD > 0 || t.TaskUSD > 0:
-			// Refused rather than metered at $0: a cap nothing reaches.
-			if _, ok := c.Meter.Prices[t.Model]; !ok {
+			// Refused rather than metered at $0: a cap nothing reaches. Priced by served model,
+			// a run of a model the table lacks is capped in tokens and named at run time.
+			if _, ok := c.Meter.Prices[t.Model]; !ok && !c.Meter.ByModel() {
 				bad("tier %s: runUSD and taskUSD need meter.prices.%s", name, t.Model)
 			}
 		}
 	}
 	for model, p := range c.Meter.Prices {
 		switch {
-		case !slices.Contains(models(), model):
-			bad("meter.prices: %q is not a C5 logical name", model)
+		case !modelRE.MatchString(model):
+			bad("meter.prices: %q is not a model name", model)
+		case !slices.Contains(models(), model) && !c.Meter.ByModel():
+			bad("meter.prices.%s: a served model's price needs meter.query grouped by gen_ai_request_model", model)
 		case !finite(p.Input) || !finite(p.CacheRead) || !finite(p.Output) || !finite(p.CacheWrite) ||
 			p.Input <= 0 || p.CacheRead <= 0 || p.Output <= 0 || p.CacheWrite < 0:
 			bad("meter.prices.%s: input, cacheRead and output must be positive, cacheWrite 0 or more", model)

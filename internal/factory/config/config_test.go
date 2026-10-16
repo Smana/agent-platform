@@ -156,6 +156,10 @@ func TestUSDCaps(t *testing.T) {
 	}{
 		"no prices: token caps":   {func(s string) string { return s }, map[string][2]float64{"light": {0, 0}, "standard": {0, 0}, "frontier": {0, 0}}},
 		"prices: the REF default": {priced, map[string][2]float64{"light": {0.51, 1.02}, "standard": {2.55, 5.10}, "frontier": {6.80, 13.60}}},
+		"served-model prices, a query by model": {func(s string) string {
+			s = strings.Replace(s, "sum by (ar_agent)", "sum by (ar_agent, gen_ai_request_model, gen_ai_token_type)", 1)
+			return strings.Replace(s, "  logsURL:", "  prices: {glm-5.3: {input: 1.40, cacheRead: 0.26, output: 4.40}, claude-opus-5-5: {input: 4, cacheRead: 0.20, cacheWrite: 5, output: 20}}\n  logsURL:", 1)
+		}, map[string][2]float64{"light": {0.51, 1.02}, "standard": {2.55, 5.10}, "frontier": {6.80, 13.60}}},
 		"an explicit cap wins": {func(s string) string {
 			return strings.Replace(priced(s), "runTokens: 4000000,", "runUSD: 10, taskUSD: 20, runTokens: 4000000,", 1)
 		}, map[string][2]float64{"light": {0.51, 1.02}, "standard": {2.55, 5.10}, "frontier": {10, 20}}},
@@ -419,8 +423,11 @@ func TestBadConfigsFail(t *testing.T) {
 		"negative runUSD":        {"runTokens: 1500000,", "runUSD: -1, runTokens: 1500000,", "tier standard: runUSD must be a positive amount"},
 		"a tier's model unpriced": {"  logsURL:", "  prices: {tier-light: {input: 1.40, cacheRead: 0.26, output: 4.40}}\n  logsURL:",
 			"tier light: runUSD and taskUSD need meter.prices.agent-default"},
-		"price of an unknown model": {"  logsURL:", "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}, glm-5.3: {input: 1, cacheRead: 1, output: 1}}\n  logsURL:",
-			`meter.prices: "glm-5.3" is not a C5 logical name`},
+		"a price key that names no model": {"  logsURL:", "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}, 'GLM 5': {input: 1, cacheRead: 1, output: 1}}\n  logsURL:",
+			`meter.prices: "GLM 5" is not a model name`},
+		// A served model's price is read only from a query grouped by the model that served it.
+		"a served model's price, a query not by model": {"  logsURL:", "  prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}, glm-5.3: {input: 1, cacheRead: 1, output: 1}}\n  logsURL:",
+			`meter.prices.glm-5.3: a served model's price needs meter.query grouped by gen_ai_request_model`},
 		"a price without its cache-read rate": {"  logsURL:", "  prices: {agent-default: {input: 1.40, output: 4.40}}\n  logsURL:",
 			"meter.prices.agent-default: input, cacheRead and output must be positive"},
 		"an unknown price field":      {"  logsURL:", "  prices: {agent-default: {input: 1.40, cached: 0.26, output: 4.40}}\n  logsURL:", `unknown field "cached"`},

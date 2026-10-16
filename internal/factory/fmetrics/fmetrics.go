@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,6 +58,9 @@ func admissionReasons() []string {
 	return []string{"repository_differs_from_the_room", "repository_differs_from_the_branch", "repository_permission", "repository_not_owned"}
 }
 
+// modelRE bounds the model label to a backend's pinned model name (glm-5.3, claude-opus-5-5).
+var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
 		return v
@@ -100,6 +104,7 @@ type Set struct {
 	budgetFallbacks metric.Int64Counter
 	owned           metric.Int64Gauge
 	refusals        metric.Int64Counter
+	unpricedModels  metric.Int64Counter
 
 	// repos is the config's repository list, the repository label's only values (v2 D10).
 	mu    sync.RWMutex
@@ -225,6 +230,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.refusals, err = meter.Int64Counter("agent_factory_admission_refusals_total",
 		metric.WithDescription("Run requests refused on their repository: bound to another, no write on GitHub, or not this factory's."))
+	check(err)
+	s.unpricedModels, err = meter.Int64Counter("agent_factory_meter_unpriced_model_runs_total",
+		metric.WithDescription("Runs a model served with no meter.prices row, by that model: AgentModelUnpriced (J-AC4)."))
 	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader, s.repository))
@@ -394,6 +402,15 @@ func (s *Set) RunBudgetUSD(ctx context.Context, tier string, usd float64) {
 func (s *Set) RunBudgetFallback(ctx context.Context, scope, why string) {
 	s.budgetFallbacks.Add(ctx, 1, metric.WithAttributes(attribute.String("scope", oneOf(scope, budgetScopes())),
 		attribute.String("why", oneOf(why, budgetFallbacks()))))
+}
+
+// ModelUnpriced counts a run a model served without a price: the run meter's OnUnpriced. The
+// model is the gateway's gen_ai_request_model, a name a backend pins; any other shape is other.
+func (s *Set) ModelUnpriced(ctx context.Context, model string) {
+	if !modelRE.MatchString(model) {
+		model = other
+	}
+	s.unpricedModels.Add(ctx, 1, metric.WithAttributes(attribute.String("model", model)))
 }
 
 // Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason
