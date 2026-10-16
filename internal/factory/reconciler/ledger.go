@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Smana/agent-platform/internal/factory/config"
+
 	"github.com/Smana/agent-platform/internal/factory/forge"
 )
 
@@ -33,21 +35,21 @@ type Merge struct {
 // factory merges or reverts after the read is on its Tasks, which the breaker unites with it.
 // An unread ledger is an error, so no decision is made on a breaker that might be tripped.
 type mergeLedger struct {
-	mu      sync.Mutex
-	byClass map[string][]Merge // nil until read
+	mu     sync.Mutex
+	byRepo map[string]map[string][]Merge // by repository, then class; a repository absent until read
 }
 
 // githubLedger reads the ledger at the first decision and keeps it. A class's newest
 // merge.breaker.window merges are each asked for a revert: the window never reaches older ones,
 // since a Task's merge only pushes them further out.
-func (r *Reconciler) githubLedger(ctx context.Context) (map[string][]Merge, error) {
+func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (map[string][]Merge, error) {
 	r.ledger.mu.Lock()
 	defer r.ledger.mu.Unlock()
-	if r.ledger.byClass != nil {
-		return r.ledger.byClass, nil
+	if byClass, ok := r.ledger.byRepo[rc.Name]; ok {
+		return byClass, nil
 	}
-	byClass := make(map[string][]Merge, len(r.Cfg.Classes))
-	for _, class := range slices.Sorted(maps.Keys(r.Cfg.Classes)) {
+	byClass := make(map[string][]Merge, len(rc.Classes))
+	for _, class := range slices.Sorted(maps.Keys(rc.Classes)) {
 		ps, err := r.Merger.PullsWithLabel(ctx, AutoMergedLabel(class))
 		if err != nil {
 			return nil, fmt.Errorf("read the merge ledger: %w", err)
@@ -59,7 +61,7 @@ func (r *Reconciler) githubLedger(ctx context.Context) (map[string][]Merge, erro
 			}
 		}
 		newestFirst(ms)
-		for i := range ms[:min(len(ms), r.Cfg.Merge.Breaker.Window)] {
+		for i := range ms[:min(len(ms), rc.Merge.Breaker.Window)] {
 			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
 			// change the breaker's verdict.
 			rv, err := r.Merger.PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))
@@ -70,7 +72,10 @@ func (r *Reconciler) githubLedger(ctx context.Context) (map[string][]Merge, erro
 		}
 		byClass[class] = ms
 	}
-	r.ledger.byClass = byClass
+	if r.ledger.byRepo == nil {
+		r.ledger.byRepo = map[string]map[string][]Merge{}
+	}
+	r.ledger.byRepo[rc.Name] = byClass
 	r.log().Info("merge ledger read from GitHub", "classes", len(byClass))
 	return byClass, nil
 }

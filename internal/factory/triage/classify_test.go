@@ -117,3 +117,31 @@ func TestControlGroupRunsAtFrontier(t *testing.T) {
 		t.Fatalf("the classifier's answer is recorded as-is; the budget acts at frontier (OD-14): %+v", d)
 	}
 }
+
+// A class label is read against the task's repository: its classes and its maintainers (v2 D1).
+func TestClassifyReadsTheTasksRepository(t *testing.T) {
+	cfg := testCfg()
+	a := config.Repository{Name: "Smana/a", Maintainers: []string{"Smana"}, Classes: cfg.Classes}
+	b := config.Repository{Name: "Smana/b", Maintainers: []string{"Other"}, Classes: map[string]config.Class{"revert": {}}}
+	cfg.Maintainers, cfg.Classes, cfg.Repositories = nil, nil, []config.Repository{a, b}
+	for name, c := range map[string]struct{ repo, actor, want string }{
+		"A's class by A's maintainer": {"Smana/a", "Smana", "docs-links"},
+		"A's maintainer on B":         {"Smana/b", "Smana", "review"},
+		"a class B does not declare":  {"Smana/b", "Other", "review"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := forgetest.NewFake()
+			f.SetIssue(forge.Issue{Number: 7, Labels: []string{"class:docs-links"}})
+			f.SetEvents(7, forge.LabelEvent{Actor: c.actor, Label: "class:docs-links", At: time.Now()})
+			tk := issueTask()
+			tk.Spec.Repository = c.repo
+			d, err := Classify{Cfg: cfg, C: &fakeC7{resp: C7Response{Tier: "light", Confidence: 0.9}}, Forge: f}.Triage(t.Context(), tk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.PredictedClass != c.want {
+				t.Fatalf("class %q, want %q", d.PredictedClass, c.want)
+			}
+		})
+	}
+}

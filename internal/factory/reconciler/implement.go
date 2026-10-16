@@ -42,7 +42,7 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	}
 	// A live class may auto-merge its PR, so human review WIP is not its bottleneck; the shadow
 	// and unclassified work is exactly what lands on the review queue.
-	if len(t.Status.Runs) == 0 && !r.Cfg.Classes[t.Spec.PredictedClass].Live {
+	if len(t.Status.Runs) == 0 && !r.repo(t).Classes[t.Spec.PredictedClass].Live {
 		wip, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool { return o.Status.Phase == v1alpha1.PhaseAwaitingHuman })
 		if err != nil {
 			return false, "", err
@@ -608,7 +608,7 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 // the same list that dedups request-changes reviews and commands.
 func (r *Reconciler) countApproves(ctx context.Context, t *v1alpha1.Task, pr forge.PR) {
 	for _, rv := range pr.Reviews {
-		if rv.State == "APPROVED" && r.Cfg.IsMaintainer(rv.Author) && !slices.Contains(t.Status.Handled, rv.ID) {
+		if rv.State == "APPROVED" && r.repo(t).IsMaintainer(rv.Author) && !slices.Contains(t.Status.Handled, rv.ID) {
 			markHandled(t, rv.ID)
 			record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "approve") })
 		}

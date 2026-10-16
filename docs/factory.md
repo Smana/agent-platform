@@ -31,7 +31,7 @@ without case.
 | Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
 | Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer |
 | A **Request changes** review on the task's pull request | Queued in the room; the next implementer run revises on the same branch with the review in its brief, then the pull request goes straight back to the maintainer | A maintainer |
-| Label `factory/stop` on the control issue (`controlIssue`), or the `agent-factory-stop` ConfigMap | Every task stops, intake pauses; see [The kill switch](#the-kill-switch) | A maintainer, an operator |
+| Label `factory/stop` on the control issue (`control.issue`), or the `agent-factory-stop` ConfigMap | Every task stops, intake pauses; see [The kill switch](#the-kill-switch) | A maintainer, an operator |
 | A schedule (`schedules[]`) | A task per cron slot (5 fields, UTC), once, when the slot is under an hour old. With `probe: renovate-red`, only when an open pull request by `probeAuthor` (default `renovate[bot]`) older than 24 h has a red check (read through the merger App); up to five join the text | The factory itself |
 | `POST /intake/runlore` | An `investigate` task from a RunLore finding, and a public issue labelled `factory/proposed` that links the room; see [the API](#the-factorys-api) | RunLore |
 
@@ -374,7 +374,7 @@ in Git so Flux never reverts it; its content is ignored. While it exists:
   `POST /v1/runs` answers `503 kill_switch`. `factory/stop` and `factory/revert` labels are still
   honoured.
 
-A maintainer engages it with `factory/stop` on the control issue (`controlIssue`): each poll
+A maintainer engages it with `factory/stop` on the control issue (`control.issue`): each poll
 creates the object, annotated `agents.ogenki.io/stop-source: control-issue`, and the poll that sees
 the label admits no new task in that same pass. Removing the label deletes the object, but only an
 object the poller made. An operator's stop must be a fresh object, which
@@ -445,10 +445,8 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 
 | Key | Holds | Default |
 |---|---|---|
-| `repository` | `owner/name` the factory works on | Required |
-| `maintainers` | GitHub logins that may label, retry and review; never a bot | Required |
-| `triggerLabel` | The start label, `factory/ready` | Required |
-| `controlIssue` | The issue whose `factory/stop` is the global stop | `0`: none |
+| `repositories` | At most 8 entries, one per repository, names unique (case-insensitive); see the entry table below | Required |
+| `control` | `{repository, issue}`: the issue whose `factory/stop` is the global stop, on a listed repository | `issue` 0: none |
 | `factoryLogin`, `agentsLogin` | The factory App's login (narration) and the agents App's (pull requests) | Required |
 | `roomsURL` | `https://<host>` of the rooms UI, linked in comments | Required |
 | `broker` | `url` (https only), `caFile`, `tokenFile` | Required |
@@ -456,8 +454,6 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `poll` | `issues`, `tasks`, `meter`: durations such as `"60s"` | Required, positive |
 | `defaults` | `template`, `tier`, `dataClass`, `predictedClass` | Required |
 | `triage` | `classifierURL`, `controlPercent` (0–100) | Required |
-| `classes` | `<name>: {live, shadow}`, never both; `docs-links` and `revert` required, `review` never declared | Required |
-| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
 | `templates` | `<name>: {roles, maxReviewRounds}`; every template but a lone `triager` has an `implementer` | Required |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
@@ -465,9 +461,32 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
-| `api` | `listen` (the chart's `api` port is `:8082`), `repositories`, `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals` | Required but `groups` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values |
-| `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap` | Required |
-| `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red`, and `probeAuthor` the login whose open PRs it reads | None; `probeAuthor` defaults to `renovate[bot]` |
+| `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals` | Required but `groups` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values |
+| `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; its tasks go to the first repository | Required |
+
+Each `repositories` entry:
+
+| Key | Holds | Default |
+|---|---|---|
+| `name` | `owner/name` | Required |
+| `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
+| `triggerLabel` | The start label, `factory/ready` | Required |
+| `classes` | `<name>: {live, shadow}`, never both; `docs-links` and `revert` required, `review` never declared | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
+| `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red`, and `probeAuthor` the login whose open PRs it reads. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
+
+`api.repositories`, the run-request API's allowlist, is the entries' names.
+
+**The legacy single-repository shape still loads**, for one minor release: top-level `repository`,
+`maintainers`, `triggerLabel`, `controlIssue`, `classes`, `merge` and `schedules` read as a
+one-entry `repositories` with `control` on that repository, and its `api.repositories` stays the
+allowlist as written. A file mixing the two shapes fails the start.
+
+**This release serves exactly one repository.** A config with two entries parses, but the factory
+refuses to start with it: both GitHub connections bind to one repository, and the admission
+binding and ownership fence of the
+[second-repository design](https://github.com/Smana/cloud-native-ref/pull/2435)
+come with its later pull requests.
 
 ### The factory's API
 
@@ -479,7 +498,7 @@ system's run request. Source: `internal/factory/api/server.go`.
 | | |
 |---|---|
 | Auth | `Authorization: Bearer`: a human's token from `api.humanIssuer`, issued to one of the `api.clientIDFiles` clients (the rooms UI's proxy or `roomctl`), and the human in one of the two groups `api.groups` names; or a token from `api.systemIssuer` for audience `agent-factory`, its subject in `api.systemPrincipals`. Internal data and the `triager` role are for admins only |
-| Body | `role`, `repository` (in `api.repositories`), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
+| Body | `role`, `repository` (in `api.repositories`, the listed repositories), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
 | `Idempotency-Key` | The same key from the same caller within 24 h answers the first `201` with `Idempotent-Replayed: true` and creates nothing. Same key, different body: `422 idempotency_key_reused`. A key whose run another caller owns: `409 idempotency_key_collision`. Over 255 bytes: `400 bad_idempotency_key`. Two first requests with one key either side of 00:00 UTC make two runs |
 | `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |
 | `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room` |

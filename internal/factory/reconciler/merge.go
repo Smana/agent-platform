@@ -33,7 +33,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	switch pr.State {
 	case "MERGED": // a maintainer merged it through the bypass…
-		if !forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) {
+		if !forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
 			// R41: a human merge records when, so it counts in the class's breaker window.
 			now := metav1.NewTime(r.Now())
@@ -65,16 +65,16 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	paused, err := r.paused(ctx, t.Spec.PredictedClass)
+	paused, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass)
 	if err != nil {
 		return err
 	}
-	today, err := r.armedToday(ctx)
+	today, err := r.armedToday(ctx, r.repo(t))
 	if err != nil {
 		return err
 	}
 	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, Paused: paused}
-	if CIState(checks, r.Cfg.Merge.RequiredChecks) == "SUCCESS" {
+	if CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
 		// approved. Neither read matters while CI decides on its own, so they wait for green.
 		in.ReportedHead, err = r.reportedHead(ctx, t)
@@ -134,7 +134,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// R02 held before verdict_stale: the head is the factory's, so there is nothing for a human
 		// to judge yet, only a verdict of this head to get (N1).
 		if d.Reason == "verdict_stale" && t.Status.GateReentries < maxGateReentries &&
-			r.nextVerifier(t, "implementer") != "" && !r.engagedSince(pr, t.Status.PhaseSince) {
+			r.nextVerifier(t, "implementer") != "" && !r.engagedSince(t, pr, t.Status.PhaseSince) {
 			r.backToGate(t, d.Reason, "rereview_verdict_stale", pr.HeadSHA)
 			return nil
 		}
@@ -192,7 +192,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		return false, nil
 	}
 	if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA != t.Status.PullRequest.HeadSHA ||
-		r.engagedSince(pr, t.Status.PhaseSince) {
+		r.engagedSince(t, pr, t.Status.PhaseSince) {
 		return false, nil
 	}
 	if why == "head_unreported" {
@@ -208,13 +208,13 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		return false, err
 	}
 	if why == "ci_cancelled" {
-		if CIState(c, r.Cfg.Merge.RequiredChecks) != "SUCCESS" {
+		if CIState(c, r.repo(t).Merge.RequiredChecks) != "SUCCESS" {
 			return false, nil
 		}
 		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
 		return true, nil
 	}
-	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || !forge.SameLogin(creator, r.Cfg.Merge.PolicyBotLogin) {
+	if state, creator := c.StatusOf("policy-bot: main"); state != "SUCCESS" || !forge.SameLogin(creator, r.repo(t).Merge.PolicyBotLogin) {
 		return false, nil
 	}
 	r.backToGate(t, why, "reentered_policy", pr.HeadSHA)
@@ -289,17 +289,17 @@ func (r *Reconciler) humanCommit(ctx context.Context, t *v1alpha1.Task, head str
 }
 
 // engagedSince: a maintainer reviewed or commented on the pull request after since.
-func (r *Reconciler) engagedSince(pr forge.PR, since *metav1.Time) bool {
+func (r *Reconciler) engagedSince(t *v1alpha1.Task, pr forge.PR, since *metav1.Time) bool {
 	if since == nil {
 		return true // no hand-off time to read activity against: never assume there was none
 	}
 	for _, rv := range pr.Reviews {
-		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since.Time) {
+		if r.repo(t).IsMaintainer(rv.Author) && rv.At.After(since.Time) {
 			return true
 		}
 	}
 	for _, c := range pr.Comments {
-		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since.Time) {
+		if r.repo(t).IsMaintainer(c.Author) && c.At.After(since.Time) {
 			return true
 		}
 	}
@@ -473,14 +473,14 @@ func failing(c forge.Checks, required []string) []string {
 func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
 	var ids []int64
 	for _, x := range c.Runs {
-		if x.State == "CANCELLED" && slices.Contains(r.Cfg.Merge.RequiredChecks, x.Name) {
+		if x.State == "CANCELLED" && slices.Contains(r.repo(t).Merge.RequiredChecks, x.Name) {
 			ids = append(ids, x.ID)
 		}
 	}
 	if t.Status.CheckRerunsHead != pr.HeadSHA { // a new head gets a fresh budget
 		t.Status.CheckReruns, t.Status.CheckRerunsHead = 0, pr.HeadSHA
 	}
-	if t.Status.CheckReruns >= r.Cfg.Merge.CheckReruns {
+	if t.Status.CheckReruns >= r.repo(t).Merge.CheckReruns {
 		t.Status.PullRequest.HeadSHA = pr.HeadSHA
 		r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_cancelled")
 		narrateLater(t, narrate.WaitingForHuman(t, "ci_cancelled"))
@@ -508,8 +508,8 @@ func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr fo
 
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).
 func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
-	names := failing(c, r.Cfg.Merge.RequiredChecks)
-	if t.Status.FixRuns >= r.Cfg.Merge.FixRuns {
+	names := failing(c, r.repo(t).Merge.RequiredChecks)
+	if t.Status.FixRuns >= r.repo(t).Merge.FixRuns {
 		narrateOn(t, pr.Number, narrate.CIExhausted(t, names))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "ci_red")
 	}
@@ -520,7 +520,7 @@ func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c
 			why = append(why, fmt.Sprintf("`%s`: %s", x.Name, strings.ToLower(x.State)))
 		}
 	}
-	narrateLater(t, narrate.CIFixing(t, pr.Number, pr.HeadSHA, why, int(t.Status.FixRuns), int(r.Cfg.Merge.FixRuns)))
+	narrateLater(t, narrate.CIFixing(t, pr.Number, pr.HeadSHA, why, int(t.Status.FixRuns), int(r.repo(t).Merge.FixRuns)))
 	msg := fmt.Sprintf("CI failed on %s: %s. Read the failing jobs with `gh pr checks %d` and fix them on the same branch.",
 		pr.HeadSHA, strings.Join(names, ", "), pr.Number)
 	if err := r.Rooms.Enqueue(ctx, t.Status.RoomRef, "ci", msg, int64(t.Status.FixRuns)); err != nil {
@@ -543,12 +543,12 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 	class := t.Spec.PredictedClass
 	switch {
 	case pr.State == "MERGED":
-		if forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) {
+		if forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			r.label(ctx, pr, AutoMergedLabel(class))
 		}
 		now := metav1.NewTime(r.Now())
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
-		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
+		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
 		if !ref.AutoMerged {
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged")
@@ -595,11 +595,11 @@ func (r *Reconciler) verifying(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	switch MainState(runs, r.Cfg.Merge.VerifyChecks) {
+	switch MainState(runs, r.repo(t).Merge.VerifyChecks) {
 	case "FAILURE":
 		return r.revert(ctx, t, "main_red")
 	case "SUCCESS":
-		if ref.MergedAt != nil && r.Now().Sub(ref.MergedAt.Time) >= r.Cfg.Merge.VerifyFor.Duration {
+		if ref.MergedAt != nil && r.Now().Sub(ref.MergedAt.Time) >= r.repo(t).Merge.VerifyFor.Duration {
 			return r.end(ctx, t, v1alpha1.PhaseDone, "merged_verified")
 		}
 	}
@@ -611,7 +611,7 @@ func (r *Reconciler) revertable(t *v1alpha1.Task) bool {
 	ref := t.Status.PullRequest
 	return t.Status.Phase == v1alpha1.PhaseDone && t.Annotations[v1alpha1.AnnotationRevert] != "" &&
 		ref != nil && ref.AutoMerged && ref.RevertNumber == 0 && ref.MergedAt != nil &&
-		r.Now().Sub(ref.MergedAt.Time) <= r.Cfg.Merge.RevertWindow.Duration
+		r.Now().Sub(ref.MergedAt.Time) <= r.repo(t).Merge.RevertWindow.Duration
 }
 
 // revert opens the merger-authored revert PR and arms it: the policy's `revert` rule carries
@@ -634,7 +634,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 		return err
 	}
 	ref.RevertNumber = rv.Number
-	if r.Cfg.Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
+	if r.repo(t).Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
 		if err := r.Merger.EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
 			return err
 		}
@@ -642,8 +642,8 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
 	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
-	if n := r.Cfg.ControlIssue; n > 0 { // R41: where the kill switch lives
-		b := r.Cfg.Merge.Breaker
+	if n := r.Cfg.ControlFor().Issue; n > 0 { // R41: where the kill switch lives
+		b := r.repo(t).Merge.Breaker
 		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
 	}
 	return r.end(ctx, t, v1alpha1.PhaseReverted, why)
@@ -670,7 +670,7 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 	case pr.State == "MERGED" || pr.State == "CLOSED":
 		t.Status.Narrated = append(t.Status.Narrated, "revert-end-"+strings.ToLower(pr.State))
 		return nil
-	case t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= r.Cfg.Merge.VerifyFor.Duration:
+	case t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= r.repo(t).Merge.VerifyFor.Duration:
 		if err := r.Merger.DisableAutoMerge(ctx, pr.NodeID); err != nil {
 			return err
 		}
@@ -686,8 +686,8 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 // merges are the Tasks' united with GitHub's labelled ones (v2 D1), so a rebuild that lost every
 // Task still reads a demoted class as demoted. Only auto-merges carry a label: maintainers' merges
 // before a rebuild are not on GitHub's side, which can only keep a class demoted longer.
-func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
-	gh, err := r.githubLedger(ctx)
+func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class string) (bool, error) {
+	gh, err := r.githubLedger(ctx, rc)
 	if err != nil {
 		return false, err
 	}
@@ -702,7 +702,7 @@ func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
 			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted})
 		}
 	}
-	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), r.Cfg.Merge.Breaker)
+	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)
 	return demoted, nil
 }
 
@@ -724,8 +724,8 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
 // merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's labelled
 // merges of today, of every class, count too (v2 D1), once per pull request.
-func (r *Reconciler) armedToday(ctx context.Context) (int, error) {
-	gh, err := r.githubLedger(ctx)
+func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int, error) {
+	gh, err := r.githubLedger(ctx, rc)
 	if err != nil {
 		return 0, err
 	}

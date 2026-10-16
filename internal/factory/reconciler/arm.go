@@ -68,13 +68,14 @@ func CIState(c forge.Checks, required []string) string {
 
 // DecideArm is §5.1's merge-actor rule. Every "no" fails towards a human (property 3).
 func DecideArm(in ArmInputs) ArmDecision {
+	rc := in.Cfg.RepositoryFor(in.Task.Spec.Repository)
 	// R42 (review G6): TruffleHog runs --only-verified, so a red scan is a live credential in the
 	// diff. A fix run would remove it from the head and leave it in a public history.
-	if i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == in.Cfg.Merge.LeakScanCheck }); i >= 0 &&
+	if i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == rc.Merge.LeakScanCheck }); i >= 0 &&
 		in.Checks.Runs[i].State == "FAILURE" {
 		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}
 	}
-	switch CIState(in.Checks, in.Cfg.Merge.RequiredChecks) {
+	switch CIState(in.Checks, rc.Merge.RequiredChecks) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}
 	case "CANCELLED":
@@ -87,7 +88,7 @@ func DecideArm(in ArmInputs) ArmDecision {
 	}
 	class := in.Task.Spec.PredictedClass
 	state, creator := in.Checks.StatusOf("policy-bot: main")
-	if !forge.SameLogin(creator, in.Cfg.Merge.PolicyBotLogin) {
+	if !forge.SameLogin(creator, rc.Merge.PolicyBotLogin) {
 		return human("policy_absent", "") // policy-bot down, or a status someone else posted
 	}
 	switch state {
@@ -101,11 +102,11 @@ func DecideArm(in ArmInputs) ArmDecision {
 		return human("not_agent_authored", "")
 	}
 	for _, rv := range in.PR.Reviews {
-		if rv.State == "APPROVED" && in.Cfg.IsMaintainer(rv.Author) {
+		if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) {
 			return human("maintainer_approved", "review") // success came from a human: a human merges
 		}
 	}
-	cl := in.Cfg.Classes[class]
+	cl := rc.Classes[class]
 	if !cl.Live && !cl.Shadow {
 		return human("class_mismatch", "live") // the diff matched a live class the triage did not predict
 	}
@@ -144,7 +145,7 @@ func DecideArm(in ArmInputs) ArmDecision {
 	if in.Paused {
 		return human("class_paused", class)
 	}
-	if in.ArmedToday >= in.Cfg.Merge.AutoMergesPerDay {
+	if in.ArmedToday >= rc.Merge.AutoMergesPerDay {
 		return human("auto_merge_cap", class)
 	}
 	if !cl.Live { // R32: every condition holds, and the gate is in shadow until the wave
