@@ -290,6 +290,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
     sse = False
     fail = 0
     deleted = []
+    traceparents = []
 
     def do_DELETE(self):
         type(self).deleted.append(self.headers.get("Mcp-Session-Id"))
@@ -300,6 +301,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         type(self).calls.append(body)
+        type(self).traceparents.append((body.get("method"), self.headers.get("traceparent")))
         if type(self).fail and body.get("method") == "tools/call":
             type(self).fail -= 1
             self.send_response(404)
@@ -337,7 +339,7 @@ class ProgressNotesTest(unittest.TestCase):
 
     def setUp(self):
         FakeMCP.calls, FakeMCP.tool, FakeMCP.limited, FakeMCP.sse = [], "room_progress", 0, False
-        FakeMCP.fail, FakeMCP.deleted = 0, []
+        FakeMCP.fail, FakeMCP.deleted, FakeMCP.traceparents = 0, [], []
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeMCP)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -515,6 +517,30 @@ class ProgressNotesTest(unittest.TestCase):
                 self.notes.flush()
         self.assertEqual(self.notes.failures, agent_run.NOTE_FAILURES)
         self.assertEqual(self.notes.sent, 0)
+
+    def test_each_note_is_a_child_span_of_the_run_and_its_rpcs_carry_it(self):
+        # cloud-native-ref#2283: the gateway's spans for a note nest under the harness span that sent it.
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        exporter = InMemorySpanExporter()
+        run, provider, _ = agent_run.start_run_span({}, exporter=exporter)
+        self.notes.start_span = agent_run.child_spans(provider, run)
+        self.run_ok("git status")
+        self.notes.flush()
+        self.now[0] += agent_run.MIN_NOTE_GAP_S
+        self.run_ok("git commit -m x")
+        self.notes.flush()
+        spans = [s for s in exporter.get_finished_spans() if s.name == agent_run.NOTE_SPAN]
+        self.assertEqual([s.parent.span_id for s in spans], [run.get_span_context().span_id] * 2)
+        want = ["00-%032x-%016x-01" % (s.context.trace_id, s.context.span_id) for s in spans]
+        self.assertEqual([tp for m, tp in FakeMCP.traceparents if m == "tools/call"], want)
+        # The handshake goes out inside the first note, so it carries that note's span too.
+        self.assertEqual({tp for m, tp in FakeMCP.traceparents if m != "tools/call"}, {want[0]})
+
+    def test_without_tracing_a_note_sends_no_traceparent(self):
+        self.run_ok("git status")
+        self.notes.flush()
+        self.assertEqual(self.notes.sent, 1)
+        self.assertEqual({tp for _, tp in FakeMCP.traceparents}, {None})
 
     def test_the_step_log_feeds_and_flushes_the_notes(self):
         log = agent_run.StepLog("cid", notes=self.notes)
