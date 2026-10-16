@@ -193,6 +193,40 @@ func TestRooms(t *testing.T) {
 	}
 }
 
+// v2 suspend: a run in an attended room is suspendable when the factory's flag is on; the
+// room broker then suspends it while its approval waits on an idle room.
+func TestRunsInAttendedRoomsAreSuspendable(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		enabled   bool
+		profile   string
+		roomRef   string
+		suspended bool
+	}{
+		{"flag on, attended room", true, "attended", "3kq7x2ma", true},
+		{"flag on, the default profile is attended", true, "", "3kq7x2ma", true},
+		{"flag on, unattended room", true, "unattended", "3kq7x2ma", false},
+		{"flag on, no room", true, "", "", false},
+		{"flag off", false, "attended", "3kq7x2ma", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			room := aliceRoom()
+			room.Spec.Approvals.Profile = tc.profile
+			body := base()
+			if tc.roomRef != "" {
+				body["roomRef"] = tc.roomRef
+			}
+			st := &store{}
+			c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(room).Build()
+			srv := mkServer(t, st, c, false, false, "7f3cq2xz", 5_000_000)
+			srv.Cfg.Sandbox.Suspend.Enabled = tc.enabled
+			if w := post(srv.Handler(), "alice", body); w.Code != http.StatusCreated || st.created[0].Suspendable != tc.suspended {
+				t.Fatalf("%d %+v", w.Code, st.created)
+			}
+		})
+	}
+}
+
 func TestRefusals(t *testing.T) {
 	for name, c := range map[string]struct {
 		edit func(map[string]any)
