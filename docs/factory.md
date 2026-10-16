@@ -299,8 +299,10 @@ At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
   Uncached, the same task costs $6.77.
 
 A task falls back to `taskTokens` while any of its runs is unpriced (`runs[].unpriced`) or has
-tokens and no cost: a cost is never counted as $0. The gateway's per-run ceiling (5 M tokens)
-still bounds a run's raw tokens. The daily budgets, `budgets.factoryDaily` and
+tokens and no cost: a cost is never counted as $0. The gateway's per-run bucket (B1, 5 M) charges
+a priced call its price in reference tokens, from the same `meter.prices`, and an unpriced one its
+raw tokens; the meter names a gateway 429 `budget-run` (`gateway-ceiling`) when the run's spend in
+that unit reaches 5 M, and `budget-fleet` below it. The daily budgets, `budgets.factoryDaily` and
 `budgets.humanDaily`, stay in raw tokens. The metrics for each cap are in
 [Operations](operations.md#budget-signals).
 
