@@ -322,6 +322,7 @@ both from oauth2-proxy.
 | ID token | Issuer is the identity provider, audience holds the `rooms-proxy` client id, not expired |
 | Access token | Same `sub`; issued for `rooms-proxy`. A web session requires it to differ from the ID token |
 | Groups | `agents-admin` or `agents-member`, else `403` |
+| User state | The ZITADEL user must be active, admins included: an inactive, locked, deleted or initial user is refused `401 user_inactive` on every route, and an open WebSocket closes `1008 user_inactive`. Read with the room-access reader, cached with its answers for at most 5 minutes; past that, a state ZITADEL cannot give fails closed (`503 access_unverified`). Counted in `rooms_rejected_actions_total{reason="user_inactive"}` |
 | Room access | `agents-admin` sees every room. Anyone else sees a room only if GitHub lets the login linked to their ZITADEL user read the room's `repository`; a room with none is admins-only. Answers are cached for at most 5 minutes; past that, a check ZITADEL or GitHub cannot answer fails closed. A room you may not see answers exactly like a missing one |
 | `Origin` | Must match the room host: no cross-site WebSocket |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |
@@ -372,7 +373,7 @@ source's task, approvals, verdict and notes are not the fork's.
 
 | Status before upgrade | When |
 |---|---|
-| `401` | Not authenticated, or the token is already past its expiry |
+| `401` | Not authenticated, or the token is already past its expiry; `user_inactive`: the ZITADEL user is no longer active |
 | `403` | A foreign `Origin`; not in an agents group |
 | `404` | No such room, or one the caller may not read: the same `no such room` |
 | `429` | More than 10 connections for this person, or more than 20 people in this room (per replica) |
@@ -405,6 +406,7 @@ live `seq` triggers a range read.
 | `1013` | `log_unavailable` | Reconnect with `afterSeq` after a backoff |
 | `1008` | `no such room` | Stop: the caller may no longer read the room (room access, re-checked on every ping against the access cache, so within the TTL plus 30 s); a re-dial is refused `404` |
 | `1013` | `access_unverified` | Reconnect after a backoff: ZITADEL or GitHub could not confirm the caller's access past the cache |
+| `1008` | `user_inactive` | Stop: the caller's ZITADEL user is no longer active (re-checked on every ping, admins included, so within the TTL plus 30 s); a re-dial is refused `401` |
 
 The broker pings every 30 s; a peer that does not answer within 10 s is disconnected without a
 close frame. So is a peer that does not take a frame within 10 s (`write_timeout`): reconnect with

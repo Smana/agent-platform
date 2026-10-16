@@ -258,7 +258,40 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (authn.Princi
 		http.Error(w, "not in an agents group", http.StatusForbidden)
 		return p, false
 	}
+	switch err := s.active(r.Context(), p); {
+	case errors.Is(err, ghidentity.ErrInactive):
+		s.rejected(r.Context(), reasonUserInactive)
+		http.Error(w, reasonUserInactive, http.StatusUnauthorized)
+		return p, false
+	case err != nil:
+		s.log().Warn("user state unverified", "err", err)
+		http.Error(w, reasonAccessUnverified, http.StatusServiceUnavailable)
+		return p, false
+	}
 	return p, true
+}
+
+// reasonUserInactive refuses a ZITADEL user that is no longer active (#126): their token still
+// verifies offline until it expires. It is about the caller alone, so it tells no room's existence.
+const reasonUserInactive = "user_inactive"
+
+// active is nil when p is an active ZITADEL user, admins included, against the access cache
+// (human.access.ttl). Without the identity check wired, nothing can say, and a non-human
+// principal has no ZITADEL user state.
+func (s *Server) active(ctx context.Context, p authn.Principal) error {
+	if s.Identity == nil || p.Kind != envelope.ActorHuman {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, accessWait)
+	defer cancel()
+	return s.Identity.CheckActive(ctx, p.Sub)
+}
+
+// rejected counts a refusal in rooms_rejected_actions_total{reason}.
+func (s *Server) rejected(ctx context.Context, reason string) {
+	if s.Metrics != nil {
+		s.Metrics.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
 }
 
 // room reads a Room CR of this namespace; found is false for none.
@@ -292,6 +325,7 @@ const (
 	dropProtocol       = "protocol"             // a frame the client must not send (1007, 1008 hello first, 1009), or no hello
 	dropRevoked        = "access_revoked"       // D7's re-check: the caller may no longer read the room
 	dropUnverified     = reasonAccessUnverified // D7's re-check: ZITADEL or GitHub cannot answer past the cache
+	dropInactive       = reasonUserInactive     // the re-check: the ZITADEL user is no longer active (#126)
 	// dropClientGone is the peer leaving: not a drop, so never counted.
 	dropClientGone = "client_gone"
 )

@@ -42,6 +42,9 @@ type gitHubWorld struct {
 	unlinked map[string]bool
 	unseen   map[string]bool
 	down     bool
+	inactive map[string]bool // ZITADEL users no longer active (#126)
+	stateErr bool            // ZITADEL cannot answer a user's state
+	states   int             // ZITADEL state reads
 	now      time.Time
 	ids      []string // a linked Sub's GitHub id is its index + 1
 	links    int      // ZITADEL link reads
@@ -49,7 +52,7 @@ type gitHubWorld struct {
 }
 
 func world(reads map[string][]string, unlinked ...string) *gitHubWorld {
-	w := &gitHubWorld{reads: reads, unlinked: map[string]bool{}, now: time.Now()}
+	w := &gitHubWorld{reads: reads, unlinked: map[string]bool{}, inactive: map[string]bool{}, now: time.Now()}
 	for _, u := range unlinked {
 		w.unlinked[u] = true
 	}
@@ -75,6 +78,15 @@ func (w *gitHubWorld) set(fn func()) { w.mu.Lock(); defer w.mu.Unlock(); fn() }
 // gate wires the world into s as the broker wires ZITADEL and GitHub.
 func (w *gitHubWorld) gate(s *Server) {
 	s.Identity = &ghidentity.Resolver{IDPID: "github-idp", TTL: 5 * time.Minute, Now: w.clock,
+		Active: func(_ context.Context, sub string) (bool, error) {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			w.states++
+			if w.stateErr {
+				return false, errors.New("zitadel down")
+			}
+			return !w.inactive[sub], nil
+		},
 		Links: func(_ context.Context, sub string) ([]ghidentity.Link, error) {
 			w.mu.Lock()
 			defer w.mu.Unlock()
@@ -554,8 +566,9 @@ func TestAnOpenSocketFollowsGitHub(t *testing.T) {
 	}
 }
 
-// Admins bypass D7 at connect, and so on an open socket: the gate is never consulted.
-func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
+// Admins bypass D7 at connect, and so on an open socket: GitHub is never consulted. Only the
+// ZITADEL user's state is (#126).
+func TestAnAdminsSocketSkipsGitHub(t *testing.T) {
 	w := world(map[string][]string{})
 	timers := newFakeTimers(30 * time.Second)
 	e := setup(t, abc(t), w.option(), timers.option)
@@ -568,8 +581,8 @@ func TestAnAdminsSocketIsNotRechecked(t *testing.T) {
 	if f := p.next(t); f.Type != wire.FrameEvent || f.Event.Seq != 11 {
 		t.Fatalf("%+v", f)
 	}
-	if n := w.checked(); n != 0 {
-		t.Fatalf("an admin's socket consulted the gate's caches %d times", n)
+	if w.links != 0 {
+		t.Fatalf("an admin's socket read ZITADEL's GitHub links %d times", w.links)
 	}
 }
 

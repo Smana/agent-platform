@@ -19,6 +19,7 @@ import (
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/ghidentity"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -60,6 +61,7 @@ var (
 	errLog          = errors.New(dropLogUnavailable)
 	errRevoked      = errors.New(dropRevoked)
 	errUnverified   = errors.New(dropUnverified)
+	errInactive     = errors.New(dropInactive)
 )
 
 // withLifetime is context.WithTimeout on the Server's timer: past d the context ends with
@@ -249,6 +251,8 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(websocket.StatusTryAgainLater, reason)
 	case dropRevoked: // what a new connection to the room is now answered
 		_ = c.Close(websocket.StatusPolicyViolation, noSuchRoom)
+	case dropInactive:
+		_ = c.Close(websocket.StatusPolicyViolation, reason)
 	}
 	// The hello's read and the reader return once the socket is closed, the pinger with the life.
 	_ = c.CloseNow()
@@ -471,7 +475,7 @@ func (v *viewer) ended() string {
 	if errors.Is(cause, context.DeadlineExceeded) {
 		return dropReauth
 	}
-	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol, errRevoked, errUnverified} {
+	for _, e := range []error{errShutdown, errPingTimeout, errSlowConsumer, errProtocol, errRevoked, errUnverified, errInactive} {
 		if errors.Is(cause, e) {
 			return e.Error()
 		}
@@ -519,7 +523,7 @@ func (v *viewer) ping() {
 			return
 		case <-beat:
 		}
-		if v.gated && !v.readable() {
+		if !v.readable() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(v.base, or(v.s.PongWait, defaultPongWait))
@@ -537,17 +541,25 @@ func (v *viewer) ping() {
 	}
 }
 
-// readable re-runs D7 for the open connection, or ends it. Against the cache, a check costs
-// nothing until its answer is a TTL old, so on the ping's beat a revoked reader is cut within
-// the access TTL plus one ping, and one ZITADEL or GitHub cannot vouch for past the cache is
-// cut rather than streamed to. The Room is the one the connection opened on.
+// readable re-checks that the ZITADEL user is active, then, unless an admin, re-runs D7 for the
+// open connection, or ends it. Against the cache, a check costs nothing until its answer is a TTL
+// old, so on the ping's beat a deactivated user or a revoked reader is cut within the access TTL
+// plus one ping, and one ZITADEL or GitHub cannot vouch for past the cache is cut rather than
+// streamed to. The Room is the one the connection opened on.
 func (v *viewer) readable() bool {
-	ctx, cancel := context.WithTimeout(v.life, accessWait)
-	ok, err := v.s.admits(ctx, v.room, v.p)
-	cancel()
+	err := v.s.active(v.life, v.p)
+	ok := true
+	if err == nil && v.gated {
+		ctx, cancel := context.WithTimeout(v.life, accessWait)
+		ok, err = v.s.admits(ctx, v.room, v.p)
+		cancel()
+	}
 	switch {
 	case v.life.Err() != nil:
 		return false // the check failed because the connection ended
+	case errors.Is(err, ghidentity.ErrInactive):
+		v.cancel(errInactive)
+		return false
 	case err != nil:
 		v.s.log().Warn("room access unverified", "room", v.id, "err", err)
 		v.cancel(errUnverified)

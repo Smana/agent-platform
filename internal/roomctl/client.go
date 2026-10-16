@@ -68,18 +68,36 @@ func (f RoomFilter) query() string {
 // Refusal is the broker refusing a request before any room data: retrying
 // cannot help, the developer has to act.
 type Refusal struct {
-	Op   string
-	Code int
+	Op     string
+	Code   int
+	Reason string // the broker's reason, when it names one roomctl explains
+}
+
+// userInactive is the broker's 401 for a ZITADEL user no longer active (#126).
+const userInactive = "user_inactive"
+
+// refusal is resp as a Refusal, reading the reason from its body.
+func refusal(op string, resp *http.Response) *Refusal {
+	r := &Refusal{Op: op, Code: resp.StatusCode}
+	if resp.Body != nil {
+		body, _ := httpx.ReadBody(resp.Body, 1<<10)
+		if strings.TrimSpace(string(body)) == userInactive {
+			r.Reason = userInactive
+		}
+	}
+	return r
 }
 
 func (r *Refusal) Error() string {
 	why := http.StatusText(r.Code)
-	switch r.Code {
-	case http.StatusUnauthorized:
+	switch {
+	case r.Reason == userInactive:
+		why = userInactive + ": your ZITADEL user is not active; an admin must reactivate it"
+	case r.Code == http.StatusUnauthorized:
 		why = "the token was refused: run roomctl login"
-	case http.StatusForbidden:
+	case r.Code == http.StatusForbidden:
 		why = "not in an agents group, or not allowed in this room"
-	case http.StatusNotFound:
+	case r.Code == http.StatusNotFound:
 		why = "no such room"
 	}
 	return fmt.Sprintf("%s: %d: %s", r.Op, r.Code, why)
@@ -117,7 +135,7 @@ func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return &Refusal{Op: "rooms", Code: resp.StatusCode}
+		return refusal("rooms", resp)
 	}
 	body, err := httpx.ReadBody(resp.Body, maxRoomsBody)
 	if err != nil {
@@ -244,7 +262,7 @@ func (c Client) Summary(ctx context.Context, room string, after int64) (json.Raw
 		}
 		return nil, errors.New("status: room unavailable")
 	default:
-		return nil, &Refusal{Op: "status", Code: resp.StatusCode}
+		return nil, refusal("status", resp)
 	}
 	body, err := httpx.ReadBody(resp.Body, maxRoomsBody)
 	if err != nil {
@@ -261,12 +279,16 @@ func (c Client) dial(ctx context.Context, hello wire.ClientFrame) (*websocket.Co
 	}
 	conn, resp, err := websocket.Dial(ctx, c.URL+"/v1/ws?room="+url.QueryEscape(hello.RoomID),
 		&websocket.DialOptions{HTTPClient: c.Stream, HTTPHeader: h})
+	var refused *Refusal
+	if err != nil && resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		refused = refusal("room "+hello.RoomID, resp)
+	}
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
 	if err != nil {
-		if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			return nil, &Refusal{Op: "room " + hello.RoomID, Code: resp.StatusCode}
+		if refused != nil {
+			return nil, refused
 		}
 		return nil, fmt.Errorf("room %s: %w", hello.RoomID, err)
 	}

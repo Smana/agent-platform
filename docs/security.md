@@ -15,7 +15,7 @@ The design's threats, the controls against each, and the package or mechanism th
 | T1 | Prompt injection by a human participant | Only members prompt; attribution is immutable; a run cannot exceed its profile; side-effect classes need an approver | Room roles (`internal/policy`), approvals, the broker-stamped `actor` | Wasted budget, bad code; bounded by budgets and the merge gate |
 | T2 | Injection from agent to agent (brief, verdict, branch code) | No direct agent-to-agent path; peer text fenced as data; reviewers have read-only forge scope; a verdict has no power beyond the factory's merge gate | The fenced brief (`internal/brief`); room tools are the only agent write path (`internal/mcp`) | An injected reviewer can approve bad code *inside the room*; CI and the merge gate remain |
 | T3 | Injection into humans | Approval cards render the raw, redacted action, not the agent's prose, plus the `causedBy` author | The approval card (`internal/humanapi`, `web/`) | Social engineering of an approver |
-| T4 | Impersonation | The broker stamps `actor` from the credential; offline JWT checks; a live `AgentRun` watch; re-validated human tokens; a run joins only its own `roomRef` | `internal/authn`, `internal/runwatch` | A token from a replaced pod of a still-live run is accepted until it expires (≤ 600 s) |
+| T4 | Impersonation | The broker stamps `actor` from the credential; offline JWT checks; a live `AgentRun` watch; re-validated human tokens; a human's ZITADEL user must still be active, admins included; a run joins only its own `roomRef` | `internal/authn`, `internal/runwatch`, `internal/ghidentity` (`CheckActive`) | A token from a replaced pod of a still-live run is accepted until it expires (≤ 600 s); a deactivated user's token, which verifies offline for up to 12 h, until the 5-minute access cache expires |
 | T5 | Replay, duplicates | Unique idempotency keys; single-use `approvalId`; `driverEpoch` fencing; short-lived tokens | `internal/store`: the idempotency key, the epoch trigger, the `approvals` table | — |
 | T6 | Self-confirmation at the harness | Approvals are oversight by design; consequential actions are enforced outside the sandbox; agent events are untrusted claims | Approvals; the gateway and the forge outside the sandbox | A self-confirmed in-profile action is logged as reported; gateway and forge logs are ground truth |
 | T7 | Authorization bypass at the broker | One enforcement point; every action re-checked against database state; `not_permitted` counted and alerted | The policy matrix and its table test (`internal/policy`); `RoomRejectedActionsSpike` | Broker bugs |
@@ -64,6 +64,9 @@ id to the current login, then asks GitHub whether that login can read the room's
 through the factory App's metadata reads. Answers are cached for at most 5 minutes, so an unlinked
 account or a revoked collaborator loses the room within that; past the cache, a check ZITADEL or
 GitHub cannot answer fails closed. A member with no link sees no room. `agents-admin` bypasses it.
+The same reader also reads the user's state on every human path, `agents-admin` included, since
+tokens verify offline and ZITADEL's live 12 h: a user deactivated, locked or deleted is refused
+(`user_inactive`) within the same 5 minutes, and an open WebSocket is cut on its next ping.
 When the broker asks the factory for a run on a human's behalf, it forwards that human's access
 token, never an asserted `sub`, so the factory proves the principal itself.
 
