@@ -177,24 +177,6 @@ class PersistedTest(unittest.TestCase):
             self.assertFalse(agent_run.persisted({"AGENT_SUSPENDABLE": "true"}, root=d))
 
 
-class StartConversationTest(unittest.TestCase):
-    def test_first_start_sends_only_the_request(self):
-        with mock.patch("agent_run.http", return_value={"id": "c1"}) as http:
-            self.assertEqual(agent_run.start_conversation({"x": 1}, False), "c1")
-        self.assertEqual(http.call_args_list, [mock.call("POST", "/api/conversations", {"x": 1})])
-
-    def test_resume_reattaches_then_sends_one_message_that_runs(self):
-        with mock.patch("agent_run.http", return_value={"id": "c1"}) as http:
-            self.assertEqual(agent_run.start_conversation({"x": 1}, True), "c1")
-        self.assertEqual(len(http.call_args_list), 2)
-        self.assertEqual(http.call_args_list[0], mock.call("POST", "/api/conversations", {"x": 1}))
-        method, path, body = http.call_args_list[1].args
-        self.assertEqual((method, path), ("POST", "/api/conversations/c1/events"))
-        self.assertEqual(body["role"], "user")
-        self.assertTrue(body["run"])
-        self.assertEqual(body["content"], [{"type": "text", "text": agent_run.RESUME_MESSAGE}])
-
-
 class MainResumeTest(unittest.TestCase):
     def _main(self, persisted):
         with tempfile.TemporaryDirectory() as d:
@@ -206,24 +188,27 @@ class MainResumeTest(unittest.TestCase):
                     mock.patch("agent_run.wait_ready"), \
                     mock.patch("agent_run.persisted", return_value=persisted), \
                     mock.patch("agent_run.clone", return_value=False) as clone, \
-                    mock.patch("agent_run.build_request", return_value={}), \
-                    mock.patch("agent_run.start_conversation", return_value="c1") as start, \
+                    mock.patch("agent_run.build_request", return_value={"x": 1}), \
+                    mock.patch("agent_run.http", return_value={"id": "c1"}) as http, \
                     mock.patch("agent_run.poll", return_value=0), \
                     mock.patch("agent_run.StepLog"), \
                     mock.patch("agent_run.stop", return_value="stopped"), \
                     mock.patch("agent_run.timed"):
                 self.assertEqual(agent_run.main(), 0)
-        return clone, start
+        return clone, http
 
-    def test_a_resumed_run_skips_the_clone(self):
-        clone, start = self._main(True)
+    def test_a_resumed_run_skips_the_clone_and_sends_nothing_but_the_start(self):
+        # The conversation waits on a call's approval: a message would reject that call
+        # (SDK local_conversation.py, "Superseded by a new user message") and a bare run would
+        # execute it unconfirmed. The bridge answers it from the room's decision.
+        clone, http = self._main(True)
         clone.assert_not_called()
-        start.assert_called_once_with({}, True)
+        self.assertEqual(http.call_args_list, [mock.call("POST", "/api/conversations", {"x": 1})])
 
     def test_a_first_start_clones(self):
-        clone, start = self._main(False)
+        clone, http = self._main(False)
         clone.assert_called_once()
-        start.assert_called_once_with({}, False)
+        self.assertEqual(http.call_args_list, [mock.call("POST", "/api/conversations", {"x": 1})])
 
 
 class OutcomeTest(unittest.TestCase):

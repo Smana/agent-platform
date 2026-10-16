@@ -31,8 +31,6 @@ REPO_DIR = "/workspace/repo"
 # in workspace/conversations/<uuid.hex>, relative to its cwd "/" (config.py conversations_path).
 KEY_FILE = "/workspace/.oh-key"
 CONVERSATIONS_DIR = "/workspace/conversations"
-RESUME_MESSAGE = ("The run was suspended while it waited for a human, and has now resumed. "
-                  "Continue the task from where you stopped.")
 # agent-server's start-up hook (F29, see site/sitecustomize.py), beside this file in /opt/agent.
 SITE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "site")
 TERMINAL_OK = {"finished"}
@@ -777,17 +775,6 @@ def persisted(env: dict, root: str = CONVERSATIONS_DIR) -> bool:
     return os.path.isfile(os.path.join(root, cid.hex, "base_state.json"))
 
 
-def start_conversation(request: dict, resuming: bool) -> str:
-    """Starts the conversation, or reattaches the persisted one: agent-server answers a start with
-    an existing id with the stored conversation and ignores the request's initial message. A
-    resumed run then gets one message, which also runs it."""
-    cid = http("POST", "/api/conversations", request)["id"]
-    if resuming:
-        http("POST", "/api/conversations/%s/events" % cid,
-             {"role": "user", "content": [{"type": "text", "text": RESUME_MESSAGE}], "run": True})
-    return cid
-
-
 def server_env(env: dict) -> dict:
     """agent-server's environment, with an OH_SECRET_KEY made for this pod when unset.
 
@@ -816,12 +803,14 @@ def main() -> int:
     cid, steps, code, signalled, read = None, None, None, False, False
     try:
         wait_ready()
-        # A resumed suspendable run finds its clone and its conversation on its PVC.
-        resuming = persisted(env)
-        resumed = resuming or clone(env)
+        # A resumed suspendable run finds its clone and its conversation on its PVC. The same start
+        # request reattaches the stored conversation and starts nothing. agent-run sends it nothing
+        # either: it waits on a call's approval, a new message would reject that call, and a bare
+        # run would execute it unconfirmed. The bridge answers it from the room's decision.
+        resumed = persisted(env) or clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             request = build_request(env, t.read(), r.read(), span)
-        cid = start_conversation(request, resuming)
+        cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)
