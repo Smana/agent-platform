@@ -326,6 +326,38 @@ func (g *GitHub) AgentPulls(ctx context.Context) ([]AgentPull, error) {
 	return out, nil
 }
 
+// PullsWithLabel lists the newest 100 pull requests carrying label, by creation, in every state.
+// The breaker reads a window of 10 merges, so a class's 100 newest labelled ones hold it.
+func (g *GitHub) PullsWithLabel(ctx context.Context, label string) ([]LabelledPull, error) {
+	var q struct {
+		Repository struct {
+			PullRequests struct {
+				Nodes []struct {
+					Number   int
+					State    string
+					MergedAt *githubv4.DateTime
+				}
+			} `graphql:"pullRequests(labels: $labels, first: 100, orderBy: {field: CREATED_AT, direction: DESC})"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	vars := map[string]any{"owner": githubv4.String(g.owner), "name": githubv4.String(g.name),
+		"labels": []githubv4.String{githubv4.String(label)}}
+	err := g.v4.Query(ctx, &q, vars)
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list labelled pull requests", err)
+	}
+	out := make([]LabelledPull, 0, len(q.Repository.PullRequests.Nodes))
+	for _, p := range q.Repository.PullRequests.Nodes {
+		lp := LabelledPull{Number: p.Number, State: p.State}
+		if p.MergedAt != nil {
+			lp.MergedAt = p.MergedAt.Time
+		}
+		out = append(out, lp)
+	}
+	return out, nil
+}
+
 // actor is GraphQL's Actor interface. A bot's login has no "[bot]" there; REST has it.
 type actor struct {
 	Typename string `graphql:"__typename"`
@@ -410,6 +442,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				HeadRefOid       string
 				Author           *actor
 				MergedBy         *actor
+				MergedAt         *githubv4.DateTime
 				MergeCommit      *struct{ Oid string }
 				AutoMergeRequest *struct{ EnabledAt githubv4.DateTime }
 				Labels           struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 30)"`
@@ -463,6 +496,9 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
 	if p.MergeCommit != nil {
 		out.MergeCommitSHA = p.MergeCommit.Oid
+	}
+	if p.MergedAt != nil {
+		out.MergedAt = p.MergedAt.Time
 	}
 	for _, l := range p.Labels.Nodes {
 		out.Labels = append(out.Labels, l.Name)

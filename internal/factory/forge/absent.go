@@ -44,3 +44,11 @@ func (Absent) DisableAutoMerge(context.Context, string) error { return ErrNoMerg
 func (Absent) RevertPR(context.Context, string, string, string) (Revert, error) {
 	return Revert{}, ErrNoMerger
 }
+
+// AddLabels implements the Merger's AddLabels and fails closed.
+func (Absent) AddLabels(context.Context, int, ...string) error { return ErrNoMerger }
+
+// PullsWithLabel implements the Merger's PullsWithLabel and fails closed.
+func (Absent) PullsWithLabel(context.Context, string) ([]LabelledPull, error) {
+	return nil, ErrNoMerger
+}

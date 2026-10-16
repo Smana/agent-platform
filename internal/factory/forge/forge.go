@@ -115,6 +115,7 @@ type PR struct {
 	// The head commit's committer date: set by whoever committed, so a claim like Trailer's.
 	HeadCommittedAt time.Time
 	MergedBy        string
+	MergedAt        time.Time // zero while unmerged
 	MergeCommitSHA  string
 	AutoMerge       bool
 	Labels          []string
@@ -209,6 +210,14 @@ type Revert struct {
 	NodeID string
 }
 
+// LabelledPull is one pull request carrying a label, as the merge breaker's ledger reads it
+// (v2 D1): its state and, once merged, when.
+type LabelledPull struct {
+	Number   int
+	State    string // OPEN | CLOSED | MERGED
+	MergedAt time.Time
+}
+
 // PRSummary is one open pull request: enough to find the live ones without reading each in full.
 type PRSummary struct {
 	Number  int
@@ -238,6 +247,12 @@ type Merger interface {
 	EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error
 	DisableAutoMerge(ctx context.Context, nodeID string) error
 	RevertPR(ctx context.Context, nodeID, title, body string) (Revert, error)
+	// AddLabels and PullsWithLabel are the merge breaker's ledger on GitHub (v2 D1): the merger
+	// labels what it merged and the reverts it opened, so the breaker's state survives a rebuild
+	// that loses every Task, and only the merger's key writes it. It needs issues: write, GitHub's
+	// permission for a pull request's labels.
+	AddLabels(ctx context.Context, number int, labels ...string) error
+	PullsWithLabel(ctx context.Context, label string) ([]LabelledPull, error)
 }
 
 var _ Merger = (*GitHub)(nil)

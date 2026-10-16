@@ -364,9 +364,11 @@ func Armed(t *v1alpha1.Task) Event {
 		"a moved one. main's CI is watched after the merge.", t.Name, t.Spec.PredictedClass)}
 }
 
-// WouldArm is the shadow gate's record (R32): the same decision as Armed, and nothing armed.
-func WouldArm(t *v1alpha1.Task, class string) Event {
-	return Event{Key: "would-arm-" + fmt.Sprint(len(t.Status.Runs)), Body: fmt.Sprintf("Agent factory task `%s`: "+
+// WouldArm is the shadow gate's record (R32): the same decision as Armed, and nothing armed. Its
+// key, and so its marker, carries the head it judged (v2 D2): a maintainer's later merge at that
+// head is a merge of what the gate would have merged, and a new head is a new decision.
+func WouldArm(t *v1alpha1.Task, class, head string) Event {
+	return Event{Key: fmt.Sprintf("would-arm-%d head=%s", len(t.Status.Runs), head), Body: fmt.Sprintf("Agent factory task `%s`: "+
 		"would auto-merge: `%s`, checks green, verdict approve. The merge gate is in shadow until the "+
 		"merge wave, so nothing is armed: a maintainer merges or closes this pull request.", t.Name, class)}
 }

@@ -297,7 +297,7 @@ func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (f
 	}
 	return forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
 		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.Merge.CheckReruns > 0)})
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.Merge.CheckReruns > 0, cfg.AnyLive())})
 }
 
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface

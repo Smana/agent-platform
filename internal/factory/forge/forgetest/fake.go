@@ -52,6 +52,7 @@ type Fake struct {
 	disarmed     []string
 	reverts      []string
 	refused      map[string]error
+	labelErr     error
 	calls        []string
 	nextID       int64
 }
@@ -180,16 +181,21 @@ func (f *Fake) Issue(_ context.Context, n int) (forge.Issue, error) {
 	return i, nil
 }
 
+// now is Now's reading, time.Now's when Now is nil.
+func (f *Fake) now() time.Time {
+	if f.Now != nil {
+		return f.Now()
+	}
+	return time.Now()
+}
+
 // Comment implements the forge's Comment, as the factory App.
 func (f *Fake) Comment(_ context.Context, n int, body string) error {
-	now := time.Now
-	if f.Now != nil {
-		now = f.Now
-	}
+	now := f.now()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	f.comments[n] = append(f.comments[n], forge.Comment{ID: f.nextID, Author: "ogenki-agent-factory[bot]", Body: body, At: now()})
+	f.comments[n] = append(f.comments[n], forge.Comment{ID: f.nextID, Author: "ogenki-agent-factory[bot]", Body: body, At: now})
 	return nil
 }
 
@@ -207,6 +213,10 @@ func (f *Fake) AddLabels(_ context.Context, n int, labels ...string) error {
 	defer f.mu.Unlock()
 	f.added[n] = append(f.added[n], labels...)
 	f.calls = append(f.calls, fmt.Sprintf("add-labels %d %s", n, strings.Join(labels, ",")))
+	if p, ok := f.prs[n]; ok {
+		p.Labels = append(slices.Clone(p.Labels), labels...)
+		f.prs[n] = p
+	}
 	for i := range f.agentPulls {
 		if f.agentPulls[i].Number == n {
 			f.agentPulls[i].Labels = append(f.agentPulls[i].Labels, labels...)
@@ -448,7 +458,7 @@ func (f *Fake) Merge(_ context.Context, nodeID, head string) error {
 		if p.HeadSHA != head {
 			return fmt.Errorf("forge: fake: %w: %s is at %s, not %s", forge.ErrHeadMoved, nodeID, p.HeadSHA, head)
 		}
-		p.State, p.MergeCommitSHA, p.MergedBy = "MERGED", head, "ogenki-agent-merger[bot]"
+		p.State, p.MergeCommitSHA, p.MergedBy, p.MergedAt = "MERGED", head, "ogenki-agent-merger[bot]", f.now()
 		f.prs[n] = p
 		break
 	}
@@ -518,6 +528,31 @@ func (f *Fake) RevertPR(_ context.Context, nodeID, title, _ string) (forge.Rever
 	defer f.mu.Unlock()
 	f.reverts = append(f.reverts, nodeID+" "+title)
 	return forge.Revert{Number: 900 + len(f.reverts), URL: "https://github.com/Smana/cloud-native-ref/pull/901", NodeID: "PR_revert"}, nil
+}
+
+// FailLabelReads makes PullsWithLabel answer err; nil clears it.
+func (f *Fake) FailLabelReads(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.labelErr = err
+}
+
+// PullsWithLabel implements the Merger's PullsWithLabel over the stored pull requests, newest
+// number first.
+func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.LabelledPull, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.labelErr != nil {
+		return nil, f.labelErr
+	}
+	var out []forge.LabelledPull
+	for _, n := range slices.Sorted(maps.Keys(f.prs)) {
+		if p := f.prs[n]; slices.Contains(p.Labels, label) {
+			out = append(out, forge.LabelledPull{Number: n, State: p.State, MergedAt: p.MergedAt})
+		}
+	}
+	slices.Reverse(out)
+	return out, nil
 }
 
 // OpenPullRequests implements the forge's OpenPullRequests.

@@ -217,6 +217,7 @@ absent rather than 0.
 | `agent_factory_budget_remaining_tokens` | gauge | `principal` | Tokens the principal has left today |
 | `agent_factory_budget_cap_tokens` | gauge | `principal` | The principal's daily token cap |
 | `agent_factory_human_interventions_total` | counter | `kind` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
+| `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
 | `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
 | `agent_factory_intake_errors_total` | counter | `source` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |

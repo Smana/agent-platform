@@ -127,6 +127,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.BudgetCap(ctx, "system:factory", 25_000_000)
 	s.Intervention(ctx, "stop")
 	s.ClassMismatch(ctx, "docs-links", "review")
+	s.MergeDecision(ctx, "docs-links", "shadow", "shadow_would_arm")
 	s.TierFit(ctx, "static", "standard", "fit", false)
 	s.IntakeError(ctx, "issue")
 	s.LabelEventsTruncated(ctx, "factory/ready")
@@ -154,6 +155,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_human_interventions_total{kind="stop"} 1`,
 		`agent_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`agent_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
+		`agent_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",verdict="shadow"} 1`,
 		`agent_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
 		`agent_factory_intake_errors_total{source="issue"} 1`,
 		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
