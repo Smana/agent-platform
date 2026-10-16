@@ -77,9 +77,13 @@ type IssuePoller struct {
 	// repository. A maintainers entry drifts from GitHub silently; this does not. nil starts
 	// nothing: a label is never trusted on the list alone.
 	CanWrite func(ctx context.Context, login string) (bool, error)
-	Stopped  func(context.Context) bool
-	Errors   errorCounter
-	Log      *slog.Logger
+	// Owned is v2 D7's fence: whether the repository's default branch names this factory. Not
+	// owned, the poller still honours stops and the control issue, and starts nothing; nil owns
+	// nothing.
+	Owned   func(repository string) bool
+	Stopped func(context.Context) bool
+	Errors  errorCounter
+	Log     *slog.Logger
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// Sanitize is the snapshot's sanitiser; nil means sanitize.Text. A test forces a withheld text.
@@ -181,6 +185,9 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 	}
 	if err := p.stops(ctx); err != nil {
 		return errors.Join(publishErr, err)
+	}
+	if p.Owned == nil || !p.Owned(p.repo().Name) {
+		return publishErr // another factory's, or nobody's: its labels wait for the owner (v2 D7)
 	}
 	if err := p.reverts(ctx); err != nil {
 		return errors.Join(publishErr, err)

@@ -96,23 +96,26 @@ type Config struct {
 	Merge        Merge            `json:"merge,omitzero"`
 	Schedules    []Schedule       `json:"schedules,omitempty"`
 
-	FactoryLogin string              `json:"factoryLogin"`
-	AgentsLogin  string              `json:"agentsLogin"`
-	RoomsURL     string              `json:"roomsURL"`
-	Broker       Broker              `json:"broker"`
-	GitHub       GitHub              `json:"github"`
-	Poll         Poll                `json:"poll"`
-	Defaults     Defaults            `json:"defaults"`
-	Triage       Triage              `json:"triage"`
-	Tiers        map[string]Tier     `json:"tiers"`
-	Templates    map[string]Template `json:"templates"`
-	Caps         Caps                `json:"caps"`
-	Budgets      Budgets             `json:"budgets"`
-	Resume       Resume              `json:"resume"`
-	Meter        Meter               `json:"meter"`
-	Tracing      Tracing             `json:"tracing"`
-	API          API                 `json:"api"`
-	RunLore      RunLore             `json:"runlore"`
+	FactoryLogin string `json:"factoryLogin"`
+	AgentsLogin  string `json:"agentsLogin"`
+	// Factory is this factory's name (v2 D7): a repository is acted on only when its default
+	// branch's .github/agent-factory.yaml gives this name. A DNS label, e.g. the cluster's, aws-0.
+	Factory   string              `json:"factory"`
+	RoomsURL  string              `json:"roomsURL"`
+	Broker    Broker              `json:"broker"`
+	GitHub    GitHub              `json:"github"`
+	Poll      Poll                `json:"poll"`
+	Defaults  Defaults            `json:"defaults"`
+	Triage    Triage              `json:"triage"`
+	Tiers     map[string]Tier     `json:"tiers"`
+	Templates map[string]Template `json:"templates"`
+	Caps      Caps                `json:"caps"`
+	Budgets   Budgets             `json:"budgets"`
+	Resume    Resume              `json:"resume"`
+	Meter     Meter               `json:"meter"`
+	Tracing   Tracing             `json:"tracing"`
+	API       API                 `json:"api"`
+	RunLore   RunLore             `json:"runlore"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -482,6 +485,8 @@ var (
 	hostPortRE  = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?:[0-9]{1,5}$`)
 	hostRE      = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`) // a DNS name, an optional port
 	schedNameRE = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	// factoryRE is the fence package's name syntax: a DNS label.
+	factoryRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
@@ -637,6 +642,12 @@ func (c *Config) Validate() error {
 			seenRepo[k] = true
 		}
 		c.validateRepository(&rs[i], seenSchedule, bad)
+	}
+	switch {
+	case c.Factory == "":
+		bad("factory is required: the name repositories' .github/agent-factory.yaml give this factory (v2 D7)")
+	case !factoryRE.MatchString(c.Factory):
+		bad("factory %q is not a DNS label", c.Factory)
 	}
 	if ctl := c.ControlFor(); ctl.Issue < 0 {
 		bad("control.issue must be 0 or more")

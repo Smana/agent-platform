@@ -80,6 +80,15 @@ func (c *repoConns) schedule(name string) (intake.ScheduleForge, intake.Schedule
 	return rc.gh, rc.merger, ok
 }
 
+// fenceFile reads repository's fence file through its factory App (contents: read).
+func (c *repoConns) fenceFile(ctx context.Context, repository string) ([]byte, bool, error) {
+	rc, ok := c.get(repository)
+	if !ok {
+		return nil, false, fmt.Errorf("no GitHub connection for %s", repository)
+	}
+	return rc.gh.FenceFile(ctx)
+}
+
 // ping keeps every installation token warm; the first failure is the answer.
 func (c *repoConns) ping(ctx context.Context) error {
 	var errs []error

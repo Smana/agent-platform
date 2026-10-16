@@ -159,6 +159,9 @@ func TestDecideArm(t *testing.T) {
 	}{
 		"all conditions": {ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""),
 			ReportedHead: head, Files: changed("[x](old.md)", "[x](new.md)")}, "arm", "", "docs-links"},
+		// v2 D7: every other condition holds, but the fence names another factory: a human merges.
+		"not this factory's repository": {ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""),
+			ReportedHead: head, Files: changed("[x](old.md)", "[x](new.md)"), NotOwned: true}, "human", "not_owned", ""},
 		"CI red":                   {ArmInputs{PR: agentPR(), Checks: red, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
 		"CI errored":               {ArmInputs{PR: agentPR(), Checks: errored, Task: armTask("docs-links", "solo", "")}, "ci_red", "ci_red", ""},
 		"CI still running":         {ArmInputs{PR: agentPR(), Checks: pending, Task: armTask("docs-links", "solo", "")}, "wait", "ci_pending", ""},

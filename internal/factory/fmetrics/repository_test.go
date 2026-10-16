@@ -45,3 +45,29 @@ func TestTheRepositoryLabelIsBoundedByTheList(t *testing.T) {
 		t.Fatal("a label value outside the list")
 	}
 }
+
+// v2 D7 and the admission paths: one gauge per listed repository, and refusals counted by
+// repository and reason; a reason outside the repository codes is not counted here.
+func TestOwnershipAndAdmissionRefusals(t *testing.T) {
+	s, scrape := rig(t, nil, func() bool { return true })
+	s.ListRepositories("Smana/a", "Smana/b")
+	s.RepositoryOwned(t.Context(), "Smana/a", true)
+	s.RepositoryOwned(t.Context(), "smana/b", false)
+	s.AdmissionRefused(WithRepository(t.Context(), "Smana/b"), "repository_not_owned")
+	s.AdmissionRefused(WithRepository(t.Context(), "Smana/a"), "repository_permission")
+	s.AdmissionRefused(WithRepository(t.Context(), "Smana/a"), "room_busy")
+	out := scrape()
+	for _, want := range []string{
+		`agent_factory_repository_owned{repository="Smana/a"} 1`,
+		`agent_factory_repository_owned{repository="Smana/b"} 0`,
+		`agent_factory_admission_refusals_total{reason="repository_not_owned",repository="Smana/b"} 1`,
+		`agent_factory_admission_refusals_total{reason="repository_permission",repository="Smana/a"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(out, "room_busy") {
+		t.Fatal("only the repository refusals are counted")
+	}
+}

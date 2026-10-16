@@ -18,7 +18,6 @@ import (
 
 	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/tracing"
@@ -160,21 +159,4 @@ func TestTaskSink(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	shutdown(ctx)
-}
-
-// Until the ownership fence (v2 D7) lands, a second entry is refused at start: nothing yet stops
-// two clusters from taking the same repository.
-func TestOneRepositoryUntilFenced(t *testing.T) {
-	for name, c := range map[string]*config.Config{
-		"one entry":    {Repositories: []config.Repository{{Name: "Smana/a"}}},
-		"legacy shape": {Repository: "Smana/cloud-native-ref"},
-	} {
-		if err := oneRepositoryUntilFenced(c); err != nil {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	two := &config.Config{Repositories: []config.Repository{{Name: "Smana/a"}, {Name: "Smana/b"}}}
-	if err := oneRepositoryUntilFenced(two); err == nil || !strings.Contains(err.Error(), "serves exactly one") {
-		t.Fatalf("two entries are refused at start: %v", err)
-	}
 }

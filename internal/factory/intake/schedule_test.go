@@ -45,7 +45,7 @@ func schedulerCfg() *config.Config {
 func scheduler(f *forgetest.Fake, c *fake.ClientBuilder, stopped func(context.Context) bool,
 	now time.Time, cfg *config.Config) *Scheduler {
 	return &Scheduler{Forge: f, Merger: f, Client: c.Build(), Namespace: "agent-system", Now: func() time.Time { return now },
-		Stopped: stopped, Errors: &counter{}, Cfg: cfg}
+		Stopped: stopped, Errors: &counter{}, Cfg: cfg, Owned: func(string) bool { return true }}
 }
 
 func TestSchedulerCreatesOneTaskPerSlot(t *testing.T) {

@@ -109,6 +109,8 @@ type fakeGitHub struct {
 	// perms records each minted body's scope, in order, so a test can pin it per connection.
 	wantPerms map[string]string
 	perms     []map[string]string
+	// fence is .github/agent-factory.yaml on the default branch: "" is absent, "!" a 500.
+	fence string
 }
 
 func (g *fakeGitHub) setWantPerms(p map[string]string) {
@@ -438,6 +440,19 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "a.md", "path": p, "type": "file",
 				"encoding": "base64", "size": len(text), "content": base64.StdEncoding.EncodeToString([]byte(text))})
+		case p == ".github/agent-factory.yaml" && ref == "":
+			g.mu.Lock()
+			body := g.fence
+			g.mu.Unlock()
+			switch body {
+			case "":
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			case "!":
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "agent-factory.yaml", "path": p, "type": "file",
+					"encoding": "base64", "size": len(body), "content": base64.StdEncoding.EncodeToString([]byte(body))})
+			}
 		case p == "docs/big.png":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "big.png", "path": p, "type": "file", "size": 2_000_000})
 		default:
@@ -1236,5 +1251,25 @@ func TestUserLoginReadsTheCurrentLogin(t *testing.T) {
 	}
 	if r.g.Repository() != "Smana/demo" {
 		t.Fatal(r.g.Repository())
+	}
+}
+
+// v2 D7: the fence file on the default branch; absent is an answer, a failure is not.
+func TestFenceFileReadsTheDefaultBranch(t *testing.T) {
+	r := newRig(t)
+	if body, found, err := r.g.FenceFile(t.Context()); found || err != nil || len(body) != 0 {
+		t.Fatalf("absent: %q %v %v", body, found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.fence = "factory: aws-0\n"
+	r.gh.mu.Unlock()
+	if body, found, err := r.g.FenceFile(t.Context()); !found || err != nil || string(body) != "factory: aws-0\n" {
+		t.Fatalf("present: %q %v %v", body, found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.fence = "!"
+	r.gh.mu.Unlock()
+	if _, _, err := r.g.FenceFile(t.Context()); err == nil {
+		t.Fatal("a failed read is an error")
 	}
 }

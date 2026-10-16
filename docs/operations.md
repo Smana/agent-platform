@@ -208,19 +208,19 @@ absent rather than 0.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `agent_factory_build_info` | gauge | `version` | Always 1; carries the running version |
-| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier` | Tasks by state |
+| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier`, `repository` | Tasks by state |
 | `agent_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
 | `agent_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
-| `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template` | From intake to the pull request opening |
-| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome` | `auto_merged`, `human_merged`, `closed`, `reverted` |
-| `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class` | Tokens per finished task |
+| `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
+| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository` | `auto_merged`, `human_merged`, `closed`, `reverted` |
+| `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
 | `agent_factory_budget_remaining_tokens` | gauge | `principal` | Tokens the principal has left today |
 | `agent_factory_budget_cap_tokens` | gauge | `principal` | The principal's daily token cap |
-| `agent_factory_human_interventions_total` | counter | `kind` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
+| `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
 | `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
 | `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
-| `agent_factory_intake_errors_total` | counter | `source` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
+| `agent_factory_intake_errors_total` | counter | `source`, `repository` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
 | `agent_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
 | `agent_factory_run_revocations_total` | counter | `reason`, `limit` | Runs the factory revoked; `limit` when the run meter did it (below) |
 | `agent_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
@@ -234,8 +234,10 @@ absent rather than 0.
 | `agent_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |
 | `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
 | `agent_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
+| `agent_factory_repository_owned` | gauge | `repository` | 1 while the repository's `.github/agent-factory.yaml` names this factory (`factory` in the config), per replica; 0 means no intake, schedules, API runs or merges there |
+| `agent_factory_admission_refusals_total` | counter | `repository`, `reason` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned` |
 
-A label value outside its known set is recorded as `other`.
+A label value outside its known set is recorded as `other`; `repository` takes only the configured repositories' names.
 
 ### Factory alerts
 

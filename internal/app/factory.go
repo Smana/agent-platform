@@ -34,6 +34,7 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fence"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/intake"
@@ -63,6 +64,10 @@ const (
 	pingEvery = time.Minute
 	// traceDrain bounds the span exporter's flush at exit, inside the pod's grace.
 	traceDrain = 2 * time.Second
+	// fenceEvery is how often each repository's fence file is read (v2 D7); fenceStale how long a
+	// failed read keeps the last answer before the repository counts as not owned.
+	fenceEvery = 5 * time.Minute
+	fenceStale = 15 * time.Minute
 )
 
 // RunFactory runs agent-factory (SP3): the Task reconciler, the issue poller, the run meter
@@ -97,9 +102,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return err
-	}
-	if err := oneRepositoryUntilFenced(cfg); err != nil {
 		return err
 	}
 	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version)
@@ -138,6 +140,9 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	m.ListRepositories(conns.names()...)
+	// v2 D7: a repository is acted on only while its default branch names this factory.
+	fenced := &fence.Fence{Name: cfg.Factory, Repositories: conns.names(), Read: conns.fenceFile,
+		Every: fenceEvery, Stale: fenceStale, Now: time.Now, OnState: m.RepositoryOwned, Log: log}
 	costs := &meter.Costs{} // the meter writes each run's cost, the reconciler sums a task's
 	runUSD := map[string]float64{}
 	for name, t := range cfg.Tiers {
@@ -155,7 +160,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	rc := runs.Client{C: mgr.GetClient()}
-	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Clients: conns.task,
+	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Clients: conns.task, Owned: fenced.Owned,
 		Runs: rc, Rooms: broker,
 		Triage: triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)},
 			Clients: conns.class},
@@ -194,7 +199,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
-		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: conns.access(log, cfg, perms)}
+		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: conns.access(log, cfg, perms), Owned: fenced.Owned}
 	runlore, ok := conns.get(cfg.RunLoreRepository())
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
@@ -204,15 +209,15 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		c, _ := conns.get(rp.Name)
 		name := rp.Name
 		runnables = append(runnables, &intake.IssuePoller{Forge: c.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
-			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped,
+			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped, Owned: fenced.Owned,
 			CanWrite: func(ctx context.Context, login string) (bool, error) { return perms.CanWrite(ctx, name, login) }})
 	}
 	for _, r := range append(runnables,
-		&intake.Scheduler{Clients: conns.schedule, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+		&intake.Scheduler{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
 		// so the ExternalSecret's rotations need no restart (AGENTS.md).
-		&intake.RunLore{Forge: runlore.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+		&intake.RunLore{Forge: runlore.gh, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Token: func() string {
 				b, _ := os.ReadFile(filepath.Clean(cfg.RunLore.TokenFile))
 				return strings.TrimSpace(string(b))
@@ -238,7 +243,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 					m.Revoked(ctx, "manual")
 				}
 			}, Log: log},
-		apiSrv,
+		apiSrv, fenced,
 		&pinger{ping: conns.ping, every: pingEvery, up: func() bool { return conns.healthy(time.Now()) }, record: m.GitHubUp},
 	) {
 		if err := mgr.Add(r); err != nil {
@@ -280,16 +285,6 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	err = g.Wait()
 	stopOps()
 	return errors.Join(err, <-opsDone)
-}
-
-// oneRepositoryUntilFenced refuses a second entry until the ownership fence (v2 D7) lands: the
-// connections and the admission binding (D3-D6, D8) are per repository, but nothing yet stops two
-// clusters from taking the same repository's issues.
-func oneRepositoryUntilFenced(cfg *config.Config) error {
-	if n := len(cfg.Repos()); n != 1 {
-		return fmt.Errorf("config lists %d repositories: this release serves exactly one (v2 second-repository design, PR 3)", n)
-	}
-	return nil
 }
 
 // connectMerger connects the merger App, or answers the fail-closed forge.Absent when its key

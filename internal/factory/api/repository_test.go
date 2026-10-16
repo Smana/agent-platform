@@ -233,3 +233,20 @@ func TestTheRepositoryIsSpelledAsListed(t *testing.T) {
 	st := &store{}
 	refusedWith(t, post(twoRepos(t, st, nil), "alice", on("smana/AI-native-ref", nil)), http.StatusForbidden, "repository_not_allowed", st)
 }
+
+// v2 D7: a repository whose fence file does not name this factory starts no API run, whoever asks.
+func TestARepositoryNotOwnedStartsNoRun(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(scheme()).Build()
+	st := &store{}
+	s := mkServer(t, st, c, false, false, "7f3cq2xz", 5_000_000)
+	s.Cfg.API.Repositories = []string{repoA, repoB}
+	s.Access = writers{can: map[string][]string{"human:291": {repoA, repoB}}}
+	s.Owned = func(r string) bool { return r == repoA }
+	refusedWith(t, post(s.Handler(), "alice", on(repoB, nil)), http.StatusConflict, "repository_not_owned", st)
+	if w := post(s.Handler(), "alice", on(repoA, nil)); w.Code != http.StatusCreated {
+		t.Fatalf("an owned repository admits: %d %s", w.Code, w.Body)
+	}
+	s.Owned = nil // fail closed: no fence, no repository
+	st.created = nil
+	refusedWith(t, post(s.Handler(), "alice", on(repoA, nil)), http.StatusConflict, "repository_not_owned", st)
+}
