@@ -251,7 +251,9 @@ another on one branch, and only the implementer writes. `templates.<name>.roles`
 
 A template whose only role is `triager` proposes and never writes: its proposal stays in the room
 until a maintainer publishes it as a new issue. The reviewer runs on the other tier than the
-implementer: `standard` after `frontier`, `frontier` otherwise.
+implementer: `standard` after `frontier`, `frontier` otherwise. It takes that tier's caps and, unless
+the template sets `reviewerModel`, its model: `pair: {roles: [implementer, reviewer], reviewerModel:
+tier-frontier}` reviews every `pair` task on `tier-frontier` whatever the implementer's tier.
 
 A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
 a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`
@@ -464,7 +466,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `defaults` | `template`, `tier`, `dataClass`, `predictedClass` | Required |
 | `triage` | `classifierURL`, `controlPercent` (0–100) | Required |
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
-| `templates` | `<name>: {roles, maxReviewRounds}`; every template but a lone `triager` has an `implementer` | Required |
+| `templates` | `<name>: {roles, maxReviewRounds, reviewerModel}`; every template but a lone `triager` has an `implementer`; `reviewerModel` (a gateway logical name) needs a `reviewer` role | Required; `reviewerModel` unset: the other tier's model |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
 | `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000 |
 | `resume` | `maxPerTask` (1–5) | 2 |

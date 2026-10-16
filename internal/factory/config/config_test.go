@@ -551,3 +551,14 @@ func TestValidateNamesAMissingDeploymentFact(t *testing.T) {
 		})
 	}
 }
+
+// A reviewer's model is chosen per template, apart from the tiers (default: the other tier's).
+func TestAReviewerModelParses(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(good, "maxReviewRounds: 2}\n  trio", "maxReviewRounds: 2, reviewerModel: tier-frontier}\n  trio", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Templates["pair"].ReviewerModel != "tier-frontier" || c.Templates["trio"].ReviewerModel != "" {
+		t.Fatalf("%+v", c.Templates)
+	}
+}
