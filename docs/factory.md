@@ -322,6 +322,33 @@ The breaker: a class whose newest `merge.breaker.window` merges hold `merge.brea
 reverts goes back to human review, whatever the config. Maintainers' merges of that class refill
 the window, so clean ones lift it. Each revert is announced on the control issue.
 
+The breaker and the daily cap read their merges from the Tasks and from GitHub, so a rebuild that
+loses every Task keeps a demoted class demoted. The merger App labels what it merged
+`factory/auto-merged:<class>` and its revert pull request `factory/revert-of:#<n>`. The factory
+reads those labels at its first decision and keeps them for the process's life. Until that read
+succeeds, the gate decides nothing. Only auto-merges carry a label, so maintainers' merges from
+before a rebuild do not refill the window: a demotion can only last longer. A failed label write
+is logged and retried while the factory still reads that pull request; it never holds up the
+merge or the revert. The labels need `issues: write` on the merger App, which the factory asks
+for only while a class is `live`.
+
+```mermaid
+flowchart LR
+  merged["merger App merges #n"] -->|"label factory/auto-merged:class"| gh[("GitHub labels")]
+  revert["revert PR of #n"] -->|"label factory/revert-of:#n"| gh
+  merged --> tasks[("Task CRs")]
+  revert --> tasks
+  gh -->|"read once, at the first decision"| breaker{"newest window merges<br/>hold maxReverts reverts?"}
+  tasks -->|"every decision"| breaker
+  breaker -->|yes| paused["class_paused"]
+  breaker -->|no| next["the daily cap, then live or shadow"]
+```
+
+A shadow decision's comment carries the head it judged (`event=would-arm-<n> head=<sha>`).
+`scripts/shadow-merge-tally.sh --class docs-links` counts the pull requests a maintainer then
+merged at that head: the gate's evidence that the class would have merged nothing a human would
+not. Comments from before the head was recorded never count.
+
 ## Escalation, reminders and stale tasks
 
 A maintainer's review reaches the next run once queued: the factory re-reads the pull request just

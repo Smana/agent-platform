@@ -23,6 +23,7 @@ task check      # exit 0, or it is not done
 | `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 | `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
 | `docs` | `hack/docs.sh` | a reader page with a per-row status tag, or a dead relative link or anchor |
+| `scripts` | `scripts/*_test.sh` | an operator script, such as `shadow-merge-tally.sh`, no longer reading GitHub's shapes as its test fakes them |
 | `ui:test` | `npm ci`, `tsc --noEmit`, `vitest run` in `web/` | a type error or a failing UI test |
 | `ui:check` | `web/`'s build into `internal/humanapi/ui/dist/` | a committed bundle that differs from what `web/` builds, or a built file not committed |
 

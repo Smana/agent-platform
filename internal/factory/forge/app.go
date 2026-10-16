@@ -44,11 +44,16 @@ func permissions() map[string]string {
 // calls read checks and statuses, write contents on the merger's own revert branches, and arm
 // and merge pull requests — and nothing else. Like the factory's, it is the App's ceiling: a
 // mint asking for more fails. rerun adds actions: write for RerunCheck: it is asked only when
-// merge.checkReruns is on, so an App that was not granted it keeps minting.
-func MergerPermissions(rerun bool) map[string]string {
+// merge.checkReruns is on, so an App that was not granted it keeps minting. label adds issues:
+// write for the breaker's labels (v2 D1), written only once a class is live: a shadow-only App
+// keeps minting without it, and still reads them (pull_requests covers the read).
+func MergerPermissions(rerun, label bool) map[string]string {
 	p := map[string]string{"checks": "read", "statuses": "read", "contents": "write", "pull_requests": "write", "metadata": "read"}
 	if rerun {
 		p["actions"] = "write"
+	}
+	if label {
+		p["issues"] = "write"
 	}
 	return p
 }

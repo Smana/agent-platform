@@ -13,6 +13,7 @@ tasks:
       - task: chart:check
       - task: migrations
       - task: docs
+      - task: scripts
       - task: ui:test
       - task: ui:check
 
@@ -36,6 +37,11 @@ tasks:
     cmds:
       - bash hack/docs_test.sh
       - bash hack/docs.sh
+
+  scripts:
+    desc: The operator scripts under scripts/, against fakes.
+    cmds:
+      - bash scripts/shadow-merge-tally_test.sh
 
   vuln:
     desc: Known vulnerabilities reachable from our code, the stdlib included.

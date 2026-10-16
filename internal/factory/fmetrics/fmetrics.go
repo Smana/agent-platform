@@ -77,6 +77,7 @@ type Set struct {
 	budgetCap       metric.Int64Gauge
 	interventions   metric.Int64Counter
 	classMismatch   metric.Int64Counter
+	mergeDecisions  metric.Int64Counter
 	tierFit         metric.Int64Counter
 	intakeErrors    metric.Int64Counter
 	eventsTruncated metric.Int64Counter
@@ -125,6 +126,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.classMismatch, err = meter.Int64Counter("agent_factory_class_mismatch_total",
 		metric.WithDescription("Predicted class versus the class policy-bot matched (§2)."))
+	check(err)
+	s.mergeDecisions, err = meter.Int64Counter("agent_factory_merge_decisions_total",
+		metric.WithDescription("The merge gate's decisions by class, verdict and reason (v2 D2); a wait is none."))
 	check(err)
 	s.tierFit, err = meter.Int64Counter("agent_factory_tier_fit_total",
 		metric.WithDescription("After-the-fact tier fit per classifier (§7, SC-10)."))
@@ -273,6 +277,13 @@ func (s *Set) Intervention(ctx context.Context, kind string) {
 func (s *Set) ClassMismatch(ctx context.Context, predicted, matched string) {
 	s.classMismatch.Add(ctx, 1, metric.WithAttributes(attribute.String("predicted", predicted),
 		attribute.String("matched", matched)))
+}
+
+// MergeDecision counts one decision of the merge gate (§5.1): arm, shadow, human, escalate,
+// ci_red or ci_cancelled, with its reason code.
+func (s *Set) MergeDecision(ctx context.Context, class, verdict, reason string) {
+	s.mergeDecisions.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("verdict", verdict), attribute.String("reason", reason)))
 }
 
 // TierFit counts a finished task's tier fit per classifier, OD-14's control group apart.

@@ -81,6 +81,7 @@ type metrics interface {
 	RunBudgetFallback(ctx context.Context, scope, why string)
 	TraceExportAbandoned(ctx context.Context)
 	ClassMismatch(ctx context.Context, predicted, matched string)
+	MergeDecision(ctx context.Context, class, verdict, reason string)
 	Resumed(ctx context.Context, reason string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 }
@@ -131,6 +132,7 @@ type Reconciler struct {
 	Costs costReader
 
 	oldBroker sync.Once // the broker serves no task route: said once per process
+	ledger    mergeLedger
 }
 
 // SetupWithManager watches Tasks and the AgentRuns that carry a task label.

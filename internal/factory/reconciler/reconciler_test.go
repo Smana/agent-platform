@@ -288,6 +288,9 @@ func (m *fakeMetrics) TraceExportAbandoned(context.Context) { m.add("trace_expor
 func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string) {
 	m.add("class_mismatch " + predicted + " " + matched)
 }
+func (m *fakeMetrics) MergeDecision(_ context.Context, class, verdict, reason string) {
+	m.add("merge_decision " + class + " " + verdict + " " + reason)
+}
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
 	m.add("room_closed_at_cap " + reason)

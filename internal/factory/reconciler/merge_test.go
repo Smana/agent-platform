@@ -326,19 +326,17 @@ func TestAMaintainersRevertAfterDone(t *testing.T) {
 // R41 (review G5): 1 revert among the last 10 merges demotes; 10 clean merges after it lift it.
 func TestRevertsAmongTheLastMergesDemoteTheClass(t *testing.T) {
 	b := config.Breaker{Window: 10, MaxReverts: 1}
-	at := func(i int, phase string) *v1alpha1.Task {
-		m := metav1.NewTime(now.Add(time.Duration(i) * time.Hour))
-		return &v1alpha1.Task{Status: v1alpha1.TaskStatus{Phase: phase, ConfigHash: strings.Repeat("h", i+1),
-			PullRequest: &v1alpha1.PullRequestRef{MergedAt: &m}}}
+	at := func(i int, reverted bool) Merge {
+		return Merge{Number: i + 1, At: now.Add(time.Duration(i) * time.Hour), Reverted: reverted}
 	}
-	merged := []*v1alpha1.Task{at(0, v1alpha1.PhaseReverted)}
+	merged := []Merge{at(0, true)}
 	for i := 1; i <= 9; i++ {
-		merged = append(merged, at(i, v1alpha1.PhaseDone))
+		merged = append(merged, at(i, false))
 	}
 	if d, n := Demoted(merged, b); !d || n != 1 {
-		t.Fatalf("1 revert in the last 10 merges demotes, whatever the config: %v %d", d, n)
+		t.Fatalf("1 revert in the last 10 merges demotes: %v %d", d, n)
 	}
-	if d, _ := Demoted(append(merged, at(10, v1alpha1.PhaseDone)), b); d {
+	if d, _ := Demoted(append(merged, at(10, false)), b); d {
 		t.Fatal("the revert left the window: 10 clean merges lift the demotion")
 	}
 }

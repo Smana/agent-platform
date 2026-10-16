@@ -68,6 +68,11 @@ const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
  {"number":33,"headRefName":"agent/gonesome","headRepository":null,
   "labels":{"nodes":[{"name":"factory/class:review"}]}}]}}}}`
 
+// The breaker's ledger read (v2 D1): pull requests carrying one label, newest first.
+const labelledJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
+ {"number":41,"state":"MERGED","mergedAt":"2026-10-15T09:00:00Z"},
+ {"number":40,"state":"OPEN","mergedAt":null}]}}}}`
+
 const eventsJSON = `[
  {"event":"labeled","label":{"name":"factory/ready"},"actor":{"login":"someone"},"created_at":"2026-09-27T09:00:00Z"},
  {"event":"labeled","label":{"name":"bug"},"actor":{"login":"Smana"},"created_at":"2026-09-27T09:01:00Z"},
@@ -197,6 +202,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			return
 		case strings.Contains(string(b), "disablePullRequestAutoMerge"):
 			_, _ = io.WriteString(w, `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		}
+		if strings.Contains(string(b), "pullRequests(labels: $labels") {
+			_, _ = io.WriteString(w, labelledJSON)
 			return
 		}
 		if strings.Contains(string(b), "pullRequests(") {
@@ -571,6 +580,21 @@ func TestAgentPullsAreTheOwnOnes(t *testing.T) {
 	}
 	if !ps[1].Fork || !ps[2].Fork {
 		t.Fatalf("a fork's and a deleted head's are marked: %+v %+v", ps[1], ps[2])
+	}
+}
+
+func TestPullsWithLabelReadsEveryStateWithItsMergeTime(t *testing.T) {
+	r := newRig(t)
+	ps, err := r.g.PullsWithLabel(t.Context(), "factory/auto-merged:docs-links")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []LabelledPull{{Number: 41, State: "MERGED", MergedAt: time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)}, {Number: 40, State: "OPEN"}}
+	if !slices.Equal(ps, want) {
+		t.Fatalf("%+v", ps)
+	}
+	if b := r.gh.graphqlBodies(); !strings.Contains(b[len(b)-1], `"labels":["factory/auto-merged:docs-links"]`) {
+		t.Fatalf("the label is a variable, never spliced into the query: %s", b[len(b)-1])
 	}
 }
 
@@ -1033,9 +1057,9 @@ func write(t *testing.T, s string) string {
 // refuses it (the fail-loud contract of app.go's permissions()).
 func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	r := newRig(t) // the factory connection: its mint pins the factory scope
-	r.gh.setWantPerms(MergerPermissions(false))
+	r.gh.setWantPerms(MergerPermissions(false, false))
 	o := r.opts
-	o.Permissions = MergerPermissions(false)
+	o.Permissions = MergerPermissions(false, false)
 	if _, err := Connect(t.Context(), o); err != nil {
 		t.Fatal(err)
 	}
@@ -1046,7 +1070,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 	if !maps.Equal(got[0], permissions()) {
 		t.Fatalf("the factory connection mints its App's scope: %v", got[0])
 	}
-	if !maps.Equal(got[1], MergerPermissions(false)) {
+	if !maps.Equal(got[1], MergerPermissions(false, false)) {
 		t.Fatalf("the merger connection mints the merger profile: %v", got[1])
 	}
 }
@@ -1054,7 +1078,7 @@ func TestEachConnectionMintsItsOwnScope(t *testing.T) {
 func TestATokenBeyondTheAppsScopeFailsToMint(t *testing.T) {
 	r := newRig(t)
 	o := r.opts
-	o.Permissions = MergerPermissions(false) // checks:read is beyond the factory App
+	o.Permissions = MergerPermissions(false, false) // checks:read is beyond the factory App
 	if _, err := Connect(t.Context(), o); err == nil || !strings.Contains(err.Error(), "mint an installation token") {
 		t.Fatalf("a token beyond the App's scope must fail the mint: %v", err)
 	}
@@ -1077,11 +1101,22 @@ func TestRerunCheckPostsTheJobRerun(t *testing.T) {
 }
 
 func TestMergerPermissionsAskForActionsOnlyToRerun(t *testing.T) {
-	if _, ok := MergerPermissions(false)["actions"]; ok {
+	if _, ok := MergerPermissions(false, false)["actions"]; ok {
 		t.Fatal("re-run off must not ask for actions")
 	}
-	if got := MergerPermissions(true)["actions"]; got != "write" {
+	if got := MergerPermissions(true, false)["actions"]; got != "write" {
 		t.Fatalf("actions: %q", got)
+	}
+}
+
+// v2 D1: the breaker's labels are written only once a class is live, so a shadow-only App that
+// was never granted issues: write keeps minting.
+func TestMergerPermissionsAskForIssuesOnlyToLabel(t *testing.T) {
+	if _, ok := MergerPermissions(false, false)["issues"]; ok {
+		t.Fatal("no live class must not ask for issues")
+	}
+	if got := MergerPermissions(false, true)["issues"]; got != "write" {
+		t.Fatalf("issues: %q", got)
 	}
 }
 

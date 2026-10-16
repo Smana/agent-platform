@@ -137,6 +137,16 @@ func (c *Config) NeedsMerger() bool {
 	return false
 }
 
+// AnyLive reports whether a class is live, so the merger App merges and labels (v2 D1).
+func (c *Config) AnyLive() bool {
+	for _, cl := range c.Classes {
+		if cl.Live {
+			return true
+		}
+	}
+	return false
+}
+
 // Poll is how often each loop runs.
 type Poll struct {
 	Issues Duration `json:"issues"`

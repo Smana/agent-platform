@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -110,6 +111,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr"}
 		}
 	}
+	if d.Verdict != "wait" {
+		class, verdict, reason := t.Spec.PredictedClass, d.Verdict, cmp.Or(d.Reason, "armed")
+		record(ctx, func(ctx context.Context) { r.Metrics.MergeDecision(ctx, class, verdict, reason) })
+	}
 	switch d.Verdict {
 	case "wait":
 		t.Status.Reason = d.Reason
@@ -139,7 +144,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
-		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched))
+		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
 		return nil
 	}
 	// The decided head, pinned: GitHub checks it at merge time, so a push that landed since the
@@ -538,6 +543,9 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 	class := t.Spec.PredictedClass
 	switch {
 	case pr.State == "MERGED":
+		if forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) {
+			r.label(ctx, pr, AutoMergedLabel(class))
+		}
 		now := metav1.NewTime(r.Now())
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
 		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.Cfg.Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
@@ -619,6 +627,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	if err != nil {
 		return err
 	}
+	r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
 	rv, err := r.Merger.RevertPR(ctx, ref.NodeID, fmt.Sprintf("Revert %q", pr.Title),
 		fmt.Sprintf("Reverts #%d (agent factory task `%s`): %s.", ref.Number, t.Name, narrate.Reason(why)))
 	if err != nil {
@@ -656,6 +665,7 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
+	r.label(ctx, pr, RevertOfLabel(ref.Number)) // every pass until it holds: the watch reads it again
 	switch {
 	case pr.State == "MERGED" || pr.State == "CLOSED":
 		t.Status.Narrated = append(t.Status.Narrated, "revert-end-"+strings.ToLower(pr.State))
@@ -672,20 +682,27 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 // paused: the circuit breaker (§6.4, extended by R41 for review G5). It reads outcomes, not the
 // config: a class whose last merge.breaker.window merges hold merge.breaker.maxReverts reverts
 // (a maintainer's factory/revert, or main_red) is demoted to human review, whatever the config
-// hash. Maintainers' merges of a demoted class refill the window, so clean ones lift it.
+// hash. Maintainers' merges of a demoted class refill the window, so clean ones lift it. The
+// merges are the Tasks' united with GitHub's labelled ones (v2 D1), so a rebuild that lost every
+// Task still reads a demoted class as demoted. Only auto-merges carry a label: maintainers' merges
+// before a rebuild are not on GitHub's side, which can only keep a class demoted longer.
 func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
+	gh, err := r.githubLedger(ctx)
+	if err != nil {
+		return false, err
+	}
 	var l v1alpha1.TaskList
 	if err := r.Client.List(ctx, &l, client.InNamespace(r.Namespace)); err != nil {
 		return false, err
 	}
-	var merged []*v1alpha1.Task
+	var tasks []Merge
 	for i := range l.Items {
 		o := &l.Items[i]
-		if o.Spec.PredictedClass == class && o.Status.PullRequest != nil && o.Status.PullRequest.MergedAt != nil {
-			merged = append(merged, o)
+		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil {
+			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted})
 		}
 	}
-	demoted, _ := Demoted(merged, r.Cfg.Merge.Breaker)
+	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), r.Cfg.Merge.Breaker)
 	return demoted, nil
 }
 
@@ -693,13 +710,11 @@ func (r *Reconciler) paused(ctx context.Context, class string) (bool, error) {
 // many they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
 // and Validate keep it off the production path, so a test rig that builds config.Merge by hand
 // must set a breaker.
-func Demoted(merged []*v1alpha1.Task, b config.Breaker) (bool, int) {
-	slices.SortFunc(merged, func(x, y *v1alpha1.Task) int {
-		return y.Status.PullRequest.MergedAt.Compare(x.Status.PullRequest.MergedAt.Time)
-	})
+func Demoted(merges []Merge, b config.Breaker) (bool, int) {
+	newestFirst(merges)
 	reverts := 0
-	for _, o := range merged[:min(len(merged), b.Window)] {
-		if o.Status.Phase == v1alpha1.PhaseReverted {
+	for _, m := range merges[:min(len(merges), b.Window)] {
+		if m.Reverted {
 			reverts++
 		}
 	}
@@ -707,10 +722,31 @@ func Demoted(merged []*v1alpha1.Task, b config.Breaker) (bool, int) {
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
-// merge itself went, and §5.1's cap counts the decisions, not their outcomes.
+// merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's labelled
+// merges of today, of every class, count too (v2 D1), once per pull request.
 func (r *Reconciler) armedToday(ctx context.Context) (int, error) {
-	return r.countTasks(ctx, func(o *v1alpha1.Task) bool {
-		ref := o.Status.PullRequest
-		return ref != nil && ref.ArmedAt != nil && sameUTCDay(ref.ArmedAt.Time, r.Now())
-	})
+	gh, err := r.githubLedger(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var l v1alpha1.TaskList
+	if err := r.Client.List(ctx, &l, client.InNamespace(r.Namespace)); err != nil {
+		return 0, err
+	}
+	n, seen := 0, map[int]bool{}
+	for i := range l.Items {
+		if ref := l.Items[i].Status.PullRequest; ref != nil && ref.ArmedAt != nil && sameUTCDay(ref.ArmedAt.Time, r.Now()) {
+			n++
+			seen[ref.Number] = true
+		}
+	}
+	for _, ms := range gh {
+		for _, m := range ms {
+			if sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
+				n++
+				seen[m.Number] = true
+			}
+		}
+	}
+	return n, nil
 }
