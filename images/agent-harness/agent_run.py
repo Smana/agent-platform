@@ -27,6 +27,12 @@ AGENT_SERVER = "http://127.0.0.1:8000"
 # itself switches to 0.0.0.0 by default once a session key is set.
 SERVER_CMD = ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server", "--host", "127.0.0.1", "--port", "8000"]
 REPO_DIR = "/workspace/repo"
+# A suspendable run's state on its PVC (warm-sandboxes design §6). agent-server keeps a conversation
+# in workspace/conversations/<uuid.hex>, relative to its cwd "/" (config.py conversations_path).
+KEY_FILE = "/workspace/.oh-key"
+CONVERSATIONS_DIR = "/workspace/conversations"
+RESUME_MESSAGE = ("The run was suspended while it waited for a human, and has now resumed. "
+                  "Continue the task from where you stopped.")
 # agent-server's start-up hook (F29, see site/sitecustomize.py), beside this file in /opt/agent.
 SITE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "site")
 TERMINAL_OK = {"finished"}
@@ -741,14 +747,57 @@ def _on_sigterm(signum, frame):
     raise SystemExit(128 + signum)
 
 
+def suspendable(env: dict) -> bool:
+    """The composition sets AGENT_SUSPENDABLE only on a run whose /workspace is a PVC."""
+    return env.get("AGENT_SUSPENDABLE") == "true"
+
+
+def run_key(path: str = KEY_FILE) -> str:
+    """A suspendable run's OH_SECRET_KEY, made once and kept on its PVC: agent-server redacts the
+    stored secrets it cannot decrypt, so the resumed pod needs the key the first one used."""
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        key = secrets.token_urlsafe(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key)
+        return key
+
+
+def persisted(env: dict, root: str = CONVERSATIONS_DIR) -> bool:
+    """True when a suspendable run's conversation is already on its PVC: the run was resumed."""
+    if not suspendable(env):
+        return False
+    try:
+        cid = uuid.UUID(env.get("CONVERSATION_ID", ""))
+    except ValueError:
+        return False
+    return os.path.isfile(os.path.join(root, cid.hex, "base_state.json"))
+
+
+def start_conversation(request: dict, resuming: bool) -> str:
+    """Starts the conversation, or reattaches the persisted one: agent-server answers a start with
+    an existing id with the stored conversation and ignores the request's initial message. A
+    resumed run then gets one message, which also runs it."""
+    cid = http("POST", "/api/conversations", request)["id"]
+    if resuming:
+        http("POST", "/api/conversations/%s/events" % cid,
+             {"role": "user", "content": [{"type": "text", "text": RESUME_MESSAGE}], "run": True})
+    return cid
+
+
 def server_env(env: dict) -> dict:
     """agent-server's environment, with an OH_SECRET_KEY made for this pod when unset.
 
     The key encrypts the secrets and MCP OAuth state agent-server stores. A run
     is single-use, so a per-pod key loses nothing and nothing is seeded by hand.
+    A suspendable run's key outlives its pod, on its PVC (run_key).
     """
     out = dict(env)
-    out.setdefault("OH_SECRET_KEY", secrets.token_urlsafe(32))
+    if "OH_SECRET_KEY" not in out:
+        out["OH_SECRET_KEY"] = run_key() if suspendable(env) else secrets.token_urlsafe(32)
     out["PYTHONPATH"] = os.pathsep.join(p for p in (SITE_DIR, env.get("PYTHONPATH")) if p)
     out["AGENT_RUN_RETRY_LOG"] = RETRY_LOG
     return out
@@ -767,10 +816,12 @@ def main() -> int:
     cid, steps, code, signalled, read = None, None, None, False, False
     try:
         wait_ready()
-        resumed = clone(env)
+        # A resumed suspendable run finds its clone and its conversation on its PVC.
+        resuming = persisted(env)
+        resumed = resuming or clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             request = build_request(env, t.read(), r.read(), span)
-        cid = http("POST", "/api/conversations", request)["id"]
+        cid = start_conversation(request, resuming)
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)
