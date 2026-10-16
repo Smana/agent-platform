@@ -69,13 +69,31 @@ type IssuePoller struct {
 	Client    client.Client
 	Namespace string
 	Cfg       *config.Config
-	Stopped   func(context.Context) bool
-	Errors    errorCounter
-	Log       *slog.Logger
+	// Repository names the config entry this poller serves, and Forge must be bound to it (v2
+	// D1). With one entry it may be left empty.
+	Repository string
+	Stopped    func(context.Context) bool
+	Errors     errorCounter
+	Log        *slog.Logger
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// Sanitize is the snapshot's sanitiser; nil means sanitize.Text. A test forces a withheld text.
 	Sanitize func(string) (string, sanitize.Report)
+}
+
+func (p *IssuePoller) repo() *config.Repository { return p.Cfg.RepositoryFor(p.Repository) }
+
+// controlIssue is the kill switch's issue when it lives on this poller's repository, else 0.
+func (p *IssuePoller) controlIssue() int {
+	if ctl := p.Cfg.ControlFor(); ctl.Issue > 0 && strings.EqualFold(ctl.Repository, p.repo().Name) {
+		return ctl.Issue
+	}
+	return 0
+}
+
+// owns: the task is on this poller's repository. One entry owns every task, as before the list.
+func (p *IssuePoller) owns(t *v1alpha1.Task) bool {
+	return len(p.Cfg.Repos()) == 1 || strings.EqualFold(t.Spec.Repository, p.repo().Name)
 }
 
 // NeedLeaderElection is true: two pollers would race each label.
@@ -145,7 +163,7 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 func (p *IssuePoller) Poll(ctx context.Context) error {
 	var publishErr error
 	engaged := false // reflects the stop label this pass saw or set, so the reader's cache may not hold it yet; it errs safe if the publish fails
-	if n := p.Cfg.ControlIssue; n > 0 {
+	if n := p.controlIssue(); n > 0 {
 		iss, err := p.Forge.Issue(ctx, n)
 		if err != nil {
 			return err
@@ -164,7 +182,7 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 	if engaged || p.Stopped(ctx) {
 		return publishErr
 	}
-	items, err := p.Forge.Labeled(ctx, p.Cfg.TriggerLabel)
+	items, err := p.Forge.Labeled(ctx, p.repo().TriggerLabel)
 	if err != nil {
 		return fmt.Errorf("intake: %w", err)
 	}
@@ -217,12 +235,12 @@ func snapshot(i forge.Issue, clean func(string) (string, sanitize.Report)) (stri
 }
 
 func (p *IssuePoller) one(ctx context.Context, n int) error {
-	label := p.Cfg.TriggerLabel
+	label := p.repo().TriggerLabel
 	evs, ok, err := p.labelEvents(ctx, n, label)
 	if err != nil || !ok {
 		return err
 	}
-	gen, last, ok := Generation(evs, p.Cfg.IsMaintainer)
+	gen, last, ok := Generation(evs, p.repo().IsMaintainer)
 	if !ok {
 		return p.refuse(ctx, n, last, "unauthorised_labeller")
 	}
@@ -244,7 +262,7 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	if rep.Changed() {
 		p.log().Info("issue text sanitised", "issue", n, "report", rep.String())
 	}
-	key := taskid.IssueKey(p.Cfg.Repository, n, gen)
+	key := taskid.IssueKey(p.repo().Name, n, gen)
 	name := taskid.Name(key)
 	open, err := p.openTasks(ctx, n)
 	if err != nil {
@@ -270,9 +288,9 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	t := &v1alpha1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace, Labels: map[string]string{v1alpha1.LabelIssue: strconv.Itoa(n)}},
 		Spec: v1alpha1.TaskSpec{
-			Source: v1alpha1.Source{Kind: "issue", Ref: fmt.Sprintf("%s#%d", p.Cfg.Repository, n), Key: key,
+			Source: v1alpha1.Source{Kind: "issue", Ref: fmt.Sprintf("%s#%d", p.repo().Name, n), Key: key,
 				RequestedBy: "github:" + last.Actor, Trust: "untrusted", ContentSHA256: sum},
-			Repository: p.Cfg.Repository, Issue: n, IssueAuthor: iss.Author, Text: text, DataClass: p.Cfg.Defaults.DataClass,
+			Repository: p.repo().Name, Issue: n, IssueAuthor: iss.Author, Text: text, DataClass: p.Cfg.Defaults.DataClass,
 		},
 	}
 	if err := p.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -286,7 +304,7 @@ func (p *IssuePoller) refuse(ctx context.Context, n int, last forge.LabelEvent, 
 	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n), narrate.Refused(n, reason, last.At)); err != nil {
 		return err
 	}
-	return p.Forge.RemoveLabel(ctx, n, p.Cfg.TriggerLabel)
+	return p.Forge.RemoveLabel(ctx, n, p.repo().TriggerLabel)
 }
 
 // openTasks are issue n's tasks that have not ended.
@@ -334,7 +352,7 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 		return fmt.Errorf("list tasks: %w", err)
 	}
 	for _, it := range items {
-		if it.Number == p.Cfg.ControlIssue {
+		if it.Number == p.controlIssue() {
 			continue // the control issue keeps its factory/stop: removing it is how a human resumes (§6.1)
 		}
 		evs, ok, err := p.labelEvents(ctx, it.Number, LabelStop)
@@ -344,7 +362,7 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		if _, last, byMaintainer := Generation(evs, p.Cfg.IsMaintainer); !byMaintainer {
+		if _, last, byMaintainer := Generation(evs, p.repo().IsMaintainer); !byMaintainer {
 			if err := p.narrator().PostOnce(ctx, it.Number, fmt.Sprintf("issue-%d", it.Number),
 				narrate.StopIgnored(it.Number, "unauthorised_stopper", last.At)); err != nil {
 				return err
@@ -357,7 +375,7 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 		hit := false
 		for i := range l.Items {
 			t := &l.Items[i]
-			if v1alpha1.TerminalPhase(t.Status.Phase) {
+			if v1alpha1.TerminalPhase(t.Status.Phase) || !p.owns(t) {
 				continue
 			}
 			if t.Spec.Issue == it.Number || (t.Status.PullRequest != nil && t.Status.PullRequest.Number == it.Number) {
@@ -392,12 +410,12 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		if err != nil || !ok {
 			continue // GitHub has not listed it yet, or its newest events are unread: it waits
 		}
-		if !p.Cfg.IsMaintainer(evs[len(evs)-1].Actor) {
+		if !p.repo().IsMaintainer(evs[len(evs)-1].Actor) {
 			continue // labels are intent, and only a maintainer's counts
 		}
 		for i := range l.Items {
 			t := &l.Items[i]
-			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && ref.AutoMerged {
+			if ref := t.Status.PullRequest; ref != nil && ref.Number == it.Number && ref.AutoMerged && p.owns(t) {
 				body, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{v1alpha1.AnnotationRevert: "label"}}})
 				obj := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: t.Name, Namespace: t.Namespace}}
 				if err := p.Client.Patch(ctx, obj, client.RawPatch(types.MergePatchType, body)); err != nil {

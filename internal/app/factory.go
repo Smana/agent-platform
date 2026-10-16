@@ -99,6 +99,10 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	repo, err := servedRepository(cfg)
+	if err != nil {
+		return err
+	}
 	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version)
 	if err != nil {
 		return err
@@ -122,7 +126,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
-	gh, err := forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.AppIDFile,
+	gh, err := forge.Connect(ctx, forge.Options{Repository: repo.Name, AppIDFile: cfg.GitHub.AppIDFile,
 		PrivateKeyFile: cfg.GitHub.PrivateKeyFile, APIURL: githubAPI, UserAgent: "agent-factory/" + version.Version,
 		HTTP: httpx.New(githubTimeout, nil), Now: time.Now})
 	if err != nil {
@@ -131,7 +135,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
 	// workload holds. TW4: its token asks the merger profile, not the factory App's scope —
 	// checks and statuses read, contents and pull requests write.
-	merger, err := connectMerger(ctx, log, cfg)
+	merger, err := connectMerger(ctx, log, cfg, repo.Name)
 	if err != nil {
 		return err
 	}
@@ -200,7 +204,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
 		NewRunID: taskid.Random, Now: time.Now, Metrics: m}
 	for _, r := range []manager.Runnable{
-		&intake.IssuePoller{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Errors: m, Log: log,
+		&intake.IssuePoller{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Repository: repo.Name, Errors: m, Log: log,
 			Stopped: stopped},
 		&intake.Scheduler{Forge: gh, Merger: merger, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
@@ -276,10 +280,22 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	return errors.Join(err, <-opsDone)
 }
 
+// servedRepository is the one repository this release serves. The config reads a list (v2 D1),
+// but both GitHub connections are bound to one repository, and the admission binding (D3-D6) and
+// the ownership fence (D7) are not built yet: a second entry would be acted on through the
+// first's connections, and admitted unchecked. Refused at start until those land.
+func servedRepository(cfg *config.Config) (config.Repository, error) {
+	rs := cfg.Repos()
+	if len(rs) != 1 {
+		return config.Repository{}, fmt.Errorf("config lists %d repositories: this release serves exactly one (v2 second-repository design, PR 2 and 3)", len(rs))
+	}
+	return rs[0], nil
+}
+
 // connectMerger connects the merger App, or answers the fail-closed forge.Absent when its key
 // is not mounted and no class needs it (#57: the chart mounts the Secret optional). A class
 // live or in shadow reads checks through the merger, so for it a missing key stops the start.
-func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (forge.Merger, error) {
+func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config, repository string) (forge.Merger, error) {
 	idFile := cfg.GitHub.MergerAppIDFile
 	if idFile != "" {
 		_, err := os.Stat(filepath.Clean(idFile))
@@ -295,9 +311,9 @@ func connectMerger(ctx context.Context, log *slog.Logger, cfg *config.Config) (f
 		log.Warn("no merger App key: checks, merges and reverts fail closed until it is mounted and the pod restarts")
 		return forge.Absent{}, nil
 	}
-	return forge.Connect(ctx, forge.Options{Repository: cfg.Repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
+	return forge.Connect(ctx, forge.Options{Repository: repository, AppIDFile: cfg.GitHub.MergerAppIDFile,
 		PrivateKeyFile: cfg.GitHub.MergerKeyFile, APIURL: githubAPI, UserAgent: "agent-factory-merger/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.Merge.CheckReruns > 0, cfg.AnyLive())})
+		HTTP: httpx.New(githubTimeout, nil), Now: time.Now, Permissions: forge.MergerPermissions(cfg.AnyCheckReruns(), cfg.AnyLive())})
 }
 
 // taskSink exports task spans (R46) when tracing.otlpEndpoint is set, and is a nil interface

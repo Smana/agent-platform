@@ -200,7 +200,7 @@ func (r *Reconciler) changesRequested(t *v1alpha1.Task, pr forge.PR) []forge.Rev
 	for i, rv := range pr.Reviews {
 		last, approved := approvedAt[strings.ToLower(rv.Author)]
 		superseded := approved && last > i
-		if rv.State == "CHANGES_REQUESTED" && r.Cfg.IsMaintainer(rv.Author) && !superseded &&
+		if rv.State == "CHANGES_REQUESTED" && r.repo(t).IsMaintainer(rv.Author) && !superseded &&
 			!slices.Contains(t.Status.Handled, rv.ID) && (since == nil || rv.At.After(since.Time)) {
 			out = append(out, rv)
 		}
@@ -274,7 +274,7 @@ func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR,
 	var found forge.Comment
 	ok := false
 	for _, c := range all {
-		if c.Edited || !r.Cfg.IsMaintainer(c.Author) || slices.Contains(t.Status.Handled, c.ID) || !commandLine(c.Body, verb) ||
+		if c.Edited || !r.repo(t).IsMaintainer(c.Author) || slices.Contains(t.Status.Handled, c.ID) || !commandLine(c.Body, verb) ||
 			(t.Status.PhaseSince != nil && !c.At.After(t.Status.PhaseSince.Add(-retrySkew))) {
 			continue
 		}
@@ -374,12 +374,12 @@ func (r *Reconciler) quietSince(t *v1alpha1.Task, pr forge.PR, thread []forge.Co
 		since = at
 	}
 	for _, rv := range pr.Reviews {
-		if r.Cfg.IsMaintainer(rv.Author) && rv.At.After(since) {
+		if r.repo(t).IsMaintainer(rv.Author) && rv.At.After(since) {
 			since = rv.At
 		}
 	}
 	for _, c := range slices.Concat(pr.Comments, thread) {
-		if r.Cfg.IsMaintainer(c.Author) && c.At.After(since) {
+		if r.repo(t).IsMaintainer(c.Author) && c.At.After(since) {
 			since = c.At
 		}
 	}
@@ -391,10 +391,10 @@ func (r *Reconciler) quietSince(t *v1alpha1.Task, pr forge.PR, thread []forge.Co
 
 // approved: the latest maintainer review that decides (approve, request changes or a dismissal)
 // approves. Such a pull request waits for a merge, which until the wave only a human makes.
-func (r *Reconciler) approved(pr forge.PR) bool {
+func (r *Reconciler) approved(t *v1alpha1.Task, pr forge.PR) bool {
 	last := ""
 	for _, rv := range pr.Reviews {
-		if r.Cfg.IsMaintainer(rv.Author) && rv.State != "COMMENTED" && rv.State != "PENDING" {
+		if r.repo(t).IsMaintainer(rv.Author) && rv.State != "COMMENTED" && rv.State != "PENDING" {
 			last = rv.State
 		}
 	}
@@ -445,8 +445,8 @@ func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) 
 	if waited < RemindAfter {
 		return nil
 	}
-	approved := r.approved(pr)
-	reminder := narrate.Reminder(t, r.Cfg.Maintainers, since, approved)
+	approved := r.approved(t, pr)
+	reminder := narrate.Reminder(t, r.repo(t).Maintainers, since, approved)
 	posted, ok := r.postedAt(t, thread, reminder.Key)
 	if approved || waited < StaleAfter || !ok || r.Now().Sub(posted) < reminderNotice {
 		narrateLater(t, reminder)

@@ -109,7 +109,16 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return nil
 	}
 	var errs []error
-	for _, e := range s.Cfg.Schedules {
+	for _, rc := range s.Cfg.Repos() {
+		errs = append(errs, s.tick(ctx, &rc)...)
+	}
+	return errors.Join(errs...)
+}
+
+// tick is one repository's schedules, each stamped with that repository (v2 D1).
+func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
+	var errs []error
+	for _, e := range rc.Schedules {
 		now := s.Now().UTC()
 		slot, ok := LastSlot(e.Cron, now)
 		if !ok || now.Sub(slot) > time.Hour {
@@ -118,7 +127,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		key := taskid.ScheduleKey(e.Name, slot)
 		text := e.Text
 		if e.Probe != "" {
-			found, detail, err := s.probe(ctx, e.Probe, e.ProbeAuthor)
+			found, detail, err := s.probe(ctx, rc, e.Probe, e.ProbeAuthor)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", e.Name, err))
 				continue
@@ -138,23 +147,23 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			Spec: v1alpha1.TaskSpec{
 				Source: v1alpha1.Source{Kind: "schedule", Ref: e.Name, Key: key, RequestedBy: "system:scheduler",
 					Trust: "trusted", ContentSHA256: hex.EncodeToString(sum[:])},
-				Repository: s.Cfg.Repository, Text: text, DataClass: dataClass, PredictedClass: e.Class,
+				Repository: rc.Name, Text: text, DataClass: dataClass, PredictedClass: e.Class,
 			},
 		}
 		if err := s.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
 			errs = append(errs, err) // AlreadyExists is the dedup (S2)
 		}
 	}
-	return errors.Join(errs...)
+	return errs
 }
 
 // probe: renovate-red lists open Renovate PRs whose checks have been red for more than 24 h —
 // bumps the factory can land itself when Renovate's own branch went stale.
-func (s *Scheduler) probe(ctx context.Context, name, author string) (bool, string, error) {
+func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, name, author string) (bool, string, error) {
 	if name != "renovate-red" {
 		return false, "", fmt.Errorf("intake: unknown probe %q", name)
 	}
-	if !s.Cfg.NeedsMerger() {
+	if !rc.NeedsMerger() {
 		return false, "", nil // no merger key is required, and reading checks needs it: nothing to find
 	}
 	prs, err := s.Forge.OpenPullRequests(ctx)

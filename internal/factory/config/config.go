@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -77,12 +78,23 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // Config is the factory's configuration.
 type Config struct {
-	Repository   string   `json:"repository"`
-	Maintainers  []string `json:"maintainers"`
-	TriggerLabel string   `json:"triggerLabel"`
-	// ControlIssue is the pinned issue whose factory/stop label is the global stop (§6.1);
-	// 0: none, and only the stop object stops the factory.
-	ControlIssue int                 `json:"controlIssue,omitempty"`
+	// Repositories are the repositories the factory takes issues from, each with its own
+	// maintainers, label, classes, merge gate and schedules (v2 D1).
+	Repositories []Repository `json:"repositories,omitempty"`
+	// Control is the global kill switch's issue (§6.1, v2 D2): one issue stops every repository.
+	Control Control `json:"control,omitzero"`
+
+	// The legacy single-repository shape (v2 D1), read as a one-entry Repositories for one minor
+	// release and refused beside it. Parse moves these into Repositories and Control and empties
+	// them, so code reads Repos and Control, never these.
+	Repository   string           `json:"repository,omitempty"`
+	Maintainers  []string         `json:"maintainers,omitempty"`
+	TriggerLabel string           `json:"triggerLabel,omitempty"`
+	ControlIssue int              `json:"controlIssue,omitempty"`
+	Classes      map[string]Class `json:"classes,omitempty"`
+	Merge        Merge            `json:"merge,omitzero"`
+	Schedules    []Schedule       `json:"schedules,omitempty"`
+
 	FactoryLogin string              `json:"factoryLogin"`
 	AgentsLogin  string              `json:"agentsLogin"`
 	RoomsURL     string              `json:"roomsURL"`
@@ -91,8 +103,6 @@ type Config struct {
 	Poll         Poll                `json:"poll"`
 	Defaults     Defaults            `json:"defaults"`
 	Triage       Triage              `json:"triage"`
-	Classes      map[string]Class    `json:"classes"`
-	Merge        Merge               `json:"merge"`
 	Tiers        map[string]Tier     `json:"tiers"`
 	Templates    map[string]Template `json:"templates"`
 	Caps         Caps                `json:"caps"`
@@ -102,7 +112,6 @@ type Config struct {
 	Tracing      Tracing             `json:"tracing"`
 	API          API                 `json:"api"`
 	RunLore      RunLore             `json:"runlore"`
-	Schedules    []Schedule          `json:"schedules,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -126,10 +135,36 @@ type GitHub struct {
 	MergerKeyFile   string `json:"mergerKeyFile,omitempty"`
 }
 
-// NeedsMerger reports whether a class is live or in shadow: deciding it reads checks through
-// the merger App, so its key is then mandatory. With every class off the key is optional.
-func (c *Config) NeedsMerger() bool {
-	for _, cl := range c.Classes {
+// MaxRepositories bounds repositories (v2 D1): a repository metric label keeps at most this many
+// values, and every entry is polled on the GitHub budget the whole factory shares.
+const MaxRepositories = 8
+
+// Repository is one repository the factory works on, with the settings that are its own (v2 D2).
+type Repository struct {
+	Name         string           `json:"name"` // owner/name
+	Maintainers  []string         `json:"maintainers"`
+	TriggerLabel string           `json:"triggerLabel"`
+	Classes      map[string]Class `json:"classes"`
+	Merge        Merge            `json:"merge"`
+	Schedules    []Schedule       `json:"schedules,omitempty"`
+}
+
+// Control is the pinned issue whose factory/stop label is the global stop (§6.1). Issue 0: none,
+// and only the stop object stops the factory.
+type Control struct {
+	Repository string `json:"repository,omitempty"`
+	Issue      int    `json:"issue,omitempty"`
+}
+
+// IsMaintainer is whether login is one of the repository's maintainers; GitHub logins are
+// case-insensitive.
+func (r *Repository) IsMaintainer(login string) bool {
+	return slices.ContainsFunc(r.Maintainers, func(m string) bool { return strings.EqualFold(m, login) })
+}
+
+// NeedsMerger reports whether a class of the repository is live or in shadow.
+func (r *Repository) NeedsMerger() bool {
+	for _, cl := range r.Classes {
 		if cl.Live || cl.Shadow {
 			return true
 		}
@@ -137,14 +172,75 @@ func (c *Config) NeedsMerger() bool {
 	return false
 }
 
-// AnyLive reports whether a class is live, so the merger App merges and labels (v2 D1).
-func (c *Config) AnyLive() bool {
-	for _, cl := range c.Classes {
+// AnyLive reports whether a class of the repository is live.
+func (r *Repository) AnyLive() bool {
+	for _, cl := range r.Classes {
 		if cl.Live {
 			return true
 		}
 	}
 	return false
+}
+
+// Repos is the repository list. A Config built by hand in the legacy shape, without Parse, reads
+// as the one entry Parse would have made of it.
+func (c *Config) Repos() []Repository {
+	if len(c.Repositories) > 0 || reflect.ValueOf(c.legacyRepository()).IsZero() {
+		return c.Repositories
+	}
+	return []Repository{c.legacyRepository()}
+}
+
+func (c *Config) legacyRepository() Repository {
+	return Repository{Name: c.Repository, Maintainers: c.Maintainers, TriggerLabel: c.TriggerLabel,
+		Classes: c.Classes, Merge: c.Merge, Schedules: c.Schedules}
+}
+
+// Primary is the first repository's name: RunLore's, until its config names one (v2 D6).
+func (c *Config) Primary() string {
+	if rs := c.Repos(); len(rs) > 0 {
+		return rs[0].Name
+	}
+	return ""
+}
+
+// RepositoryFor is name's entry, matched case-insensitively as GitHub matches it. With one entry
+// it is that entry whatever name says, as one set of settings governed every task before the
+// list (v2 D1). With several, an unlisted name gets an entry with no maintainer and no class.
+func (c *Config) RepositoryFor(name string) *Repository {
+	rs := c.Repos()
+	if i := slices.IndexFunc(rs, func(r Repository) bool { return strings.EqualFold(r.Name, name) }); i >= 0 {
+		return &rs[i]
+	}
+	if len(rs) == 1 {
+		return &rs[0]
+	}
+	return &Repository{Name: name}
+}
+
+// ControlFor is the kill switch's issue; Issue 0 when there is none.
+func (c *Config) ControlFor() Control {
+	if c.Control.Issue == 0 && c.ControlIssue > 0 {
+		return Control{Repository: c.Repository, Issue: c.ControlIssue}
+	}
+	return c.Control
+}
+
+// NeedsMerger reports whether a class of any repository is live or in shadow: deciding it reads
+// checks through the merger App, so its key is then mandatory. With every class off it is optional.
+func (c *Config) NeedsMerger() bool {
+	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.NeedsMerger() })
+}
+
+// AnyLive reports whether a class of any repository is live, so the merger App merges and labels (v2 D1).
+func (c *Config) AnyLive() bool {
+	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.AnyLive() })
+}
+
+// AnyCheckReruns reports whether any repository re-runs a cancelled check, which needs the
+// merger App's actions: write.
+func (c *Config) AnyCheckReruns() bool {
+	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.Merge.CheckReruns > 0 })
 }
 
 // Poll is how often each loop runs.
@@ -381,6 +477,9 @@ func Parse(raw []byte) (*Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	if err := c.normalize(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	if c.Caps.MaxPendingMinutes == 0 {
 		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)
 	}
@@ -413,9 +512,11 @@ func Parse(raw []byte) (*Config, error) {
 	if c.API.Groups.Member == "" {
 		c.API.Groups.Member = defaultMemberGroup
 	}
-	for i := range c.Schedules {
-		if c.Schedules[i].ProbeAuthor == "" {
-			c.Schedules[i].ProbeAuthor = defaultProbeAuthor
+	for i := range c.Repositories {
+		for j := range c.Repositories[i].Schedules {
+			if s := &c.Repositories[i].Schedules[j]; s.ProbeAuthor == "" {
+				s.ProbeAuthor = defaultProbeAuthor
+			}
 		}
 	}
 	if err := c.Validate(); err != nil {
@@ -424,6 +525,47 @@ func Parse(raw []byte) (*Config, error) {
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
 	return &c, nil
+}
+
+// normalize reads the legacy single-repository keys as a one-entry repositories (v2 D1), and
+// refuses a file that mixes the two shapes. The legacy shape keeps its own api.repositories, the
+// allowlist it always had; the list shape derives it from the names, so it is never written twice.
+func (c *Config) normalize() error {
+	if c.Repository == "" {
+		var errs []error
+		for _, k := range []struct {
+			key string
+			set bool
+		}{
+			{"maintainers", c.Maintainers != nil}, {"triggerLabel", c.TriggerLabel != ""}, {"controlIssue", c.ControlIssue != 0},
+			{"classes", c.Classes != nil}, {"merge", !reflect.ValueOf(c.Merge).IsZero()}, {"schedules", c.Schedules != nil},
+		} {
+			if k.set {
+				errs = append(errs, fmt.Errorf("%s is per repository: it belongs in a repositories entry (v2 D1)", k.key))
+			}
+		}
+		if c.API.Repositories != nil {
+			errs = append(errs, errors.New("api.repositories is derived from repositories (v2 D1): remove it"))
+		}
+		c.API.Repositories = make([]string, 0, len(c.Repositories))
+		for _, r := range c.Repositories {
+			c.API.Repositories = append(c.API.Repositories, r.Name)
+		}
+		return errors.Join(errs...)
+	}
+	switch {
+	case c.Repositories != nil:
+		return errors.New("repository is the legacy single-repository shape: write repositories or repository, never both (v2 D1)")
+	case c.Control != Control{}:
+		return errors.New("control belongs to the repositories shape: the legacy shape writes controlIssue (v2 D1)")
+	}
+	c.Repositories = []Repository{c.legacyRepository()}
+	if c.ControlIssue != 0 {
+		c.Control = Control{Repository: c.Repository, Issue: c.ControlIssue}
+	}
+	c.Repository, c.Maintainers, c.TriggerLabel, c.ControlIssue = "", nil, "", 0
+	c.Classes, c.Merge, c.Schedules = nil, Merge{}, nil
+	return nil
 }
 
 // EscalatedLimit is how long a task may wait Escalated; 0 is no limit, which is also what a
@@ -435,34 +577,33 @@ func (c *Config) EscalatedLimit() time.Duration {
 	return time.Duration(*c.Caps.EscalatedHours) * time.Hour
 }
 
-// IsMaintainer is whether login is a listed maintainer; GitHub logins are case-insensitive.
-func (c *Config) IsMaintainer(login string) bool {
-	return slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, login) })
-}
-
 // Validate reports every problem at once, so one rollout shows them all.
 func (c *Config) Validate() error {
 	var errs []error
 	bad := func(f string, a ...any) { errs = append(errs, fmt.Errorf(f, a...)) }
-	if !repoRE.MatchString(c.Repository) {
-		bad("repository %q is not owner/name", c.Repository)
+	rs := c.Repos()
+	switch {
+	case len(rs) == 0:
+		bad("repositories is empty: the factory has no repository to work on")
+	case len(rs) > MaxRepositories:
+		bad("repositories holds %d entries, at most %d (v2 D1)", len(rs), MaxRepositories)
 	}
-	if c.ControlIssue < 0 {
-		bad("controlIssue must be 0 or more")
-	}
-	if len(c.Maintainers) == 0 {
-		bad("maintainers is empty: nobody could start a task")
-	}
-	// A maintainer starts tasks and revisions (Δ5): an App listed here could drive the factory
-	// with its own output. The merger App joins this list when it is configured (phase 7).
-	for _, m := range c.Maintainers {
-		if strings.HasSuffix(strings.ToLower(m), "[bot]") || strings.EqualFold(m, c.FactoryLogin) || strings.EqualFold(m, c.AgentsLogin) ||
-			strings.EqualFold(m+"[bot]", c.FactoryLogin) || strings.EqualFold(m+"[bot]", c.AgentsLogin) {
-			bad("maintainer %q is an App: a bot never starts or revises a task", m)
+	seenRepo, seenSchedule := map[string]bool{}, map[string]bool{}
+	for i := range rs {
+		if k := strings.ToLower(rs[i].Name); seenRepo[k] {
+			bad("repository %s is listed twice", rs[i].Name)
+		} else {
+			seenRepo[k] = true
 		}
+		c.validateRepository(&rs[i], seenSchedule, bad)
+	}
+	if ctl := c.ControlFor(); ctl.Issue < 0 {
+		bad("control.issue must be 0 or more")
+	} else if ctl.Issue > 0 && !seenRepo[strings.ToLower(ctl.Repository)] {
+		bad("control.repository %q is not a listed repository", ctl.Repository)
 	}
 	for _, f := range []struct{ key, value string }{
-		{"triggerLabel", c.TriggerLabel}, {"factoryLogin", c.FactoryLogin}, {"agentsLogin", c.AgentsLogin},
+		{"factoryLogin", c.FactoryLogin}, {"agentsLogin", c.AgentsLogin},
 		{"roomsURL", c.RoomsURL}, {"broker.url", c.Broker.URL}, {"broker.caFile", c.Broker.CAFile},
 		{"broker.tokenFile", c.Broker.TokenFile}, {"github.appIDFile", c.GitHub.AppIDFile},
 		{"github.privateKeyFile", c.GitHub.PrivateKeyFile}, {"meter.url", c.Meter.URL}, {"meter.query", c.Meter.Query},
@@ -566,16 +707,6 @@ func (c *Config) Validate() error {
 	if c.Triage.ControlPercent < 0 || c.Triage.ControlPercent > 100 {
 		bad("triage.controlPercent must be 0..100")
 	}
-	for _, name := range []string{"docs-links", "revert"} {
-		if _, ok := c.Classes[name]; !ok {
-			bad("class %s is required (OD-8)", name)
-		}
-	}
-	for name, cl := range c.Classes {
-		if cl.Live && cl.Shadow {
-			bad("class %s: live and shadow never together (R32)", name)
-		}
-	}
 	// R16: the merger App's key is both files or neither — a half pair cannot mint a token —
 	// and both are required once any class is live or shadow, whose decision reads checks
 	// through it.
@@ -585,41 +716,6 @@ func (c *Config) Validate() error {
 		bad("github.mergerAppIDFile and github.mergerKeyFile are both set or both empty")
 	case anyMerge && c.GitHub.MergerAppIDFile == "":
 		bad("github.mergerAppIDFile: required by a live or shadow class")
-	}
-	if _, ok := c.Classes["review"]; ok {
-		bad("review is the implicit class of everything else; do not declare it")
-	}
-	// §1 schedules. The name keys every task it starts, so names are unique and C2-shaped;
-	// the cron must parse to have slots at all.
-	seenSchedule := map[string]bool{}
-	for _, e := range c.Schedules {
-		switch {
-		case !schedNameRE.MatchString(e.Name):
-			bad("schedule name %q must match ^[a-z0-9-]{1,40}$", e.Name)
-		case seenSchedule[e.Name]:
-			bad("schedule name %q is used twice", e.Name)
-		}
-		seenSchedule[e.Name] = true
-		if _, err := cron.ParseStandard(e.Cron); err != nil {
-			bad("schedule %s: cron %q does not parse", e.Name, e.Cron)
-		}
-		if e.Class != "review" {
-			if _, ok := c.Classes[e.Class]; !ok {
-				bad("schedule %s: class %q is review or a declared class", e.Name, e.Class)
-			}
-		}
-		if e.Text == "" || len(e.Text) > c.Caps.MaxTextBytes {
-			bad("schedule %s: text must be 1..%d bytes", e.Name, c.Caps.MaxTextBytes)
-		}
-		if e.Probe != "" && e.Probe != "renovate-red" {
-			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
-		}
-		if e.Probe != "" && e.ProbeAuthor == "" {
-			bad("schedule %s: probeAuthor is required with a probe", e.Name)
-		}
-		if e.DataClass != "" && e.DataClass != "public" && e.DataClass != "internal" {
-			bad("schedule %s: dataClass %q is public or internal", e.Name, e.DataClass)
-		}
 	}
 	if c.Caps.ActiveTasks < 1 || c.Caps.ConcurrentRuns < 1 || c.Caps.TasksPerDay < 1 {
 		bad("caps must be positive")
@@ -644,42 +740,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
 		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)
-	}
-	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
-	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.
-	if len(c.Merge.RequiredChecks) == 0 {
-		bad("merge.requiredChecks is empty: arming waits for every context classic protection requires")
-	}
-	if len(c.Merge.VerifyChecks) == 0 {
-		bad("merge.verifyChecks is empty: §6.4 watches these on the merge commit")
-	}
-	if m := c.Merge; !slices.Contains(m.RequiredChecks, m.LeakScanCheck) || !slices.Contains(m.VerifyChecks, m.LeakScanCheck) {
-		bad("merge.leakScanCheck %q must be in merge.requiredChecks and merge.verifyChecks (R42)", c.Merge.LeakScanCheck)
-	}
-	for _, f := range []struct{ key, value string }{
-		{"merge.policyBotLogin", c.Merge.PolicyBotLogin}, {"merge.mergerLogin", c.Merge.MergerLogin},
-	} {
-		if !strings.HasSuffix(strings.ToLower(f.value), "[bot]") {
-			bad("%s %q must be a bot login", f.key, f.value)
-		}
-	}
-	if c.Merge.AutoMergesPerDay < 0 {
-		bad("merge.autoMergesPerDay must be 0 or more")
-	}
-	if c.Merge.FixRuns < 0 {
-		bad("merge.fixRuns must be 0 or more")
-	}
-	if c.Merge.CheckReruns < 0 {
-		bad("merge.checkReruns must be 0 or more")
-	}
-	if c.Merge.VerifyFor.Duration <= 0 {
-		bad("merge.verifyFor must be positive")
-	}
-	if c.Merge.RevertWindow.Duration <= 0 {
-		bad("merge.revertWindow must be positive")
-	}
-	if b := c.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
-		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
 	}
 	// The run-request API (§4): the factory binary serves it from Task 5.4's wiring, so its
 	// block is as required as the rest of this file. A human caller is verified against the
@@ -729,4 +789,107 @@ func (c *Config) Validate() error {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)
 	}
 	return errors.Join(errs...)
+}
+
+// validateRepository reports one entry's problems, each prefixed with its name.
+func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool, report func(string, ...any)) {
+	if !repoRE.MatchString(r.Name) {
+		report("repository %q is not owner/name", r.Name)
+	}
+	bad := func(f string, a ...any) { report("%s: %s", r.Name, fmt.Sprintf(f, a...)) }
+	if len(r.Maintainers) == 0 {
+		bad("maintainers is empty: nobody could start a task")
+	}
+	// A maintainer starts tasks and revisions (Δ5): an App listed here could drive the factory
+	// with its own output. The merger App joins this list when it is configured (phase 7).
+	for _, m := range r.Maintainers {
+		if strings.HasSuffix(strings.ToLower(m), "[bot]") || strings.EqualFold(m, c.FactoryLogin) || strings.EqualFold(m, c.AgentsLogin) ||
+			strings.EqualFold(m+"[bot]", c.FactoryLogin) || strings.EqualFold(m+"[bot]", c.AgentsLogin) {
+			bad("maintainer %q is an App: a bot never starts or revises a task", m)
+		}
+	}
+	if r.TriggerLabel == "" {
+		bad("triggerLabel is required")
+	}
+	for _, name := range []string{"docs-links", "revert"} {
+		if _, ok := r.Classes[name]; !ok {
+			bad("class %s is required (OD-8)", name)
+		}
+	}
+	for name, cl := range r.Classes {
+		if cl.Live && cl.Shadow {
+			bad("class %s: live and shadow never together (R32)", name)
+		}
+	}
+	if _, ok := r.Classes["review"]; ok {
+		bad("review is the implicit class of everything else; do not declare it")
+	}
+	// §1 schedules. The name keys every task it starts, so names are unique across every
+	// repository and C2-shaped;
+	// the cron must parse to have slots at all.
+	for _, e := range r.Schedules {
+		switch {
+		case !schedNameRE.MatchString(e.Name):
+			bad("schedule name %q must match ^[a-z0-9-]{1,40}$", e.Name)
+		case seenSchedule[e.Name]:
+			bad("schedule name %q is used twice", e.Name)
+		}
+		seenSchedule[e.Name] = true
+		if _, err := cron.ParseStandard(e.Cron); err != nil {
+			bad("schedule %s: cron %q does not parse", e.Name, e.Cron)
+		}
+		if e.Class != "review" {
+			if _, ok := r.Classes[e.Class]; !ok {
+				bad("schedule %s: class %q is review or a declared class", e.Name, e.Class)
+			}
+		}
+		if e.Text == "" || len(e.Text) > c.Caps.MaxTextBytes {
+			bad("schedule %s: text must be 1..%d bytes", e.Name, c.Caps.MaxTextBytes)
+		}
+		if e.Probe != "" && e.Probe != "renovate-red" {
+			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
+		}
+		if e.Probe != "" && e.ProbeAuthor == "" {
+			bad("schedule %s: probeAuthor is required with a probe", e.Name)
+		}
+		if e.DataClass != "" && e.DataClass != "public" && e.DataClass != "internal" {
+			bad("schedule %s: dataClass %q is public or internal", e.Name, e.DataClass)
+		}
+	}
+	// §5.1's arming and §6.4's rollback. The merge gate is as required as the rest of the
+	// file: a config that cannot say which checks gate the arming or who arms fails its rollout.
+	if len(r.Merge.RequiredChecks) == 0 {
+		bad("merge.requiredChecks is empty: arming waits for every context classic protection requires")
+	}
+	if len(r.Merge.VerifyChecks) == 0 {
+		bad("merge.verifyChecks is empty: §6.4 watches these on the merge commit")
+	}
+	if m := r.Merge; !slices.Contains(m.RequiredChecks, m.LeakScanCheck) || !slices.Contains(m.VerifyChecks, m.LeakScanCheck) {
+		bad("merge.leakScanCheck %q must be in merge.requiredChecks and merge.verifyChecks (R42)", r.Merge.LeakScanCheck)
+	}
+	for _, f := range []struct{ key, value string }{
+		{"merge.policyBotLogin", r.Merge.PolicyBotLogin}, {"merge.mergerLogin", r.Merge.MergerLogin},
+	} {
+		if !strings.HasSuffix(strings.ToLower(f.value), "[bot]") {
+			bad("%s %q must be a bot login", f.key, f.value)
+		}
+	}
+	if r.Merge.AutoMergesPerDay < 0 {
+		bad("merge.autoMergesPerDay must be 0 or more")
+	}
+	if r.Merge.FixRuns < 0 {
+		bad("merge.fixRuns must be 0 or more")
+	}
+	if r.Merge.CheckReruns < 0 {
+		bad("merge.checkReruns must be 0 or more")
+	}
+	if r.Merge.VerifyFor.Duration <= 0 {
+		bad("merge.verifyFor must be positive")
+	}
+	if r.Merge.RevertWindow.Duration <= 0 {
+		bad("merge.revertWindow must be positive")
+	}
+	if b := r.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
+		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
+	}
 }

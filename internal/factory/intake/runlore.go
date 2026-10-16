@@ -217,7 +217,7 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 			// Alert and log text are attacker-influenced (§8 T1): untrusted, fenced for the harness.
 			Source: v1alpha1.Source{Kind: "runlore", Ref: f.AlertName + "/" + f.ResourceRef, Key: key,
 				RequestedBy: "system:runlore", Trust: "untrusted", ContentSHA256: hex.EncodeToString(sum[:])},
-			Repository: h.Cfg.Repository, Text: text, DataClass: "internal",
+			Repository: h.Cfg.Primary(), Text: text, DataClass: "internal",
 		},
 	}
 	if err := h.Client.Create(ctx, t); apierrors.IsAlreadyExists(err) {

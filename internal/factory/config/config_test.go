@@ -83,7 +83,8 @@ func TestGoodConfigParses(t *testing.T) {
 	if c.GitHub.MergerAppIDFile != "/etc/agent-factory-merger/app_id" || c.GitHub.MergerKeyFile != "/etc/agent-factory-merger/private_key" {
 		t.Fatalf("github merger pair: %+v", c.GitHub)
 	}
-	if !c.IsMaintainer("smana") || c.IsMaintainer("someone") {
+	r := c.Repos()[0]
+	if !r.IsMaintainer("smana") || r.IsMaintainer("someone") {
 		t.Fatal("maintainers match case-insensitively, and only listed logins")
 	}
 	if c.Caps.MaxPendingMinutes != 30 {
@@ -104,13 +105,13 @@ func TestGoodConfigParses(t *testing.T) {
 		t.Fatal("the config hash stamps each task (breaker)")
 	}
 	// §5.1 and §6.4: the arming gate's own block, and the classes held in shadow (R32).
-	if len(c.Merge.RequiredChecks) != 8 || len(c.Merge.VerifyChecks) != 5 ||
-		c.Merge.PolicyBotLogin != "ogenki-merge-gate[bot]" || c.Merge.MergerLogin != "ogenki-agent-merger[bot]" ||
-		c.Merge.AutoMergesPerDay != 10 || c.Merge.FixRuns != 2 ||
-		c.Merge.VerifyFor.Minutes() != 30 || c.Merge.RevertWindow.Hours() != 168 {
-		t.Fatalf("merge: %+v", c.Merge)
+	if len(r.Merge.RequiredChecks) != 8 || len(r.Merge.VerifyChecks) != 5 ||
+		r.Merge.PolicyBotLogin != "ogenki-merge-gate[bot]" || r.Merge.MergerLogin != "ogenki-agent-merger[bot]" ||
+		r.Merge.AutoMergesPerDay != 10 || r.Merge.FixRuns != 2 ||
+		r.Merge.VerifyFor.Minutes() != 30 || r.Merge.RevertWindow.Hours() != 168 {
+		t.Fatalf("merge: %+v", r.Merge)
 	}
-	if cl := c.Classes["docs-links"]; !cl.Shadow || cl.Live {
+	if cl := r.Classes["docs-links"]; !cl.Shadow || cl.Live {
 		t.Fatalf("docs-links is shadow until task 10.7, not live: %+v", cl)
 	}
 }
@@ -178,7 +179,7 @@ func TestLoadReadsTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, err := Load(path)
-	if err != nil || c.Repository != "Smana/cloud-native-ref" {
+	if err != nil || c.Repos()[0].Name != "Smana/cloud-native-ref" {
 		t.Fatalf("%+v %v", c, err)
 	}
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
@@ -446,15 +447,16 @@ func TestSchedules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Schedules) != 2 {
-		t.Fatalf("%+v", c.Schedules)
+	scheds := c.Repos()[0].Schedules
+	if len(scheds) != 2 {
+		t.Fatalf("%+v", scheds)
 	}
-	s := c.Schedules[1]
+	s := scheds[1]
 	if s.Name != "renovate-red" || s.Cron != "0 6 * * 1" || s.Class != "review" || s.DataClass != "internal" || s.Probe != "renovate-red" {
 		t.Fatalf("%+v", s)
 	}
-	if c.Schedules[0].DataClass != "" || c.Schedules[0].Probe != "" {
-		t.Fatalf("an omitted dataClass falls back to the default at use; an omitted probe is none: %+v", c.Schedules[0])
+	if scheds[0].DataClass != "" || scheds[0].Probe != "" {
+		t.Fatalf("an omitted dataClass falls back to the default at use; an omitted probe is none: %+v", scheds[0])
 	}
 }
 
@@ -513,8 +515,8 @@ func TestDeploymentFactsDefaultAndOverride(t *testing.T) {
 	if o.API.Groups.Admin != "ops-admin" || o.API.Groups.Member != "ops-member" {
 		t.Fatalf("api.groups: %+v", o.API.Groups)
 	}
-	if o.Schedules[0].ProbeAuthor != "renovate[bot]" || o.Schedules[1].ProbeAuthor != "mend[bot]" {
-		t.Fatalf("probeAuthor defaults to renovate[bot]: %+v", o.Schedules)
+	if s := o.Repos()[0].Schedules; s[0].ProbeAuthor != "renovate[bot]" || s[1].ProbeAuthor != "mend[bot]" {
+		t.Fatalf("probeAuthor defaults to renovate[bot]: %+v", s)
 	}
 }
 
@@ -525,7 +527,7 @@ func TestValidateNamesAMissingDeploymentFact(t *testing.T) {
 	}{
 		"member group": {func(c *Config) { c.API.Groups.Member = "" }, "api.groups.member is required"},
 		"admin group":  {func(c *Config) { c.API.Groups.Admin = "" }, "api.groups.admin is required"},
-		"probe author": {func(c *Config) { c.Schedules[0].ProbeAuthor = "" }, "schedule a: probeAuthor is required"},
+		"probe author": {func(c *Config) { c.Repositories[0].Schedules[0].ProbeAuthor = "" }, "schedule a: probeAuthor is required"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, err := Parse([]byte(good + "schedules:\n  - {name: a, cron: \"0 6 * * 1\", class: review, text: Fix, probe: renovate-red}\n"))

@@ -59,7 +59,7 @@ func TestConnectMerger(t *testing.T) {
 			if c.needs {
 				cfg.Classes = map[string]config.Class{"docs-links": {Shadow: true}}
 			}
-			m, err := connectMerger(t.Context(), slog.New(slog.DiscardHandler), cfg)
+			m, err := connectMerger(t.Context(), slog.New(slog.DiscardHandler), cfg, "Smana/cloud-native-ref")
 			if c.wantErr {
 				if err == nil {
 					t.Fatal("a needed merger key that is missing must stop the start")

@@ -320,6 +320,11 @@ func (r *Reconciler) to(t *v1alpha1.Task, phase, reason string) {
 	t.Status.Phase, t.Status.Reason = phase, reason
 }
 
+// repo is the config entry of the task's repository (v2 D1).
+func (r *Reconciler) repo(t *v1alpha1.Task) *config.Repository {
+	return r.Cfg.RepositoryFor(t.Spec.Repository)
+}
+
 func (r *Reconciler) narrator() narrate.Narrator {
 	return narrate.Narrator{Forge: r.Forge, Login: r.Cfg.FactoryLogin}
 }
@@ -435,7 +440,7 @@ func target(t *v1alpha1.Task) int {
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
 	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
-	narrateLater(t, narrate.Ended(t, phase, reason, r.Cfg.Maintainers...))
+	narrateLater(t, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
 	r.outcome(ctx, t)
 	return nil
 }

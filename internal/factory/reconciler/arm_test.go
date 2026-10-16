@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -209,5 +210,27 @@ func TestAShadowClassWouldArmAndNeverArms(t *testing.T) {
 	if d := DecideArm(ArmInputs{PR: foreign, Checks: green("SUCCESS"), Task: armTask("docs-links", "solo", ""),
 		Cfg: cfg, ReportedHead: head}); d.Reason != "foreign_trailer" {
 		t.Fatalf("%+v", d)
+	}
+}
+
+// The merge gate reads the task's repository (v2 D1): the same PR arms on A, where docs-links is
+// live, would only on B, where it is shadow, and waits on C, whose own required check has not run.
+func TestDecideArmReadsTheTasksRepository(t *testing.T) {
+	cfg := armCfg()
+	a := config.Repository{Name: "Smana/a", Maintainers: cfg.Maintainers, Classes: cfg.Classes, Merge: cfg.Merge}
+	b := a
+	b.Name, b.Classes = "Smana/b", map[string]config.Class{"docs-links": {Shadow: true}, "revert": {}}
+	strict := b
+	strict.Name, strict.Merge.RequiredChecks = "Smana/c", append(slices.Clone(required), "B's own check")
+	cfg.Maintainers, cfg.Classes, cfg.Merge = nil, nil, config.Merge{}
+	cfg.Repositories = []config.Repository{a, b, strict}
+	for repo, want := range map[string]string{"Smana/a": "arm", "Smana/b": "shadow", "Smana/c": "wait"} {
+		tk := armTask("docs-links", "solo", "")
+		tk.Spec.Repository = repo
+		d := DecideArm(ArmInputs{PR: agentPR(), Checks: green("SUCCESS"), Task: tk, Cfg: cfg, ReportedHead: head,
+			Files: changed("[x](old.md)", "[x](new.md)")})
+		if d.Verdict != want {
+			t.Errorf("%s: %+v, want %s", repo, d, want)
+		}
 	}
 }

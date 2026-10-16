@@ -12,7 +12,7 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | Term | Meaning | Where it lives |
 |---|---|---|
 | **Task** | One labelled issue's journey: a `Task` CR the intake creates, with its room, runs, PR and end, narrated on the issue | `Task` CR (`agents.ogenki.io`), kept by `internal/factory/reconciler` |
-| **Trigger** | What starts or stops a task: the labels `factory/ready`, `factory/stop` and `factory/revert`; `/factory retry`; the control issue; a schedule; a RunLore finding | Issue labels and comments; `controlIssue` and `schedules` in the factory config |
+| **Trigger** | What starts or stops a task: the labels `factory/ready`, `factory/stop` and `factory/revert`; `/factory retry`; the control issue; a schedule; a RunLore finding | Issue labels and comments; `control` and each repository's `schedules` in the factory config |
 | **Tier** | `light`, `standard`, `frontier`: a run's model, deadline and budget, chosen once per task. The model is a logical name on the agent gateway (`tier-light`, `tier-standard`, `tier-frontier`). Rooms do not carry or change it: escalating a task means a new run, never a switch inside one | `tiers` in the factory config; `AgentRun.spec.model` |
 | **Template** | `solo`, `pair`, `trio`, `investigate`: which roles run in which order | The `Task` CRD's template enum |
 | **Merge gate** | Which agent PRs may merge themselves: only low-risk classes, green CI, policy-bot's check. Each class is live, shadow (decided like a live one, never armed) or off | `merge` and `classes` in the factory config |

@@ -89,7 +89,7 @@ func (c Classify) predictClass(ctx context.Context, t *v1alpha1.Task) (string, e
 	case "runlore":
 		return "review", nil
 	case "schedule":
-		if _, ok := c.Cfg.Classes[t.Spec.PredictedClass]; ok {
+		if _, ok := c.Cfg.RepositoryFor(t.Spec.Repository).Classes[t.Spec.PredictedClass]; ok {
 			return t.Spec.PredictedClass, nil
 		}
 		return "review", nil
@@ -103,14 +103,14 @@ func (c Classify) predictClass(ctx context.Context, t *v1alpha1.Task) (string, e
 	}
 	for _, l := range iss.Labels {
 		name, ok := strings.CutPrefix(l, "class:")
-		if _, known := c.Cfg.Classes[name]; !ok || !known || name == "revert" {
+		if _, known := c.Cfg.RepositoryFor(t.Spec.Repository).Classes[name]; !ok || !known || name == "revert" {
 			continue // revert is the factory's own class, never predicted from a label
 		}
 		evs, err := c.Forge.LabelEvents(ctx, t.Spec.Issue, l)
 		if err != nil {
 			return "", err
 		}
-		if len(evs) > 0 && c.Cfg.IsMaintainer(evs[len(evs)-1].Actor) {
+		if len(evs) > 0 && c.Cfg.RepositoryFor(t.Spec.Repository).IsMaintainer(evs[len(evs)-1].Actor) {
 			return name, nil
 		}
 	}

@@ -154,7 +154,7 @@ func TestShadowNarratesAndNeverArms(t *testing.T) {
 	if c := strings.Join(g.f.Comments(12), "\n"); !strings.Contains(c, "would auto-merge: `docs-links`, checks green, verdict approve") {
 		t.Fatalf("%q", c)
 	}
-	if n, _ := g.r.armedToday(t.Context()); n != 0 {
+	if n, _ := g.r.armedToday(t.Context(), g.r.Cfg.RepositoryFor("")); n != 0 {
 		t.Fatal("a shadow decision never counts against the daily cap")
 	}
 }
@@ -211,12 +211,12 @@ func TestMainRedRevertsAndPausesTheClass(t *testing.T) {
 		!strings.HasPrefix(strings.SplitN(g.f.Reverts()[0], " ", 2)[1], `Revert "`) || len(g.f.Armed()) != 1 {
 		t.Fatalf("%s %s %v %v", got.Status.Phase, got.Status.Reason, g.f.Reverts(), g.f.Armed())
 	}
-	paused, err := g.r.paused(t.Context(), "docs-links")
+	paused, err := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links")
 	if err != nil || !paused {
 		t.Fatal("one revert pauses the class until the config changes (§6.4)")
 	}
 	g.r.Cfg.Hash = strings.Repeat("c", 64)
-	if paused, _ := g.r.paused(t.Context(), "docs-links"); !paused {
+	if paused, _ := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); !paused {
 		t.Fatal("R41: a config change no longer lifts a demotion while the revert is among the class's last 10 merges")
 	}
 }
@@ -371,13 +371,13 @@ func TestAHumanMergeOfADemotedClassRefillsTheWindow(t *testing.T) {
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
 		t.Fatalf("prEnded must timestamp the merge too: %s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
 	}
-	if paused, _ := g.r.paused(t.Context(), "docs-links"); !paused {
+	if paused, _ := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); !paused {
 		t.Fatal("one clean merge beside the revert does not lift the demotion")
 	}
 	if tk := g.reconcile(t, "2cleanmerge", 1); tk.Status.Phase != v1alpha1.PhaseDone || tk.Status.PullRequest.MergedAt == nil {
 		t.Fatalf("the second human merge: %s %v", tk.Status.Phase, tk.Status.PullRequest.MergedAt)
 	}
-	if paused, _ := g.r.paused(t.Context(), "docs-links"); paused {
+	if paused, _ := g.r.paused(t.Context(), g.r.Cfg.RepositoryFor(""), "docs-links"); paused {
 		t.Fatal("R41: clean merges of the demoted class must refill the window until the revert leaves it")
 	}
 }
