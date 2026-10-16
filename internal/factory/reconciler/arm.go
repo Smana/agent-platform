@@ -28,6 +28,9 @@ type ArmInputs struct {
 	ReportedHead string
 	Verifiers    []v1alpha1.RunRecord
 	Files        struct{ Base, Head map[string]string }
+	// NotOwned: the repository's fence file does not name this factory (v2 D7). It never merges
+	// there, whatever else holds.
+	NotOwned bool
 }
 
 // ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | ci_cancelled | escalate | human.
@@ -85,6 +88,9 @@ func DecideArm(in ArmInputs) ArmDecision {
 	}
 	human := func(reason, matched string) ArmDecision {
 		return ArmDecision{Verdict: "human", Reason: reason, Matched: matched}
+	}
+	if in.NotOwned {
+		return human("not_owned", "")
 	}
 	class := in.Task.Spec.PredictedClass
 	state, creator := in.Checks.StatusOf("policy-bot: main")

@@ -16,6 +16,7 @@ import (
 )
 
 const good = `
+factory: aws-0
 repository: Smana/cloud-native-ref
 maintainers: [Smana]
 triggerLabel: factory/ready
@@ -275,12 +276,14 @@ func TestResumeDefault(t *testing.T) {
 // the same edit (review I2: a rule deleted must fail a test).
 func TestBadConfigsFail(t *testing.T) {
 	for name, c := range map[string]struct{ from, to, err string }{
-		"unknown key":           {"triggerLabel: factory/ready", "triggerLabel: factory/ready\ntrigerLabel: x", `unknown field "trigerLabel"`},
-		"run tokens > ceiling":  {"runTokens: 4000000", "runTokens: 6000000", "tier frontier: runTokens must be 1..5000000"},
-		"run tokens below one":  {"runTokens: 300000,", "runTokens: 0,", "tier light: runTokens must be 1..5000000"},
-		"task below run tokens": {"taskTokens: 600000,", "taskTokens: 200000,", "tier light: taskTokens below runTokens"},
-		"text above the XRD":    {"maxTextBytes: 14336", "maxTextBytes: 32768", "caps.maxTextBytes must be 1..14336"},
-		"text below one byte":   {"maxTextBytes: 14336", "maxTextBytes: 0", "caps.maxTextBytes must be 1..14336"},
+		"no factory name":                {"factory: aws-0\n", "", "factory is required: the name repositories' .github/agent-factory.yaml give this factory (v2 D7)"},
+		"a factory name not a DNS label": {"factory: aws-0", "factory: AWS_0", `factory "AWS_0" is not a DNS label`},
+		"unknown key":                    {"triggerLabel: factory/ready", "triggerLabel: factory/ready\ntrigerLabel: x", `unknown field "trigerLabel"`},
+		"run tokens > ceiling":           {"runTokens: 4000000", "runTokens: 6000000", "tier frontier: runTokens must be 1..5000000"},
+		"run tokens below one":           {"runTokens: 300000,", "runTokens: 0,", "tier light: runTokens must be 1..5000000"},
+		"task below run tokens":          {"taskTokens: 600000,", "taskTokens: 200000,", "tier light: taskTokens below runTokens"},
+		"text above the XRD":             {"maxTextBytes: 14336", "maxTextBytes: 32768", "caps.maxTextBytes must be 1..14336"},
+		"text below one byte":            {"maxTextBytes: 14336", "maxTextBytes: 0", "caps.maxTextBytes must be 1..14336"},
 		// P: the Pending bound is 5..480 minutes; an omitted one defaults to 30.
 		"pending minutes below five": {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 4", "caps.maxPendingMinutes must be 5..480"},
 		"pending minutes above 480":  {"maxTextBytes: 14336", "maxTextBytes: 14336, maxPendingMinutes: 481", "caps.maxPendingMinutes must be 5..480"},

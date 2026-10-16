@@ -892,6 +892,28 @@ func (g *GitHub) fileAt(ctx context.Context, path, ref string) (string, error) {
 	return text, nil
 }
 
+// FenceFile is the ownership fence (v2 D7) on the default branch, found false when the repository
+// has none. Any failure other than GitHub's 404 is an error: the caller keeps its last answer.
+func (g *GitHub) FenceFile(ctx context.Context) ([]byte, bool, error) {
+	fc, _, resp, err := g.rest.Repositories.GetContents(ctx, g.owner, g.name, ".github/agent-factory.yaml", nil)
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		g.mark(nil)
+		return nil, false, nil
+	}
+	g.mark(err)
+	if err != nil {
+		return nil, false, wrap("read the fence file", err)
+	}
+	if fc == nil {
+		return nil, false, errors.New("forge: the fence file is not a file")
+	}
+	text, err := fc.GetContent()
+	if err != nil {
+		return nil, false, wrap("decode the fence file", err)
+	}
+	return []byte(text), true, nil
+}
+
 func wrap(what string, err error) error {
 	if err == nil {
 		return nil

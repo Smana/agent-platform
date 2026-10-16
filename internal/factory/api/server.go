@@ -81,6 +81,9 @@ type Server struct {
 	NewRunID  func() string
 	Now       func() time.Time
 	Metrics   *fmetrics.Set
+	// Owned is v2 D7's fence: whether the repository's default branch names this factory. nil owns
+	// nothing.
+	Owned func(repository string) bool
 	// Access is v2 D4: whether a human may write the repository on GitHub. nil refuses every
 	// human: GitHub is the one answer to who may change a repository, and there is no bypass.
 	Access WriteChecker
@@ -165,6 +168,15 @@ func refuse(w http.ResponseWriter, code int, reason string) {
 	reply(w, code, map[string]string{"error": reason})
 }
 
+// refuseRepository refuses and counts a refusal by repository (v2 observability): the counter
+// keeps only the repository codes, so its label stays bounded.
+func (s *Server) refuseRepository(ctx context.Context, w http.ResponseWriter, code int, reason string) {
+	if s.Metrics != nil {
+		s.Metrics.AdmissionRefused(ctx, reason)
+	}
+	refuse(w, code, reason)
+}
+
 // createRun admits a run in §4's order — stop object, shape, repository, room, R37's owner
 // defaults, R35's resume branch, the day's ledger — then creates it with the factory's own
 // id and branch. Refusals name only codes: no claim or principal data echoes back (authn rule).
@@ -195,6 +207,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	// the config's spelling is ever written there.
 	if !slices.Contains(s.Cfg.API.Repositories, in.Repository) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
+		return
+	}
+	ctx := fmetrics.WithRepository(r.Context(), in.Repository)
+	if s.Owned == nil || !s.Owned(in.Repository) { // v2 D7: another factory's, or nobody's
+		s.refuseRepository(ctx, w, http.StatusConflict, "repository_not_owned")
 		return
 	}
 	// The defaults come first: the request's fingerprint and the ledger's reservation both
@@ -246,7 +263,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if in.RoomRef != "" {
 		code, reason := s.admitRoom(r.Context(), p, in, all)
 		if code != 0 {
-			refuse(w, code, reason)
+			s.refuseRepository(ctx, w, code, reason)
 			return
 		}
 		branch = "agent/" + in.RoomRef // a room's runs share one branch (C3)
@@ -263,7 +280,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if in.ResumeBranch != "" {
 		code, reason := s.admitResume(r.Context(), p, in.ResumeBranch, in.Repository, all)
 		if code != 0 {
-			refuse(w, code, reason)
+			s.refuseRepository(ctx, w, code, reason)
 			return
 		}
 		branch = in.ResumeBranch
@@ -271,7 +288,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	// v2 D4/D6, last before the ledger: the one check that asks GitHub, made only for a request
 	// every local rule admitted, so a refused one reserves nothing and costs no call.
 	if !s.mayWrite(r.Context(), p, in.Repository) {
-		refuse(w, http.StatusForbidden, "repository_permission")
+		s.refuseRepository(ctx, w, http.StatusForbidden, "repository_permission")
 		return
 	}
 	if code, reason := s.reserve(r.Context(), p, id, in); code != 0 {

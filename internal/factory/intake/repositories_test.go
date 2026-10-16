@@ -5,11 +5,13 @@ package intake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
@@ -233,5 +235,65 @@ func TestAProbeReadsItsRepository(t *testing.T) {
 	_ = sch.Client.List(t.Context(), &l)
 	if len(l.Items) != 0 {
 		t.Fatalf("B's probe found A's red pull request: %+v", l.Items)
+	}
+}
+
+// v2 D7: a repository the fence does not give this factory gets no intake: its labels stay for the
+// factory that owns it, its schedules start nothing, and RunLore files nothing on it. A stop label
+// is still honoured: stopping is never another factory's to refuse.
+func TestARepositoryNotOwnedGetsNoIntake(t *testing.T) {
+	f := forgetest.NewFake()
+	labelled(f, 7, "Smana")
+	p, c := poller(t, f)
+	p.Owned = func(string) bool { return false }
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks(t, c)) != 0 || len(f.Removed(7)) != 0 {
+		t.Fatalf("a task or a consumed label on another factory's repository: %d tasks, removed %q", len(tasks(t, c)), f.Removed(7))
+	}
+
+	s := runtime.NewScheme()
+	_ = v1alpha1.AddToScheme(s)
+	now := time.Date(2026, 10, 5, 6, 20, 0, 0, time.UTC)
+	sch := scheduler(forgetest.NewFake(), fake.NewClientBuilder().WithScheme(s), func(context.Context) bool { return false }, now, schedulerCfg())
+	sch.Owned = func(string) bool { return false }
+	if err := sch.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var l v1alpha1.TaskList
+	_ = sch.Client.List(t.Context(), &l)
+	if len(l.Items) != 0 {
+		t.Fatalf("a schedule on another factory's repository: %d tasks", len(l.Items))
+	}
+
+	h, rc, rf := runlore(t)
+	h.Owned = func(string) bool { return false }
+	if w := send(h, "s3cret", finding); w.Code != 409 || !strings.Contains(w.Body.String(), "repository_not_owned") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var rl v1alpha1.TaskList
+	_ = rc.List(t.Context(), &rl)
+	if len(rl.Items) != 0 || len(rf.Created()) != 0 {
+		t.Fatal("RunLore filed on another factory's repository")
+	}
+}
+
+// Stops are honoured on an unowned repository; a missing fence owns nothing (fail closed).
+func TestStopsOutliveTheFence(t *testing.T) {
+	f := forgetest.NewFake()
+	f.SetEvents(7, forge.LabelEvent{Actor: "Smana", Label: LabelStop, At: t0})
+	f.SetLabeled(LabelStop, forge.Item{Number: 7})
+	running := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "aaaaaaaa", Namespace: "agent-system"},
+		Spec: v1alpha1.TaskSpec{Repository: "Smana/cloud-native-ref", Issue: 7}}
+	p, c := poller(t, f, running)
+	p.Owned = nil
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var got v1alpha1.Task
+	_ = c.Get(t.Context(), client.ObjectKeyFromObject(running), &got)
+	if got.Annotations[v1alpha1.AnnotationStop] != "label" {
+		t.Fatalf("the stop was not honoured: %v", got.Annotations)
 	}
 }

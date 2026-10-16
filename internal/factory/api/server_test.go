@@ -89,6 +89,7 @@ func mkServer(t *testing.T, st RunStore, c client.Client, enforce, stopped bool,
 		NewRunID: func() string { return runID }, Now: func() time.Time { return now },
 		Metrics: m,
 		Access:  writers{can: map[string][]string{"human:291": {"Smana/cloud-native-ref"}, "human:1": {"Smana/cloud-native-ref"}}},
+		Owned:   func(string) bool { return true },
 	}
 }
 

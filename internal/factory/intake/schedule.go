@@ -70,10 +70,12 @@ type Scheduler struct {
 	Client    client.Client
 	Namespace string
 	Cfg       *config.Config
-	Stopped   func(context.Context) bool
-	Now       func() time.Time
-	Errors    errorCounter
-	Log       *slog.Logger
+	// Owned is v2 D7's fence: an entry not owned by this factory fires nothing; nil owns nothing.
+	Owned   func(repository string) bool
+	Stopped func(context.Context) bool
+	Now     func() time.Time
+	Errors  errorCounter
+	Log     *slog.Logger
 }
 
 // NeedLeaderElection is true: two schedulers would race every slot.
@@ -114,6 +116,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	var errs []error
 	for _, rc := range s.Cfg.Repos() {
+		if s.Owned == nil || !s.Owned(rc.Name) {
+			continue // another factory's, or nobody's (v2 D7)
+		}
 		errs = append(errs, s.tick(ctx, &rc)...)
 	}
 	return errors.Join(errs...)

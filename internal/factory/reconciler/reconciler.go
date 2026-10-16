@@ -127,6 +127,9 @@ type Reconciler struct {
 	// task on a repository it does not know is refused before any call; nil, Forge and Merger
 	// serve every task (one repository).
 	Clients func(repository string) (TaskForge, forge.Merger, bool)
+	// Owned is v2 D7's fence: the merge gate hands a repository this factory does not own to a
+	// human. nil owns nothing.
+	Owned   func(repository string) bool
 	Runs    RunClient
 	Rooms   RoomLog
 	Triage  triage.Triager

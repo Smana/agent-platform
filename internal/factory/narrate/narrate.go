@@ -223,6 +223,7 @@ func reasons() map[string]string {
 		"class_paused":              "auto-merge of this class is paused after a revert",
 		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
+		"not_owned":                 "this repository's .github/agent-factory.yaml does not name this factory",
 		"policy_pending":            "the policy needs a maintainer's approval",
 		"policy_absent":             "policy-bot has not evaluated it",
 		"maintainer_approved":       "a maintainer approved it: a human merges it",

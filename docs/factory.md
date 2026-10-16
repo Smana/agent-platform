@@ -169,6 +169,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `human_commit_in_pr` | It holds a commit no run of the task pushed, so the factory neither fixes nor merges on top of it |
 | `class_paused` | The class's breaker tripped after reverts |
 | `auto_merge_cap` | `merge.autoMergesPerDay` is reached |
+| `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
 | `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
 | `ci_cancelled` | A required check was cancelled and re-running it did not settle it |
 
@@ -300,6 +301,7 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | # | Check | If it fails |
 |---|---|---|
 | 1 | The secret scan (`merge.leakScanCheck`) is not red | Escalated, `secret_scan_red` |
+| 2a | The repository is this factory's ([the fence](#the-ownership-fence)) | `not_owned` |
 | 2 | Every `merge.requiredChecks` is green | Red: a fix run, up to `merge.fixRuns`, then `ci_red`. Cancelled: re-run, up to `merge.checkReruns`. Pending: wait |
 | 3 | `policy-bot: main` is green, posted by `merge.policyBotLogin` | `policy_absent`, `policy_pending`, `gate_path` |
 | 4 | The author is `agentsLogin`, and no maintainer approved it | `not_agent_authored`, `maintainer_approved` |
@@ -445,6 +447,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 
 | Key | Holds | Default |
 |---|---|---|
+| `factory` | This factory's name, a DNS label such as `aws-0`: a repository is acted on only while its `.github/agent-factory.yaml` gives it | Required |
 | `repositories` | At most 8 entries, one per repository, names unique (case-insensitive); see the entry table below | Required |
 | `control` | `{repository, issue}`: the issue whose `factory/stop` is the global stop, on a listed repository | `issue` 0: none |
 | `factoryLogin`, `agentsLogin` | The factory App's login (narration) and the agents App's (pull requests) | Required |
@@ -487,10 +490,23 @@ per entry; a repository either App is not installed on fails the start. Each ent
 poller, and a task only ever reads and writes its own repository through its own pair. The daily
 auto-merge cap and the breaker count that repository's merges only.
 
-**This release still serves exactly one repository.** A config with two entries parses, but the
-factory refuses to start with it until the ownership fence of the
-[second-repository design](https://github.com/Smana/cloud-native-ref/pull/2435) lands: nothing yet
-stops two clusters from taking the same repository.
+#### The ownership fence
+
+A repository is this factory's only while `.github/agent-factory.yaml` on its default branch names
+it, so two clusters never take the same issue:
+
+```yaml
+# .github/agent-factory.yaml: make it a policy-bot gate path
+factory: aws-0
+```
+
+Every replica reads each listed repository's file at start and every 5 minutes, with the factory
+App. Absent, unparsable (anything but `factory: <name>`) or naming another factory, the repository
+gets no trigger-label or revert intake, no orphan scan, no schedules, no RunLore issues
+(`409 repository_not_owned`), no API runs (`409 repository_not_owned`) and no merges (gate step
+`not_owned`, a human merges). Stop labels and the control issue still work. A read that fails keeps
+the last answer for 15 minutes, then the repository counts as not owned until a read succeeds.
+`agent_factory_repository_owned{repository}` shows the state.
 
 #### Who may start work on a repository
 
@@ -525,7 +541,7 @@ system's run request. Source: `internal/factory/api/server.go`.
 | `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |
 | `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room`, `repository_differs_from_the_room`, `repository_differs_from_the_branch` |
 | `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch`, `repository_permission` (no `write` on the repository, or it could not be verified) |
-| `409`, `429` | `room_busy`, `branch_busy`, `run_busy`; `over_budget` |
+| `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget` |
 | `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed` |
 
 **`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore
@@ -539,4 +555,5 @@ finding. Source: `internal/factory/intake/runlore.go`.
 | `200` | `{duplicate: true, task}`: a task for this alert and resource is still open |
 | `202` | `{accepted: false, reason: below_threshold}`: the verdict is not `action_required` or `action_suggested`, or the confidence is under `runlore.minConfidence` |
 | `400`, `401`, `429` | `bad_finding`; `unauthenticated`; `runlore_daily_cap` (`runlore.dailyCap` a UTC day) |
+| `409` | `repository_not_owned`: `runlore.repository`'s fence does not name this factory |
 | `503` | `intake_unconfigured` (the token file is missing or empty: the intake is off, never open), `factory_stopped`, `intake_failed` |

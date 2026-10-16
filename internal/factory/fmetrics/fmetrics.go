@@ -53,6 +53,9 @@ func tiers() []string           { return []string{"light", "standard", "frontier
 func intakeSources() []string   { return []string{"issue", "runlore", "schedule", "api"} }
 func resumeReasons() []string   { return []string{"Disrupted", "PodLost"} }
 func roomCapReasons() []string  { return []string{"human_driver", "facts_due"} }
+func admissionReasons() []string {
+	return []string{"repository_differs_from_the_room", "repository_differs_from_the_branch", "repository_permission", "repository_not_owned"}
+}
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -95,6 +98,8 @@ type Set struct {
 	runCost         metric.Float64Histogram
 	runBudgetUSD    metric.Float64Gauge
 	budgetFallbacks metric.Int64Counter
+	owned           metric.Int64Gauge
+	refusals        metric.Int64Counter
 
 	// repos is the config's repository list, the repository label's only values (v2 D10).
 	mu    sync.RWMutex
@@ -215,6 +220,12 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	s.budgetFallbacks, err = meter.Int64Counter("agent_factory_run_budget_fallbacks_total",
 		metric.WithDescription("Runs and tasks of a USD-capped tier held to their token cap instead: an unpriced model, or a meter.query without gen_ai_token_type."))
 	check(err)
+	s.owned, err = meter.Int64Gauge("agent_factory_repository_owned",
+		metric.WithDescription("1 while the repository's .github/agent-factory.yaml names this factory (v2 D7), else 0."))
+	check(err)
+	s.refusals, err = meter.Int64Counter("agent_factory_admission_refusals_total",
+		metric.WithDescription("Run requests refused on their repository: bound to another, no write on GitHub, or not this factory's."))
+	check(err)
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader, s.repository))
 	}
@@ -275,6 +286,24 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 		return nil
 	}, tasks, stop, phase)
 	return err
+}
+
+// RepositoryOwned records whether the fence names this factory on repository (v2 D7).
+func (s *Set) RepositoryOwned(ctx context.Context, repository string, owned bool) {
+	v := int64(0)
+	if owned {
+		v = 1
+	}
+	s.owned.Record(ctx, v, metric.WithAttributes(attribute.String("repository", s.repository(repository))))
+}
+
+// AdmissionRefused counts a run request refused on its repository, the one ctx names. Other
+// refusals have their own codes and are not counted here.
+func (s *Set) AdmissionRefused(ctx context.Context, reason string) {
+	if !slices.Contains(admissionReasons(), reason) {
+		return
+	}
+	s.refusals.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason), s.repoOf(ctx)))
 }
 
 // TimeToPR records a task's time from intake to its PR opening.

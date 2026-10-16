@@ -59,7 +59,9 @@ type runloreForge interface {
 // secret at each request, so a rotation needs no restart (AGENTS.md).
 type RunLore struct {
 	// Forge is the factory App on cfg.RunLoreRepository(), where the findings are filed (v2 D6).
-	Forge     runloreForge
+	Forge runloreForge
+	// Owned is v2 D7's fence; nil owns nothing.
+	Owned     func(repository string) bool
 	Client    client.Client
 	Namespace string
 	Cfg       *config.Config
@@ -142,6 +144,10 @@ func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.Stopped(r.Context()) {
 		reply(w, http.StatusServiceUnavailable, map[string]string{"error": "factory_stopped"})
+		return
+	}
+	if h.Owned == nil || !h.Owned(h.Cfg.RunLoreRepository()) { // v2 D7: files nothing on another factory's
+		reply(w, http.StatusConflict, map[string]string{"error": "repository_not_owned"})
 		return
 	}
 	var f Finding

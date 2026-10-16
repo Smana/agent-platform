@@ -73,7 +73,8 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, Paused: paused}
+	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, Paused: paused,
+		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
 	if CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
 		// approved. Neither read matters while CI decides on its own, so they wait for green.
