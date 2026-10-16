@@ -57,6 +57,9 @@ func (r *Reconciler) verifierSpec(t *v1alpha1.Task, role string) runs.Spec {
 	if role == "reviewer" { // "on a different tier from the implementer where possible" (§3); R47
 		s.Tier = otherTier(t.Spec.Budget.Tier)
 		s.Model = r.Cfg.Tiers[s.Tier].Model
+		if m := r.Cfg.Templates[t.Spec.Template].ReviewerModel; m != "" {
+			s.Model = m
+		}
 	}
 	return s
 }

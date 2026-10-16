@@ -348,6 +348,9 @@ type Price struct {
 type Template struct {
 	Roles           []string `json:"roles"`
 	MaxReviewRounds int32    `json:"maxReviewRounds,omitempty"`
+	// ReviewerModel is the reviewer's gateway name whatever the implementer's tier; empty keeps
+	// the other tier's model. The run keeps the other tier's caps.
+	ReviewerModel string `json:"reviewerModel,omitempty"`
 }
 
 // Caps bound the factory's throughput (§6.2).
@@ -749,6 +752,13 @@ func (c *Config) Validate() error {
 			if !slices.Contains(roles(), r) {
 				bad("template %s: unknown role %q", name, r)
 			}
+		}
+		switch {
+		case t.ReviewerModel == "":
+		case !slices.Contains(t.Roles, "reviewer"):
+			bad("template %s: reviewerModel needs a reviewer role", name)
+		case !slices.Contains(models(), t.ReviewerModel):
+			bad("template %s: reviewerModel %q is not a C5 logical name", name, t.ReviewerModel)
 		}
 		// R38 (owner default, 2026-09-27): a lone triager only proposes; every other template writes.
 		if !slices.Contains(t.Roles, "implementer") && !slices.Equal(t.Roles, []string{"triager"}) {
