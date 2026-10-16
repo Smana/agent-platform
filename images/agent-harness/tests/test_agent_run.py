@@ -129,6 +129,88 @@ class ServerEnvTest(unittest.TestCase):
         self.assertEqual(agent_run.server_env({"OH_SECRET_KEY": "given"})["OH_SECRET_KEY"], "given")  # pragma: allowlist secret
 
 
+class SuspendableKeyTest(unittest.TestCase):
+    def test_suspendable_key_is_kept_in_the_workspace(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, ".oh-key")
+            with mock.patch("agent_run.KEY_FILE", path), mock.patch("agent_run.run_key.__defaults__", (path,)):
+                first = agent_run.server_env({"AGENT_SUSPENDABLE": "true"})["OH_SECRET_KEY"]
+                again = agent_run.server_env({"AGENT_SUSPENDABLE": "true"})["OH_SECRET_KEY"]
+            self.assertEqual(first, again, "the resumed pod decrypts with the first pod's key")
+            self.assertGreaterEqual(len(first), 32)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_unsuspendable_key_stays_per_pod(self):
+        with mock.patch("agent_run.run_key", side_effect=AssertionError("no key file")):
+            a = agent_run.server_env({})["OH_SECRET_KEY"]
+            b = agent_run.server_env({"AGENT_SUSPENDABLE": "false"})["OH_SECRET_KEY"]
+        self.assertNotEqual(a, b)
+
+    def test_a_set_key_wins_on_a_suspendable_run(self):
+        with mock.patch("agent_run.run_key", side_effect=AssertionError("no key file")):
+            env = agent_run.server_env({"AGENT_SUSPENDABLE": "true", "OH_SECRET_KEY": "given"})  # pragma: allowlist secret
+        self.assertEqual(env["OH_SECRET_KEY"], "given")  # pragma: allowlist secret
+
+
+class PersistedTest(unittest.TestCase):
+    def _root(self, d, cid):
+        os.makedirs(os.path.join(d, uuid.UUID(cid).hex))
+        open(os.path.join(d, uuid.UUID(cid).hex, "base_state.json"), "w").close()
+
+    def test_found_by_uuid_hex(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._root(d, ENV["CONVERSATION_ID"])
+            self.assertTrue(agent_run.persisted({**ENV, "AGENT_SUSPENDABLE": "true"}, root=d))
+
+    def test_absent_is_a_first_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(agent_run.persisted({**ENV, "AGENT_SUSPENDABLE": "true"}, root=d))
+
+    def test_not_suspendable_is_never_resumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._root(d, ENV["CONVERSATION_ID"])
+            self.assertFalse(agent_run.persisted(ENV, root=d))
+
+    def test_malformed_conversation_id_is_not_resumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(agent_run.persisted({"AGENT_SUSPENDABLE": "true", "CONVERSATION_ID": "../x"}, root=d))
+            self.assertFalse(agent_run.persisted({"AGENT_SUSPENDABLE": "true"}, root=d))
+
+
+class MainResumeTest(unittest.TestCase):
+    def _main(self, persisted):
+        with tempfile.TemporaryDirectory() as d:
+            task = os.path.join(d, "task.md")
+            open(task, "w").write("task")
+            env = {"TASK_FILE": task, "RULES_FILE": task, "ROLE": "implementer"}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch("agent_run.subprocess.Popen"), \
+                    mock.patch("agent_run.wait_ready"), \
+                    mock.patch("agent_run.persisted", return_value=persisted), \
+                    mock.patch("agent_run.clone", return_value=False) as clone, \
+                    mock.patch("agent_run.build_request", return_value={"x": 1}), \
+                    mock.patch("agent_run.http", return_value={"id": "c1"}) as http, \
+                    mock.patch("agent_run.poll", return_value=0), \
+                    mock.patch("agent_run.StepLog"), \
+                    mock.patch("agent_run.stop", return_value="stopped"), \
+                    mock.patch("agent_run.timed"):
+                self.assertEqual(agent_run.main(), 0)
+        return clone, http
+
+    def test_a_resumed_run_skips_the_clone_and_sends_nothing_but_the_start(self):
+        # The conversation waits on a call's approval: a message would reject that call
+        # (SDK local_conversation.py, "Superseded by a new user message") and a bare run would
+        # execute it unconfirmed. The bridge answers it from the room's decision.
+        clone, http = self._main(True)
+        clone.assert_not_called()
+        self.assertEqual(http.call_args_list, [mock.call("POST", "/api/conversations", {"x": 1})])
+
+    def test_a_first_start_clones(self):
+        clone, http = self._main(False)
+        clone.assert_called_once()
+        self.assertEqual(http.call_args_list, [mock.call("POST", "/api/conversations", {"x": 1})])
+
+
 class OutcomeTest(unittest.TestCase):
     def test_terminal_statuses(self):
         from openhands.sdk.conversation.state import ConversationExecutionStatus as Status
