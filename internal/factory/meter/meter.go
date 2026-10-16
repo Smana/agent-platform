@@ -212,8 +212,9 @@ type Meter struct {
 	Throttle Throttled
 	// Budgets are the daily ceilings; enforced only when EnforcePrincipal (R3's shadow first).
 	Budgets config.Budgets
-	// B1Ceiling is the gateway's per-run ceiling (config.RunTokenCeiling): a 429 at or above it
-	// is the run spending its own bucket, below it the fleet's (R13). Zero: never name B1.
+	// B1Ceiling is the gateway's per-run ceiling (config.RunTokenCeiling), in the unit B1 charges
+	// (b1Spend): a 429 at or above it is the run spending its own bucket, below it the fleet's
+	// (R13). Zero: never name B1.
 	B1Ceiling int64
 	// Prices are meter.prices, by the model that served the tokens (or the claim's logical model,
 	// for tokens no model label names); RunUSD each tier's USD run cap (config.Tier.RunUSD). A run
@@ -550,7 +551,8 @@ func (m *Meter) Tick(ctx context.Context) error {
 		}
 		var limit string
 		if !runs.Terminal(r.Phase) && r.Revoked == "" {
-			if reason, l := m.revocation(r, n, usd[r.ID], caps[r.ID], hit[r.ID], m.daySpent(r, spent)); reason != "" {
+			if reason, l := m.revocation(r, n, b1Spend(n, usd, r.ID), usd[r.ID], caps[r.ID], hit[r.ID],
+				m.daySpent(r, spent)); reason != "" {
 				kv[runs.AnnRevoked], limit = reason, l
 			}
 		}
@@ -692,14 +694,14 @@ func (m *Meter) daySpent(r runs.Run, spent map[string]int64) bool {
 
 // revocation names why a live run must stop, and the limit that fired, in the order the design
 // lists the caps (C5). A run capped in USD is not held to its MaxTokens: pricing cache reads at
-// their own rate is the point (OD-3), and B1 still bounds its raw tokens at the gateway.
-func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool, daySpent bool) (reason, limit string) {
+// their own rate is the point (OD-3), and B1 bounds the same money at the gateway.
+func (m *Meter) revocation(r runs.Run, tokens, b1, usd, capUSD int64, throttled bool, daySpent bool) (reason, limit string) {
 	switch {
 	case capUSD > 0 && usd >= capUSD:
 		return ReasonBudgetRun, LimitRunUSD
 	case capUSD <= 0 && r.MaxTokens > 0 && tokens >= r.MaxTokens:
 		return ReasonBudgetRun, LimitRunTokens
-	case throttled && m.B1Ceiling > 0 && tokens >= m.B1Ceiling:
+	case throttled && m.B1Ceiling > 0 && b1 >= m.B1Ceiling:
 		return ReasonBudgetRun, LimitGatewayCeiling
 	case throttled:
 		return ReasonBudgetFleet, LimitFleet // B2, the only other bucket on agent-router (R13)
@@ -707,6 +709,17 @@ func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool
 		return ReasonBudgetPrincipal, LimitPrincipalDay
 	}
 	return "", ""
+}
+
+// b1Spend is what the gateway's B1 bucket holds for a run, as far as the meter can tell: B1 charges
+// a priced call the meter's own price in reference tokens (ai-native-ref's policy-budgets.yaml,
+// generated from meter.prices), and an unpriced one its raw tokens. Micro-USD over the reference
+// rate ($1.70 per M, 1.7 micro-USD a token) is reference tokens.
+func b1Spend(tokens int64, usd map[string]int64, id string) int64 {
+	if v, priced := usd[id]; priced {
+		return int64(float64(v) / config.RefUSDPerMToken)
+	}
+	return tokens
 }
 
 // fallback reports, once per live run, that its tier's USD cap could not apply. Never silent:
