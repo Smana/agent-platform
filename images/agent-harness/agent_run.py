@@ -146,11 +146,21 @@ def span_traceparent(span) -> str | None:
     return "00-%032x-%016x-01" % (sc.trace_id, sc.span_id)
 
 
+def child_spans(provider, parent):
+    """start_span(name) for spans under parent, or None when tracing is off."""
+    if not provider or not span_traceparent(parent):
+        return None
+    from opentelemetry import trace
+    tracer, ctx = provider.get_tracer("agent-run"), trace.set_span_in_context(parent)
+    return lambda name: tracer.start_span(name, context=ctx)
+
+
 def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     """The StartConversationRequest body, as plain JSON.
 
     The platform MCP entry carries the run span's traceparent (cloud-native-ref#2283), so the
-    gateway's /mcp spans join the run's trace instead of each starting its own.
+    gateway's /mcp spans join the run's trace instead of each starting its own. It is the fallback:
+    agent-server replaces it on each request with the span that sent it (site/sitecustomize.py).
     """
     from openhands.sdk import LLM
     from openhands.sdk.conversation.request import StartConversationRequest
@@ -270,6 +280,7 @@ MIN_NOTE_GAP_S = 60
 MAX_NOTES = 8
 NOTE_FAILURES = 3
 NOTE_TIMEOUT_S = 2
+NOTE_SPAN = "agent-run.room_progress"
 MILESTONES = {
     "started": "started working.",
     "commit": "committed.",
@@ -352,8 +363,11 @@ class ProgressNotes:
     MCP route. Each milestone is noted once, at most one note per MIN_NOTE_GAP_S and MAX_NOTES a
     run. The text is fixed: nothing the agent wrote reaches the room through here. Best effort."""
 
-    def __init__(self, url: str, role: str = "agent", resumed: bool = False, clock=time.monotonic):
+    def __init__(self, url: str, role: str = "agent", resumed: bool = False, clock=time.monotonic, start_span=None):
         self.url, self.role, self.resumed, self.clock = url, role, resumed, clock
+        # Each note is a span under the run's, and its RPCs carry it, so the gateway's spans for the
+        # note nest under it (cloud-native-ref#2283). None when tracing is off.
+        self.start_span, self.traceparent = start_span, None
         self.seen, self.pending, self.sent = set(), [], 0
         self.calls = {}
         self.last = None
@@ -422,6 +436,8 @@ class ProgressNotes:
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
         if self.session:
             headers["Mcp-Session-Id"] = self.session
+        if self.traceparent:
+            headers["traceparent"] = self.traceparent
         req = urllib.request.Request(self.url, data=json.dumps(body).encode(), method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=NOTE_TIMEOUT_S) as resp:
             self.session = resp.headers.get("Mcp-Session-Id") or self.session
@@ -440,6 +456,8 @@ class ProgressNotes:
     def send(self, text: str) -> bool:
         """True when the note was stored; False when the broker's minute is spent (retried later).
         An HTTP 4xx (an expired session, a restarted broker) redoes the handshake once."""
+        span = self.start_span(NOTE_SPAN) if self.start_span else None
+        self.traceparent = span_traceparent(span)
         try:
             return self.call(text)
         except urllib.error.HTTPError as exc:
@@ -447,6 +465,10 @@ class ProgressNotes:
                 raise
             self.tool, self.session = None, None
             return self.call(text)
+        finally:
+            self.traceparent = None
+            if span:
+                span.end()
 
     def call(self, text: str) -> bool:
         if self.tool is None:
@@ -744,7 +766,8 @@ def main() -> int:
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             request = build_request(env, t.read(), r.read(), span)
         cid = http("POST", "/api/conversations", request)["id"]
-        notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed) if env.get("MCP_URL") else None
+        notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
+                              start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)
         code = poll(cid, on_tick=steps)
         steps()
