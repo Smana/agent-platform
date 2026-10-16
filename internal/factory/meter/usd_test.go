@@ -302,3 +302,47 @@ func TestAnUnseenRunIsNotReportedUnpriced(t *testing.T) {
 		t.Fatalf("fallbacks %v, revocations %v", fell, revoked)
 	}
 }
+
+// agentgateway 1.6 reports an Anthropic call's input with its cache tokens on the non-streaming
+// Chat Completions translation, and without them on a streamed one or native Messages. Both shapes
+// of xplane-run-wfeiraim's 8 calls on aws-0 (fresh input 18 tokens) cost what it cost.
+func TestCostReadsEitherInputShape(t *testing.T) {
+	opus := served["claude-opus-5-5"]
+	for name, u := range map[string]Usage{
+		"input includes cache": {Input: 303_477, CacheRead: 258_965, CacheWrite: 44_494, Output: 10_147},
+		"input excludes cache": {Input: 18, CacheRead: 258_965, CacheWrite: 44_494, Output: 10_147},
+	} {
+		// 18 x 4 + 258,965 x 0.20 + 44,494 x 5 + 10,147 x 20 = 477,275 micro-USD
+		if got := cost(opus, u); got != 477_275 {
+			t.Errorf("%s: cost = %d micro-USD, want 477275", name, got)
+		}
+	}
+}
+
+// A reading whose input is below its cache tokens is named once per run and model, so a gateway
+// path change shows on a counter instead of only in the price.
+func TestAnInputBelowItsCacheTokensIsNamedOnce(t *testing.T) {
+	r := standardRun("aaaaaaaa")
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{r}}
+	src := typed{"aaaaaaaa": byModel(map[string]ModelUsage{
+		"claude-opus-5-5": {Input: 18, CacheRead: 258_965, CacheWrite: 44_494, Output: 10_147},
+		"glm-5.3":         {Input: 100_000, CacheRead: 90_000, Output: 1_000},
+	})}
+	var revoked []revocation
+	var fell, named []string
+	m := usdMeter(st, src, &revoked, &fell)
+	m.Prices, m.Costs = served, &Costs{}
+	m.OnInputExcludesCache = func(_ context.Context, model string) { named = append(named, model) }
+	for range 2 {
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(named) != 1 || named[0] != "claude-opus-5-5" {
+		t.Fatalf("named %v, want claude-opus-5-5 once", named)
+	}
+	// glm: 10,000 x 1.40 + 90,000 x 0.26 + 1,000 x 4.40 = 41,800; opus: 477,275
+	if c, _ := m.Costs.Get("aaaaaaaa"); c.MicroUSD != 519_075 {
+		t.Fatalf("cost %+v, want 519075 micro-USD", c)
+	}
+}
