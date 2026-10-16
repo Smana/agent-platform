@@ -224,7 +224,9 @@ absent rather than 0.
 | `agent_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
 | `agent_factory_run_revocations_total` | counter | `reason`, `limit` | Runs the factory revoked; `limit` when the run meter did it (below) |
 | `agent_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
-| `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost when it ended |
+| `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost, reported two minutes after it ended (below) |
+| `agent_factory_run_spend_usd` | gauge | `run`, `model` | A priced run's USD spend so far, until its cost is reported |
+| `agent_factory_model_cost_usd_total` | counter | `model` | USD the runs spent, by served model, added as each run's cost is reported |
 | `agent_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
 | `agent_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
 | `agent_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
@@ -269,7 +271,14 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
 | `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
-| `agent_factory_run_cost_usd{tier}` | A priced run's cost when it ended. `agent_factory_run_budget_usd{tier}` is the run cap |
+| `agent_factory_run_cost_usd{tier}` | A priced run's cost, reported two minutes after the meter first sees it ended, or when its claim is deleted first. `agent_factory_run_budget_usd{tier}` is the run cap |
+| `agent_factory_run_spend_usd{run, model}` | A priced run's spend so far, by the model that served it, from its first reading until its cost is reported. Only runs not yet reported carry the series, so its cardinality is the live runs times their models. One run's final price: `max_over_time(agent_factory_run_spend_usd{run="<id>"}[1d])` |
+| `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported: `increase(...[1d])` is a day's bill per model |
+
+A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
+after they happen, so the first tick that sees a run ended can read it short. On
+`xplane-run-nh5tztlh` that tick read 370,526 of 507,350 tokens. The meter keeps annotating an
+ended run's usage, and reports its cost only once the window has passed.
 
 A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no
 annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a

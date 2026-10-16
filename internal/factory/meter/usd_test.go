@@ -5,6 +5,7 @@ package meter
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -165,7 +166,9 @@ func TestACounterResetNeverResetsTheUSDCost(t *testing.T) {
 	var fell []string
 	var costs []float64
 	m := usdMeter(st, src, &revoked, &fell)
-	m.OnCost = func(_ context.Context, tier string, usd float64) {
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	m.Now = func() time.Time { return clock }
+	m.OnCost = func(_ context.Context, tier string, usd float64, _ map[string]float64) {
 		if tier == "standard" {
 			costs = append(costs, usd)
 		}
@@ -180,7 +183,8 @@ func TestACounterResetNeverResetsTheUSDCost(t *testing.T) {
 		t.Fatalf("revocations %v, want the USD cap past the reset", revoked)
 	}
 	st.runs[0].Phase = "BudgetExhausted"
-	for range 2 {
+	for range 6 {
+		clock = clock.Add(30 * time.Second)
 		if err := m.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
