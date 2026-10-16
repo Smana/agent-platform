@@ -181,6 +181,11 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
         # to maximum thinking: measured 150 s and 1,238 reasoning tokens for a reply that
         # takes 10.8 s at "high", so every step took minutes and some hit the 300 s timeout.
         litellm_extra_body={"reasoning_effort": env.get("LLM_REASONING_EFFORT", "high")},
+        # Internal runs reach Anthropic, where an uncached turn re-sends the whole context at the
+        # full input price. The SDK only knows `agent-default` is a Claude model when told; its
+        # markers are rewritten for the gateway in site/sitecustomize.py. Public runs reach Z.ai
+        # through a passthrough, which would forward the marker to an API that never asked for it.
+        capability_overrides={"supports_prompt_cache": True} if env.get("DATA_CLASS") == "internal" else {},
     )
     # The SDK redacts secrets on dump and drops the redacted value on load, so
     # without this the key never reaches agent-server and litellm refuses to

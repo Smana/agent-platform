@@ -8,7 +8,7 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `git_credential_agent.py` → `git-credential-agent` | git credential helper; exchanges through identity-proxy `:4001`, caches in memory; `agent-run` calls its `revoke` on exit |
 | `gh` | gh with that token in `GH_TOKEN`; `gh pr create` (or `new`) then appends the provenance footer (`pr_footer.py`, SP2 design §5) |
 | `commit-msg` | adds `Agent-Run: $RUN_ID`, `Agent-Task: $TASK_ID` when set, and `Agent-Checkpoint: disruption` on agent-run's SIGTERM checkpoint |
-| `site/sitecustomize.py` | agent-server's start-up hook: a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (F29, envoyproxy/ai-gateway#2715); a transient model error is retried (#99, below) |
+| `site/sitecustomize.py` | agent-server's start-up hook: a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (F29, envoyproxy/ai-gateway#2715); a transient model error is retried (#99, below); an internal run's prompt-cache markers are rewritten as `prompt_cache_breakpoint`, the only one agentgateway 1.6 carries to Anthropic |
 
 ## Model errors
 

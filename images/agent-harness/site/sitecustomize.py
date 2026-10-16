@@ -14,6 +14,9 @@ answer client replies 202 itself (F29's gateway half); the harness does not depe
 
 cloud-native-ref#2283: each MCP request carries the traceparent of the span that sent it; see
 patch_traceparent.
+
+Internal runs' Anthropic prompt caching reaches the gateway in the field it converts; see
+cache_breakpoints.
 """
 import asyncio
 import contextvars
@@ -177,6 +180,52 @@ def patch_model_retry(llm, openai, sleep=time.sleep, asleep=asyncio.sleep) -> bo
     return True
 
 
+BREAKPOINT = {"mode": "explicit"}
+
+
+def cache_breakpoints(messages: list) -> None:
+    """Rewrites the SDK's Anthropic `cache_control` markers, in place, as the OpenAI text-part field
+    `prompt_cache_breakpoint`: the only marker agentgateway 1.6 carries from Chat Completions to
+    Anthropic Messages; it drops `cache_control`. The SDK puts a tool message's marker on the
+    message (litellm#6422), and 1.6 reads it only on a part, so it moves to the last one."""
+    for message in messages:
+        marked = message.pop("cache_control", None) is not None
+        content = message.get("content")
+        if marked and isinstance(content, str):
+            content = message["content"] = [{"type": "text", "text": content}]
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.pop("cache_control", None) is not None:
+                part["prompt_cache_breakpoint"] = BREAKPOINT
+        if marked and content and isinstance(content[-1], dict):
+            content[-1]["prompt_cache_breakpoint"] = BREAKPOINT
+
+
+def patch_cache_breakpoints(llm) -> bool:
+    """Wraps both model calls so the SDK's cache markers reach the gateway in its field. Only an
+    internal run has markers (agent_run's supports_prompt_cache), so a public call is untouched."""
+    sync_call = getattr(llm, "_transport_call", None)
+    async_call = getattr(llm, "_atransport_call", None)
+    if sync_call is None or async_call is None:
+        print("agent-harness: prompt cache NOT applied: %s has no _transport_call or _atransport_call (an "
+              "SDK upgrade?); internal runs pay full input price every turn" % llm.__name__,
+              file=sys.stderr, flush=True)
+        return False
+
+    def _transport_call(self, *, messages, **kwargs):
+        cache_breakpoints(messages)
+        return sync_call(self, messages=messages, **kwargs)
+
+    async def _atransport_call(self, *, messages, **kwargs):
+        cache_breakpoints(messages)
+        return await async_call(self, messages=messages, **kwargs)
+
+    llm._transport_call = _transport_call
+    llm._atransport_call = _atransport_call
+    return True
+
+
 def _install() -> None:
     # agent-server's children, the agent's own commands, must not load this.
     rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and os.path.abspath(p) != HERE]
@@ -204,8 +253,9 @@ def _install() -> None:
         import openai
         from openhands.sdk.llm.llm import LLM
     except ImportError as exc:
-        print("agent-harness: #99 retry NOT applied: %s" % exc, file=sys.stderr, flush=True)
+        print("agent-harness: #99 retry and prompt cache NOT applied: %s" % exc, file=sys.stderr, flush=True)
     else:
+        patch_cache_breakpoints(LLM)
         patch_model_retry(LLM, openai)
 
 
