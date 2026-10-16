@@ -182,6 +182,12 @@ type Confirmer struct {
 	Logger     *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Suspendable is a run whose pod may be suspended and resumed on its PVC
+	// (AGENT_SUSPENDABLE, v2 plan P6). Its new pod's conversation reloads
+	// paused, as the previous pod's SIGTERM path left it, and nothing but this
+	// bridge continues it: agent-run sends nothing, a message would reject the
+	// pending call and a bare /run would execute it.
+	Suspendable bool
 	// PastCap reports that the bridge's buffer is full (Bridge.PastCap): the
 	// broker is behind, maybe down, so a step needing a human decision is not
 	// asked for, which an outage would reject, but left waiting until it drains;
@@ -208,6 +214,10 @@ type Confirmer struct {
 	stale bool
 	// resume is set while a rejected conversation still has to be resumed.
 	resume bool
+	// started is set by the first status; inherited, while a suspendable
+	// run's conversation has stayed paused since then: the previous pod's
+	// pause, never a human's interrupt.
+	started, inherited bool
 }
 
 func (c *Confirmer) log() *slog.Logger {
@@ -312,6 +322,12 @@ func (c *Confirmer) OnStatus(ctx context.Context, status string) {
 	c.settling.Lock()
 	defer c.settling.Unlock()
 	c.mu.Lock()
+	if !c.started {
+		c.started, c.inherited = true, c.Suspendable && status == statusPaused
+	} else if status != statusPaused {
+		c.inherited = false
+	}
+	inherited := c.inherited
 	stale, resume := c.stale, c.resume
 	c.stale = false
 	if !stale && resume && status != statusIdle {
@@ -326,10 +342,31 @@ func (c *Confirmer) OnStatus(ctx context.Context, status string) {
 	if resume {
 		c.resumeRun(ctx)
 	}
+	if inherited {
+		c.resumeInherited(ctx)
+		return
+	}
 	if status != statusWaiting {
 		return
 	}
 	c.settle(ctx, false)
+}
+
+// resumeInherited continues a suspended run's reloaded conversation. A pending
+// step is answered like a waiting one, from the room's decision. With none, the
+// pod was suspended between steps, and a /run, which then confirms nothing,
+// continues it. Until the step is answered and the run goes on, the next paused
+// status tries again. Under settling.
+func (c *Confirmer) resumeInherited(ctx context.Context) {
+	if step, _ := c.step(); len(step) > 0 {
+		c.settle(ctx, false)
+	} else {
+		c.resumeRun(ctx)
+	}
+	step, _ := c.step()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inherited = len(step) > 0 || c.resume
 }
 
 // Decision records an approver's decision from the broker's stream, and
