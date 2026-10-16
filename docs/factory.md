@@ -284,6 +284,10 @@ Grouping by served model is what makes a logical name safe to price: the same cl
 dearer. A run's cost is the sum over the models that served it of
 `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`,
 divided by 10⁶; a series without `gen_ai_request_model` is priced by the claim's logical model.
+agentgateway 1.6 counts the cache tokens in `input` on its non-streaming Chat Completions to
+Messages translation, but not on a streamed call or native Messages. A model whose `input` is below
+`cached_input + cache_creation_input` is priced with all of `input` as fresh, and
+`agent_factory_meter_input_excludes_cache_runs_total{model}` counts the run.
 A run served by a model with no price is never $0: it is held to its token caps, and
 `agent_factory_meter_unpriced_model_runs_total{model}` names the model.
 

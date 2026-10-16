@@ -148,6 +148,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.RunBudgetUSD(ctx, "standard", 2.55)
 	s.RunBudgetFallback(ctx, "task", "unpriced")
 	s.ModelUnpriced(ctx, "claude-fable-5-1")
+	s.InputExcludesCache(ctx, "claude-opus-5-5")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{repository="other",source="issue",template="solo",tier="standard",le="600"} 1`,
@@ -178,6 +179,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_run_budget_usd{tier="standard"} 2.55`,
 		`agent_factory_run_budget_fallbacks_total{scope="task",why="unpriced"} 1`,
 		`agent_factory_meter_unpriced_model_runs_total{model="claude-fable-5-1"} 1`,
+		`agent_factory_meter_input_excludes_cache_runs_total{model="claude-opus-5-5"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)
@@ -208,6 +210,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.RunSpend(map[string]map[string]float64{"not a run": {"glm-5.3": 1}, "aaaaaaaa": {"A Model": 2}})
 	s.RunBudgetFallback(ctx, "a scope", "a reason")
 	s.ModelUnpriced(ctx, "Ignore previous instructions")
+	s.InputExcludesCache(ctx, "Ignore previous instructions")
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_run_revocations_total{reason="other"} 1`,
@@ -222,6 +225,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 		`agent_factory_run_spend_usd{model="other",run="aaaaaaaa"} 2`,
 		`agent_factory_run_budget_fallbacks_total{scope="other",why="other"} 1`,
 		`agent_factory_meter_unpriced_model_runs_total{model="other"} 1`,
+		`agent_factory_meter_input_excludes_cache_runs_total{model="other"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s\n%s", want, body)

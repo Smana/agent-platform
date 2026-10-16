@@ -139,7 +139,7 @@ func TestNewVMRefuses(t *testing.T) {
 	}
 }
 
-// The gateway's input series includes the cache tokens (docs/operations.md, run and task budgets):
+// The gateway's input series includes the cache tokens on the internal runs' route (docs/factory.md):
 // cost prices the difference as fresh input. A reply read from testdata pins the contract end to end.
 func TestCostFollowsTheGatewaySeries(t *testing.T) {
 	raw, err := os.ReadFile("testdata/query_reply.json")

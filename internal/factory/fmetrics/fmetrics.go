@@ -110,6 +110,7 @@ type Set struct {
 	owned           metric.Int64Gauge
 	refusals        metric.Int64Counter
 	unpricedModels  metric.Int64Counter
+	excludesCache   metric.Int64Counter
 	modelCost       metric.Float64Counter
 
 	spendMu sync.Mutex
@@ -242,6 +243,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.unpricedModels, err = meter.Int64Counter("agent_factory_meter_unpriced_model_runs_total",
 		metric.WithDescription("Runs a model served with no meter.prices row, by that model: AgentModelUnpriced (J-AC4)."))
+	check(err)
+	s.excludesCache, err = meter.Int64Counter("agent_factory_meter_input_excludes_cache_runs_total",
+		metric.WithDescription("Runs whose input a model's gateway series reported without its cache tokens, by that model: priced as fresh input whole."))
 	check(err)
 	s.modelCost, err = meter.Float64Counter("agent_factory_model_cost_usd_total",
 		metric.WithDescription("USD the factory's runs spent, by the model that served them, counted when each run's cost is reported."))
@@ -481,6 +485,12 @@ func (s *Set) RunBudgetFallback(ctx context.Context, scope, why string) {
 // model is the gateway's gen_ai_request_model, a name a backend pins; any other shape is other.
 func (s *Set) ModelUnpriced(ctx context.Context, model string) {
 	s.unpricedModels.Add(ctx, 1, metric.WithAttributes(attribute.String("model", boundModel(model))))
+}
+
+// InputExcludesCache counts a run whose input a model reported without its cache tokens: the run
+// meter's OnInputExcludesCache. The model is bounded as ModelUnpriced's.
+func (s *Set) InputExcludesCache(ctx context.Context, model string) {
+	s.excludesCache.Add(ctx, 1, metric.WithAttributes(attribute.String("model", boundModel(model))))
 }
 
 // Resumed counts a run the factory resumed on its own, by the lost run's AgentRun reason

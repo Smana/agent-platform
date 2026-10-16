@@ -10,6 +10,7 @@
 package meter
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -84,8 +85,10 @@ type Store interface {
 }
 
 // Usage is a run's raw counters. Tokens is what the token caps count: input plus output, or an
-// untyped series' value. `Input` is the gateway's `input` series, which **includes** `cached_input`
-// and `cache_creation_input`; `cost` subtracts them to price fresh input.
+// untyped series' value. `Input` is the gateway's `input` series. agentgateway 1.6 includes
+// `cached_input` and `cache_creation_input` in it for an Anthropic call on its non-streaming Chat
+// Completions translation, and leaves them out on a streamed one or native Messages: `cost`
+// subtracts them to price fresh input unless the input is below them (inputExcludesCache).
 type Usage struct {
 	Tokens, Input, CacheRead, CacheWrite, Output int64
 	// Typed: the reading carried gen_ai_token_type, so it can be priced.
@@ -140,9 +143,25 @@ func cost(p config.Price, u Usage) int64 {
 	if write == 0 {
 		write = p.Input
 	}
-	fresh := max(0, u.Input-u.CacheRead-u.CacheWrite)
+	fresh := u.Input
+	if !inputExcludesCache(u.Input, u.CacheRead, u.CacheWrite) {
+		fresh -= u.CacheRead + u.CacheWrite
+	}
 	return int64(math.Round(float64(fresh)*p.Input + float64(u.CacheRead)*p.CacheRead +
 		float64(u.CacheWrite)*write + float64(u.Output)*p.Output))
+}
+
+// inputExcludesCache is true of an input below its cache tokens: only a gateway that reports
+// input without them yields one. An input at or above them is read as including them, the shape
+// the internal runs' route reports; a run whose calls mix both shapes is priced as the larger.
+func inputExcludesCache(input, read, write int64) bool { return input < read+write }
+
+// byModel is the typed counters by served model, "" holding a reading without the model label.
+func (u Usage) byModel() map[string]ModelUsage {
+	if len(u.Models) == 0 {
+		return map[string]ModelUsage{"": {Input: u.Input, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Output: u.Output}}
+	}
+	return u.Models
 }
 
 // runCost prices a typed reading in micro-USD as the sum over the models that served it, each at
@@ -159,10 +178,7 @@ func runCost(prices map[string]config.Price, claim string, u Usage) (micro int64
 // runCosts is runCost by the model that served the tokens, the claim's model for those no label
 // names; nil and the model when one has no price.
 func runCosts(prices map[string]config.Price, claim string, u Usage) (map[string]int64, string) {
-	models := u.Models
-	if len(models) == 0 {
-		models = map[string]ModelUsage{"": {Input: u.Input, CacheRead: u.CacheRead, CacheWrite: u.CacheWrite, Output: u.Output}}
-	}
+	models := u.byModel()
 	out := map[string]int64{}
 	for _, name := range slices.Sorted(maps.Keys(models)) {
 		mu := models[name]
@@ -227,6 +243,9 @@ type Meter struct {
 	OnSpend func(spend map[string]map[string]float64)
 	// OnUnpriced is told, once per run, of a model that served it with no price (J-AC4).
 	OnUnpriced func(ctx context.Context, model string)
+	// OnInputExcludesCache is told, once per run, of a model whose input read below its cache
+	// tokens: the gateway reported it without them, and it was priced as fresh input whole.
+	OnInputExcludesCache func(ctx context.Context, model string)
 	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
 	Remaining func(principal string, remaining, limit int64)
 	// OnUsageError is told of each failed usage read; OnSucceeded of each tick that metered,
@@ -257,7 +276,7 @@ type Meter struct {
 	ended   map[string]time.Time        // live-seen runs, by when this meter first saw them ended
 	settled map[string]map[string]int64 // reported runs: the micro-USD by served model reported
 	fell    map[string]bool             // runs whose fallback was reported
-	named   map[string]bool             // run and model pairs whose missing price was reported
+	named   map[string]bool             // run and model pairs whose missing price, or input without cache, was reported
 }
 
 type reading struct {
@@ -479,6 +498,11 @@ func (m *Meter) Tick(ctx context.Context) error {
 				why = FallbackUnpriced
 				m.unpriced(ctx, r, model)
 				break
+			}
+			for name, mu := range u.byModel() {
+				if inputExcludesCache(mu.Input, mu.CacheRead, mu.CacheWrite) {
+					m.excludesCache(ctx, r, cmp.Or(name, r.Model))
+				}
 			}
 			v := m.spend(r.ID, raw)
 			usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
@@ -716,6 +740,23 @@ func (m *Meter) unpriced(ctx context.Context, r runs.Run, model string) {
 	m.log().Warn("a model served a run without a price in meter.prices", "run", r.ID, "model", model)
 	if m.OnUnpriced != nil {
 		m.OnUnpriced(ctx, model)
+	}
+}
+
+// excludesCache names, once per run, a model whose input read below its cache tokens: a gateway
+// path that reports input without them changes how the run is priced, so it shows on a counter.
+func (m *Meter) excludesCache(ctx context.Context, r runs.Run, model string) {
+	k := r.ID + "/input-excludes-cache/" + model
+	if m.named[k] {
+		return
+	}
+	if m.named == nil {
+		m.named = map[string]bool{}
+	}
+	m.named[k] = true
+	m.log().Info("the gateway reported a model's input without its cache tokens", "run", r.ID, "model", model)
+	if m.OnInputExcludesCache != nil {
+		m.OnInputExcludesCache(ctx, model)
 	}
 }
 
