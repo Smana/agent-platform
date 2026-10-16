@@ -16,8 +16,11 @@ import (
 
 var (
 	// ErrAlreadyDecided is a decision on an approval that is no longer pending:
-	// the first valid decision won, or it expired, or its call already has a result.
+	// the first valid decision won, or its call already has a result, or its run ended.
 	ErrAlreadyDecided = errors.New("already_decided")
+	// ErrApprovalExpired is a human decision on an approval past its deadline:
+	// the deadline decides, so a late decision never wins over the expiry sweep.
+	ErrApprovalExpired = errors.New("approval_expired")
 	// ErrNoApproval is an approval id the room log does not hold.
 	ErrNoApproval = errors.New("no such approval")
 	// ErrBadDecision is a human decision other than approved or denied.
@@ -145,9 +148,10 @@ func (s *Store) requestApproval(ctx context.Context, a Approval, d envelope.Draf
 // Decide records a human's decision, approved or denied, and appends
 // approval_decided in one transaction. UPDATE … WHERE state = 'pending' under the
 // room's row lock is the whole race (§2): the first valid decision wins, and every
-// later one, an expiry or a supersede included, is ErrAlreadyDecided. A decision
-// on a call that already has a result closes the approval as superseded and is
-// ErrAlreadyDecided too. Like the driver's acts, d's key is checked first: a
+// later one, a supersede included, is ErrAlreadyDecided. A decision on a call that
+// already has a result closes the approval as superseded and is ErrAlreadyDecided
+// too. One past the deadline, read in the same transaction, closes it as expired
+// and is ErrApprovalExpired, as is any decision on an expired approval. Like the driver's acts, d's key is checked first: a
 // replayed decision returns its stored event, and a key stored for anything else
 // is ErrKeyConflict.
 func (s *Store) Decide(ctx context.Context, approvalID, decision, by, reason string, d envelope.Draft) (envelope.Event, Approval, error) {
@@ -203,23 +207,37 @@ func (s *Store) closeApproval(ctx context.Context, id, state, by, reason string,
 	}
 	human := state == ApprovalApproved || state == ApprovalDenied
 	if human {
-		var answered, ended bool
-		if err := tx.QueryRow(ctx, `SELECT `+answeredSQL+`, `+endedSQL+` FROM approvals a WHERE a.approval_id = $1 AND a.state = 'pending'`,
-			id).Scan(&answered, &ended); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// The deadline is read under the room's row lock that every close takes, on
+		// the database's clock: a decision past it is refused here, whether or not
+		// the sweep has run, so the sweep is cleanup and never the fence.
+		var st string
+		var answered, ended, late bool
+		if err := tx.QueryRow(ctx, `SELECT a.state, `+answeredSQL+`, `+endedSQL+`, a.expires_at <= now() FROM approvals a
+			WHERE a.approval_id = $1`, id).Scan(&st, &answered, &ended, &late); err != nil {
 			return envelope.Event{}, Approval{}, false, err
 		}
-		if answered || ended { // too late for anyone: close it for what it is, then refuse
-			why := reasonSuperseded
-			if !answered {
-				why = reasonRunEnded
-			}
-			if _, _, err := s.closeTx(ctx, tx, id, ApprovalSuperseded, brokerActor, why, brokerClose(id)); err != nil {
+		var closeAs, why string
+		refusal := ErrAlreadyDecided
+		switch {
+		case st == ApprovalExpired:
+			return envelope.Event{}, Approval{}, false, ErrApprovalExpired
+		case st != ApprovalPending:
+			return envelope.Event{}, Approval{}, false, ErrAlreadyDecided
+		case answered: // superseded before expired, as the sweep orders them
+			closeAs, why = ApprovalSuperseded, reasonSuperseded
+		case ended:
+			closeAs, why = ApprovalSuperseded, reasonRunEnded
+		case late:
+			closeAs, why, refusal = ApprovalExpired, reasonExpired, ErrApprovalExpired
+		}
+		if closeAs != "" { // too late for anyone: close it for what it is, then refuse
+			if _, _, err := s.closeTx(ctx, tx, id, closeAs, brokerActor, why, brokerClose(id)); err != nil {
 				return envelope.Event{}, Approval{}, false, err
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return envelope.Event{}, Approval{}, false, err
 			}
-			return envelope.Event{}, Approval{}, false, ErrAlreadyDecided
+			return envelope.Event{}, Approval{}, false, refusal
 		}
 	}
 	ev, a, err := s.closeTx(ctx, tx, id, state, by, reason, d)

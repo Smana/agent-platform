@@ -20,6 +20,7 @@ const rejections: Record<string, string> = {
   conflict: "The room changed at the same moment. Retry.",
   log_unavailable: "The room's log is unavailable right now. Retry.",
   already_decided: "Another approver decided first.",
+  approval_expired: "The request expired before your decision reached the broker. The agent was told no.",
   four_eyes: "This room needs an approver who did not prompt the turn.",
   too_large: "Forking here copies over 5,000 events or 32 MiB. Fork from an earlier message.",
 };

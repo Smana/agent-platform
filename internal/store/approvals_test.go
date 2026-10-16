@@ -101,7 +101,7 @@ func TestExpiry(t *testing.T) {
 	if evs[0].Actor.ID != "system:room-broker" || evs[0].Origin != envelope.OriginBroker {
 		t.Fatalf("the expiry is the broker's: %+v", evs[0])
 	}
-	if _, _, err := s.Decide(t.Context(), "ap1", "approved", "human:x", "", deciderDraft("human:x", 1)); !errors.Is(err, ErrAlreadyDecided) {
+	if _, _, err := s.Decide(t.Context(), "ap1", "approved", "human:x", "", deciderDraft("human:x", 1)); !errors.Is(err, ErrApprovalExpired) {
 		t.Fatalf("a decision after the expiry: %v", err)
 	}
 	if again, err := s.ExpireDue(t.Context()); err != nil || len(again) != 0 {
@@ -650,5 +650,75 @@ func TestASweepSkipsARoomSealedMeanwhile(t *testing.T) {
 	evs, err := s.closeAll(ctx, `SELECT approval_id FROM approvals WHERE state = 'pending' ORDER BY room_id DESC`, ApprovalExpired, reasonExpired)
 	if err != nil || len(evs) != 1 || evs[0].RoomID != room {
 		t.Fatalf("closed %v, %v; want the open room's approval only", evs, err)
+	}
+}
+
+// A decision that reaches the store after the deadline, before any sweep, is
+// refused in its own transaction: the approval closes as expired, the broker's
+// close, and the late approver is told approval_expired, then and on a retry.
+func TestADecisionPastTheDeadlineIsRefused(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	holdBridge(t, s, room, approvalRun)
+	if _, _, err := s.RequestApproval(ctx, approval("ap1", "e1", "c1", -time.Second), approvalDraft()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Decide(ctx, "ap1", ApprovalApproved, "human:x", "", deciderDraft("human:x", 1)); !errors.Is(err, ErrApprovalExpired) {
+		t.Fatalf("a late approve: %v, want ErrApprovalExpired", err)
+	}
+	if a, err := s.Approval(ctx, "ap1"); err != nil || a.State != ApprovalExpired {
+		t.Fatalf("the late decision closed it %q, %v; want expired", a.State, err)
+	}
+	var decision, actor string
+	if err := s.pool.QueryRow(ctx, `SELECT payload->>'decision', actor_id FROM events WHERE type = 'approval_decided'`).Scan(&decision, &actor); err != nil ||
+		decision != ApprovalExpired || actor != brokerActor {
+		t.Fatalf("decided event %q by %q, %v; want the broker's expiry", decision, actor, err)
+	}
+	if _, _, err := s.Decide(ctx, "ap1", ApprovalDenied, "human:y", "", deciderDraft("human:y", 1)); !errors.Is(err, ErrApprovalExpired) {
+		t.Fatalf("a decision on an expired approval: %v, want ErrApprovalExpired", err)
+	}
+	if evs, err := s.ExpireDue(ctx); err != nil || len(evs) != 0 {
+		t.Fatalf("the sweep after a refused decision closed %d, %v", len(evs), err)
+	}
+}
+
+// A late decision and the expiry sweep, on two replicas, interleave in either
+// order: the deadline decides, never the race. Every approval ends expired, with
+// one close event, and the decision is always refused as approval_expired.
+func TestALateDecisionNeverBeatsTheSweep(t *testing.T) {
+	ctx := t.Context()
+	s, broker, _, _ := open(t)
+	other, err := Open(ctx, broker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	holdBridge(t, s, room, approvalRun)
+	const rounds = 20
+	for i := range rounds {
+		id := fmt.Sprint("ap", i)
+		if _, _, err := s.RequestApproval(ctx, approval(id, fmt.Sprint("e", i), fmt.Sprint("c", i), -time.Second), approvalDraft()); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var decideErr, sweepErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _, decideErr = s.Decide(ctx, id, ApprovalApproved, "human:x", "", deciderDraft("human:x", int64(i+1)))
+		}()
+		go func() { defer wg.Done(); _, sweepErr = other.ExpireDue(ctx) }()
+		wg.Wait()
+		if sweepErr != nil || !errors.Is(decideErr, ErrApprovalExpired) {
+			t.Fatalf("round %d: decide %v, sweep %v; want approval_expired and a clean sweep", i, decideErr, sweepErr)
+		}
+		if a, err := s.Approval(ctx, id); err != nil || a.State != ApprovalExpired {
+			t.Fatalf("round %d: %q, %v; want expired", i, a.State, err)
+		}
+	}
+	var closes, approved int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE payload->>'decision' = 'approved')
+		FROM events WHERE type = 'approval_decided'`).Scan(&closes, &approved); err != nil || closes != rounds || approved != 0 {
+		t.Fatalf("%d closes, %d approved, %v; want %d expiries and no approval", closes, approved, err, rounds)
 	}
 }
