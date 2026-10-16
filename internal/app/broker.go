@@ -37,6 +37,7 @@ import (
 	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/agent-platform/internal/suspend"
 	"github.com/Smana/agent-platform/internal/version"
 )
 
@@ -164,6 +165,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	rc := &roomctrl.Reconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Store: logStore,
 		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom, Observe: roomObserver(m, rw.watch)}
+	withSuspend(rc, cfg.Suspend, mgr.GetClient(), logStore, log)
 	if err := rc.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -371,4 +373,14 @@ func countLiveRuns(w *runwatch.Watcher, m *metrics.Set) {
 	w.OnLive(func(ctx context.Context, d int64) {
 		m.Participants.Add(ctx, d, metric.WithAttributes(attribute.String("kind", "run")))
 	})
+}
+
+// withSuspend turns on the room controller's suspend trigger when the config does (v2
+// suspend). Off, the field stays a nil interface, never a typed nil.
+func withSuspend(rc *roomctrl.Reconciler, cfg config.SuspendConfig, c client.Client, a *meteredLog, log *slog.Logger) {
+	if !cfg.Enabled {
+		return
+	}
+	rc.Suspend = &suspend.Suspender{Client: c, Approvals: a, After: cfg.After.Duration, Log: log}
+	log.Info("the suspend trigger is on", "after", cfg.After.Duration)
 }

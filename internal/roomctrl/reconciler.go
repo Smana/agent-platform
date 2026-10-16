@@ -82,6 +82,14 @@ type Reconciler struct {
 	Now func() time.Time
 	// Log receives the seal-timeout warning; nil discards it.
 	Log *slog.Logger
+	// Suspend, when set, suspends and resumes the room's runs at each resync (v2 suspend);
+	// nil leaves them be.
+	Suspend suspender
+}
+
+// suspender is the suspend trigger; *suspend.Suspender has it.
+type suspender interface {
+	Room(ctx context.Context, room *v1alpha1.Room, idleSince time.Time, runs []runwatch.Run) error
 }
 
 // Reconcile ensures the room's row and its seq-1 Open event, projects the log and
@@ -123,7 +131,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("roomctrl: pending approvals of room %s: %w", room.Name, err)
 	}
-	want := v1alpha1.RoomStatus{Phase: Phase(st, r.Runs.InRoom(room.Name), pending, r.now()),
+	runs := r.Runs.InRoom(room.Name)
+	want := v1alpha1.RoomStatus{Phase: Phase(st, runs, pending, r.now()),
 		LastSeq: st.LastSeq, Driver: st.Driver, DriverEpoch: st.DriverEpoch,
 		PendingApprovals: clampInt32(pending), ObservedGeneration: room.Generation}
 	if want.Task, err = r.taskStatus(ctx, &room); err != nil {
@@ -134,6 +143,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if r.Observe != nil {
 		r.Observe(room.Name, want, st.LastEventAt)
+	}
+	if r.Suspend != nil && want.Phase != "Closed" {
+		if err := r.Suspend.Room(ctx, &room, st.LastEventAt, runs); err != nil {
+			return requeueOnConflict(err)
+		}
 	}
 	return ctrl.Result{RequeueAfter: resync}, nil
 }
