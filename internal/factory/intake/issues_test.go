@@ -41,6 +41,13 @@ type counter struct {
 	mu        sync.Mutex
 	sources   []string
 	truncated []string
+	refused   []string
+}
+
+func (c *counter) AdmissionRefused(_ context.Context, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refused = append(c.refused, reason)
 }
 
 func (c *counter) LabelEventsTruncated(_ context.Context, label string) {

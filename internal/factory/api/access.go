@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 )
 
@@ -34,4 +35,20 @@ func (a GitHubAccess) CanWrite(ctx context.Context, p authn.Principal, repositor
 		return false, nil
 	}
 	return a.Perms.CanWrite(ctx, repository, login)
+}
+
+// Person implements PersonResolver (v2 per-person caps D1): github:<login> from the same link
+// CanWrite reads, "" with no sub or no link.
+func (a GitHubAccess) Person(ctx context.Context, p authn.Principal, repository string) (string, error) {
+	if p.Sub == "" {
+		return "", nil
+	}
+	login, err := a.Identity.Login(ctx, p.Sub, repository)
+	if err != nil {
+		return "", fmt.Errorf("person: %w", err)
+	}
+	if login == "" {
+		return "", nil
+	}
+	return factoryv1.Person(login), nil
 }

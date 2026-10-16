@@ -238,7 +238,7 @@ absent rather than 0.
 | `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
 | `agent_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
 | `agent_factory_repository_owned` | gauge | `repository` | 1 while the repository's `.github/agent-factory.yaml` names this factory (`factory` in the config), per replica; 0 means no intake, schedules, API runs or merges there |
-| `agent_factory_admission_refusals_total` | counter | `repository`, `reason` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned` |
+| `agent_factory_admission_refusals_total` | counter | `repository`, `reason` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned`; and `person_budget_exhausted`, an API run or a label refused on its person's day ([per-person caps](factory.md#per-person-caps)) |
 
 A label value outside its known set is recorded as `other`; `repository` takes only the configured repositories' names.
 
@@ -274,6 +274,9 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | `agent_factory_run_cost_usd{tier}` | A priced run's cost, reported two minutes after the meter first sees it ended, or when its claim is deleted first. `agent_factory_run_budget_usd{tier}` is the run cap |
 | `agent_factory_run_spend_usd{run, model}` | A priced run's spend so far, by the model that served it, from its first reading until its cost is reported. Only runs not yet reported carry the series, so its cardinality is the live runs times their models. One run's final price: `max_over_time(agent_factory_run_spend_usd{run="<id>"}[1d])` |
 | `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
+| `agent_factory_run_revocations_total{reason="budget-principal-shadow", principal}` | A run admitted past a day's cap while `enforcePrincipal` is off; `principal` is the key over: `system:factory`, or a person with per-person caps on. Zero false refusals for a week is the bar for enforcing |
+| `agent_factory_run_revocations_total{reason="budget-person"}` | A task escalated at Queued because its person's day is spent |
+| `agent_factory_budget_remaining_tokens{principal="github:<login>"}` | A person's day left, once per-person caps are on |
 
 A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
 after they happen, so the first tick that sees a run ended can read it short. On

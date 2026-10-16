@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
@@ -37,7 +38,7 @@ const (
 	AnnUsage         = "agents.ogenki.io/usage-tokens"
 	AnnPullRequest   = "agents.ogenki.io/pull-request"
 	AnnRevoked       = runwatch.RevokedAnnotation
-	PrincipalFactory = "system:factory"
+	PrincipalFactory = config.PrincipalFactory
 	QueueFactory     = "factory"
 	QueueInteractive = "interactive"
 	AnnTraceparent   = "agents.ogenki.io/traceparent" // W3C, set at CREATE; the composition hands it to the harness (R46)
@@ -50,6 +51,9 @@ const (
 	// The run API's fingerprint of the request that made the run, so a replay of its
 	// Idempotency-Key with another body is told apart from a retry. CREATE only.
 	AnnRequestHash = "agents.ogenki.io/request-hash"
+	// The person the run is charged to beside the fleet (v2 per-person caps D2): the meter
+	// settles its tokens to both keys. CREATE only; absent, the run's principal pays alone.
+	AnnChargedTo = "agents.ogenki.io/charged-to"
 
 	namePrefix = runwatch.ClaimPrefix
 )
@@ -77,7 +81,7 @@ func Scheme(s *runtime.Scheme) {
 // CREATE-only annotations' sources (R48).
 type Spec struct {
 	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue, Traceparent, Tier string
-	SourceURL, Head, RequestHash                                                                                                        string
+	SourceURL, Head, RequestHash, ChargedTo                                                                                             string
 	MaxTokens, MaxMinutes, StartSeq                                                                                                     int64
 	EgressProfiles                                                                                                                      []string
 }
@@ -176,6 +180,9 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.RequestHash != "" {
 		ann[AnnRequestHash] = s.RequestHash
 	}
+	if s.ChargedTo != "" {
+		ann[AnnChargedTo] = s.ChargedTo
+	}
 	if len(ann) > 0 {
 		u.SetAnnotations(ann)
 	}
@@ -188,7 +195,7 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 // Run is the part of a claim the factory reads back.
 type Run struct {
 	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef, Repository string
-	Head, TaskText, RequestHash, Tier, Model                                                      string
+	Head, TaskText, RequestHash, Tier, Model, ChargedTo                                           string
 	Tokens, MaxTokens, StartSeq                                                                   int64
 	Created, Finished                                                                             time.Time
 	// Deleting: the claim carries a deletion timestamp. Its finalizers can keep it listed, in
@@ -209,7 +216,7 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		RoomRef: str("spec", "roomRef"), Repository: str("spec", "repository"), Phase: str("status", "phase"), Reason: str("status", "reason"),
 		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead],
 		RequestHash: u.GetAnnotations()[AnnRequestHash], Tier: u.GetLabels()[LabelTier], Model: str("spec", "model"),
-		TaskText: str("spec", "task", "text")}
+		TaskText: str("spec", "task", "text"), ChargedTo: u.GetAnnotations()[AnnChargedTo]}
 	// The CREATE-only start seq (R48): absent means the room was empty when the run was created.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnStartSeq], 10, 64); err == nil {
 		r.StartSeq = v
@@ -323,7 +330,7 @@ func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) e
 	if err := validID("annotate", id); err != nil {
 		return err
 	}
-	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash} {
+	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo} {
 		if _, ok := kv[k]; ok {
 			return fmt.Errorf("annotate run %s: %s is set at CREATE only", id, k)
 		}

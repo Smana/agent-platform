@@ -171,6 +171,11 @@ type TaskStatus struct {
 	CheckRerunsHead string `json:"checkRerunsHead,omitempty"`
 	// +optional
 	Retries int32 `json:"retries,omitempty"`
+	// RetriedBy is the maintainer whose /factory retry sent the task back, github:<login>: the
+	// person its later runs are charged to (v2 per-person caps D2). Empty: the labeller.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	RetriedBy string `json:"retriedBy,omitempty"`
 	// Automatic resumes of runs lost to their infrastructure (disruption design §4), every role
 	// counted; capped by the config's resume.maxPerTask.
 	// +kubebuilder:validation:Minimum=0
@@ -330,6 +335,11 @@ type RunRecord struct {
 	// +kubebuilder:validation:Enum=unpriced;untyped
 	// +optional
 	Unpriced string `json:"unpriced,omitempty"`
+	// The person the run was charged to beside the fleet (v2 per-person caps D2), github:<login>;
+	// empty when per-person caps were off or no person caused it.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ChargedTo string `json:"chargedTo,omitempty"`
 	// The room's lastSeq when the run was created: verdicts are read after it.
 	// +optional
 	StartSeq int64 `json:"startSeq,omitempty"`

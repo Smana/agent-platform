@@ -383,6 +383,33 @@ type Budgets struct {
 	EnforcePrincipal bool  `json:"enforcePrincipal"`
 	FactoryDaily     int64 `json:"factoryDaily"`
 	HumanDaily       int64 `json:"humanDaily"`
+	// PerPerson is v2's per-person caps: off, every run is admitted as before.
+	PerPerson PerPerson `json:"perPerson"`
+}
+
+// PerPerson charges each run to the person who caused it as well as to the fleet, in one ledger
+// write (v2 per-person caps D2, D3). Enabled alone attributes and counts (shadow); a refusal also
+// needs EnforcePrincipal (D8). The unit is the ledger's reference tokens (D6): the run and task
+// caps already bound the money in USD.
+type PerPerson struct {
+	Enabled bool `json:"enabled"`
+	// DailyTokens is every person's day (D7: one value, no per-person override). Omitted: humanDaily.
+	DailyTokens int64 `json:"dailyTokens"`
+}
+
+// PrincipalFactory is the fleet's ledger key: the factory's own principal.
+const PrincipalFactory = "system:factory"
+
+// DailyCap is the day of a ledger key: the fleet's for PrincipalFactory, the person day for any
+// other key while per-person caps are on, else humanDaily.
+func (b Budgets) DailyCap(principal string) int64 {
+	switch {
+	case principal == PrincipalFactory:
+		return b.FactoryDaily
+	case b.PerPerson.Enabled:
+		return b.PerPerson.DailyTokens
+	}
+	return b.HumanDaily
 }
 
 // Resume bounds the automatic resume of a run lost to its infrastructure (disruption design §4).
@@ -548,6 +575,9 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if c.Budgets.HumanDaily == 0 {
 		c.Budgets.HumanDaily = defaultHumanDaily
+	}
+	if c.Budgets.PerPerson.DailyTokens == 0 {
+		c.Budgets.PerPerson.DailyTokens = c.Budgets.HumanDaily // D7: one day for every person
 	}
 	if c.Resume.MaxPerTask == 0 {
 		c.Resume.MaxPerTask = defaultResumesPerTask
@@ -813,6 +843,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Budgets.HumanDaily < 1 {
 		bad("budgets.humanDaily must be positive")
+	}
+	if c.Budgets.PerPerson.DailyTokens < 1 {
+		bad("budgets.perPerson.dailyTokens must be positive")
 	}
 	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
 		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)

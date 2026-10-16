@@ -51,3 +51,16 @@ func TestGitHubAccessResolvesTheLoginThenAsksGitHub(t *testing.T) {
 		})
 	}
 }
+
+// D1: the person a token is charged as is the same login the write check resolved.
+func TestGitHubAccessNamesThePerson(t *testing.T) {
+	a := GitHubAccess{Identity: logins{"291": "alice-gh"}}
+	for sub, want := range map[string]string{"291": "github:alice-gh", "999": "", "": ""} {
+		if got, err := a.Person(t.Context(), authn.Principal{Sub: sub}, "Smana/x"); err != nil || got != want {
+			t.Fatalf("%q: %q %v", sub, got, err)
+		}
+	}
+	if _, err := a.Person(t.Context(), authn.Principal{Sub: "broken"}, "Smana/x"); err == nil {
+		t.Fatal("a failed lookup is no answer")
+	}
+}

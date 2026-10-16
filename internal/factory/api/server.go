@@ -87,6 +87,15 @@ type Server struct {
 	// Access is v2 D4: whether a human may write the repository on GitHub. nil refuses every
 	// human: GitHub is the one answer to who may change a repository, and there is no bypass.
 	Access WriteChecker
+	// People is D1's identity link, read only while budgets.perPerson is on: the person a human
+	// token is charged as. nil charges every human as their own principal.
+	People PersonResolver
+}
+
+// PersonResolver names the person a human principal is charged as (v2 per-person caps D1):
+// github:<login> through their ZITADEL link, "" with no link. An error is no answer.
+type PersonResolver interface {
+	Person(ctx context.Context, p authn.Principal, repository string) (string, error)
 }
 
 // WriteChecker answers v2 D4 for a human principal: write or higher on repository, from GitHub.
@@ -125,8 +134,12 @@ const (
 )
 
 // Reservation is one ledger entry: what the run may spend, on whose behalf and on which room.
+// Person is the second key the same entry charges (v2 per-person caps D3): the person who caused
+// the run, beside the fleet as Principal. One key per run is what makes both reservations one
+// write: no run ever holds one without the other.
 type Reservation struct {
 	Principal string `json:"principal"`
+	Person    string `json:"person,omitempty"`
 	Room      string `json:"room,omitempty"`
 	MaxTokens int64  `json:"maxTokens"`
 }
@@ -291,12 +304,21 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		s.refuseRepository(ctx, w, http.StatusForbidden, "repository_permission")
 		return
 	}
-	if code, reason := s.reserve(r.Context(), p, id, in); code != 0 {
+	person, err := s.person(r.Context(), p, in.Repository)
+	if err != nil {
+		refuse(w, http.StatusServiceUnavailable, "identity_unavailable")
+		return
+	}
+	if code, reason := s.reserve(ctx, p, person, id, in); code != 0 {
+		if reason == reasonPersonOver {
+			s.refuseRepository(ctx, w, code, reason)
+			return
+		}
 		refuse(w, code, reason)
 		return
 	}
 	spec := runs.Spec{RunID: id, Role: in.Role, Repository: in.Repository, BaseRef: in.BaseRef, Branch: branch,
-		TaskText: in.Task.Text, TaskURL: in.Task.URL, Principal: p.ID, DataClass: in.DataClass, Model: in.Model,
+		TaskText: in.Task.Text, TaskURL: in.Task.URL, Principal: p.ID, ChargedTo: person, DataClass: in.DataClass, Model: in.Model,
 		RoomRef: in.RoomRef, Queue: runs.QueueInteractive, MaxTokens: in.MaxTokens, MaxMinutes: 120,
 		EgressProfiles: in.EgressProfiles, RequestHash: hash}
 	if err := s.Runs.Create(r.Context(), spec); err != nil {
@@ -505,15 +527,40 @@ func (s *Server) mayWrite(ctx context.Context, p authn.Principal, repository str
 	return err == nil && ok
 }
 
-// reserve is R50's admission on the day's ledger (Reserve), its refusals said in HTTP.
-func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in RunRequest) (int, string) {
-	limit := s.Cfg.Budgets.HumanDaily
-	if p.ID == runs.PrincipalFactory {
-		limit = s.Cfg.Budgets.FactoryDaily
+// reasonPersonOver is the API's refusal of a person past their day (D4), counted by repository.
+const reasonPersonOver = "person_budget_exhausted"
+
+// person is who a human's run is charged to while per-person caps are on (D1): their GitHub
+// login, else their own principal; "" when the caps are off or the caller is a system.
+func (s *Server) person(ctx context.Context, p authn.Principal, repository string) (string, error) {
+	if !s.Cfg.Budgets.PerPerson.Enabled || p.Kind != envelope.ActorHuman {
+		return "", nil
 	}
-	over, err := Reserve(ctx, s.Rooms, s.Namespace, s.Now(), id,
-		Reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}, limit, s.Cfg.Budgets.EnforcePrincipal)
+	if s.People == nil {
+		return p.ID, nil
+	}
+	who, err := s.People.Person(ctx, p, repository)
+	if err != nil {
+		return "", err
+	}
+	if who == "" {
+		return p.ID, nil // no link: the sub is the person, and cannot label anyway (D1)
+	}
+	return who, nil
+}
+
+// reserve is R50's admission on the day's ledger (Reserve), its refusals said in HTTP. A run
+// charged to a person reserves the fleet and the person in one entry (D2, D3).
+func (s *Server) reserve(ctx context.Context, p authn.Principal, person, id string, in RunRequest) (int, string) {
+	b := s.Cfg.Budgets
+	mine := Reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}
+	if person != "" {
+		mine.Principal, mine.Person = runs.PrincipalFactory, person
+	}
+	over, err := Reserve(ctx, s.Rooms, s.Namespace, s.Now(), id, mine, b.DailyCap(mine.Principal), b.DailyCap(person), b.EnforcePrincipal)
 	switch {
+	case errors.Is(err, ErrPersonOverBudget):
+		return http.StatusTooManyRequests, reasonPersonOver
 	case errors.Is(err, ErrOverBudget):
 		return http.StatusTooManyRequests, "over_budget"
 	case errors.Is(err, ErrRunBusy):
@@ -527,8 +574,8 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 	case err != nil:
 		return http.StatusServiceUnavailable, "ledger_unavailable"
 	}
-	if over {
-		s.Metrics.Revoked(ctx, "budget-principal-shadow") // R3: counted, not enforced
+	if over != "" {
+		s.Metrics.PrincipalShadow(ctx, over) // R3: counted, not enforced
 	}
 	return 0, ""
 }
@@ -536,9 +583,12 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, id string, in R
 // Reserve's refusals. Any other error is the ledger unread or unwritten.
 var (
 	ErrOverBudget = errors.New("ledger: over the daily budget")
-	ErrRunBusy    = errors.New("ledger: the run id holds another reservation")
-	ErrRoomBusy   = errors.New("ledger: a reservation holds the room")
-	ErrLedgerBusy = errors.New("ledger: busy")
+	// ErrPersonOverBudget is the person's day, not the fleet's (D4): checked first, so a refusal
+	// names whose cap it is.
+	ErrPersonOverBudget = errors.New("ledger: over the person's daily budget")
+	ErrRunBusy          = errors.New("ledger: the run id holds another reservation")
+	ErrRoomBusy         = errors.New("ledger: a reservation holds the room")
+	ErrLedgerBusy       = errors.New("ledger: busy")
 )
 
 // Reserve is R50's atomic admission, shared by the API and the factory's Queued (#78): read the
@@ -548,14 +598,17 @@ var (
 // lands whatever the interleaving. Unless enforce (R3's shadow), an over day is reported as over,
 // written, and never refused; room exclusion stays exact. An enforced cap also refuses while the
 // meter is blind (#54): its spend column is then stale. Release drops the entry when the run ends.
+//
+// mine.Person, when set, is checked against personLimit in the same read and charged by the same
+// write (D3). over names the key whose day the run does not fit, the person's first; "" fits.
 func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id string, mine Reservation,
-	limit int64, enforce bool) (over bool, err error) {
+	limit, personLimit int64, enforce bool) (over string, err error) {
 	if enforce {
 		switch blind, err := meterBlind(ctx, c, ns, now); {
 		case err != nil:
-			return false, err
+			return "", err
 		case blind:
-			return false, ErrMeterBlind
+			return "", ErrMeterBlind
 		}
 	}
 	name := LedgerPrefix + now.UTC().Format(LedgerDayLayout)
@@ -568,28 +621,37 @@ func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id 
 			cm = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 			existed = false
 		} else if err != nil {
-			return false, fmt.Errorf("ledger %s: %w", name, err)
+			return "", fmt.Errorf("ledger %s: %w", name, err)
 		}
 		spent, err := LedgerSpentColumn(cm)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		reserved, err := ledgerReservations(cm)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		// R48: the run id is the retry's identity. Our own equal entry means we already
 		// landed this admission: pass without reserving twice. A different value under this
 		// id is another run's slot, and overwriting it would unreserve theirs: refuse.
 		if prev, ok := reserved[id]; ok {
 			if prev == mine {
-				return false, nil
+				return "", nil
 			}
-			return false, ErrRunBusy
+			return "", ErrRunBusy
 		}
-		over = OverDaily(dayUsed(spent, reserved, mine.Principal), mine.MaxTokens, limit)
-		if over && enforce {
-			return true, ErrOverBudget
+		over = ""
+		switch {
+		case mine.Person != "" && OverDaily(dayUsed(spent, reserved, mine.Person), mine.MaxTokens, personLimit):
+			over = mine.Person
+			if enforce {
+				return over, ErrPersonOverBudget
+			}
+		case OverDaily(dayUsed(spent, reserved, mine.Principal), mine.MaxTokens, limit):
+			over = mine.Principal
+			if enforce {
+				return over, ErrOverBudget
+			}
 		}
 		if mine.Room != "" {
 			for _, v := range reserved {
@@ -603,7 +665,7 @@ func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id 
 		}
 		b, err := json.Marshal(mine)
 		if err != nil {
-			return false, fmt.Errorf("ledger %s: %w", name, err)
+			return "", fmt.Errorf("ledger %s: %w", name, err)
 		}
 		cm.Data[LedgerReserved+id] = string(b)
 		if existed {
@@ -617,11 +679,11 @@ func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id 
 		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
 			continue // re-read and re-check (R50)
 		default:
-			return false, fmt.Errorf("ledger %s: %w", name, err)
+			return "", fmt.Errorf("ledger %s: %w", name, err)
 		}
 	}
 	// Conflicts at this depth mean steady contention, not a lost slot: fail open never.
-	return false, ErrLedgerBusy
+	return "", ErrLedgerBusy
 }
 
 // dropReservation undoes reserve when the run creation itself failed. Best effort: a leaked
@@ -646,11 +708,11 @@ func (s *Server) dropReservation(ctx context.Context, id string) {
 func OverDaily(used, maxTokens, limit int64) bool { return used+maxTokens > limit }
 
 // dayUsed is what principal holds of its day: the meter's settled spend plus its admitted runs'
-// reservations.
+// reservations, as their principal or their person.
 func dayUsed(spent map[string]int64, reserved map[string]Reservation, principal string) int64 {
 	used := spent[principal]
 	for _, v := range reserved {
-		if v.Principal == principal {
+		if v.Principal == principal || v.Person == principal {
 			used += v.MaxTokens
 		}
 	}

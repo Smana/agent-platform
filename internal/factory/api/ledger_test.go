@@ -64,7 +64,7 @@ func TestReleaseIsIdempotentByRunID(t *testing.T) {
 	}
 	// The room is free again the same day (#55's acceptance).
 	if _, err := Reserve(t.Context(), c, "agent-system", now, "cccccccc",
-		Reservation{Principal: "human:291", Room: "3kq7x2ma", MaxTokens: 2_000_000}, 5_000_000, false); err != nil {
+		Reservation{Principal: "human:291", Room: "3kq7x2ma", MaxTokens: 2_000_000}, 5_000_000, 0, false); err != nil {
 		t.Fatalf("the released room admits a new run: %v", err)
 	}
 	// No ledger that day: nothing to release.
@@ -95,7 +95,7 @@ func TestABlindMeterRefusesEnforcedAdmission(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, err := Reserve(t.Context(), k, "agent-system", now, "aaaaaaaa", mine, 25_000_000, c.enforce)
+			_, err := Reserve(t.Context(), k, "agent-system", now, "aaaaaaaa", mine, 25_000_000, 0, c.enforce)
 			if errors.Is(err, ErrMeterBlind) != c.blind || (!c.blind && err != nil) {
 				t.Fatalf("want blind %v: %v", c.blind, err)
 			}

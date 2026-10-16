@@ -338,6 +338,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 	markHandled(t, c.ID)
 	after := t.Status.Reason
 	t.Status.Retries++
+	t.Status.RetriedBy = v1alpha1.Person(c.Author) // D2: the retrier pays for the runs the retry causes
 	t.Status.NextTrigger = "retry"
 	record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "retry") })
 	next := v1alpha1.PhaseQueued

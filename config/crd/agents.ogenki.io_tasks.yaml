@@ -437,6 +437,12 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              retriedBy:
+                description: |-
+                  RetriedBy is the maintainer whose /factory retry sent the task back, github:<login>: the
+                  person its later runs are charged to (v2 per-person caps D2). Empty: the labeller.
+                maxLength: 64
+                type: string
               retries:
                 format: int32
                 type: integer
@@ -462,6 +468,12 @@ spec:
                 items:
                   description: RunRecord is one AgentRun the task started.
                   properties:
+                    chargedTo:
+                      description: |-
+                        The person the run was charged to beside the fleet (v2 per-person caps D2), github:<login>;
+                        empty when per-person caps were off or no person caused it.
+                      maxLength: 64
+                      type: string
                     costMicroUSD:
                       description: The run's cost in micro-dollars, cache reads at
                         their own rate, as the meter priced it.

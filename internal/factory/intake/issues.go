@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
@@ -56,10 +57,12 @@ type issueForge interface {
 	AddLabels(ctx context.Context, number int, labels ...string) error
 }
 
-// errorCounter counts a failed poll, and a label left for the next one (fmetrics.Set).
+// errorCounter counts a failed poll, a label left for the next one, and a label refused on its
+// labeller's day (fmetrics.Set).
 type errorCounter interface {
 	IntakeError(ctx context.Context, source string)
 	LabelEventsTruncated(ctx context.Context, label string)
+	AdmissionRefused(ctx context.Context, reason string)
 }
 
 // IssuePoller is a leader-only manager.Runnable: it reads factory/ready and factory/stop labels
@@ -88,6 +91,11 @@ type IssuePoller struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// Sanitize is the snapshot's sanitiser; nil means sanitize.Text. A test forces a withheld text.
 	Sanitize func(string) (string, sanitize.Report)
+	// Ledger reads the day ledgers live (v2 per-person caps D4): a labeller past their day is
+	// refused before any Task exists. nil: intake reads no ledger, and Queued alone refuses.
+	Ledger client.Reader
+	// Now is the clock the ledger is read on; nil means time.Now.
+	Now func() time.Time
 }
 
 func (p *IssuePoller) repo() *config.Repository { return p.Cfg.RepositoryFor(p.Repository) }
@@ -299,6 +307,11 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 			return p.refuse(ctx, n, last, "task_active")
 		}
 	}
+	if !slices.ContainsFunc(open, func(t *v1alpha1.Task) bool { return t.Name == name }) { // a created Task is past the door
+		if spent, err := p.personSpent(ctx, n, last); err != nil || spent {
+			return err
+		}
+	}
 	for _, t := range superseded {
 		if err := p.annotateStop(ctx, t, "superseded"); err != nil {
 			return err
@@ -316,6 +329,41 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 		return fmt.Errorf("create task %s: %w", name, err) // AlreadyExists is the dedup (S2)
 	}
 	return p.Forge.RemoveLabel(ctx, n, label)
+}
+
+// personSpent is D4 at intake: with per-person caps on and enforced, a labeller whose day is spent
+// gets a comment naming them, their cap and the reset, no Task, and the label removed, so
+// re-labelling tomorrow retries. Queued's reservation stays the exact check (D3): this one only
+// keeps an exhausted day from queueing work until midnight. In shadow it refuses nothing.
+func (p *IssuePoller) personSpent(ctx context.Context, n int, last forge.LabelEvent) (bool, error) {
+	b := p.Cfg.Budgets
+	if !b.PerPerson.Enabled || p.Ledger == nil {
+		return false, nil
+	}
+	now := time.Now
+	if p.Now != nil {
+		now = p.Now
+	}
+	person := v1alpha1.Person(last.Actor)
+	used, err := api.DayUsed(ctx, p.Ledger, p.Namespace, person, now())
+	if err != nil {
+		return false, err // no answer is no refusal: the label waits for the next poll
+	}
+	if used < b.DailyCap(person) {
+		return false, nil
+	}
+	if !b.EnforcePrincipal {
+		p.log().Info("labeller's day is spent (shadow)", "issue", n, "person", person, "used", used, "cap", b.DailyCap(person))
+		return false, nil
+	}
+	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n),
+		narrate.PersonOverBudget(n, person, b.DailyCap(person), last.At)); err != nil {
+		return false, err
+	}
+	if p.Errors != nil {
+		p.Errors.AdmissionRefused(ctx, "person_budget_exhausted")
+	}
+	return true, p.Forge.RemoveLabel(ctx, n, p.repo().TriggerLabel)
 }
 
 // writer is v2 D5's GitHub check on login; without CanWrite nobody is one.

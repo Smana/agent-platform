@@ -43,7 +43,7 @@ func interventions() []string {
 }
 func revocations() []string {
 	return []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "manual",
-		"budget-task-shadow", "budget-principal-shadow"}
+		"budget-task-shadow", "budget-principal-shadow", "budget-person"}
 }
 func revocationLimits() []string {
 	return []string{"run-usd", "run-tokens", "task-usd", "task-tokens", "gateway-ceiling", "fleet", "principal-day"}
@@ -55,7 +55,8 @@ func intakeSources() []string   { return []string{"issue", "runlore", "schedule"
 func resumeReasons() []string   { return []string{"Disrupted", "PodLost"} }
 func roomCapReasons() []string  { return []string{"human_driver", "facts_due"} }
 func admissionReasons() []string {
-	return []string{"repository_differs_from_the_room", "repository_differs_from_the_branch", "repository_permission", "repository_not_owned"}
+	return []string{"repository_differs_from_the_room", "repository_differs_from_the_branch", "repository_permission", "repository_not_owned",
+		"person_budget_exhausted"}
 }
 
 // runRE bounds the run label to a C2 run id: the gauge holds only the runs the meter has not
@@ -391,6 +392,14 @@ func (s *Set) LabelEventsTruncated(ctx context.Context, label string) {
 // Revoked counts a run the factory revoked, by reason: the run meter's OnRevoke.
 func (s *Set) Revoked(ctx context.Context, reason string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations()))))
+}
+
+// PrincipalShadow counts a run admitted past a day's cap while budgets.enforcePrincipal is off
+// (R3), naming the ledger key over: system:factory, or the person (per-person caps D8). The
+// principal label is bounded by the people who may start runs.
+func (s *Set) PrincipalShadow(ctx context.Context, principal string) {
+	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "budget-principal-shadow"),
+		attribute.String("principal", principal)))
 }
 
 // RunRevoked counts a revocation by the run meter, by reason and the limit that fired.

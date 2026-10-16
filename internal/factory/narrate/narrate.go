@@ -181,6 +181,7 @@ func reasons() map[string]string {
 		"deleted":                   "the run's claim was deleted",
 		"budget-run":                "the run spent its token budget",
 		"budget-principal":          "the factory's daily token budget is spent",
+		"budget-person":             "the daily token budget of the person its next run is charged to is spent",
 		"budget-fleet":              "the agent fleet's daily token budget is spent",
 		"budget-task":               "the task's token budget has no room left for another full run",
 		"run_lost":                  "the run disappeared",
@@ -462,6 +463,9 @@ func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event 
 	if why := Reason(reason); why != "" {
 		fmt.Fprintf(&b, ": %s", why)
 	}
+	if p := t.Payer(); reason == "budget-person" && p != "" {
+		fmt.Fprintf(&b, ", `%s`; it resets at 00:00 UTC", p)
+	}
 	b.WriteString(".")
 	if pr := t.Status.PullRequest; pr != nil && pr.MergedBy != "" && phase == v1alpha1.PhaseDone {
 		fmt.Fprintf(&b, " Merged by @%s.", strings.TrimSuffix(pr.MergedBy, "[bot]"))
@@ -510,6 +514,14 @@ func StopIgnored(number int, reason string, at time.Time) Event {
 func Refused(number int, reason string, at time.Time) Event {
 	return Event{Key: fmt.Sprintf("refused-%s-%d", reason, at.Unix()),
 		Body: fmt.Sprintf("The agent factory did not start a task for #%d: %s.", number, Reason(reason))}
+}
+
+// PersonOverBudget refuses a label whose labeller's day is spent (v2 per-person caps D4): no Task,
+// the person, their cap and the reset named, so re-labelling after it retries.
+func PersonOverBudget(number int, person string, capTokens int64, at time.Time) Event {
+	return Event{Key: fmt.Sprintf("refused-person_budget_exhausted-%d", at.Unix()),
+		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily token budget of `%s` (%s tokens) is spent. "+
+			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, Tokens(capTokens))}
 }
 
 // NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
