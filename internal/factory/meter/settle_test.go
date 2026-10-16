@@ -115,3 +115,37 @@ func TestTheLiveSpendSnapshot(t *testing.T) {
 		t.Fatalf("snapshot %v after the run was reported, want empty", snap)
 	}
 }
+
+// A reading that lands after the report is not lost: the late spend goes to OnLateCost, by the
+// model that served it, while the run's claim exists.
+func TestSpendAfterTheReportIsAddedLate(t *testing.T) {
+	clock := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{standardRun("aaaaaaaa")}}
+	src := typed{"aaaaaaaa": byModel(map[string]ModelUsage{"glm-5.3": {Input: 1_000_000}})}
+	var costs []float64
+	var late []map[string]float64
+	m := &Meter{Runs: st, Source: src, Prices: served, Now: func() time.Time { return clock },
+		OnCost:     func(_ context.Context, _ string, usd float64, _ map[string]float64) { costs = append(costs, usd) },
+		OnLateCost: func(_ context.Context, byModel map[string]float64) { late = append(late, byModel) }}
+	tick := func() {
+		t.Helper()
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(30 * time.Second)
+	}
+	tick()
+	st.runs[0].Phase = "Succeeded"
+	for range 6 {
+		tick()
+	}
+	src["aaaaaaaa"] = byModel(map[string]ModelUsage{"glm-5.3": {Input: 1_500_000}})
+	tick()
+	tick()
+	if len(costs) != 1 || costs[0] != 1.4 {
+		t.Fatalf("costs %v, want one $1.40", costs)
+	}
+	if len(late) != 1 || !maps.Equal(late[0], map[string]float64{"glm-5.3": 0.7}) {
+		t.Fatalf("late %v, want one $0.70 on glm-5.3", late)
+	}
+}

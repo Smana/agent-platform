@@ -143,6 +143,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.RunRevoked(ctx, "budget-run", "run-usd")
 	s.RunRevoked(ctx, "budget-task", "task-usd")
 	s.RunCost(ctx, "standard", 0.65, map[string]float64{"glm-5.3": 0.65})
+	s.LateCost(ctx, map[string]float64{"glm-5.3": 0.1})
 	s.RunSpend(map[string]map[string]float64{"nh5tztlh": {"claude-opus-5-5": 2.13212}})
 	s.RunBudgetUSD(ctx, "standard", 2.55)
 	s.RunBudgetFallback(ctx, "task", "unpriced")
@@ -172,7 +173,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_run_revocations_total{limit="run-usd",reason="budget-run"} 1`,
 		`agent_factory_run_revocations_total{limit="task-usd",reason="budget-task"} 1`,
 		`agent_factory_run_cost_usd_bucket{tier="standard",le="0.75"} 1`,
-		`agent_factory_model_cost_usd_total{model="glm-5.3"} 0.65`,
+		`agent_factory_model_cost_usd_total{model="glm-5.3"} 0.75`,
 		`agent_factory_run_spend_usd{model="claude-opus-5-5",run="nh5tztlh"} 2.13212`,
 		`agent_factory_run_budget_usd{tier="standard"} 2.55`,
 		`agent_factory_run_budget_fallbacks_total{scope="task",why="unpriced"} 1`,

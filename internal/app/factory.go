@@ -224,7 +224,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			},
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.RunRevoked, Log: log,
-			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, OnSpend: m.RunSpend, Costs: costs,
+			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, OnLateCost: m.LateCost, OnSpend: m.RunSpend, Costs: costs,
 			OnFallback: func(ctx context.Context, why string) { m.RunBudgetFallback(ctx, "run", why) },
 			OnUnpriced: m.ModelUnpriced,
 			Throttle:   meter.VL{URL: cfg.Meter.LogsURL, Query: cfg.Meter.ThrottleQuery, HC: httpx.New(vmTimeout, nil)},

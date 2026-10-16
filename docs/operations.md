@@ -273,12 +273,14 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
 | `agent_factory_run_cost_usd{tier}` | A priced run's cost, reported two minutes after the meter first sees it ended, or when its claim is deleted first. `agent_factory_run_budget_usd{tier}` is the run cap |
 | `agent_factory_run_spend_usd{run, model}` | A priced run's spend so far, by the model that served it, from its first reading until its cost is reported. Only runs not yet reported carry the series, so its cardinality is the live runs times their models. One run's final price: `max_over_time(agent_factory_run_spend_usd{run="<id>"}[1d])` |
-| `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported: `increase(...[1d])` is a day's bill per model |
+| `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
 
 A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
 after they happen, so the first tick that sees a run ended can read it short. On
 `xplane-run-nh5tztlh` that tick read 370,526 of 507,350 tokens. The meter keeps annotating an
-ended run's usage, and reports its cost only once the window has passed.
+ended run's usage, and reports its cost only once the window has passed. A reading slower than
+the window still reaches the by-model counter and the Task's cost. It cannot correct the histogram,
+and the log says `a run spent after its cost was reported`.
 
 A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no
 annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a

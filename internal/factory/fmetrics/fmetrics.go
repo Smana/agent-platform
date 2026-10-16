@@ -403,6 +403,12 @@ func (s *Set) RunRevoked(ctx context.Context, reason, limit string) {
 // served it: the run meter's OnCost.
 func (s *Set) RunCost(ctx context.Context, tier string, usd float64, byModel map[string]float64) {
 	s.runCost.Record(ctx, usd, metric.WithAttributes(attribute.String("tier", oneOf(tier, tiers()))))
+	s.LateCost(ctx, byModel)
+}
+
+// LateCost adds what runs spent after their cost was reported to the by-model counter: the run
+// meter's OnLateCost.
+func (s *Set) LateCost(ctx context.Context, byModel map[string]float64) {
 	for model, v := range byModel {
 		s.modelCost.Add(ctx, v, metric.WithAttributes(attribute.String("model", boundModel(model))))
 	}

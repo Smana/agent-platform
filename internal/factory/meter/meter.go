@@ -219,6 +219,9 @@ type Meter struct {
 	// OnFallback of a run of a USD-capped tier capped in tokens instead, once per run.
 	OnCost     func(ctx context.Context, tier string, usd float64, byModel map[string]float64)
 	OnFallback func(ctx context.Context, why string)
+	// OnLateCost is told of what a run spent after its cost was reported, by served model: a
+	// reading slower than endSettle corrects the total spend, never the reported cost.
+	OnLateCost func(ctx context.Context, byModel map[string]float64)
 	// OnSpend receives, each tick that read usage, the USD spend of every priced run whose cost
 	// is not reported yet, by run then served model: the per-run gauge.
 	OnSpend func(spend map[string]map[string]float64)
@@ -244,16 +247,17 @@ type Meter struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	Log    *slog.Logger
 
-	last    map[string]reading   // per run: the last raw reading and the total it gave
-	mem     map[string]int64     // the day's spend when no Ledger is wired
-	memDay  string               // the UTC day mem counts; a change resets it
-	dropped map[string]bool      // ended runs whose reservation was dropped
-	orphans map[string]time.Time // unclaimed reservations, by when this meter first saw them
-	pruned  string               // the last UTC day whose old ledgers were deleted
-	live    map[string]string    // priced runs seen live, by tier: their cost is still to report
-	ended   map[string]time.Time // live-seen runs, by when this meter first saw them ended
-	fell    map[string]bool      // runs whose fallback was reported
-	named   map[string]bool      // run and model pairs whose missing price was reported
+	last    map[string]reading          // per run: the last raw reading and the total it gave
+	mem     map[string]int64            // the day's spend when no Ledger is wired
+	memDay  string                      // the UTC day mem counts; a change resets it
+	dropped map[string]bool             // ended runs whose reservation was dropped
+	orphans map[string]time.Time        // unclaimed reservations, by when this meter first saw them
+	pruned  string                      // the last UTC day whose old ledgers were deleted
+	live    map[string]string           // priced runs seen live, by tier: their cost is still to report
+	ended   map[string]time.Time        // live-seen runs, by when this meter first saw them ended
+	settled map[string]map[string]int64 // reported runs: the micro-USD by served model reported
+	fell    map[string]bool             // runs whose fallback was reported
+	named   map[string]bool             // run and model pairs whose missing price was reported
 }
 
 type reading struct {
@@ -374,6 +378,11 @@ func (m *Meter) forget(ctx context.Context, all []runs.Run) {
 	for k := range m.named {
 		if id, _, _ := strings.Cut(k, "/"); !live[id] {
 			delete(m.named, k)
+		}
+	}
+	for id := range m.settled {
+		if !live[id] {
+			delete(m.settled, id)
 		}
 	}
 	for _, set := range []map[string]bool{m.dropped, m.fell} {
@@ -695,6 +704,10 @@ func (m *Meter) observeCost(ctx context.Context, r runs.Run, usd map[string]int6
 	if _, priced := usd[r.ID]; !priced {
 		return
 	}
+	if _, done := m.settled[r.ID]; done {
+		m.lateCost(ctx, r.ID)
+		return
+	}
 	if !runs.Terminal(r.Phase) {
 		if m.live == nil {
 			m.live = map[string]string{}
@@ -724,14 +737,39 @@ func (m *Meter) report(ctx context.Context, id string) {
 	delete(m.live, id)
 	delete(m.ended, id)
 	e := m.last[id]
-	if m.OnCost == nil || !e.usdKnown {
+	if !e.usdKnown {
 		return
 	}
+	if m.settled == nil {
+		m.settled = map[string]map[string]int64{}
+	}
+	at := make(map[string]int64, len(e.models))
 	by := make(map[string]float64, len(e.models))
 	for model, p := range e.models {
-		by[model] = float64(p.total) / 1e6
+		at[model], by[model] = p.total, float64(p.total)/1e6
 	}
-	m.OnCost(ctx, tier, float64(e.usd)/1e6, by)
+	m.settled[id] = at
+	if m.OnCost != nil {
+		m.OnCost(ctx, tier, float64(e.usd)/1e6, by)
+	}
+}
+
+// lateCost reports what a reported run spent since, by served model.
+func (m *Meter) lateCost(ctx context.Context, id string) {
+	at := m.settled[id]
+	late := map[string]float64{}
+	for model, p := range m.last[id].models {
+		if d := p.total - at[model]; d > 0 {
+			late[model], at[model] = float64(d)/1e6, p.total
+		}
+	}
+	if len(late) == 0 {
+		return
+	}
+	m.log().Warn("a run spent after its cost was reported: its readings trailed the settle window", "run", id, "usd_by_model", late)
+	if m.OnLateCost != nil {
+		m.OnLateCost(ctx, late)
+	}
 }
 
 // liveSpend is the USD spend of each run whose cost is still to report, by served model.
