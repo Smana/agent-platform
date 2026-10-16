@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -260,8 +261,10 @@ const cmdRetry = "/factory retry"
 
 // command is the newest maintainer comment carrying verb alone on a line, on the task's issue or
 // on pr (the zero PR when the task has none), posted since the task entered its phase and not yet
-// acted on. Anyone else's command is dropped without an answer (T1), so it cannot make the
-// factory talk. An edited comment never counts: its text may not be its author's.
+// acted on, whose author holds write on the task's repository (asked last, of the newest
+// candidate only). Anyone else's command is dropped without an answer (T1), so it cannot make the
+// factory talk. An edited comment never counts: its text may not be its author's. A failing
+// write check is an error: the command waits for the next reconcile.
 func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR, verb string) (forge.Comment, bool, error) {
 	all := slices.Clone(pr.Comments)
 	if t.Spec.Issue > 0 {
@@ -282,7 +285,14 @@ func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR,
 			found, ok = c, true
 		}
 	}
-	return found, ok, nil
+	if !ok || r.CanWrite == nil {
+		return forge.Comment{}, false, nil
+	}
+	w, err := r.CanWrite(ctx, t.Spec.Repository, found.Author)
+	if err != nil {
+		return forge.Comment{}, false, fmt.Errorf("write check of %s: %w", found.Author, err)
+	}
+	return found, w, nil
 }
 
 // commandLine: some line of body outside a code fence is exactly verb, from its first character;
