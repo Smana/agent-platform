@@ -273,13 +273,16 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		id = s.NewRunID()
 	}
 	branch := "agent/" + id
+	suspendable := false
 	if in.RoomRef != "" {
-		code, reason := s.admitRoom(r.Context(), p, in, all)
+		code, reason, attended := s.admitRoom(r.Context(), p, in, all)
 		if code != 0 {
 			s.refuseRepository(ctx, w, code, reason)
 			return
 		}
 		branch = "agent/" + in.RoomRef // a room's runs share one branch (C3)
+		// v2 suspend: only an attended room has a human whose approval a run may wait on.
+		suspendable = attended && s.Cfg.Sandbox.Suspend.Enabled
 	}
 	// R37 (owner default): internal data and triagers are the admins'. After the room checks
 	// so a member naming the wrong class for a room they cannot enter learns that first, and
@@ -320,7 +323,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	spec := runs.Spec{RunID: id, Role: in.Role, Repository: in.Repository, BaseRef: in.BaseRef, Branch: branch,
 		TaskText: in.Task.Text, TaskURL: in.Task.URL, Principal: p.ID, ChargedTo: person, DataClass: in.DataClass, Model: in.Model,
 		RoomRef: in.RoomRef, Queue: runs.QueueInteractive, MaxTokens: in.MaxTokens, MaxMinutes: 120,
-		EgressProfiles: in.EgressProfiles, RequestHash: hash}
+		EgressProfiles: in.EgressProfiles, RequestHash: hash, Suspendable: suspendable}
 	if err := s.Runs.Create(r.Context(), spec); err != nil {
 		// Without this the reservation would eat the principal's day (and room) forever:
 		// the meter drops entries only of runs that reach a terminal phase, and this one
@@ -430,35 +433,35 @@ func resumeBranchValid(b string) bool {
 
 // admitRoom: the room exists, its data class matches, the caller may start a run in it by SP2's
 // own rule, and it has no live run (SP2 §1: one Running run per room). Cross-replica exclusion
-// is the ledger's (R50).
-func (s *Server) admitRoom(ctx context.Context, p authn.Principal, in RunRequest, all []runs.Run) (int, string) {
+// is the ledger's (R50). attended reports an admitted room's approval profile.
+func (s *Server) admitRoom(ctx context.Context, p authn.Principal, in RunRequest, all []runs.Run) (code int, reason string, attended bool) {
 	var room v1alpha1.Room
 	err := s.Rooms.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: in.RoomRef}, &room)
 	if apierrors.IsNotFound(err) {
-		return http.StatusBadRequest, "no_room"
+		return http.StatusBadRequest, "no_room", false
 	}
 	if err != nil {
-		return http.StatusServiceUnavailable, "rooms_unavailable"
+		return http.StatusServiceUnavailable, "rooms_unavailable", false
 	}
 	if room.Spec.DataClass != in.DataClass {
-		return http.StatusBadRequest, "data_class_differs_from_the_room"
+		return http.StatusBadRequest, "data_class_differs_from_the_room", false
 	}
 	// v2 D3: the room's repository wins, never overwritten silently (the fingerprint would hash a
 	// body the caller never sent). A room without one binds to none.
 	if !sameRepository(room.Spec.Repository, in.Repository) {
-		return http.StatusBadRequest, "repository_differs_from_the_room"
+		return http.StatusBadRequest, "repository_differs_from_the_room", false
 	}
 	// The broker's rule, not a copy of it: the driver or the owner (agents-admin owns every room).
 	// StartRun is not UI-only (SP2 P18), so webUI does not change the answer.
 	if !policy.Allowed(s.Groups.Resolve(&room, p, room.Status.Driver, false), policy.StartRun) {
-		return http.StatusForbidden, "not_permitted"
+		return http.StatusForbidden, "not_permitted", false
 	}
 	for _, x := range all {
 		if x.RoomRef == in.RoomRef && !runs.Terminal(x.Phase) {
-			return http.StatusConflict, "room_busy"
+			return http.StatusConflict, "room_busy", false
 		}
 	}
-	return 0, ""
+	return 0, "", room.Spec.Approvals.Profile != "unattended"
 }
 
 // admitResume is R35's one caller-named branch: a stopped run's agent/<id>. A task's branch

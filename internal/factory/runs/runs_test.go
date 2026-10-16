@@ -49,6 +49,18 @@ func TestBuildIsTheSP1Claim(t *testing.T) {
 	}
 }
 
+// v2 suspend: spec.suspendable is immutable once set, so it is written only when true.
+func TestBuildWritesSuspendableOnlyWhenSet(t *testing.T) {
+	if _, found, _ := unstructured.NestedFieldNoCopy(Build(spec()).Object, "spec", "suspendable"); found {
+		t.Error("today's claim carries no suspendable")
+	}
+	s := spec()
+	s.Suspendable = true
+	if v, found, _ := unstructured.NestedBool(Build(s).Object, "spec", "suspendable"); !found || !v {
+		t.Errorf("suspendable = %v, %v", v, found)
+	}
+}
+
 func TestBuildWritesQueueAndEgressOnlyWhenSet(t *testing.T) {
 	s := spec()
 	s.Queue, s.EgressProfiles = QueueFactory, []string{"github", "docs"}

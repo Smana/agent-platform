@@ -35,6 +35,16 @@ func claim(name, room, phase, revoked string) *unstructured.Unstructured {
 	return u
 }
 
+// suspendable is a suspendable run its broker suspended and resumed once.
+func suspendable() *unstructured.Unstructured {
+	u := claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Suspended", "")
+	_ = unstructured.SetNestedField(u.Object, true, "spec", "suspendable")
+	u.SetAnnotations(map[string]string{OperatingModeAnnotation: "Suspended",
+		RemainingSecondsAnnotation: "900", ResumedAtAnnotation: "2026-09-27T11:00:00Z"})
+	u.SetResourceVersion("42")
+	return u
+}
+
 // transitioned gives the claim conditions, Ready's at transition, and no finishedAt.
 func transitioned(u *unstructured.Unstructured, transition string) *unstructured.Unstructured {
 	_ = unstructured.SetNestedSlice(u.Object, []any{
@@ -86,6 +96,17 @@ func TestFromUnstructured(t *testing.T) {
 		{"a terminal run is not live", claim("xplane-run-7f3cq2xz", "", "Succeeded", ""), func(r Run) bool { return !r.Live() }},
 		{"a claim with no phase yet is Pending and live", defaults, func(r Run) bool { return r.Phase == "Pending" && r.Live() }},
 		{"a claim with no budget gets the default deadline", defaults, func(r Run) bool { return r.MaxMinutes == 120 }},
+		// v2 suspend: a suspended run keeps its room, so it is neither terminal nor dead.
+		{"a suspended run is live", claim("xplane-run-7f3cq2xz", "", "Suspended", ""), func(r Run) bool {
+			return r.Live() && !Terminal(r.Phase)
+		}},
+		{"a run is not suspendable unless its spec says so", defaults, func(r Run) bool {
+			return !r.Suspendable && r.OperatingMode == "" && r.RemainingSeconds == "" && r.ResumedAt.IsZero()
+		}},
+		{"the suspend fields and the resource version are read", suspendable(), func(r Run) bool {
+			return r.Suspendable && r.OperatingMode == "Suspended" && r.RemainingSeconds == "900" &&
+				r.ResumedAt.Equal(time.Date(2026, 9, 27, 11, 0, 0, 0, time.UTC)) && r.ResourceVersion == "42"
+		}},
 		{"the branch falls back to spec.branch before status has one", defaults, func(r Run) bool { return r.Branch == "agent/fork" }},
 		{
 			"with no finishedAt the end is the Ready transition",

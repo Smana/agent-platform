@@ -167,7 +167,13 @@ class AgentServerTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.terminate()
-        cls.server.wait(10)
+        try:
+            cls.server.wait(10)
+        except subprocess.TimeoutExpired:
+            # agent-server's OTel exporter retries an absent collector on shutdown and can
+            # outlast the wait; the test is over, so the process is killed, not a failure.
+            cls.server.kill()
+            cls.server.wait(10)
         cls.gateway.shutdown()
         cls.gateway.server_close()
         cls.patcher.stop()

@@ -100,7 +100,24 @@ type Config struct {
 	Human            HumanConfig       `json:"human"`
 	FactoryURL       string            `json:"factoryURL,omitempty"`
 	TLS              TLSConfig         `json:"tls"`
+	Suspend          SuspendConfig     `json:"suspend,omitzero"`
 }
+
+// SuspendConfig is the broker's suspend trigger (v2 warm-sandboxes design §6): a suspendable
+// run in an attended room whose approval waits while the room stays idle for After is
+// suspended, and resumed once nothing waits. Off unless Enabled.
+type SuspendConfig struct {
+	Enabled bool     `json:"enabled,omitempty"`
+	After   Duration `json:"after,omitzero"`
+}
+
+// The bounds of suspend.after: a suspend and its resume cost a cold start, so not at once,
+// and the attended approval expires at 30 minutes, so before that.
+const (
+	DefaultSuspendAfter = 5 * time.Minute
+	minSuspendAfter     = time.Minute
+	maxSuspendAfter     = 25 * time.Minute
+)
 
 // Load reads, strictly decodes, defaults and validates the file at path.
 func Load(path string) (Config, error) {
@@ -126,6 +143,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.TLS.KeyFile == "" {
 		c.TLS.KeyFile = DefaultKeyFile
+	}
+	if c.Suspend.After.Duration == 0 {
+		c.Suspend.After.Duration = DefaultSuspendAfter
 	}
 	if a := c.Human.Access; a != nil && a.TTL.Duration == 0 {
 		a.TTL.Duration = MaxAccessTTL
@@ -153,6 +173,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.Human.validate()...)
+	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
+		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
+	}
 	return errors.Join(errs...)
 }
 

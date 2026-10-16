@@ -160,6 +160,7 @@ flowchart LR
 | Rooms | `api/v1alpha1` | `Room` types and deepcopy; CRD generated into `config/crd/` |
 | Rooms | `internal/runwatch` | `AgentRun` informer: liveness, membership, run events, end reason |
 | Rooms | `internal/roomctrl` | `Room` reconciler: row, seq 1, finalizer, status projection |
+| Rooms | `internal/suspend` | the suspend trigger: a suspendable run waiting on an approval in an idle attended room is suspended, and resumed once nothing waits, through its claim's annotations |
 | API | `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals |
 | API | `internal/mcp` | `:8090` MCP server, the `room_*` tools |
 | API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments |
