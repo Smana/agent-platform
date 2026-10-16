@@ -52,6 +52,8 @@ type bridgeConfig struct {
 	egress map[string]bool // the run's egress profiles
 	// readOnlyMCP is MCP_READ_ONLY_TOOLS: the <server>__<tool> names that classify as plain.
 	readOnlyMCP map[string]bool
+	// suspendable is AGENT_SUSPENDABLE=true, the composition's mark of a run that may be suspended.
+	suspendable bool
 }
 
 func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
@@ -66,6 +68,7 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 		tokenFile: getenv("ROOM_TOKEN_FILE"), harnessURL: or("HARNESS_URL", defaultHarnessURL),
 		healthAddr: or("HEALTH_ADDR", defaultHealthAddr)}
 	c.memLimitSet = getenv("GOMEMLIMIT") != ""
+	c.suspendable = getenv("AGENT_SUSPENDABLE") == "true"
 	c.branch, c.egress = getenv("BRANCH"), map[string]bool{}
 	c.readOnlyMCP = map[string]bool{}
 	for k, dst := range map[string]map[string]bool{"EGRESS_PROFILES": c.egress, "MCP_READ_ONLY_TOOLS": c.readOnlyMCP} {
@@ -169,7 +172,8 @@ func wireBridge(b *bridge.Bridge, approvals bridge.ApprovalRequester, cfg bridge
 		log.Info("read-only MCP tools configured", "count", len(cfg.readOnlyMCP))
 	}
 	confirm := &bridge.Confirmer{Harness: b.Harness, Broker: approvals, RunID: b.RunID, Push: b.Push, Logger: log,
-		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}, PastCap: b.PastCap}
+		Classifier: bridge.Classifier{Branch: cfg.branch, Egress: cfg.egress, ReadOnlyMCP: cfg.readOnlyMCP}, PastCap: b.PastCap,
+		Suspendable: cfg.suspendable}
 	steer := &bridge.Steering{Harness: b.Harness, RunID: b.RunID, Push: b.Push, Gate: confirm.Gate}
 	b.OnDeliver, b.OnInterrupt = steer.Deliver, steer.Interrupt
 	b.OnResume = func(_ context.Context, r wire.Resume) { confirm.SetPolicy(r.Approvals) }

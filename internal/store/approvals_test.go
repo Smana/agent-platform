@@ -313,6 +313,33 @@ func TestAnAnsweredCallSupersedesItsApproval(t *testing.T) {
 	}
 }
 
+// v2 suspend (plan P6): the SIGTERM path of a run waiting on an approval
+// interrupts a conversation that runs nothing, which pauses it and writes no
+// tool_result, so the approval stays pending through the suspend for the
+// resumed bridge to answer; that bridge's re-sent request gets it back.
+func TestASuspendedRunsApprovalStaysPending(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := open(t)
+	holdBridge(t, s, room, approvalRun)
+	if _, _, err := s.RequestApproval(ctx, approval("ap1", "e1", "c1", time.Hour), approvalDraft()); err != nil {
+		t.Fatal(err)
+	}
+	for i, kind := range []string{"interrupted", "harness_paused"} {
+		d := draft("agent:"+approvalRun, int64(i+1))
+		d.Type, d.Payload = envelope.StateChanged, envelope.StatePayload(kind, nil)
+		if _, _, err := s.AppendAsBridge(ctx, approvalRun, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if evs, err := s.SupersedeAnswered(ctx); err != nil || len(evs) != 0 {
+		t.Fatalf("a pause answers nothing: %v %v", evs, err)
+	}
+	again, _, err := s.RequestApproval(ctx, approval("ap2", "e1", "c1", time.Hour), approvalDraft())
+	if err != nil || again.ID != "ap1" || again.State != ApprovalPending {
+		t.Fatalf("the resumed bridge's request: %+v %v", again, err)
+	}
+}
+
 // The age of the oldest pending approval, in open rooms only, on the database's clock.
 func TestOldestPending(t *testing.T) {
 	ctx := t.Context()

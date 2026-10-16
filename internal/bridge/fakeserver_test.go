@@ -43,6 +43,7 @@ type fakeAgentServer struct {
 	// the next status read, unless a message arrived during it.
 	parkAfterRead bool
 	messaged      bool // a message arrived during the current step
+	matched       bool // a paused conversation's pending actions were rejected
 	down          bool // every request is cut, as when agent-server is not listening
 	cut           int  // event searches cut while down
 	// failSearch, when set, runs under mu before an event search; true answers 500.
@@ -59,9 +60,10 @@ func (f *fakeAgentServer) setDown(down bool) {
 // conversation waiting for a confirmation, or paused with actions unmatched,
 // it runs every pending action, an implicit confirmation. Under f.mu.
 func (f *fakeAgentServer) runStep() {
-	if f.status == "waiting_for_confirmation" || f.status == "paused" {
+	if (f.status == "waiting_for_confirmation" || f.status == "paused") && !f.matched {
 		f.writes = append(f.writes, "implicit accept")
 	}
+	f.matched = false
 	if f.status != "running" {
 		f.messaged = false // a new step
 	}
@@ -236,8 +238,14 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		f.responses = append(f.responses, in.Accept)
 		f.reasons = append(f.reasons, in.Reason)
 		f.writes = append(f.writes, "respond "+strconv.FormatBool(in.Accept))
-		f.status = "running"
-		if !in.Accept {
+		switch {
+		case in.Accept:
+			f.status = "running"
+		case f.status == "paused":
+			// reject_pending_actions (local_conversation.py:2641-2672) leaves a
+			// paused conversation paused, with nothing left to run implicitly.
+			f.matched = true
+		default:
 			f.status = "idle" // OpenHands rejects, goes idle, and does not run
 		}
 		f.mu.Unlock()

@@ -202,6 +202,19 @@ func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
 	}
 }
 
+// v2 suspend: only the composition's exact "true" makes the bridge continue a reloaded conversation.
+func TestBridgeConfigReadsSuspendable(t *testing.T) {
+	for v, want := range map[string]bool{"true": true, "": false, "1": false, "TRUE": false} {
+		c, _ := loadBridgeConfig(func(k string) string { return map[string]string{"AGENT_SUSPENDABLE": v}[k] })
+		if c.suspendable != want {
+			t.Errorf("AGENT_SUSPENDABLE=%q: suspendable %v", v, c.suspendable)
+		}
+		if confirm, _ := wireBridge(&bridge.Bridge{}, nil, c, slog.New(slog.DiscardHandler)); confirm.Suspendable != want {
+			t.Errorf("AGENT_SUSPENDABLE=%q: the confirmer's Suspendable %v", v, confirm.Suspendable)
+		}
+	}
+}
+
 // F15: /admission is what room-bridge gate reads before the harness may start.
 func TestAdmissionEndpoint(t *testing.T) {
 	cases := []struct {
