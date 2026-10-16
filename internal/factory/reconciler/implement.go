@@ -560,11 +560,11 @@ func (r *Reconciler) afterWriter(ctx context.Context, t *v1alpha1.Task) error {
 }
 
 func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Run) error {
-	n, err := r.Forge.PullRequestForBranch(ctx, "agent/"+t.Name)
+	n, err := r.gh(ctx).PullRequestForBranch(ctx, "agent/"+t.Name)
 	if err != nil || n == 0 {
 		return err
 	}
-	pr, err := r.Forge.PullRequest(ctx, n)
+	pr, err := r.gh(ctx).PullRequest(ctx, n)
 	if err != nil {
 		return err
 	}
@@ -573,7 +573,7 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 	if err := r.Runs.Annotate(ctx, run.ID, map[string]string{runs.AnnPullRequest: pr.URL}); err != nil {
 		return err
 	}
-	if err := r.Forge.AddLabels(ctx, pr.Number, "factory/class:"+t.Spec.PredictedClass); err != nil {
+	if err := r.gh(ctx).AddLabels(ctx, pr.Number, "factory/class:"+t.Spec.PredictedClass); err != nil {
 		return err
 	}
 	d, source, tier, tmpl := r.Now().Sub(t.CreationTimestamp.Time), t.Spec.Source.Kind, t.Spec.Budget.Tier, t.Spec.Template

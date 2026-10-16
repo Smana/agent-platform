@@ -81,6 +81,15 @@ type Server struct {
 	NewRunID  func() string
 	Now       func() time.Time
 	Metrics   *fmetrics.Set
+	// Access is v2 D4: whether a human may write the repository on GitHub. nil refuses every
+	// human: GitHub is the one answer to who may change a repository, and there is no bypass.
+	Access WriteChecker
+}
+
+// WriteChecker answers v2 D4 for a human principal: write or higher on repository, from GitHub.
+// An error is no answer, and the caller refuses.
+type WriteChecker interface {
+	CanWrite(ctx context.Context, p authn.Principal, repository string) (bool, error)
 }
 
 var (
@@ -182,6 +191,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, reason)
 		return
 	}
+	// Exact, not case-insensitive: spec.repository becomes the run's octo-sts audience, so only
+	// the config's spelling is ever written there.
 	if !slices.Contains(s.Cfg.API.Repositories, in.Repository) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
 		return
@@ -250,12 +261,18 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.ResumeBranch != "" {
-		code, reason := s.admitResume(r.Context(), p, in.ResumeBranch, all)
+		code, reason := s.admitResume(r.Context(), p, in.ResumeBranch, in.Repository, all)
 		if code != 0 {
 			refuse(w, code, reason)
 			return
 		}
 		branch = in.ResumeBranch
+	}
+	// v2 D4/D6, last before the ledger: the one check that asks GitHub, made only for a request
+	// every local rule admitted, so a refused one reserves nothing and costs no call.
+	if !s.mayWrite(r.Context(), p, in.Repository) {
+		refuse(w, http.StatusForbidden, "repository_permission")
+		return
 	}
 	if code, reason := s.reserve(r.Context(), p, id, in); code != 0 {
 		refuse(w, code, reason)
@@ -387,6 +404,11 @@ func (s *Server) admitRoom(ctx context.Context, p authn.Principal, in RunRequest
 	if room.Spec.DataClass != in.DataClass {
 		return http.StatusBadRequest, "data_class_differs_from_the_room"
 	}
+	// v2 D3: the room's repository wins, never overwritten silently (the fingerprint would hash a
+	// body the caller never sent). A room without one binds to none.
+	if !sameRepository(room.Spec.Repository, in.Repository) {
+		return http.StatusBadRequest, "repository_differs_from_the_room"
+	}
 	// The broker's rule, not a copy of it: the driver or the owner (agents-admin owns every room).
 	// StartRun is not UI-only (SP2 P18), so webUI does not change the answer.
 	if !policy.Allowed(s.Groups.Resolve(&room, p, room.Status.Driver, false), policy.StartRun) {
@@ -405,7 +427,10 @@ func (s *Server) admitRoom(ctx context.Context, p authn.Principal, in RunRequest
 // branch a live run holds is busy. The branch widens nothing: the agents' App may push any
 // agent/** branch already; SC-14's run-reported head and SHA-bound verdicts (R52) keep foreign
 // commits away from the merge.
-func (s *Server) admitResume(ctx context.Context, p authn.Principal, branch string, all []runs.Run) (int, string) {
+//
+// v2 D3: the branch keeps its repository, the one its newest run or its room names. A branch
+// neither names is bound by D4 alone: the caller must write the repository they asked for.
+func (s *Server) admitResume(ctx context.Context, p authn.Principal, branch, repository string, all []runs.Run) (int, string) {
 	id := strings.TrimPrefix(branch, "agent/")
 	var task factoryv1.Task
 	switch err := s.Rooms.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: id}, &task); {
@@ -420,15 +445,47 @@ func (s *Server) admitResume(ctx context.Context, p authn.Principal, branch stri
 		if !policy.Allowed(s.Groups.Resolve(&room, p, room.Status.Driver, false), policy.StartRun) {
 			return http.StatusForbidden, "not_permitted"
 		}
+		if !sameRepository(room.Spec.Repository, repository) {
+			return http.StatusBadRequest, "repository_differs_from_the_branch"
+		}
 	case !apierrors.IsNotFound(err):
 		return http.StatusServiceUnavailable, "rooms_unavailable"
 	}
-	for _, x := range all {
-		if x.Branch == branch && !runs.Terminal(x.Phase) {
+	var last *runs.Run
+	for i, x := range all {
+		if x.Branch != branch {
+			continue
+		}
+		if !runs.Terminal(x.Phase) {
 			return http.StatusConflict, "branch_busy"
 		}
+		if last == nil || x.Created.After(last.Created) {
+			last = &all[i]
+		}
+	}
+	if last != nil && !sameRepository(last.Repository, repository) {
+		return http.StatusBadRequest, "repository_differs_from_the_branch"
 	}
 	return 0, ""
+}
+
+// sameRepository compares owner/name as GitHub does, case-insensitively. An empty bound names no
+// repository, so it matches none.
+func sameRepository(bound, asked string) bool {
+	return bound != "" && strings.EqualFold(bound, asked)
+}
+
+// mayWrite is v2 D4 for a human — write or higher on GitHub, admins included — and D6 for a system
+// caller: the repositories api.systemRepositories lists for it. Any doubt refuses.
+func (s *Server) mayWrite(ctx context.Context, p authn.Principal, repository string) bool {
+	if p.Kind != envelope.ActorHuman {
+		return slices.ContainsFunc(s.Cfg.API.SystemRepositories[p.ID], func(r string) bool { return strings.EqualFold(r, repository) })
+	}
+	if s.Access == nil {
+		return false
+	}
+	ok, err := s.Access.CanWrite(ctx, p, repository)
+	return err == nil && ok
 }
 
 // reserve is R50's admission on the day's ledger (Reserve), its refusals said in HTTP.

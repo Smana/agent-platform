@@ -67,7 +67,7 @@ func poller(t *testing.T, f issueForge, objs ...client.Object) (*IssuePoller, cl
 		Cfg: &config.Config{Repository: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, TriggerLabel: "factory/ready",
 			FactoryLogin: "ogenki-agent-factory[bot]", Poll: config.Poll{Issues: config.Duration{Duration: time.Minute}},
 			Defaults: config.Defaults{DataClass: "public"}},
-		Errors: &counter{}}, c
+		Errors: &counter{}, CanWrite: func(context.Context, string) (bool, error) { return true, nil }}, c
 }
 
 func labelled(f *forgetest.Fake, n int, actors ...string) {

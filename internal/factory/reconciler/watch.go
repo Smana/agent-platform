@@ -136,7 +136,7 @@ func briefEvent(e envelope.Event) bool {
 
 // readPR reads the task's pull request, and keeps who wrote and who reviewed it for the room's facts.
 func (r *Reconciler) readPR(ctx context.Context, t *v1alpha1.Task) (forge.PR, error) {
-	pr, err := r.Forge.PullRequest(ctx, t.Status.PullRequest.Number)
+	pr, err := r.gh(ctx).PullRequest(ctx, t.Status.PullRequest.Number)
 	if err != nil {
 		return pr, err
 	}
@@ -265,7 +265,7 @@ const cmdRetry = "/factory retry"
 func (r *Reconciler) command(ctx context.Context, t *v1alpha1.Task, pr forge.PR, verb string) (forge.Comment, bool, error) {
 	all := slices.Clone(pr.Comments)
 	if t.Spec.Issue > 0 {
-		cs, err := r.Forge.RecentComments(ctx, t.Spec.Issue)
+		cs, err := r.gh(ctx).RecentComments(ctx, t.Spec.Issue)
 		if err != nil {
 			return forge.Comment{}, false, err
 		}
@@ -404,7 +404,7 @@ func (r *Reconciler) approved(t *v1alpha1.Task, pr forge.PR) bool {
 // thread is the comments where the task narrates: its issue's newest, else its pull request's.
 func (r *Reconciler) thread(ctx context.Context, t *v1alpha1.Task, pr forge.PR) ([]forge.Comment, error) {
 	if t.Spec.Issue > 0 {
-		return r.Forge.RecentComments(ctx, t.Spec.Issue)
+		return r.gh(ctx).RecentComments(ctx, t.Spec.Issue)
 	}
 	return pr.Comments, nil
 }
@@ -452,11 +452,11 @@ func (r *Reconciler) remind(ctx context.Context, t *v1alpha1.Task, pr forge.PR) 
 		narrateLater(t, reminder)
 		return nil
 	}
-	if err := r.Forge.AddLabels(ctx, pr.Number, labelStale); err != nil {
+	if err := r.gh(ctx).AddLabels(ctx, pr.Number, labelStale); err != nil {
 		return err
 	}
-	if err := r.Forge.ClosePR(ctx, pr.Number); err != nil {
-		if rerr := r.Forge.RemoveLabel(ctx, pr.Number, labelStale); rerr != nil {
+	if err := r.gh(ctx).ClosePR(ctx, pr.Number); err != nil {
+		if rerr := r.gh(ctx).RemoveLabel(ctx, pr.Number, labelStale); rerr != nil {
 			r.log().Warn("stale label left on an open pull request", "task.id", t.Name, "pr", pr.Number, "err", rerr)
 		}
 		return err

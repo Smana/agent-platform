@@ -145,3 +145,35 @@ func TestClassifyReadsTheTasksRepository(t *testing.T) {
 		})
 	}
 }
+
+// v2 D8: the class label is read on the task's repository: B's issue #7 is not A's.
+func TestClassifyReadsTheIssueOnItsRepository(t *testing.T) {
+	cfg := testCfg()
+	a := config.Repository{Name: "Smana/a", Maintainers: []string{"Smana"}, Classes: cfg.Classes}
+	b := config.Repository{Name: "Smana/b", Maintainers: []string{"Smana"}, Classes: cfg.Classes}
+	cfg.Maintainers, cfg.Classes, cfg.Repositories = nil, nil, []config.Repository{a, b}
+	onA, onB := forgetest.NewFake(), forgetest.NewFake()
+	onA.SetIssue(forge.Issue{Number: 7, Labels: []string{"class:docs-links"}})
+	onA.SetEvents(7, forge.LabelEvent{Actor: "Smana", Label: "class:docs-links", At: time.Now()})
+	onB.SetIssue(forge.Issue{Number: 7})
+	clients := func(repo string) (ClassForge, bool) {
+		switch repo {
+		case "Smana/a":
+			return onA, true
+		case "Smana/b":
+			return onB, true
+		}
+		return nil, false
+	}
+	tk := issueTask()
+	tk.Spec.Repository = "Smana/b"
+	d, err := Classify{Cfg: cfg, C: &fakeC7{resp: C7Response{Tier: "light", Confidence: 0.9}}, Clients: clients}.Triage(t.Context(), tk)
+	if err != nil || d.PredictedClass != "review" {
+		t.Fatalf("B's issue carries no class: %q %v", d.PredictedClass, err)
+	}
+	tk.Spec.Repository = "Smana/elsewhere"
+	if d, err := (Classify{Cfg: cfg, C: &fakeC7{resp: C7Response{Tier: "light", Confidence: 0.9}}, Clients: clients}).Triage(t.Context(), tk); err != nil ||
+		d.PredictedClass != "review" {
+		t.Fatalf("an unknown repository reads no label: %q %v", d.PredictedClass, err)
+	}
+}

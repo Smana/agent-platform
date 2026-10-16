@@ -50,7 +50,7 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 	}
 	byClass := make(map[string][]Merge, len(rc.Classes))
 	for _, class := range slices.Sorted(maps.Keys(rc.Classes)) {
-		ps, err := r.Merger.PullsWithLabel(ctx, AutoMergedLabel(class))
+		ps, err := r.merger(ctx).PullsWithLabel(ctx, AutoMergedLabel(class))
 		if err != nil {
 			return nil, fmt.Errorf("read the merge ledger: %w", err)
 		}
@@ -64,7 +64,7 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 		for i := range ms[:min(len(ms), rc.Merge.Breaker.Window)] {
 			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
 			// change the breaker's verdict.
-			rv, err := r.Merger.PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))
+			rv, err := r.merger(ctx).PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))
 			if err != nil {
 				return nil, fmt.Errorf("read the merge ledger: %w", err)
 			}
@@ -112,7 +112,7 @@ func (r *Reconciler) label(ctx context.Context, pr forge.PR, l string) {
 	if slices.Contains(pr.Labels, l) {
 		return
 	}
-	if err := r.Merger.AddLabels(ctx, pr.Number, l); err != nil {
+	if err := r.merger(ctx).AddLabels(ctx, pr.Number, l); err != nil {
 		r.log().Error("label the merge ledger", "pr", pr.Number, "label", l, "err", err)
 	}
 }

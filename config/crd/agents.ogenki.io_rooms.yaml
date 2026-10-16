@@ -144,7 +144,9 @@ spec:
                 pattern: ^(human:[A-Za-z0-9@._-]+|system:[a-z0-9-]+)$
                 type: string
               repository:
-                default: Smana/cloud-native-ref
+                description: |-
+                  The repository every run of the room acts on (v2 D3): the factory refuses a run request
+                  naming another. No default: a room names its repository, and one without binds to none.
                 pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
                 type: string
               retention:

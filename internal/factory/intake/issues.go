@@ -26,6 +26,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
@@ -72,9 +73,13 @@ type IssuePoller struct {
 	// Repository names the config entry this poller serves, and Forge must be bound to it (v2
 	// D1). With one entry it may be left empty.
 	Repository string
-	Stopped    func(context.Context) bool
-	Errors     errorCounter
-	Log        *slog.Logger
+	// CanWrite is v2 D5's GitHub half: whether login holds write or higher on this poller's
+	// repository. A maintainers entry drifts from GitHub silently; this does not. nil starts
+	// nothing: a label is never trusted on the list alone.
+	CanWrite func(ctx context.Context, login string) (bool, error)
+	Stopped  func(context.Context) bool
+	Errors   errorCounter
+	Log      *slog.Logger
 	// Ticker starts the period; nil means a time.Ticker.
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	// Sanitize is the snapshot's sanitiser; nil means sanitize.Text. A test forces a withheld text.
@@ -141,6 +146,7 @@ func (p *IssuePoller) Start(ctx context.Context) error {
 	}
 	c, stop := tick(every)
 	defer stop()
+	ctx = fmetrics.WithRepository(ctx, p.repo().Name) // v2 D10: this poller's errors are its repository's
 	for {
 		if err := p.Poll(ctx); err != nil {
 			if p.Errors != nil {
@@ -244,6 +250,12 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	if !ok {
 		return p.refuse(ctx, n, last, "unauthorised_labeller")
 	}
+	switch w, err := p.writer(ctx, last.Actor); {
+	case err != nil:
+		return err // no answer is no refusal: the label waits for the next poll
+	case !w:
+		return p.refuse(ctx, n, last, "unauthorised_labeller")
+	}
 	iss, err := p.Forge.Issue(ctx, n)
 	if err != nil {
 		return err
@@ -299,6 +311,18 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	return p.Forge.RemoveLabel(ctx, n, label)
 }
 
+// writer is v2 D5's GitHub check on login; without CanWrite nobody is one.
+func (p *IssuePoller) writer(ctx context.Context, login string) (bool, error) {
+	if p.CanWrite == nil {
+		return false, nil
+	}
+	ok, err := p.CanWrite(ctx, login)
+	if err != nil {
+		return false, fmt.Errorf("write check of %s: %w", login, err)
+	}
+	return ok, nil
+}
+
 // refuse answers the label once, keyed by its time, then consumes it (R4).
 func (p *IssuePoller) refuse(ctx context.Context, n int, last forge.LabelEvent, reason string) error {
 	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n), narrate.Refused(n, reason, last.At)); err != nil {
@@ -307,7 +331,7 @@ func (p *IssuePoller) refuse(ctx context.Context, n int, last forge.LabelEvent, 
 	return p.Forge.RemoveLabel(ctx, n, p.repo().TriggerLabel)
 }
 
-// openTasks are issue n's tasks that have not ended.
+// openTasks are this repository's issue n's tasks that have not ended.
 func (p *IssuePoller) openTasks(ctx context.Context, n int) ([]*v1alpha1.Task, error) {
 	var l v1alpha1.TaskList
 	if err := p.Client.List(ctx, &l, client.InNamespace(p.Namespace), client.MatchingLabels{v1alpha1.LabelIssue: strconv.Itoa(n)}); err != nil {
@@ -315,7 +339,8 @@ func (p *IssuePoller) openTasks(ctx context.Context, n int) ([]*v1alpha1.Task, e
 	}
 	var open []*v1alpha1.Task
 	for i := range l.Items {
-		if !v1alpha1.TerminalPhase(l.Items[i].Status.Phase) {
+		// The issue label is a number, and two repositories share numbers: only this one's count.
+		if !v1alpha1.TerminalPhase(l.Items[i].Status.Phase) && p.owns(&l.Items[i]) {
 			open = append(open, &l.Items[i])
 		}
 	}
@@ -410,8 +435,12 @@ func (p *IssuePoller) reverts(ctx context.Context) error {
 		if err != nil || !ok {
 			continue // GitHub has not listed it yet, or its newest events are unread: it waits
 		}
-		if !p.repo().IsMaintainer(evs[len(evs)-1].Actor) {
+		actor := evs[len(evs)-1].Actor
+		if !p.repo().IsMaintainer(actor) {
 			continue // labels are intent, and only a maintainer's counts
+		}
+		if w, err := p.writer(ctx, actor); err != nil || !w {
+			continue // a revert opens a pull request: a write, so D5's check holds it too
 		}
 		for i := range l.Items {
 			t := &l.Items[i]

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package repoaccess answers "may this GitHub login read this repository?" for room visibility
-// (spec D7): a room is never more visible than its repository.
+// (spec D7): a room is never more visible than its repository; and "may it write it?" for starting
+// a run (v2 D4), a write through the agents' App.
 package repoaccess
 
 import (
@@ -26,7 +27,7 @@ type Checker struct {
 }
 
 type entry struct {
-	read bool
+	perm string
 	at   time.Time
 }
 
@@ -38,16 +39,33 @@ var ErrNoRepository = errors.New("repoaccess: no such repository for the App")
 // defaultMaxEntries bounds the cache; when it is full the oldest entry is dropped.
 const defaultMaxEntries = 10_000
 
-// readable are GitHub's permissions that include read. "none", "" and anything unknown are not.
-var readable = map[string]bool{"admin": true, "maintain": true, "write": true, "triage": true, "read": true}
+// readable are GitHub's permissions that include read, writable those that include write.
+// "none", "" and anything unknown are neither.
+var (
+	readable = map[string]bool{"admin": true, "maintain": true, "write": true, "triage": true, "read": true}
+	writable = map[string]bool{"admin": true, "maintain": true, "write": true}
+)
 
 // CanRead is true when login may read repository ("owner/name"). An answer is cached for TTL;
 // when GitHub fails, a cached answer younger than TTL stands, otherwise it is an error and the
 // caller fails closed.
 func (c *Checker) CanRead(ctx context.Context, repository, login string) (bool, error) {
+	perm, err := c.permission(ctx, repository, login)
+	return readable[perm], err
+}
+
+// CanWrite is true when login may write repository: write, maintain or admin. Cached and failing
+// closed as CanRead, from the same entry.
+func (c *Checker) CanWrite(ctx context.Context, repository, login string) (bool, error) {
+	perm, err := c.permission(ctx, repository, login)
+	return writable[perm], err
+}
+
+// permission is login's permission on repository, "" when either is malformed.
+func (c *Checker) permission(ctx context.Context, repository, login string) (string, error) {
 	owner, repo, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || repo == "" || login == "" {
-		return false, nil
+		return "", nil
 	}
 	// GitHub's owner, repository and login names are case-insensitive.
 	key := strings.ToLower(repository + "\x00" + login)
@@ -55,18 +73,17 @@ func (c *Checker) CanRead(ctx context.Context, repository, login string) (bool, 
 	e, hit := c.cache[key]
 	c.mu.Unlock()
 	if hit && c.Now().Sub(e.at) < c.TTL {
-		return e.read, nil
+		return e.perm, nil
 	}
 	perm, err := c.Perm(ctx, owner, repo, login)
 	if errors.Is(err, ErrNoRepository) {
 		perm, err = "none", nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("repoaccess: cannot verify %s's access to %s: %w", login, repository, err)
+		return "", fmt.Errorf("repoaccess: cannot verify %s's access to %s: %w", login, repository, err)
 	}
-	e = entry{read: readable[perm], at: c.Now()}
-	c.put(key, e)
-	return e.read, nil
+	c.put(key, entry{perm: perm, at: c.Now()})
+	return perm, nil
 }
 
 // put stores e, first dropping the oldest entry if key would grow a full cache.

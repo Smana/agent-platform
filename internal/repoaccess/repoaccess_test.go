@@ -142,3 +142,30 @@ func TestCanReadBoundsItsCache(t *testing.T) {
 		t.Fatalf("the oldest entry must be the one dropped: %d asks", asked)
 	}
 }
+
+// v2 D4: starting a run is a write through the agents' App, so it needs write or higher; read and
+// triage do not suffice, and one cached answer serves both questions.
+func TestCanWriteNeedsWriteOrHigher(t *testing.T) {
+	perm := map[string]string{"dev1": "read", "dev2": "none", "dev3": "triage", "dev4": "maintain", "dev5": "admin", "dev6": "write"}
+	asked := 0
+	c := &repoaccess.Checker{TTL: 5 * time.Minute, Now: time.Now,
+		Perm: func(_ context.Context, _, _, login string) (string, error) { asked++; return perm[login], nil }}
+	for login, want := range map[string]bool{"dev1": false, "dev2": false, "dev3": false, "dev4": true, "dev5": true, "dev6": true,
+		"unknown": false, "": false} {
+		if ok, err := c.CanWrite(context.Background(), "Smana/x", login); ok != want || err != nil {
+			t.Errorf("%q: %v, %v; want %v", login, ok, err, want)
+		}
+	}
+	before := asked
+	if ok, _ := c.CanRead(context.Background(), "Smana/x", "dev1"); !ok || asked != before {
+		t.Fatalf("the read answer comes from the same cache entry: %v, %d calls", ok, asked-before)
+	}
+}
+
+func TestCanWriteFailsClosed(t *testing.T) {
+	c := &repoaccess.Checker{TTL: 5 * time.Minute, Now: time.Now,
+		Perm: func(context.Context, string, string, string) (string, error) { return "", errors.New("github down") }}
+	if ok, err := c.CanWrite(context.Background(), "Smana/x", "dev1"); ok || err == nil {
+		t.Fatalf("%v %v", ok, err)
+	}
+}

@@ -461,8 +461,8 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
-| `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals` | Required but `groups` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values |
-| `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; its tasks go to the first repository | Required |
+| `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
+| `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 
 Each `repositories` entry:
 
@@ -482,11 +482,33 @@ Each `repositories` entry:
 one-entry `repositories` with `control` on that repository, and its `api.repositories` stays the
 allowlist as written. A file mixing the two shapes fails the start.
 
-**This release serves exactly one repository.** A config with two entries parses, but the factory
-refuses to start with it: both GitHub connections bind to one repository, and the admission
-binding and ownership fence of the
-[second-repository design](https://github.com/Smana/cloud-native-ref/pull/2435)
-come with its later pull requests.
+**Each repository has its own GitHub connections**, the factory App's and the merger's, one pair
+per entry; a repository either App is not installed on fails the start. Each entry has its own issue
+poller, and a task only ever reads and writes its own repository through its own pair. The daily
+auto-merge cap and the breaker count that repository's merges only.
+
+**This release still serves exactly one repository.** A config with two entries parses, but the
+factory refuses to start with it until the ownership fence of the
+[second-repository design](https://github.com/Smana/cloud-native-ref/pull/2435) lands: nothing yet
+stops two clusters from taking the same repository.
+
+#### Who may start work on a repository
+
+| Path | Bound to | GitHub check |
+|---|---|---|
+| Trigger label | The poller's repository; the labeller in that entry's `maintainers` | The labeller has `write` or higher on it; no answer leaves the label for the next poll |
+| `factory/revert` label | The labelled pull request's task, on the poller's repository | Same as the trigger label |
+| Schedule | The entry that lists it | None: the config is the requester |
+| RunLore | `runlore.repository` | None: the config chooses, not the caller |
+| `POST /v1/runs`, roomless | `repository`, in the list | The human has `write` or higher on it, admins included; a system principal needs it in `api.systemRepositories` |
+| `POST /v1/runs` with `roomRef` (broker `start_run`, a fork's runs) | The room's `spec.repository`, else `400 repository_differs_from_the_room` | As roomless |
+| `POST /v1/runs` with `resumeBranch` | The branch's newest run's repository and its room's, else `400 repository_differs_from_the_branch` | As roomless |
+
+The `write` check resolves the token's subject to the caller's GitHub login through their ZITADEL
+link (`api.access.readerFile`), then asks GitHub with the factory App; both answers are cached for
+`api.access.ttl`. A caller with no GitHub link, a lookup that fails, or a factory without
+`api.access` is refused `403 repository_permission`. Metrics carry a `repository` label whose
+values are the listed names only, anything else `other`.
 
 ### The factory's API
 
@@ -498,11 +520,11 @@ system's run request. Source: `internal/factory/api/server.go`.
 | | |
 |---|---|
 | Auth | `Authorization: Bearer`: a human's token from `api.humanIssuer`, issued to one of the `api.clientIDFiles` clients (the rooms UI's proxy or `roomctl`), and the human in one of the two groups `api.groups` names; or a token from `api.systemIssuer` for audience `agent-factory`, its subject in `api.systemPrincipals`. Internal data and the `triager` role are for admins only |
-| Body | `role`, `repository` (in `api.repositories`, the listed repositories), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
+| Body | `role`, `repository` (in `api.repositories`, the listed repositories, spelled as listed), `baseRef` (default `main`), `task: {text \| url}` (one of them; a reviewer or tester needs a pull request URL), `dataClass`, `roomRef`, `model` (default `agent-default`), `maxTokens` (default 2,000,000), `egressProfiles` (`pypi`, `npm`, `golang`, `crates`; none for internal data), `resumeBranch`. The principal and the branch are never the body's |
 | `Idempotency-Key` | The same key from the same caller within 24 h answers the first `201` with `Idempotent-Replayed: true` and creates nothing. Same key, different body: `422 idempotency_key_reused`. A key whose run another caller owns: `409 idempotency_key_collision`. Over 255 bytes: `400 bad_idempotency_key`. Two first requests with one key either side of 00:00 UTC make two runs |
 | `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |
-| `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room` |
-| `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch` |
+| `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room`, `repository_differs_from_the_room`, `repository_differs_from_the_branch` |
+| `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch`, `repository_permission` (no `write` on the repository, or it could not be verified) |
 | `409`, `429` | `room_busy`, `branch_busy`, `run_busy`; `over_budget` |
 | `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed` |
 

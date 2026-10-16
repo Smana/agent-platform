@@ -25,6 +25,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -57,6 +58,7 @@ type runloreForge interface {
 // notify route), on every replica like the run-request API. Token re-reads the mounted bearer
 // secret at each request, so a rotation needs no restart (AGENTS.md).
 type RunLore struct {
+	// Forge is the factory App on cfg.RunLoreRepository(), where the findings are filed (v2 D6).
 	Forge     runloreForge
 	Client    client.Client
 	Namespace string
@@ -101,7 +103,7 @@ func (h *RunLore) Start(ctx context.Context) error {
 // a warning at most once a minute.
 func (h *RunLore) unconfigured(ctx context.Context) {
 	if h.Errors != nil {
-		h.Errors.IntakeError(ctx, "runlore")
+		h.Errors.IntakeError(fmetrics.WithRepository(ctx, h.Cfg.RunLoreRepository()), "runlore")
 	}
 	now := h.Now().UnixNano()
 	last := h.warnedAt.Load()
@@ -154,7 +156,7 @@ func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	code, body, err := h.intake(r.Context(), f)
 	if err != nil {
 		if h.Errors != nil {
-			h.Errors.IntakeError(r.Context(), "runlore")
+			h.Errors.IntakeError(fmetrics.WithRepository(r.Context(), h.Cfg.RunLoreRepository()), "runlore")
 		}
 		// The finding's alert and resource are attacker-influenced: log the key's task name, never them.
 		h.log().Warn("runlore intake failed", "task", taskid.Name(taskid.RunloreKey(f.AlertName, f.ResourceRef)), "err", err)
@@ -217,7 +219,7 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 			// Alert and log text are attacker-influenced (§8 T1): untrusted, fenced for the harness.
 			Source: v1alpha1.Source{Kind: "runlore", Ref: f.AlertName + "/" + f.ResourceRef, Key: key,
 				RequestedBy: "system:runlore", Trust: "untrusted", ContentSHA256: hex.EncodeToString(sum[:])},
-			Repository: h.Cfg.Primary(), Text: text, DataClass: "internal",
+			Repository: h.Cfg.RunLoreRepository(), Text: text, DataClass: "internal",
 		},
 	}
 	if err := h.Client.Create(ctx, t); apierrors.IsAlreadyExists(err) {

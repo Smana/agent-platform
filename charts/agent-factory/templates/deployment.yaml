@@ -58,6 +58,7 @@ spec:
             - {name: rooms-token, mountPath: /var/run/secrets/agents/rooms, readOnly: true}
             - {name: oidc, mountPath: /etc/agent-factory-oidc, readOnly: true}
             - {name: intake, mountPath: /etc/agent-factory-intake, readOnly: true}
+            - {name: zitadel-reader, mountPath: /etc/agent-factory-zitadel-reader, readOnly: true}
       volumes:
         - name: config
           configMap: {name: agent-factory-config}
@@ -81,3 +82,7 @@ spec:
           # render test refuses it (review C1). Group bit plus fsGroup, as the App keys.
           # optional: without the token the intake refuses every request (503), never runs open (#57).
           secret: {secretName: {{ .Values.intakeSecret }}, defaultMode: 0440, optional: true}
+        - name: zitadel-reader
+          # optional: without it the run-request API cannot resolve a caller's GitHub login, and
+          # refuses every human run (v2 D4); 0440 with fsGroup, as the other secrets.
+          secret: {secretName: {{ .Values.zitadelReaderSecret }}, defaultMode: 0440, optional: true}

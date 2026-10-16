@@ -426,7 +426,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 
 | `rejected` | Meaning |
 |---|---|
-| `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run |
+| `not_permitted` | The caller's room role, flag or client does not allow it; or the factory refused the caller a run, such as a caller without `write` on the room's repository on GitHub ([factory](factory.md#who-may-start-work-on-a-repository)) |
 | `stale_epoch` | `driverEpoch` no longer matches: someone else holds the token now |
 | `rate_limited` | Over 10 actions per second (burst 20), or over 3 forks at once then one a minute; per replica |
 | `no_running_run` | Steering or interrupt with no run `Running` |

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -93,6 +95,41 @@ type Set struct {
 	runCost         metric.Float64Histogram
 	runBudgetUSD    metric.Float64Gauge
 	budgetFallbacks metric.Int64Counter
+
+	// repos is the config's repository list, the repository label's only values (v2 D10).
+	mu    sync.RWMutex
+	repos []string
+}
+
+// ListRepositories sets the values the repository label may take: the config's list, at most
+// config.MaxRepositories. Anything else is recorded as other.
+func (s *Set) ListRepositories(names ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = slices.Clone(names)
+}
+
+// repository is name as the list spells it, other when the list does not hold it.
+func (s *Set) repository(name string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if i := slices.IndexFunc(s.repos, func(r string) bool { return strings.EqualFold(r, name) }); i >= 0 {
+		return s.repos[i]
+	}
+	return other
+}
+
+type repositoryKey struct{}
+
+// WithRepository names the repository the series recorded under ctx belong to: the reconciler
+// binds its task's, a poller its own (v2 D10). Recorded without one, a series reads other.
+func WithRepository(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, repositoryKey{}, name)
+}
+
+func (s *Set) repoOf(ctx context.Context) attribute.KeyValue {
+	name, _ := ctx.Value(repositoryKey{}).(string)
+	return attribute.String("repository", s.repository(name))
 }
 
 // New makes the instruments on meter (nil: a no-op meter) and, when tasks is set, the leader-only
@@ -179,7 +216,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("Runs and tasks of a USD-capped tier held to their token cap instead: an unpriced model, or a meter.query without gen_ai_token_type."))
 	check(err)
 	if tasks != nil {
-		check(registerCollected(meter, tasks, ns, leader))
+		check(registerCollected(meter, tasks, ns, leader, s.repository))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("fmetrics: %w", err)
@@ -190,7 +227,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 // registerCollected reads the tasks and the stop object at each scrape, on the leader only. A
 // failed read observes nothing, so the series go absent rather than read as 0: an unread stop
 // object is not a disengaged one.
-func registerCollected(meter metric.Meter, r client.Reader, ns string, leader func() bool) error {
+func registerCollected(meter metric.Meter, r client.Reader, ns string, leader func() bool, repo func(string) string) error {
 	tasks, err := meter.Int64ObservableGauge("agent_factory_tasks", metric.WithDescription("Tasks by state (§7)."))
 	if err != nil {
 		return err
@@ -213,13 +250,13 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 		defer cancel()
 		var l v1alpha1.TaskList
 		if err := r.List(ctx, &l, client.InNamespace(ns)); err == nil {
-			counts := map[[4]string]int64{}
+			counts := map[[5]string]int64{}
 			for _, t := range l.Items {
-				counts[[4]string{t.Status.Phase, t.Spec.Source.Kind, t.Spec.PredictedClass, t.Spec.Budget.Tier}]++
+				counts[[5]string{t.Status.Phase, t.Spec.Source.Kind, t.Spec.PredictedClass, t.Spec.Budget.Tier, repo(t.Spec.Repository)}]++
 			}
 			for k, n := range counts {
 				o.ObserveInt64(tasks, n, metric.WithAttributes(attribute.String("phase", k[0]), attribute.String("source", k[1]),
-					attribute.String("predicted_class", k[2]), attribute.String("tier", k[3])))
+					attribute.String("predicted_class", k[2]), attribute.String("tier", k[3]), attribute.String("repository", k[4])))
 			}
 			for _, t := range l.Items {
 				if !v1alpha1.TerminalPhase(t.Status.Phase) && t.Status.PhaseSince != nil {
@@ -243,19 +280,19 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 // TimeToPR records a task's time from intake to its PR opening.
 func (s *Set) TimeToPR(ctx context.Context, d time.Duration, source, tier, template string) {
 	s.timeToPR.Record(ctx, d.Seconds(), metric.WithAttributes(attribute.String("source", source),
-		attribute.String("tier", tier), attribute.String("template", template)))
+		attribute.String("tier", tier), attribute.String("template", template), s.repoOf(ctx)))
 }
 
 // PROutcome counts a task PR's outcome: auto_merged, human_merged, closed or reverted.
 func (s *Set) PROutcome(ctx context.Context, class, outcome string) {
 	s.prOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("outcome", oneOf(outcome, outcomes()))))
+		attribute.String("outcome", oneOf(outcome, outcomes())), s.repoOf(ctx)))
 }
 
 // TaskTokens records a finished task's tokens.
 func (s *Set) TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string) {
 	s.taskTokens.Record(ctx, tokens, metric.WithAttributes(attribute.String("tier", tier),
-		attribute.String("template", template), attribute.String("predicted_class", predictedClass)))
+		attribute.String("template", template), attribute.String("predicted_class", predictedClass), s.repoOf(ctx)))
 }
 
 // BudgetRemaining sets the tokens a principal has left today.
@@ -270,7 +307,7 @@ func (s *Set) BudgetCap(ctx context.Context, principal string, tokens int64) {
 
 // Intervention counts a human stepping in: stop, retry, request_changes, steer, takeover, approve.
 func (s *Set) Intervention(ctx context.Context, kind string) {
-	s.interventions.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", oneOf(kind, interventions()))))
+	s.interventions.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", oneOf(kind, interventions())), s.repoOf(ctx)))
 }
 
 // ClassMismatch counts a task whose predicted class is not the one policy-bot matched.
@@ -294,7 +331,7 @@ func (s *Set) TierFit(ctx context.Context, classifier, tier, fit string, control
 
 // IntakeError counts a failed intake poll or request, by source.
 func (s *Set) IntakeError(ctx context.Context, source string) {
-	s.intakeErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("source", oneOf(source, intakeSources()))))
+	s.intakeErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("source", oneOf(source, intakeSources())), s.repoOf(ctx)))
 }
 
 // LabelEventsTruncated counts a label left on its issue because its events passed the forge's cap.

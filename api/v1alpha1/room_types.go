@@ -66,7 +66,8 @@ type RoomSpec struct {
 	// +kubebuilder:validation:Enum=public;internal
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="dataClass is immutable"
 	DataClass string `json:"dataClass"`
-	// +kubebuilder:default="Smana/cloud-native-ref"
+	// The repository every run of the room acts on (v2 D3): the factory refuses a run request
+	// naming another. No default: a room names its repository, and one without binds to none.
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`
 	// +optional
 	Repository string `json:"repository,omitempty"`
