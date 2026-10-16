@@ -245,6 +245,9 @@ A label value outside its known set is recorded as `other`; `repository` takes o
 | Alert | Fires when | For | First step |
 |---|---|---|---|
 | `FactoryGitHubUnreachable` | `agent_factory_github_up == 0` | 10 min | GitHub's status and the App key (`agent-factory-github`): [below](#factory-failures) |
+| `FactoryRepositoryNotOwned` | `max by (repository) (agent_factory_repository_owned) == 0` | 20 min | The repository's `.github/agent-factory.yaml` on its default branch: absent, unparsable, or naming another factory. A read that fails turns the gauge 0 after 15 min |
+
+No series, no alert: on a release without the gauge the expression is empty, so the rule is safe to ship ahead of it.
 
 ### Factory failures
 

@@ -14,6 +14,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -493,6 +495,54 @@ func TestOnlyAMaintainersFreshCommandRetries(t *testing.T) {
 				t.Fatalf("%s %d %q", got.Status.Phase, got.Status.Retries, g.f.Comments(7))
 			}
 		})
+	}
+}
+
+// v2: a maintainer's /factory retry also needs write or higher on the task's repository, asked
+// of GitHub for that repository. Read-only, a failing lookup and no checker each refuse.
+func TestARetryNeedsWriteOnTheTasksRepository(t *testing.T) {
+	type ask struct{ repository, login string }
+	for name, tc := range map[string]struct {
+		check   func(context.Context, string, string) (bool, error)
+		wantErr bool
+	}{
+		"read only":      {check: func(context.Context, string, string) (bool, error) { return false, nil }},
+		"GitHub fails":   {check: func(context.Context, string, string) (bool, error) { return false, errors.New("502") }, wantErr: true},
+		"no write check": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+			var asked []ask
+			g.r.CanWrite = nil
+			if tc.check != nil {
+				g.r.CanWrite = func(ctx context.Context, repository, login string) (bool, error) {
+					asked = append(asked, ask{repository, login})
+					return tc.check(ctx, repository, login)
+				}
+			}
+			g.f.SetComments(7, retryBy(77, "Smana", time.Minute))
+			_, err := g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err %v, want error %v", err, tc.wantErr)
+			}
+			var tk v1alpha1.Task
+			if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &tk); err != nil {
+				t.Fatal(err)
+			}
+			if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Retries != 0 || len(tk.Status.Handled) != 0 || len(g.f.Comments(7)) != 1 {
+				t.Fatalf("%s %d %v %q", tk.Status.Phase, tk.Status.Retries, tk.Status.Handled, g.f.Comments(7))
+			}
+			if tc.check != nil && !slices.Equal(asked, []ask{{"Smana/cloud-native-ref", "Smana"}}) {
+				t.Fatalf("asked %v", asked)
+			}
+		})
+	}
+	g := newRig(t, escalatedTask(false), roomOf("3buqdlot"))
+	asked := 0
+	g.r.CanWrite = func(context.Context, string, string) (bool, error) { asked++; return true, nil }
+	g.f.SetComments(7, retryBy(80, "someone", time.Minute)) // not a maintainer: no GitHub call
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || asked != 0 {
+		t.Fatalf("%s, %d calls", tk.Status.Phase, asked)
 	}
 }
 

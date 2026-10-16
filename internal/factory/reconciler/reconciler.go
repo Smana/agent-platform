@@ -141,6 +141,9 @@ type Reconciler struct {
 	// Costs is the run meter's per-run USD costs, which a task capped in USD sums (OD-6 (b));
 	// nil: every task is held to TaskTokens.
 	Costs costReader
+	// CanWrite is v2 D4's GitHub check, as the label intake's: a /factory retry needs its
+	// maintainer to hold write or higher on the task's repository. nil: nobody writes.
+	CanWrite func(ctx context.Context, repository, login string) (bool, error)
 
 	oldBroker sync.Once // the broker serves no task route: said once per process
 	ledger    mergeLedger

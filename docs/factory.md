@@ -29,7 +29,7 @@ without case.
 | Label `factory/stop` on the issue or its pull request | The running task stops within a poll: its runs are revoked and deleted, the task ends `Stopped`. The label is removed once it hit a task; with no task running it stays, so a task started later stops at once. Anyone else's is removed and answered | A maintainer |
 | Label `factory/revert` on an auto-merged pull request, within `merge.revertWindow` | The factory opens a revert pull request through the merger App and the task ends `Reverted`; the class counts the revert towards its [breaker](#the-merge-gate). A human merge is never reverted | A maintainer |
 | Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
-| Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer |
+| Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer with `write` on the repository |
 | A **Request changes** review on the task's pull request | Queued in the room; the next implementer run revises on the same branch with the review in its brief, then the pull request goes straight back to the maintainer | A maintainer |
 | Label `factory/stop` on the control issue (`control.issue`), or the `agent-factory-stop` ConfigMap | Every task stops, intake pauses; see [The kill switch](#the-kill-switch) | A maintainer, an operator |
 | A schedule (`schedules[]`) | A task per cron slot (5 fields, UTC), once, when the slot is under an hour old. With `probe: renovate-red`, only when an open pull request by `probeAuthor` (default `renovate[bot]`) older than 24 h has a red check (read through the merger App); up to five join the text | The factory itself |
@@ -365,7 +365,7 @@ dismissed is skipped. A review dismissed after it was queued still drives that r
 
 | Input | Effect |
 |---|---|
-| A maintainer's comment with `/factory retry` alone on a line, outside a code fence, on an escalated task's issue or pull request, posted after it escalated (up to a minute before, by the factory's clock, still counts: GitHub's clock and the factory's may differ) | A fresh run through `Queued` and its caps, within 5 minutes (escalated tasks are polled every 5 minutes). Edited comments, and anyone else's, are ignored without an answer. After `review_rounds_exhausted` or `no_verdict` the rounds stay spent: the retry buys one revision and one review |
+| A maintainer's comment with `/factory retry` alone on a line, outside a code fence, on an escalated task's issue or pull request, posted after it escalated (up to a minute before, by the factory's clock, still counts: GitHub's clock and the factory's may differ) | A fresh run through `Queued` and its caps, within 5 minutes (escalated tasks are polled every 5 minutes). Edited comments, and anyone else's (a maintainer without `write` on the task's repository included), are ignored without an answer; when GitHub does not answer, the command waits for the next poll. After `review_rounds_exhausted` or `no_verdict` the rounds stay spent: the retry buys one revision and one review |
 | No maintainer activity on an `AwaitingHuman` pull request for 48 h: no review, no comment on it or on the issue, no push without an `Agent-Run` trailer | One reminder mentioning the maintainers, per quiet spell. A spell never restarts earlier than one already reminded. An approved pull request's reminder says it waits for a merge |
 | The same for 14 days, at least 24 h after that reminder, and the latest maintainer review is not an approval | The pull request is labelled `factory/stale` and closed, and the task ends `Closed` (`stale`). An approved pull request is never closed. A refused close takes the label off again |
 | An escalated task with no retry for `caps.escalatedHours` (default 168, `0` for no limit) | The task ends `Stopped` (`escalation_expired`) and says so; its pull request is left as it is. A task whose room a person drives never expires while they drive, and a retry already asked for wins |
@@ -520,6 +520,7 @@ the last answer for 15 minutes, then the repository counts as not owned until a 
 |---|---|---|
 | Trigger label | The poller's repository; the labeller in that entry's `maintainers` | The labeller has `write` or higher on it; no answer leaves the label for the next poll |
 | `factory/revert` label | The labelled pull request's task, on the poller's repository | Same as the trigger label |
+| `/factory retry` | The escalated task's repository; the commenter in that entry's `maintainers` | Same as the trigger label |
 | Schedule | The entry that lists it | None: the config is the requester |
 | RunLore | `runlore.repository` | None: the config chooses, not the caller |
 | `POST /v1/runs`, roomless | `repository`, in the list | The human has `write` or higher on it, admins included; a system principal needs it in `api.systemRepositories` |

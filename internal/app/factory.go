@@ -160,8 +160,9 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	rc := runs.Client{C: mgr.GetClient()}
+	perms := conns.permissions(cfg.API.Access)
 	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Clients: conns.task, Owned: fenced.Owned,
-		Runs: rc, Rooms: broker,
+		CanWrite: perms.CanWrite, Runs: rc, Rooms: broker,
 		Triage: triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)},
 			Clients: conns.class},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
@@ -195,7 +196,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	// The two groups R23 admits: api.groups, which defaults to the values the broker's config carries.
 	groups := policy.Groups{Admin: cfg.API.Groups.Admin, Member: cfg.API.Groups.Member}
-	perms := conns.permissions(cfg.API.Access)
 	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
