@@ -136,8 +136,10 @@ func (c *repoConns) access(log *slog.Logger, cfg *config.Config, perms *repoacce
 		log.Warn("api.access is not set: the run-request API refuses every human run (repository_permission, v2 D4)")
 		return nil
 	}
+	zitadel := httpx.New(zitadelTimeout, nil)
 	id := &ghidentity.Resolver{IDPID: githubIDP, TTL: a.TTL.Duration, Now: time.Now,
-		Links: readerLinks(httpx.New(zitadelTimeout, nil), cfg.API.HumanIssuer, a.ReaderFile),
+		Active: readerActive(zitadel, cfg.API.HumanIssuer, a.ReaderFile),
+		Links:  readerLinks(zitadel, cfg.API.HumanIssuer, a.ReaderFile),
 		LoginOf: func(ctx context.Context, repo string, gid int64) (string, error) {
 			rc, ok := c.get(repo)
 			if !ok {

@@ -22,22 +22,33 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/ghidentity"
 	"github.com/Smana/agent-platform/internal/github"
 	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
-// fakeZitadel serves one user's IdP links to the bearer of pat only, like ZITADEL's v2 API.
+// fakeZitadel serves one user's IdP links and state to the bearer of pat only, like ZITADEL's
+// v2 API.
 type fakeZitadel struct {
 	mu    sync.Mutex
 	pat   string
 	links string // the result array
+	state string // "" is USER_STATE_ACTIVE
 	calls int
 }
 
 func (z *fakeZitadel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	z.mu.Lock()
 	defer z.mu.Unlock()
+	if r.Method == http.MethodGet && r.URL.Path == "/v2/users/u1" && r.Header.Get("Authorization") == "Bearer "+z.pat {
+		state := z.state
+		if state == "" {
+			state = "USER_STATE_ACTIVE"
+		}
+		_, _ = w.Write([]byte(`{"user":{"userId":"u1","state":"` + state + `"}}`))
+		return
+	}
 	z.calls++
 	if r.Method != http.MethodPost || r.URL.Path != "/v2/users/u1/links/_search" || r.Header.Get("Authorization") != "Bearer "+z.pat {
 		http.Error(w, "no", http.StatusUnauthorized)
@@ -143,6 +154,19 @@ func TestRoomAccess(t *testing.T) {
 	if login, err := id.Login(ctx, "u1", "Smana/a"); err != nil || login != "octocat" {
 		t.Fatalf("after a rotation: %q, %v", login, err)
 	}
+
+	// #126: the same reader reads the user's state, and a deactivated user is refused.
+	z.mu.Lock()
+	z.state = "USER_STATE_INACTIVE"
+	z.mu.Unlock()
+	later(4 * time.Minute)
+	if err := id.CheckActive(ctx, "u1"); !errors.Is(err, ghidentity.ErrInactive) {
+		t.Fatalf("a deactivated user: %v, want ErrInactive", err)
+	}
+	z.mu.Lock()
+	z.state = ""
+	z.mu.Unlock()
+	later(4 * time.Minute)
 
 	// No secret, or one without the IdP id, cannot be checked: fail closed.
 	for _, body := range []string{"", `{"pat":"pat-2"}`, `{"githubIdpId":"idp-gh-2"}`, "not json"} {

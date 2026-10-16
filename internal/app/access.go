@@ -49,7 +49,8 @@ func roomAccess(h config.HumanConfig, gh gitHubUsers, zitadel *http.Client, now 
 		return nil, nil, errors.New("human.access needs the factory App: ROOMS_GITHUB_APP_DIR is not set")
 	}
 	ttl := h.Access.TTL.Duration
-	id := &ghidentity.Resolver{IDPID: githubIDP, TTL: ttl, Now: now, Links: readerLinks(zitadel, h.Issuer, h.Access.ReaderFile),
+	id := &ghidentity.Resolver{IDPID: githubIDP, TTL: ttl, Now: now,
+		Active: readerActive(zitadel, h.Issuer, h.Access.ReaderFile), Links: readerLinks(zitadel, h.Issuer, h.Access.ReaderFile),
 		LoginOf: func(ctx context.Context, repo string, id int64) (string, error) {
 			owner, name, _ := strings.Cut(repo, "/")
 			login, err := gh.UserLogin(ctx, owner, name, id)
@@ -84,19 +85,38 @@ type zitadelReader struct {
 	GitHubIDPID string `json:"githubIdpId"`
 }
 
-// readerLinks lists a user's links to the GitHub IdP with the reader secret at path, read on
-// every call, so a rotated PAT or a rebuilt IdP needs no restart. A secret that is missing or
-// incomplete is an error: the check fails closed.
+// readReader reads the reader secret at path, on every call, so a rotated PAT or a rebuilt IdP
+// needs no restart. A secret that is missing or incomplete is an error: the check fails closed.
+func readReader(path string) (zitadelReader, error) {
+	var r zitadelReader
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return r, fmt.Errorf("zitadel reader: %w", err)
+	}
+	if json.Unmarshal(raw, &r) != nil || r.PAT == "" || r.GitHubIDPID == "" {
+		// Never the decoder's text: it may quote the PAT.
+		return r, errors.New(`zitadel reader: not {"pat", "githubIdpId"} JSON`)
+	}
+	return r, nil
+}
+
+// readerActive reads whether a ZITADEL user is active with the reader secret at path (#126).
+func readerActive(hc *http.Client, issuer, path string) func(ctx context.Context, user string) (bool, error) {
+	return func(ctx context.Context, user string) (bool, error) {
+		r, err := readReader(path)
+		if err != nil {
+			return false, err
+		}
+		return ghidentity.ZitadelActive(hc, issuer, r.PAT)(ctx, user)
+	}
+}
+
+// readerLinks lists a user's links to the GitHub IdP with the reader secret at path.
 func readerLinks(hc *http.Client, issuer, path string) func(ctx context.Context, user string) ([]ghidentity.Link, error) {
 	return func(ctx context.Context, user string) ([]ghidentity.Link, error) {
-		raw, err := os.ReadFile(filepath.Clean(path))
+		r, err := readReader(path)
 		if err != nil {
-			return nil, fmt.Errorf("zitadel reader: %w", err)
-		}
-		var r zitadelReader
-		if json.Unmarshal(raw, &r) != nil || r.PAT == "" || r.GitHubIDPID == "" {
-			// Never the decoder's text: it may quote the PAT.
-			return nil, errors.New(`zitadel reader: not {"pat", "githubIdpId"} JSON`)
+			return nil, err
 		}
 		links, err := ghidentity.ZitadelLinks(hc, issuer, r.PAT)(ctx, user)
 		if err != nil {

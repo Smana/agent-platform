@@ -107,4 +107,5 @@ Run `roomctl doctor` first: it checks in the order things fail and prints the fi
 | `no such host` on the rooms host | the VPN is down: the host resolves only on the tailnet | `tailscale up`, then `tailscale status` |
 | `x509: certificate signed by unknown authority` | the platform's root CA is not trusted, and `roomctl` has no `--cacert` | trust the root CA on your system, or set `SSL_CERT_FILE` to a bundle holding it for the shell that runs `roomctl` |
 | auth error, expired token | not signed in | `roomctl login` |
+| `401: user_inactive` | your ZITADEL user was deactivated, locked or deleted | ask an admin to reactivate it; `roomctl login` cannot help |
 | `rooms` lists nothing | your ZITADEL user has no linked GitHub identity, so no repository is readable | ask an admin to link your GitHub account to your ZITADEL user; `roomctl doctor` reports it on its `github` line |

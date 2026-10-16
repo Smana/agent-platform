@@ -622,3 +622,20 @@ func TestRoomsFilterAndAccessHint(t *testing.T) {
 		}
 	}
 }
+
+// #126: a deactivated ZITADEL user is told so, not to log in again, on a list and on a watch.
+func TestAnInactiveUserIsToldSo(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "user_inactive", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c := Client{URL: srv.URL, Token: fixed, HC: srv.Client(), Stream: srv.Client(), Backoff: time.Millisecond}
+	for name, err := range map[string]error{
+		"rooms": c.Rooms(t.Context(), &strings.Builder{}, RoomFilter{}),
+		"watch": c.Watch(t.Context(), "3kq7x2ma", 50, &strings.Builder{}),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "user_inactive") || strings.Contains(err.Error(), "roomctl login") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
