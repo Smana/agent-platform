@@ -227,3 +227,9 @@ func TestSystemCallersAreScopedPerRepository(t *testing.T) {
 }
 
 var _ = runtime.NewScheme
+
+// spec.repository becomes the run's octo-sts audience: only the config's spelling is admitted.
+func TestTheRepositoryIsSpelledAsListed(t *testing.T) {
+	st := &store{}
+	refusedWith(t, post(twoRepos(t, st, nil), "alice", on("smana/AI-native-ref", nil)), http.StatusForbidden, "repository_not_allowed", st)
+}

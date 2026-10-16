@@ -191,7 +191,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, reason)
 		return
 	}
-	if !slices.ContainsFunc(s.Cfg.API.Repositories, func(r string) bool { return strings.EqualFold(r, in.Repository) }) {
+	// Exact, not case-insensitive: spec.repository becomes the run's octo-sts audience, so only
+	// the config's spelling is ever written there.
+	if !slices.Contains(s.Cfg.API.Repositories, in.Repository) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
 		return
 	}
