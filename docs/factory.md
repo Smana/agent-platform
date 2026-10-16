@@ -199,6 +199,7 @@ every maintainer.
 | `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
 | `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
 | `budget-task` | The task cap has no room for another whole run |
+| `budget-person` | [Per-person caps](#per-person-caps): the day of the person the next run is charged to is spent; the comment names them. A maintainer's `/factory retry` charges the retrier instead |
 | `ci_red` | CI stayed red after `merge.fixRuns` fix runs; the comment names the failing checks |
 | `secret_scan_red` | The secret scan (`merge.leakScanCheck`) found a live credential. Next step: a maintainer revokes the key and closes the pull request; the factory does not retry |
 | `review_rounds_exhausted` | The reviewer still asked for changes after `maxReviewRounds`; its last verdict is posted on the pull request |
@@ -298,6 +299,48 @@ tokens and no cost: a cost is never counted as $0. The gateway's per-run ceiling
 still bounds a run's raw tokens. The daily budgets, `budgets.factoryDaily` and
 `budgets.humanDaily`, stay in raw tokens. The metrics for each cap are in
 [Operations](operations.md#budget-signals).
+
+### Per-person caps
+
+Off by default (`budgets.perPerson.enabled: false`): every run is admitted exactly as before.
+On, each run is charged to the person who caused it **and** to the fleet (`system:factory`), in
+one ledger entry, so no run holds one reservation without the other.
+
+| Run | Charged to |
+|---|---|
+| A labelled task's first run and its automatic follow-ups | The labeller, `github:<login>` |
+| A task's runs after a `/factory retry` | The maintainer who typed it (`status.retriedBy`) |
+| `POST /v1/runs` by a human | Their GitHub login through their ZITADEL link; with no link, their own `human:<sub>` |
+| A schedule's or RunLore's task, a system caller's API run | The fleet alone, as before |
+
+Each run record keeps its person in `status.runs[].chargedTo`, and the claim in
+`agents.ogenki.io/charged-to`: the meter settles the run's tokens to the fleet and to that person,
+never to the token's `human:<sub>`, so one person has one ledger key whichever path they use. Logins
+are lowercased.
+
+```mermaid
+flowchart LR
+  label["factory/ready by alice"] --> intake{"intake: alice's day spent?"}
+  intake -->|yes, enforced| refuse["comment, no Task, label removed"]
+  intake -->|no| queued{"Queued: reserve alice + fleet"}
+  api["POST /v1/runs, alice's token"] --> res{"reserve alice + fleet"}
+  queued -->|alice over| esc["Escalated budget-person"]
+  queued -->|fleet over| wait["waiting_daily_budget"]
+  res -->|alice over| r429["429 person_budget_exhausted"]
+  queued -->|fits| run["run"]
+  res -->|fits| run
+  run --> meter["meter settles to alice and the fleet"]
+```
+
+| Setting | Effect |
+|---|---|
+| `budgets.perPerson.enabled` | Charge the person beside the fleet. Alone it only counts: a run past a person's day is admitted and counted as `budget-principal-shadow{principal}` |
+| `budgets.perPerson.dailyTokens` | Every person's day, in the ledger's reference tokens. Default: `humanDaily` |
+| `budgets.enforcePrincipal` | With `enabled`, refuse: intake comments and drops the label, Queued escalates `budget-person`, the API answers `429 person_budget_exhausted`, and the meter revokes a live run once its person's day is spent (`budget-principal`). The fleet's day keeps its wait |
+
+The person's day is in tokens, like the fleet's: the run and task caps already bound the money in
+USD. Turning it on: set `enabled` and watch `budget-principal-shadow{principal}` for a week, then
+set `enforcePrincipal`.
 
 ## The merge gate
 
@@ -468,7 +511,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
 | `templates` | `<name>: {roles, maxReviewRounds, reviewerModel}`; every template but a lone `triager` has an `implementer`; `reviewerModel` (a gateway logical name) needs a `reviewer` role | Required; `reviewerModel` unset: the other tier's model |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
-| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000 |
+| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens), `perPerson: {enabled, dailyTokens}` ([per-person caps](#per-person-caps)) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000, `perPerson.enabled` false, `perPerson.dailyTokens` `humanDaily` |
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
@@ -550,8 +593,8 @@ system's run request. Source: `internal/factory/api/server.go`.
 | `201` | `{runId, branch}`: `agent/<roomRef>` in a room, else `agent/<runId>` |
 | `400` | `bad_json`, a validation code (`bad_role`, `exactly_one_of_task_text_or_url`, …), `no_room`, `data_class_differs_from_the_room`, `repository_differs_from_the_room`, `repository_differs_from_the_branch` |
 | `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch`, `repository_permission` (no `write` on the repository, or it could not be verified) |
-| `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget` |
-| `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed` |
+| `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget`, `person_budget_exhausted` (the caller's own day, [per-person caps](#per-person-caps)) |
+| `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed`, `identity_unavailable` (per-person caps on, and the caller's GitHub link could not be read) |
 
 **`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore
 finding. Source: `internal/factory/intake/runlore.go`.

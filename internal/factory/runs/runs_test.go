@@ -242,7 +242,7 @@ func TestAnnotateRefusesTheCreateOnlyKeys(t *testing.T) {
 	if err := c.Create(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash} {
+	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo} {
 		if err := c.Annotate(t.Context(), s.RunID, map[string]string{key: "https://github.com/Smana/cloud-native-ref/issues/1"}); err == nil {
 			t.Errorf("%s was patched", key)
 		}
@@ -354,5 +354,19 @@ func TestClientRoundTrip(t *testing.T) {
 	}
 	if err := c.Delete(ctx, "7f3cq2xz"); err != nil {
 		t.Fatal("deleting a gone run is not an error")
+	}
+}
+
+// v2 per-person caps D2: the person a run is charged to rides its claim from CREATE, so the meter
+// that settles it reads the same key admission reserved.
+func TestChargedToRoundTrips(t *testing.T) {
+	s := spec()
+	s.ChargedTo = "github:alice"
+	r, ok := FromUnstructured(Build(s))
+	if !ok || r.ChargedTo != "github:alice" {
+		t.Fatalf("%+v", r)
+	}
+	if r, _ := FromUnstructured(Build(spec())); r.ChargedTo != "" || Build(spec()).GetAnnotations()[AnnChargedTo] != "" {
+		t.Fatal("no person, no annotation")
 	}
 }

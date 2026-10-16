@@ -277,6 +277,10 @@ func (m *fakeMetrics) TierFit(_ context.Context, classifier, tier, fit string, c
 	m.add("tier_fit " + classifier + " " + tier + " " + fit + " " + strconv.FormatBool(control))
 }
 func (m *fakeMetrics) Revoked(_ context.Context, reason string) { m.add("revoked " + reason) }
+func (m *fakeMetrics) PrincipalShadow(_ context.Context, principal string) {
+	m.add("revoked budget-principal-shadow")
+	m.add("shadow " + principal)
+}
 func (m *fakeMetrics) RunRevoked(_ context.Context, reason, limit string) {
 	m.add("revoked " + reason)
 	m.add("limit " + limit)

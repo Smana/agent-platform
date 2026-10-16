@@ -490,7 +490,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 			m.fallback(ctx, r, why)
 		}
 		if inc := t - paid; inc > 0 { // the increase since this run's last settled reading (R07)
-			delta[r.Principal] += inc
+			for _, k := range charged(r) {
+				delta[k] += inc
+			}
 			pending[r.ID] = t
 		}
 	}
@@ -524,7 +526,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 		}
 		var limit string
 		if !runs.Terminal(r.Phase) && r.Revoked == "" {
-			if reason, l := m.revocation(r, n, usd[r.ID], caps[r.ID], hit[r.ID], spent[r.Principal]); reason != "" {
+			if reason, l := m.revocation(r, n, usd[r.ID], caps[r.ID], hit[r.ID], m.daySpent(r, spent)); reason != "" {
 				kv[runs.AnnRevoked], limit = reason, l
 			}
 		}
@@ -644,10 +646,30 @@ func (m *Meter) settle(ctx context.Context, day string, delta map[string]int64) 
 	return nil, fmt.Errorf("meter: the %s ledger stayed busy", day)
 }
 
+// charged are the ledger keys a run's tokens settle to: the fleet and the person it is charged to
+// (v2 per-person caps D2), else its principal alone.
+func charged(r runs.Run) []string {
+	if r.ChargedTo != "" {
+		return []string{runs.PrincipalFactory, r.ChargedTo}
+	}
+	return []string{r.Principal}
+}
+
+// daySpent reports whether any key the run is charged to has spent its day: budget-principal's
+// test, a person's day included (D5). A nil spent column reads nothing spent.
+func (m *Meter) daySpent(r runs.Run, spent map[string]int64) bool {
+	for _, k := range charged(r) {
+		if spent != nil && spent[k] >= m.dailyCap(k) {
+			return true
+		}
+	}
+	return false
+}
+
 // revocation names why a live run must stop, and the limit that fired, in the order the design
 // lists the caps (C5). A run capped in USD is not held to its MaxTokens: pricing cache reads at
 // their own rate is the point (OD-3), and B1 still bounds its raw tokens at the gateway.
-func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool, principalToday int64) (reason, limit string) {
+func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool, daySpent bool) (reason, limit string) {
 	switch {
 	case capUSD > 0 && usd >= capUSD:
 		return ReasonBudgetRun, LimitRunUSD
@@ -657,7 +679,7 @@ func (m *Meter) revocation(r runs.Run, tokens, usd, capUSD int64, throttled bool
 		return ReasonBudgetRun, LimitGatewayCeiling
 	case throttled:
 		return ReasonBudgetFleet, LimitFleet // B2, the only other bucket on agent-router (R13)
-	case m.Budgets.EnforcePrincipal && principalToday >= m.dailyCap(r.Principal):
+	case m.Budgets.EnforcePrincipal && daySpent:
 		return ReasonBudgetPrincipal, LimitPrincipalDay
 	}
 	return "", ""
@@ -785,12 +807,7 @@ func (m *Meter) liveSpend() map[string]map[string]float64 {
 	return out
 }
 
-func (m *Meter) dailyCap(principal string) int64 {
-	if principal == runs.PrincipalFactory {
-		return m.Budgets.FactoryDaily
-	}
-	return m.Budgets.HumanDaily
-}
+func (m *Meter) dailyCap(principal string) int64 { return m.Budgets.DailyCap(principal) }
 
 func (m *Meter) now() time.Time {
 	if m.Now == nil {

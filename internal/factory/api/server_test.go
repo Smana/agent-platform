@@ -416,7 +416,7 @@ func TestConcurrentReservationsAdmitOnlyWhatFits(t *testing.T) {
 			wg.Go(func() {
 				for { // a caller retries ErrLedgerBusy: the reconciler's requeue, the API's 503
 					o, err := Reserve(t.Context(), c, "agent-system", now, id,
-						Reservation{Principal: runs.PrincipalFactory, MaxTokens: 1_500_000}, 25_000_000, enforce)
+						Reservation{Principal: runs.PrincipalFactory, MaxTokens: 1_500_000}, 25_000_000, 0, enforce)
 					mu.Lock()
 					switch {
 					case errors.Is(err, ErrLedgerBusy):
@@ -428,7 +428,7 @@ func TestConcurrentReservationsAdmitOnlyWhatFits(t *testing.T) {
 					case !errors.Is(err, ErrOverBudget):
 						t.Error(err)
 					}
-					if o {
+					if o != "" {
 						over++
 					}
 					mu.Unlock()

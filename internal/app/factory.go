@@ -196,10 +196,12 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	// The two groups R23 admits: api.groups, which defaults to the values the broker's config carries.
 	groups := policy.Groups{Admin: cfg.API.Groups.Admin, Member: cfg.API.Groups.Member}
+	access := conns.access(log, cfg, perms)
+	people, _ := access.(api.PersonResolver) // D1: the login the write check reads is the person charged
 	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
-		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: conns.access(log, cfg, perms), Owned: fenced.Owned}
+		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned}
 	runlore, ok := conns.get(cfg.RunLoreRepository())
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
@@ -209,7 +211,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		c, _ := conns.get(rp.Name)
 		name := rp.Name
 		runnables = append(runnables, &intake.IssuePoller{Forge: c.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
-			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped, Owned: fenced.Owned,
+			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped, Owned: fenced.Owned, Ledger: live,
 			CanWrite: func(ctx context.Context, login string) (bool, error) { return perms.CanWrite(ctx, name, login) }})
 	}
 	for _, r := range append(runnables,

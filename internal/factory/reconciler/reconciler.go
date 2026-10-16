@@ -80,6 +80,7 @@ type metrics interface {
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
 	Revoked(ctx context.Context, reason string)
+	PrincipalShadow(ctx context.Context, principal string)
 	RunRevoked(ctx context.Context, reason, limit string)
 	RunBudgetFallback(ctx context.Context, scope, why string)
 	TraceExportAbandoned(ctx context.Context)
@@ -801,6 +802,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
 		over, err := r.reserveFactoryDay(ctx, t, limit)
 		switch {
+		case errors.Is(err, api.ErrPersonOverBudget): // D4/D5: the person's day, not the fleet's: refused, not queued
+			record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-person") })
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-person")
 		case errors.Is(err, api.ErrOverBudget):
 			t.Status.Reason = "waiting_daily_budget" // no new factory run until 00:00 UTC
 			return nil
@@ -811,8 +815,8 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		case err != nil: // a shadow cap counts; it never holds a run
 			r.log().Warn("daily cap unreserved (shadow)", "task.id", t.Name, "err", err)
-		case over:
-			record(ctx, func(ctx context.Context) { r.Metrics.Revoked(ctx, "budget-principal-shadow") })
+		case over != "":
+			record(ctx, func(ctx context.Context) { r.Metrics.PrincipalShadow(ctx, over) })
 		}
 	}
 	if len(t.Status.Runs) == 0 {

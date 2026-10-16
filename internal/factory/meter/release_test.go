@@ -75,7 +75,7 @@ func TestABlindMeterIsSeenAndItsOvershootRecorded(t *testing.T) {
 	}
 	admit := func() error {
 		_, err := api.Reserve(t.Context(), c, "agent-system", clock, "bbbbbbbb",
-			api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, true)
+			api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, 0, true)
 		if rerr := api.Release(t.Context(), c, "agent-system", clock, "bbbbbbbb"); rerr != nil {
 			t.Fatal(rerr)
 		}
@@ -103,7 +103,7 @@ func TestABlindMeterIsSeenAndItsOvershootRecorded(t *testing.T) {
 		t.Fatalf("past it, an enforced admission is refused: %v", err)
 	}
 	if _, err := api.Reserve(t.Context(), c, "agent-system", clock, "cccccccc",
-		api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, false); err != nil {
+		api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, 0, false); err != nil {
 		t.Fatalf("in shadow a blind meter holds nothing: %v", err)
 	}
 	src.down = false

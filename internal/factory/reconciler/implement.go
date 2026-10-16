@@ -107,7 +107,7 @@ func (r *Reconciler) recordExisting(t *v1alpha1.Task, x runs.Run) error {
 	}
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: x.ID, Role: x.Role, Trigger: trigger,
 		Round: t.Status.ReviewRounds, Phase: x.Phase, Tokens: x.Tokens, StartSeq: x.StartSeq, HeadSHA: x.Head,
-		Started: &started})
+		Started: &started, ChargedTo: x.ChargedTo})
 	t.Status.NextTrigger, t.Status.NextRole = "", ""
 	r.to(t, phaseFor(x.Role), "adopted")
 	return nil
@@ -143,13 +143,24 @@ func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
 // day, and a replay re-reserves the same entry, never a second. The meter drops it when the run
 // ends. No room: the factory's room exclusion is slotFree's, on the claims, and a reservation
 // that names the room would hold the task's next run until the meter's next tick.
-func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (bool, error) {
+//
+// With per-person caps on, the same entry also charges the person who caused the run (D2, D3).
+func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, limit int64) (string, error) {
 	if r.Ledger == nil {
-		return false, errors.New("the daily cap needs the ledger client")
+		return "", errors.New("the daily cap needs the ledger client")
 	}
+	person := r.person(t)
 	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
-		api.Reservation{Principal: runs.PrincipalFactory, MaxTokens: t.Spec.Budget.RunTokens}, limit,
-		r.Cfg.Budgets.EnforcePrincipal)
+		api.Reservation{Principal: runs.PrincipalFactory, Person: person, MaxTokens: t.Spec.Budget.RunTokens}, limit,
+		r.Cfg.Budgets.DailyCap(person), r.Cfg.Budgets.EnforcePrincipal)
+}
+
+// person is who the task's next run is charged to beside the fleet, "" with per-person caps off.
+func (r *Reconciler) person(t *v1alpha1.Task) string {
+	if !r.Cfg.Budgets.PerPerson.Enabled {
+		return ""
+	}
+	return t.Payer()
 }
 
 // traceparent is the task span's W3C header for its runs (R46); empty when tracing is off.
@@ -168,7 +179,7 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	if err != nil {
 		return err
 	}
-	s.RunID, s.StartSeq = runID(t.Name, len(t.Status.Runs)), last
+	s.RunID, s.StartSeq, s.ChargedTo = runID(t.Name, len(t.Status.Runs)), last, r.person(t)
 	if err := r.Runs.Create(ctx, s); err != nil {
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
@@ -186,7 +197,7 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 	}
 	now := metav1.NewTime(r.Now())
 	t.Status.Runs = append(t.Status.Runs, v1alpha1.RunRecord{ID: s.RunID, Role: s.Role, Trigger: trigger,
-		Round: t.Status.ReviewRounds, StartSeq: last, HeadSHA: s.Head, Started: &now})
+		Round: t.Status.ReviewRounds, StartSeq: last, HeadSHA: s.Head, Started: &now, ChargedTo: s.ChargedTo})
 	t.Status.NextTrigger = ""
 	r.to(t, phaseFor(s.Role), "")
 	narrateLater(t, narrate.Started(t, s, r.Cfg.RoomsURL))
