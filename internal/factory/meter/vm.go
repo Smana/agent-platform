@@ -53,8 +53,9 @@ func NewVM(rawURL, query string, hc *http.Client) (*VM, error) {
 
 // RunUsage is each run's raw counters, by run id. A series that is not a run's, or whose value is
 // not a finite, non-negative count, is no reading. A series labelled gen_ai_token_type counts
-// as its type (reasoning, a subset of output, and unknown types are ignored); an unlabelled one
-// is the token count itself, so an untyped query meters as before.
+// as its type (reasoning, a subset of output, and unknown types are ignored), and also under its
+// gen_ai_request_model, the model that served it; an unlabelled one is the token count itself, so
+// an untyped query meters as before.
 func (v *VM) RunUsage(ctx context.Context) (map[string]Usage, error) {
 	target := v.base.JoinPath("api/v1/query")
 	target.RawQuery = url.Values{"query": {v.query}}.Encode()
@@ -107,22 +108,34 @@ func parseUsage(raw []byte) (map[string]Usage, error) {
 			continue
 		}
 		u, n := out[m[1]], int64(f)
-		switch typ, typed := s.Metric["gen_ai_token_type"]; {
-		case !typed:
+		typ, typed := s.Metric["gen_ai_token_type"]
+		if !typed {
 			u.Tokens += n
-		case typ == "input":
-			u.Input += n
-			u.Tokens += n
-			u.Typed = true
-		case typ == "output":
-			u.Output += n
-			u.Tokens += n
-			u.Typed = true
-		case typ == "cached_input":
-			u.CacheRead += n
-		case typ == "cache_creation_input":
-			u.CacheWrite += n
+			out[m[1]] = u
+			continue
 		}
+		model := s.Metric["gen_ai_request_model"] // "": the query does not group by model
+		mu := u.Models[model]
+		switch typ {
+		case "input":
+			u.Input, mu.Input = u.Input+n, mu.Input+n
+			u.Tokens += n
+			u.Typed = true
+		case "output":
+			u.Output, mu.Output = u.Output+n, mu.Output+n
+			u.Tokens += n
+			u.Typed = true
+		case "cached_input":
+			u.CacheRead, mu.CacheRead = u.CacheRead+n, mu.CacheRead+n
+		case "cache_creation_input":
+			u.CacheWrite, mu.CacheWrite = u.CacheWrite+n, mu.CacheWrite+n
+		default:
+			continue
+		}
+		if u.Models == nil {
+			u.Models = map[string]ModelUsage{}
+		}
+		u.Models[model] = mu
 		out[m[1]] = u
 	}
 	return out, nil

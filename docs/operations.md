@@ -227,6 +227,7 @@ absent rather than 0.
 | `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost when it ended |
 | `agent_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
 | `agent_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
+| `agent_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
 | `agent_factory_meter_usage_read_errors_total` | counter | — | Meter ticks whose usage read failed: no cap was checked on them |
 | `agent_factory_meter_last_success_timestamp_seconds` | gauge | — | When the meter last read usage and settled it in the day's ledger; set by the leader only, so alert on its max across pods. A tick whose ledger write fails sets nothing: it still revokes runs at their own caps, but the daily budgets wait and the increase is retried whole on the next tick |
 | `agent_factory_resumes_total` | counter | `reason` | Runs resumed after their pod was `Disrupted` or `PodLost` |
@@ -260,7 +261,8 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | Signal | Meaning |
 |---|---|
 | A tier sets `runUSD` or `taskUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
-| `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A run's claim names a model with no price (a config changed under a live run). The run is capped at `runTokens`. The log says `run capped in tokens` |
+| `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A model that served the run has no price (or, without `gen_ai_request_model` in `meter.query`, its claim's model has none). The run is capped at `runTokens`. The log says `run capped in tokens` |
+| `agent_factory_meter_unpriced_model_runs_total{model}` | Runs served by `model`, which has no `meter.prices` row: a backend pins a model the price table lacks. Counted once per run and model, whatever the tier caps in. Alert on any increase |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
 | `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |

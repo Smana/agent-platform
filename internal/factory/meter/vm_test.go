@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestVMParsesTheVector(t *testing.T) {
 		{"metric":{"ar_agent":"system:serviceaccount:agents:xplane-run-gggggggg"},"value":[1727430000,42]},
 		{"metric":{"ar_agent":"system:serviceaccount:agents:xplane-run-hhhhhhhhh"},"value":[1727430000,"7"]}]}}`)
 	got, err := v.RunUsage(t.Context())
-	if err != nil || len(got) != 2 || got["7f3cq2xz"] != (Usage{Tokens: 12345}) || got["aaaaaaaa"] != (Usage{Tokens: 1500}) {
+	if err != nil || len(got) != 2 || !reflect.DeepEqual(got["7f3cq2xz"], Usage{Tokens: 12345}) || !reflect.DeepEqual(got["aaaaaaaa"], Usage{Tokens: 1500}) {
 		t.Fatalf("only runs' service accounts, with a finite, non-negative count that fits: %v %v", got, err)
 	}
 }
@@ -62,7 +63,28 @@ func TestVMReadsTokenTypes(t *testing.T) {
 		{"metric":{`+run+`,"gen_ai_token_type":"reasoning"},"value":[1727430000,"999"]}]}}`)
 	got, err := v.RunUsage(t.Context())
 	want := Usage{Tokens: 1_661_800, Input: 1_631_496, CacheRead: 1_552_384, CacheWrite: 7, Output: 30_304, Typed: true}
-	if err != nil || got["7f3cq2xz"] != want {
+	want.Models = map[string]ModelUsage{"": {Input: 1_631_496, CacheRead: 1_552_384, CacheWrite: 7, Output: 30_304}}
+	if err != nil || !reflect.DeepEqual(got["7f3cq2xz"], want) {
+		t.Fatalf("got %+v %v, want %+v", got, err, want)
+	}
+}
+
+// A query grouped by gen_ai_request_model reads each served model's tokens apart, for its price.
+func TestVMReadsTokenTypesByModel(t *testing.T) {
+	const run = `"ar_agent":"system:serviceaccount:agents:xplane-run-7f3cq2xz"`
+	v := vmServer(t, http.StatusOK, `{"status":"success","data":{"resultType":"vector","result":[
+		{"metric":{`+run+`,"gen_ai_request_model":"glm-5.3","gen_ai_token_type":"input"},"value":[1727430000,"1000"]},
+		{"metric":{`+run+`,"gen_ai_request_model":"glm-5.3","gen_ai_token_type":"cached_input"},"value":[1727430000,"900"]},
+		{"metric":{`+run+`,"gen_ai_request_model":"glm-5.3","gen_ai_token_type":"output"},"value":[1727430000,"10"]},
+		{"metric":{`+run+`,"gen_ai_request_model":"claude-opus-5-5","gen_ai_token_type":"input"},"value":[1727430000,"200"]},
+		{"metric":{`+run+`,"gen_ai_request_model":"claude-opus-5-5","gen_ai_token_type":"cache_creation_input"},"value":[1727430000,"50"]},
+		{"metric":{`+run+`,"gen_ai_request_model":"claude-opus-5-5","gen_ai_token_type":"output"},"value":[1727430000,"5"]}]}}`)
+	got, err := v.RunUsage(t.Context())
+	want := Usage{Tokens: 1215, Input: 1200, CacheRead: 900, CacheWrite: 50, Output: 15, Typed: true, Models: map[string]ModelUsage{
+		"glm-5.3":         {Input: 1000, CacheRead: 900, Output: 10},
+		"claude-opus-5-5": {Input: 200, CacheWrite: 50, Output: 5},
+	}}
+	if err != nil || !reflect.DeepEqual(got["7f3cq2xz"], want) {
 		t.Fatalf("got %+v %v, want %+v", got, err, want)
 	}
 }

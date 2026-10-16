@@ -272,11 +272,17 @@ prices both caps stay in tokens.
 
 | Setting | Effect |
 |---|---|
-| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the tier's logical model. `cacheWrite` defaults to `input`. Each price must be positive |
-| `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's caps in USD; `taskUSD` may not be below `runUSD`. A tier with either set and no price for its model fails the rollout: an unpriced run would cost $0 |
-| `meter.query` | Must group by `gen_ai_token_type` (`input`, `cached_input`, `cache_creation_input`, `output`), or no run can be priced and every run is capped in tokens |
+| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the model that served the tokens (`glm-5.3`, `claude-opus-5-5`) when `meter.query` groups by `gen_ai_request_model`, else by the tier's logical model. `cacheWrite` defaults to `input`. Each price must be positive |
+| `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's caps in USD; `taskUSD` may not be below `runUSD`. Keyed by logical model, a tier with either set and no price for its model fails the rollout: an unpriced run would cost $0 |
+| `meter.query` | Must group by `gen_ai_token_type` (`input`, `cached_input`, `cache_creation_input`, `output`), or no run can be priced and every run is capped in tokens. Grouped by `gen_ai_request_model` too, each model is priced at its own rate |
 
-A run's cost is `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`, divided by 10⁶.
+Grouping by served model is what makes a logical name safe to price: the same claim's
+`agent-default` is GLM-5.3 on one gateway listener and Claude Opus on another, about ten times
+dearer. A run's cost is the sum over the models that served it of
+`(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`,
+divided by 10⁶; a series without `gen_ai_request_model` is priced by the claim's logical model.
+A run served by a model with no price is never $0: it is held to its token caps, and
+`agent_factory_meter_unpriced_model_runs_total{model}` names the model.
 
 At GLM-5.3's prices ($1.40 / $0.26 / $4.40):
 
