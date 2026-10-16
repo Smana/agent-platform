@@ -11,8 +11,12 @@ dropped; requests and notifications are untouched. Belt and braces: agent-router
 answer client replies 202 itself (F29's gateway half); the harness does not depend on it.
 
 #99: one transient model error must not end the run; see patch_model_retry.
+
+cloud-native-ref#2283: each MCP request carries the traceparent of the span that sent it; see
+patch_traceparent.
 """
 import asyncio
+import contextvars
 import logging
 import os
 import sys
@@ -41,6 +45,56 @@ def patch(transport, httpx, replies) -> bool:
                         "the session is kept", exc.response.status_code)
 
     transport._handle_post_request = _handle_post_request
+    return True
+
+
+# The traceparent of the message _handle_post_request is sending, for _prepare_headers to add.
+_SENDING = contextvars.ContextVar("agent_harness_traceparent", default=None)
+
+
+def current_traceparent(trace) -> str | None:
+    sc = trace.get_current_span().get_span_context()
+    return "00-%032x-%016x-01" % (sc.trace_id, sc.span_id) if sc.is_valid else None
+
+
+def patch_traceparent(session_module, transport, trace) -> bool:
+    """Sends each MCP request with the traceparent of the span current where it was made.
+
+    mcp builds the HTTP headers from the transport's config, once per session, and sends from its
+    own post_writer task, where the caller's span is no longer current. So the span is read when
+    the message is made (in the caller, where MCPToolExecutor.call_tool's @observe made it current)
+    and the header added when it is posted. Without a current span the config's header stays: the
+    run span agent-run puts there."""
+    base = getattr(session_module, "SessionMessage", None)
+    post = getattr(transport, "_handle_post_request", None)
+    prepare = getattr(transport, "_prepare_headers", None)
+    if base is None or post is None or prepare is None:
+        print("agent-harness: #2283 traceparent NOT applied: no SessionMessage, _handle_post_request or "
+              "_prepare_headers (an mcp upgrade?); MCP spans nest under the run, not their step",
+              file=sys.stderr, flush=True)
+        return False
+
+    class TracedSessionMessage(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.traceparent = current_traceparent(trace)
+
+    async def _handle_post_request(self, ctx):
+        token = _SENDING.set(getattr(ctx.session_message, "traceparent", None))
+        try:
+            await post(self, ctx)
+        finally:
+            _SENDING.reset(token)
+
+    def _prepare_headers(self):
+        headers = prepare(self)
+        if _SENDING.get():
+            headers["traceparent"] = _SENDING.get()
+        return headers
+
+    session_module.SessionMessage = TracedSessionMessage
+    transport._handle_post_request = _handle_post_request
+    transport._prepare_headers = _prepare_headers
     return True
 
 
@@ -138,6 +192,14 @@ def _install() -> None:
         print("agent-harness: F29 patch NOT applied: %s" % exc, file=sys.stderr, flush=True)
     else:
         patch(StreamableHTTPTransport, httpx, (JSONRPCResponse, JSONRPCError))
+    try:
+        import mcp.shared.session
+        from mcp.client.streamable_http import StreamableHTTPTransport
+        from opentelemetry import trace
+    except ImportError as exc:
+        print("agent-harness: #2283 traceparent NOT applied: %s" % exc, file=sys.stderr, flush=True)
+    else:
+        patch_traceparent(mcp.shared.session, StreamableHTTPTransport, trace)
     try:
         import openai
         from openhands.sdk.llm.llm import LLM
