@@ -221,6 +221,26 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 		}
 		_, _ = io.WriteString(w, issueJSON)
 	}))
+	// v2 D4/D5: a login's permission on the repository, and a user id's current login.
+	mux.HandleFunc("GET /repos/Smana/demo/collaborators/{login}/permission", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		switch r.PathValue("login") {
+		case "writer":
+			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"writer"}}`)
+		case "flaky":
+			http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+		case "empty":
+			_, _ = io.WriteString(w, `{"permission":""}`)
+		default:
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}
+	}))
+	mux.HandleFunc("GET /user/{id}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") != "583231" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"login":"octocat","id":583231}`)
+	}))
 	mux.HandleFunc("GET /repos/Smana/demo/issues/7/events", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, eventsJSON)
 	}))
@@ -1186,4 +1206,35 @@ func mustReq(t *testing.T, u string) *http.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+// v2 D4/D5: GitHub's collaborator permission, 404 meaning none; anything else unanswered is an
+// error, never an answer, and a login is checked before it reaches the path.
+func TestPermissionIsGitHubsAnswer(t *testing.T) {
+	r := newRig(t)
+	for login, want := range map[string]string{"writer": "write", "stranger": "none"} {
+		if got, err := r.g.Permission(t.Context(), login); got != want || err != nil {
+			t.Errorf("%s: %q %v", login, got, err)
+		}
+	}
+	for _, login := range []string{"flaky", "empty", "../../x", ""} {
+		if got, err := r.g.Permission(t.Context(), login); err == nil {
+			t.Errorf("%q: %q answered", login, got)
+		}
+	}
+}
+
+func TestUserLoginReadsTheCurrentLogin(t *testing.T) {
+	r := newRig(t)
+	if got, err := r.g.UserLogin(t.Context(), 583231); got != "octocat" || err != nil {
+		t.Fatalf("%q %v", got, err)
+	}
+	for _, id := range []int64{7, 0, -1} {
+		if got, err := r.g.UserLogin(t.Context(), id); err == nil {
+			t.Errorf("%d: %q", id, got)
+		}
+	}
+	if r.g.Repository() != "Smana/demo" {
+		t.Fatal(r.g.Repository())
+	}
 }

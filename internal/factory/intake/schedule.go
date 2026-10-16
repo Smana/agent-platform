@@ -44,15 +44,15 @@ func LastSlot(expr string, now time.Time) (time.Time, bool) {
 	return last, !last.IsZero()
 }
 
-// scheduleForge is the part of the forge the probe reads as the factory App: the open pull
+// ScheduleForge is the part of the forge the probe reads as the factory App: the open pull
 // requests, whose checks it then hands to the merger.
-type scheduleForge interface {
+type ScheduleForge interface {
 	OpenPullRequests(ctx context.Context) ([]forge.PRSummary, error)
 }
 
-// scheduleMerger reads a pull request's checks through the merger App (R16): the renovate-red
+// ScheduleMerger reads a pull request's checks through the merger App (R16): the renovate-red
 // probe is a merger-side read, so checks:read never joins the factory App's scope.
-type scheduleMerger interface {
+type ScheduleMerger interface {
 	PullRequestChecks(ctx context.Context, number int) (forge.Checks, error)
 }
 
@@ -61,8 +61,12 @@ type scheduleMerger interface {
 // across a failover — and only a slot of the last hour fires. Stopped reports the kill switch:
 // intake pauses while it holds, schedules included.
 type Scheduler struct {
-	Forge     scheduleForge
-	Merger    scheduleMerger
+	Forge  ScheduleForge
+	Merger ScheduleMerger
+	// Clients is v2 D8: a repository's factory App and merger connections. Set, each entry's
+	// probe reads its own repository, and one with no connection probes nothing; nil, Forge and
+	// Merger serve every entry (one repository).
+	Clients   func(repository string) (ScheduleForge, ScheduleMerger, bool)
 	Client    client.Client
 	Namespace string
 	Cfg       *config.Config
@@ -166,7 +170,14 @@ func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, name, auth
 	if !rc.NeedsMerger() {
 		return false, "", nil // no merger key is required, and reading checks needs it: nothing to find
 	}
-	prs, err := s.Forge.OpenPullRequests(ctx)
+	gh, merger := s.Forge, s.Merger
+	if s.Clients != nil {
+		var ok bool
+		if gh, merger, ok = s.Clients(rc.Name); !ok {
+			return false, "", fmt.Errorf("intake: no GitHub connection for %s (v2 D8)", rc.Name)
+		}
+	}
+	prs, err := gh.OpenPullRequests(ctx)
 	if err != nil {
 		return false, "", err
 	}
@@ -175,7 +186,7 @@ func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, name, auth
 		if p.Author != author || s.Now().Sub(p.Created) < 24*time.Hour {
 			continue
 		}
-		c, err := s.Merger.PullRequestChecks(ctx, p.Number)
+		c, err := merger.PullRequestChecks(ctx, p.Number)
 		if err != nil {
 			return false, "", err
 		}

@@ -187,10 +187,10 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 
 // Run is the part of a claim the factory reads back.
 type Run struct {
-	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef string
-	Head, TaskText, RequestHash, Tier, Model                                          string
-	Tokens, MaxTokens, StartSeq                                                       int64
-	Created, Finished                                                                 time.Time
+	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef, Repository string
+	Head, TaskText, RequestHash, Tier, Model                                                      string
+	Tokens, MaxTokens, StartSeq                                                                   int64
+	Created, Finished                                                                             time.Time
 	// Deleting: the claim carries a deletion timestamp. Its finalizers can keep it listed, in
 	// whatever phase it had, long after the run itself was stopped (#55).
 	Deleting bool
@@ -206,7 +206,7 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	str := func(path ...string) string { v, _, _ := unstructured.NestedString(u.Object, path...); return v }
 	r := Run{ID: id, TaskID: u.GetLabels()[LabelTask], Created: u.GetCreationTimestamp().Time, Deleting: u.GetDeletionTimestamp() != nil,
 		Role: str("spec", "role"), Principal: str("spec", "principal"), Branch: str("spec", "branch"),
-		RoomRef: str("spec", "roomRef"), Phase: str("status", "phase"), Reason: str("status", "reason"),
+		RoomRef: str("spec", "roomRef"), Repository: str("spec", "repository"), Phase: str("status", "phase"), Reason: str("status", "reason"),
 		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead],
 		RequestHash: u.GetAnnotations()[AnnRequestHash], Tier: u.GetLabels()[LabelTier], Model: str("spec", "model"),
 		TaskText: str("spec", "task", "text")}

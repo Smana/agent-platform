@@ -162,19 +162,19 @@ func TestTaskSink(t *testing.T) {
 	shutdown(ctx)
 }
 
-// v2 PR 1 reads a list but serves one repository: a second entry would run on the first's
-// GitHub connections, unadmitted, so the start refuses it until the binding and the fence land.
-func TestServedRepository(t *testing.T) {
-	one := &config.Config{Repositories: []config.Repository{{Name: "Smana/a"}}}
-	if r, err := servedRepository(one); err != nil || r.Name != "Smana/a" {
-		t.Fatalf("%+v %v", r, err)
-	}
-	legacy := &config.Config{Repository: "Smana/cloud-native-ref"}
-	if r, err := servedRepository(legacy); err != nil || r.Name != "Smana/cloud-native-ref" {
-		t.Fatalf("the legacy shape serves its repository: %+v %v", r, err)
+// Until the ownership fence (v2 D7) lands, a second entry is refused at start: nothing yet stops
+// two clusters from taking the same repository.
+func TestOneRepositoryUntilFenced(t *testing.T) {
+	for name, c := range map[string]*config.Config{
+		"one entry":    {Repositories: []config.Repository{{Name: "Smana/a"}}},
+		"legacy shape": {Repository: "Smana/cloud-native-ref"},
+	} {
+		if err := oneRepositoryUntilFenced(c); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 	two := &config.Config{Repositories: []config.Repository{{Name: "Smana/a"}, {Name: "Smana/b"}}}
-	if _, err := servedRepository(two); err == nil || !strings.Contains(err.Error(), "serves exactly one") {
+	if err := oneRepositoryUntilFenced(two); err == nil || !strings.Contains(err.Error(), "serves exactly one") {
 		t.Fatalf("two entries are refused at start: %v", err)
 	}
 }

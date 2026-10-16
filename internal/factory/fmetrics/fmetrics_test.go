@@ -74,8 +74,8 @@ func TestTasksGaugeIsLeaderOnly(t *testing.T) {
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_build_info{version="v0.7.0"} 1`,
-		`agent_factory_tasks{phase="Implementing",predicted_class="review",source="issue",tier="standard"} 2`,
-		`agent_factory_tasks{phase="Done",predicted_class="review",source="issue",tier="standard"} 1`,
+		`agent_factory_tasks{phase="Implementing",predicted_class="review",repository="other",source="issue",tier="standard"} 2`,
+		`agent_factory_tasks{phase="Done",predicted_class="review",repository="other",source="issue",tier="standard"} 1`,
 		`agent_factory_kill_switch_engaged 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
@@ -147,17 +147,17 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.RunBudgetFallback(ctx, "task", "unpriced")
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_time_to_pr_seconds_bucket{source="issue",template="solo",tier="standard",le="600"} 1`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged"} 1`,
-		`agent_factory_task_tokens_bucket{predicted_class="review",template="solo",tier="standard",le="200000"} 1`,
+		`agent_factory_time_to_pr_seconds_bucket{repository="other",source="issue",template="solo",tier="standard",le="600"} 1`,
+		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged",repository="other"} 1`,
+		`agent_factory_task_tokens_bucket{predicted_class="review",repository="other",template="solo",tier="standard",le="200000"} 1`,
 		`agent_factory_budget_remaining_tokens{principal="system:factory"} 2.4e+07`,
 		`agent_factory_budget_cap_tokens{principal="system:factory"} 2.5e+07`,
-		`agent_factory_human_interventions_total{kind="stop"} 1`,
+		`agent_factory_human_interventions_total{kind="stop",repository="other"} 1`,
 		`agent_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`agent_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
 		`agent_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",verdict="shadow"} 1`,
 		`agent_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
-		`agent_factory_intake_errors_total{source="issue"} 1`,
+		`agent_factory_intake_errors_total{repository="other",source="issue"} 1`,
 		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
 		`agent_factory_github_rate_remaining 4990`,
 		`agent_factory_github_up 1`,
@@ -203,9 +203,9 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_run_revocations_total{reason="other"} 1`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="other"} 1`,
-		`agent_factory_human_interventions_total{kind="other"} 1`,
-		`agent_factory_intake_errors_total{source="other"} 1`,
+		`agent_factory_pr_outcomes_total{class="docs-links",outcome="other",repository="other"} 1`,
+		`agent_factory_human_interventions_total{kind="other",repository="other"} 1`,
+		`agent_factory_intake_errors_total{repository="other",source="other"} 1`,
 		`agent_factory_resumes_total{reason="other"} 1`,
 		`agent_factory_rooms_closed_at_cap_total{reason="other"} 1`,
 		`agent_factory_run_revocations_total{limit="other",reason="budget-run"} 1`,

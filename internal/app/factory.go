@@ -99,8 +99,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
-	repo, err := servedRepository(cfg)
-	if err != nil {
+	if err := oneRepositoryUntilFenced(cfg); err != nil {
 		return err
 	}
 	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version)
@@ -126,20 +125,10 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
-	gh, err := forge.Connect(ctx, forge.Options{Repository: repo.Name, AppIDFile: cfg.GitHub.AppIDFile,
-		PrivateKeyFile: cfg.GitHub.PrivateKeyFile, APIURL: githubAPI, UserAgent: "agent-factory/" + version.Version,
-		HTTP: httpx.New(githubTimeout, nil), Now: time.Now})
+	conns, err := connectRepositories(ctx, log, cfg)
 	if err != nil {
 		return err
 	}
-	// R16 (owner, 2026-09-27): merge-side calls use the merger App's key, which no other
-	// workload holds. TW4: its token asks the merger profile, not the factory App's scope —
-	// checks and statuses read, contents and pull requests write.
-	merger, err := connectMerger(ctx, log, cfg, repo.Name)
-	if err != nil {
-		return err
-	}
-
 	mgr, err := newFactoryManager(log, ns)
 	if err != nil {
 		return err
@@ -148,6 +137,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	m.ListRepositories(conns.names()...)
 	costs := &meter.Costs{} // the meter writes each run's cost, the reconciler sums a task's
 	runUSD := map[string]float64{}
 	for name, t := range cfg.Tiers {
@@ -165,9 +155,10 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	rc := runs.Client{C: mgr.GetClient()}
-	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Forge: gh, Merger: merger,
+	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Clients: conns.task,
 		Runs: rc, Rooms: broker,
-		Triage:  triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)}, Forge: gh},
+		Triage: triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)},
+			Clients: conns.class},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink, Costs: costs}
 	if err := rec.SetupWithManager(mgr); err != nil {
@@ -199,18 +190,29 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	// The two groups R23 admits: api.groups, which defaults to the values the broker's config carries.
 	groups := policy.Groups{Admin: cfg.API.Groups.Admin, Member: cfg.API.Groups.Member}
+	perms := conns.permissions(cfg.API.Access)
 	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
-		NewRunID: taskid.Random, Now: time.Now, Metrics: m}
-	for _, r := range []manager.Runnable{
-		&intake.IssuePoller{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg, Repository: repo.Name, Errors: m, Log: log,
-			Stopped: stopped},
-		&intake.Scheduler{Forge: gh, Merger: merger, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: conns.access(log, cfg, perms)}
+	runlore, ok := conns.get(cfg.RunLoreRepository())
+	if !ok {
+		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
+	}
+	var runnables []manager.Runnable
+	for _, rp := range cfg.Repos() {
+		c, _ := conns.get(rp.Name)
+		name := rp.Name
+		runnables = append(runnables, &intake.IssuePoller{Forge: c.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped,
+			CanWrite: func(ctx context.Context, login string) (bool, error) { return perms.CanWrite(ctx, name, login) }})
+	}
+	for _, r := range append(runnables,
+		&intake.Scheduler{Clients: conns.schedule, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
 		// so the ExternalSecret's rotations need no restart (AGENTS.md).
-		&intake.RunLore{Forge: gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+		&intake.RunLore{Forge: runlore.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Token: func() string {
 				b, _ := os.ReadFile(filepath.Clean(cfg.RunLore.TokenFile))
 				return strings.TrimSpace(string(b))
@@ -237,8 +239,8 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				}
 			}, Log: log},
 		apiSrv,
-		&pinger{ping: gh.Ping, every: pingEvery, up: func() bool { return gh.Healthy(time.Now()) }, record: m.GitHubUp},
-	} {
+		&pinger{ping: conns.ping, every: pingEvery, up: func() bool { return conns.healthy(time.Now()) }, record: m.GitHubUp},
+	) {
 		if err := mgr.Add(r); err != nil {
 			return fmt.Errorf("manager: %w", err)
 		}
@@ -280,16 +282,14 @@ func serveFactory(ctx context.Context, log *slog.Logger, mgr manager.Manager, op
 	return errors.Join(err, <-opsDone)
 }
 
-// servedRepository is the one repository this release serves. The config reads a list (v2 D1),
-// but both GitHub connections are bound to one repository, and the admission binding (D3-D6) and
-// the ownership fence (D7) are not built yet: a second entry would be acted on through the
-// first's connections, and admitted unchecked. Refused at start until those land.
-func servedRepository(cfg *config.Config) (config.Repository, error) {
-	rs := cfg.Repos()
-	if len(rs) != 1 {
-		return config.Repository{}, fmt.Errorf("config lists %d repositories: this release serves exactly one (v2 second-repository design, PR 2 and 3)", len(rs))
+// oneRepositoryUntilFenced refuses a second entry until the ownership fence (v2 D7) lands: the
+// connections and the admission binding (D3-D6, D8) are per repository, but nothing yet stops two
+// clusters from taking the same repository's issues.
+func oneRepositoryUntilFenced(cfg *config.Config) error {
+	if n := len(cfg.Repos()); n != 1 {
+		return fmt.Errorf("config lists %d repositories: this release serves exactly one (v2 second-repository design, PR 3)", n)
 	}
-	return rs[0], nil
+	return nil
 }
 
 // connectMerger connects the merger App, or answers the fail-closed forge.Absent when its key

@@ -233,6 +233,51 @@ func (g *GitHub) AddLabels(ctx context.Context, number int, labels ...string) er
 	return wrap("add labels", err)
 }
 
+// Repository is the owner/name this connection is bound to.
+func (g *GitHub) Repository() string { return g.owner + "/" + g.name }
+
+// githubLogin is GitHub's login syntax, checked before a login is spliced into a path.
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// Permission is login's permission on the repository as GitHub's collaborator API states it
+// (admin, maintain, write, triage, read or none); GitHub's 404 — a login it does not know, or one
+// with no access — is "none" (v2 D4, D5). Any other failure is an error, never an answer.
+func (g *GitHub) Permission(ctx context.Context, login string) (string, error) {
+	if !githubLogin.MatchString(login) {
+		return "", errors.New("forge: not a GitHub login")
+	}
+	p, resp, err := g.rest.Repositories.GetPermissionLevel(ctx, g.owner, g.name, login)
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		g.mark(nil)
+		return "none", nil
+	}
+	g.mark(err)
+	switch {
+	case err != nil:
+		return "", wrap("permission", err)
+	case p.GetPermission() == "":
+		return "", errors.New("forge: permission: the reply has no permission")
+	}
+	return p.GetPermission(), nil
+}
+
+// UserLogin is GitHub user id's current login. The id is stable across a rename, the login is
+// not, so the D4 lookup resolves the id each time its cache expires.
+func (g *GitHub) UserLogin(ctx context.Context, id int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("forge: not a GitHub user id")
+	}
+	u, _, err := g.rest.Users.GetByID(ctx, id)
+	g.mark(err)
+	if err != nil {
+		return "", wrap("user", err)
+	}
+	if u.GetLogin() == "" {
+		return "", errors.New("forge: user: the reply has no login")
+	}
+	return u.GetLogin(), nil
+}
+
 // RemoveLabel removes a label; one already gone (404) is not an error.
 func (g *GitHub) RemoveLabel(ctx context.Context, number int, label string) error {
 	resp, err := g.rest.Issues.RemoveLabelForIssue(ctx, g.owner, g.name, number, label)

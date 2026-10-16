@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -216,6 +217,15 @@ func (c *Config) RepositoryFor(name string) *Repository {
 		return &rs[0]
 	}
 	return &Repository{Name: name}
+}
+
+// listed is name's entry, nil when the list does not name it (whatever its length).
+func (c *Config) listed(name string) *Repository {
+	rs := c.Repos()
+	if i := slices.IndexFunc(rs, func(r Repository) bool { return strings.EqualFold(r.Name, name) }); i >= 0 {
+		return &rs[i]
+	}
+	return nil
 }
 
 // ControlFor is the kill switch's issue; Issue 0 when there is none.
@@ -429,7 +439,24 @@ type API struct {
 	SystemIssuer     string            `json:"systemIssuer,omitempty"`
 	SystemJWKS       string            `json:"systemJWKS,omitempty"`
 	SystemPrincipals map[string]string `json:"systemPrincipals,omitempty"`
+	// Access is v2 D4's lookup: the ZITADEL reader secret (the broker's {"pat", "githubIdpId"}) that
+	// resolves a caller to their GitHub login, and how long an answer is trusted. Without it the
+	// API refuses every human run: write on the repository is checked, never assumed.
+	Access *Access `json:"access,omitempty"`
+	// SystemRepositories is v2 D6: the repositories each system principal (a systemPrincipals
+	// value) may start runs on. A principal it does not list may start none.
+	SystemRepositories map[string][]string `json:"systemRepositories,omitempty"`
 }
+
+// Access is api.access (v2 D4).
+type Access struct {
+	ReaderFile string   `json:"readerFile"`
+	TTL        Duration `json:"ttl"`
+}
+
+// MaxAccessTTL is the longest a GitHub permission answer is trusted, and the default: the
+// broker's room-visibility bound, so a revoked collaborator loses both within the same window.
+const MaxAccessTTL = 5 * time.Minute
 
 // RunLore is the intake of §1: findings become tasks when actionable, 5 a day (OD-9).
 type RunLore struct {
@@ -437,6 +464,17 @@ type RunLore struct {
 	TokenFile     string  `json:"tokenFile"`
 	MinConfidence float64 `json:"minConfidence"`
 	DailyCap      int     `json:"dailyCap"`
+	// Repository is where RunLore's issues are filed (v2 D6); omitted, the first listed.
+	Repository string `json:"repository,omitempty"`
+}
+
+// RunLoreRepository is the repository RunLore's findings become issues on: a system caller
+// files where the config says, never where it asks (v2 D6).
+func (c *Config) RunLoreRepository() string {
+	if c.RunLore.Repository != "" {
+		return c.RunLore.Repository
+	}
+	return c.Primary()
 }
 
 var (
@@ -505,6 +543,9 @@ func Parse(raw []byte) (*Config, error) {
 			}
 			c.Tiers[name] = t
 		}
+	}
+	if a := c.API.Access; a != nil && a.TTL.Duration == 0 {
+		a.TTL.Duration = MaxAccessTTL
 	}
 	if c.API.Groups.Admin == "" {
 		c.API.Groups.Admin = defaultAdminGroup
@@ -771,6 +812,28 @@ func (c *Config) Validate() error {
 	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
 		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")
 	}
+	if a := c.API.Access; a != nil {
+		if a.ReaderFile == "" {
+			bad("api.access.readerFile is required")
+		}
+		if a.TTL.Duration <= 0 || a.TTL.Duration > MaxAccessTTL {
+			bad("api.access.ttl must be above 0 and at most %s (v2 D4)", MaxAccessTTL)
+		}
+		// The reader's PAT is sent to the issuer: never in clear, never with userinfo.
+		if u, err := url.Parse(c.API.HumanIssuer); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			bad("api.humanIssuer must be https://host when api.access is set")
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(c.API.SystemRepositories)) {
+		if !slices.Contains(slices.Collect(maps.Values(c.API.SystemPrincipals)), id) {
+			bad("api.systemRepositories: %q is not a systemPrincipals value", id)
+		}
+		for _, r := range c.API.SystemRepositories[id] {
+			if c.listed(r) == nil {
+				bad("api.systemRepositories.%s: %q is not a listed repository", id, r)
+			}
+		}
+	}
 	// §1's RunLore intake (FA-8): every replica serves it, like the API, so its block is as
 	// required as api's. OD-9: the bar is real and the cap is stated; 0 admits nothing.
 	if c.RunLore.Listen == "" {
@@ -784,6 +847,9 @@ func (c *Config) Validate() error {
 	}
 	if c.RunLore.DailyCap < 0 {
 		bad("runlore.dailyCap must be 0 or more")
+	}
+	if r := c.RunLore.Repository; r != "" && c.listed(r) == nil {
+		bad("runlore.repository %q is not a listed repository", r)
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

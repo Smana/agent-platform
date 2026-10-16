@@ -13,9 +13,9 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/forge"
 )
 
-// classForge is the part of the forge triage reads: an issue's labels, and who applied them.
+// ClassForge is the part of the forge triage reads: an issue's labels, and who applied them.
 // (The forge package exports no interface; each consumer declares its own.)
-type classForge interface {
+type ClassForge interface {
 	Issue(ctx context.Context, number int) (forge.Issue, error)
 	LabelEvents(ctx context.Context, number int, label string) ([]forge.LabelEvent, error)
 }
@@ -46,7 +46,22 @@ func Control(taskID string, percent int) bool {
 type Classify struct {
 	Cfg   *config.Config
 	C     Classifier
-	Forge classForge
+	Forge ClassForge
+	// Clients is v2 D8: the factory App on a repository. Set, a task's labels are read on its
+	// own repository, and one it has no connection for reads none; nil, Forge reads them.
+	Clients func(repository string) (ClassForge, bool)
+}
+
+// forge is the connection that reads t's issue; nil when its repository has none.
+func (c Classify) forge(t *v1alpha1.Task) ClassForge {
+	if c.Clients == nil {
+		return c.Forge
+	}
+	f, ok := c.Clients(t.Spec.Repository)
+	if !ok {
+		return nil
+	}
+	return f
 }
 
 // Triage fixes the class, then asks C7 for the tier: one call per task, whose failure falls
@@ -94,10 +109,11 @@ func (c Classify) predictClass(ctx context.Context, t *v1alpha1.Task) (string, e
 		}
 		return "review", nil
 	}
-	if t.Spec.Issue == 0 {
+	gh := c.forge(t)
+	if t.Spec.Issue == 0 || gh == nil {
 		return "review", nil
 	}
-	iss, err := c.Forge.Issue(ctx, t.Spec.Issue)
+	iss, err := gh.Issue(ctx, t.Spec.Issue)
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +122,7 @@ func (c Classify) predictClass(ctx context.Context, t *v1alpha1.Task) (string, e
 		if _, known := c.Cfg.RepositoryFor(t.Spec.Repository).Classes[name]; !ok || !known || name == "revert" {
 			continue // revert is the factory's own class, never predicted from a label
 		}
-		evs, err := c.Forge.LabelEvents(ctx, t.Spec.Issue, l)
+		evs, err := gh.LabelEvents(ctx, t.Spec.Issue, l)
 		if err != nil {
 			return "", err
 		}

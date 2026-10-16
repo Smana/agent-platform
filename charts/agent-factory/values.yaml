@@ -15,5 +15,8 @@ brokerCASecret: openbao-ca
 roomsAudience: rooms-system
 oidcSecret: agent-factory-oidc
 intakeSecret: agent-factory-intake
+# v2 D4: the ZITADEL reader ({"pat", "githubIdpId"}) that resolves an API caller to their GitHub
+# login, read at config.api.access.readerFile. Optional: without it every human run is refused.
+zitadelReaderSecret: agent-factory-zitadel-reader
 # The factory config, rendered verbatim: README.md#config, docs/factory.md#the-config-file.
 config: {}

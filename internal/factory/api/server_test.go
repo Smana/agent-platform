@@ -88,6 +88,7 @@ func mkServer(t *testing.T, st RunStore, c client.Client, enforce, stopped bool,
 		Stopped:  func(context.Context) bool { return stopped },
 		NewRunID: func() string { return runID }, Now: func() time.Time { return now },
 		Metrics: m,
+		Access:  writers{can: map[string][]string{"human:291": {"Smana/cloud-native-ref"}, "human:1": {"Smana/cloud-native-ref"}}},
 	}
 }
 
@@ -116,7 +117,7 @@ func ledgerCM(day string, spent map[string]int64) *corev1.ConfigMap {
 
 func aliceRoom() *v1alpha1.Room {
 	return &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: "3kq7x2ma", Namespace: "agent-system"},
-		Spec:   v1alpha1.RoomSpec{Owner: "human:291", Driver: "human:291", DataClass: "public"},
+		Spec:   v1alpha1.RoomSpec{Owner: "human:291", Driver: "human:291", DataClass: "public", Repository: "Smana/cloud-native-ref"},
 		Status: v1alpha1.RoomStatus{Driver: "human:291"}}
 }
 

@@ -61,7 +61,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		narrateLater(t, narrate.WaitingForHuman(t, "merge_gate_off"))
 		return nil
 	}
-	checks, err := r.Merger.PullRequestChecks(ctx, n)
+	checks, err := r.merger(ctx).PullRequestChecks(ctx, n)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// forge.Files is read late: only a decision that would reach the LinksOnly gate of an
 		// entry class pays its 2N+1 API calls. The first pass passed that gate vacuously; this
 		// second pass decides on the real diff.
-		base, head, ferr := r.Merger.Files(ctx, "main", pr.HeadSHA)
+		base, head, ferr := r.merger(ctx).Files(ctx, "main", pr.HeadSHA)
 		if ferr != nil {
 			return ferr
 		}
@@ -150,7 +150,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	// The decided head, pinned: GitHub checks it at merge time, so a push that landed since the
 	// read refuses the merge (409) and the new head is decided again — never merged on this
 	// decision (SC-14). A merge GitHub does not allow as it stands (405) is a human's to fix.
-	if err := r.Merger.Merge(ctx, pr.NodeID, pr.HeadSHA); err != nil {
+	if err := r.merger(ctx).Merge(ctx, pr.NodeID, pr.HeadSHA); err != nil {
 		switch {
 		case errors.Is(err, forge.ErrHeadMoved):
 			r.to(t, v1alpha1.PhaseAwaitingCI, "head_moved")
@@ -203,7 +203,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		r.backToGate(t, why, "reentered_head_reported", pr.HeadSHA)
 		return true, nil
 	}
-	c, err := r.Merger.PullRequestChecks(ctx, pr.Number)
+	c, err := r.merger(ctx).PullRequestChecks(ctx, pr.Number)
 	if err != nil {
 		return false, err
 	}
@@ -337,7 +337,7 @@ func (r *Reconciler) reportedHead(ctx context.Context, t *v1alpha1.Task) (string
 // is what binds the commits to the factory; the claim stays because it narrows that to this task's
 // implementer runs, where the App's push identity is shared by every implementer run of any task.
 func (r *Reconciler) factoryCommits(ctx context.Context, t *v1alpha1.Task, head string) (bool, error) {
-	cs, err := r.Forge.PullRequestCommits(ctx, t.Status.PullRequest.Number)
+	cs, err := r.gh(ctx).PullRequestCommits(ctx, t.Status.PullRequest.Number)
 	if errors.Is(err, forge.ErrCommitsTruncated) {
 		return false, nil
 	}
@@ -391,7 +391,7 @@ func pushDeadline(t *v1alpha1.Task) time.Time {
 // one wholly the App's whose newest move is not yet the head — GitHub records a push a little
 // after it lands. A read error is returned, as factoryCommits's is: the caller retries.
 func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) (pushCheck, error) {
-	ps, err := r.Forge.BranchActivity(ctx, "agent/"+t.Name)
+	ps, err := r.gh(ctx).BranchActivity(ctx, "agent/"+t.Name)
 	if errors.Is(err, forge.ErrActivityTruncated) {
 		return pushStranger, nil
 	}
@@ -491,7 +491,7 @@ func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr fo
 	var first error
 	done := false
 	for _, id := range ids {
-		if err := r.Merger.RerunCheck(ctx, id); err != nil {
+		if err := r.merger(ctx).RerunCheck(ctx, id); err != nil {
 			if first == nil {
 				first = err
 			}
@@ -591,7 +591,7 @@ func (r *Reconciler) verifying(ctx context.Context, t *v1alpha1.Task) error {
 		return r.revert(ctx, t, "revert_requested")
 	}
 	ref := t.Status.PullRequest
-	runs, err := r.Merger.CommitChecks(ctx, ref.MergeCommitSHA)
+	runs, err := r.merger(ctx).CommitChecks(ctx, ref.MergeCommitSHA)
 	if err != nil {
 		return err
 	}
@@ -623,19 +623,19 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	if ref.RevertNumber > 0 { // a lost write's replay: the revert exists; end, never open a second
 		return r.end(ctx, t, v1alpha1.PhaseReverted, why)
 	}
-	pr, err := r.Forge.PullRequest(ctx, ref.Number)
+	pr, err := r.gh(ctx).PullRequest(ctx, ref.Number)
 	if err != nil {
 		return err
 	}
 	r.label(ctx, pr, AutoMergedLabel(t.Spec.PredictedClass)) // a second chance: its revert is read against it
-	rv, err := r.Merger.RevertPR(ctx, ref.NodeID, fmt.Sprintf("Revert %q", pr.Title),
+	rv, err := r.merger(ctx).RevertPR(ctx, ref.NodeID, fmt.Sprintf("Revert %q", pr.Title),
 		fmt.Sprintf("Reverts #%d (agent factory task `%s`): %s.", ref.Number, t.Name, narrate.Reason(why)))
 	if err != nil {
 		return err
 	}
 	ref.RevertNumber = rv.Number
 	if r.repo(t).Classes["revert"].Live { // not live (R32): the revert PR opens and a maintainer merges it
-		if err := r.Merger.EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
+		if err := r.merger(ctx).EnableAutoMerge(ctx, rv.NodeID, ""); err != nil { // the merger's own revert-* branch
 			return err
 		}
 	}
@@ -661,7 +661,7 @@ func (r *Reconciler) revertPending(t *v1alpha1.Task) bool {
 // disarmed and handed to a maintainer (§6.4). The narration key ends the watch, once.
 func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 	ref := t.Status.PullRequest
-	pr, err := r.Forge.PullRequest(ctx, ref.RevertNumber)
+	pr, err := r.gh(ctx).PullRequest(ctx, ref.RevertNumber)
 	if err != nil {
 		return err
 	}
@@ -671,10 +671,10 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 		t.Status.Narrated = append(t.Status.Narrated, "revert-end-"+strings.ToLower(pr.State))
 		return nil
 	case t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= r.repo(t).Merge.VerifyFor.Duration:
-		if err := r.Merger.DisableAutoMerge(ctx, pr.NodeID); err != nil {
+		if err := r.merger(ctx).DisableAutoMerge(ctx, pr.NodeID); err != nil {
 			return err
 		}
-		return r.narrator().Post(ctx, t, ref.Number, narrate.RevertStalled(t, ref.RevertNumber))
+		return r.narrator(ctx).Post(ctx, t, ref.Number, narrate.RevertStalled(t, ref.RevertNumber))
 	}
 	return nil
 }
@@ -698,7 +698,7 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	var tasks []Merge
 	for i := range l.Items {
 		o := &l.Items[i]
-		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil {
+		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
 			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted})
 		}
 	}
@@ -735,7 +735,8 @@ func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int
 	}
 	n, seen := 0, map[int]bool{}
 	for i := range l.Items {
-		if ref := l.Items[i].Status.PullRequest; ref != nil && ref.ArmedAt != nil && sameUTCDay(ref.ArmedAt.Time, r.Now()) {
+		if ref := l.Items[i].Status.PullRequest; ref != nil && ref.ArmedAt != nil && sameUTCDay(ref.ArmedAt.Time, r.Now()) &&
+			r.onRepo(&l.Items[i], rc) {
 			n++
 			seen[ref.Number] = true
 		}

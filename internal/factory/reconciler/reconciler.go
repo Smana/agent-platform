@@ -5,8 +5,10 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
 	"github.com/Smana/agent-platform/internal/factory/meter"
@@ -56,8 +59,8 @@ type RoomLog interface {
 	TaskFacts(ctx context.Context, room string, f envelope.TaskFacts, clientSeq int64) error
 }
 
-// taskForge is the part of the forge the reconciler uses, as the factory App.
-type taskForge interface {
+// TaskForge is the part of the forge the reconciler uses, as the factory App.
+type TaskForge interface {
 	RecentComments(ctx context.Context, number int) ([]forge.Comment, error)
 	Comment(ctx context.Context, number int, body string) error
 	AddLabels(ctx context.Context, number int, labels ...string) error
@@ -117,16 +120,21 @@ type Reconciler struct {
 	Ledger    client.Client
 	Namespace string
 	Cfg       *config.Config
-	Forge     taskForge
+	Forge     TaskForge
 	Merger    forge.Merger // the merger App: checks, merges and reverts (R16)
-	Runs      RunClient
-	Rooms     RoomLog
-	Triage    triage.Triager
-	Metrics   metrics
-	Now       func() time.Time
-	Nonce     func() string
-	Log       *slog.Logger
-	Trace     tracing.Sink // nil: tracing off (R46)
+	// Clients is v2 D8: a repository's two connections, the factory App's and the merger's, each
+	// bound to that repository. Set, every reconcile binds its task's repository's pair, and a
+	// task on a repository it does not know is refused before any call; nil, Forge and Merger
+	// serve every task (one repository).
+	Clients func(repository string) (TaskForge, forge.Merger, bool)
+	Runs    RunClient
+	Rooms   RoomLog
+	Triage  triage.Triager
+	Metrics metrics
+	Now     func() time.Time
+	Nonce   func() string
+	Log     *slog.Logger
+	Trace   tracing.Sink // nil: tracing off (R46)
 	// Costs is the run meter's per-run USD costs, which a task capped in USD sums (OD-6 (b));
 	// nil: every task is held to TaskTokens.
 	Costs costReader
@@ -157,6 +165,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Client.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	ctx, err := r.bind(fmetrics.WithRepository(ctx, t.Spec.Repository), &t) // v2 D10: the pass's series are the task's repository's
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	ended := v1alpha1.TerminalPhase(t.Status.Phase)
 	// A requested revert and an open revert PR are the two exceptions to leaving a terminal
 	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
@@ -178,7 +190,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.to(&t, v1alpha1.PhaseReceived, "")
 	}
 	fx := &effects{}
-	var err error
 	switch {
 	case !ended, revertWait:
 		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
@@ -325,8 +336,50 @@ func (r *Reconciler) repo(t *v1alpha1.Task) *config.Repository {
 	return r.Cfg.RepositoryFor(t.Spec.Repository)
 }
 
-func (r *Reconciler) narrator() narrate.Narrator {
-	return narrate.Narrator{Forge: r.Forge, Login: r.Cfg.FactoryLogin}
+func (r *Reconciler) narrator(ctx context.Context) narrate.Narrator {
+	return narrate.Narrator{Forge: r.gh(ctx), Login: r.Cfg.FactoryLogin}
+}
+
+// boundKey carries the reconciled task's connections (v2 D8): every GitHub call of the pass reads
+// them from its context, so none can reach another repository's.
+type boundKey struct{}
+
+type bound struct {
+	forge  TaskForge
+	merger forge.Merger
+}
+
+// bind puts t's repository's connections on ctx; an unknown repository is an error, so nothing
+// acts for it.
+func (r *Reconciler) bind(ctx context.Context, t *v1alpha1.Task) (context.Context, error) {
+	if r.Clients == nil {
+		return ctx, nil
+	}
+	f, m, ok := r.Clients(t.Spec.Repository)
+	if !ok {
+		return ctx, fmt.Errorf("task %s: no GitHub connection for repository %q (v2 D8)", t.Name, t.Spec.Repository)
+	}
+	return context.WithValue(ctx, boundKey{}, bound{forge: f, merger: m}), nil
+}
+
+// gh is the factory App on the task's repository, merger the merger App there.
+func (r *Reconciler) gh(ctx context.Context) TaskForge {
+	if b, ok := ctx.Value(boundKey{}).(bound); ok {
+		return b.forge
+	}
+	return r.Forge
+}
+
+func (r *Reconciler) merger(ctx context.Context) forge.Merger {
+	if b, ok := ctx.Value(boundKey{}).(bound); ok {
+		return b.merger
+	}
+	return r.Merger
+}
+
+// onRepo: t is a task of rc's repository. One entry owns every task, as before the list.
+func (r *Reconciler) onRepo(t *v1alpha1.Task, rc *config.Repository) bool {
+	return len(r.Cfg.Repos()) == 1 || strings.EqualFold(t.Spec.Repository, rc.Name)
 }
 
 func stopReasons() map[string]string {
@@ -410,7 +463,7 @@ func (r *Reconciler) drain(ctx context.Context, t *v1alpha1.Task) error {
 		if narrate.Closing(o.Key) && r.settling(t) {
 			break // its token total is final only once the usage settles (#42); settle requeues
 		}
-		if err := r.narrator().Post(ctx, t, o.Number, narrate.Event{Key: o.Key, Body: o.Body}); err != nil {
+		if err := r.narrator(ctx).Post(ctx, t, o.Number, narrate.Event{Key: o.Key, Body: o.Body}); err != nil {
 			return err
 		}
 		t.Status.Outbox = t.Status.Outbox[1:]

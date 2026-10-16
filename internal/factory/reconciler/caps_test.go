@@ -307,6 +307,7 @@ func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
 			cf := cfg()
 			cf.Budgets = g.r.Cfg.Budgets
 			cf.API.Repositories = []string{"Smana/cloud-native-ref"}
+			cf.API.SystemRepositories = map[string][]string{runs.PrincipalFactory: {"Smana/cloud-native-ref"}} // v2 D6
 			rooms := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(c.l.DeepCopy()).Build()
 			seeingMeter(t, rooms)
 			srv := &api.Server{Auth: factoryToken{}, Cfg: cf, Runs: noRuns{},
