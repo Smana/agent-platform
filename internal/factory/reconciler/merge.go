@@ -667,22 +667,20 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	r.label(ctx, pr, RevertOfLabel(ref.Number)) // every pass until it holds: the watch reads it again
-	switch {
-	case pr.State == "MERGED" || pr.State == "CLOSED":
+	if pr.State == "MERGED" || pr.State == "CLOSED" {
 		t.Status.Narrated = append(t.Status.Narrated, "revert-end-"+strings.ToLower(pr.State))
 		return nil
 	}
 	if merged, err := r.mergeGreenRevert(ctx, t, pr); err != nil || merged {
 		return err
 	}
-	switch {
-	case t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= r.repo(t).Merge.VerifyFor.Duration:
-		if err := r.merger(ctx).DisableAutoMerge(ctx, pr.NodeID); err != nil {
-			return err
-		}
-		return r.narrator(ctx).Post(ctx, t, ref.Number, narrate.RevertStalled(t, ref.RevertNumber))
+	if t.Status.PhaseSince == nil || r.Now().Sub(t.Status.PhaseSince.Time) < r.repo(t).Merge.VerifyFor.Duration {
+		return nil
 	}
-	return nil
+	if err := r.merger(ctx).DisableAutoMerge(ctx, pr.NodeID); err != nil {
+		return err
+	}
+	return r.narrator(ctx).Post(ctx, t, ref.Number, narrate.RevertStalled(t, ref.RevertNumber))
 }
 
 // mergeGreenRevert merges a green revert at its head, as the decision path merges (R02). Native
