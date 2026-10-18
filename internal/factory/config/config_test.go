@@ -13,6 +13,8 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 const good = `
@@ -574,5 +576,22 @@ func TestAReviewerModelParses(t *testing.T) {
 	}
 	if c.Templates["pair"].ReviewerModel != "tier-frontier" || c.Templates["trio"].ReviewerModel != "" {
 		t.Fatalf("%+v", c.Templates)
+	}
+}
+
+func TestRunsKind(t *testing.T) {
+	c, err := Parse([]byte(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runs != runwatch.DefaultKind {
+		t.Fatalf("no runs block: %+v", c.Runs)
+	}
+	c, err = Parse([]byte(good + "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"))
+	if err != nil || c.Runs.Group != "agents.ogenki.io" || c.Runs.Namespace != "agents" {
+		t.Fatalf("runs %+v err %v", c.Runs, err)
+	}
+	if _, err := Parse([]byte(good + "runs:\n  group: nodot\n")); err == nil {
+		t.Fatal("want an error for a group without a dot")
 	}
 }

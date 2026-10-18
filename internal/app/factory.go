@@ -49,6 +49,7 @@ import (
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/version"
 )
 
@@ -103,6 +104,10 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
+	}
+	// Before anything watches or creates a run: every reader takes the kind from here.
+	if err := runwatch.Configure(cfg.Runs); err != nil {
+		return fmt.Errorf("factory config: runs: %w", err)
 	}
 	exp, err := metrics.NewExporter(metrics.FactoryBuildInfo, version.Version)
 	if err != nil {

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 // The :8443 key pair's defaults: cert-manager's Certificate room-broker-tls (GP-18).
@@ -101,6 +103,8 @@ type Config struct {
 	FactoryURL       string            `json:"factoryURL,omitempty"`
 	TLS              TLSConfig         `json:"tls"`
 	Suspend          SuspendConfig     `json:"suspend,omitzero"`
+	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
+	Runs runwatch.Kind `json:"runs,omitzero"`
 }
 
 // SuspendConfig is the broker's suspend trigger (v2 warm-sandboxes design §6): a suspendable
@@ -144,6 +148,7 @@ func (c *Config) ApplyDefaults() {
 	if c.TLS.KeyFile == "" {
 		c.TLS.KeyFile = DefaultKeyFile
 	}
+	c.Runs = c.Runs.WithDefaults()
 	if c.Suspend.After.Duration == 0 {
 		c.Suspend.After.Duration = DefaultSuspendAfter
 	}
@@ -175,6 +180,9 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.Human.validate()...)
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
+	}
+	if err := c.Runs.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("runs: %w", err))
 	}
 	return errors.Join(errs...)
 }
