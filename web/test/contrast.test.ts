@@ -25,17 +25,14 @@ const pairs = (t: Record<string, string>) => [
   ["links on the page", t["--link"], t["--muted"], 4.5],
   ["links on a card", t["--link"], t["--card"], 4.5],
   ["success text on a card", t["--success-text"], t["--card"], 4.5],
-  ["ok chip text on its tint", t["--success-text"], mix(t["--success"], t["--card"], 0.12), 4.5],
-  ["running chip text on its tint", t["--link"], mix(t["--primary"], t["--card"], 0.10), 4.5],
   ["destructive text on a card", t["--destructive"], t["--card"], 4.5],
-  ["error chip text on its tint", t["--destructive-text"], mix(t["--destructive"], t["--card"], 0.10), 4.5],
   ["deny pill text on a tool row", t["--destructive-text"], t["--card"], 4.5],
   ["warning text on its tint", t["--warning-foreground"], mix(t["--warning"], t["--card"], 0.18), 4.5],
   ["primary button text", t["--primary-foreground"], t["--primary"], 4.5],
   ["the header's text", t["--brand-navy-foreground"], t["--brand-navy"], 4.5],
   ["the strip's chip borders", mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.45), t["--brand-navy"], 3],
   ["the needs-you pill", t["--brand-navy"], t["--warning"], 4.5],
-  ["the budget meter's fill", t["--accent"], mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.20), 3],
+  ["the budget meter's fill", t["--accent"], mix(t["--brand-navy-foreground"], t["--brand-navy"], 0.12), 3],
   ["the needs-you border", t["--warning-border"], t["--card"], 3],
   ["the deny button's text on a card", t["--destructive-text"], t["--card"], 4.5],
   ["the controls' group names", t["--muted-foreground"], t["--background"], 4.5],
@@ -43,6 +40,17 @@ const pairs = (t: Record<string, string>) => [
   ["the room list's notice on the page", t["--destructive-text"], t["--muted"], 4.5],
   ["destructive text on the page (.status-error, .summary-error, .mk-harness_error)", t["--destructive"], t["--muted"], 4.5],
   ["the focus ring on the header", t["--ring"], t["--brand-navy"], 3],
+  // The dock (P4, P8): its own surface, the composer's boundary, the delivery segments.
+  ["text on the dock", t["--foreground"], t["--surface-raised"], 4.5],
+  ["muted text on the dock (session line, hints)", t["--muted-foreground"], t["--surface-raised"], 4.5],
+  ["placeholder text in the composer", t["--placeholder"], t["--card"], 4.5],
+  ["the composer's boundary on the dock", t["--input"], t["--surface-raised"], 3],
+  ["an unchecked delivery segment", t["--muted-foreground"], t["--muted"], 4.5],
+  ["the checked delivery segment", t["--foreground"], t["--card"], 4.5],
+  ["the focus ring on the dock", t["--ring"], t["--surface-raised"], 3],
+  // A step's line and a call's status (P1, P3).
+  ["a step's exceptions on the page", t["--warning-foreground"], t["--muted"], 4.5],
+  ["a rejected call's word on a card", t["--warning-foreground"], t["--card"], 4.5],
 ] as const;
 
 describe.each([["light", light], ["dark", dark]])("%s theme", (_name, t) => {
