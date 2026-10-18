@@ -6,14 +6,14 @@
 - **Supervised:** approvals, steering and the merge gate sit outside the sandbox, with humans.
 - **On the record:** every run streams into a room that nobody can rewrite, the agent included.
 
-<a href="https://smana.github.io/agent-platform/">
+<a href="https://blog.ogenki.io/agent-platform/">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/room-dark.png">
     <img alt="A room replaying an agent run: steps of tool calls, a denied command, an approval, the composer" src="docs/assets/room-light.png" width="800">
   </picture>
 </a>
 
-**[Watch a run in the live demo →](https://smana.github.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
+**[Watch a run in the live demo →](https://blog.ogenki.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
 
 ## What's a room?
 
