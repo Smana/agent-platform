@@ -53,7 +53,14 @@ func TestObserve(t *testing.T) {
 		"pod ready":      {pod: pod(corev1.PodRunning, ready), phase: "Running"},
 		"harness exit 0": {prev: running, pod: pod(corev1.PodSucceeded, harnessExit(0)), phase: "Succeeded", fin: five},
 		"harness exit 1": {prev: running, pod: pod(corev1.PodFailed, harnessExit(1)), phase: "Failed", reason: "PodFailed", fin: five},
-		"deadline":       {prev: running, pod: pod(corev1.PodFailed, func(p *corev1.Pod) { p.Status.Reason = "DeadlineExceeded" }), phase: "Failed", reason: "PodFailed", fin: now.Format(time.RFC3339)},
+		"harness exit 2": {prev: running, pod: pod(corev1.PodFailed, harnessExit(2)), phase: "Failed", reason: "PodFailed", fin: five},
+		"exit 143 evicted": {prev: running, pod: pod(corev1.PodFailed, harnessExit(143), func(p *corev1.Pod) {
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue}}
+		}), phase: "Failed", reason: "Disrupted", fin: now.Format(time.RFC3339)},
+		"exit 143 deleted":           {prev: running, pod: pod(corev1.PodRunning, harnessExit(143), func(p *corev1.Pod) { d := metav1.NewTime(now); p.DeletionTimestamp = &d }), phase: "Failed", reason: "PodLost", fin: now.Format(time.RFC3339)},
+		"exit 137 pod failed":        {prev: running, pod: pod(corev1.PodFailed, harnessExit(137)), phase: "Failed", reason: "PodFailed", fin: now.Format(time.RFC3339)},
+		"exit 143 pod still running": {prev: running, pod: pod(corev1.PodRunning, harnessExit(143)), phase: "Running"},
+		"deadline":                   {prev: running, pod: pod(corev1.PodFailed, func(p *corev1.Pod) { p.Status.Reason = "DeadlineExceeded" }), phase: "Failed", reason: "PodFailed", fin: now.Format(time.RFC3339)},
 		"disrupted": {prev: running, pod: pod(corev1.PodFailed, func(p *corev1.Pod) {
 			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue}}
 		}), phase: "Failed", reason: "Disrupted", fin: now.Format(time.RFC3339)},

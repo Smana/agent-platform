@@ -50,11 +50,16 @@ func Observe(prev v1alpha1.AgentRunStatus, revoked string, pod *corev1.Pod, podG
 		}
 		return st
 	}
+	// 137 and 143 are the shutdown's own SIGKILL and SIGTERM, not a crash (the composition's
+	// _crashed): they defer to the pod's disruption or deletion below.
 	if t := harnessTerminated(pod); t != nil {
-		if t.ExitCode == 0 {
+		switch t.ExitCode {
+		case 0:
 			return end("Succeeded", "", t.FinishedAt.Time)
+		case 137, 143:
+		default:
+			return end("Failed", "PodFailed", t.FinishedAt.Time)
 		}
-		return end("Failed", "PodFailed", t.FinishedAt.Time)
 	}
 	if pod.Status.Phase == corev1.PodFailed {
 		if podCondition(pod, corev1.DisruptionTarget) {
