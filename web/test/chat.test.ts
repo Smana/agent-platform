@@ -12,7 +12,7 @@ const ev = (seq: number, type: string, payload: unknown, actor: { kind: string; 
 // Every element the chat view may build; anything else in the output is a hole (T10).
 const allowed = new Set(["ARTICLE", "HEADER", "DIV", "P", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI",
   "BLOCKQUOTE", "STRONG", "EM", "S", "A", "SPAN", "CODE", "PRE", "HR", "BR", "TABLE", "THEAD", "TBODY", "TR",
-  "TH", "TD", "DETAILS", "SUMMARY", "TIME"]);
+  "TH", "TD", "DETAILS", "SUMMARY", "TIME", "SECTION", "BUTTON", "svg", "path"]);
 
 function inert(root: HTMLElement) {
   for (const n of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
@@ -30,9 +30,9 @@ function mount(fork?: (seq: number) => void, you?: string): { el: HTMLElement; v
   return { el, view: new ChatView(el, undefined, fork, you) };
 }
 
-function view(events: RoomEvent[], cap = 5000): { el: HTMLElement; v: ChatView } {
+function view(events: RoomEvent[], cap = 5000, you?: string): { el: HTMLElement; v: ChatView } {
   const el = document.createElement("div");
-  const v = new ChatView(el, cap);
+  const v = new ChatView(el, cap, undefined, you);
   for (const e of events) v.apply(e);
   return { el, v };
 }
@@ -80,7 +80,7 @@ describe("ChatView tool pairing", () => {
     const { el } = view([call(1, "call_1", "git push origin agent/ibbay5ud")]);
     const tool = el.querySelector("details.tool")!;
     expect(tool.className).toContain("st-running");
-    expect(tool.querySelector(".chip")?.textContent).toBe("running");
+    expect(tool.querySelector(".t-status svg")?.getAttribute("aria-label")).toBe("running");
     expect(tool.querySelector(".t-cmd")?.textContent).toBe("git push origin agent/ibbay5ud");
     expect(el.children).toHaveLength(1);
   });
@@ -89,9 +89,11 @@ describe("ChatView tool pairing", () => {
     expect(el.children).toHaveLength(1);
     const tool = el.querySelector("details.tool")!;
     expect(tool.className).toContain("st-ok");
-    expect(tool.querySelector(".chip")?.textContent).toBe("ok");
+    expect(tool.querySelector(".t-status svg")?.getAttribute("aria-label")).toBe("ok");
+    expect(tool.querySelector(".chip")).toBeNull(); // ok is the norm: no chip (P3)
     expect(tool.querySelector(".t-out")?.textContent).toBe(" M web/src/render.ts");
-    expect(tool.querySelector(".t-args")?.textContent).toContain("git status");
+    expect(tool.querySelector(".t-command")?.textContent).toBe("git status");
+    expect(tool.querySelector(".t-args")).toBeNull(); // the command was all there was
   });
   it("renders a rejected result in its own state", () => {
     const { el } = view([call(1, "c", "git push"), result(2, "c", "rejected", "refused")]);
@@ -209,9 +211,9 @@ describe("the recorded session fixture", () => {
     const { el } = view(events);
     expect(el.querySelectorAll(".msg")).toHaveLength(5); // four agent, one human
     expect(el.querySelectorAll("details.tool")).toHaveLength(5); // results paired, none doubled
-    expect(el.querySelectorAll(".st-rejected")).toHaveLength(1); // the refused push
-    expect(el.querySelectorAll(".st-ok")).toHaveLength(3);
-    expect(el.querySelectorAll(".st-running")).toHaveLength(1); // git log, still running
+    expect(el.querySelectorAll("details.st-rejected")).toHaveLength(1); // the refused push
+    expect(el.querySelectorAll("details.st-ok")).toHaveLength(3);
+    expect(el.querySelectorAll("details.st-running")).toHaveLength(1); // git log, still running
     expect(el.querySelectorAll(".pol-allow")).toHaveLength(0); // an allowed call is the norm: no badge (U7)
     expect(el.querySelectorAll(".sys")).toHaveLength(2); // owner and agent joined
     expect(el.querySelector(".redacted")?.textContent).toContain("github-app-token");
@@ -225,7 +227,7 @@ describe("ChatView noise rules (U7)", () => {
     view.apply(ev(1, "state_changed", { kind: "room_phase", phase: "Open" }));
     view.apply(ev(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
     view.apply(ev(3, "turn", { turnId: "t1", phase: "started" }));
-    view.apply(ev(4, "message", { kind: "chat", text: "hi", delivery: "none" }));
+    view.apply(ev(4, "message", { kind: "chat", text: "hi", delivery: "none" }, { kind: "human", id: "human:me" }));
     view.apply(ev(5, "state_changed", { kind: "harness_status", status: "running", previous: "idle" }));
     const rows = [...el.children];
     expect(rows.map((r) => r.className.split(" ")[0])).toEqual(["fold", "msg", "mark"]);
@@ -281,7 +283,8 @@ describe("ChatView noise rules (U7)", () => {
 
 describe("ChatView folds", () => {
   const turn = (seq: number) => ev(seq, "turn", { turnId: "t1", phase: "started" });
-  const msg = (seq: number) => ev(seq, "message", { kind: "chat", text: `m${seq}`, delivery: "none" });
+  // A human's message: a break, so these folds sit in the stream, outside any step.
+  const msg = (seq: number) => ev(seq, "message", { kind: "chat", text: `m${seq}`, delivery: "none" }, { kind: "human", id: "human:me" });
   const shape = (el: HTMLElement) => [...el.children].map((r) =>
     r.classList.contains("fold") ? `fold(${[...r.querySelectorAll("[data-seq]")].map((x) => (x as HTMLElement).dataset.seq).join(",")})` : (r as HTMLElement).dataset.seq ?? r.querySelector<HTMLElement>("[data-seq]")?.dataset.seq);
 
@@ -370,5 +373,186 @@ describe("ChatView folds", () => {
     expect(fold.open).toBe(false);
     reveal(row);
     expect(fold.open).toBe(true);
+  });
+});
+
+describe("ChatView steps (P1, P2)", () => {
+  const human = { kind: "human", id: "human:me" };
+  const said = (seq: number, actor?: { kind: string; id: string; role?: string }) =>
+    ev(seq, "message", { kind: "chat", text: `m${seq}`, delivery: "none" }, actor);
+  const call = (seq: number, id: string, command = `cmd${seq}`) =>
+    ev(seq, "tool_call", { callId: id, tool: "terminal", args: { command } });
+  const done = (seq: number, id: string, status = "ok") =>
+    ev(seq, "tool_result", { callId: id, status, output: "", truncated: false, bytes: 0 });
+  const turn = (seq: number) => ev(seq, "turn", { turnId: "t1", phase: "started" });
+  // shape names each child of the stream: a step as step(owner: members), a fold by its seqs.
+  const seqsIn = (n: Element) => [...n.querySelectorAll<HTMLElement>("[data-flow]")].map((x) => x.dataset.seq).join(",");
+  const shape = (el: HTMLElement) => [...el.children].map((r) => {
+    if (r.classList.contains("step")) {
+      const owner = r.querySelector<HTMLElement>(":scope > [data-flow]")?.dataset.seq;
+      const inner = r.querySelector(":scope > .step-calls > .step-body");
+      return `step(${owner}${inner ? ": " + [...inner.children].map((m) => m.classList.contains("fold") ? `fold(${seqsIn(m)})` : (m as HTMLElement).dataset.seq).join(" ") : ""})`;
+    }
+    return r.classList.contains("fold") ? `fold(${seqsIn(r)})` : (r as HTMLElement).dataset.seq;
+  });
+  const line = (el: HTMLElement, owner: number) =>
+    el.querySelector(`[data-seq="${owner}"]`)!.closest(".step")!.querySelector(".step-calls > summary")!.textContent;
+
+  it("gives an agent's message the calls and plumbing after it, up to a human's message", () => {
+    const { el } = view([said(1), call(2, "a"), turn(3), turn(4), call(5, "b"), said(6, human), call(7, "c")]);
+    expect(shape(el)).toEqual(["step(1: 2 fold(3,4) 5)", "6", "7"]);
+  });
+  it("leaves the rows before the first agent message in the stream", () => {
+    const { el } = view([turn(1), call(2, "a"), said(3), call(4, "b")]);
+    expect(shape(el)).toEqual(["1", "2", "step(3: 4)"]);
+  });
+  it("closes a step at a handoff, a harness error and the next agent message", () => {
+    const { el } = view([
+      said(1), call(2, "a"),
+      ev(3, "state_changed", { kind: "harness_error", code: "E1", detail: "boom" }), call(4, "b"),
+      said(5), call(6, "c"),
+      ev(7, "handoff", { from: "implementer", to: "reviewer", summary: "done" }), call(8, "d"),
+    ]);
+    expect(shape(el)).toEqual(["step(1: 2)", "3", "4", "step(5: 6)", "7", "8"]);
+  });
+  it("renders an agent message with nothing after it as a step with no toggle", () => {
+    const { el } = view([said(1)]);
+    expect(shape(el)).toEqual(["step(1)"]);
+    expect(el.querySelector(".step-calls")).toBeNull();
+  });
+  it("recounts and opens a step whose calls landed before its message", () => {
+    const { el } = view([call(2, "a"), said(1)]);
+    expect(line(el, 1)).toBe("Running 1 command");
+    expect(el.querySelector<HTMLDetailsElement>(".step-calls")!.open).toBe(true);
+  });
+  it("sums the step's calls on its line and rewrites it as results land", () => {
+    const { el, v } = view([said(1), call(2, "a"), call(3, "b")]);
+    expect(line(el, 1)).toBe("Running 2 commands");
+    v.apply(done(4, "a"));
+    v.apply(done(5, "b", "rejected"));
+    expect(line(el, 1)).toBe("Ran 2 commands · 1 rejected · 0:03");
+    expect(el.querySelector(".step-exc")?.textContent).toBe("1 rejected");
+  });
+  it("keeps an approval and a driver change naming the viewer inside the step", () => {
+    const ask = ev(3, "approval_requested", { callId: "x", tool: "terminal" });
+    expect(shape(view([said(1), call(2, "a"), ask, call(4, "b")]).el)).toEqual(["step(1: 2 3 4)"]);
+    const decided = ev(3, "approval_decided", { callId: "x", decision: "allow" }, human);
+    expect(shape(view([said(1), call(2, "a"), decided, call(4, "b")]).el)).toEqual(["step(1: 2 3 4)"]);
+    const sys = { kind: "system", id: "system:room-broker" };
+    const { el } = view([said(1), call(2, "a"), ev(3, "driver", { from: "human:a", to: "human:me" }, sys), call(4, "b")], 5000, "human:me");
+    expect(shape(el)).toEqual(["step(1: 2 3 4)"]);
+  });
+  it("opens a running step, keeps a failed one open, and closes a clean one", () => {
+    const { el, v } = view([said(1), call(2, "a")]);
+    const calls = () => el.querySelector<HTMLDetailsElement>(".step-calls")!;
+    expect(calls().open).toBe(true);
+    v.apply(done(3, "a"));
+    expect(calls().open).toBe(false);
+    v.apply(call(4, "b"));
+    expect(calls().open).toBe(true);
+    v.apply(done(5, "b", "error"));
+    expect(calls().open).toBe(true);
+    expect(el.querySelector<HTMLElement>(".step")!.dataset.state).toBe("failed");
+  });
+  it("keeps the reader's toggle while the step's state holds", () => {
+    const { el, v } = view([said(1), call(2, "a"), done(3, "a")]);
+    const calls = el.querySelector<HTMLDetailsElement>(".step-calls")!;
+    calls.open = true; // the reader opens a finished step
+    v.apply(turn(4)); // plumbing joins it; the state is still done
+    expect(calls.open).toBe(true);
+  });
+  it("lays a replay out of order into the right steps, never doubling a row", () => {
+    const events = [said(1), call(2, "a"), turn(3), said(4, human), said(5), call(6, "b")];
+    const { el, v } = view([events[5], events[2], events[0], events[4], events[1], events[3]]);
+    expect(shape(el)).toEqual(["step(1: 2 3)", "4", "step(5: 6)"]);
+    for (const e of events) v.apply(e); // a clamped resume resends them all
+    expect(shape(el)).toEqual(["step(1: 2 3)", "4", "step(5: 6)"]);
+    for (const s of [1, 2, 3, 4, 5, 6]) expect(el.querySelectorAll(`[data-seq="${s}"]`)).toHaveLength(1);
+  });
+  it("splits a step when an agent message lands inside it, folds included", () => {
+    const { el, v } = view([said(1), call(2, "a"), turn(3), turn(5), turn(6), call(7, "b")]);
+    expect(shape(el)).toEqual(["step(1: 2 fold(3,5,6) 7)"]);
+    v.apply(said(4));
+    expect(shape(el)).toEqual(["step(1: 2 3)", "step(4: fold(5,6) 7)"]);
+  });
+  it("hands a step's calls to the stream when the cap evicts its owner", () => {
+    const { el } = view([said(1), call(2, "a"), call(3, "b"), call(4, "c")], 3);
+    expect(shape(el)).toEqual(["2", "3", "4"]);
+  });
+  it("opens the step and the fold around a row, so a link lands on it", () => {
+    const { el } = view([said(1), call(2, "a"), done(3, "a"), turn(4), turn(5)]);
+    const calls = el.querySelector<HTMLDetailsElement>(".step-calls")!;
+    expect(calls.open).toBe(false);
+    reveal(el.querySelector<HTMLElement>('[data-seq="5"]')!);
+    expect(calls.open).toBe(true);
+    expect(el.querySelector<HTMLDetailsElement>(".fold")!.open).toBe(true);
+  });
+});
+
+describe("ChatView call lines (P3)", () => {
+  const call = (args: Record<string, unknown>, tool = "terminal") => ev(1, "tool_call", { callId: "c", tool, args });
+  const done = (status: string, output = "") => ev(2, "tool_result", { callId: "c", status, output, truncated: false, bytes: output.length });
+
+  it("prompts a shell command with $ and names any other tool", () => {
+    expect(view([call({ command: "ls" })]).el.querySelector("summary .t-prompt")?.textContent).toBe("$");
+    expect(view([call({ limit: 50 }, "room_read")]).el.querySelector("summary .t-name")?.textContent).toBe("room_read");
+  });
+  it("names a rejected or errored call in words beside its icon; ok and running stay unworded", () => {
+    const words = (status: string) => view([call({ command: "x" }), done(status)]).el.querySelector(".t-status")!.textContent;
+    expect(words("rejected")).toBe("rejected");
+    expect(words("error")).toBe("error");
+    expect(words("ok")).toBe("");
+    expect(view([call({ command: "x" })]).el.querySelector(".t-status")!.textContent).toBe("");
+  });
+  it("labels the icon only when the status is unworded, so a word is announced once", () => {
+    const label = (status: string) => view([call({ command: "x" }), done(status)]).el.querySelector(".t-status svg")!.getAttribute("aria-label");
+    expect(label("ok")).toBe("ok");
+    expect(label("rejected")).toBeNull();
+    expect(label("error")).toBeNull();
+  });
+  it("shows only the arguments the command does not already say", () => {
+    const { el } = view([call({ command: "ls", timeout: 30 })]);
+    expect(el.querySelector(".t-command")?.textContent).toBe("ls");
+    expect(JSON.parse(el.querySelector(".t-args")!.textContent!)).toEqual({ timeout: 30 });
+  });
+  it("caps a long output behind show all, and lifts the cap on click", () => {
+    const { el } = view([call({ command: "seq 40" }), done("ok", Array.from({ length: 40 }, (_, i) => i).join("\n"))]);
+    const out = el.querySelector(".t-out")!;
+    const more = el.querySelector<HTMLButtonElement>(".t-more")!;
+    expect(out.classList.contains("capped")).toBe(true);
+    more.click();
+    expect(out.classList.contains("capped")).toBe(false);
+    expect(more.textContent).toBe("show less");
+  });
+  it("caps a long output with few newlines", () => {
+    const { el } = view([call({ command: "x" }), done("ok", "x".repeat(3000))]);
+    expect(el.querySelector(".t-out")!.classList.contains("capped")).toBe(true);
+    expect(el.querySelector(".t-more")?.textContent).toBe("show all");
+  });
+  it("ignores a single trailing newline when counting lines", () => {
+    const { el } = view([call({ command: "x" }), done("ok", Array.from({ length: 20 }, (_, i) => i).join("\n") + "\n")]);
+    expect(el.querySelector(".t-more")).toBeNull();
+  });
+  it("leaves a short output uncapped, with no show all", () => {
+    const { el } = view([call({ command: "ls" }), done("ok", "a\nb")]);
+    expect(el.querySelector(".t-more")).toBeNull();
+  });
+});
+
+describe("ChatView step cost", () => {
+  // A step's line is a tally counted per row: a rescan per event made a 5,000-event
+  // replay of one step take a minute.
+  it("replays a long step without rescanning its rows", () => {
+    const el = document.createElement("div");
+    const v = new ChatView(el);
+    v.apply(ev(1, "message", { kind: "chat", text: "go", delivery: "none" }));
+    v.apply(ev(2, "tool_call", { callId: "c0", tool: "terminal", args: { command: "ls" } }));
+    const scans = vi.spyOn(el.querySelector<HTMLElement>(".step-body")!, "querySelectorAll");
+    for (let i = 1; i <= 300; i++) {
+      v.apply(ev(1 + 2 * i, "tool_result", { callId: `c${i - 1}`, status: "ok", output: "" }));
+      v.apply(ev(2 + 2 * i, "tool_call", { callId: `c${i}`, tool: "terminal", args: { command: "ls" } }));
+    }
+    expect(scans).not.toHaveBeenCalled();
+    expect(el.querySelector(".step-head")?.textContent).toBe("Running 301 commands");
   });
 });

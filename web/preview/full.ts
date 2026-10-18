@@ -39,6 +39,11 @@ async function run() {
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
+  // The session toggle, as room.ts mounts it; open, so the preview shows the controls.
+  const session = document.createElement("details");
+  session.className = "session";
+  session.open = new URLSearchParams(location.search).has("session");
+  session.append(Object.assign(document.createElement("summary"), { textContent: "Session · driver: you · a run is on" }), section);
   const forkPanel = document.createElement("section");
   const footer = document.createElement("footer");
   footer.className = "page-dock";
@@ -55,8 +60,8 @@ async function run() {
   meta.append(notice);
   mountThemeButton(meta, theme);
   meta.append(status);
-  footer.append(composerEl, meta);
-  app.replaceChildren(header, needsPanel, lead, main, section, forkPanel, footer);
+  footer.append(session, composerEl, meta);
+  app.replaceChildren(header, needsPanel, lead, main, forkPanel, footer);
 
   // Acts go nowhere: the preview has no broker.
   const sender = { send: () => { notice.textContent = "Offline preview: nothing was sent."; return false; } };

@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* The platform's design tokens, verbatim from the app-wizard (ui/src/index.css):
-   one design language across the platform's UIs. Light is the default; the
-   .dark block applies when theme.ts puts the class on <html> (the wizard's
-   contract — a media query would ignore the user's explicit choice). */
+/* The platform's design tokens, from the app-wizard (ui/src/index.css): one design
+   language across the platform's UIs. Light is the default; the .dark block applies
+   when theme.ts puts the class on <html> (the wizard's contract — a media query would
+   ignore the user's explicit choice).
+   Diverges from the wizard (2026-10-18 room UI polish, P8), to port back there: dark
+   --muted, --card, --border, --input and --brand-navy separate the page, the cards and
+   the header (page and card were both #003552, 1.00:1); --input is a 3:1 boundary in
+   both schemes (WCAG 1.4.11); --surface-raised is new, the dock's surface. */
 :root {
   color-scheme: light;
 
@@ -14,7 +18,8 @@
   --muted: #f2f2f2; /* haze surface */
   --muted-foreground: #575757; /* neutral text — AA on white */
   --border: #dedede;
-  --input: #dedede;
+  --input: #8f8f8f; /* an input's boundary: 3.2:1 on white */
+  --surface-raised: #ffffff; /* the dock: a card, lifted by its shadow */
 
   --primary: #0077b8; /* ocean blue */
   --primary-foreground: #ffffff;
@@ -31,7 +36,8 @@
 
   --destructive: #d22323;
   --destructive-foreground: #ffffff;
-  /* Text on the error chip's 10% tint: --destructive is 4.47:1 there. */
+  /* Destructive text where --destructive falls short: the deny button, the error status,
+   notices, on the card and on the dock's raised surface (4.5:1 on both). */
   --destructive-text: #d02323;
 
   /* Brand navy header/dark surfaces */
@@ -53,6 +59,8 @@
     0 0 0 1px rgb(0 0 0 / 0.08),
     0 1px 2px -1px rgb(0 0 0 / 0.08),
     0 2px 4px 0 rgb(0 0 0 / 0.06);
+  /* The dock floats over the stream it scrolls past. */
+  --shadow-dock: 0 -1px 0 rgb(0 0 0 / 0.06), 0 -6px 16px -4px rgb(0 0 0 / 0.10);
 }
 
 .dark {
@@ -60,13 +68,14 @@
 
   --background: #002538; /* deep navy */
   --foreground: #f2f2f2;
-  --card: #003552; /* mid navy surface */
+  --card: #002d47; /* a card: 1.23:1 on the page */
   --card-foreground: #f2f2f2;
 
-  --muted: #003552;
+  --muted: #001b2b; /* the page: the deepest navy, so cards and the header lift off it */
   --muted-foreground: #b8c6d0;
-  --border: #004070; /* logo navy */
-  --input: #004070;
+  --border: #13527d; /* structure: 1.7:1 on a card */
+  --input: #5b8db0; /* an input's boundary: 3.3:1 on the dock */
+  --surface-raised: #003a5c; /* the dock: 1.48:1 on the page */
 
   --primary: #2b9fda; /* lightened ocean blue for contrast on navy */
   --primary-foreground: #002538;
@@ -84,10 +93,13 @@
 
   --destructive: #f37171; /* was #f26363: 4.13:1 on the card, under AA */
   --destructive-foreground: #002538;
-  /* Text on the error chip's 10% tint: --destructive is 4.13:1 there. */
+  /* Destructive text where --destructive falls short: the deny button, the error status,
+   notices, on the card and on the dock's raised surface (4.62:1 on raised). */
   --destructive-text: #f47e7e;
 
-  --brand-navy: #002538;
+  /* The header: the raised navy, so it lifts off the page (the brand's #002538 is
+     1.11:1 on it). */
+  --brand-navy: #003a5c;
   --brand-navy-foreground: #f2f2f2;
 
   --placeholder: #9db0bc;
@@ -98,6 +110,7 @@
   /* Layered depth shadows are invisible against navy — collapse to the ring. */
   --shadow-border: 0 0 0 1px rgb(255 255 255 / 0.08);
   --shadow-border-hover: 0 0 0 1px rgb(255 255 255 / 0.13);
+  --shadow-dock: 0 -1px 0 rgb(255 255 255 / 0.10), 0 -6px 16px -4px rgb(0 0 0 / 0.45);
 }
 
 html {
@@ -128,21 +141,59 @@ a { color: var(--link); }
 }
 /* The dock: the composer on the left (the text over its row: deliver to, the notice, send),
    the act notice, the theme button and the connection on the right; one column on a phone. */
+/* Sticky, not fixed: it sits in the flow at the page's end, so once scrolled there it
+   covers no row. The shadow, not a border, lifts it over the rows it scrolls past. */
 .page-dock {
   bottom: 0; z-index: 2;
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: end;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: end;
+  padding-top: 10px; padding-bottom: 10px;
   font-variant-numeric: tabular-nums;
-  background: var(--card); color: var(--card-foreground);
-  border-top: 1px solid var(--border);
+  background: var(--surface-raised); color: var(--card-foreground);
+  box-shadow: var(--shadow-dock);
 }
-.page-dock .composer { display: grid; gap: 6px; min-width: 0; }
-.page-dock textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px; resize: vertical; }
+/* The session: Run, Driver, the queue and Room, behind a toggle across the dock (P7).
+   Open, it scrolls inside a bound, so the dock never takes the whole screen. */
+.page-dock > .session { grid-column: 1 / -1; min-width: 0; }
+.session > summary { cursor: pointer; font-size: 13px; color: var(--muted-foreground); width: fit-content; }
+.session[open] > section.controls { max-height: 40vh; overflow: auto; margin-top: 6px; }
+.page-dock .controls { padding: 0; background: transparent; }
+.page-dock .composer { display: grid; gap: 8px; min-width: 0; }
+/* The composer (P4): the text and Send side by side, Send as tall as the field. */
+.composer-write { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
+.composer-write textarea {
+  flex: 1 1 auto; min-width: 0; box-sizing: border-box; font: inherit;
+  padding: 8px 10px; border-radius: 8px; resize: vertical;
+  /* Grows with the text from two lines to eight where the browser can; rows=2 elsewhere. */
+  field-sizing: content; min-height: calc(2lh + 18px); max-height: calc(8lh + 18px);
+}
+button.send { display: inline-flex; gap: 6px; align-items: center; justify-content: center; padding: 0 16px; font-weight: 600; border-radius: 8px; min-width: 88px; }
 .composer-row, .dock-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; min-width: 0; }
+.composer-row .hint { color: var(--muted-foreground); font-size: 12px; }
+.composer-row .keys { margin-left: auto; }
+/* Where a message goes (P5): a segmented radio group. The radios stay real inputs, for
+   the keyboard and assistive tech; the checked one's label is the raised segment. */
+fieldset.delivery { display: inline-flex; gap: 2px; margin: 0; padding: 2px; border: 0; border-radius: 8px; background: var(--muted); min-width: 0; }
+fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.seg { position: relative; display: flex; }
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg span {
+  padding: 4px 12px; border-radius: 6px; font-size: 13px; color: var(--muted-foreground);
+  transition-property: background-color, color, box-shadow; transition-duration: 150ms; transition-timing-function: ease-out;
+}
+.seg input:checked + span { background: var(--card); color: var(--foreground); font-weight: 600; box-shadow: var(--shadow-border); }
+.seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 1px; }
+.seg input:disabled + span { opacity: .5; }
 .dock-meta { justify-content: flex-end; }
 .page-dock .status { color: var(--muted-foreground); font-family: ui-monospace, monospace; }
 .page-dock[data-status="live"] .status { color: var(--success-text); }
-.page-dock .notice { color: var(--destructive); overflow-wrap: anywhere; }
-@media (max-width: 640px) { .page-dock { grid-template-columns: minmax(0, 1fr); } .dock-meta { justify-content: space-between; } }
+.page-dock .notice { color: var(--destructive-text); overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .page-dock { grid-template-columns: minmax(0, 1fr); }
+  .dock-meta { justify-content: space-between; }
+  .composer-write { flex-direction: column; }
+  button.send { min-height: 40px; }
+  .composer-row .keys { display: none; }
+}
 /* Not live: under the strip, why and when the page retries. */
 .banner { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
 main { padding: 8px 16px 16px; max-width: 100%; }
@@ -151,8 +202,16 @@ button {
   font: inherit; cursor: pointer;
   background: var(--card); color: var(--card-foreground);
   border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px;
+  min-height: 28px;
+  transition-property: box-shadow, background-color, scale; transition-duration: 150ms; transition-timing-function: ease-out;
 }
 button:hover { box-shadow: var(--shadow-border-hover); }
+/* Press feedback: never below .95, which reads as exaggerated. */
+button:active:not(:disabled) { scale: .96; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+/* The acts a reader comes to do get a full target: Send, approve, deny. */
+.composer button, .needs button { min-height: 40px; }
+.icon { width: 14px; height: 14px; flex: none; vertical-align: -2px; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
   outline: 2px solid var(--ring); outline-offset: 1px;
 }
@@ -170,7 +229,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .page-header a { color: var(--brand-navy-foreground); text-decoration: underline; }
 .meter-bar {
   display: inline-block; width: 64px; height: 6px; border-radius: 3px; vertical-align: middle;
-  background: color-mix(in srgb, var(--brand-navy-foreground) 20%, transparent); position: relative;
+  background: color-mix(in srgb, var(--brand-navy-foreground) 12%, transparent); position: relative;
 }
 .meter-bar::after { content: ""; position: absolute; inset: 0; width: var(--fill, 0%); background: var(--accent); border-radius: 3px; }
 .waiting, .closed { font-size: 13px; color: var(--brand-navy-foreground); opacity: .9; }
@@ -195,7 +254,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* Chat view */
 .msg { margin: 12px 0; max-width: 72ch; }
 .msg-head { color: var(--muted-foreground); font-size: 12px; display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
-.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 12px; white-space: nowrap; }
+.msg-head time, .t-time { margin-left: auto; color: var(--placeholder); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .bubble {
   background: var(--card); color: var(--card-foreground);
   border-radius: 4px 12px 12px 12px; padding: 6px 12px;
@@ -212,51 +271,47 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 8px; margin: 6px 0; max-width: 72ch;
   box-shadow: var(--shadow-border);
 }
-.tool summary { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; cursor: pointer; list-style: none; flex-wrap: wrap; border-radius: 8px; }
+.tool summary { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; list-style: none; flex-wrap: wrap; border-radius: 8px; }
 .tool summary::before { content: "▸"; color: var(--placeholder); }
 .tool[open] summary::before { content: "▾"; }
 .tool summary::-webkit-details-marker { display: none; }
 .tool.st-rejected, .tool.st-error { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--destructive) 65%, var(--card)); }
 .tool.st-rejected { box-shadow: var(--shadow-border), inset 3px 0 0 color-mix(in srgb, var(--warning) 80%, var(--card)); }
 .t-name { color: var(--link); font-weight: 600; }
+.t-prompt { color: var(--placeholder); font-family: ui-monospace, monospace; font-size: 13px; }
+/* A call's status (P3): ok a muted check, running the link colour, the rest in words. */
+.t-status { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+.t-status.st-ok { color: var(--placeholder); }
+.t-status.st-running { color: var(--link); }
+.t-status.st-rejected { color: var(--warning-foreground); }
+.t-status.st-error { color: var(--destructive-text); }
+@media (prefers-reduced-motion: no-preference) {
+  .icon-spinner { animation: spin 1s linear infinite; }
+  @keyframes spin { to { rotate: 360deg; } }
+}
 .t-cmd { font-family: ui-monospace, monospace; font-size: 13px; min-width: 0; flex: 1 1 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool[open] .t-cmd { white-space: normal; overflow-wrap: anywhere; }
 .t-body { border-top: 1px solid var(--border); padding: 6px 10px; }
 .t-sec { color: var(--placeholder); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; }
 .t-meta { color: var(--placeholder); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
 .t-body pre, .other pre { background: var(--muted); border-radius: 6px; padding: 6px 8px; }
+.t-command { font-size: 13px; margin: 2px 0 6px; }
+.t-out { max-height: none; }
+.t-out.capped { max-height: 16em; }
+.t-more { font-size: 12px; }
 
 /* Chips and badges: a tinted pill, the status token for its text. */
 .chip, .pol {
   font-size: 12px; padding: 0 8px; border-radius: 999px; white-space: nowrap;
   border: 1px solid var(--border); color: var(--muted-foreground);
 }
-.chip-ok {
-  color: var(--success-text);
-  background: color-mix(in srgb, var(--success) 12%, var(--card));
-  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
-}
-.chip-error {
-  color: var(--destructive-text);
-  background: color-mix(in srgb, var(--destructive) 10%, var(--card));
-  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
-}
-.chip-rejected, .chip-delivery {
+.chip-delivery {
   color: var(--warning-foreground);
   background: color-mix(in srgb, var(--warning) 18%, var(--card));
   border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
 }
 /* A message for the room prompts no agent: a neutral chip, the others amber (R09). */
 .chip-delivery.dl-none { color: var(--muted-foreground); background: none; border-color: var(--border); }
-.chip-running {
-  color: var(--link);
-  background: color-mix(in srgb, var(--primary) 10%, var(--card));
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-}
-@media (prefers-reduced-motion: no-preference) {
-  .chip-running { animation: pulse 1.6s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: .45; } }
-}
+@keyframes pulse { 50% { opacity: .45; } }
 .pol-allow, .pol-approved, .verdict-approve {
   color: var(--success-text);
   border-color: color-mix(in srgb, var(--success) 45%, var(--border));
@@ -284,6 +339,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .fold > summary { cursor: pointer; list-style: none; }
 .fold > summary::-webkit-details-marker { display: none; }
 .fold-body { padding-left: 14px; }
+/* A step (P1): an agent's message, then its calls behind one line, on a rail under it. */
+.step { margin: 12px 0; max-width: 72ch; }
+.step > .msg, .step > .row > .msg { margin: 0; }
+.step-calls { margin: 6px 0 0 3px; padding-left: 12px; border-left: 2px solid var(--border); }
+.step[data-state="failed"] > .step-calls { border-left-color: color-mix(in srgb, var(--destructive) 65%, var(--card)); }
+.step-calls > summary {
+  display: flex; gap: 8px; align-items: baseline; padding: 4px 0; cursor: pointer; list-style: none;
+  font-size: 13px; font-weight: 500; color: var(--muted-foreground);
+}
+.step-calls > summary::-webkit-details-marker { display: none; }
+.step-calls > summary::before { content: "▸"; color: var(--placeholder); }
+.step-calls[open] > summary::before { content: "▾"; }
+.step-exc { color: var(--warning-foreground); font-weight: 600; }
+.step-sep { color: var(--placeholder); }
+.step-dur { margin-left: auto; color: var(--placeholder); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* Inside a step a call is a line, not a card: the rail groups them. */
+.step-body > .tool { background: transparent; box-shadow: none; margin: 0; }
+.step-body > .tool > summary:hover { background: color-mix(in srgb, var(--card) 70%, transparent); }
+.step-body > .tool[open] { background: var(--card); box-shadow: var(--shadow-border); margin: 4px 0; }
+.step-body > .fold { margin: 2px 0 2px 10px; }
+.step-body .mark { max-width: none; } /* its time aligns with the call lines' */
 /* An actor's colour, keyed on its id: decoration beside the name, which carries the meaning. */
 .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: -2px; flex: none; align-self: center; }
 .swatch-0 { background: var(--primary); }
@@ -328,7 +404,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow
 .members { margin: 0; padding-left: 18px; } .members li { overflow-wrap: anywhere; }
 .stop { margin: 0; } .stop code { font-family: ui-monospace, monospace; }
 .confirm { display: inline-flex; gap: 6px; }
-button.destructive { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
+button.destructive { color: var(--destructive-text); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
 input, select, textarea {
   font: inherit;
   background: var(--card); color: var(--card-foreground);
@@ -378,6 +454,14 @@ button.deny { color: var(--destructive-text); border-color: var(--destructive-te
 .notes ul { margin: 4px 0 0; padding-left: 18px; }
 .raw-events { margin-top: 8px; }
 .raw-events > summary { cursor: pointer; padding: 4px 0; }
+/* Until the first frame (P9): three message shapes, pulsing where motion is welcome. */
+.skeleton { padding: 8px 16px; display: grid; gap: 12px; max-width: 72ch; }
+.sk-msg { height: 56px; border-radius: 12px; background: var(--card); box-shadow: var(--shadow-border); }
+.sk-msg:nth-child(2) { width: 70%; }
+.sk-msg:nth-child(3) { width: 85%; }
+@media (prefers-reduced-motion: no-preference) {
+  .sk-msg { animation: pulse 1.6s ease-in-out infinite; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

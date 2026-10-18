@@ -11,7 +11,9 @@
 
 import type { RoomEvent } from "./conn";
 import { deliveryChip, handoffHead, markdown, stateHead } from "./render";
+import { icon, type IconName } from "./icons";
 import { maxRows } from "./limits";
+import { count, emptyTally, stepLine, stepState, type StepCall, type StepTally } from "./step";
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const e = document.createElement(tag);
@@ -102,10 +104,6 @@ function preview(call: RoomEvent | undefined, result: RoomEvent | undefined): st
   return out.split("\n", 1)[0];
 }
 
-function chip(status: string): HTMLElement {
-  return el("span", `chip chip-${cls(status)}`, status);
-}
-
 function polBadge(d: RoomEvent): HTMLElement {
   const p = d.payload ?? {};
   // policy_decision carries `decision`; decision_applied may carry only a ref.
@@ -113,16 +111,45 @@ function polBadge(d: RoomEvent): HTMLElement {
   return el("span", `pol pol-${cls(label)}`, `policy: ${label}`);
 }
 
+// The status a call line shows. ok is the norm: a muted check, no word. The rest are
+// named beside their icon, so a colour is never the only sign.
+const statuses: Record<string, [IconName, boolean]> = {
+  ok: ["check", false], running: ["spinner", false], rejected: ["ban", true], error: ["x", true],
+};
+
+function statusMark(status: string): HTMLElement {
+  const [glyph, worded] = statuses[status] ?? ["x", true];
+  const s = el("span", `t-status st-${cls(status)}`);
+  // A worded status is announced by its word; the icon then only decorates it.
+  s.append(icon(glyph, worded ? undefined : status));
+  if (worded) s.append(el("span", "", status));
+  return s;
+}
+
+// An output longer than this many lines, or characters, opens capped, with a "show all":
+// a long line with few newlines would otherwise fill the page.
+const capLines = 20;
+const capChars = 1500;
+
 function toolRow(c: Call): HTMLElement {
   const status = c.result ? String(c.result.payload?.status ?? "ok") : "running";
   const d = el("details", `tool st-${cls(status)}`) as HTMLDetailsElement;
   d.dataset.seq = String(c.seq);
   d.dataset.callId = c.callId;
   d.dataset.lastSeq = String(Math.max(...[c.call, c.result, ...c.decisions].map((e) => e?.seq ?? 0)));
+  const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
+  const args = c.call?.payload?.args;
+  const command = args && typeof args.command === "string" ? args.command : undefined;
+  // What the step's summary line reads off the row (step.ts).
+  d.dataset.tool = name;
+  d.dataset.status = status;
+  d.dataset.start = (c.call ?? c.result ?? c.decisions[0])!.ts;
+  if (c.result) d.dataset.end = c.result.ts;
 
   const sum = el("summary", "");
-  const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
-  sum.append(el("span", "t-name", name), el("code", "t-cmd", preview(c.call, c.result)), chip(status));
+  // A shell command reads as one: a prompt, then the command. Any other tool is named.
+  sum.append(name === "terminal" && command !== undefined ? el("span", "t-prompt", "$") : el("span", "t-name", name));
+  sum.append(el("code", "t-cmd", preview(c.call, c.result)), statusMark(status));
   const by = c.call?.payload?.decidedBy;
   // An allowed call is the norm: only a decision that is not a plain allow, or one a
   // person made, earns a badge.
@@ -131,14 +158,30 @@ function toolRow(c: Call): HTMLElement {
   sum.append(time((c.result ?? c.call ?? c.decisions[0])!.ts));
 
   const body = el("div", "t-body");
-  if (c.call) {
+  if (command !== undefined) body.append(el("pre", "t-command", command));
+  // The arguments the summary does not already show: all of them for a tool with no
+  // command, the rest beside one, nothing when the command was all there was.
+  const rest = args && command !== undefined ? Object.fromEntries(Object.entries(args).filter(([k]) => k !== "command")) : args;
+  if (c.call && (command === undefined || Object.keys(rest ?? {}).length > 0)) {
     body.append(el("div", "t-sec", "arguments"));
-    body.append(el("pre", "t-args", JSON.stringify(c.call.payload?.args ?? null, null, 2)));
+    body.append(el("pre", "t-args", JSON.stringify(rest ?? null, null, 2)));
   }
   if (c.result) {
     const p = c.result.payload ?? {};
+    const output = String(p.output ?? "");
     body.append(el("div", "t-sec", `output · ${p.bytes ?? "?"} B${p.truncated ? " · truncated" : ""}`));
-    body.append(el("pre", "t-out", String(p.output ?? "")));
+    const out = el("pre", "t-out", output);
+    body.append(out);
+    if (output.replace(/\n$/, "").split("\n").length > capLines || output.length > capChars) {
+      out.classList.add("capped");
+      const more = el("button", "t-more", "show all") as HTMLButtonElement;
+      more.type = "button";
+      more.onclick = () => {
+        const capped = out.classList.toggle("capped");
+        more.textContent = capped ? "show all" : "show less";
+      };
+      body.append(more);
+    }
   } else {
     body.append(el("div", "t-sec", "waiting for the result…"));
   }
@@ -290,6 +333,55 @@ function tidy(fold: HTMLElement) {
   else label(fold);
 }
 
+// A step's DOM: the section that holds its owner (the agent's message) and, once a call
+// or plumbing row joins, the toggle over them.
+const callsOf = (step: HTMLElement) => step.querySelector<HTMLDetailsElement>(":scope > details.step-calls");
+const stepBodyOf = (step: HTMLElement) => callsOf(step)?.querySelector<HTMLElement>(":scope > .step-body");
+
+// Each step's tally (step.ts), counted as rows land and leave.
+const tallies = new WeakMap<HTMLElement, StepTally>();
+const tallyOf = (step: HTMLElement) => {
+  let t = tallies.get(step);
+  if (!t) tallies.set(step, (t = emptyTally()));
+  return t;
+};
+
+// callOf is what a member row adds to its step's tally: a call, or nothing (plumbing).
+function callOf(row: HTMLElement): StepCall | undefined {
+  const d = row.dataset;
+  return d.callId === undefined ? undefined : { tool: d.tool!, status: d.status!, start: d.start!, end: d.end };
+}
+
+// recount tallies a step from its rows: for the rare moves (rows changing step on an
+// out-of-order replay), never on the live path.
+function recount(step: HTMLElement) {
+  const t = emptyTally();
+  for (const r of stepBodyOf(step)?.querySelectorAll<HTMLElement>("[data-flow]") ?? []) count(t, callOf(r), 1);
+  tallies.set(step, t);
+}
+
+// refreshStep rewrites a step's summary line from its tally and opens or closes it when
+// its state changes: open while a call runs or after one failed, closed once all are
+// ok. A state that did not change leaves the reader's own toggle alone.
+function refreshStep(step: HTMLElement) {
+  const calls = callsOf(step);
+  if (!calls) return;
+  const t = tallyOf(step);
+  const line = stepLine(t);
+  const sum = calls.querySelector(":scope > summary")!;
+  sum.replaceChildren(el("span", "step-head", line.head));
+  // Visible separators keep the accessible name readable: "Ran 3 commands · 1 rejected · 0:15".
+  const sep = () => el("span", "step-sep", " · ");
+  if (line.exceptions) sum.append(sep(), el("span", "step-exc", line.exceptions));
+  if (line.duration) sum.append(sep(), el("span", "step-dur", line.duration));
+  const state = stepState(t);
+  step.dataset.state = state;
+  if (calls.dataset.state !== state) {
+    calls.dataset.state = state;
+    calls.open = state !== "done";
+  }
+}
+
 // ChatView holds the log as a conversation, newest rows last. A resume can
 // resend a seq: the row is replaced in place. A tool_call's row is re-rendered
 // when its result or a decision lands, so a result never doubles its call.
@@ -316,12 +408,14 @@ export class ChatView {
     const p = ev.payload ?? {};
     const you = this.viewer();
     const put = (row: HTMLElement) => {
-      if (plumbing(ev, you)) row.dataset.plumbing = "1";
-      this.put(ev.seq, row);
+      const quiet = plumbing(ev, you);
+      if (quiet) row.dataset.plumbing = "1";
+      this.put(ev.seq, row, quiet ? "member" : "break");
     };
     switch (ev.type) {
       case "message":
-        this.put(ev.seq, this.tools(bubble(ev, you), ev.seq));
+        // An agent's message opens a step; anyone else's closes the one open.
+        this.put(ev.seq, this.tools(bubble(ev, you), ev.seq), ev.actor.kind === "agent" ? "owner" : "break");
         break;
       case "tool_call":
         this.merge(String(p.callId ?? `seq${ev.seq}`), ev, "call");
@@ -347,14 +441,25 @@ export class ChatView {
         put(marker(ev));
         break;
       case "participant":
-      case "driver":
         put(sysline(ev));
         break;
+      case "driver": {
+        // Never a breaker, even naming the viewer (which stays unfolded, as no plumbing).
+        const row = sysline(ev);
+        if (plumbing(ev, you)) row.dataset.plumbing = "1";
+        this.put(ev.seq, row, "member");
+        break;
+      }
+      case "approval_requested":
+      case "approval_decided":
+        // An approval is part of the step's work, not a turn of the conversation.
+        this.put(ev.seq, fallback(ev), "member");
+        break;
       case "handoff":
-        this.put(ev.seq, this.tools(handoff(ev), ev.seq));
+        this.put(ev.seq, this.tools(handoff(ev), ev.seq), "break");
         break;
       default:
-        this.put(ev.seq, fallback(ev));
+        this.put(ev.seq, fallback(ev), "break");
     }
   }
 
@@ -373,17 +478,7 @@ export class ChatView {
     if (part === "call") c.call = ev;
     else if (part === "result") c.result = ev;
     else if (!c.decisions.some((d) => d.seq === ev.seq)) c.decisions.push(ev);
-    this.put(c.seq, toolRow(c));
-  }
-
-  private drop(seq: number) {
-    const i = this.seqs.indexOf(seq);
-    if (i < 0) return;
-    this.detach(this.rows.get(seq)!);
-    this.rows.delete(seq);
-    this.seqs.splice(i, 1);
-    this.regroup(i - 1);
-    this.regroup(i);
+    this.put(c.seq, toolRow(c), "member");
   }
 
   // tools puts a "fork here" beside row, outside any summary, when forking is on.
@@ -403,18 +498,110 @@ export class ChatView {
     return wrap;
   }
 
-  // The fold around a row, if any; top is what sits in the stream for it.
+  // The layout is two layers over the seq order. A step: an agent's message (its owner)
+  // and the member rows after it (tool rows and plumbing), up to the next row that is
+  // neither, inside one section.step. A fold: a run of two or more plumbing rows, inside
+  // whatever holds them (a step's body, or the stream before any step).
+  private flow(i: number): string | undefined { return this.rows.get(this.seqs[i])?.dataset.flow; }
+  private isPlumbing(i: number): boolean { return this.rows.get(this.seqs[i])?.dataset.plumbing === "1"; }
+
+  // The fold around a row, if any.
   private foldOf(n: HTMLElement): HTMLElement | undefined {
     const parent = n.parentElement;
     return parent?.classList.contains("fold-body") ? parent.parentElement ?? undefined : undefined;
   }
-  private top(n: HTMLElement): HTMLElement { return this.foldOf(n) ?? n; }
+  // within is the child of box that holds n, or null when box does not hold it.
+  private within(n: HTMLElement, box: HTMLElement): HTMLElement | null {
+    let c: HTMLElement | null = n;
+    while (c && c.parentElement !== box) c = c.parentElement;
+    return c;
+  }
+  // top is what sits in the stream for a row: its step, its fold, or the row itself.
+  private top(n: HTMLElement): HTMLElement { return this.within(n, this.el) ?? n; }
+  private stepOf(n: HTMLElement): HTMLElement | undefined {
+    const t = this.top(n);
+    return t.classList.contains("step") ? t : undefined;
+  }
+  // members is a step's member box, made on its first member.
+  private members(step: HTMLElement): HTMLElement {
+    const have = stepBodyOf(step);
+    if (have) return have;
+    const calls = el("details", "step-calls") as HTMLDetailsElement;
+    const inner = el("div", "step-body");
+    calls.append(el("summary", ""), inner);
+    step.append(calls);
+    return inner;
+  }
+  // box is where member i belongs: the body of the step its nearest non-member before
+  // it owns, else the stream. Constant time: the row before i already sits in place.
+  private box(i: number): HTMLElement {
+    if (i === 0) return this.el;
+    const prev = this.rows.get(this.seqs[i - 1])!;
+    if (prev.dataset.flow === "owner") return this.members(this.stepOf(prev)!);
+    if (prev.dataset.flow === "member") return (this.foldOf(prev) ?? prev).parentElement as HTMLElement;
+    return this.el;
+  }
+  // settle drops a step's toggle once no member is left in it, and rewrites its line.
+  private settle(step: HTMLElement | undefined) {
+    if (!step) return;
+    const inner = stepBodyOf(step);
+    if (inner && inner.childElementCount === 0) callsOf(step)!.remove();
+    else refreshStep(step);
+  }
   private detach(n: HTMLElement) {
     const fold = this.foldOf(n);
+    const step = this.stepOf(n);
     n.remove();
     if (fold) tidy(fold);
+    if (step) count(tallyOf(step), callOf(n), -1);
+    this.settle(step);
   }
-  private isPlumbing(i: number): boolean { return this.rows.get(this.seqs[i])?.dataset.plumbing === "1"; }
+
+  // rehome moves the members from index i on (up to the next non-member) into box,
+  // before anchor: an owner landing among them takes them; a break or a lost owner
+  // hands them to the stream. Their folds move whole.
+  private rehome(i: number, box: HTMLElement, anchor: HTMLElement | null) {
+    const touched = new Set<HTMLElement>();
+    let moved = false;
+    for (let j = i; j < this.seqs.length && this.flow(j) === "member"; j++) {
+      const row = this.rows.get(this.seqs[j])!;
+      const home = (this.foldOf(row) ?? row);
+      if (home.parentElement === box) continue;
+      const from = this.stepOf(row);
+      if (from) touched.add(from);
+      box.insertBefore(home, anchor);
+      moved = true;
+    }
+    const to = this.stepOf(box);
+    if (to && moved) touched.add(to);
+    for (const s of touched) {
+      recount(s);
+      this.settle(s);
+    }
+  }
+
+  private drop(seq: number) {
+    const i = this.seqs.indexOf(seq);
+    if (i < 0) return;
+    const row = this.rows.get(seq)!;
+    const flow = row.dataset.flow;
+    const step = flow === "owner" ? this.stepOf(row) : undefined;
+    this.detach(row);
+    this.rows.delete(seq);
+    this.seqs.splice(i, 1);
+    if (step) {
+      // A step without its owner hands its members to whatever holds the row before it.
+      const box = this.box(i);
+      this.rehome(i, box, box === this.el ? step : null);
+      step.remove();
+      this.settle(this.stepOf(box));
+    } else if (flow === "break") {
+      const box = this.box(i);
+      this.rehome(i, box, box === this.el ? (i > 0 ? this.top(this.rows.get(this.seqs[i - 1])!).nextElementSibling as HTMLElement | null : this.el.firstElementChild as HTMLElement | null) : null);
+    }
+    this.regroup(i - 1);
+    this.regroup(i);
+  }
 
   // regroup lays out the run of consecutive plumbing rows around index i: one fold for
   // two or more, the row alone for one. A fold that already holds just the run stays
@@ -424,14 +611,15 @@ export class ChatView {
     let a = i, b = i;
     while (a > 0 && this.isPlumbing(a - 1)) a--;
     while (b < this.seqs.length - 1 && this.isPlumbing(b + 1)) b++;
+    const box = this.box(a);
     const items = this.seqs.slice(a, b + 1).map((s) => this.rows.get(s)!);
     const held = new Set<Element>(items);
-    const after = b + 1 < this.seqs.length ? this.top(this.rows.get(this.seqs[b + 1])!) : null;
+    const after = b + 1 < this.seqs.length ? this.within(this.rows.get(this.seqs[b + 1])!, box) : null;
     const sources = new Set(items.map((n) => this.foldOf(n)).filter((f): f is HTMLElement => !!f));
     if (items.length === 1) {
       const fold = this.foldOf(items[0]);
       if (fold) {
-        this.el.insertBefore(items[0], after);
+        box.insertBefore(items[0], after);
         tidy(fold);
       }
       return;
@@ -444,7 +632,7 @@ export class ChatView {
     }
     const inner = body(target);
     if (inner.children.length !== items.length || items.some((n, k) => inner.children[k] !== n)) inner.replaceChildren(...items);
-    if (target.parentElement !== this.el || target.nextElementSibling !== after) this.el.insertBefore(target, after);
+    if (target.parentElement !== box || target.nextElementSibling !== after) box.insertBefore(target, after);
     for (const f of sources) if (f !== target) tidy(f);
     tidy(target);
   }
@@ -460,37 +648,69 @@ export class ChatView {
     return true;
   }
 
-  private put(seq: number, row: HTMLElement) {
+  private put(seq: number, row: HTMLElement, flow: "owner" | "member" | "break") {
+    row.dataset.flow = flow;
     const old = this.rows.get(seq);
-    if (old && old.dataset.plumbing === row.dataset.plumbing) {
-      old.replaceWith(row); // inside its fold, if it is in one: a resend never doubles a line
+    if (old && old.dataset.plumbing === row.dataset.plumbing && old.dataset.flow === flow) {
+      const step = this.stepOf(old);
+      old.replaceWith(row); // inside its fold or step, if in one: a resend never doubles a line
       this.rows.set(seq, row);
+      if (step) {
+        count(tallyOf(step), callOf(old), -1);
+        count(tallyOf(step), callOf(row), 1);
+        refreshStep(step);
+      }
       return;
     }
     if (old) this.drop(seq);
     let i = this.seqs.length;
     while (i > 0 && this.seqs[i - 1] > seq) i--; // from the end: live events land there
-    const next = i < this.seqs.length ? this.top(this.rows.get(this.seqs[i])!) : null;
+    const last = i === this.seqs.length;
     this.seqs.splice(i, 0, seq);
     this.rows.set(seq, row);
-    if (row.dataset.plumbing === "1") {
+    if (flow === "member") {
+      const box = this.box(i);
+      const next = last ? null : this.within(this.rows.get(this.seqs[i + 1])!, box);
       // The live path: a plumbing row after a fold's last row joins it, in constant time.
-      if (next !== null || !this.joinsLastFold(i, row)) {
-        this.el.insertBefore(row, next);
-        this.regroup(i);
+      if (row.dataset.plumbing === "1") {
+        if (next !== null || !this.joinsLastFold(i, row)) {
+          box.insertBefore(row, next);
+          this.regroup(i);
+        }
+      } else {
+        box.insertBefore(row, next);
+        this.regroup(i - 1);
+        this.regroup(i + 1);
+      }
+      const step = this.stepOf(row);
+      if (step) {
+        count(tallyOf(step), callOf(row), 1);
+        refreshStep(step);
       }
     } else {
-      this.el.insertBefore(row, next);
-      this.regroup(i - 1);
-      this.regroup(i + 1);
+      // An owner or a break sits in the stream, right after what holds the row before it.
+      const prev = i > 0 ? this.top(this.rows.get(this.seqs[i - 1])!) : null;
+      const anchor = (prev ? prev.nextElementSibling : this.el.firstElementChild) as HTMLElement | null;
+      let node = row;
+      if (flow === "owner") {
+        node = el("section", "step");
+        node.append(row);
+      }
+      this.el.insertBefore(node, anchor);
+      this.regroup(i - 1); // a plumbing run it lands in splits here
+      if (!last) {
+        // The members after it were the step before's (or the stream's): now they are its own.
+        if (flow === "owner") this.rehome(i + 1, this.members(node), null);
+        else this.rehome(i + 1, this.el, node.nextElementSibling as HTMLElement | null);
+        this.regroup(i + 1);
+        this.settle(node.classList.contains("step") ? node : undefined);
+      }
     }
     while (this.seqs.length > this.cap) {
-      const s = this.seqs.shift()!;
+      const s = this.seqs[0];
       const gone = this.rows.get(s)!;
       if (gone.dataset.callId) this.calls.delete(gone.dataset.callId);
-      this.detach(gone);
-      this.rows.delete(s);
-      this.regroup(0);
+      this.drop(s);
     }
   }
 }

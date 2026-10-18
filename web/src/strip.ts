@@ -61,7 +61,7 @@ function nowLine(i: StripInput, t: number, onNow: (seq: number) => void): HTMLEl
     line.append(b);
   } else line.textContent = present ? "Now ▸ the run has started" : ran ? "No run" : "No run yet";
   const lead = !present && i.snap && (i.snap.you.role === "owner" || i.snap.you.driver);
-  return lead ? [line, el("span", { className: "now-hint", textContent: "Start one under Run" })] : [line];
+  return lead ? [line, el("span", { className: "now-hint", textContent: "Start one under Session › Run" })] : [line];
 }
 
 function runText(r: NonNullable<Summary["status"]["run"]>, t: number): string {

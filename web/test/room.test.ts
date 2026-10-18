@@ -135,20 +135,21 @@ describe("the room page", () => {
     vi.setSystemTime(Date.parse("2026-10-06T10:00:05Z"));
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
-    const steer = () => p.app.querySelector<HTMLOptionElement>('select[name="delivery"] option[value="steering"]')!;
+    const steer = () => p.app.querySelector<HTMLInputElement>('input[name="delivery"][value="steering"]')!;
+    const shown = () => !steer().closest("label")!.hidden;
     p.last().recv(event(1, "message", { kind: "chat", text: "anyone?", delivery: "none" }));
     expect(p.app.querySelector(".now")?.textContent).toBe("No run yet"); // a human's message starts no run
-    expect(steer().hidden).toBe(true);
+    expect(shown()).toBe(false);
     p.last().recv(event(2, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
     p.last().recv(agent(3, "message", { kind: "chat", text: "on it", delivery: "none" }));
     expect(p.app.querySelector(".now")?.textContent).toBe("Now ▸ on it · message · 5 s ago");
-    expect([steer().hidden, steer().disabled]).toEqual([false, false]);
-    p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
+    expect([shown(), steer().disabled]).toEqual([true, false]);
+    steer().checked = true;
     p.last().recv(event(4, "participant", { principal: "agent:ikely2yk", change: "left" }));
     expect(p.app.querySelector(".now")?.textContent).toBe("No run · last: on it · 5 s ago");
-    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
-    expect([steer().hidden, steer().disabled]).toEqual([true, true]);
-    expect(p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value).toBe(""); // a steer with no run: chosen again
+    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
+    expect([shown(), steer().disabled]).toEqual([false, true]);
+    expect(p.app.querySelector('input[name="delivery"]:checked')).toBeNull(); // a steer with no run: chosen again
     expect(p.app.querySelector("#delivery-notice")?.textContent).toMatch(/no run/i);
   });
 
@@ -308,7 +309,7 @@ describe("the room page", () => {
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
     const notice = () => p.app.querySelector("footer .act-notice")!.textContent;
     const beside = () => p.app.querySelector("#delivery-notice")!.textContent;
-    p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!.value = "steering";
+    p.app.querySelector<HTMLInputElement>('input[name="delivery"][value="steering"]')!.checked = true;
     p.app.querySelector<HTMLInputElement>('[name="giveTo"]')!.value = "human:c";
     p.app.querySelector<HTMLButtonElement>('[data-act="driver_give"]')!.click();
     const give = p.last().sent.at(-1) as { clientSeq: number };
@@ -356,10 +357,10 @@ describe("the room page", () => {
     const p = page();
     p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
     const notice = () => p.app.querySelector("#delivery-notice")!.textContent;
-    const delivery = p.app.querySelector<HTMLSelectElement>('select[name="delivery"]')!;
+    const radio = (v: string) => p.app.querySelector<HTMLInputElement>(`input[name="delivery"][value="${v}"]`)!;
     const text = p.app.querySelector<HTMLTextAreaElement>('textarea[name="text"]')!;
     const send = p.app.querySelector<HTMLButtonElement>('[data-act="message"]')!;
-    delivery.value = "steering";
+    radio("steering").checked = true;
     p.last().recv(event(1, "driver", { from: "human:a", to: "human:c", epoch: 2, reason: "taken" }));
     const choose = "You no longer hold the driver token: choose where this message goes.";
     expect(notice()).toBe(choose);
@@ -368,7 +369,7 @@ describe("the room page", () => {
     send.click(); // no delivery chosen: refused, and said again
     expect(p.last().sent).toHaveLength(frames);
     expect(notice()).toBe(choose);
-    delivery.value = "none";
+    radio("none").checked = true;
     send.click();
     const msg = p.last().sent.at(-1) as { clientSeq: number; action: unknown };
     expect(msg.action).toEqual({ kind: "message", text: "for the room, then", delivery: "none" });
@@ -446,6 +447,43 @@ describe("the room page", () => {
     expect(p.app.querySelector<HTMLElement>("footer .composer")!.hidden).toBe(false);
   });
 
+  it("keeps the Session toggle hidden until the first frame", () => {
+    const p = page();
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(true);
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0);
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(false);
+  });
+
+  it("puts Run and Driver behind a Session toggle in the dock, its line naming the driver and the run", () => {
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const session = p.app.querySelector<HTMLDetailsElement>("footer.page-dock > details.session")!;
+    expect(session.open).toBe(false);
+    expect(session.hidden).toBe(false);
+    expect(session.querySelector("section.controls .group-run")).not.toBeNull();
+    expect(session.querySelector("section.controls .group-driver")).not.toBeNull();
+    expect(session.querySelector("summary")!.textContent).toBe("Session · driver: you · no run");
+    p.last().recv(event(1, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    expect(session.querySelector("summary")!.textContent).toBe("Session · driver: you · a run is on");
+    expect(session.nextElementSibling?.classList.contains("composer")).toBe(true);
+  });
+
+  it("hides the Session toggle from a watcher, who has no controls", () => {
+    const p = page();
+    p.join(snapshot({ role: "watcher" }), 0);
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(true);
+  });
+
+  it("shows a skeleton stream until the first frame, then the stream alone", () => {
+    const p = page();
+    const skeleton = p.app.querySelector<HTMLElement>(".skeleton")!;
+    expect(skeleton.hidden).toBe(false);
+    expect(skeleton.querySelectorAll(".sk-msg")).toHaveLength(3);
+    expect(skeleton.getAttribute("aria-hidden")).toBe("true");
+    p.join(snapshot(), 0);
+    expect(skeleton.hidden).toBe(true);
+  });
+
   it("docks the composer at the bottom and disables Send while reconnecting or sealed", () => {
     const p = page();
     p.join(snapshot({ role: "collaborator" }), 0);
@@ -471,17 +509,17 @@ describe("the room page", () => {
   });
 
   // Review focus 5.
-  it("keeps a steering draft and moves the notice beside the select when the token is lost (review focus 5)", () => {
+  it("keeps a steering draft and moves the notice beside the delivery group when the token is lost (review focus 5)", () => {
     const p = page();
     p.join(snapshot({ role: "collaborator", driver: true }), 0);
     const dock = p.app.querySelector("footer.page-dock")!;
     const text = dock.querySelector("textarea") as HTMLTextAreaElement;
-    const delivery = dock.querySelector('select[name="delivery"]') as HTMLSelectElement;
-    text.value = "turn left"; delivery.value = "steering";
+    const steer = dock.querySelector('input[name="delivery"][value="steering"]') as HTMLInputElement;
+    text.value = "turn left"; steer.checked = true;
     p.last().recv(event(1, "driver", { from: "human:b", to: "human:c", epoch: 2 }));
     expect(text.value).toBe("turn left");
-    expect(delivery.value).toBe("");
-    expect(delivery.getAttribute("aria-describedby")).toBe("delivery-notice");
+    expect(dock.querySelector('input[name="delivery"]:checked')).toBeNull();
+    expect(steer.getAttribute("aria-describedby")).toBe("delivery-notice delivery-hint");
     expect(dock.querySelector("#delivery-notice")?.textContent).toMatch(/choose where this message goes/);
     expect((dock.querySelector('button[data-act="message"]') as HTMLButtonElement).disabled).toBe(false);
   });
@@ -492,7 +530,7 @@ describe("the room page", () => {
     p.last().recv({ ...event(1, "state_changed", { kind: "room_phase", phase: "Closed", reason: "owner" }), event: { ...event(1, "state_changed", {}).event,
       actor: { kind: "human", id: "human:b" }, payload: { kind: "room_phase", phase: "Closed", reason: "owner" } } });
     expect(p.app.querySelector(".closed")?.textContent).toMatch(/^Closed .* by you$/);
-    expect((p.app.querySelector("footer.page-dock textarea") as HTMLElement).hidden).toBe(true);
+    expect(p.app.querySelector("footer.page-dock textarea")!.closest("[hidden]")).not.toBeNull();
     expect(p.app.querySelector<HTMLElement>(".group-run")!.hidden).toBe(true);
     expect(p.app.querySelector<HTMLElement>(".group-driver")!.hidden).toBe(true);
   });

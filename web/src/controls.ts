@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Frame, Snapshot } from "./conn";
+import { icon } from "./icons";
 import type { RoomState } from "./room-state";
 import { safeLink, type Summary } from "./summary";
 
@@ -369,50 +370,82 @@ export function mountControls(root: HTMLElement, conn: Sender, state: RoomState,
   };
 }
 
-// mountComposer renders the dock's composer into root: the text, where it goes, Send.
-// The text stays until its own ack accepts it: a rejected message is not lost. setLive
-// disables Send while the socket is down and hides nothing, so the draft stays in view;
-// a sealed room hides the composer, and a watcher has none.
+// The three places a message can go, the room first: it prompts no agent (R09). Each
+// says what it does in the hint line once chosen.
+const deliveries: [value: string, label: string, hint: string][] = [
+  ["none", "Room", "Posted to the room; no agent is prompted."],
+  ["queued", "Queue", "Queued for the next run's brief."],
+  ["steering", "Steer", "Sent to the running agent now."],
+];
+
+// mountComposer renders the dock's composer into root: the text and Send, then where it
+// goes (a segmented radio group), the hint for that choice, and the notice. The text
+// stays until its own ack accepts it: a rejected message is not lost. setLive disables
+// Send while the socket is down and hides nothing, so the draft stays in view; a sealed
+// room hides the composer, and a watcher has none. Ctrl or Cmd with Enter sends; Enter
+// alone is a new line, so a multi-line message is never sent half-typed.
 export function mountComposer(root: HTMLElement, conn: Sender, state: RoomState, you: Snapshot["you"]) {
   const isDriver = () => state.driver === you.principal;
-  const text = named(el("textarea", { name: "text", maxLength: 16384, rows: 2 }), "message to the room");
-  // The room is the default: queued and steered text enters an agent's prompt (R09).
-  const delivery = select("delivery", "Deliver to", [["none", "post to the room (no agent is prompted)"],
-    ["queued", "queue for the next run's brief"], ["steering", "steer the running agent now"]]);
-  delivery.append(el("option", { value: "", textContent: "choose where this goes", disabled: true, hidden: true }));
-  delivery.setAttribute("aria-describedby", "delivery-notice");
-  const steering = delivery.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+  const text = named(el("textarea", { name: "text", maxLength: 16384, rows: 2, placeholder: "Message the room…" }), "message to the room");
+  const group = el("fieldset", { className: "delivery" });
+  group.append(el("legend", { textContent: "Deliver to" }));
+  const radios = new Map<string, HTMLInputElement>();
+  for (const [value, label] of deliveries) {
+    const r = named(el("input", { type: "radio", name: "delivery", value, checked: value === "none" }), label);
+    r.setAttribute("aria-describedby", "delivery-notice delivery-hint");
+    radios.set(value, r);
+    const l = el("label", { className: "seg" });
+    l.append(r, el("span", { textContent: label }));
+    group.append(l);
+  }
+  const steering = radios.get("steering")!;
+  const chosen = () => [...radios.values()].find((r) => r.checked)?.value ?? "";
+  const hint = el("span", { id: "delivery-hint", className: "hint" });
+  const showHint = () => { hint.textContent = deliveries.find(([v]) => v === chosen())?.[2] ?? ""; };
   const choose = "You no longer hold the driver token: choose where this message goes.";
   const noRun = "No run is on now, so no agent to steer: choose where this message goes.";
-  // The notice sits beside the select it is about, so the page's act notice keeps its own.
+  // The notice sits beside the group it is about, so the page's act notice keeps its own.
   const notice = el("span", { id: "delivery-notice", className: "notice" });
   notice.setAttribute("role", "status");
   notice.setAttribute("aria-live", "polite");
-  delivery.onchange = () => { notice.textContent = ""; };
+  group.onchange = () => { notice.textContent = ""; showHint(); };
   let sent = { seq: 0, text: "" };
-  const sendBtn = button("send", "message", () => {
+  const sendBtn = button("Send", "message", () => {
     if (!text.value.trim()) return;
-    if (!delivery.value) { notice.textContent = choose; return; }
-    sent = { seq: act(conn, state, { kind: "message", text: text.value, delivery: delivery.value }), text: text.value };
+    const delivery = chosen();
+    if (!delivery) { notice.textContent = choose; return; }
+    sent = { seq: act(conn, state, { kind: "message", text: text.value, delivery }), text: text.value };
     if (sent.seq) notice.textContent = ""; // a send that went out supersedes the notice
   });
-  sendBtn.classList.add("primary");
+  sendBtn.classList.add("primary", "send");
+  sendBtn.append(icon("send"));
+  text.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      sendBtn.click();
+    }
+  };
+  const write = el("div", { className: "composer-write" });
+  write.append(text, sendBtn);
   const row = el("div", { className: "composer-row" });
-  row.append(labelled("Deliver to", delivery), notice, sendBtn);
-  root.replaceChildren(text, row);
+  row.append(group, hint, notice, el("span", { className: "hint keys", textContent: "Ctrl+Enter to send" }));
+  root.replaceChildren(write, row);
+  showHint();
   return {
     refresh() {
       // Steering needs the token and an agent present now (Q2): with no run it is not offered.
-      steering.hidden = !state.running();
-      steering.disabled = !isDriver() || steering.hidden;
+      const label = steering.closest("label")!;
+      label.hidden = !state.running();
+      steering.disabled = !isDriver() || label.hidden;
       // A lost token or an ended run picks no other delivery for the human: both prompt or
       // skip an agent the human meant to reach (R09, reversing review 4.5 I3). The draft stays.
-      if (steering.disabled && delivery.value === "steering") {
-        delivery.value = "";
+      if (steering.disabled && steering.checked) {
+        steering.checked = false;
+        showHint();
         notice.textContent = isDriver() ? noRun : choose;
       }
       root.hidden = you.role === "watcher";
-      text.hidden = row.hidden = state.sealed;
+      write.hidden = row.hidden = state.sealed;
     },
     onAck(f: Frame) {
       if (!f.rejected && f.clientSeq && f.clientSeq === sent.seq && text.value === sent.text) text.value = "";
