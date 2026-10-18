@@ -29,13 +29,45 @@ function fakeClock() {
 const ev = (seq: number, s: number): RoomEvent => ({ v: 1, id: `e${seq}`, seq, roomId: "r", actor: { kind: "agent", id: "agent:x" },
   type: "turn", origin: "harness", ts: new Date(Date.UTC(2026, 9, 18, 7, 0, 0) + s * 1000).toISOString(), redactions: [], payload: {} });
 
-function setup(seconds: number[], speed = 1, maxGapMs = 10_000) {
+function setup(seconds: number[], speed = 1, maxGapMs = 10_000, dwell?: (e: RoomEvent) => number) {
   const { clock, advance, pending } = fakeClock();
   const seen: number[] = [];
   let changes = 0;
-  const r = new Replay(seconds.map((s, i) => ev(i + 1, s)), (e) => seen.push(e.seq), { speed, maxGapMs, clock, onChange: () => changes++ });
+  const r = new Replay(seconds.map((s, i) => ev(i + 1, s)), (e) => seen.push(e.seq), { speed, maxGapMs, clock, dwell, onChange: () => changes++ });
   return { r, seen, advance, pending, changes: () => changes };
 }
+
+describe("Replay dwell", () => {
+  // Event 2 dwells 4 s: the visitor gets time to see it, whatever the speed.
+  const onSecond = (e: RoomEvent) => (e.seq === 2 ? 4000 : 0);
+  it("holds after a dwelling event for real time, on top of the sped-up gap", () => {
+    const t = setup([0, 8, 16], 8, 10_000, onSecond);
+    t.r.play();
+    t.advance(1000); // 8 s at 8×
+    expect(t.seen).toEqual([1, 2]);
+    t.advance(4999); // the 1 s gap + 4 s dwell, less 1 ms
+    expect(t.seen).toEqual([1, 2]);
+    t.advance(1);
+    expect(t.seen).toEqual([1, 2, 3]);
+  });
+  it("is not shortened by the gap cap", () => {
+    const t = setup([0, 1, 1], 1, 0, onSecond); // every recorded gap capped to nothing
+    t.r.play();
+    t.advance(0);
+    expect(t.seen).toEqual([1, 2]);
+    t.advance(3999);
+    expect(t.seen).toEqual([1, 2]);
+    t.advance(1);
+    expect(t.seen).toEqual([1, 2, 3]);
+  });
+  it("is skipped by skip", () => {
+    const t = setup([0, 1, 2], 1, 10_000, onSecond);
+    t.r.play();
+    t.advance(1000);
+    t.r.skip();
+    expect(t.seen).toEqual([1, 2, 3]);
+  });
+});
 
 describe("Replay", () => {
   it("applies the first event at once, then each after its recorded gap", () => {
