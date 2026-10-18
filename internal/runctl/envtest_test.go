@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,6 +37,20 @@ func (b podBlind) Get(ctx context.Context, k client.ObjectKey, o client.Object, 
 		return apierrors.NewNotFound(corev1.Resource("pods"), k.Name)
 	}
 	return b.Client.Get(ctx, k, o, opts...)
+}
+
+// cnpFails refuses every CiliumNetworkPolicy create with err: envtest has no RuntimeClass
+// admission, so the API server's refusal is injected.
+type cnpFails struct {
+	client.Client
+	err error
+}
+
+func (c cnpFails) Create(ctx context.Context, o client.Object, opts ...client.CreateOption) error {
+	if o.GetObjectKind().GroupVersionKind().Kind == "CiliumNetworkPolicy" {
+		return c.err
+	}
+	return c.Client.Create(ctx, o, opts...)
 }
 
 type env struct {
@@ -212,6 +227,38 @@ func TestEnvtestInvalidRunFails(t *testing.T) {
 	}
 	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "other-cccccccc"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("no pod for an invalid run, got %v", err)
+	}
+}
+
+func TestEnvtestPermanentCreateFailureEndsTheRun(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	e.r.Client = cnpFails{e.c, &apimeta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "cilium.io", Kind: "CiliumNetworkPolicy"}}}
+	create(t, e, run("run-ffffffff"))
+	e.reconcile(t, "run-ffffffff")
+	got := e.get(t, "run-ffffffff")
+	if got.Status.Phase != "Failed" || got.Status.FinishedAt == "" {
+		t.Fatalf("a permanent create failure ends the run: %+v", got.Status)
+	}
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, "Invalid"); c == nil || c.Status != metav1.ConditionTrue || c.Reason != "CreateFailed" || c.Message == "" {
+		t.Fatalf("Invalid condition %+v", c)
+	}
+	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-ffffffff"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("no pod after a failed create, got %v", err)
+	}
+}
+
+func TestEnvtestTransientCreateFailureIsReportedAndRetried(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	e.r.Client = cnpFails{e.c, apierrors.NewServiceUnavailable("apiserver busy")}
+	create(t, e, run("run-gggggggg"))
+	if _, err := e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agents", Name: "run-gggggggg"}}); err == nil {
+		t.Fatal("a transient create failure must return the error so it is retried")
+	}
+	got := e.get(t, "run-gggggggg")
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); c == nil || c.Status != metav1.ConditionFalse || c.Reason != "CreateFailed" || got.Status.Phase != "Pending" {
+		t.Fatalf("Ready condition %+v, status %+v", c, got.Status)
 	}
 }
 

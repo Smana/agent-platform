@@ -4,6 +4,7 @@ package runctl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -89,6 +90,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{RequeueAfter: secretRetry}, r.writeStatus(ctx, run, *st)
 		}
 		if err := r.create(ctx, run, runID, m, ca); err != nil {
+			// A refusal that retrying cannot cure (a bad object, a forbidden verb, a missing
+			// CRD) ends the run so the broker stops waiting; anything else is retried.
+			if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apimeta.IsNoMatchError(err) {
+				st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
+				apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Invalid", Status: metav1.ConditionTrue, Reason: "CreateFailed", Message: err.Error()})
+				apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed", Message: err.Error()})
+				return ctrl.Result{}, r.writeStatus(ctx, run, *st)
+			}
+			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed", Message: err.Error()})
+			if st.Phase == "" {
+				st.Phase = "Pending"
+			}
+			if werr := r.writeStatus(ctx, run, *st); werr != nil {
+				return ctrl.Result{}, errors.Join(err, werr)
+			}
 			return ctrl.Result{}, err
 		}
 		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created"})
