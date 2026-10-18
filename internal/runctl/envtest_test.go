@@ -27,6 +27,16 @@ import (
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
+// podBlind reads every pod as NotFound, like an informer cache that is behind.
+type podBlind struct{ client.Client }
+
+func (b podBlind) Get(ctx context.Context, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+	if _, ok := o.(*corev1.Pod); ok {
+		return apierrors.NewNotFound(corev1.Resource("pods"), k.Name)
+	}
+	return b.Client.Get(ctx, k, o, opts...)
+}
+
 type env struct {
 	c   client.Client
 	r   *Reconciler
@@ -226,6 +236,68 @@ func TestEnvtestUnsandboxedIsMarked(t *testing.T) {
 	e.reconcile(t, "run-eeeeeeee")
 	if !apimeta.IsStatusConditionTrue(e.get(t, "run-eeeeeeee").Status.Conditions, "Unsandboxed") {
 		t.Fatal("an unsandboxed run must say so")
+	}
+}
+
+func TestEnvtestStartedRunPodGone(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	create(t, e, run("run-ffffffff"))
+	e.reconcile(t, "run-ffffffff")
+	e.setPod(t, "run-ffffffff", func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodRunning
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	})
+	e.reconcile(t, "run-ffffffff")
+
+	// A stale cache must not end the run: the uncached re-check finds the pod.
+	cached := e.r.Client
+	e.r.Client = podBlind{cached}
+	e.reconcile(t, "run-ffffffff")
+	if got := e.get(t, "run-ffffffff"); got.Status.Phase != "Running" {
+		t.Fatalf("stale cache ended the run: %+v", got.Status)
+	}
+	e.r.Client = cached
+
+	p := &corev1.Pod{}
+	key := types.NamespacedName{Namespace: "agents", Name: "run-ffffffff"}
+	if err := e.c.Get(e.ctx, key, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Delete(e.ctx, p, client.GracePeriodSeconds(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Get(e.ctx, key, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("pod must be gone (no kubelet to finalise it), got %v", err)
+	}
+	e.reconcile(t, "run-ffffffff")
+	if got := e.get(t, "run-ffffffff"); got.Status.Phase != "Failed" || got.Status.Reason != "PodLost" || got.Status.FinishedAt == "" {
+		t.Fatalf("pod lost %+v", got.Status)
+	}
+	e.reconcile(t, "run-ffffffff")
+	if err := e.c.Get(e.ctx, key, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("a lost run's pod must not be recreated, got %v", err)
+	}
+}
+
+func TestEnvtestRunningRunSurvivesConfigGoingInvalid(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	create(t, e, run("run-gggggggg"))
+	e.reconcile(t, "run-gggggggg")
+	e.setPod(t, "run-gggggggg", func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodRunning
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	})
+	e.reconcile(t, "run-gggggggg")
+
+	e.r.Cfg.RuntimeClassName, e.r.Cfg.AllowUnsandboxed = "", false
+	e.reconcile(t, "run-gggggggg")
+	if got := e.get(t, "run-gggggggg"); got.Status.Phase != "Running" || apimeta.IsStatusConditionTrue(got.Status.Conditions, "Invalid") {
+		t.Fatalf("a started run must outlive a config change: %+v", got.Status)
+	}
+	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-gggggggg"}, &corev1.Pod{}); err != nil {
+		t.Fatalf("pod must stay: %v", err)
 	}
 }
 

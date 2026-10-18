@@ -51,19 +51,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	now := r.Now()
 	st := run.Status.DeepCopy()
-	if why := r.Cfg.Invalid(run); why != "" {
-		st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
-		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Invalid", Status: metav1.ConditionTrue, Reason: "Refused", Message: why})
-		return ctrl.Result{}, r.writeStatus(ctx, run, *st)
-	}
-	runID := r.Cfg.RunID(run)
-	st.RunID, st.Branch, st.ConversationID = runID, Branch(run, runID), string(run.UID)
 	revoked := run.Annotations[runwatch.RevokedAnnotation]
 
 	pod, gone, err := r.pod(ctx, run)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Invalid depends on config, which can change across a restart: a run that already
+	// has a pod must not be failed with its pod left running.
+	if pod == nil && run.Status.StartedAt == "" {
+		if why := r.Cfg.Invalid(run); why != "" {
+			st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
+			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Invalid", Status: metav1.ConditionTrue, Reason: "Refused", Message: why})
+			return ctrl.Result{}, r.writeStatus(ctx, run, *st)
+		}
+	}
+	runID := r.Cfg.RunID(run)
+	st.RunID, st.Branch, st.ConversationID = runID, Branch(run, runID), string(run.UID)
 	if RevokeEnds(revoked) {
 		if pod != nil && pod.DeletionTimestamp == nil {
 			if err := r.Client.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
