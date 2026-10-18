@@ -30,9 +30,9 @@ function mount(fork?: (seq: number) => void, you?: string): { el: HTMLElement; v
   return { el, view: new ChatView(el, undefined, fork, you) };
 }
 
-function view(events: RoomEvent[], cap = 5000): { el: HTMLElement; v: ChatView } {
+function view(events: RoomEvent[], cap = 5000, you?: string): { el: HTMLElement; v: ChatView } {
   const el = document.createElement("div");
-  const v = new ChatView(el, cap);
+  const v = new ChatView(el, cap, undefined, you);
   for (const e of events) v.apply(e);
   return { el, v };
 }
@@ -430,8 +430,17 @@ describe("ChatView steps (P1, P2)", () => {
     expect(line(el, 1)).toBe("Running 2 commands");
     v.apply(done(4, "a"));
     v.apply(done(5, "b", "rejected"));
-    expect(line(el, 1)).toBe("Ran 2 commands1 rejected0:03");
+    expect(line(el, 1)).toBe("Ran 2 commands · 1 rejected · 0:03");
     expect(el.querySelector(".step-exc")?.textContent).toBe("1 rejected");
+  });
+  it("keeps an approval and a driver change naming the viewer inside the step", () => {
+    const ask = ev(3, "approval_requested", { callId: "x", tool: "terminal" });
+    expect(shape(view([said(1), call(2, "a"), ask, call(4, "b")]).el)).toEqual(["step(1: 2 3 4)"]);
+    const decided = ev(3, "approval_decided", { callId: "x", decision: "allow" }, human);
+    expect(shape(view([said(1), call(2, "a"), decided, call(4, "b")]).el)).toEqual(["step(1: 2 3 4)"]);
+    const sys = { kind: "system", id: "system:room-broker" };
+    const { el } = view([said(1), call(2, "a"), ev(3, "driver", { from: "human:a", to: "human:me" }, sys), call(4, "b")], 5000, "human:me");
+    expect(shape(el)).toEqual(["step(1: 2 3 4)"]);
   });
   it("opens a running step, keeps a failed one open, and closes a clean one", () => {
     const { el, v } = view([said(1), call(2, "a")]);
@@ -495,6 +504,12 @@ describe("ChatView call lines (P3)", () => {
     expect(words("ok")).toBe("");
     expect(view([call({ command: "x" })]).el.querySelector(".t-status")!.textContent).toBe("");
   });
+  it("labels the icon only when the status is unworded, so a word is announced once", () => {
+    const label = (status: string) => view([call({ command: "x" }), done(status)]).el.querySelector(".t-status svg")!.getAttribute("aria-label");
+    expect(label("ok")).toBe("ok");
+    expect(label("rejected")).toBeNull();
+    expect(label("error")).toBeNull();
+  });
   it("shows only the arguments the command does not already say", () => {
     const { el } = view([call({ command: "ls", timeout: 30 })]);
     expect(el.querySelector(".t-command")?.textContent).toBe("ls");
@@ -508,6 +523,15 @@ describe("ChatView call lines (P3)", () => {
     more.click();
     expect(out.classList.contains("capped")).toBe(false);
     expect(more.textContent).toBe("show less");
+  });
+  it("caps a long output with few newlines", () => {
+    const { el } = view([call({ command: "x" }), done("ok", "x".repeat(3000))]);
+    expect(el.querySelector(".t-out")!.classList.contains("capped")).toBe(true);
+    expect(el.querySelector(".t-more")?.textContent).toBe("show all");
+  });
+  it("ignores a single trailing newline when counting lines", () => {
+    const { el } = view([call({ command: "x" }), done("ok", Array.from({ length: 20 }, (_, i) => i).join("\n") + "\n")]);
+    expect(el.querySelector(".t-more")).toBeNull();
   });
   it("leaves a short output uncapped, with no show all", () => {
     const { el } = view([call({ command: "ls" }), done("ok", "a\nb")]);

@@ -120,13 +120,16 @@ const statuses: Record<string, [IconName, boolean]> = {
 function statusMark(status: string): HTMLElement {
   const [glyph, worded] = statuses[status] ?? ["x", true];
   const s = el("span", `t-status st-${cls(status)}`);
-  s.append(icon(glyph, status));
+  // A worded status is announced by its word; the icon then only decorates it.
+  s.append(icon(glyph, worded ? undefined : status));
   if (worded) s.append(el("span", "", status));
   return s;
 }
 
-// An output longer than this many lines opens capped, with a "show all".
+// An output longer than this many lines, or characters, opens capped, with a "show all":
+// a long line with few newlines would otherwise fill the page.
 const capLines = 20;
+const capChars = 1500;
 
 function toolRow(c: Call): HTMLElement {
   const status = c.result ? String(c.result.payload?.status ?? "ok") : "running";
@@ -169,7 +172,7 @@ function toolRow(c: Call): HTMLElement {
     body.append(el("div", "t-sec", `output · ${p.bytes ?? "?"} B${p.truncated ? " · truncated" : ""}`));
     const out = el("pre", "t-out", output);
     body.append(out);
-    if (output.split("\n").length > capLines) {
+    if (output.replace(/\n$/, "").split("\n").length > capLines || output.length > capChars) {
       out.classList.add("capped");
       const more = el("button", "t-more", "show all") as HTMLButtonElement;
       more.type = "button";
@@ -330,9 +333,6 @@ function tidy(fold: HTMLElement) {
   else label(fold);
 }
 
-// ChatView holds the log as a conversation, newest rows last. A resume can
-// resend a seq: the row is replaced in place. A tool_call's row is re-rendered
-// when its result or a decision lands, so a result never doubles its call.
 // A step's DOM: the section that holds its owner (the agent's message) and, once a call
 // or plumbing row joins, the toggle over them.
 const callsOf = (step: HTMLElement) => step.querySelector<HTMLDetailsElement>(":scope > details.step-calls");
@@ -370,8 +370,10 @@ function refreshStep(step: HTMLElement) {
   const line = stepLine(t);
   const sum = calls.querySelector(":scope > summary")!;
   sum.replaceChildren(el("span", "step-head", line.head));
-  if (line.exceptions) sum.append(el("span", "step-exc", line.exceptions));
-  if (line.duration) sum.append(el("span", "step-dur", line.duration));
+  // Visible separators keep the accessible name readable: "Ran 3 commands · 1 rejected · 0:15".
+  const sep = () => el("span", "step-sep", " · ");
+  if (line.exceptions) sum.append(sep(), el("span", "step-exc", line.exceptions));
+  if (line.duration) sum.append(sep(), el("span", "step-dur", line.duration));
   const state = stepState(t);
   step.dataset.state = state;
   if (calls.dataset.state !== state) {
@@ -380,6 +382,9 @@ function refreshStep(step: HTMLElement) {
   }
 }
 
+// ChatView holds the log as a conversation, newest rows last. A resume can
+// resend a seq: the row is replaced in place. A tool_call's row is re-rendered
+// when its result or a decision lands, so a result never doubles its call.
 export class ChatView {
   private rows = new Map<number, HTMLElement>();
   private seqs: number[] = [];
@@ -436,8 +441,19 @@ export class ChatView {
         put(marker(ev));
         break;
       case "participant":
-      case "driver":
         put(sysline(ev));
+        break;
+      case "driver": {
+        // Never a breaker, even naming the viewer (which stays unfolded, as no plumbing).
+        const row = sysline(ev);
+        if (plumbing(ev, you)) row.dataset.plumbing = "1";
+        this.put(ev.seq, row, "member");
+        break;
+      }
+      case "approval_requested":
+      case "approval_decided":
+        // An approval is part of the step's work, not a turn of the conversation.
+        this.put(ev.seq, fallback(ev), "member");
         break;
       case "handoff":
         this.put(ev.seq, this.tools(handoff(ev), ev.seq), "break");
@@ -576,7 +592,7 @@ export class ChatView {
     if (step) {
       // A step without its owner hands its members to whatever holds the row before it.
       const box = this.box(i);
-      this.rehome(i, box, step);
+      this.rehome(i, box, box === this.el ? step : null);
       step.remove();
       this.settle(this.stepOf(box));
     } else if (flow === "break") {

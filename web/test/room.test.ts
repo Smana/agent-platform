@@ -147,7 +147,7 @@ describe("the room page", () => {
     steer().checked = true;
     p.last().recv(event(4, "participant", { principal: "agent:ikely2yk", change: "left" }));
     expect(p.app.querySelector(".now")?.textContent).toBe("No run · last: on it · 5 s ago");
-    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+    expect(p.app.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
     expect([shown(), steer().disabled]).toEqual([false, true]);
     expect(p.app.querySelector('input[name="delivery"]:checked')).toBeNull(); // a steer with no run: chosen again
     expect(p.app.querySelector("#delivery-notice")?.textContent).toMatch(/no run/i);
@@ -445,6 +445,13 @@ describe("the room page", () => {
     expect(p.app.querySelector("details.raw-events")!.contains(p.app.querySelector('textarea[name="text"]'))).toBe(false);
     expect(p.app.querySelector<HTMLElement>("section.controls")!.hidden).toBe(false);
     expect(p.app.querySelector<HTMLElement>("footer .composer")!.hidden).toBe(false);
+  });
+
+  it("keeps the Session toggle hidden until the first frame", () => {
+    const p = page();
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(true);
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0);
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(false);
   });
 
   it("puts Run and Driver behind a Session toggle in the dock, its line naming the driver and the run", () => {

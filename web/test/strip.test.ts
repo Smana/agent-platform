@@ -37,7 +37,7 @@ describe("the title strip", () => {
   it("hints at Run only to an owner or the driver", () => {
     const { h, strip } = mount();
     strip.update(input({ summary: undefined }));
-    expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+    expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
     strip.update(input({ summary: undefined, snap: { ...snap, you: { ...snap.you, role: "collaborator", driver: false } } }));
     expect(h.querySelector(".now-hint")).toBeNull();
   });
@@ -195,7 +195,7 @@ describe("the title strip", () => {
       const strip = mountStrip(h, at);
       strip.update(input({ running: false, ...over }));
       expect(h.querySelector(".now")?.textContent).toBe(want);
-      expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Run");
+      expect(h.querySelector(".now-hint")?.textContent).toBe("Start one under Session › Run");
       expect(h.querySelector(".chip-run")).toBeNull(); // the facts' run is over: no ageing chip
     });
     it("links the last activity to its row", () => {

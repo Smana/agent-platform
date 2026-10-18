@@ -36,7 +36,8 @@
 
   --destructive: #d22323;
   --destructive-foreground: #ffffff;
-  /* Text on the error chip's 10% tint: --destructive is 4.47:1 there. */
+  /* Destructive text where --destructive falls short: the deny button, the error status,
+   notices, on the card and on the dock's raised surface (4.5:1 on both). */
   --destructive-text: #d02323;
 
   /* Brand navy header/dark surfaces */
@@ -92,7 +93,8 @@
 
   --destructive: #f37171; /* was #f26363: 4.13:1 on the card, under AA */
   --destructive-foreground: #002538;
-  /* Text on the error chip's 10% tint: --destructive is 4.13:1 there. */
+  /* Destructive text where --destructive falls short: the deny button, the error status,
+   notices, on the card and on the dock's raised surface (4.62:1 on raised). */
   --destructive-text: #f47e7e;
 
   /* The header: the raised navy, so it lifts off the page (the brand's #002538 is
@@ -184,7 +186,7 @@ fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overfl
 .dock-meta { justify-content: flex-end; }
 .page-dock .status { color: var(--muted-foreground); font-family: ui-monospace, monospace; }
 .page-dock[data-status="live"] .status { color: var(--success-text); }
-.page-dock .notice { color: var(--destructive); overflow-wrap: anywhere; }
+.page-dock .notice { color: var(--destructive-text); overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .page-dock { grid-template-columns: minmax(0, 1fr); }
   .dock-meta { justify-content: space-between; }
@@ -350,6 +352,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .step-calls > summary::before { content: "▸"; color: var(--placeholder); }
 .step-calls[open] > summary::before { content: "▾"; }
 .step-exc { color: var(--warning-foreground); font-weight: 600; }
+.step-sep { color: var(--placeholder); }
 .step-dur { margin-left: auto; color: var(--placeholder); font-size: 12px; font-variant-numeric: tabular-nums; }
 /* Inside a step a call is a line, not a card: the rail groups them. */
 .step-body > .tool { background: transparent; box-shadow: none; margin: 0; }
@@ -401,7 +404,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow
 .members { margin: 0; padding-left: 18px; } .members li { overflow-wrap: anywhere; }
 .stop { margin: 0; } .stop code { font-family: ui-monospace, monospace; }
 .confirm { display: inline-flex; gap: 6px; }
-button.destructive { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
+button.destructive { color: var(--destructive-text); border-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
 input, select, textarea {
   font: inherit;
   background: var(--card); color: var(--card-foreground);

@@ -52,6 +52,7 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   // line says who drives and whether a run is on, so a closed toggle still answers both.
   const session = document.createElement("details");
   session.className = "session";
+  session.hidden = true; // until the first frame says whether the viewer has controls
   const sessionLine = document.createElement("summary");
   session.append(sessionLine, section);
   const showSession = () => {
