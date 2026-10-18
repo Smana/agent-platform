@@ -221,7 +221,7 @@ func fencesOf(s string) [][2]int {
 		}
 		if strings.HasPrefix(strings.TrimLeft(s[off:end], " \t"), "```") {
 			if in {
-				out = append(out, [2]int{start, end})
+				out, in = append(out, [2]int{start, end}), false
 			} else {
 				start, in = off, true
 			}

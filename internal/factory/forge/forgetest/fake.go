@@ -385,8 +385,9 @@ func (f *Fake) SetCommitChecks(sha string, cs ...forge.Check) {
 	f.commitChecks[sha] = cs
 }
 
-// SetFiles sets what Files returns: only the files a compare says changed, each side "" when
-// the file is absent there, as an added or deleted file reads on GitHub.
+// SetFiles sets what Files returns: only the files a compare says changed, the base side as of
+// the merge base, each side "" when the file is absent there, as an added or deleted file reads
+// on GitHub.
 func (f *Fake) SetFiles(base, head map[string]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
