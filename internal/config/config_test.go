@@ -157,7 +157,12 @@ func TestLoadRuns(t *testing.T) {
 	if c.Runs != runwatch.DefaultKind {
 		t.Fatalf("no runs block: %+v", c.Runs)
 	}
-	c, err = Load(write(t, valid+"runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"))
+	const native = "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"
+	// The xplane-run- issuer cannot authenticate a run-<id> ServiceAccount: refused at start.
+	if _, err := Load(write(t, valid+native)); err == nil || !strings.Contains(err.Error(), "runs") || !strings.Contains(err.Error(), "runIssuers") {
+		t.Fatalf("want a runs/runIssuers error, got %v", err)
+	}
+	c, err = Load(write(t, strings.Replace(valid, "agents:xplane-run-", "agents:run-", 1)+native))
 	if err != nil {
 		t.Fatal(err)
 	}

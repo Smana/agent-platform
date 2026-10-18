@@ -171,6 +171,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("runIssuers[%d] %s: subPattern must compile with one capture group (the runId)", i, is.Issuer))
 		}
 	}
+	if err := c.Runs.Validate(); err == nil {
+		errs = append(errs, c.runIssuerMatchesKind()...)
+	}
 	errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
 	for sub, id := range c.SystemPrincipals {
 		if !strings.HasPrefix(id, "system:") || id == "system:" {
@@ -185,6 +188,23 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("runs: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// runIssuerMatchesKind refuses a runs kind no runIssuers pattern recognises: its bridge tokens
+// would be denied at :8443 and the room would stay silent, with only authn denials as a trace.
+func (c *Config) runIssuerMatchesKind() []error {
+	const id = "aaaaaaaa"
+	sub := "system:serviceaccount:" + c.Runs.Namespace + ":" + c.Runs.NamePrefix + id
+	for _, is := range c.RunIssuers {
+		re, err := regexp.Compile(is.SubPattern)
+		if err != nil || re.NumSubexp() != 1 {
+			continue // reported above
+		}
+		if m := re.FindStringSubmatch(sub); m != nil && m[1] == id {
+			return nil
+		}
+	}
+	return []error{fmt.Errorf("runs / runIssuers: no runIssuers[].subPattern matches %q (namespace %q, namePrefix %q) and captures the run id", sub, c.Runs.Namespace, c.Runs.NamePrefix)}
 }
 
 func (h HumanConfig) validate() []error {
