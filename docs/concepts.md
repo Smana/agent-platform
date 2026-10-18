@@ -1,9 +1,28 @@
 # Concepts
 
-The factory turns a labelled issue into a narrated run; a **room** is where that run happens in the
-open. A room is one append-only, ordered log for a piece of work. Humans and agent runs are its
-participants. Everything they do, and everything that happens to them, becomes an event in that log
-with a gapless sequence number that only the broker assigns. The rest of this page names the parts.
+A room is a flight recorder and a group chat for one piece of agent work. While the run is live,
+you watch every step, steer the agent, and approve what it may not do alone. Afterwards the room
+stays: an ordered, redacted record that nobody can edit, which you audit, fork from any message, or
+hand to the next run. For example, you see the agent's `git push` wait for approval, approve it
+from the room, and a month later read exactly who approved what.
+
+## In one picture
+
+```mermaid
+flowchart LR
+  factory["The factory<br/>opens the room, posts the brief"] --> room
+  humans["Humans<br/>watch · steer · approve"] <--> room
+  subgraph run["A run's sandbox pod"]
+    agent["The agent"] --- bridge["Its bridge"]
+  end
+  bridge -->|"every step, as events"| room[("The room<br/>one ordered log")]
+  room -->|"steering, decisions"| bridge
+  agent -->|opens| pr["The pull request"]
+  room --> record["The record<br/>audit · fork · hand off"]
+```
+
+Everything that happens in a room is an event in its log, with a gapless sequence number that only
+the broker assigns. The rest of this page names the parts.
 
 ## Glossary
 
@@ -26,12 +45,12 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 
 | Term | Meaning | Where it lives |
 |---|---|---|
-| **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by the factory, the broker or the owner, never committed to Git | `Room` CR (`agents.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id ([reference](#reference-the-room-crd)); its log in Postgres |
+| **Room** | One session: its policy (owner, driver, members, approvals, retention, data class) and its log. Rooms are runtime objects, created by the factory, the broker or the owner, never committed to Git | `Room` CR (`agents.ogenki.io/v1alpha1`) in `agent-system`, named with a C2 id (8 lowercase base32 characters; [reference](#reference-the-room-crd)); its log in Postgres |
 | **Run** | One agent, one role, one task, one branch, with a deadline. It joins a room by naming it in `spec.roomRef`. One run is `Running` per room at a time | `AgentRun` claim (`cloud.ogenki.io`) in `agents` |
 | **Harness** | The agent loop inside the sandbox: the OpenHands agent-server on `127.0.0.1:8000` | The run's pod |
 | **Bridge** | `room-bridge`, a native sidecar in every run pod that has a `roomRef`. It polls the harness and pushes its events to the broker; it carries steering, interrupts and decisions back | The run's pod, namespace `agents` |
 | **Broker** | `room-broker`, the stateless service that owns rooms: it authenticates writers, redacts, sequences and stores events, and serves them | `agent-system` |
-| **Participant** | Anyone in a room: a human, a run, or a system principal. Joining and leaving are `participant` events | The log |
+| **Participant** | Anyone in a room: a human, a run, or a system component, each named by its principal (next row). Joining and leaving are `participant` events | The log |
 | **Principal** | A canonical identity: `agent:<runId>`, `human:<zitadel sub>` or `system:<component>`. The broker stamps it on every event from the authenticated credential | Every event's `actor.id` |
 | **C2 id** | 8 characters of lowercase unpadded base32, `[a-z2-7]{8}`. Room, run and task ids share the format, so `agent/<id>` branches match the merge gate | Names of rooms and runs |
 | **Run role** | What a run may do: `implementer`, `reviewer`, `tester` or `triager`. A policy input, not an identity | `AgentRun.spec.role`; an agent event's `actor.role` |
@@ -43,6 +62,8 @@ with a gapless sequence number that only the broker assigns. The rest of this pa
 | **Brief** | The fenced, bounded text the next run starts from: the last handoff and verdict, plus the queued messages, quoted as untrusted data | Built by the broker (`internal/brief`) |
 | **Approval** | A human decision on a pending harness action. Oversight, not a security boundary: a run's capabilities are fixed at creation. The first valid decision wins | `approval_requested`, `approval_decided` |
 | **Fork** | A new room copied from a prefix of another, events `1..N` with their `seq`, owned and driven by whoever forked it, with the messages still queued at that point | New `Room` annotated `agents.ogenki.io/forked-from: <room>@<seq>`; `state_changed{forked_from}` |
+| **Step** | An agent's message and the tool calls it ran next, shown as one collapsible line on the room page | The room page; built from `message`, `tool_call` and `tool_result` events |
+| **Call line** | One tool call in a step: its command, its status, and its output behind the toggle | The room page; one `tool_call` and its `tool_result` |
 
 ### The log
 

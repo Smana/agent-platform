@@ -1,5 +1,8 @@
 web/node_modules/
 web/preview/preview.js
 web/preview/full.js
+web/preview/demo.js
+web/.demo-site/
+_site/
 __pycache__/
 *.pyc

@@ -1,0 +1,59 @@
+{
+  "apiVersion": "summary/v1",
+  "room": "k7m2qp4x",
+  "url": "https://rooms.example/r/k7m2qp4x",
+  "status": {
+    "phase": "AwaitingHuman",
+    "run": null,
+    "budget": {
+      "usedTokens": 412377,
+      "limitTokens": 1500000
+    },
+    "pr": {
+      "number": 214,
+      "url": "https://github.com/acme/billing-api/pull/214"
+    },
+    "issue": {
+      "number": 212,
+      "url": "https://github.com/acme/billing-api/issues/212",
+      "title": "Retry the meter's gateway call on a 429"
+    },
+    "lastVerdict": {
+      "by": "agent:p9tz3b6d",
+      "verdict": "approve",
+      "at": "2026-10-14T09:25:03Z"
+    },
+    "reason": "the reviewer approved",
+    "next": "a maintainer merges the pull request"
+  },
+  "needsYou": [
+    {
+      "kind": "merge",
+      "id": "pr-214",
+      "what": "PR #214 is approved and waits for a maintainer",
+      "url": "https://github.com/acme/billing-api/pull/214"
+    }
+  ],
+  "actions": [],
+  "notes": {
+    "untrusted": true,
+    "items": [
+      {
+        "at": "2026-10-14T09:12:58Z",
+        "run": "w4hn8c2r",
+        "text": "Read #212: the meter gives up on the first 429 from the gateway."
+      },
+      {
+        "at": "2026-10-14T09:17:20Z",
+        "run": "w4hn8c2r",
+        "text": "Retry on 429 with a capped backoff; the meter's tests pass."
+      },
+      {
+        "at": "2026-10-14T09:21:36Z",
+        "run": "w4hn8c2r",
+        "text": "Draft PR #214 opened; handing it to a reviewer."
+      }
+    ]
+  },
+  "cursor": "seq:93"
+}

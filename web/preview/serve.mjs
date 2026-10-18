@@ -6,10 +6,11 @@
 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("..", import.meta.url)); // web/
+// web/, or SERVE_ROOT: the built demo site (npm run demo).
+const root = process.env.SERVE_ROOT ? resolve(process.env.SERVE_ROOT) + sep : fileURLToPath(new URL("..", import.meta.url));
 const port = Number(process.env.PORT ?? 4180);
 
 const types = {
@@ -22,7 +23,8 @@ const types = {
 
 createServer((req, res) => {
   const path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
-  const file = join(root, path);
+  let file = join(root, path);
+  if (file.startsWith(root) && existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.html");
   if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {
     res.writeHead(404).end("not found");
     return;
@@ -30,6 +32,10 @@ createServer((req, res) => {
   res.writeHead(200, { "content-type": types[extname(file)] ?? "application/octet-stream" });
   createReadStream(file).pipe(res);
 }).listen(port, "127.0.0.1", () => {
+  if (process.env.SERVE_ROOT) {
+    console.log(`live demo: http://127.0.0.1:${port}/`);
+    return;
+  }
   console.log(`room log preview:  http://127.0.0.1:${port}/preview/preview.html   (add ?live to replay)`);
   console.log(`room page preview: http://127.0.0.1:${port}/preview/full.html   (add ?theme=dark for the dark palette)`);
 });

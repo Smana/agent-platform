@@ -1,0 +1,18 @@
+{
+  "roomId": "k7m2qp4x",
+  "phase": "Active",
+  "driver": "system:factory",
+  "driverEpoch": 2,
+  "dataClass": "internal",
+  "you": {
+    "principal": "human:418263950381",
+    "role": "collaborator",
+    "approver": true,
+    "driver": false,
+    "webUI": true
+  },
+  "runs": [],
+  "queue": [],
+  "approvals": [],
+  "sealed": false
+}
