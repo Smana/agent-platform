@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +49,7 @@ func startEnv(t *testing.T) env {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS unset: run `task test`, which sets it")
 	}
+	ctrl.SetLogger(logr.Discard())
 	e := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd"), "testdata"}, ErrorIfCRDPathMissing: true}
 	cfg, err := e.Start()
 	if err != nil {
