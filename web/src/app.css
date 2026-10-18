@@ -196,6 +196,12 @@ fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overfl
 }
 /* Not live: under the strip, why and when the page retries. */
 .banner { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
+/* The live demo (web/preview/demo.ts): its banner, and the replay bar as the dock's first row. */
+.demo-banner a { color: inherit; text-decoration: underline; }
+.replay-bar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.replay-bar button, .replay-bar select { min-height: 40px; }
+.replay-bar select { font: inherit; background: var(--card); color: var(--card-foreground); border: 1px solid var(--input); border-radius: 6px; padding: 0 8px; }
+.replay-progress { color: var(--muted-foreground); font-family: ui-monospace, monospace; }
 main { padding: 8px 16px 16px; max-width: 100%; }
 
 button {

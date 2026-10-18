@@ -17,6 +17,7 @@ import { mountThemeButton, type ThemeController } from "../src/theme";
 export interface PreviewPage {
   apply(e: RoomEvent): void;
   settle(): void; // refresh needs, controls, composer, strip and notes
+  setSummary(s: Summary): void; // the summary the next settle() shows
   say(text: string): void; // the dock's act notice
   setStatus(text: string): void;
   header: HTMLElement;
@@ -26,14 +27,16 @@ export interface PreviewPage {
 export interface PreviewOptions {
   snap: Snapshot;
   summary: Summary;
-  count: number; // the events the page will receive, for the state's starting point
+  count: number; // the seq the snapshot stands at: events at or below it are already in it
   nothingSent: string; // what an act says, since it goes nowhere
   sessionOpen: boolean;
+  sessionLabel?: string; // the session toggle's text
   theme: ThemeController; // initialised by the caller, so a ?theme override can follow it
 }
 
 export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPage {
-  const { snap, summary } = o;
+  const { snap } = o;
+  let summary = o.summary;
   const header = document.createElement("header");
   header.className = "page-header";
   const strip = mountStrip(header);
@@ -49,7 +52,7 @@ export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPa
   const session = document.createElement("details");
   session.className = "session";
   session.open = o.sessionOpen;
-  session.append(Object.assign(document.createElement("summary"), { textContent: "Session · driver: you · a run is on" }), section);
+  session.append(Object.assign(document.createElement("summary"), { textContent: o.sessionLabel ?? "Session · driver: you · a run is on" }), section);
   const forkPanel = document.createElement("section");
   const footer = document.createElement("footer");
   footer.className = "page-dock";
@@ -97,6 +100,7 @@ export function mountPreviewPage(app: HTMLElement, o: PreviewOptions): PreviewPa
       strip.update({ roomId: summary.room, snap, phase: state.phase, driver: state.driver, sealedBy: state.closed, sealed: state.sealed,
         summary, needs: needs.count(), connection: "live", now: state.latest(), running: state.running(), ran: state.ran() });
     },
+    setSummary(s) { summary = s; },
     say,
     setStatus(text) { status.textContent = text; },
     header,
