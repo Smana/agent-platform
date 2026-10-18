@@ -90,6 +90,26 @@ func TestHeadAndVerdictMustBeFresh(t *testing.T) {
 	}
 }
 
+// A closing fence ends its block: each block is its own range, and only an unclosed one runs
+// to the end of the text (cloud-native-ref#2517).
+func TestFencesOf(t *testing.T) {
+	for name, c := range map[string]struct {
+		s    string
+		want [][2]int
+	}{
+		"two blocks":            {"```\nx\n```\ntext\n```\ny\n```\n", [][2]int{{0, 9}, {15, 24}}},
+		"indented blocks":       {"- a\n  ```\n  x\n  ```\n- b\n\t```\n\t```", [][2]int{{4, 19}, {24, 33}}},
+		"unclosed at EOF":       {"a\n```\nb", [][2]int{{2, 7}}},
+		"closed, then unclosed": {"```\n```\nt\n```\nu", [][2]int{{0, 7}, {10, 15}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := fencesOf(c.s); !slices.Equal(got, c.want) {
+				t.Fatalf("fencesOf = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // R52's LinksOnly: a docs-links or revert diff may move link targets and nothing else.
 func TestLinksOnly(t *testing.T) {
 	one := func(s string) map[string]string { return map[string]string{testFile: s} }
@@ -111,6 +131,13 @@ func TestLinksOnly(t *testing.T) {
 		"a new external host":             {"[a](https://example.com/x)", "[a](https://evil.example/x)", false},
 		"a javascript target":             {"[a](https://example.com/x)", "[a](javascript:alert(1))", false},
 		"a link added":                    {"text.", "text. [a](new.md)", false},
+		// cloud-native-ref#2517: a code block above the links must not fence everything after it.
+		"a retarget after a block":           {"```\nx\n```\n[a](docs/old.md)", "```\nx\n```\n[a](docs/new.md)", true},
+		"a retarget between two blocks":      {"```\nx\n```\n[a](old.md)\n```\ny\n```", "```\nx\n```\n[a](new.md)\n```\ny\n```", true},
+		"a retarget after two blocks":        {"```\nx\n```\n```\ny\n```\n[a](old.md)", "```\nx\n```\n```\ny\n```\n[a](new.md)", true},
+		"a retarget after a list's block":    {"- step:\n  ```sh\n  ls\n  ```\n[a](old.md)", "- step:\n  ```sh\n  ls\n  ```\n[a](new.md)", true},
+		"a retarget in a list's block":       {"- step:\n  ```\n  [a](old.md)\n  ```\n", "- step:\n  ```\n  [a](new.md)\n  ```\n", false},
+		"a retarget after an unclosed fence": {"```\nx\n[a](old.md)", "```\nx\n[a](new.md)", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, why := LinksOnly(one(c.base), one(c.headText))
