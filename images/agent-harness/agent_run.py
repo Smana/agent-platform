@@ -52,8 +52,10 @@ MAX_POLL_ERRORS = 5
 # token shape. An injected agent can print its token into a command or its final message,
 # and these lines reach VictoriaLogs, so both are redacted before any print.
 TOKEN_CACHE = os.environ.get("GIT_TOKEN_CACHE", "/run/agent/git/token.json")
-GITHUB_TOKEN = re.compile(r"gh[posu]_[A-Za-z0-9_]{20,}")
+# File mode (adoption 3a) adds the user's fine-grained PAT and provider key: github_pat_ shape, and the files' values.
+GITHUB_TOKEN = re.compile(r"gh[posu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}")
 REDACTED = "[REDACTED:github-token]"
+REDACTED_KEY = "[REDACTED:model-key]"
 # One line per model-call retry, written by agent-server (site/sitecustomize.py, #99). /tmp is the
 # pod's emptyDir; the agent can write there too, so the count is a signal, never a control.
 RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
@@ -67,6 +69,14 @@ def redact(text: str) -> str:
         cached = None
     if cached:
         text = text.replace(cached, REDACTED)
+    for var, marker in (("GIT_TOKEN_FILE", REDACTED), ("LLM_API_KEY_FILE", REDACTED_KEY)):
+        try:
+            with open(os.environ.get(var) or os.devnull) as f:
+                value = f.read().strip()
+        except OSError:
+            value = ""
+        if value:
+            text = text.replace(value, marker)
     return GITHUB_TOKEN.sub(REDACTED, text)
 
 
