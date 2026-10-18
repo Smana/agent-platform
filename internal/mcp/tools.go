@@ -45,7 +45,9 @@ const (
 )
 
 var (
-	commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+	// commitRE is a full sha, never an abbreviation: the factory's merge gate compares a handoff's
+	// commit exactly with the pull request's head (R02), and a prefix match would trust 28 bits.
+	commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	allRoles = []string{"implementer", "reviewer", "tester", "triager"}
 )
 
@@ -139,8 +141,8 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				return out, err
 			}},
 		{Name: "room_handoff", Roles: []string{"implementer", "tester", "triager"}, Action: policy.Chat,
-			Description: "Hand the work to the next role, with the commit you pushed. Call it once, then finish.",
-			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["toRole","summary","commit"],"properties":{"toRole":{"enum":["implementer","reviewer","tester","triager"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{7,40}$"}}}`),
+			Description: "Hand the work to the next role, with the commit you pushed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). Call it once, then finish.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["toRole","summary","commit"],"properties":{"toRole":{"enum":["implementer","reviewer","tester","triager"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"}}}`),
 			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 				var a struct {
 					ToRole  string `json:"toRole"`
@@ -148,14 +150,14 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					Commit  string `json:"commit"`
 				}
 				if decodeArgs(args, &a) != nil || !isRole(a.ToRole) || !text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
-					return nil, argError("toRole is implementer, reviewer, tester or triager; summary 1 to 8192 bytes; commit a lowercase hex sha of 7 to 40")
+					return nil, argError("toRole is implementer, reviewer, tester or triager; summary 1 to 8192 bytes; commit the full 40-hex sha from git rev-parse HEAD, never an abbreviation")
 				}
 				return appendAs(ctx, c, envelope.Handoff, envelope.HandoffPayload{FromRole: c.Run.Role, ToRole: a.ToRole,
 					Summary: a.Summary, Commit: a.Commit, Branch: c.Run.Branch})
 			}},
 		{Name: "room_verdict", Roles: []string{"reviewer", "tester"}, Action: policy.Chat,
-			Description: "Record your review: approve or changes, a summary, and the commit you reviewed. A verdict is not a merge.",
-			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["verdict","summary","commit"],"properties":{"verdict":{"enum":["approve","changes"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{7,40}$"}}}`),
+			Description: "Record your review: approve or changes, a summary, and the commit you reviewed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). A verdict is not a merge.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["verdict","summary","commit"],"properties":{"verdict":{"enum":["approve","changes"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"}}}`),
 			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 				var a struct {
 					Verdict string `json:"verdict"`
@@ -164,7 +166,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				if decodeArgs(args, &a) != nil || (a.Verdict != "approve" && a.Verdict != "changes") ||
 					!text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
-					return nil, argError("verdict is approve or changes; summary 1 to 8192 bytes; commit a lowercase hex sha of 7 to 40")
+					return nil, argError("verdict is approve or changes; summary 1 to 8192 bytes; commit the full 40-hex sha from git rev-parse HEAD, never an abbreviation")
 				}
 				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindReviewVerdict,
 					Text: a.Summary, Verdict: a.Verdict, Commit: a.Commit, Delivery: envelope.DeliveryNone,
