@@ -13,7 +13,7 @@ import (
 func Rules(r *v1alpha1.AgentRun, runID string) string {
 	s := r.Spec
 	branch := Branch(r, runID)
-	out := fmt.Sprintf("Platform rules for run %s (%s) on %s. The platform enforces each of them independently of you.\n"+
+	out := fmt.Sprintf("Platform rules for run %s (%s) on %s. Follow each of them.\n"+
 		"1. Work in /workspace/repo, cloned from %s at %s.\n", runID, s.Role, s.Repository, s.Repository, s.BaseRef)
 	if s.Role == "implementer" {
 		out += fmt.Sprintf("2. Push only to %s. Never push to any other branch, and never merge.\n"+
