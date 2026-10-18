@@ -72,7 +72,7 @@ var (
 func TestVerdictIsSP3sReservedMessage(t *testing.T) {
 	log := &memLog{}
 	out, err := tool(tools(log), "room_verdict").Call(t.Context(), reviewer,
-		json.RawMessage(`{"verdict":"changes","summary":"Missing test for the new flag.","commit":"4be1c9d"}`))
+		json.RawMessage(`{"verdict":"changes","summary":"Missing test for the new flag.","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestVerdictIsSP3sReservedMessage(t *testing.T) {
 	}
 	var p envelope.MessagePayload
 	_ = json.Unmarshal(d.Payload, &p)
-	if p.Kind != envelope.KindReviewVerdict || p.Verdict != "changes" || p.Commit != "4be1c9d" ||
+	if p.Kind != envelope.KindReviewVerdict || p.Verdict != "changes" || p.Commit != "4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3" ||
 		p.Text != "Missing test for the new flag." || p.Delivery != envelope.DeliveryNone {
 		t.Fatalf("payload = %+v", p)
 	}
@@ -109,22 +109,26 @@ func TestPostIsAChatDeliveredToNobody(t *testing.T) {
 func TestHandoffCarriesTheBranchAndValidates(t *testing.T) {
 	log := &memLog{}
 	h := tool(tools(log), "room_handoff")
-	if _, err := h.Call(t.Context(), impl, json.RawMessage(`{"toRole":"reviewer","summary":"Done","commit":"4be1c9d0"}`)); err != nil {
+	if _, err := h.Call(t.Context(), impl, json.RawMessage(`{"toRole":"reviewer","summary":"Done","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`)); err != nil {
 		t.Fatal(err)
 	}
 	d := log.drafts[0]
 	if d.Type != envelope.Handoff || d.Actor.Role != "implementer" {
 		t.Fatalf("draft = %+v", d)
 	}
-	if got := string(d.Payload); got != `{"fromRole":"implementer","toRole":"reviewer","summary":"Done","commit":"4be1c9d0","branch":"agent/3kq7x2ma"}` {
+	if got := string(d.Payload); got != `{"fromRole":"implementer","toRole":"reviewer","summary":"Done","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3","branch":"agent/3kq7x2ma"}` {
 		t.Fatalf("payload = %s", got)
 	}
 	for _, bad := range []string{
-		`{"toRole":"boss","summary":"x","commit":"4be1c9d"}`,
+		`{"toRole":"boss","summary":"x","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`,
 		`{"toRole":"reviewer","summary":"x","commit":"main"}`,
-		`{"toRole":"reviewer","summary":"","commit":"4be1c9d"}`,
+		`{"toRole":"reviewer","summary":"","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`,
 		`{"toRole":"reviewer","summary":"x","commit":"4BE1C9D"}`,
 		`{"toRole":"reviewer","summary":"x","commit":"4be1c9"}`,
+		// An abbreviated sha can never equal the pull request's head, which the merge gate compares
+		// exactly (R02): it is refused here, where the agent can still correct it.
+		`{"toRole":"reviewer","summary":"x","commit":"c3119614"}`,
+		`{"toRole":"reviewer","summary":"x","commit":"` + strings.Repeat("a", 39) + `"}`,
 		`{"toRole":"reviewer","summary":"x","commit":"` + strings.Repeat("a", 41) + `"}`,
 	} {
 		if _, err := h.Call(t.Context(), impl, json.RawMessage(bad)); err == nil {
@@ -160,12 +164,14 @@ func TestArgumentsAreValidated(t *testing.T) {
 		{"not an object", "room_post", `"hi"`, false},
 		{"trailing data", "room_post", `{"text":"hi"} {"text":"again"}`, false},
 		{"a number for text", "room_post", `{"text":1}`, false},
-		{"summary at the cap", "room_verdict", `{"verdict":"approve","summary":"` + long(8192) + `","commit":"4be1c9d"}`, true},
-		{"summary over the cap", "room_verdict", `{"verdict":"approve","summary":"` + long(8193) + `","commit":"4be1c9d"}`, false},
-		{"summary with a control character", "room_verdict", `{"verdict":"approve","summary":"a\u0007","commit":"4be1c9d"}`, false},
-		{"an unknown verdict", "room_verdict", `{"verdict":"merge","summary":"x","commit":"4be1c9d"}`, false},
-		{"a verdict in capitals", "room_verdict", `{"verdict":"APPROVE","summary":"x","commit":"4be1c9d"}`, false},
-		{"a handoff summary with a control character", "room_handoff", `{"toRole":"reviewer","summary":"a\u0000","commit":"4be1c9d"}`, false},
+		{"summary at the cap", "room_verdict", `{"verdict":"approve","summary":"` + long(8192) + `","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, true},
+		{"summary over the cap", "room_verdict", `{"verdict":"approve","summary":"` + long(8193) + `","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, false},
+		{"summary with a control character", "room_verdict", `{"verdict":"approve","summary":"a\u0007","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, false},
+		{"an abbreviated commit", "room_verdict", `{"verdict":"approve","summary":"x","commit":"c3119614"}`, false},
+		{"a 39-hex commit", "room_verdict", `{"verdict":"approve","summary":"x","commit":"` + strings.Repeat("a", 39) + `"}`, false},
+		{"an unknown verdict", "room_verdict", `{"verdict":"merge","summary":"x","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, false},
+		{"a verdict in capitals", "room_verdict", `{"verdict":"APPROVE","summary":"x","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, false},
+		{"a handoff summary with a control character", "room_handoff", `{"toRole":"reviewer","summary":"a\u0000","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`, false},
 		{"a negative sinceSeq", "room_read", `{"sinceSeq":-1}`, false},
 		{"a fractional limit", "room_read", `{"limit":1.5}`, false},
 		{"no read arguments", "room_read", ``, true},
@@ -194,8 +200,8 @@ func TestArgumentsAreValidated(t *testing.T) {
 func TestEveryWriteIsRedactedBeforeTheAppend(t *testing.T) {
 	for name, args := range map[string]string{
 		"room_post":    `{"text":"token SECRET"}`,
-		"room_handoff": `{"toRole":"reviewer","summary":"token SECRET","commit":"4be1c9d"}`,
-		"room_verdict": `{"verdict":"approve","summary":"token SECRET","commit":"4be1c9d"}`,
+		"room_handoff": `{"toRole":"reviewer","summary":"token SECRET","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`,
+		"room_verdict": `{"verdict":"approve","summary":"token SECRET","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			log := &memLog{}
@@ -373,6 +379,21 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		if !json.Valid(t2.InputSchema) || t2.Description == "" {
 			t.Errorf("%s: schema or description missing", t2.Name)
 		}
+		// The schema is what the agent reads before calling: it must ask for the full sha the gate
+		// compares, and the description must say how to get it.
+		if t2.Name == "room_handoff" || t2.Name == "room_verdict" {
+			var sc struct {
+				Properties struct {
+					Commit struct{ Pattern string } `json:"commit"`
+				} `json:"properties"`
+			}
+			if json.Unmarshal(t2.InputSchema, &sc) != nil || sc.Properties.Commit.Pattern != "^[0-9a-f]{40}$" {
+				t.Errorf("%s: commit pattern = %q, want the full 40-hex sha", t2.Name, sc.Properties.Commit.Pattern)
+			}
+			if !strings.Contains(t2.Description, "git rev-parse HEAD") {
+				t.Errorf("%s: description does not say how to get the full sha: %q", t2.Name, t2.Description)
+			}
+		}
 	}
 }
 
@@ -382,13 +403,13 @@ func TestToolsBehindTheServer(t *testing.T) {
 	log := &memLog{}
 	s, _ := testServer(watcher(t, "reviewer"), newClock())
 	s.Tools = tools(log)
-	res, text := callWith(t, s, "room_verdict", map[string]any{"verdict": "approve", "summary": "LGTM", "commit": "4be1c9d"})
+	res, text := callWith(t, s, "room_verdict", map[string]any{"verdict": "approve", "summary": "LGTM", "commit": "4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"})
 	if res["isError"] == true || text != `{"seq":1}` || log.drafts[0].RoomID != "3kq7x2ma" {
 		t.Fatalf("%v %q", res, text)
 	}
 	s, _ = testServer(watcher(t, "implementer"), newClock())
 	s.Tools = tools(log)
-	if res, _ := callWith(t, s, "room_verdict", map[string]any{"verdict": "approve", "summary": "LGTM", "commit": "4be1c9d"}); res["isError"] != true || len(log.drafts) != 1 {
+	if res, _ := callWith(t, s, "room_verdict", map[string]any{"verdict": "approve", "summary": "LGTM", "commit": "4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}); res["isError"] != true || len(log.drafts) != 1 {
 		t.Fatalf("an implementer's verdict: %v", res)
 	}
 }
@@ -405,7 +426,7 @@ func callWith(t *testing.T, s *Server, name string, args any) (map[string]any, s
 
 func TestVerdictNamesThePullRequestUnderReview(t *testing.T) {
 	const prURL = "https://github.com/Smana/cloud-native-ref/pull/12"
-	args := json.RawMessage(`{"verdict":"approve","summary":"Looks right.","commit":"4be1c9d"}`)
+	args := json.RawMessage(`{"verdict":"approve","summary":"Looks right.","commit":"4be1c9d0e8a7f6b5c4d3e2f1a0b9c8d7e6f5a4b3"}`)
 	for _, tc := range []struct {
 		name, repo, task, want string
 	}{
