@@ -141,6 +141,28 @@ func TestAStalledRevertIsDisarmed(t *testing.T) {
 	}
 }
 
+// Live on gcp-0 (#2521): agent-merge keeps native auto-merge BLOCKED, so a green revert is merged
+// by the merger at its head, as the decision path merges.
+func TestAGreenRevertIsMergedAtItsHead(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseVerifying)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: "3buqdlot"}, &tk)
+	merged := metav1.NewTime(now)
+	tk.Status.PullRequest.MergeCommitSHA, tk.Status.PullRequest.AutoMerged, tk.Status.PullRequest.MergedAt = "m1", true, &merged
+	_ = g.c.Status().Update(t.Context(), &tk)
+	red := green("SUCCESS")
+	red.Runs[0].State = "FAILURE"
+	g.f.SetCommitChecks("m1", red.Runs...)
+	got := g.reconcile(t, "3buqdlot", 1)
+	rv := got.Status.PullRequest.RevertNumber
+	g.f.SetPR(forge.PR{Number: rv, NodeID: "PR_revert", State: "OPEN", HeadSHA: "r1"})
+	g.f.SetChecks(rv, green("SUCCESS"))
+	got = g.reconcile(t, "3buqdlot", 1)
+	if a := g.f.Armed(); !slices.Contains(a, "PR_revert r1") || !slices.Contains(got.Status.Narrated, "revert-end-merged") || len(g.f.Disarmed()) != 0 {
+		t.Fatalf("%v %v %v", a, got.Status.Narrated, g.f.Disarmed())
+	}
+}
+
 // R32 (owner, 2026-09-27): before the wave the gate narrates what it would do and does nothing.
 func TestShadowNarratesAndNeverArms(t *testing.T) {
 	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)

@@ -671,6 +671,11 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 	case pr.State == "MERGED" || pr.State == "CLOSED":
 		t.Status.Narrated = append(t.Status.Narrated, "revert-end-"+strings.ToLower(pr.State))
 		return nil
+	}
+	if merged, err := r.mergeGreenRevert(ctx, t, pr); err != nil || merged {
+		return err
+	}
+	switch {
 	case t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= r.repo(t).Merge.VerifyFor.Duration:
 		if err := r.merger(ctx).DisableAutoMerge(ctx, pr.NodeID); err != nil {
 			return err
@@ -678,6 +683,29 @@ func (r *Reconciler) revertWatch(ctx context.Context, t *v1alpha1.Task) error {
 		return r.narrator(ctx).Post(ctx, t, ref.Number, narrate.RevertStalled(t, ref.RevertNumber))
 	}
 	return nil
+}
+
+// mergeGreenRevert merges a green revert at its head, as the decision path merges (R02). Native
+// auto-merge alone never fires where agent-merge restricts updates to main: GitHub reads the PR as
+// BLOCKED for every actor, so it would stay armed until the watch disarms it.
+func (r *Reconciler) mergeGreenRevert(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
+	rc := r.repo(t)
+	if !rc.Classes["revert"].Live {
+		return false, nil
+	}
+	checks, err := r.merger(ctx).PullRequestChecks(ctx, pr.Number)
+	if err != nil || CIState(checks, rc.Merge.RequiredChecks) != "SUCCESS" {
+		return false, err
+	}
+	switch err := r.merger(ctx).Merge(ctx, pr.NodeID, pr.HeadSHA); {
+	case err == nil:
+		t.Status.Narrated = append(t.Status.Narrated, "revert-end-merged")
+		return true, nil
+	case errors.Is(err, forge.ErrHeadMoved), errors.Is(err, forge.ErrNotMergeable):
+		return false, nil // the stall clock still runs: a revert GitHub refuses goes to a maintainer
+	default:
+		return false, err
+	}
 }
 
 // paused: the circuit breaker (§6.4, extended by R41 for review G5). It reads outcomes, not the
