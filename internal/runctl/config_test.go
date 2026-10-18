@@ -95,7 +95,10 @@ func TestInvalid(t *testing.T) {
 		"bad id":       {run("run-ABCDEFGH"), "namePrefix"},
 		"other ns":     {run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Namespace = "default" }), "namespace"},
 		"suspendable":  {run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.Suspendable = true }), "suspendable"},
-		"internal":     {run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.DataClass = "internal" }), "internal"},
+		"bogus profile": {run("run-abcdefgh", func(r *v1alpha1.AgentRun) {
+			r.Spec.Egress.Profiles = []v1alpha1.AgentRunEgressProfile{"bogus"}
+		}), "egress"},
+		"internal": {run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.DataClass = "internal" }), "internal"},
 	} {
 		if got := c.Invalid(tc.r); (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 			t.Errorf("%s: Invalid = %q, want it to mention %q", name, got, tc.want)

@@ -135,15 +135,15 @@ func (c Config) Invalid(r *v1alpha1.AgentRun) string {
 	case r.Namespace != c.Namespace:
 		return fmt.Sprintf("runs live in namespace %q", c.Namespace)
 	case r.Spec.Suspendable:
-		return "suspendable runs need cloud-native-ref's runtime"
+		return "spec.suspendable runs need cloud-native-ref's runtime"
 	case r.Spec.DataClass == "internal":
-		return "internal runs need the model gateway, which this runtime does not have"
+		return "spec.dataClass internal needs the model gateway, which this runtime does not have"
 	case c.RuntimeClassName == "" && !c.AllowUnsandboxed:
 		return "runtimeClassName is empty and allowUnsandboxed is false: refusing to run unsandboxed"
 	}
 	for _, p := range r.Spec.Egress.Profiles {
 		if _, ok := c.EgressProfiles[string(p)]; !ok {
-			return fmt.Sprintf("egress profile %q is not configured", p)
+			return fmt.Sprintf("spec.egress.profiles: profile %q is not configured", p)
 		}
 	}
 	return ""
