@@ -1,24 +1,66 @@
 # agent-platform
 
-**agent-platform** runs coding agents under human oversight and keeps the record. Label a GitHub
-issue `factory/ready` and **agent-factory** triages it, starts sandboxed agent runs that open the pull
-request, narrates each step on the issue and stops at its budget. Every run streams into a
-**collaboration room**: an append-only, redacted Postgres log that outlives the pod, which
-you watch, steer, approve and fork in the web UI, or watch, post, queue and fork from `roomctl` in a terminal. Four binaries in one
-repo (`room-broker`, `room-bridge`, `agent-factory`, `roomctl`) plus the `agent-harness` image,
-released together and pinned by digest. Built for one maintainer's Kubernetes platform
-([cloud-native-ref](https://github.com/Smana/cloud-native-ref)); the core carries no platform
-constants.
+**Run coding agents on your Kubernetes cluster without trusting them.**
 
-| Why | In one line | More |
-|---|---|---|
-| A factory | Work you do not want to babysit, sandboxed, reviewed and budgeted, under its own identity | [the platform's agents overview](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/agents/_index.md) |
-| A room | The transcript, handoffs and decisions outlive the sandbox, and nobody can rewrite them | [docs/room-log.md](docs/room-log.md) |
-| Humans in the loop | Approvals, steering and the merge gate sit outside the sandbox; the agent is not a trusted component | [docs/security.md](docs/security.md) |
+- **Sandboxed:** every run is an isolated pod holding only short-lived, scoped credentials, inside a budget it cannot raise.
+- **Supervised:** approvals, steering and the merge gate sit outside the sandbox, with humans.
+- **On the record:** every run streams into a room that nobody can rewrite, the agent included.
 
-**Status:** v0.11.0, in daily use on one cloud for one public repository, with the merge gate in
-shadow. What is proven live and what comes next is on the platform's
-[status page](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/status.md).
+<a href="https://smana.github.io/agent-platform/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/room-dark.png">
+    <img alt="A room replaying an agent run: steps of tool calls, a denied command, an approval, the composer" src="docs/assets/room-light.png" width="800">
+  </picture>
+</a>
+
+**[Watch a run in the live demo →](https://smana.github.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
+
+## What's a room?
+
+A room is a flight recorder and a group chat for one piece of agent work. While the run is live,
+you watch every step, steer the agent, and approve what it may not do alone. Afterwards the room
+stays: an ordered, redacted record that nobody can edit, which you audit, fork from any message, or
+hand to the next run.
+
+Why you can trust that record:
+
+- **Append-only.** The broker's database role can insert and read events, never update or delete
+  them ([the room log](docs/room-log.md#the-guarantees)).
+- **Redacted first.** Secrets are detected and removed before an event is stored, logged or
+  counted ([security](docs/security.md)).
+- **Attributed.** Every event carries an identity the broker stamped from a verified credential,
+  never one the sender claimed ([principals](docs/security.md)).
+
+## How it works
+
+```mermaid
+flowchart LR
+  issue["Issue<br/>factory/ready"] --> triage["Triage<br/>tier · budget"] --> run["Sandboxed run<br/>gVisor pod"]
+  run --> room[("Room<br/>live · permanent")]
+  run --> pr["Pull request"] --> merge{"Human merge"}
+```
+
+1. **Issue.** A maintainer labels an issue `factory/ready`. The same label from anyone else starts nothing.
+2. **Triage.** The factory picks the task's template and its tier, which sets the model, the deadline and the token budget, once.
+3. **Sandboxed run.** Each agent runs in its own gVisor pod behind a default-deny network policy, with short-lived credentials minted for that run alone.
+4. **Room.** The run streams every step into its room: live while it works, kept after it ends.
+5. **Pull request.** The implementer run opens the pull request on an `agent/<task>` branch, and a reviewer run gives its verdict.
+6. **Human merge.** A maintainer merges. Only a low-risk class the config marks `live` merges itself, after every check holds; a `shadow` class is decided the same way and never merged.
+
+## Who it's for
+
+For platform teams who want coding agents on their cluster, under their own rules.
+
+Not yet for: a laptop tool or a hosted service.
+
+## Status
+
+v0.15.2, in daily use on one cloud for one public repository, with the merge gate in shadow. It
+runs today on [cloud-native-ref](https://github.com/Smana/cloud-native-ref); a portable install for
+any Kubernetes cluster is the next milestone. What is proven live and what comes next is on the
+platform's [status page](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/status.md).
+
+## Start here
 
 | You are | Start at |
 |---|---|
@@ -28,91 +70,8 @@ shadow. What is proven live and what comes next is on the platform's
 | Operating a cluster | [Integration](docs/integration.md), then [Operations](docs/operations.md) |
 | Changing the code | [AGENTS.md](AGENTS.md), then [Development](docs/development.md) |
 
-Every page is indexed in [docs/](docs/README.md). The programme's sub-project codes, where you meet
-them in the specs: SP2 is the rooms, SP3 the factory.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  gh[GitHub issue · factory/ready] --> factory[agent-factory<br/>Task reconciler · meter · kill switch]
-  factory -->|AgentRun| run
-  subgraph run["AgentRun pod · gVisor"]
-    harness[agent-harness<br/>OpenHands] --- bridge[room-bridge]
-  end
-  bridge -->|":8443 TLS"| broker[room-broker<br/>log · Room controller · web UI]
-  factory -->|":8443 system API"| broker
-  broker --> pg[("Postgres<br/>append-only log")]
-  human[Browser] --> proxy[oauth2-proxy]
-  cli[roomctl] --> proxy
-  proxy -->|":8080"| broker
-  harness -.->|"room_* tools · :8090"| broker
-  harness -->|opens the PR| gh
-  factory -->|narrates| gh
-```
-
-| Port | Binary | Who calls it |
-|---|---|---|
-| `:8080` | room-broker | Humans in the web UI and `roomctl`, both through oauth2-proxy |
-| `:8443` | room-broker | `room-bridge` in each run pod; system callers (the factory) |
-| `:8090` | room-broker | The agents' `room_*` tools through the agent gateway (agent-router) |
-| `:9090` | room-broker | Metrics and probes |
-| `:8082` | agent-factory | `POST /v1/runs`, plaintext inside the mesh: the broker's `start_run` |
-| `:8080` | agent-factory | `POST /intake/runlore` |
-| `:9090` | agent-factory | Metrics and probes |
-
-## Binaries and images
-
-| Binary | Runs as | Image |
-|---|---|---|
-| `room-broker` | Stateless service in `agent-system`; owns the `Room` CRD (`agents.ogenki.io/v1alpha1`) | `ghcr.io/smana/room-broker` |
-| `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
-| `agent-factory` | The factory's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/agent-factory` | `ghcr.io/smana/agent-factory` |
-| `agent-harness` | Main container of every `AgentRun` pod: OpenHands agent-server plus `agent-run`, the git credential helper, `gh` with the PR footer and the trailer hook ([`images/agent-harness`](images/agent-harness/README.md)) | `ghcr.io/smana/agent-harness` |
-| `roomctl` | A developer's CLI: list, follow, post, queue and fork rooms; `roomctl skill install` writes the factory-handoff Agent Skill for local coding agents; `roomctl token` for scripts. Never steers or approves: those stay in the web UI | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
-
-Every image is multi-arch (`linux/amd64`, `linux/arm64`). The Go ones are static binaries on distroless `nonroot`; the harness is OpenHands' Python image, run as uid 10001.
-
-```bash
-roomctl configure --url https://rooms.<domain>                       # the broker serves the issuer and ids; roomctl doctor checks VPN, CA, login, GitHub
-roomctl login                                                        # device flow, in any browser
-roomctl rooms --needs-me                                             # issue, title, task, PR per room; --repo, --mine, --json
-roomctl status 3kq7x2ma                                              # phase, needs you, notes; --json, --after seq:N
-roomctl watch 3kq7x2ma
-roomctl post 3kq7x2ma --queue "address L42"
-roomctl fork 3kq7x2ma --at 42 --role implementer --egress pypi --note "try uv"
-roomctl skill install                                                # .agents/skills/factory-handoff in this repo
-```
-
-## Releases
-
-| Trigger | Tag | Workflow |
-|---|---|---|
-| Each push to a PR from this repo | `v<next-patch>-pr<N>.<sha8>`, `<sha8>` = the PR **head** | `ci.yaml` → `prerelease` |
-| The same push, the factory chart | `<next-patch>-pr<N>.g<sha8>` (the `g` keeps it semver) | `ci.yaml` → `chart-prerelease` |
-| A `v*` git tag | the tag, e.g. `v0.11.0` | `release.yaml` |
-
-Never `latest`. Consumers pin by digest. Every pushed image carries SLSA provenance (`mode=max`) and
-an SBOM as attestations, and a keyless cosign signature on its digest:
-
-```bash
-cosign verify ghcr.io/smana/room-broker@sha256:<digest> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/release\.yaml@refs/tags/v'
-```
-
-That accepts released images only. PR pre-releases are not release-grade (they run unreviewed branch
-code): see [verifying an image](docs/security.md#supply-chain) for their variant.
-
-## Where it plugs in
-
-| Repo | Consumes |
-|---|---|
-| [cloud-native-ref](https://github.com/Smana/cloud-native-ref) | Deploys the broker (`App` claim), its CNPG database `xplane-rooms`, the `Room` CRD, RBAC and network policies |
-| [crossplane-configuration](https://github.com/Smana/crossplane-configuration) | The `AgentRun` composition injects the `room-bridge` sidecar and its room token |
-
-Design: [collaboration rooms](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-collaboration-rooms-design.md),
-part of the [Agent Factory programme](https://github.com/Smana/cloud-native-ref/blob/main/docs/superpowers/specs/2026-09-23-agent-factory-design.md).
+Every page is indexed in [docs/](docs/README.md). The binaries, images, ports and release
+mechanics are in [Architecture](docs/architecture.md#binaries-images-and-releases).
 
 ## Develop
 
