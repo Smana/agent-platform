@@ -54,6 +54,14 @@ const (
 	aHead = "see [the guide](docs/new.md).\n"
 )
 
+// cloud-native-ref#2515: the PR retargets one link in docs/b.md; after its branch was cut, main
+// took another PR's change to the same file. Main's tip is not what the PR changes.
+const (
+	bFork = "see [the guide](docs/old.md).\n\n    url: http://a\n"
+	bTip  = "see [the guide](docs/old.md).\n\n    url: http://b\n"
+	bHead = "see [the guide](docs/new.md).\n\n    url: http://a\n"
+)
+
 // R51's orphan scan: the newest-100 window GitHub returns, a mix of `agent/` and other heads.
 // The connection takes no headRefPrefix, so the filtering is client-side; `agents/` and
 // `my-agent/` must not slip through a loose match.
@@ -419,9 +427,13 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	mux.HandleFunc("GET /repos/Smana/demo/compare/{basehead}", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("basehead") {
 		case "old...new": // one modified file: both sides have content.
-			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/a.md","status":"modified"}]}`)
+			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/a.md","status":"modified"}]}`)
 		case "old...mid": // a file over the contents API's megabyte: GitHub lists it without content.
-			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/big.png","status":"modified"}]}`)
+			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/big.png","status":"modified"}]}`)
+		case "main...behind": // a branch cut at "fork", before main moved on: three-dot lists its own change.
+			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"fork"},"files":[{"filename":"docs/b.md","status":"modified"}]}`)
+		case "main...nobase": // a compare without a merge base cannot say which side is the PR's.
+			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/b.md","status":"modified"}]}`)
 		default: // mid...new: exactly one page, so more changed files are unread.
 			var fs []string
 			for i := range 100 {
@@ -439,6 +451,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				text = aHead
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "a.md", "path": p, "type": "file",
+				"encoding": "base64", "size": len(text), "content": base64.StdEncoding.EncodeToString([]byte(text))})
+		case p == "docs/b.md" && (ref == "fork" || ref == "main" || ref == "behind"):
+			text := map[string]string{"fork": bFork, "main": bTip, "behind": bHead}[ref]
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "b.md", "path": p, "type": "file",
 				"encoding": "base64", "size": len(text), "content": base64.StdEncoding.EncodeToString([]byte(text))})
 		case p == ".github/agent-factory.yaml" && ref == "":
 			g.mu.Lock()
@@ -888,6 +904,24 @@ func TestFilesReadsBothSidesOfADiff(t *testing.T) {
 	}
 	if _, _, err := r.g.Files(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
 		t.Errorf("a truncated compare must be an error: %v", err)
+	}
+}
+
+// cloud-native-ref#2515: compare's file list is three-dot — changed since the merge base — so the
+// base side is read there too. Read at main's tip, another PR's change to the same file lands in
+// the diff and the links-only test fails a pure link retarget as class_mismatch.
+func TestFilesReadsTheBaseAtTheMergeBase(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	b, h, err := r.g.Files(ctx, "main", "behind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b["docs/b.md"] != bFork || h["docs/b.md"] != bHead {
+		t.Fatalf("base %q head %q: the base must be the merge base, not main's tip", b["docs/b.md"], h["docs/b.md"])
+	}
+	if _, _, err := r.g.Files(ctx, "main", "nobase"); err == nil || !strings.Contains(err.Error(), "merge base") {
+		t.Errorf("a compare without a merge base must be an error: %v", err)
 	}
 }
 
