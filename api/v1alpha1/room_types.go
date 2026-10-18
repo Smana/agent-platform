@@ -151,7 +151,7 @@ type TaskStatus struct {
 }
 
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(GroupVersion, &Room{}, &RoomList{})
+	scheme.AddKnownTypes(GroupVersion, &Room{}, &RoomList{}, &AgentRun{}, &AgentRunList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }

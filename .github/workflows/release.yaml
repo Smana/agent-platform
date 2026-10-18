@@ -136,4 +136,5 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes
           cp config/crd/agents.ogenki.io_rooms.yaml crd-rooms.yaml
-          gh release upload "$TAG" roomctl-* roomctl.sha256 crd-rooms.yaml --clobber
+          cp config/crd/agents.ogenki.io_agentruns.yaml crd-agentruns.yaml
+          gh release upload "$TAG" roomctl-* roomctl.sha256 crd-rooms.yaml crd-agentruns.yaml --clobber
