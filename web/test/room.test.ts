@@ -447,6 +447,36 @@ describe("the room page", () => {
     expect(p.app.querySelector<HTMLElement>("footer .composer")!.hidden).toBe(false);
   });
 
+  it("puts Run and Driver behind a Session toggle in the dock, its line naming the driver and the run", () => {
+    const p = page();
+    p.join(snapshot({ principal: "human:a", role: "owner" }), 0); // human:a drives
+    const session = p.app.querySelector<HTMLDetailsElement>("footer.page-dock > details.session")!;
+    expect(session.open).toBe(false);
+    expect(session.hidden).toBe(false);
+    expect(session.querySelector("section.controls .group-run")).not.toBeNull();
+    expect(session.querySelector("section.controls .group-driver")).not.toBeNull();
+    expect(session.querySelector("summary")!.textContent).toBe("Session · driver: you · no run");
+    p.last().recv(event(1, "participant", { principal: "agent:ikely2yk", change: "joined", role: "implementer" }));
+    expect(session.querySelector("summary")!.textContent).toBe("Session · driver: you · a run is on");
+    expect(session.nextElementSibling?.classList.contains("composer")).toBe(true);
+  });
+
+  it("hides the Session toggle from a watcher, who has no controls", () => {
+    const p = page();
+    p.join(snapshot({ role: "watcher" }), 0);
+    expect(p.app.querySelector<HTMLElement>("details.session")!.hidden).toBe(true);
+  });
+
+  it("shows a skeleton stream until the first frame, then the stream alone", () => {
+    const p = page();
+    const skeleton = p.app.querySelector<HTMLElement>(".skeleton")!;
+    expect(skeleton.hidden).toBe(false);
+    expect(skeleton.querySelectorAll(".sk-msg")).toHaveLength(3);
+    expect(skeleton.getAttribute("aria-hidden")).toBe("true");
+    p.join(snapshot(), 0);
+    expect(skeleton.hidden).toBe(true);
+  });
+
   it("docks the composer at the bottom and disables Send while reconnecting or sealed", () => {
     const p = page();
     p.join(snapshot({ role: "collaborator" }), 0);

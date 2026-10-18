@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The room page: the header, the reconnecting banner, the needs-you panel, the notes,
-// the chat and raw views, the controls and the dock (the composer, the connection), all
-// fed by one RoomConnection.
+// the chat and raw views, and the dock (the session's controls behind a toggle, the
+// composer, the connection), all fed by one RoomConnection.
 
 import { api } from "./api";
 import { focusRow } from "./chat";
 import { RoomConnection, type Options, type Snapshot } from "./conn";
-import { hasControls, mountComposer, mountControls, rejection } from "./controls";
+import { hasControls, mountComposer, mountControls, rejection, shortPrincipal } from "./controls";
 import { mountFork } from "./fork";
 import { mountNeeds } from "./needs";
 import { changesSummary, fetchSummary, focusApproval, renderNotes, type Summary } from "./summary";
@@ -39,12 +39,29 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   summaryError.setAttribute("role", "status");
   summaryError.hidden = true;
   lead.append(blocks, summaryError);
+  // Until the first frame, three grey message shapes stand where the stream will be:
+  // an empty page reads as broken (P9).
+  const skeleton = document.createElement("div");
+  skeleton.className = "skeleton";
+  skeleton.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 3; i++) skeleton.append(Object.assign(document.createElement("div"), { className: "sk-msg" }));
   const main = document.createElement("main");
   const section = document.createElement("section");
   section.className = "controls";
+  // The session: Run, Driver, the queue and Room, behind a toggle in the dock (P7). Its
+  // line says who drives and whether a run is on, so a closed toggle still answers both.
+  const session = document.createElement("details");
+  session.className = "session";
+  const sessionLine = document.createElement("summary");
+  session.append(sessionLine, section);
+  const showSession = () => {
+    session.hidden = !you || !hasControls(you);
+    const holder = !state.driver ? "nobody" : state.driver === you?.principal ? "you" : shortPrincipal(state.driver);
+    sessionLine.textContent = `Session · driver: ${holder} · ${state.running() ? "a run is on" : "no run"}`;
+  };
   const forkPanel = document.createElement("section");
-  // The dock: the composer (mounted with the first state frame), then the page's act
-  // notice, the theme button and the connection.
+  // The dock: the session, the composer (mounted with the first state frame), then the
+  // page's act notice, the theme button and the connection.
   const footer = document.createElement("footer");
   footer.className = "page-dock";
   const composerEl = document.createElement("div");
@@ -61,8 +78,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
   meta.append(notice);
   mountThemeButton(meta, theme);
   meta.append(status);
-  footer.append(composerEl, meta);
-  app.replaceChildren(header, banner, needsPanel, lead, main, section, forkPanel, footer);
+  footer.append(session, composerEl, meta);
+  app.replaceChildren(header, banner, needsPanel, lead, skeleton, main, forkPanel, footer);
   const views = mountViews(main, (seq) => fork.open(seq), () => snap?.you.principal);
   const state = new RoomState();
   let you: Snapshot["you"] | undefined;
@@ -199,6 +216,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
         composer.setLive(connection === "live");
       }
       composer.refresh();
+      showSession();
+      skeleton.hidden = true;
       land();
     },
     onEvent: (e) => {
@@ -209,6 +228,8 @@ export function mountRoom(app: HTMLElement, id: string, theme: ThemeController, 
       refreshStrip();
       controls?.refresh();
       composer?.refresh();
+      showSession();
+      skeleton.hidden = true;
       land();
       // A membership change naming you: the page projects none (R10). The reconnect's
       // state frame re-resolves you, and the broker re-checks every act anyway.
