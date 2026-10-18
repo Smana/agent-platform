@@ -159,6 +159,16 @@ def child_spans(provider, parent):
     return lambda name: tracer.start_span(name, context=ctx)
 
 
+def _api_key(env: dict) -> str:
+    # The run-controller's runtime mounts the provider key (adoption 3a); behind the
+    # identity-proxy the harness only ever holds the placeholder.
+    path = env.get("LLM_API_KEY_FILE")
+    if not path:
+        return PLACEHOLDER_KEY
+    with open(path) as f:
+        return f.read().strip()
+
+
 def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     """The StartConversationRequest body, as plain JSON.
 
@@ -173,7 +183,7 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     llm = LLM(
         model="openai/" + env["MODEL"],
         base_url=env["LLM_BASE_URL"],
-        api_key=PLACEHOLDER_KEY,
+        api_key=_api_key(env),
         usage_id="agent",
         # A budget 429 is terminal (design section 5), and the SDK's retry cannot leave it out.
         # agent-server retries a transient error itself (#99, site/sitecustomize.py).
@@ -193,14 +203,16 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     )
     # The SDK redacts secrets on dump and drops the redacted value on load, so
     # without this the key never reaches agent-server and litellm refuses to
-    # call. Safe to expose: it is the placeholder above.
+    # call. agent-server is on loopback; the key is the placeholder, or the provider key the run was given.
     plain = {"expose_secrets": True}
     agent = get_default_agent(llm=llm, cli_mode=True).model_dump(mode="json", context=plain)
-    platform = {"url": env["MCP_URL"], "transport": "http"}
-    tp = span_traceparent(span)
-    if tp:
-        platform["headers"] = {"traceparent": tp}
-    agent["mcp_config"] = {"platform": platform}
+    mcp_url = env.get("MCP_URL")
+    if mcp_url:
+        platform = {"url": mcp_url, "transport": "http"}
+        tp = span_traceparent(span)
+        if tp:
+            platform["headers"] = {"traceparent": tp}
+        agent["mcp_config"] = {"platform": platform}
     request = StartConversationRequest.model_validate({
         "conversation_id": env.get("CONVERSATION_ID") or str(uuid.uuid4()),
         "workspace": {"working_dir": REPO_DIR},

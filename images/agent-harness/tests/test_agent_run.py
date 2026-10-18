@@ -41,6 +41,19 @@ class BuildRequestTest(unittest.TestCase):
         self.assertEqual(llm.get("api_key"), agent_run.PLACEHOLDER_KEY, "litellm refuses to call without a key")
         self.assertEqual(llm["num_retries"], 0, "a budget 429 is terminal")
 
+    def test_key_file_replaces_the_placeholder(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("sk-real\n")
+        self.addCleanup(os.unlink, f.name)
+        env = dict(ENV, LLM_API_KEY_FILE=f.name)
+        llm = agent_run.build_request(env, "t", "r")["agent"]["llm"]
+        self.assertEqual(llm["api_key"], "sk-real")
+
+    def test_without_mcp_url_there_are_no_platform_tools(self):
+        env = {k: v for k, v in ENV.items() if k != "MCP_URL"}
+        agent = agent_run.build_request(env, "t", "r")["agent"]
+        self.assertNotIn("platform", agent.get("mcp_config") or {})
+
     def test_mcp_task_and_rules_are_wired(self):
         self.assertEqual(self.body["agent"]["mcp_config"]["platform"]["url"], "http://127.0.0.1:4000/mcp")
         self.assertEqual(self.body["initial_message"]["content"][0]["text"], "fix the link")

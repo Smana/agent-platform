@@ -5,7 +5,8 @@
 scoped to $REPOSITORY and $ROLE (octo-sts, C6), and caches it in memory
 (/run/agent/git is a Memory emptyDir, T3). `token` prints it for gh.
 `revoke` deletes it at GitHub; agent-run calls it on its way out, after the
-checkpoint push (disruption design §2).
+checkpoint push (disruption design §2). With `GIT_TOKEN_FILE` set (run-controller,
+adoption 3a) it prints that file's token and never exchanges or revokes.
 """
 import fcntl
 import json
@@ -23,6 +24,11 @@ LIFETIME_S = 3600
 REFRESH_MARGIN_S = 600
 
 log = logging.getLogger("git-credential-agent")
+
+
+def _token_file() -> str | None:
+    # Read at call time: the run-controller's runtime mounts the user's PAT (adoption 3a).
+    return os.environ.get("GIT_TOKEN_FILE") or None
 
 
 def _cached() -> str | None:
@@ -69,6 +75,10 @@ def _exchange() -> str:
 
 
 def token() -> str:
+    path = _token_file()
+    if path:
+        with open(path) as f:
+            return f.read().strip()
     # Serialize concurrent `get`s on the cache file itself: two credential
     # helper invocations racing here must not both exchange and stomp on
     # each other's cache write.
@@ -82,6 +92,8 @@ def token() -> str:
 
 
 def revoke() -> None:
+    if _token_file():
+        return  # the user's PAT is theirs to revoke, not the run's
     # Serialize with token() on the same lock to ensure revoke atomically
     # reads, revokes, and deletes the cache. Without this, a concurrent
     # token() exchange can write a new token after we read the old one but

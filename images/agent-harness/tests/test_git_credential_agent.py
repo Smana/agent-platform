@@ -162,5 +162,24 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(Stub.calls[-1], ("DELETE", "/installation/token", "Bearer ghs_stub1"))
 
 
+class TokenFileMode(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "token")
+        with open(self.path, "w") as f:
+            f.write("github_pat_x\n")
+
+    def test_token_reads_the_file_and_never_exchanges(self):
+        with mock.patch.dict(os.environ, {"GIT_TOKEN_FILE": self.path}), \
+                mock.patch.object(helper, "_exchange", side_effect=AssertionError("no exchange in file mode")):
+            self.assertEqual(helper.token(), "github_pat_x")
+
+    def test_revoke_never_touches_the_users_pat(self):
+        with mock.patch.dict(os.environ, {"GIT_TOKEN_FILE": self.path}), \
+                mock.patch.object(helper, "_revoke_value", side_effect=AssertionError("never revoke a PAT")):
+            helper.revoke()
+        self.assertTrue(os.path.exists(self.path))
+
+
 if __name__ == "__main__":
     unittest.main()
