@@ -20,6 +20,9 @@ export interface ReplayOptions {
   speed?: number; // 8 by default: a twenty-minute run plays in under three
   maxGapMs?: number; // the longest recorded gap honoured, before speed: 10 s
   clock?: Clock;
+  // dwell is a real-time pause after an event, in ms: neither capped nor sped up, so a moment the
+  // visitor must see (an approval waiting) stays on screen at any speed. Skip ignores it.
+  dwell?: (e: RoomEvent) => number;
   onChange?: () => void; // after every applied event and every play, pause, speed or skip
 }
 
@@ -29,12 +32,14 @@ export class Replay {
   private speedNow: number;
   private readonly maxGapMs: number;
   private readonly clock: Clock;
+  private readonly dwell: (e: RoomEvent) => number;
   private readonly onChange: () => void;
 
   constructor(private readonly events: RoomEvent[], private readonly apply: (e: RoomEvent) => void, o: ReplayOptions = {}) {
     this.speedNow = o.speed ?? 8;
     this.maxGapMs = o.maxGapMs ?? 10_000;
     this.clock = o.clock ?? windowClock;
+    this.dwell = o.dwell ?? (() => 0);
     this.onChange = o.onChange ?? (() => {});
   }
 
@@ -77,11 +82,12 @@ export class Replay {
     this.onChange();
   }
 
-  // wait is the pause before event i: its recorded gap, capped, then sped up.
+  // wait is the pause before event i: its recorded gap, capped, then sped up, plus the previous
+  // event's dwell.
   private wait(i: number): number {
     if (i === 0) return 0;
     const gap = Date.parse(this.events[i].ts) - Date.parse(this.events[i - 1].ts);
-    return Math.min(Math.max(gap, 0), this.maxGapMs) / this.speedNow;
+    return Math.min(Math.max(gap, 0), this.maxGapMs) / this.speedNow + this.dwell(this.events[i - 1]);
   }
 
   private schedule(ms: number) {

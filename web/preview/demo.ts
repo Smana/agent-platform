@@ -12,6 +12,8 @@ import { mountPreviewPage } from "./page";
 import { Replay } from "./replay";
 import { mountReplayBar } from "./replay-bar";
 
+const APPROVAL_DWELL_MS = 4000;
+
 const get = async <T>(path: string): Promise<T> => (await fetch(path)).json() as Promise<T>;
 
 // rebased stamps an event with the moment it is shown, so "5 s ago" reads true. Step
@@ -52,6 +54,8 @@ async function run() {
     page.setSummary(summaryAt(summary, shown, events.length, shown.length === events.length));
     page.settle();
   }, {
+    // The approval is the demo's point: hold its card on screen, whatever the speed.
+    dwell: (e) => (e.type === "approval_requested" ? APPROVAL_DWELL_MS : 0),
     onChange: () => {
       bar.refresh();
       page.setStatus(`demo · ${replay.applied} / ${events.length} events`);
