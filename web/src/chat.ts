@@ -11,6 +11,7 @@
 
 import type { RoomEvent } from "./conn";
 import { deliveryChip, handoffHead, markdown, stateHead } from "./render";
+import { icon, type IconName } from "./icons";
 import { maxRows } from "./limits";
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
@@ -102,10 +103,6 @@ function preview(call: RoomEvent | undefined, result: RoomEvent | undefined): st
   return out.split("\n", 1)[0];
 }
 
-function chip(status: string): HTMLElement {
-  return el("span", `chip chip-${cls(status)}`, status);
-}
-
 function polBadge(d: RoomEvent): HTMLElement {
   const p = d.payload ?? {};
   // policy_decision carries `decision`; decision_applied may carry only a ref.
@@ -113,16 +110,42 @@ function polBadge(d: RoomEvent): HTMLElement {
   return el("span", `pol pol-${cls(label)}`, `policy: ${label}`);
 }
 
+// The status a call line shows. ok is the norm: a muted check, no word. The rest are
+// named beside their icon, so a colour is never the only sign.
+const statuses: Record<string, [IconName, boolean]> = {
+  ok: ["check", false], running: ["spinner", false], rejected: ["ban", true], error: ["x", true],
+};
+
+function statusMark(status: string): HTMLElement {
+  const [glyph, worded] = statuses[status] ?? ["x", true];
+  const s = el("span", `t-status st-${cls(status)}`);
+  s.append(icon(glyph, status));
+  if (worded) s.append(el("span", "", status));
+  return s;
+}
+
+// An output longer than this many lines opens capped, with a "show all".
+const capLines = 20;
+
 function toolRow(c: Call): HTMLElement {
   const status = c.result ? String(c.result.payload?.status ?? "ok") : "running";
   const d = el("details", `tool st-${cls(status)}`) as HTMLDetailsElement;
   d.dataset.seq = String(c.seq);
   d.dataset.callId = c.callId;
   d.dataset.lastSeq = String(Math.max(...[c.call, c.result, ...c.decisions].map((e) => e?.seq ?? 0)));
+  const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
+  const args = c.call?.payload?.args;
+  const command = args && typeof args.command === "string" ? args.command : undefined;
+  // What the step's summary line reads off the row (step.ts).
+  d.dataset.tool = name;
+  d.dataset.status = status;
+  d.dataset.start = (c.call ?? c.result ?? c.decisions[0])!.ts;
+  if (c.result) d.dataset.end = c.result.ts;
 
   const sum = el("summary", "");
-  const name = c.call ? String(c.call.payload?.tool ?? "tool") : "tool";
-  sum.append(el("span", "t-name", name), el("code", "t-cmd", preview(c.call, c.result)), chip(status));
+  // A shell command reads as one: a prompt, then the command. Any other tool is named.
+  sum.append(name === "terminal" && command !== undefined ? el("span", "t-prompt", "$") : el("span", "t-name", name));
+  sum.append(el("code", "t-cmd", preview(c.call, c.result)), statusMark(status));
   const by = c.call?.payload?.decidedBy;
   // An allowed call is the norm: only a decision that is not a plain allow, or one a
   // person made, earns a badge.
@@ -131,14 +154,30 @@ function toolRow(c: Call): HTMLElement {
   sum.append(time((c.result ?? c.call ?? c.decisions[0])!.ts));
 
   const body = el("div", "t-body");
-  if (c.call) {
+  if (command !== undefined) body.append(el("pre", "t-command", command));
+  // The arguments the summary does not already show: all of them for a tool with no
+  // command, the rest beside one, nothing when the command was all there was.
+  const rest = args && command !== undefined ? Object.fromEntries(Object.entries(args).filter(([k]) => k !== "command")) : args;
+  if (c.call && (command === undefined || Object.keys(rest ?? {}).length > 0)) {
     body.append(el("div", "t-sec", "arguments"));
-    body.append(el("pre", "t-args", JSON.stringify(c.call.payload?.args ?? null, null, 2)));
+    body.append(el("pre", "t-args", JSON.stringify(rest ?? null, null, 2)));
   }
   if (c.result) {
     const p = c.result.payload ?? {};
+    const output = String(p.output ?? "");
     body.append(el("div", "t-sec", `output · ${p.bytes ?? "?"} B${p.truncated ? " · truncated" : ""}`));
-    body.append(el("pre", "t-out", String(p.output ?? "")));
+    const out = el("pre", "t-out", output);
+    body.append(out);
+    if (output.split("\n").length > capLines) {
+      out.classList.add("capped");
+      const more = el("button", "t-more", "show all") as HTMLButtonElement;
+      more.type = "button";
+      more.onclick = () => {
+        const capped = out.classList.toggle("capped");
+        more.textContent = capped ? "show all" : "show less";
+      };
+      body.append(more);
+    }
   } else {
     body.append(el("div", "t-sec", "waiting for the result…"));
   }

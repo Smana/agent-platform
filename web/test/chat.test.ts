@@ -12,7 +12,7 @@ const ev = (seq: number, type: string, payload: unknown, actor: { kind: string; 
 // Every element the chat view may build; anything else in the output is a hole (T10).
 const allowed = new Set(["ARTICLE", "HEADER", "DIV", "P", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI",
   "BLOCKQUOTE", "STRONG", "EM", "S", "A", "SPAN", "CODE", "PRE", "HR", "BR", "TABLE", "THEAD", "TBODY", "TR",
-  "TH", "TD", "DETAILS", "SUMMARY", "TIME"]);
+  "TH", "TD", "DETAILS", "SUMMARY", "TIME", "BUTTON", "svg", "path"]);
 
 function inert(root: HTMLElement) {
   for (const n of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
@@ -80,7 +80,7 @@ describe("ChatView tool pairing", () => {
     const { el } = view([call(1, "call_1", "git push origin agent/ibbay5ud")]);
     const tool = el.querySelector("details.tool")!;
     expect(tool.className).toContain("st-running");
-    expect(tool.querySelector(".chip")?.textContent).toBe("running");
+    expect(tool.querySelector(".t-status svg")?.getAttribute("aria-label")).toBe("running");
     expect(tool.querySelector(".t-cmd")?.textContent).toBe("git push origin agent/ibbay5ud");
     expect(el.children).toHaveLength(1);
   });
@@ -89,9 +89,11 @@ describe("ChatView tool pairing", () => {
     expect(el.children).toHaveLength(1);
     const tool = el.querySelector("details.tool")!;
     expect(tool.className).toContain("st-ok");
-    expect(tool.querySelector(".chip")?.textContent).toBe("ok");
+    expect(tool.querySelector(".t-status svg")?.getAttribute("aria-label")).toBe("ok");
+    expect(tool.querySelector(".chip")).toBeNull(); // ok is the norm: no chip (P3)
     expect(tool.querySelector(".t-out")?.textContent).toBe(" M web/src/render.ts");
-    expect(tool.querySelector(".t-args")?.textContent).toContain("git status");
+    expect(tool.querySelector(".t-command")?.textContent).toBe("git status");
+    expect(tool.querySelector(".t-args")).toBeNull(); // the command was all there was
   });
   it("renders a rejected result in its own state", () => {
     const { el } = view([call(1, "c", "git push"), result(2, "c", "rejected", "refused")]);
@@ -209,9 +211,9 @@ describe("the recorded session fixture", () => {
     const { el } = view(events);
     expect(el.querySelectorAll(".msg")).toHaveLength(5); // four agent, one human
     expect(el.querySelectorAll("details.tool")).toHaveLength(5); // results paired, none doubled
-    expect(el.querySelectorAll(".st-rejected")).toHaveLength(1); // the refused push
-    expect(el.querySelectorAll(".st-ok")).toHaveLength(3);
-    expect(el.querySelectorAll(".st-running")).toHaveLength(1); // git log, still running
+    expect(el.querySelectorAll("details.st-rejected")).toHaveLength(1); // the refused push
+    expect(el.querySelectorAll("details.st-ok")).toHaveLength(3);
+    expect(el.querySelectorAll("details.st-running")).toHaveLength(1); // git log, still running
     expect(el.querySelectorAll(".pol-allow")).toHaveLength(0); // an allowed call is the norm: no badge (U7)
     expect(el.querySelectorAll(".sys")).toHaveLength(2); // owner and agent joined
     expect(el.querySelector(".redacted")?.textContent).toContain("github-app-token");
@@ -370,5 +372,40 @@ describe("ChatView folds", () => {
     expect(fold.open).toBe(false);
     reveal(row);
     expect(fold.open).toBe(true);
+  });
+});
+
+describe("ChatView call lines (P3)", () => {
+  const call = (args: Record<string, unknown>, tool = "terminal") => ev(1, "tool_call", { callId: "c", tool, args });
+  const done = (status: string, output = "") => ev(2, "tool_result", { callId: "c", status, output, truncated: false, bytes: output.length });
+
+  it("prompts a shell command with $ and names any other tool", () => {
+    expect(view([call({ command: "ls" })]).el.querySelector("summary .t-prompt")?.textContent).toBe("$");
+    expect(view([call({ limit: 50 }, "room_read")]).el.querySelector("summary .t-name")?.textContent).toBe("room_read");
+  });
+  it("names a rejected or errored call in words beside its icon; ok and running stay unworded", () => {
+    const words = (status: string) => view([call({ command: "x" }), done(status)]).el.querySelector(".t-status")!.textContent;
+    expect(words("rejected")).toBe("rejected");
+    expect(words("error")).toBe("error");
+    expect(words("ok")).toBe("");
+    expect(view([call({ command: "x" })]).el.querySelector(".t-status")!.textContent).toBe("");
+  });
+  it("shows only the arguments the command does not already say", () => {
+    const { el } = view([call({ command: "ls", timeout: 30 })]);
+    expect(el.querySelector(".t-command")?.textContent).toBe("ls");
+    expect(JSON.parse(el.querySelector(".t-args")!.textContent!)).toEqual({ timeout: 30 });
+  });
+  it("caps a long output behind show all, and lifts the cap on click", () => {
+    const { el } = view([call({ command: "seq 40" }), done("ok", Array.from({ length: 40 }, (_, i) => i).join("\n"))]);
+    const out = el.querySelector(".t-out")!;
+    const more = el.querySelector<HTMLButtonElement>(".t-more")!;
+    expect(out.classList.contains("capped")).toBe(true);
+    more.click();
+    expect(out.classList.contains("capped")).toBe(false);
+    expect(more.textContent).toBe("show less");
+  });
+  it("leaves a short output uncapped, with no show all", () => {
+    const { el } = view([call({ command: "ls" }), done("ok", "a\nb")]);
+    expect(el.querySelector(".t-more")).toBeNull();
   });
 });
