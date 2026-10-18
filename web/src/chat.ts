@@ -546,6 +546,7 @@ export class ChatView {
   // hands them to the stream. Their folds move whole.
   private rehome(i: number, box: HTMLElement, anchor: HTMLElement | null) {
     const touched = new Set<HTMLElement>();
+    let moved = false;
     for (let j = i; j < this.seqs.length && this.flow(j) === "member"; j++) {
       const row = this.rows.get(this.seqs[j])!;
       const home = (this.foldOf(row) ?? row);
@@ -553,9 +554,10 @@ export class ChatView {
       const from = this.stepOf(row);
       if (from) touched.add(from);
       box.insertBefore(home, anchor);
+      moved = true;
     }
     const to = this.stepOf(box);
-    if (to && touched.size) touched.add(to);
+    if (to && moved) touched.add(to);
     for (const s of touched) {
       recount(s);
       this.settle(s);

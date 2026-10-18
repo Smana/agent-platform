@@ -420,6 +420,11 @@ describe("ChatView steps (P1, P2)", () => {
     expect(shape(el)).toEqual(["step(1)"]);
     expect(el.querySelector(".step-calls")).toBeNull();
   });
+  it("recounts and opens a step whose calls landed before its message", () => {
+    const { el } = view([call(2, "a"), said(1)]);
+    expect(line(el, 1)).toBe("Running 1 command");
+    expect(el.querySelector<HTMLDetailsElement>(".step-calls")!.open).toBe(true);
+  });
   it("sums the step's calls on its line and rewrites it as results land", () => {
     const { el, v } = view([said(1), call(2, "a"), call(3, "b")]);
     expect(line(el, 1)).toBe("Running 2 commands");
