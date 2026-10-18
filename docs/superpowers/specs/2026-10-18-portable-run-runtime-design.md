@@ -35,7 +35,7 @@ The fix is a second runtime that reads **the same run manifest**:
 | R3 | **Secrets and egress hosts live in the controller's config** | Per-run Secret references | A quickstart has one model key and one PAT. Per-run secrets are a later need, and an additive one |
 | R4 | **The model key and the PAT go into the sandbox** | Shipping identity-proxy, octo-sts and a gateway | The owner's choice for adoption. The loss of guarantees is stated in 3b's "what differs from production" table, not hidden |
 | R5 | **gVisor is required; `allowUnsandboxed` is an explicit, visible escape hatch** | runc by default | The project's promise is "without trusting them". Running unsandboxed must be a choice the room shows |
-| R6 | **Suspend, Kueue, warm headroom are out of scope** | Porting them | They stay on cloud-native-ref's runtime. `spec.suspendable: true` is refused, not ignored |
+| R6 | **Suspend, Kueue, warm headroom are out of scope** | Porting them | They stay on cloud-native-ref's runtime. `spec.suspendable: true` is refused by the controller (`Failed`/`Invalid`), not ignored |
 | R7 | **`internal` runs are refused; `spec.model` is ignored** | Accepting both | `internal` promises the model gateway and no public egress; `spec.model` names gateway tiers. Without a gateway neither can be honoured, so the model comes from `modelSecret` |
 | R8 | **The controller renders the rules itself**, a Go port of the composition's `_rulesFor` | A rules ConfigMap per role | The rules name the run, its branch and its base: they are per run, not per role. The port drops the lines about `room_*` tools and the gateway's 429, neither of which exists here |
 
@@ -46,11 +46,11 @@ The fix is a second runtime that reads **the same run manifest**:
 
 | Field | Type | Notes |
 |---|---|---|
-| `role`, `repository`, `baseRef`, `branch`, `principal`, `dataClass`, `roomRef` | string | Required except `dataClass` |
+| `role`, `repository`, `baseRef`, `branch`, `principal`, `dataClass`, `roomRef` | string | Required, except `roomRef` (as the XRD) |
 | `task.text` / `task.url` | string | Exactly one (CEL) |
 | `budget.maxMinutes` | int | Default 120 |
 | `egress.profiles` | []string | The XRD's enum (`pypi`, `npm`, `golang`, `crates`); `github` is always on |
-| `suspendable` | bool | Must be false here (CEL) |
+| `suspendable` | bool | Must be false here: the controller refuses it (`Invalid`), not CEL, so the CRD equals the XRD |
 
 Status:
 
@@ -130,7 +130,7 @@ Status mapping:
 | Revoked annotation | `Revoked` | `revoked` |
 
 RBAC: a Role in its namespace on `agentruns`, `agentruns/status`, pods, serviceaccounts,
-configmaps, ciliumnetworkpolicies; read on the two Secrets; get on the CA Secret in the broker's
+configmaps, ciliumnetworkpolicies; create/patch on events; get/create/update on leases (`coordination.k8s.io`, leader election); read on the two Secrets; get on the CA Secret in the broker's
 namespace by name. No cluster scope.
 
 ## The runwatch seam
