@@ -3,10 +3,12 @@
 package humanapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -323,11 +325,18 @@ func TestAForkWhoseRoomFailsIsClosed(t *testing.T) {
 		return apierrors.NewServiceUnavailable("etcd")
 	}}
 	a, log, room, req := forkFixture(t, refuse)
+	var buf bytes.Buffer
+	a.Logger = slog.New(slog.NewTextHandler(&buf, nil))
 	if f := forkAs(a, room, "human:bob", false, Action{Seq: 1, Role: "implementer"}); f.Rejected != "log_unavailable" {
 		t.Fatalf("%+v", f)
 	}
 	if log.closed == "" || len(req.calls()) != 0 {
 		t.Fatalf("closed %q, %d run requests", log.closed, len(req.calls()))
+	}
+	// #146: the refusal is logged, or a missing grant looks like an outage.
+	if l := buf.String(); !strings.Contains(l, "level=WARN") || !strings.Contains(l, "room=") ||
+		!strings.Contains(l, "repository="+room.Spec.Repository) || !strings.Contains(l, "etcd") {
+		t.Fatalf("logged %q", l)
 	}
 	conflict := &interceptor.Funcs{Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
 		return apierrors.NewAlreadyExists(schema.GroupResource{Group: "agents.ogenki.io", Resource: "rooms"}, "x")

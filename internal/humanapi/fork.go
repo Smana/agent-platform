@@ -86,6 +86,9 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v
 		Spec: v1alpha1.RoomSpec{Owner: p.ID, Driver: p.ID, DataClass: room.Spec.DataClass, Repository: room.Spec.Repository,
 			Approvals: approvals, Retention: room.Spec.Retention}}
 	if err := a.Rooms.Create(ctx, child); err != nil {
+		if a.Logger != nil {
+			a.Logger.WarnContext(ctx, "forked room not created", "room", id, "repository", child.Spec.Repository, "err", err)
+		}
 		// A row no Room projects is never closed, so retention would never purge it.
 		_ = a.Log.CloseRoom(ctx, id, "fork failed: no Room")
 		if apierrors.IsAlreadyExists(err) {

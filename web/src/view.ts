@@ -270,7 +270,9 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
 const createErrors: Record<number, string> = {
   400: "That data class or repository is not accepted (repository is owner/name).",
   404: "You cannot read that repository on GitHub, or it does not exist.",
+  409: "A room with that id already exists. Retry.",
   429: "Too many actions at once. Wait a moment and retry.",
+  500: "The broker could not create the room: see its logs.",
   503: "Rooms cannot be created right now, or your GitHub access cannot be checked. Retry.",
 };
 
