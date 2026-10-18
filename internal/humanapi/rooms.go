@@ -5,6 +5,8 @@ package humanapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"regexp"
 	"slices"
@@ -100,15 +102,29 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Actor.Rooms.Create(ctx, room); err != nil {
-		code := http.StatusServiceUnavailable
-		if apierrors.IsInvalid(err) {
-			code = http.StatusBadRequest
-		}
-		http.Error(w, "could not create the room", code)
+		s.log().Warn("room not created", "room", room.Name, "repository", in.Repository, "err", err)
+		http.Error(w, "could not create the room", createStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]string{"id": room.Name})
+}
+
+// createStatus maps a Room Create error to a status that says whether a retry can help (#146):
+// 503 only when the API server is unreachable or overloaded. Forbidden is the broker's own
+// grant missing, so it is a 500 like any other error a retry will not fix.
+func createStatus(err error) int {
+	var netErr net.Error
+	switch {
+	case apierrors.IsInvalid(err):
+		return http.StatusBadRequest
+	case apierrors.IsAlreadyExists(err):
+		return http.StatusConflict
+	case apierrors.IsServerTimeout(err), apierrors.IsTimeout(err), apierrors.IsTooManyRequests(err),
+		apierrors.IsServiceUnavailable(err), errors.As(err, &netErr), errors.Is(err, context.DeadlineExceeded):
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
 }
 
 // roomctlSetup is GET /api/roomctl: the values of `roomctl configure` and the broker's

@@ -3,9 +3,12 @@
 package humanapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -84,7 +87,7 @@ func TestCreateRoom(t *testing.T) {
 		{"too large", "alice", `{"dataClass":"public","repository":"` + strings.Repeat("a", 5<<10) + `"}`, nil, http.StatusBadRequest},
 		{"refused as invalid", "alice", public,
 			apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "Room"}, "x", field.ErrorList{}), http.StatusBadRequest},
-		{"the API server is down", "alice", public, errors.New("down"), http.StatusServiceUnavailable},
+		{"the API server is down", "alice", public, &net.OpError{Op: "dial", Err: errors.New("connection refused")}, http.StatusServiceUnavailable},
 	} {
 		createErr = c.err
 		if rec := post(c.user, c.body); rec.Code != c.want {
@@ -106,6 +109,50 @@ func TestCreateRoom(t *testing.T) {
 	srv.Actor = nil
 	if rec := post("alice", public); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no actor: %d", rec.Code)
+	}
+}
+
+// #146: a refused Create is logged, and its status says whether a retry can help:
+// 503 only for the API server being unreachable or overloaded, 500 for the broker's own grant.
+func TestCreateRoomErrorsAreLoggedAndMapped(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	rooms := schema.GroupResource{Group: "agents.ogenki.io", Resource: "rooms"}
+	for _, c := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"forbidden", apierrors.NewForbidden(rooms, "", errors.New("no create on rooms")), http.StatusInternalServerError},
+		{"already exists", apierrors.NewAlreadyExists(rooms, "x"), http.StatusConflict},
+		{"server timeout", apierrors.NewServerTimeout(rooms, "create", 1), http.StatusServiceUnavailable},
+		{"timeout", apierrors.NewTimeoutError("slow", 1), http.StatusServiceUnavailable},
+		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), http.StatusServiceUnavailable},
+		{"unavailable", apierrors.NewServiceUnavailable("etcd"), http.StatusServiceUnavailable},
+		{"connection refused", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, http.StatusServiceUnavailable},
+		{"anything else", errors.New("boom"), http.StatusInternalServerError},
+	} {
+		var buf bytes.Buffer
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return c.err }}).Build()
+		srv := &Server{Humans: headerAuth{}, Groups: groups, Namespace: namespace, Actor: &Actor{Rooms: cl},
+			Logger: slog.New(slog.NewJSONHandler(&buf, nil))}
+		w0().gate(srv)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/rooms",
+			strings.NewReader(`{"dataClass":"public","repository":"Smana/agent-platform"}`))
+		req.Header.Set("X-Test-User", "alice")
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: %d, want %d", c.name, rec.Code, c.want)
+		}
+		var line struct{ Level, Room, Repository, Err string }
+		if err := json.Unmarshal(buf.Bytes(), &line); err != nil || line.Level != "WARN" || !envelope.ValidID(line.Room) ||
+			line.Repository != "Smana/agent-platform" || line.Err != c.err.Error() {
+			t.Errorf("%s: logged %s", c.name, buf.Bytes())
+		}
 	}
 }
 

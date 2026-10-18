@@ -74,8 +74,9 @@ describe("newRoomForm", () => {
 
   it("says why a room was not created", async () => {
     const go = vi.spyOn(nav, "go").mockImplementation(() => {});
-    for (const [status, copy] of [[400, /not accepted/], [404, /cannot read that repository/], [429, /too many/i], [503, /cannot be created/],
-      [500, /500/]] as const) {
+    // #146: only a 503 says retry for an outage; a 500 points at the broker's logs.
+    for (const [status, copy] of [[400, /not accepted/], [404, /cannot read that repository/], [409, /already exists/], [429, /too many/i],
+      [500, /see its logs/], [503, /cannot be created/], [502, /502/]] as const) {
       const form = submit(answer(status));
       await vi.waitFor(() => expect(form.querySelector(".notice")?.textContent).toMatch(copy));
     }
