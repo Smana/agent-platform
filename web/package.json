@@ -10,7 +10,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "preview:build": "esbuild preview/preview.ts preview/full.ts preview/demo.ts --bundle --format=esm --target=es2022 --outdir=preview",
-    "preview": "npm run preview:build && node preview/serve.mjs"
+    "preview": "npm run preview:build && node preview/serve.mjs",
+    "demo": "bash scripts/demo-site.sh .demo-site && SERVE_ROOT=.demo-site node preview/serve.mjs"
   },
   "dependencies": {
     "markdown-it": "14.3.2"
