@@ -1,0 +1,263 @@
+metadata:
+  annotations:
+    agents.ogenki.io/principal: human:a
+  labels:
+    agents.ogenki.io/role: implementer
+    agents.ogenki.io/run-id: abcdefgh
+    app.kubernetes.io/managed-by: run-controller
+  name: run-abcdefgh
+  namespace: agents
+spec:
+  activeDeadlineSeconds: 1800
+  automountServiceAccountToken: false
+  containers:
+  - env:
+    - name: RUN_ID
+      value: abcdefgh
+    - name: ROLE
+      value: implementer
+    - name: REPOSITORY
+      value: o/r
+    - name: BASE_REF
+      value: main
+    - name: BRANCH
+      value: agent/abcdefgh
+    - name: MODEL
+      value: claude-sonnet-5-5
+    - name: DATA_CLASS
+      value: public
+    - name: CONVERSATION_ID
+      value: uid-1
+    - name: LLM_BASE_URL
+      value: https://api.anthropic.com/v1
+    - name: LLM_API_KEY_FILE
+      value: /run/agent/model/api_key
+    - name: GIT_TOKEN_FILE
+      value: /run/agent/github/token
+    - name: TASK_FILE
+      value: /run/agent/task/task.md
+    - name: RULES_FILE
+      value: /run/agent/task/rules.md
+    - name: HOME
+      value: /home/openhands
+    - name: ROOM_ID
+      value: roomroom
+    - name: BRIDGE_URL
+      value: http://127.0.0.1:8085
+    image: ghcr.io/smana/agent-harness:v0.16.0
+    livenessProbe:
+      exec:
+        command:
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+          timeout=2)
+      failureThreshold: 3
+      periodSeconds: 20
+      timeoutSeconds: 5
+    name: harness
+    readinessProbe:
+      exec:
+        command:
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready',
+          timeout=2)
+      periodSeconds: 10
+      timeoutSeconds: 5
+    resources:
+      limits:
+        cpu: "2"
+        ephemeral-storage: 10Gi
+        memory: 4Gi
+      requests:
+        cpu: "1"
+        ephemeral-storage: 1Gi
+        memory: 2Gi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    startupProbe:
+      exec:
+        command:
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready',
+          timeout=2)
+      failureThreshold: 60
+      periodSeconds: 5
+      timeoutSeconds: 5
+    volumeMounts:
+    - mountPath: /workspace
+      name: workspace
+    - mountPath: /home/openhands
+      name: home
+    - mountPath: /tmp
+      name: tmp
+    - mountPath: /run/agent/git
+      name: git-cache
+    - mountPath: /run/agent/task
+      name: task
+      readOnly: true
+    - mountPath: /run/agent/model
+      name: model
+      readOnly: true
+    - mountPath: /run/agent/github
+      name: github
+      readOnly: true
+  dnsConfig:
+    options:
+    - name: ndots
+      value: "1"
+  enableServiceLinks: false
+  initContainers:
+  - env:
+    - name: RUN_ID
+      value: abcdefgh
+    - name: ROOM_ID
+      value: roomroom
+    - name: BRANCH
+      value: agent/abcdefgh
+    - name: CONVERSATION_ID
+      value: uid-1
+    - name: BROKER_URL
+      value: https://room-broker.agent-platform.svc:8443
+    - name: BROKER_CA_FILE
+      value: /etc/room-broker-ca/ca.crt
+    - name: HARNESS_URL
+      value: http://127.0.0.1:8000
+    - name: ROOM_TOKEN_FILE
+      value: /var/run/secrets/agents/room/token
+    - name: EGRESS_PROFILES
+      value: github,golang
+    - name: FLUSH_GRACE
+      value: 12s
+    image: ghcr.io/smana/room-bridge:v0.16.0
+    livenessProbe:
+      failureThreshold: 3
+      httpGet:
+        path: /healthz
+        port: 8085
+      periodSeconds: 20
+    name: room-bridge
+    ports:
+    - containerPort: 8085
+      name: bridge-health
+      protocol: TCP
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: 8085
+      periodSeconds: 10
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+      requests:
+        cpu: 20m
+        memory: 32Mi
+    restartPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    startupProbe:
+      failureThreshold: 30
+      httpGet:
+        path: /healthz
+        port: 8085
+      periodSeconds: 1
+    volumeMounts:
+    - mountPath: /var/run/secrets/agents/room
+      name: room-token
+      readOnly: true
+    - mountPath: /etc/room-broker-ca
+      name: room-broker-ca
+      readOnly: true
+  - args:
+    - gate
+    image: ghcr.io/smana/room-bridge:v0.16.0
+    name: room-gate
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+      requests:
+        cpu: 10m
+        memory: 16Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    terminationMessagePolicy: FallbackToLogsOnError
+  restartPolicy: Never
+  runtimeClassName: gvisor
+  securityContext:
+    fsGroup: 10001
+    runAsGroup: 10001
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: run-abcdefgh
+  shareProcessNamespace: false
+  terminationGracePeriodSeconds: 45
+  volumes:
+  - configMap:
+      name: run-abcdefgh-task
+    name: task
+  - name: model
+    secret:
+      defaultMode: 288
+      items:
+      - key: api_key
+        path: api_key
+      secretName: agent-model
+  - name: github
+    secret:
+      defaultMode: 288
+      items:
+      - key: token
+        path: token
+      secretName: agent-git
+  - emptyDir:
+      sizeLimit: 10Gi
+    name: workspace
+  - emptyDir:
+      sizeLimit: 2Gi
+    name: home
+  - emptyDir:
+      sizeLimit: 2Gi
+    name: tmp
+  - emptyDir:
+      medium: Memory
+      sizeLimit: 1Mi
+    name: git-cache
+  - name: room-token
+    projected:
+      defaultMode: 288
+      sources:
+      - serviceAccountToken:
+          audience: room-broker
+          expirationSeconds: 600
+          path: token
+  - configMap:
+      name: run-abcdefgh-ca
+    name: room-broker-ca
+status: {}
