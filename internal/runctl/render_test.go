@@ -84,6 +84,16 @@ func TestPodInvariants(t *testing.T) {
 	if len(noRoom.Spec.InitContainers) != 0 {
 		t.Fatal("a run without a room has no bridge")
 	}
+	tasked := Pod(run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Labels = map[string]string{LabelTask: "T-7"} }), c, testModel, "abcdefgh")
+	var taskID string
+	for _, e := range tasked.Spec.Containers[0].Env {
+		if e.Name == "TASK_ID" {
+			taskID = e.Value
+		}
+	}
+	if taskID != "T-7" || tasked.Labels[LabelTask] != "T-7" {
+		t.Fatalf("task label must reach the env and the labels: %q %v", taskID, tasked.Labels)
+	}
 	c.RuntimeClassName, c.AllowUnsandboxed = "", true
 	if Pod(run("run-abcdefgh"), c, testModel, "abcdefgh").Spec.RuntimeClassName != nil {
 		t.Fatal("allowUnsandboxed: no RuntimeClass")

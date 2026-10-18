@@ -62,6 +62,10 @@ var defaultProfiles = map[string][]string{
 	"crates": {"index.crates.io", "static.crates.io"},
 }
 
+// The broker host must be the fully qualified service name: the pod's ndots:1 resolver
+// would otherwise try search-path expansions that the CNP's DNS allowlist refuses.
+var brokerHostRE = regexp.MustCompile(`^[a-z0-9-]+\.[a-z0-9-]+\.svc\.[a-z0-9.-]+$`)
+
 var prefixRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}-$`)
 
 // LoadConfig reads, strictly decodes, defaults and validates the file at path.
@@ -108,6 +112,9 @@ func (c Config) validate() error {
 	}
 	if u, err := url.Parse(c.Broker.URL); err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		errs = append(errs, fmt.Errorf("broker.url %q must be an https URL", c.Broker.URL))
+	}
+	if u, err := url.Parse(c.Broker.URL); err == nil && u.Hostname() != "" && !brokerHostRE.MatchString(u.Hostname()) {
+		errs = append(errs, fmt.Errorf("broker.url host %q must be <service>.<namespace>.svc.<cluster-domain>, e.g. room-broker.agent-platform.svc.cluster.local", u.Hostname()))
 	}
 	if len(c.Broker.Labels) == 0 {
 		errs = append(errs, errors.New("broker.labels: the CNP needs at least one to select the broker"))

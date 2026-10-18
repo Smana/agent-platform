@@ -20,7 +20,7 @@ runtimeClassName: gvisor
 modelSecret: agent-model
 gitSecret: agent-git
 broker:
-  url: https://room-broker.agent-platform.svc:8443
+  url: https://room-broker.agent-platform.svc.cluster.local:8443
   namespace: agent-platform
   labels: {app.kubernetes.io/name: room-broker}
   caSecret: room-broker-tls
@@ -74,6 +74,7 @@ func TestLoadConfigRefuses(t *testing.T) {
 	for name, body := range map[string]string{
 		"no images":     strings.Replace(goodConfig, "images:", "imagesX:", 1),
 		"http broker":   strings.Replace(goodConfig, "https://room-broker", "http://room-broker", 1),
+		"short svc":     strings.Replace(goodConfig, ".svc.cluster.local", ".svc", 1),
 		"bad prefix":    strings.Replace(goodConfig, "namePrefix: run-", "namePrefix: run", 1),
 		"unknown field": goodConfig + "surprise: 1\n",
 		"no model":      strings.Replace(goodConfig, "modelSecret: agent-model\n", "", 1),

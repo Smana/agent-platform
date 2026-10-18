@@ -29,7 +29,7 @@ spec:
         - matchName: proxy.golang.org
         - matchName: sum.golang.org
         - matchName: api.anthropic.com
-        - matchName: room-broker.agent-platform.svc
+        - matchName: room-broker.agent-platform.svc.cluster.local
   - toFQDNs:
     - matchName: github.com
     - matchName: api.github.com

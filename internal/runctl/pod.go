@@ -92,6 +92,9 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 		env = append(env, corev1.EnvVar{Name: "ROOM_ID", Value: s.RoomRef},
 			corev1.EnvVar{Name: "BRIDGE_URL", Value: fmt.Sprintf("http://127.0.0.1:%d", BridgeHealthPort)})
 	}
+	if v := r.Labels[LabelTask]; v != "" {
+		env = append(env, corev1.EnvVar{Name: "TASK_ID", Value: v})
+	}
 	if s.Task.URL != "" {
 		env = append(env, corev1.EnvVar{Name: "TASK_URL", Value: s.Task.URL})
 	}

@@ -80,7 +80,7 @@ allowUnsandboxed: false
 modelSecret: agent-model          # keys: api_key, base_url, model
 gitSecret: agent-git              # key: token (fine-grained PAT)
 broker:
-  url: https://room-broker.agent-platform.svc:8443
+  url: https://room-broker.agent-platform.svc.cluster.local:8443
   namespace: agent-platform       # with labels: the CNP's toEndpoints for :8443
   labels: {app.kubernetes.io/name: room-broker}
   caSecret: room-broker-tls       # its ca.crt is copied into each run's CA ConfigMap

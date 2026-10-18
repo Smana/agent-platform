@@ -127,7 +127,7 @@ spec:
     - name: CONVERSATION_ID
       value: uid-1
     - name: BROKER_URL
-      value: https://room-broker.agent-platform.svc:8443
+      value: https://room-broker.agent-platform.svc.cluster.local:8443
     - name: BROKER_CA_FILE
       value: /etc/room-broker-ca/ca.crt
     - name: HARNESS_URL

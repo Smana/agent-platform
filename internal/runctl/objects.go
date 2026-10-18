@@ -17,12 +17,17 @@ const (
 	LabelRunID     = "agents.ogenki.io/run-id"
 	LabelRole      = "agents.ogenki.io/role"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
+	LabelTask      = "agents.ogenki.io/task"
 	managedBy      = "run-controller"
 )
 
 // Labels are every owned object's.
 func Labels(r *v1alpha1.AgentRun, runID string) map[string]string {
-	return map[string]string{LabelRunID: runID, LabelRole: r.Spec.Role, LabelManagedBy: managedBy}
+	l := map[string]string{LabelRunID: runID, LabelRole: r.Spec.Role, LabelManagedBy: managedBy}
+	if v := r.Labels[LabelTask]; v != "" {
+		l[LabelTask] = v
+	}
+	return l
 }
 
 // Branch is spec.branch, else agent/<runId>, as the composition defaults it.

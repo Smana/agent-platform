@@ -767,7 +767,7 @@ runtimeClassName: gvisor
 modelSecret: agent-model
 gitSecret: agent-git
 broker:
-  url: https://room-broker.agent-platform.svc:8443
+  url: https://room-broker.agent-platform.svc.cluster.local:8443
   namespace: agent-platform
   labels: {app.kubernetes.io/name: room-broker}
   caSecret: room-broker-tls
