@@ -35,18 +35,47 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 			t.Errorf("spec.%s must be required", f)
 		}
 	}
-	rules := []string{}
+	// rule -> message, for every spec-level rule the XRD carries.
+	got := map[string]string{}
 	for _, r := range spec.XValidations {
-		rules = append(rules, r.Rule)
+		got[r.Rule] = r.Message
 	}
-	for _, want := range []string{
-		"self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))",
-		"!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')",
-		"has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)",
+	for rule, msg := range map[string]string{
+		"self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))": "a reviewer run needs a pull request URL as its task",
+		"!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')":                               "task.url must point into spec.repository",
+		"self.dataClass != 'internal' || !has(self.egress) || !has(self.egress.profiles) || size(self.egress.profiles) == 0":           "an internal run takes no egress profiles",
+		"has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)":                              "branch is immutable and cannot be added or removed after creation",
+		"has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)":                         "roomRef is immutable and cannot be added or removed after creation",
+		"has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)":               "queueName is immutable and cannot be added or removed after creation",
+		"has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)":     "suspendable is immutable and cannot be added or removed after creation",
 	} {
-		if !slices.Contains(rules, want) {
-			t.Errorf("spec lacks rule %s", want)
+		if m, ok := got[rule]; !ok || m != msg {
+			t.Errorf("spec rule %q: message %q, want %q", rule, m, msg)
 		}
+	}
+	if len(spec.XValidations) != 7 {
+		t.Errorf("spec has %d rules, want 7", len(spec.XValidations))
+	}
+	immutable := func(name string, p apiextensionsv1.JSONSchemaProps) {
+		for _, r := range p.XValidations {
+			if r.Rule == "self == oldSelf" && r.Message == name+" is immutable" {
+				return
+			}
+		}
+		t.Errorf("%s lacks its immutability rule", name)
+	}
+	for _, f := range []string{"role", "repository", "baseRef", "principal", "model", "dataClass", "harness", "size", "egress", "task"} {
+		immutable(f, spec.Properties[f])
+	}
+	immutable("budget.maxMinutes", spec.Properties["budget"].Properties["maxMinutes"])
+	if m := spec.Properties["egress"].Properties["profiles"].MaxItems; m == nil || *m != 4 {
+		t.Errorf("egress.profiles maxItems %v, want 4", m)
+	}
+	if p := spec.Properties["roomRef"].Pattern; p != "^[a-z2-7]{8}$" {
+		t.Errorf("roomRef pattern %q", p)
+	}
+	if p := spec.Properties["task"].Properties["url"].Pattern; p != `^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$` {
+		t.Errorf("task.url pattern %q", p)
 	}
 	enum := func(p apiextensionsv1.JSONSchemaProps) []string {
 		out := []string{}

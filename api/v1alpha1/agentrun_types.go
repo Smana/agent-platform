@@ -67,6 +67,7 @@ type AgentRunSpec struct {
 	// +optional
 	Model string `json:"model,omitempty"`
 	// +kubebuilder:validation:Enum=public;internal
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="dataClass is immutable"
 	DataClass string `json:"dataClass"`
 	// +kubebuilder:default={}
 	// +optional
@@ -74,10 +75,12 @@ type AgentRunSpec struct {
 	// +kubebuilder:validation:Enum=openhands
 	// +kubebuilder:default=openhands
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="harness is immutable"
 	Harness string `json:"harness,omitempty"`
 	// +kubebuilder:validation:Enum=small;medium;large
 	// +kubebuilder:default=small
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="size is immutable"
 	Size string `json:"size,omitempty"`
 	// +kubebuilder:default={}
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="egress is immutable"

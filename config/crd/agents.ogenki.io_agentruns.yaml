@@ -93,6 +93,9 @@ spec:
                 - public
                 - internal
                 type: string
+                x-kubernetes-validations:
+                - message: dataClass is immutable
+                  rule: self == oldSelf
               egress:
                 default: {}
                 description: AgentRunEgress adds package registries to the always-on
@@ -121,6 +124,9 @@ spec:
                 enum:
                 - openhands
                 type: string
+                x-kubernetes-validations:
+                - message: harness is immutable
+                  rule: self == oldSelf
               model:
                 default: agent-default
                 description: A gateway tier on cloud-native-ref; the run-controller
@@ -172,6 +178,9 @@ spec:
                 - medium
                 - large
                 type: string
+                x-kubernetes-validations:
+                - message: size is immutable
+                  rule: self == oldSelf
               suspendable:
                 type: boolean
               task:
