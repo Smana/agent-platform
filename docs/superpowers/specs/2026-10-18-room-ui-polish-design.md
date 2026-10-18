@@ -1,7 +1,8 @@
 # Room UI polish: design
 
-**Status:** design, approved by the owner on 2026-10-18 in brainstorming; awaiting review of this
-written spec. **Scope:** `web/` only (the room page's stream, dock, controls and stylesheet), the
+**Status:** design, approved by the owner on 2026-10-18; amended the same day from the plan's
+prototype (see "Amended from the prototype" at the end). **Plan:**
+[2026-10-18-room-ui-polish-plan.md](../plans/2026-10-18-room-ui-polish-plan.md). **Scope:** `web/` only (the room page's stream, dock, controls and stylesheet), the
 committed bundle in `internal/humanapi/ui/dist/` that `ui:check` rebuilds, and the preview fixtures.
 No API, envelope or summary change. **Builds on:**
 [2026-10-15-room-readability-design.md](2026-10-15-room-readability-design.md), whose decisions D1
@@ -34,15 +35,15 @@ The fix keeps D1 and restructures in place:
 | # | Decision | Rejected | Why |
 |---|---|---|---|
 | P1 | **Step blocks**: an agent message and every row after it, until the next step breaker, form one step. The tool calls sit behind one `<details>` summary line under the message | A timeline rail with every call visible; a rail that auto-collapses old steps | The owner's choice. The rail keeps the stream long; collapsing a rail is the most work for the same reading |
-| P2 | **A step opens itself while it needs reading.** Open while any call runs, and while any call is errored, rejected or denied. Collapsed once every call is ok. A reader's own toggle wins until the step's state changes | Always collapsed; always open | The live step is what the reader watches; a finished clean step is history. A failure is the one thing in history worth seeing |
-| P3 | **`ok` is silent.** A call line shows ✓ in the muted colour; the green `ok` chip goes. ⊘ amber for rejected/denied, ✕ red for error, a spinner for running | Keep the chip | A status shown on 40 rows of 40 is noise; only an exception should draw the eye (D5's rule, extended) |
+| P2 | **A step opens itself while it needs reading.** Open while any call runs, and while any call errored or was rejected. Collapsed once every call is ok. A reader's own toggle wins until the step's state changes | Always collapsed; always open | The live step is what the reader watches; a finished clean step is history. A failure is the one thing in history worth seeing |
+| P3 | **`ok` is silent.** A call line shows ✓ in the muted colour; the green `ok` chip goes. ⊘ amber and the word for rejected, ✕ red and the word for error, a spinner for running | Keep the chip | A status shown on 40 rows of 40 is noise; only an exception should draw the eye (D5's rule, extended) |
 | P4 | **The composer is the dock's main element**: placeholder `Message the room…`, a visible input border, auto-grow from 2 to 8 rows. A full-height primary **Send** with a label and an arrow icon. Ctrl/⌘+Enter sends | Restyle the button only | Talking to the room is the most frequent act (D4). It has to look like an input |
 | P5 | **Delivery is a segmented radio group**, `Room · Queue · Steer`, with the meaning of the checked one in a hint line under it. No radio is checked after a lost token or an ended run, exactly as the hidden "choose" option works today | Keep the `<select>` | A three-way choice made on every message should be visible, not hidden in a dropdown. The R09 rule (never silently re-route) is unchanged |
-| P6 | **The dock never covers the stream.** A `ResizeObserver` writes the dock's height to `--dock-h` on `<html>`; `main` pads its bottom by it. The dock gets an elevation shadow | A non-sticky dock; `main` as the scroll container | One custom property keeps `scrollIntoView`, the page scroll and `focusRow` exactly as they are |
+| P6 | **The dock stays sticky and gains an elevation shadow; nothing else.** A sticky element sits in the flow at the page's end, so once scrolled there it covers no row. The overlap in the owner's screenshot is a full-page capture painting the sticky bar where the viewport was | A `ResizeObserver` padding `main` by the dock's height; `main` as the scroll container | The prototype showed the padding fixes nothing a sticky dock gets wrong. An open Session scrolls inside 40vh, so the dock never fills the screen |
 | P7 | **Run and Driver move into a `Session` disclosure in the dock**, collapsed by default, above the composer. The Room group and the queue go with them | They stay under the stream | Under 144 events they are three screens down and read as leftovers; the dock is where acts live |
 | P8 | **Dark surfaces retuned, hues kept** (table below). `app.css` records the divergence from app-wizard in a comment; porting it back is a follow-up there | Retune both repos now; a new palette | The owner's choice. The bug is one equal pair of values, not the palette |
 | P9 | **A skeleton stream while connecting.** Three grey message shapes in place of an empty navy screen, until the first frame or the first event | A spinner | The screencast spends 15 s on an empty screen that reads as broken |
-| P10 | **Icons are inline SVG built with `createElementNS`**: one 1.5 px-stroke outline set, `currentColor`, about eight glyphs (send, check, x, ban, spinner, chevron, terminal, tool) | An icon font or a library | Strict CSP and no dependency (D1); one stroke weight per surface |
+| P10 | **Icons are inline SVG built with `createElementNS`**: one 1.5 px-stroke outline set, `currentColor`, six glyphs (check, x, ban, spinner, chevron, send): the ones the page uses | An icon font or a library | Strict CSP and no dependency (D1); one stroke weight per surface |
 
 ## The stream
 
@@ -58,15 +59,15 @@ today.
 - **Members:** every row from the owner up to the next breaker. That is tool rows, plumbing
   rows, and the folds that plumbing forms.
 - **Rows before the first owner** stay at the top level, as now.
-- **When the cap drops a step's owner,** its remaining members form an ownerless step labelled
-  `Earlier calls`.
+- **When the cap drops a step's owner,** its remaining members go to the stream, like rows before
+  the first owner. A label for them was not worth a third kind of step at a 5,000-row cap.
 
 ```mermaid
 flowchart TB
   subgraph step["section.step"]
     owner["article.msg (the agent's sentence, fork here)"]
     subgraph calls["details.step-calls"]
-      s["summary: ▸ Ran 3 commands · 1 denied · 0:15"]
+      s["summary: ▸ Ran 3 commands · 1 rejected · 0:15"]
       t1["details.tool: $ which aspell … ✓ 7:54:09"]
       f["details.fold: · 2 changes"]
       t2["details.tool: ⊘ pip install pyspellchecker 7:54:22"]
@@ -86,7 +87,7 @@ Format: `<verb> <n> <noun> · <exceptions> · <duration>`.
 |---|---|
 | verb | `Running` while any call has no result, else `Ran` |
 | n, noun | the count of tool calls; `command(s)` when every call is a terminal call, else `tool call(s)` |
-| exceptions | `1 denied`, `2 failed`, joined by `·`, omitted when zero; amber/red text |
+| exceptions | `1 rejected`, `2 failed` (error or any unknown status), joined by `·`, omitted when zero; amber text |
 | duration | first call's ts to the last result's ts, `m:ss`, `tabular-nums`; omitted for one call |
 
 Plumbing rows count toward nothing; they show inside as the existing `· N changes` fold.
@@ -150,15 +151,19 @@ Dark tokens, before and after. Light mode keeps its values; its shadows already 
 |---|---|---|---|---|
 | `--muted` (the page) | `#003552` | `#001b2b` | card on page | 1.23:1 (was 1.00) |
 | `--card` | `#003552` | `#002d47` | `--muted-foreground` on card | 8.2:1 |
-| `--surface-raised` (new: header, dock) | n/a | `#003a5c` | raised on page | 1.48:1 |
-| `--border`, `--input` | `#004070` | `#13527d` | border on card | 1.73:1 |
+| `--surface-raised` (new: the dock) | n/a | `#003a5c` | raised on page | 1.48:1 |
+| `--brand-navy` (the header) | `#002538` | `#003a5c` | header text on it | 11.3:1 |
+| `--border` | `#004070` | `#13527d` | border on card | 1.73:1 |
+| `--input` | `#004070` | `#5b8db0` | input boundary on the dock | 3.3:1 |
 | `--placeholder` | `#9db0bc` | unchanged | on raised | 5.3:1 |
 | `--link` | `#4db3e8` | unchanged | on raised | 5.1:1 |
 
-In light mode, `--surface-raised` is `--card` (`#ffffff`). The header keeps `--brand-navy` in
-both schemes. In dark mode the header moves to `--surface-raised`, because brand navy on the new
-page reads 1.11:1. `contrast.test.ts` gains the new pairs: text on raised; the composer border
-on the dock at 3:1, since an input's boundary is meaningful (WCAG 1.4.11).
+In light mode, `--surface-raised` is `#ffffff` and `--input` goes from `#dedede` to `#8f8f8f`
+(3.2:1 on white). Dark `--brand-navy` becomes the raised navy, because the brand's `#002538` on the
+new page reads 1.11:1; every header rule already reads the token. The budget meter's track drops
+from a 20% to a 12% mix, so its green fill keeps 3:1 on the raised header. `contrast.test.ts`
+gains the new pairs: text on the dock; the composer's boundary at 3:1, since an input's boundary
+is meaningful (WCAG 1.4.11); the delivery segments; a step's exceptions.
 
 **Type:**
 
@@ -190,15 +195,15 @@ TDD, stdlib vitest, the existing fakes and fixtures.
 | `chat.test.ts`: call line | no `ok` chip; the args section omits `command`; `show all` lifts the cap |
 | `chat.test.ts`: reveal | `focusRow` on a call in a collapsed step opens the step |
 | `controls.test.ts`: composer | Ctrl/⌘+Enter sends, plain Enter inserts a newline; the radio group follows R09 (no radio checked after a lost token, a notice, the draft kept); Send is disabled while not live |
-| `room.test.ts` | the Session disclosure holds Run and Driver; `--dock-h` follows the dock's size |
+| `room.test.ts` | the Session disclosure holds Run and Driver and names the driver and the run; a watcher has none; the skeleton shows until the first frame |
 | `contrast.test.ts` | every pair above, both schemes |
 
 **Visual check:**
 
 - **Screenshots:** `npm run preview`, then headless chromium on `/preview/full.html`. Light and
   dark, at 390, 1024 and 1280 px, before and after, attached to the PR.
-- **Fixture:** `test/fixtures/live-session.jsonl` gains a denied call and a failed call, so a
-  step with exceptions is in the preview.
+- **Fixture:** `test/fixtures/live-session.jsonl` is unchanged: its refused push already puts a
+  step with an exception in the preview.
 
 **Gate:** `task check`, including `ui:check` for the rebuilt bundle.
 
@@ -208,3 +213,15 @@ TDD, stdlib vitest, the existing fakes and fixtures.
 - Porting the retuned dark tokens back to app-wizard.
 - The room list page: it already reads well as a table, and it inherits only the token change.
 - Syntax highlighting of commands or output.
+
+## Amended from the prototype
+
+The plan's prototype (every task applied and tested in a throwaway worktree) changed five points:
+
+| Point | Was | Now | Why |
+|---|---|---|---|
+| P6 | a `ResizeObserver` padding `main` | sticky dock, shadow only | sticky never covers the last row; the screenshot's overlap is a full-page capture |
+| Steps at the cap | an `Earlier calls` step | members go to the stream | no third kind of step for a 5,000-row edge |
+| Step line | rescanned per event | a per-step tally | a rescan made a 5,000-event replay take 63 s in jsdom; the tally, 0.9 s |
+| Exceptions | `denied` | `rejected`, `failed` | the result statuses the page already shows |
+| Header | `--surface-raised` | dark `--brand-navy` retuned | one token keeps every header rule and its contrast test |
