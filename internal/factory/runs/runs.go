@@ -28,8 +28,8 @@ import (
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
-// The claim's namespace, labels, annotations, principal and queues. Namespace and AnnRevoked
-// are the broker's own (runwatch), so the two readers of a claim never disagree.
+// The claim's labels, annotations, principal and queues. The namespace and AnnRevoked are the
+// broker's own (runwatch), so the two readers of a claim never disagree.
 const (
 	LabelTask        = "agents.ogenki.io/task"
 	LabelRole        = "agents.ogenki.io/role"
@@ -210,7 +210,7 @@ type Run struct {
 }
 
 // FromUnstructured reads a claim. ok is false for one that is not a run: not named
-// xplane-run-<C2 id>, or outside Namespace, as the broker's runwatch decides.
+// <prefix><C2 id> (runs.namePrefix), or outside runs.namespace, as the broker's runwatch decides.
 func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	id, ok := strings.CutPrefix(u.GetName(), runwatch.ClaimPrefix())
 	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace() {
@@ -288,7 +288,7 @@ func (c Client) replayOf(ctx context.Context, s Spec) bool {
 	return a[AnnStartSeq] == start && a[AnnHead] == s.Head
 }
 
-// validID refuses an id that names no run, before it reaches the API as xplane-run-<id>.
+// validID refuses an id that names no run, before it reaches the API as <prefix><id>.
 func validID(op, id string) error {
 	if !envelope.ValidID(id) {
 		return fmt.Errorf("%s run %q: not a C2 id", op, id)

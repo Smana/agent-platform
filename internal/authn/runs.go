@@ -12,7 +12,7 @@ import (
 )
 
 // RunIssuer is one allowlisted issuer and how its subject names a run. Today the
-// only issuer is the cluster's (sub system:serviceaccount:agents:xplane-run-<runId>);
+// only issuer is the cluster's (sub system:serviceaccount:<runs.namespace>:<runs.namePrefix><runId>);
 // a runtime minting its own workload JWTs is one more entry, not a new path (C2 r5).
 type RunIssuer struct {
 	Verifier   *Verifier

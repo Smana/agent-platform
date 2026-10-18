@@ -84,7 +84,7 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 
 // runID is the deterministic id of a task's nth run (R48): the claim a replay recomputes, so a
 // lost status write finds the run it created instead of minting another. A C2 id, like a Task
-// name, so the claim's name is always xplane-run-<id>.
+// name, so the claim's name is always <runs.namePrefix><id>.
 func runID(task string, n int) string { return taskid.Run(task, n) }
 
 // recordExisting records a claim the task's status does not know (R48): the run was created and
