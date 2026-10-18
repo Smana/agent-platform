@@ -9,16 +9,10 @@ import (
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	toolscache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-var gvk = schema.GroupVersionKind{Group: "cloud.ogenki.io", Version: "v1alpha1", Kind: "AgentRun"}
-
-// GVK is the AgentRun claim's kind (C3).
-func GVK() schema.GroupVersionKind { return gvk }
 
 // Watcher runs on every replica: every replica must cut its own connections of a
 // run that ended (S4). Appending to the log is the leader's job (Events).
@@ -209,7 +203,7 @@ type informerSource interface {
 // synced"). Anything that reads the Watcher as complete waits on synced.
 func Register(ctx context.Context, c informerSource, w *Watcher) (synced func() bool, err error) {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(gvk)
+	u.SetGroupVersionKind(GVK())
 	inf, err := c.GetInformer(ctx, u)
 	if err != nil {
 		return nil, fmt.Errorf("runwatch: agentrun informer: %w", err)

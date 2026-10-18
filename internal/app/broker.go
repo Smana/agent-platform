@@ -305,7 +305,7 @@ func managerOptions(ns string) ctrl.Options {
 		Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
 		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
 			&v1alpha1.Room{}: {Namespaces: map[string]cache.Config{ns: {}}},
-			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace: {}}},
+			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace(): {}}},
 		}},
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
 	}

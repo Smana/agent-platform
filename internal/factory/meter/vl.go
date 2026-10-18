@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 // Throttled names the runs a gateway answered with a rate-limit 429 lately; VL implements it
@@ -54,7 +56,7 @@ func (v VL) RecentlyThrottled(ctx context.Context) (map[string]bool, error) {
 		if json.Unmarshal(sc.Bytes(), &row) != nil {
 			continue
 		}
-		if m := runSA.FindStringSubmatch(row["log.x_ar_agent"]); m != nil {
+		if m := runwatch.RunSubject().FindStringSubmatch(row["log.x_ar_agent"]); m != nil {
 			out[m[1]] = true
 		}
 	}

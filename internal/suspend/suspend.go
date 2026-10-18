@@ -141,8 +141,8 @@ func (s *Suspender) patch(ctx context.Context, run runwatch.Run, ann map[string]
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runwatch.GVK())
-	u.SetNamespace(runwatch.Namespace)
-	u.SetName(runwatch.ClaimPrefix + run.ID)
+	u.SetNamespace(runwatch.Namespace())
+	u.SetName(runwatch.ClaimPrefix() + run.ID)
 	return s.Client.Patch(ctx, u, client.RawPatch(types.MergePatchType, body))
 }
 

@@ -167,7 +167,7 @@ func agentRun(id, room, phase string, hold bool) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runwatch.GVK())
 	u.SetName("xplane-run-" + id)
-	u.SetNamespace(runwatch.Namespace)
+	u.SetNamespace(runwatch.Namespace())
 	_ = unstructured.SetNestedField(u.Object, room, "spec", "roomRef")
 	if phase != "" {
 		_ = unstructured.SetNestedField(u.Object, phase, "status", "phase")

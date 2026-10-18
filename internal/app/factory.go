@@ -373,7 +373,7 @@ func factoryManagerOptions(ns string) ctrl.Options {
 			&v1alpha1.Room{}:  {Namespaces: here},
 			&corev1.ConfigMap{}: {Namespaces: here,
 				Field: fields.OneTermEqualSelector("metadata.name", killswitch.ConfigMap)},
-			runObj: {Namespaces: map[string]cache.Config{runs.Namespace: {}}},
+			runObj: {Namespaces: map[string]cache.Config{runs.Namespace(): {}}},
 		}},
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
 	}

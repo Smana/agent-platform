@@ -80,7 +80,7 @@ func task(r Request) map[string]string {
 }
 
 // Manifest renders the AgentRun claim for the owner to create (ruling P14), on
-// runwatch's seam: its GVK and namespace, and the xplane-run- prefix it parses.
+// runwatch's seam: its GVK and namespace, and the name prefix it parses.
 type Manifest struct{}
 
 // Request renders r as a claim, its run id derived from r's idempotency key.
@@ -93,7 +93,7 @@ func (Manifest) Request(_ context.Context, r Request) (Result, error) {
 	}
 	gvk := runwatch.GVK()
 	b, err := json.Marshal(map[string]any{"apiVersion": gvk.GroupVersion().String(), "kind": gvk.Kind,
-		"metadata": map[string]string{"name": "xplane-run-" + id, "namespace": runwatch.Namespace}, "spec": spec})
+		"metadata": map[string]string{"name": runwatch.ClaimPrefix() + id, "namespace": runwatch.Namespace()}, "spec": spec})
 	if err != nil {
 		return Result{}, fmt.Errorf("runrequest: render: %w", err)
 	}

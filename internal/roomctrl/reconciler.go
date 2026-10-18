@@ -272,7 +272,7 @@ func (r *Reconciler) deleteRuns(ctx context.Context, room string) (ended, live [
 	if r.APIReader != nil {
 		reader = r.APIReader
 	}
-	if err := reader.List(ctx, list, client.InNamespace(runwatch.Namespace)); err != nil {
+	if err := reader.List(ctx, list, client.InNamespace(runwatch.Namespace())); err != nil {
 		return nil, nil, fmt.Errorf("roomctrl: list the runs of room %s: %w", room, err)
 	}
 	for i := range list.Items {

@@ -1202,7 +1202,7 @@ func TestSnapshotApprovals(t *testing.T) {
 
 func agentRun(id, room, role string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": "xplane-run-" + id, "namespace": runwatch.Namespace},
+		"metadata": map[string]any{"name": runwatch.ClaimPrefix() + id, "namespace": runwatch.Namespace()},
 		"spec":     map[string]any{"roomRef": room, "role": role},
 		"status":   map[string]any{"phase": "Running"},
 	}}
