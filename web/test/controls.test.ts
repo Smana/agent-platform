@@ -32,7 +32,11 @@ function setup(who: You, driver = "human:a", epoch = 4) {
   const btn = (act: string) => [...wrap.querySelectorAll<HTMLButtonElement>(`button[data-act="${act}"]`)].find(shown) ?? null;
   const field = <T extends HTMLElement>(name: string) => wrap.querySelector<T>(`[name="${name}"]`)!;
   const deliveryNotice = () => dock.querySelector("#delivery-notice")!.textContent;
-  return { sent, notices, state, root, dock, wrap, controls, composer, btn, field, deliveryNotice, acts: () => sent.map((f) => f.action) };
+  const radio = (value: string) => dock.querySelector<HTMLInputElement>(`input[name="delivery"][value="${value}"]`)!;
+  const delivery = () => dock.querySelector<HTMLInputElement>('input[name="delivery"]:checked')?.value ?? "";
+  // pick checks a delivery as a click would: the group hears the change.
+  const pick = (value: string) => { radio(value).checked = true; radio(value).dispatchEvent(new Event("change", { bubbles: true })); };
+  return { sent, notices, state, root, dock, wrap, controls, composer, btn, field, deliveryNotice, radio, delivery, pick, acts: () => sent.map((f) => f.action) };
 }
 const mountOwner = () => setup(you("human:a", "owner"));
 
@@ -80,7 +84,7 @@ describe("mountControls", () => {
   it("sends the composer's text with its delivery and the epoch it was decided on", () => {
     const c = setup(you("human:a", "owner"));
     c.field<HTMLTextAreaElement>("text").value = "look at the flaky test";
-    c.field<HTMLSelectElement>("delivery").value = "steering";
+    c.pick("steering");
     c.btn("message")!.click();
     expect(c.sent[0]).toMatchObject({ type: "act", driverEpoch: 4,
       action: { kind: "message", text: "look at the flaky test", delivery: "steering" } });
@@ -109,44 +113,41 @@ describe("mountControls", () => {
     const c = setup(you("human:b", "collaborator"));
     c.state.apply({ ...queued(0, "system:room-broker", ""), type: "participant", payload: { principal: "agent:r1", change: "joined" } });
     c.controls.refresh();
-    const steer = c.wrap.querySelector<HTMLOptionElement>('option[value="steering"]')!;
+    const steer = c.radio("steering");
     expect(steer.disabled).toBe(true);
     c.state.apply({ ...queued(1, "human:a", ""), type: "driver", payload: { from: "human:a", to: "human:b", epoch: 5, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(false);
     // Losing the token picks nothing for the human: queued text enters an LLM prompt,
     // so neither the room nor the queue is a safe guess (R09, reversing review 4.5 I3).
-    const delivery = c.field<HTMLSelectElement>("delivery");
-    delivery.value = "steering";
+    c.pick("steering");
     c.state.apply({ ...queued(2, "human:a", ""), type: "driver", payload: { from: "human:b", to: "human:c", epoch: 6, reason: "given" } });
     c.controls.refresh();
     expect(steer.disabled).toBe(true);
-    expect(delivery.value).toBe("");
+    expect(c.delivery()).toBe("");
     const choose = "You no longer hold the driver token: choose where this message goes.";
-    expect(c.deliveryNotice()).toBe(choose); // beside the select, not the page's act notice
+    expect(c.deliveryNotice()).toBe(choose); // beside the group, not the page's act notice
     expect(c.notices).toEqual([]);
     c.field<HTMLTextAreaElement>("text").value = "steer this";
     c.btn("message")!.click();
     expect(c.sent).toHaveLength(0);
     expect(c.deliveryNotice()).toBe(choose);
-    delivery.value = "none";
-    delivery.dispatchEvent(new Event("change")); // a choice answers the notice
+    c.pick("none"); // a choice answers the notice
     expect(c.deliveryNotice()).toBe("");
     c.btn("message")!.click();
     expect(c.acts()).toEqual([{ kind: "message", text: "steer this", delivery: "none" }]);
   });
 
-  // R09: each option says what it does; the room is the default, since it prompts no agent.
-  it("names where each delivery goes, the room by default", () => {
-    const delivery = setup(you("human:a", "owner")).field<HTMLSelectElement>("delivery");
-    expect(delivery.value).toBe("none");
-    expect([...delivery.options].map((o) => [o.value, o.textContent])).toEqual([
-      ["none", "post to the room (no agent is prompted)"],
-      ["queued", "queue for the next run's brief"],
-      ["steering", "steer the running agent now"],
-      ["", "choose where this goes"],
-    ]);
-    expect(delivery.options[3].disabled).toBe(true);
+  // R09: each choice says what it does; the room is the default, since it prompts no agent.
+  it("names where each delivery goes, the room by default, and says what the chosen one does", () => {
+    const c = setup(you("human:a", "owner"));
+    expect(c.delivery()).toBe("none");
+    const choices = [...c.dock.querySelectorAll<HTMLInputElement>('input[name="delivery"]')];
+    expect(choices.map((r) => [r.value, r.closest("label")!.textContent])).toEqual([["none", "Room"], ["queued", "Queue"], ["steering", "Steer"]]);
+    const hint = () => c.dock.querySelector("#delivery-hint")!.textContent;
+    expect(hint()).toBe("Posted to the room; no agent is prompted.");
+    c.pick("queued");
+    expect(hint()).toBe("Queued for the next run's brief.");
   });
 
   it("shows the queue as text, with remove for its author and steer for the driver", () => {
@@ -382,13 +383,13 @@ describe("the control groups", () => {
     }
   });
 
-  // Spec: the delivery notice sits beside the select it is about.
-  it("puts the delivery notice right after the Deliver to field", () => {
+  // Spec: the delivery notice sits beside the group it is about.
+  it("puts the delivery notice right after the Deliver to group and its hint", () => {
     const { dock } = mountOwner();
-    const select = dock.querySelector('select[name="delivery"]')!;
-    const notice = dock.querySelector("#delivery-notice")!;
-    expect(select.closest("label")!.nextElementSibling).toBe(notice);
-    expect(select.getAttribute("aria-describedby")).toBe("delivery-notice");
+    const group = dock.querySelector("fieldset.delivery")!;
+    expect(group.nextElementSibling?.id).toBe("delivery-hint");
+    expect(group.nextElementSibling!.nextElementSibling?.id).toBe("delivery-notice");
+    for (const r of dock.querySelectorAll('input[name="delivery"]')) expect(r.getAttribute("aria-describedby")).toBe("delivery-notice delivery-hint");
   });
 
   // Spec: a principal shows short, the full id as its title, as in the strip.
@@ -427,7 +428,7 @@ describe("the control groups", () => {
       expect(f.getAttribute("placeholder"), name).toBeNull();
     }
     expect(wrap.querySelector('select[name="role"]')!.closest("label")!.firstChild!.textContent).toBe("Start a run as");
-    expect(wrap.querySelector('select[name="delivery"]')!.closest("label")!.firstChild!.textContent).toBe("Deliver to");
+    expect(wrap.querySelector("fieldset.delivery > legend")!.textContent).toBe("Deliver to");
   });
 
   it("hides Run and Driver once the room is sealed", () => {
@@ -482,9 +483,29 @@ describe("mountComposer", () => {
     for (const f of [c.field("text"), c.field("delivery"), send]) expect(shown(f)).toBe(false);
   });
 
-  it("ties the notice to the select", () => {
+  it("sends on Ctrl+Enter or Cmd+Enter, and takes Enter alone as a new line", () => {
     const c = mountOwner();
-    expect(c.field("delivery").getAttribute("aria-describedby")).toBe("delivery-notice");
+    const text = c.field<HTMLTextAreaElement>("text");
+    text.value = "first line";
+    const press = (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent("keydown", { key: "Enter", cancelable: true, ...init });
+      text.dispatchEvent(e);
+      return e;
+    };
+    expect(press({}).defaultPrevented).toBe(false);
+    expect(c.sent).toHaveLength(0);
+    expect(press({ ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(c.acts()).toEqual([{ kind: "message", text: "first line", delivery: "none" }]);
+    press({ metaKey: true });
+    expect(c.sent).toHaveLength(2);
+  });
+
+  it("labels Send in words beside its icon, and says what the field is for", () => {
+    const c = mountOwner();
+    const send = c.btn("message")!;
+    expect(send.textContent).toBe("Send");
+    expect(send.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(c.field("text").getAttribute("placeholder")).toBe("Message the room…");
   });
 });
 
