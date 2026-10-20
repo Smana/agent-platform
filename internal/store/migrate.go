@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,8 +29,8 @@ func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
 		return 0, fmt.Errorf("migrate: connect: %w", err)
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrateLock); err != nil {
-		return 0, fmt.Errorf("migrate: lock: %w", err)
+	if err := lock(ctx, conn, log); err != nil {
+		return 0, err
 	}
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrateLock) }()
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS room_broker_revisions (
@@ -57,38 +58,91 @@ func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	shipped := map[string]bool{}
+	pending, err := validate(files, applied)
+	if err != nil {
+		return 0, err
+	}
 	n := 0
-	for _, f := range files {
-		shipped[f.Version] = true
-		sum := sha256.Sum256([]byte(f.Body))
-		checksum := hex.EncodeToString(sum[:])
-		if c, ok := applied[f.Version]; ok {
-			if c != checksum {
-				return n, fmt.Errorf("migrate: %s changed after it was applied (recorded %s, now %s)", f.Name, c, checksum)
-			}
-			continue
-		}
+	for _, f := range pending {
 		if err := apply(ctx, conn, f); err != nil {
 			return n, fmt.Errorf("migrate: %s: %w", f.Name, err)
-		}
-		if _, err := conn.Exec(ctx, "INSERT INTO room_broker_revisions (version, checksum) VALUES ($1, $2)", f.Version, checksum); err != nil {
-			return n, err
 		}
 		log.Info("migration applied", "file", f.Name)
 		n++
 	}
-	for v := range applied {
-		if !shipped[v] {
-			return n, fmt.Errorf("migrate: the database has version %s, which this binary does not ship: it is newer than the code", v)
-		}
-	}
 	return n, nil
 }
 
-// apply runs a file in one transaction, or statement by statement when it opts out (Atlas's
-// txmode none, for CREATE INDEX CONCURRENTLY).
+// lock takes the advisory lock by polling. A blocking pg_advisory_lock would leave the waiter
+// inside a statement holding a snapshot, which the holder's CREATE INDEX CONCURRENTLY waits out
+// while the waiter waits on the lock: a deadlock the detector resolves by aborting a build.
+func lock(ctx context.Context, conn *pgx.Conn, log *slog.Logger) error {
+	waited := false
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", migrateLock).Scan(&got); err != nil {
+			return fmt.Errorf("migrate: lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if !waited {
+			log.Info("waiting for another migrator")
+			waited = true
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// validate checks the whole history before anything is applied and returns the pending files:
+// a changed checksum, a recorded version this binary does not ship, or a pending file older than
+// the newest applied one (Atlas's linear history) is refused with nothing changed.
+func validate(files []migrations.File, applied map[string]string) ([]migrations.File, error) {
+	shipped := map[string]bool{}
+	var pending []migrations.File
+	for _, f := range files {
+		shipped[f.Version] = true
+		c, ok := applied[f.Version]
+		if !ok {
+			pending = append(pending, f)
+			continue
+		}
+		if sum := checksum(f.Body); c != sum {
+			return nil, fmt.Errorf("migrate: %s changed after it was applied (recorded %s, now %s)", f.Name, c, sum)
+		}
+	}
+	newest := ""
+	for v := range applied {
+		if !shipped[v] {
+			return nil, fmt.Errorf("migrate: the database has version %s, which this binary does not ship: it is newer than the code", v)
+		}
+		newest = max(newest, v)
+	}
+	for _, f := range pending {
+		if f.Version < newest {
+			return nil, fmt.Errorf("migrate: %s is pending but version %s is already applied: history must stay linear", f.Name, newest)
+		}
+	}
+	return pending, nil
+}
+
+func checksum(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+const recordSQL = "INSERT INTO room_broker_revisions (version, checksum) VALUES ($1, $2)"
+
+// apply runs a file and records it. A transactional file records inside its own transaction, so a
+// SIGTERM or a lost COMMIT ack cannot leave it applied but unrecorded (no file is idempotent). A
+// txmode-none file (Atlas's, for CREATE INDEX CONCURRENTLY) runs a statement at a time and records
+// under a context a SIGTERM cannot cancel.
 func apply(ctx context.Context, conn *pgx.Conn, f migrations.File) error {
+	sum := checksum(f.Body)
 	if !f.NoTx {
 		tx, err := conn.Begin(ctx)
 		if err != nil {
@@ -98,14 +152,19 @@ func apply(ctx context.Context, conn *pgx.Conn, f migrations.File) error {
 			_ = tx.Rollback(ctx)
 			return err
 		}
+		if _, err := tx.Exec(ctx, recordSQL, f.Version, sum); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
 		return tx.Commit(ctx)
 	}
 	for _, stmt := range statements(f.Body) {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("%w (a txmode-none file can leave an INVALID index: DROP it, then re-run)", err)
+			return fmt.Errorf("%w (a txmode-none file is not resumable: DROP every index this file created, an INVALID one included, then re-run)", err)
 		}
 	}
-	return nil
+	_, err := conn.Exec(context.WithoutCancel(ctx), recordSQL, f.Version, sum)
+	return err
 }
 
 // statements splits a txmode-none migration into its statements, every one of
