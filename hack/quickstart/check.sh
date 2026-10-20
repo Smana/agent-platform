@@ -31,6 +31,10 @@ issuer_name=$(yq '.broker.tls.issuerRef.name' "$qvals")
 export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo RUN_PROMPT=$'say "hi": ok\n😀 second line'
 # shellcheck disable=SC2016 # envsubst takes a literal variable list
 render() { envsubst '${ROOM_ID} ${RUN_ID} ${REPO}' <"$qs/manifests/$1.yaml.tmpl"; }
+export RUNS_NS=$runs_ns NS=$ns PROBE_IMAGE CLUSTER_DOMAIN=cluster.local
+# shellcheck disable=SC2016 # envsubst takes a literal variable list
+envsubst '${RUNS_NS} ${NS} ${PROBE_IMAGE} ${CLUSTER_DOMAIN}' <"$qs/manifests/gvisor-probe.yaml.tmpl" >"$tmp/gvisor-probe.yaml"
+yq ea '.' "$tmp/gvisor-probe.yaml" >/dev/null || bad "gvisor-probe does not parse"
 for m in ca-issuer cnpg-cluster room agentrun; do render "$m" >"$tmp/$m.yaml"; yq ea '.' "$tmp/$m.yaml" >/dev/null || bad "$m does not parse"; done
 render agentrun | yq '.spec.task.text = strenv(RUN_PROMPT)' >"$tmp/run-final.yaml"
 [[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$RUN_PROMPT" ]] || bad "task text does not survive run.sh's templating"
@@ -68,6 +72,18 @@ grep -q "create namespace $runs_ns " "$qs/up.sh" || bad "up.sh does not create n
 [[ $(yq '.metadata.namespace' "$tmp/room.yaml") == "$ns" ]] || bad "Room is not in the release namespace $ns (where the broker reads it)"
 [[ $(q Namespace 'length') == 0 ]] || bad "chart renders a Namespace despite createRunsNamespace=false"
 [[ $(q RuntimeClass '.[0].metadata.name') == $(yq '.runController.runtimeClassName' "$vals") ]] || bad "RuntimeClass not rendered"
+
+# gVisor probe: run-shaped (runs namespace, run-id label, the chart's RuntimeClass), asks the broker's own name and port
+rc=$(yq '.runController.runtimeClassName' "$vals")
+[[ $(yq ea 'select(.kind=="Pod") | .spec.runtimeClassName' "$tmp/gvisor-probe.yaml") == "$rc" ]] || bad "probe runtimeClassName is not $rc"
+[[ $(yq ea '[.metadata.namespace] | unique | join(",")' "$tmp/gvisor-probe.yaml") == "$runs_ns" ]] || bad "probe is not in $runs_ns"
+[[ $(yq ea 'select(.kind=="Pod") | .metadata.labels."agents.ogenki.io/run-id"' "$tmp/gvisor-probe.yaml") != null ]] || bad "probe lacks the run-id label the broker CNP admits"
+[[ $(yq ea 'select(.kind=="CiliumNetworkPolicy") | .spec.egress[1].toEndpoints[0].matchLabels."app.kubernetes.io/name"' "$tmp/gvisor-probe.yaml") == room-broker ]] || bad "probe CNP does not target the broker"
+[[ $(yq ea 'select(.kind=="CiliumNetworkPolicy") | .spec.egress[1].toPorts[0].ports[0].port' "$tmp/gvisor-probe.yaml") == 8443 ]] || bad "probe CNP port is not the broker's 8443"
+for c in ok:dmesg ok:dns ok:tcp; do grep -q "$c" "$tmp/gvisor-probe.yaml" || bad "probe does not print $c"; done
+[[ $(yq '.clusterDomain' "$vals") == cluster.local ]] || bad "up.sh's probe assumes clusterDomain cluster.local"
+grep -q 'ALLOW_UNSANDBOXED:-} != 1 \]\]; then' "$qs/up.sh" || bad "up.sh does not skip the probe under ALLOW_UNSANDBOXED=1"
+for t in sha512sum bzip2 tar; do grep -E "^for t in " "$qs/up.sh" | grep -qw "$t" || bad "up.sh does not check for $t (fetch-runsc.sh needs it)"; done
 
 # Cilium must keep socket-LB out of pod namespaces, or gVisor run pods cannot reach any ClusterIP
 grep -q 'socketLB.hostNamespaceOnly=true' "$qs/up.sh" || bad "up.sh does not set socketLB.hostNamespaceOnly=true (gVisor)"
