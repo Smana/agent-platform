@@ -77,6 +77,7 @@ p="$(helm template ap . -n agent-system "${imgs[@]}" \
      --set broker.tls.secretName=broker-cert --set apiServerPorts='{6443}' --set clusterDomain=corp.local)"
 out="$p"
 ynone 'select(.kind=="ClusterRoleBinding")' 'jwks mode binds no auth-delegator'
+ynone 'select(.kind=="RuntimeClass")' 'production renders no RuntimeClass: the cluster-scoped gvisor may already exist'
 ynone 'select(.kind=="Deployment") | .spec.template.spec.initContainers | select(. != null)' 'no owner Secret, no migrate'
 check 'xplane-run-' 'the production prefix flows through'
 check 'cloud.ogenki.io' 'the production group flows through'
@@ -90,6 +91,13 @@ ykind CiliumNetworkPolicy 'select(.metadata.name=="run-controller") | (.spec.egr
 out="$(helm template ap . -n x -f values-quickstart.yaml --set createRunsNamespace=false "${imgs[@]}")"
 ykind CiliumNetworkPolicy 'select(.metadata.namespace=="agents") | (.spec.endpointSelector | length) == 0' 'default-deny without the Namespace object'
 ynone 'select(.kind=="Namespace")' 'createRunsNamespace=false renders no Namespace'
+
+# the broker Certificate covers the host the controller hands the bridge, on a non-default cluster domain
+out="$(helm template ap . -n x -f values-quickstart.yaml "${imgs[@]}" --set clusterDomain=corp.local)"
+ykind Certificate '.spec.dnsNames | contains(["room-broker.x.svc.corp.local"])' 'the Certificate names room-broker.<ns>.svc.<clusterDomain>'
+ynone '[select(.kind=="Certificate") | .spec.dnsNames[] | select(test("cluster.local"))] | .[]' 'no cluster.local in the Certificate when clusterDomain=corp.local'
+bhost="$(yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml" | from_yaml | .broker.url | sub("^https://", "") | sub(":[0-9]+$", "")' - <<<"$out")"
+BHOST="$bhost" ykind Certificate '.spec.dnsNames | contains([strenv(BHOST)])' "a dnsName covers the controller's broker.url host ($bhost)"
 
 # a misconfiguration is a helm error, for the intended reason: each case names its message
 bad() { # bad 'expected message' --set ...

@@ -9,10 +9,10 @@ spec:
   secretName: {{ .Values.broker.tls.secretName }}
   duration: 720h # 30d
   renewBefore: 240h # 10d
-  commonName: room-broker.{{ .Release.Namespace }}.svc.cluster.local
+  commonName: room-broker.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}
   dnsNames:
     - room-broker.{{ .Release.Namespace }}.svc
-    - room-broker.{{ .Release.Namespace }}.svc.cluster.local
+    - room-broker.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}
   issuerRef:
     group: cert-manager.io
     {{- toYaml .Values.broker.tls.issuerRef | nindent 4 }}

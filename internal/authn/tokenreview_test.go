@@ -49,17 +49,24 @@ func TestTokenReview(t *testing.T) {
 		err     error
 		wantSub string
 		wantErr error
+		notErr  error // the kinds must stay apart: only ErrWrongIssuer lets the next issuer try
 	}{
 		"authenticated":   {status: ok("system:serviceaccount:agents:run-abcdefgh", AudienceRun), wantSub: "system:serviceaccount:agents:run-abcdefgh"},
-		"wrong audience":  {status: ok("system:serviceaccount:agents:run-abcdefgh", "other"), wantErr: ErrUnauthenticated},
+		"wrong audience":  {status: ok("system:serviceaccount:agents:run-abcdefgh", "other"), wantErr: ErrWrongAudience, notErr: ErrWrongIssuer},
 		"unauthenticated": {status: authv1.TokenReviewStatus{Authenticated: false}, wantErr: ErrWrongIssuer},
-		"api error":       {err: errors.New("boom"), wantErr: ErrUnauthenticated},
+		"api error":       {err: errors.New("boom"), wantErr: ErrReviewUnavailable, notErr: ErrWrongIssuer},
 	} {
 		f := &fakeReviewer{status: tc.status, err: tc.err}
 		c, err := NewTokenReview(f, func() time.Time { return now }).Verify(t.Context(), tok, AudienceRun)
 		if tc.wantErr != nil {
 			if !errors.Is(err, tc.wantErr) {
 				t.Errorf("%s: err %v, want %v", name, err, tc.wantErr)
+			}
+			if tc.notErr != nil && errors.Is(err, tc.notErr) {
+				t.Errorf("%s: err %v must not be %v", name, err, tc.notErr)
+			}
+			if !errors.Is(err, ErrUnauthenticated) {
+				t.Errorf("%s: err %v must still be unauthenticated", name, err)
 			}
 			continue
 		}
