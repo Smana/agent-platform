@@ -81,8 +81,8 @@ systemIssuer: null             # optional: without it, system routes answer 401
 - It runs as the database owner. The migrations GRANT to the login roles `rooms_broker` and
   `rooms_retention`, which must exist first: the quickstart creates all three with CNPG managed
   roles, as cloud-native-ref does.
-- A file runs in a transaction unless it starts with `-- atlas:txmode none` (three do, for
-  `CREATE INDEX CONCURRENTLY`).
+- A file runs in a transaction unless it starts with `-- atlas:txmode none` (five do, for
+  `CREATE INDEX CONCURRENTLY`: verdicts, delivery_indexes, brief_index, approval_indexes, task_facts_index).
 - A checksum mismatch, or a recorded version it does not ship, is refused.
 - **Limit:** a txmode-none file failing half-way can leave an INVALID index. The next run refuses
   and names the index and the `DROP INDEX` to run. On an empty database the window is a few

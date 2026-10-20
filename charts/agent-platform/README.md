@@ -2,8 +2,7 @@
 
 The umbrella chart: the room broker, the `Room` and `AgentRun` CRDs (`crds/`), the runs
 namespace with its default-deny policy, and — behind `factory.enabled` — the
-[agent-factory](../agent-factory/README.md) subchart. The run controller lands in a later change
-(`runController`).
+[agent-factory](../agent-factory/README.md) subchart. The run controller is `runController`.
 
 ## Values that matter
 
@@ -24,4 +23,15 @@ helm template ap charts/agent-platform -n agent-platform -f charts/agent-platfor
   --set broker.image.tag=<version>@sha256:<digest> --set runController.image.tag=<version>@sha256:<digest>
 ```
 
-Checks: `task chart:check`.
+## Caveats
+
+| Topic | Behaviour |
+|---|---|
+| CRDs | `crds/` are installed once and **not upgraded by Helm**: `kubectl apply -f charts/agent-platform/crds` on every upgrade |
+| Runs namespace | Kept on uninstall (`helm.sh/resource-policy: keep`) and keeps its Helm ownership annotations: reinstalling under another release name needs `createRunsNamespace: false` |
+| `:8090` | The agents' room tools listener is not modelled in the chart (no Service port, no policy) |
+| `oidc` mode network | Needs `broker.networkPolicy.extraEgress` (JWKS) and `extraIngress` (`:8080` from the proxy, `:9090` scraping). Default-deny leaves `:9090` unscrapable for both the broker and the controller |
+| `createRuntimeClass` | Off by default (the RuntimeClass name is cluster-scoped); on in the quickstart |
+| `apiServerPorts` | `[443, 6443]`: the ports the egress policy opens to the apiserver |
+
+Checks: `task chart:check`. The laptop install is the [quickstart](../../docs/quickstart.md).

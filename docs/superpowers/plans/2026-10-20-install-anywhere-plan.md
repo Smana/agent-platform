@@ -826,8 +826,8 @@ func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
 		return 0, fmt.Errorf("migrate: connect: %w", err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrateLock); err != nil {
-		return 0, fmt.Errorf("migrate: lock: %w", err)
+	if err := lock(ctx, conn, log); err != nil { // polled pg_try_advisory_lock, see the note below
+		return 0, err
 	}
 	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrateLock) //nolint:errcheck // the session ends anyway
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS room_broker_revisions (
@@ -871,11 +871,8 @@ func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
 			}
 			continue
 		}
-		if err := apply(ctx, conn, string(body)); err != nil {
+		if err := apply(ctx, conn, version, checksum, string(body)); err != nil { // records the revision inside the file's transaction
 			return n, fmt.Errorf("migrate: %s: %w", name, err)
-		}
-		if _, err := conn.Exec(ctx, "INSERT INTO room_broker_revisions (version, checksum) VALUES ($1, $2)", version, checksum); err != nil {
-			return n, err
 		}
 		log.Info("migration applied", "file", name)
 		n++
@@ -910,6 +907,8 @@ func apply(ctx context.Context, conn *pgx.Conn, sql string) error {
 	return nil
 }
 ```
+
+**The code moved on** (`internal/store/migrate.go` is the source of truth): `lock` polls `pg_try_advisory_lock` once a second, because a blocking `pg_advisory_lock` deadlocks against the holder's `CREATE INDEX CONCURRENTLY` (the waiter's snapshot is waited out); and `apply` inserts the `room_broker_revisions` row in the same transaction as the file, so a crash cannot leave a file applied but unrecorded (a txmode-none file records after its statements).
 
 `statements` exists in `testdb_test.go`, a test file. Move it into `migrate.go`, unexported, and make the test file use the moved copy. The bootstrap then shares one splitter with production.
 
