@@ -28,27 +28,32 @@ func writeCfg(t *testing.T, body string) string {
 	return p
 }
 
-func TestServeBrokerConfiguresTheRunsKind(t *testing.T) {
-	t.Cleanup(func() { _ = runwatch.Configure(runwatch.DefaultKind) })
-	cfg := writeCfg(t, brokerCfg+runsBlock)
-	env := map[string]string{"ROOMS_CONFIG": cfg, "ROOMS_DATABASE_URL": "postgres://unused", "POD_NAMESPACE": "agent-platform"}
-	if err := serveBroker(context.Background(), slog.New(slog.DiscardHandler), func(k string) string { return env[k] }); err == nil {
-		t.Fatal("no TLS pair: serveBroker must fail after Configure")
-	}
-	if got := runwatch.Current(); got != wantKind {
-		t.Fatalf("serveBroker did not configure the runs kind: %+v", got)
-	}
-}
-
-func TestRunFactoryConfiguresTheRunsKind(t *testing.T) {
-	t.Cleanup(func() { _ = runwatch.Configure(runwatch.DefaultKind) })
-	cfg := writeCfg(t, factoryCfg+runsBlock)
-	env := map[string]string{"FACTORY_CONFIG": cfg, "POD_NAMESPACE": "agent-system"}
-	if err := runFactory(context.Background(), slog.New(slog.DiscardHandler), func(k string) string { return env[k] }); err == nil {
-		t.Fatal("no broker CA: runFactory must fail after Configure")
-	}
-	if got := runwatch.Current(); got != wantKind {
-		t.Fatalf("runFactory did not configure the runs kind: %+v", got)
+func TestEntrypointsConfigureTheRunsKind(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name, wantErr string
+		run           func(getenv func(string) string) error
+		cfgEnv, cfg   string
+		env           map[string]string
+	}{
+		{"serveBroker", "no TLS pair", func(g func(string) string) error { return serveBroker(context.Background(), logger, g) },
+			"ROOMS_CONFIG", brokerCfg, map[string]string{"ROOMS_DATABASE_URL": "postgres://unused", "POD_NAMESPACE": "agent-platform"}},
+		{"runFactory", "no broker CA", func(g func(string) string) error { return runFactory(context.Background(), logger, g) },
+			"FACTORY_CONFIG", factoryCfg, map[string]string{"POD_NAMESPACE": "agent-system"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() { _ = runwatch.Configure(runwatch.DefaultKind) })
+			env := map[string]string{tc.cfgEnv: writeCfg(t, tc.cfg+runsBlock)}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			if err := tc.run(func(k string) string { return env[k] }); err == nil {
+				t.Fatalf("%s: must fail after Configure", tc.wantErr)
+			}
+			if got := runwatch.Current(); got != wantKind {
+				t.Fatalf("%s did not configure the runs kind: %+v", tc.name, got)
+			}
+		})
 	}
 }
 

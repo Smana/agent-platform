@@ -103,7 +103,7 @@ func (e env) modelSecret(t *testing.T) {
 
 func (e env) reconcile(t *testing.T, name string) ctrl.Result {
 	t.Helper()
-	res, err := e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agents", Name: name}})
+	res, err := e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: key(name)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,16 +113,29 @@ func (e env) reconcile(t *testing.T, name string) ctrl.Result {
 func (e env) get(t *testing.T, name string) *v1alpha1.AgentRun {
 	t.Helper()
 	r := &v1alpha1.AgentRun{}
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: name}, r); err != nil {
+	if err := e.c.Get(e.ctx, key(name), r); err != nil {
 		t.Fatal(err)
 	}
 	return r
 }
 
+func key(name string) types.NamespacedName {
+	return types.NamespacedName{Namespace: "agents", Name: name}
+}
+
+// markReady is what the kubelet reports once the pod runs.
+func (e env) markReady(t *testing.T, name string) {
+	t.Helper()
+	e.setPod(t, name, func(p *corev1.Pod) {
+		p.Status.Phase = corev1.PodRunning
+		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	})
+}
+
 func (e env) setPod(t *testing.T, name string, mut func(*corev1.Pod)) {
 	t.Helper()
 	p := &corev1.Pod{}
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: name}, p); err != nil {
+	if err := e.c.Get(e.ctx, key(name), p); err != nil {
 		t.Fatal(err)
 	}
 	mut(p)
@@ -150,7 +163,7 @@ func TestEnvtestRunLifecycle(t *testing.T) {
 		t.Fatalf("status after create %+v", got.Status)
 	}
 	for _, o := range []client.Object{&corev1.ServiceAccount{}, &corev1.Pod{}} {
-		if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-abcdefgh"}, o); err != nil {
+		if err := e.c.Get(e.ctx, key("run-abcdefgh"), o); err != nil {
 			t.Fatalf("%T: %v", o, err)
 		}
 		if ref := metav1.GetControllerOf(o); ref == nil || ref.Kind != "AgentRun" {
@@ -158,21 +171,18 @@ func TestEnvtestRunLifecycle(t *testing.T) {
 		}
 	}
 	for _, n := range []string{"run-abcdefgh-task", "run-abcdefgh-ca"} {
-		if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: n}, &corev1.ConfigMap{}); err != nil {
+		if err := e.c.Get(e.ctx, key(n), &corev1.ConfigMap{}); err != nil {
 			t.Fatalf("%s: %v", n, err)
 		}
 	}
 	cnp := &unstructured.Unstructured{}
 	cnp.SetAPIVersion("cilium.io/v2")
 	cnp.SetKind("CiliumNetworkPolicy")
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-abcdefgh"}, cnp); err != nil {
+	if err := e.c.Get(e.ctx, key("run-abcdefgh"), cnp); err != nil {
 		t.Fatalf("cnp: %v", err)
 	}
 
-	e.setPod(t, "run-abcdefgh", func(p *corev1.Pod) {
-		p.Status.Phase = corev1.PodRunning
-		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-	})
+	e.markReady(t, "run-abcdefgh")
 	e.reconcile(t, "run-abcdefgh")
 	if got := e.get(t, "run-abcdefgh"); got.Status.Phase != "Running" || got.Status.StartedAt == "" {
 		t.Fatalf("running %+v", got.Status)
@@ -208,7 +218,7 @@ func TestEnvtestRevokeDeletesThePod(t *testing.T) {
 		t.Fatalf("revoked %+v", got.Status)
 	}
 	p := &corev1.Pod{}
-	err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-bbbbbbbb"}, p)
+	err := e.c.Get(e.ctx, key("run-bbbbbbbb"), p)
 	if err == nil && p.DeletionTimestamp == nil {
 		t.Fatal("the pod must be deleted on revoke")
 	} else if err != nil && !apierrors.IsNotFound(err) {
@@ -225,7 +235,7 @@ func TestEnvtestInvalidRunFails(t *testing.T) {
 	if got.Status.Phase != "Failed" || got.Status.FinishedAt == "" || !apimeta.IsStatusConditionTrue(got.Status.Conditions, "Invalid") {
 		t.Fatalf("invalid %+v", got.Status)
 	}
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "other-cccccccc"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+	if err := e.c.Get(e.ctx, key("other-cccccccc"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("no pod for an invalid run, got %v", err)
 	}
 }
@@ -243,7 +253,7 @@ func TestEnvtestPermanentCreateFailureEndsTheRun(t *testing.T) {
 	if c := apimeta.FindStatusCondition(got.Status.Conditions, "Invalid"); c == nil || c.Status != metav1.ConditionTrue || c.Reason != "CreateFailed" || c.Message == "" {
 		t.Fatalf("Invalid condition %+v", c)
 	}
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-ffffffff"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+	if err := e.c.Get(e.ctx, key("run-ffffffff"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("no pod after a failed create, got %v", err)
 	}
 }
@@ -253,7 +263,7 @@ func TestEnvtestTransientCreateFailureIsReportedAndRetried(t *testing.T) {
 	e.modelSecret(t)
 	e.r.Client = cnpFails{e.c, apierrors.NewServiceUnavailable("apiserver busy")}
 	create(t, e, run("run-gggggggg"))
-	if _, err := e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agents", Name: "run-gggggggg"}}); err == nil {
+	if _, err := e.r.Reconcile(e.ctx, ctrl.Request{NamespacedName: key("run-gggggggg")}); err == nil {
 		t.Fatal("a transient create failure must return the error so it is retried")
 	}
 	got := e.get(t, "run-gggggggg")
@@ -293,10 +303,7 @@ func TestEnvtestStartedRunPodGone(t *testing.T) {
 	e.modelSecret(t)
 	create(t, e, run("run-ffffffff"))
 	e.reconcile(t, "run-ffffffff")
-	e.setPod(t, "run-ffffffff", func(p *corev1.Pod) {
-		p.Status.Phase = corev1.PodRunning
-		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-	})
+	e.markReady(t, "run-ffffffff")
 	e.reconcile(t, "run-ffffffff")
 
 	// A stale cache must not end the run: the uncached re-check finds the pod.
@@ -309,14 +316,14 @@ func TestEnvtestStartedRunPodGone(t *testing.T) {
 	e.r.Client = cached
 
 	p := &corev1.Pod{}
-	key := types.NamespacedName{Namespace: "agents", Name: "run-ffffffff"}
-	if err := e.c.Get(e.ctx, key, p); err != nil {
+	k := key("run-ffffffff")
+	if err := e.c.Get(e.ctx, k, p); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.c.Delete(e.ctx, p, client.GracePeriodSeconds(0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.c.Get(e.ctx, key, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+	if err := e.c.Get(e.ctx, k, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("pod must be gone (no kubelet to finalise it), got %v", err)
 	}
 	e.reconcile(t, "run-ffffffff")
@@ -324,7 +331,7 @@ func TestEnvtestStartedRunPodGone(t *testing.T) {
 		t.Fatalf("pod lost %+v", got.Status)
 	}
 	e.reconcile(t, "run-ffffffff")
-	if err := e.c.Get(e.ctx, key, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+	if err := e.c.Get(e.ctx, k, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("a lost run's pod must not be recreated, got %v", err)
 	}
 }
@@ -334,10 +341,7 @@ func TestEnvtestRunningRunSurvivesConfigGoingInvalid(t *testing.T) {
 	e.modelSecret(t)
 	create(t, e, run("run-gggggggg"))
 	e.reconcile(t, "run-gggggggg")
-	e.setPod(t, "run-gggggggg", func(p *corev1.Pod) {
-		p.Status.Phase = corev1.PodRunning
-		p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-	})
+	e.markReady(t, "run-gggggggg")
 	e.reconcile(t, "run-gggggggg")
 
 	e.r.Cfg.RuntimeClassName, e.r.Cfg.AllowUnsandboxed = "", false
@@ -345,7 +349,7 @@ func TestEnvtestRunningRunSurvivesConfigGoingInvalid(t *testing.T) {
 	if got := e.get(t, "run-gggggggg"); got.Status.Phase != "Running" || apimeta.IsStatusConditionTrue(got.Status.Conditions, "Invalid") {
 		t.Fatalf("a started run must outlive a config change: %+v", got.Status)
 	}
-	if err := e.c.Get(e.ctx, types.NamespacedName{Namespace: "agents", Name: "run-gggggggg"}, &corev1.Pod{}); err != nil {
+	if err := e.c.Get(e.ctx, key("run-gggggggg"), &corev1.Pod{}); err != nil {
 		t.Fatalf("pod must stay: %v", err)
 	}
 }

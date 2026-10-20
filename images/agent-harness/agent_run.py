@@ -8,6 +8,7 @@ the log to its end, each step boxed inside 15 s (disruption design §2). Nothing
 here is a control (design section 4): every rule it passes to the agent is
 enforced outside the sandbox.
 """
+import functools
 import json
 import os
 import re
@@ -61,6 +62,17 @@ REDACTED_KEY = "[REDACTED:model-key]"
 RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
 
 
+@functools.cache
+def _read_secret(path: str) -> str:
+    # A mounted Secret never changes for the pod's life, so each file is read once. "" for a
+    # missing, unreadable or non-UTF-8 file: redaction must never fail a print.
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def redact(text: str) -> str:
     try:
         with open(TOKEN_CACHE) as f:
@@ -70,11 +82,7 @@ def redact(text: str) -> str:
     if cached:
         text = text.replace(cached, REDACTED)
     for var, marker in (("GIT_TOKEN_FILE", REDACTED), ("LLM_API_KEY_FILE", REDACTED_KEY)):
-        try:
-            with open(os.environ.get(var) or os.devnull) as f:
-                value = f.read().strip()
-        except OSError:
-            value = ""
+        value = _read_secret(os.environ.get(var) or os.devnull)
         if value:
             text = text.replace(value, marker)
     return GITHUB_TOKEN.sub(REDACTED, text)
@@ -175,6 +183,8 @@ def _api_key(env: dict) -> str:
     path = env.get("LLM_API_KEY_FILE")
     if not path:
         return PLACEHOLDER_KEY
+    # Read directly, not through _read_secret: an unreadable key must raise, never fall back
+    # to the placeholder.
     with open(path) as f:
         return f.read().strip()
 

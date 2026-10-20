@@ -38,13 +38,17 @@ func golden(t *testing.T, name string, v any) {
 	}
 }
 
+func goRun() *v1alpha1.AgentRun {
+	return run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.Egress.Profiles = []v1alpha1.AgentRunEgressProfile{"golang"} })
+}
+
 func TestPodGolden(t *testing.T) {
-	r := run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.Egress.Profiles = []v1alpha1.AgentRunEgressProfile{"golang"} })
+	r := goRun()
 	golden(t, "pod.golden.yaml", Pod(r, testConfig(t), testModel, "abcdefgh"))
 }
 
 func TestCNPGolden(t *testing.T) {
-	r := run("run-abcdefgh", func(r *v1alpha1.AgentRun) { r.Spec.Egress.Profiles = []v1alpha1.AgentRunEgressProfile{"golang"} })
+	r := goRun()
 	golden(t, "cnp.golden.yaml", NetworkPolicy(r, testConfig(t), testModel, "abcdefgh").Object)
 }
 
