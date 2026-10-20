@@ -20,7 +20,7 @@ jobs:
       id-token: write # keyless cosign signing
     strategy:
       matrix:
-        image: [room-broker, room-bridge, agent-factory, agent-harness]
+        image: [room-broker, room-bridge, agent-factory, agent-harness, run-controller]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -136,4 +136,5 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes
           cp config/crd/agents.ogenki.io_rooms.yaml crd-rooms.yaml
-          gh release upload "$TAG" roomctl-* roomctl.sha256 crd-rooms.yaml --clobber
+          cp config/crd/agents.ogenki.io_agentruns.yaml crd-agentruns.yaml
+          gh release upload "$TAG" roomctl-* roomctl.sha256 crd-rooms.yaml crd-agentruns.yaml --clobber

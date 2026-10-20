@@ -126,6 +126,10 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	// Before anything watches or creates a run: every reader takes the kind from here.
+	if err := runwatch.Configure(cfg.Runs); err != nil {
+		return fmt.Errorf("broker config: runs: %w", err)
+	}
 	tlsCfg, err := bridgeapi.TLSConfig(cfg.TLS.CertFile, cfg.TLS.KeyFile, log)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
@@ -305,7 +309,7 @@ func managerOptions(ns string) ctrl.Options {
 		Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
 		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
 			&v1alpha1.Room{}: {Namespaces: map[string]cache.Config{ns: {}}},
-			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace: {}}},
+			runObj:           {Namespaces: map[string]cache.Config{runwatch.Namespace(): {}}},
 		}},
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
 	}

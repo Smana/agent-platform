@@ -26,6 +26,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"sigs.k8s.io/yaml"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 const (
@@ -129,6 +131,8 @@ type Config struct {
 	API       API                 `json:"api"`
 	RunLore   RunLore             `json:"runlore"`
 	Sandbox   Sandbox             `json:"sandbox,omitzero"`
+	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
+	Runs runwatch.Kind `json:"runs,omitzero"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 }
@@ -576,6 +580,10 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if err := c.normalize(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	c.Runs = c.Runs.WithDefaults()
+	if err := c.Runs.Validate(); err != nil {
+		return nil, fmt.Errorf("config: runs: %w", err)
 	}
 	if c.Caps.MaxPendingMinutes == 0 {
 		c.Caps.MaxPendingMinutes = defaultMaxPendingMinutes // the Pending bound never stays open (P)

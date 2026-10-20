@@ -11,6 +11,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 func TestManifestIsAValidClaim(t *testing.T) {
@@ -118,5 +122,31 @@ func TestManifestDedupesOnTheKey(t *testing.T) {
 	c, _ := Manifest{}.Request(t.Context(), r)
 	if a.RunID != b.RunID || a.RunID == c.RunID || !regexp.MustCompile(`^[a-z2-7]{8}$`).MatchString(a.RunID) {
 		t.Fatalf("%s %s %s", a.RunID, b.RunID, c.RunID)
+	}
+}
+
+// One rendered manifest is a run to either runtime's reader (adoption 3a, R2).
+func TestManifestReadsBackUnderBothKinds(t *testing.T) {
+	t.Cleanup(func() { _ = runwatch.Configure(runwatch.DefaultKind) })
+	for _, k := range []runwatch.Kind{runwatch.DefaultKind, {Group: "agents.ogenki.io", NamePrefix: "run-"}} {
+		if err := runwatch.Configure(k); err != nil {
+			t.Fatal(err)
+		}
+		res, err := Manifest{}.Request(t.Context(), Request{Role: "implementer", Repository: "o/r",
+			BaseRef: "4be1c9d", Branch: "agent/abcdefgh", TaskText: "t", DataClass: "public", RoomRef: "abcdefgh",
+			Principal: "human:a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := &unstructured.Unstructured{}
+		if err := u.UnmarshalJSON(res.Manifest); err != nil {
+			t.Fatal(err)
+		}
+		if u.GroupVersionKind() != runwatch.GVK() {
+			t.Errorf("%s: gvk %v", k.Group, u.GroupVersionKind())
+		}
+		if r, ok := runwatch.FromUnstructured(u); !ok || r.ID != res.RunID || r.Room != "abcdefgh" {
+			t.Errorf("%s: read back ok=%v %+v", k.Group, ok, r)
+		}
 	}
 }

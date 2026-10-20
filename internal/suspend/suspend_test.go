@@ -126,8 +126,8 @@ func mapper() meta.RESTMapper {
 func agentRun(id string, ann map[string]string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runwatch.GVK())
-	u.SetName(runwatch.ClaimPrefix + id)
-	u.SetNamespace(runwatch.Namespace)
+	u.SetName(runwatch.ClaimPrefix() + id)
+	u.SetNamespace(runwatch.Namespace())
 	u.SetAnnotations(ann)
 	_ = unstructured.SetNestedField(u.Object, true, "spec", "suspendable")
 	return u
@@ -142,7 +142,7 @@ func annotations(t *testing.T, c client.Client, id string) map[string]string {
 	t.Helper()
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runwatch.GVK())
-	if err := c.Get(t.Context(), types.NamespacedName{Namespace: runwatch.Namespace, Name: runwatch.ClaimPrefix + id}, u); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: runwatch.Namespace(), Name: runwatch.ClaimPrefix() + id}, u); err != nil {
 		t.Fatal(err)
 	}
 	return u.GetAnnotations()
@@ -155,7 +155,7 @@ func build(t *testing.T, ann map[string]string) (client.Client, runwatch.Run) {
 		WithObjects(agentRun("7f3cq2xz", ann)).Build()
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(runwatch.GVK())
-	if err := c.Get(t.Context(), types.NamespacedName{Namespace: runwatch.Namespace, Name: "xplane-run-7f3cq2xz"}, u); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: runwatch.Namespace(), Name: "xplane-run-7f3cq2xz"}, u); err != nil {
 		t.Fatal(err)
 	}
 	r := running()

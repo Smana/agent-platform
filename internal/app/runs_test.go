@@ -71,7 +71,7 @@ func (f fakeOpen) Unfinished(context.Context, string, int64, int64) ([]envelope.
 
 func runClaim(id, room, phase string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": "xplane-run-" + id, "namespace": runwatch.Namespace},
+		"metadata": map[string]any{"name": runwatch.ClaimPrefix() + id, "namespace": runwatch.Namespace()},
 		"spec":     map[string]any{"roomRef": room, "role": "implementer"},
 		"status":   map[string]any{"phase": phase},
 	}}
@@ -225,7 +225,7 @@ func TestManagerOptions(t *testing.T) {
 				t.Fatal("unstructured reads (the finalizer's run list) must reach the API server")
 			}
 			// RBAC grants exactly these namespaces: a cluster-wide informer is refused.
-			want := map[string][]string{"Room": {ns}, runwatch.GVK().Kind: {runwatch.Namespace}}
+			want := map[string][]string{"Room": {ns}, runwatch.GVK().Kind: {runwatch.Namespace()}}
 			if len(o.Cache.ByObject) != len(want) || o.Cache.DefaultNamespaces != nil {
 				t.Fatalf("cached kinds: %v, default namespaces %v", o.Cache.ByObject, o.Cache.DefaultNamespaces)
 			}

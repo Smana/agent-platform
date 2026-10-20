@@ -30,6 +30,27 @@ ENV = {
 }
 
 
+class RedactTest(unittest.TestCase):
+    def test_fine_grained_pat_shape_is_redacted(self):
+        self.assertEqual(agent_run.redact("x github_pat_" + "A" * 30), "x " + agent_run.REDACTED)
+
+    def test_values_of_the_mounted_files_are_redacted(self):
+        d = tempfile.mkdtemp()
+        paths = {}
+        for name, value in (("tok", "plainpat"), ("key", "sk-plain")):
+            paths[name] = os.path.join(d, name)
+            with open(paths[name], "w") as f:
+                f.write(value + "\n")
+        env = {"GIT_TOKEN_FILE": paths["tok"], "LLM_API_KEY_FILE": paths["key"]}
+        with mock.patch.dict(os.environ, env):
+            out = agent_run.redact("a plainpat b sk-plain c")
+        self.assertEqual(out, "a %s b %s c" % (agent_run.REDACTED, agent_run.REDACTED_KEY))
+
+    def test_unreadable_files_are_tolerated(self):
+        with mock.patch.dict(os.environ, {"GIT_TOKEN_FILE": "/nonexistent", "LLM_API_KEY_FILE": ""}):
+            self.assertEqual(agent_run.redact("hello"), "hello")
+
+
 class BuildRequestTest(unittest.TestCase):
     def setUp(self):
         self.body = agent_run.build_request(ENV, "fix the link", "rules text")
@@ -40,6 +61,19 @@ class BuildRequestTest(unittest.TestCase):
         self.assertEqual(llm["base_url"], "http://127.0.0.1:4000/v1")
         self.assertEqual(llm.get("api_key"), agent_run.PLACEHOLDER_KEY, "litellm refuses to call without a key")
         self.assertEqual(llm["num_retries"], 0, "a budget 429 is terminal")
+
+    def test_key_file_replaces_the_placeholder(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("sk-real\n")
+        self.addCleanup(os.unlink, f.name)
+        env = dict(ENV, LLM_API_KEY_FILE=f.name)
+        llm = agent_run.build_request(env, "t", "r")["agent"]["llm"]
+        self.assertEqual(llm["api_key"], "sk-real")
+
+    def test_without_mcp_url_there_are_no_platform_tools(self):
+        env = {k: v for k, v in ENV.items() if k != "MCP_URL"}
+        agent = agent_run.build_request(env, "t", "r")["agent"]
+        self.assertNotIn("platform", agent.get("mcp_config") or {})
 
     def test_mcp_task_and_rules_are_wired(self):
         self.assertEqual(self.body["agent"]["mcp_config"]["platform"]["url"], "http://127.0.0.1:4000/mcp")

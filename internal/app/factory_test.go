@@ -70,7 +70,7 @@ func TestFactoryManagerOptions(t *testing.T) {
 				t.Fatal("unstructured reads (a stop's run list) must reach the API server")
 			}
 			// The chart's Roles grant exactly these namespaces: a cluster-wide informer is refused.
-			want := map[string][]string{"Task": {ns}, "Room": {ns}, "ConfigMap": {ns}, runs.GVK().Kind: {runs.Namespace}}
+			want := map[string][]string{"Task": {ns}, "Room": {ns}, "ConfigMap": {ns}, runs.GVK().Kind: {runs.Namespace()}}
 			if len(o.Cache.ByObject) != len(want) || o.Cache.DefaultNamespaces != nil {
 				t.Fatalf("cached kinds: %v, default namespaces %v", o.Cache.ByObject, o.Cache.DefaultNamespaces)
 			}

@@ -10,7 +10,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 
 	"github.com/Smana/agent-platform/internal/httpx"
@@ -23,9 +22,6 @@ const maxVMReply = 4 << 20
 // maxReading is the largest count taken as a reading: far above any run's cap (5 M, C3), and
 // exact in a float64, so int64 conversion never overflows.
 const maxReading = 1 << 53
-
-// runSA maps agent-router's ar_agent label (the token's sub, C5) to the run id.
-var runSA = regexp.MustCompile("^system:serviceaccount:" + runwatch.Namespace + ":" + runwatch.ClaimPrefix + "([a-z2-7]{8})$")
 
 // VM runs the meter's one instant query against VictoriaMetrics (R12): the expression of SP4
 // PR 2's agent_router:run_tokens:total over the raw series, until that rule exists.
@@ -98,7 +94,7 @@ func parseUsage(raw []byte) (map[string]Usage, error) {
 	}
 	out := map[string]Usage{}
 	for _, s := range body.Data.Result {
-		m := runSA.FindStringSubmatch(s.Metric["ar_agent"])
+		m := runwatch.RunSubject().FindStringSubmatch(s.Metric["ar_agent"])
 		if m == nil {
 			continue
 		}

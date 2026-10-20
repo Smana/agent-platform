@@ -48,7 +48,7 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	c := mgr.GetClient()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	for _, ns := range []string{"agent-system", runs.Namespace} {
+	for _, ns := range []string{"agent-system", runs.Namespace()} {
 		if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +72,7 @@ func TestEnvtestTaskToRun(t *testing.T) {
 	u.SetGroupVersionKind(runs.GVK())
 	var got v1alpha1.Task
 	eventually(func() bool {
-		if c.Get(ctx, types.NamespacedName{Namespace: runs.Namespace, Name: runs.Name(runID("3buqdlot", 0))}, u) != nil {
+		if c.Get(ctx, types.NamespacedName{Namespace: runs.Namespace(), Name: runs.Name(runID("3buqdlot", 0))}, u) != nil {
 			return false
 		}
 		return c.Get(ctx, client.ObjectKeyFromObject(tk), &got) == nil && got.Status.Phase == v1alpha1.PhaseImplementing &&

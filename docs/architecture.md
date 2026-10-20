@@ -215,6 +215,7 @@ Broker, bridge and CLI, by pipeline stage:
 |---|---|
 | `cmd/room-broker` | `serve` and `retention` subcommands |
 | `cmd/room-bridge` | The sidecar binary |
+| `cmd/run-controller` | The AgentRun controller binary |
 | `cmd/roomctl`, `internal/roomctl` | The human CLI and its client |
 | `internal/roomctl/skill` | The embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
 | `internal/app` | Wiring per binary, the only importer of every adapter |
@@ -294,6 +295,8 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 | `:8082` | agent-factory | `POST /v1/runs`, plaintext inside the mesh: the broker's `start_run` |
 | `:8080` | agent-factory | `POST /intake/runlore` |
 | `:9090` | agent-factory | Metrics and probes |
+| `:9090` | run-controller | Metrics |
+| `:9091` | run-controller | Probes (`/healthz`, `/readyz`) |
 
 ### Binaries and images
 
@@ -303,6 +306,7 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 | `room-bridge` | Native sidecar in every `AgentRun` pod that names a room; relays harness events, carries the room token | `ghcr.io/smana/room-bridge` |
 | `agent-factory` | The factory's orchestrator in `agent-system`, two replicas, one leading; owns the `Task` CRD; chart `oci://ghcr.io/smana/charts/agent-factory` | `ghcr.io/smana/agent-factory` |
 | `agent-harness` | Main container of every `AgentRun` pod: OpenHands agent-server plus `agent-run`, the git credential helper, `gh` with the PR footer and the trailer hook ([`images/agent-harness`](../images/agent-harness/README.md)) | `ghcr.io/smana/agent-harness` |
+| `run-controller` | A Deployment, on clusters without cloud-native-ref's Crossplane runtime; reconciles `agents.ogenki.io` AgentRuns into gVisor pods | `ghcr.io/smana/run-controller` |
 | `roomctl` | A developer's CLI: list, follow, post, queue and fork rooms; `roomctl skill install` writes the factory-handoff Agent Skill for local coding agents; `roomctl token` for scripts. Never steers or approves: those stay in the web UI | Release assets `roomctl-{linux,darwin}-{amd64,arm64}` + `roomctl.sha256`; before a release, `go build ./cmd/roomctl` |
 
 Every image is multi-arch (`linux/amd64`, `linux/arm64`). The Go ones are static binaries on distroless `nonroot`; the harness is OpenHands' Python image, run as uid 10001.

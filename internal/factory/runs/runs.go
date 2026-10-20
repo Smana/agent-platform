@@ -28,10 +28,9 @@ import (
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
-// The claim's namespace, labels, annotations, principal and queues. Namespace and AnnRevoked
-// are the broker's own (runwatch), so the two readers of a claim never disagree.
+// The claim's labels, annotations, principal and queues. The namespace and AnnRevoked are the
+// broker's own (runwatch), so the two readers of a claim never disagree.
 const (
-	Namespace        = runwatch.Namespace
 	LabelTask        = "agents.ogenki.io/task"
 	LabelRole        = "agents.ogenki.io/role"
 	LabelPrincipal   = "agents.ogenki.io/principal" // ":" is not valid in a label value: written "."
@@ -54,8 +53,6 @@ const (
 	// The person the run is charged to beside the fleet (v2 per-person caps D2): the meter
 	// settles its tokens to both keys. CREATE only; absent, the run's principal pays alone.
 	AnnChargedTo = "agents.ogenki.io/charged-to"
-
-	namePrefix = runwatch.ClaimPrefix
 )
 
 // The AgentRun's status.reason for a run's pod (disruption design §3). The factory resumes a run
@@ -65,6 +62,10 @@ const (
 	ReasonPodLost   = "PodLost"
 	ReasonPodFailed = "PodFailed"
 )
+
+// Namespace is the claims' namespace: the broker's own (runwatch), so the two readers of a
+// claim never disagree.
+func Namespace() string { return runwatch.Namespace() }
 
 // GVK is SP1's AgentRun claim: the broker's own, so the two readers of a claim never disagree.
 func GVK() schema.GroupVersionKind { return runwatch.GVK() }
@@ -126,7 +127,7 @@ func (s Spec) Validate() error {
 }
 
 // Name is the claim's name for a run id.
-func Name(runID string) string { return namePrefix + runID }
+func Name(runID string) string { return runwatch.ClaimPrefix() + runID }
 
 // Build is the claim for s. It does not validate: Create does, before the claim exists.
 func Build(s Spec) *unstructured.Unstructured {
@@ -157,7 +158,7 @@ func Build(s Spec) *unstructured.Unstructured {
 	}
 	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
 	u.SetGroupVersionKind(GVK())
-	u.SetNamespace(Namespace)
+	u.SetNamespace(Namespace())
 	u.SetName(Name(s.RunID))
 	labels := map[string]string{LabelRole: s.Role, LabelPrincipal: strings.ReplaceAll(s.Principal, ":", ".")}
 	if s.TaskID != "" {
@@ -209,10 +210,10 @@ type Run struct {
 }
 
 // FromUnstructured reads a claim. ok is false for one that is not a run: not named
-// xplane-run-<C2 id>, or outside Namespace, as the broker's runwatch decides.
+// <prefix><C2 id> (runs.namePrefix), or outside runs.namespace, as the broker's runwatch decides.
 func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
-	id, ok := strings.CutPrefix(u.GetName(), namePrefix)
-	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace {
+	id, ok := strings.CutPrefix(u.GetName(), runwatch.ClaimPrefix())
+	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace() {
 		return Run{}, false
 	}
 	str := func(path ...string) string { v, _, _ := unstructured.NestedString(u.Object, path...); return v }
@@ -250,7 +251,7 @@ func empty() *unstructured.Unstructured {
 
 func named(id string) *unstructured.Unstructured {
 	u := empty()
-	u.SetNamespace(Namespace)
+	u.SetNamespace(Namespace())
 	u.SetName(Name(id))
 	return u
 }
@@ -276,7 +277,7 @@ func (c Client) Create(ctx context.Context, s Spec) error {
 // Everything else on a live claim is the composition's or the meter's to change.
 func (c Client) replayOf(ctx context.Context, s Spec) bool {
 	u := empty()
-	if err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace, Name: Name(s.RunID)}, u); err != nil {
+	if err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace(), Name: Name(s.RunID)}, u); err != nil {
 		return false
 	}
 	a := u.GetAnnotations()
@@ -287,7 +288,7 @@ func (c Client) replayOf(ctx context.Context, s Spec) bool {
 	return a[AnnStartSeq] == start && a[AnnHead] == s.Head
 }
 
-// validID refuses an id that names no run, before it reaches the API as xplane-run-<id>.
+// validID refuses an id that names no run, before it reaches the API as <prefix><id>.
 func validID(op, id string) error {
 	if !envelope.ValidID(id) {
 		return fmt.Errorf("%s run %q: not a C2 id", op, id)
@@ -301,7 +302,7 @@ func (c Client) Get(ctx context.Context, id string) (Run, bool, error) {
 		return Run{}, false, err
 	}
 	u := empty()
-	err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace, Name: Name(id)}, u)
+	err := c.C.Get(ctx, types.NamespacedName{Namespace: Namespace(), Name: Name(id)}, u)
 	if apierrors.IsNotFound(err) {
 		return Run{}, false, nil
 	}
@@ -316,7 +317,7 @@ func (c Client) Get(ctx context.Context, id string) (Run, bool, error) {
 func (c Client) List(ctx context.Context) ([]Run, error) {
 	l := &unstructured.UnstructuredList{}
 	l.SetGroupVersionKind(GVK().GroupVersion().WithKind("AgentRunList"))
-	if err := c.C.List(ctx, l, client.InNamespace(Namespace)); err != nil {
+	if err := c.C.List(ctx, l, client.InNamespace(Namespace())); err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
 	out := make([]Run, 0, len(l.Items))

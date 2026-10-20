@@ -14,8 +14,6 @@ import (
 )
 
 const (
-	// Namespace is the only namespace AgentRun claims live in.
-	Namespace = "agents"
 	// RevokedAnnotation carries why a run was revoked; any value makes it not live.
 	RevokedAnnotation = "agents.ogenki.io/revoked"
 	// OperatingModeAnnotation asks a suspendable run's Sandbox to be Suspended or Running
@@ -27,8 +25,6 @@ const (
 	// ResumedAtAnnotation is when the broker last resumed the run, the start of its current
 	// pod's running time. The composition ignores it.
 	ResumedAtAnnotation = "agents.ogenki.io/resumed-at"
-	// ClaimPrefix starts every AgentRun claim's name: xplane-run-<C2 id>.
-	ClaimPrefix = "xplane-run-"
 
 	defaultMaxMinutes  = 120
 	deadlineToleration = 30 * time.Second
@@ -70,10 +66,10 @@ func Terminal(phase string) bool {
 func (r Run) Live() bool { return !Terminal(r.Phase) && r.Revoked == "" }
 
 // FromUnstructured reads exactly the C3 fields SP2 relies on. ok is false for a
-// claim that is not a run: not named xplane-run-<C2 id>, or outside Namespace.
+// claim that is not a run: not named <prefix><C2 id>, or outside the namespace.
 func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
-	id, ok := strings.CutPrefix(u.GetName(), ClaimPrefix)
-	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace {
+	id, ok := strings.CutPrefix(u.GetName(), ClaimPrefix())
+	if !ok || !envelope.ValidID(id) || u.GetNamespace() != Namespace() {
 		return Run{}, false
 	}
 	str := func(path ...string) string { s, _, _ := unstructured.NestedString(u.Object, path...); return s }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 const valid = `
@@ -145,4 +147,29 @@ func TestLoadRefuses(t *testing.T) {
 			t.Fatal("a missing config must fail startup")
 		}
 	})
+}
+
+func TestLoadRuns(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runs != runwatch.DefaultKind {
+		t.Fatalf("no runs block: %+v", c.Runs)
+	}
+	const native = "runs:\n  group: agents.ogenki.io\n  namePrefix: run-\n"
+	// The xplane-run- issuer cannot authenticate a run-<id> ServiceAccount: refused at start.
+	if _, err := Load(write(t, valid+native)); err == nil || !strings.Contains(err.Error(), "runs") || !strings.Contains(err.Error(), "runIssuers") {
+		t.Fatalf("want a runs/runIssuers error, got %v", err)
+	}
+	c, err = Load(write(t, strings.Replace(valid, "agents:xplane-run-", "agents:run-", 1)+native))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Runs != (runwatch.Kind{Group: "agents.ogenki.io", Namespace: "agents", NamePrefix: "run-"}) {
+		t.Fatalf("runs %+v", c.Runs)
+	}
+	if _, err := Load(write(t, valid+"runs:\n  namePrefix: run\n")); err == nil || !strings.Contains(err.Error(), "runs:") {
+		t.Fatalf("want a runs: error, got %v", err)
+	}
 }

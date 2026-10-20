@@ -8,6 +8,7 @@ the log to its end, each step boxed inside 15 s (disruption design §2). Nothing
 here is a control (design section 4): every rule it passes to the agent is
 enforced outside the sandbox.
 """
+import functools
 import json
 import os
 import re
@@ -52,11 +53,24 @@ MAX_POLL_ERRORS = 5
 # token shape. An injected agent can print its token into a command or its final message,
 # and these lines reach VictoriaLogs, so both are redacted before any print.
 TOKEN_CACHE = os.environ.get("GIT_TOKEN_CACHE", "/run/agent/git/token.json")
-GITHUB_TOKEN = re.compile(r"gh[posu]_[A-Za-z0-9_]{20,}")
+# File mode (adoption 3a) adds the user's fine-grained PAT and provider key: github_pat_ shape, and the files' values.
+GITHUB_TOKEN = re.compile(r"gh[posu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}")
 REDACTED = "[REDACTED:github-token]"
+REDACTED_KEY = "[REDACTED:model-key]"
 # One line per model-call retry, written by agent-server (site/sitecustomize.py, #99). /tmp is the
 # pod's emptyDir; the agent can write there too, so the count is a signal, never a control.
 RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
+
+
+@functools.cache
+def _read_secret(path: str) -> str:
+    # A mounted Secret never changes for the pod's life, so each file is read once. "" for a
+    # missing, unreadable or non-UTF-8 file: redaction must never fail a print.
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
 
 
 def redact(text: str) -> str:
@@ -67,6 +81,10 @@ def redact(text: str) -> str:
         cached = None
     if cached:
         text = text.replace(cached, REDACTED)
+    for var, marker in (("GIT_TOKEN_FILE", REDACTED), ("LLM_API_KEY_FILE", REDACTED_KEY)):
+        value = _read_secret(os.environ.get(var) or os.devnull)
+        if value:
+            text = text.replace(value, marker)
     return GITHUB_TOKEN.sub(REDACTED, text)
 
 
@@ -159,6 +177,18 @@ def child_spans(provider, parent):
     return lambda name: tracer.start_span(name, context=ctx)
 
 
+def _api_key(env: dict) -> str:
+    # The run-controller's runtime mounts the provider key (adoption 3a); behind the
+    # identity-proxy the harness only ever holds the placeholder.
+    path = env.get("LLM_API_KEY_FILE")
+    if not path:
+        return PLACEHOLDER_KEY
+    # Read directly, not through _read_secret: an unreadable key must raise, never fall back
+    # to the placeholder.
+    with open(path) as f:
+        return f.read().strip()
+
+
 def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     """The StartConversationRequest body, as plain JSON.
 
@@ -173,7 +203,7 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     llm = LLM(
         model="openai/" + env["MODEL"],
         base_url=env["LLM_BASE_URL"],
-        api_key=PLACEHOLDER_KEY,
+        api_key=_api_key(env),
         usage_id="agent",
         # A budget 429 is terminal (design section 5), and the SDK's retry cannot leave it out.
         # agent-server retries a transient error itself (#99, site/sitecustomize.py).
@@ -193,14 +223,16 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     )
     # The SDK redacts secrets on dump and drops the redacted value on load, so
     # without this the key never reaches agent-server and litellm refuses to
-    # call. Safe to expose: it is the placeholder above.
+    # call. agent-server is on loopback; the key is the placeholder, or the provider key the run was given.
     plain = {"expose_secrets": True}
     agent = get_default_agent(llm=llm, cli_mode=True).model_dump(mode="json", context=plain)
-    platform = {"url": env["MCP_URL"], "transport": "http"}
-    tp = span_traceparent(span)
-    if tp:
-        platform["headers"] = {"traceparent": tp}
-    agent["mcp_config"] = {"platform": platform}
+    mcp_url = env.get("MCP_URL")
+    if mcp_url:
+        platform = {"url": mcp_url, "transport": "http"}
+        tp = span_traceparent(span)
+        if tp:
+            platform["headers"] = {"traceparent": tp}
+        agent["mcp_config"] = {"platform": platform}
     request = StartConversationRequest.model_validate({
         "conversation_id": env.get("CONVERSATION_ID") or str(uuid.uuid4()),
         "workspace": {"working_dir": REPO_DIR},

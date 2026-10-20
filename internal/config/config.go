@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 // The :8443 key pair's defaults: cert-manager's Certificate room-broker-tls (GP-18).
@@ -101,6 +103,8 @@ type Config struct {
 	FactoryURL       string            `json:"factoryURL,omitempty"`
 	TLS              TLSConfig         `json:"tls"`
 	Suspend          SuspendConfig     `json:"suspend,omitzero"`
+	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
+	Runs runwatch.Kind `json:"runs,omitzero"`
 }
 
 // SuspendConfig is the broker's suspend trigger (v2 warm-sandboxes design §6): a suspendable
@@ -144,6 +148,7 @@ func (c *Config) ApplyDefaults() {
 	if c.TLS.KeyFile == "" {
 		c.TLS.KeyFile = DefaultKeyFile
 	}
+	c.Runs = c.Runs.WithDefaults()
 	if c.Suspend.After.Duration == 0 {
 		c.Suspend.After.Duration = DefaultSuspendAfter
 	}
@@ -166,6 +171,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("runIssuers[%d] %s: subPattern must compile with one capture group (the runId)", i, is.Issuer))
 		}
 	}
+	if err := c.Runs.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("runs: %w", err))
+	} else {
+		errs = append(errs, c.runIssuerMatchesKind()...)
+	}
 	errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
 	for sub, id := range c.SystemPrincipals {
 		if !strings.HasPrefix(id, "system:") || id == "system:" {
@@ -177,6 +187,23 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
 	}
 	return errors.Join(errs...)
+}
+
+// runIssuerMatchesKind refuses a runs kind no runIssuers pattern recognises: its bridge tokens
+// would be denied at :8443 and the room would stay silent, with only authn denials as a trace.
+func (c *Config) runIssuerMatchesKind() []error {
+	const id = "aaaaaaaa"
+	sub := "system:serviceaccount:" + c.Runs.Namespace + ":" + c.Runs.NamePrefix + id
+	for _, is := range c.RunIssuers {
+		re, err := regexp.Compile(is.SubPattern)
+		if err != nil || re.NumSubexp() != 1 {
+			continue // reported above
+		}
+		if m := re.FindStringSubmatch(sub); m != nil && m[1] == id {
+			return nil
+		}
+	}
+	return []error{fmt.Errorf("runs / runIssuers: no runIssuers[].subPattern matches %q (namespace %q, namePrefix %q) and captures the run id", sub, c.Runs.Namespace, c.Runs.NamePrefix)}
 }
 
 func (h HumanConfig) validate() []error {
