@@ -33,15 +33,25 @@ if [[ ${ALLOW_UNSANDBOXED:-} == 1 ]]; then
 fi
 if [[ ${UP_HELM_ARGS:-} != *image*tag* ]]; then
   step "release images"
-  AP_VERSION="${AP_VERSION:-$(curl -fsSL https://api.github.com/repos/Smana/agent-platform/releases/latest | yq -p=json '.tag_name')}"
+  docker buildx version >/dev/null 2>&1 || { echo "the docker buildx plugin is required (it resolves image digests)" >&2; exit 1; }
+  if [[ -z ${AP_VERSION:-} ]]; then
+    AP_VERSION=$(curl -fsSL https://api.github.com/repos/Smana/agent-platform/releases/latest | yq -p=json '.tag_name') ||
+      { echo "could not read the latest release from the GitHub API (unauthenticated limit: 60 requests/hour); set AP_VERSION=<release tag>" >&2; exit 1; }
+    [[ -n $AP_VERSION && $AP_VERSION != null ]] || { echo "no release found; set AP_VERSION=<release tag>" >&2; exit 1; }
+  fi
   digest() { # image → <version>@sha256:…
     local d
     d=$(docker buildx imagetools inspect "ghcr.io/smana/$1:$AP_VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')
     [[ $d == sha256:* ]] || { echo "no digest for ghcr.io/smana/$1:$AP_VERSION" >&2; exit 1; }
     echo "$AP_VERSION@$d"
   }
-  chart_args+=(--set "broker.image.tag=$(digest room-broker)" --set "runController.image.tag=$(digest run-controller)"
-    --set "runController.images.harness.tag=$(digest agent-harness)" --set "runController.images.bridge.tag=$(digest room-bridge)")
+  # One assignment each: a failure inside a substitution embedded in an array only counts for the last one.
+  broker_tag=$(digest room-broker)
+  controller_tag=$(digest run-controller)
+  harness_tag=$(digest agent-harness)
+  bridge_tag=$(digest room-bridge)
+  chart_args+=(--set "broker.image.tag=$broker_tag" --set "runController.image.tag=$controller_tag"
+    --set "runController.images.harness.tag=$harness_tag" --set "runController.images.bridge.tag=$bridge_tag")
 fi
 helm template ap "$CHART" -n "$NS" "${chart_args[@]}" "${extra[@]}" >/dev/null
 
@@ -93,5 +103,5 @@ Ready. This shell may not point at the cluster; in another terminal:
   export KUBECONFIG=$PWD/.quickstart/kubeconfig
   kubectl -n $NS port-forward deploy/room-broker 8080:8080
 then open http://localhost:8080 and start a run:
-  task quickstart:run TASK='Fix a typo in the README' REPO=$REPO
+  task quickstart:run PROMPT='Fix a typo in the README' REPO=$REPO
 MSG

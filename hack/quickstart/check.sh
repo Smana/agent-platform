@@ -28,12 +28,12 @@ issuer_name=$(yq '.broker.tls.issuerRef.name' "$qvals")
 [[ -n $ns && -n $runs_ns && -n $prefix && -n $KIND_CLUSTER ]] || bad "a source of truth is empty"
 
 # ---- templates render and parse ----
-export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo TASK=$'say "hi": ok\n😀 second line'
+export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo PROMPT=$'say "hi": ok\n😀 second line'
 # shellcheck disable=SC2016 # envsubst takes a literal variable list
 render() { envsubst '${ROOM_ID} ${RUN_ID} ${REPO}' <"$qs/manifests/$1.yaml.tmpl"; }
 for m in ca-issuer cnpg-cluster room agentrun; do render "$m" >"$tmp/$m.yaml"; yq ea '.' "$tmp/$m.yaml" >/dev/null || bad "$m does not parse"; done
-render agentrun | yq '.spec.task.text = strenv(TASK)' >"$tmp/run-final.yaml"
-[[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$TASK" ]] || bad "task text does not survive run.sh's templating"
+render agentrun | yq '.spec.task.text = strenv(PROMPT)' >"$tmp/run-final.yaml"
+[[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$PROMPT" ]] || bad "task text does not survive run.sh's templating"
 
 # ---- the chart as up.sh installs it ----
 dg='v0.0.0@sha256:0000'
@@ -68,6 +68,9 @@ grep -q "create namespace $runs_ns " "$qs/up.sh" || bad "up.sh does not create n
 [[ $(yq '.metadata.namespace' "$tmp/room.yaml") == "$ns" ]] || bad "Room is not in the release namespace $ns (where the broker reads it)"
 [[ $(q Namespace 'length') == 0 ]] || bad "chart renders a Namespace despite createRunsNamespace=false"
 [[ $(q RuntimeClass '.[0].metadata.name') == $(yq '.runController.runtimeClassName' "$vals") ]] || bad "RuntimeClass not rendered"
+
+# Cilium must keep socket-LB out of pod namespaces, or gVisor run pods cannot reach any ClusterIP
+grep -q 'socketLB.hostNamespaceOnly=true' "$qs/up.sh" || bad "up.sh does not set socketLB.hostNamespaceOnly=true (gVisor)"
 
 # kind cluster name: kind-config, Cilium's apiserver host, and every script agree
 [[ $(yq '.name' "$qs/kind-config.yaml") == "$KIND_CLUSTER" ]] || bad "kind-config name != KIND_CLUSTER"
