@@ -95,6 +95,28 @@ tasks:
       - bash charts/agent-platform/tests/render.sh
       - git diff --exit-code -- config/crd api
 
+  quickstart:
+    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart (needs docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
+    cmds:
+      - hack/quickstart/up.sh
+
+  quickstart:down:
+    desc: Delete the quickstart kind cluster
+    cmds:
+      - hack/quickstart/down.sh
+
+  quickstart:run:
+    desc: "Start a run on the quickstart cluster: task quickstart:run TASK='...' REPO=owner/name"
+    requires:
+      vars: [TASK, REPO]
+    cmds:
+      - hack/quickstart/run.sh
+
+  quickstart:check:
+    desc: Offline drift check of the quickstart scripts against the chart (no cluster, no docker)
+    cmds:
+      - bash hack/quickstart/check.sh
+
   harness:test:
     desc: The agent harness image's test stage (needs docker; kept out of check, which does not)
     cmds:
