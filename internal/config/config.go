@@ -33,6 +33,9 @@ type IssuerConfig struct {
 	Issuer     string `json:"issuer"`
 	JWKSURL    string `json:"jwksURL"`
 	SubPattern string `json:"subPattern,omitempty"`
+	// Mode, for a run issuer only: "" or "jwks" verify against JWKSURL; "tokenreview" asks the
+	// apiserver, for a cluster whose issuer is not reachable (kind).
+	Mode string `json:"mode,omitempty"`
 }
 
 // HumanConfig is the viewers' identity provider (phase 2). The client and project
@@ -165,7 +168,16 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("runIssuers: at least one is required"))
 	}
 	for i, is := range c.RunIssuers {
-		errs = append(errs, issuer(fmt.Sprintf("runIssuers[%d]", i), is)...)
+		switch is.Mode {
+		case "", "jwks":
+			errs = append(errs, issuer(fmt.Sprintf("runIssuers[%d]", i), is)...)
+		case "tokenreview":
+			if is.Issuer != "" || is.JWKSURL != "" {
+				errs = append(errs, fmt.Errorf("runIssuers[%d]: mode tokenreview takes no issuer or jwksURL: the apiserver is the issuer", i))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("runIssuers[%d]: mode %q is not jwks or tokenreview", i, is.Mode))
+		}
 		re, err := regexp.Compile(is.SubPattern)
 		if err != nil || re.NumSubexp() != 1 {
 			errs = append(errs, fmt.Errorf("runIssuers[%d] %s: subPattern must compile with one capture group (the runId)", i, is.Issuer))
