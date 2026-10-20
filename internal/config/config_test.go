@@ -235,6 +235,19 @@ func TestHumanLocalMode(t *testing.T) {
 	if _, err := Load(write(t, strings.Replace(localConfig, "http://localhost:8080", "http://rooms.example.com", 1))); err == nil {
 		t.Fatal("local mode with a non-loopback publicURL must be refused")
 	}
+	for _, extra := range []string{"  origin: https://elsewhere.example\n", "  groups:\n    admin: a\n    member: b\n"} {
+		if _, err := Load(write(t, localConfig+extra)); err == nil {
+			t.Fatalf("local mode must refuse %q", extra)
+		}
+	}
+	for _, u := range []string{"http://localhost:8080/", "https://localhost:8080", "http://localhost", "http://user@localhost:8080", "http://localhost:8080/x"} {
+		if _, err := Load(write(t, strings.Replace(localConfig, "http://localhost:8080", u, 1))); err == nil {
+			t.Fatalf("publicURL %q must be refused in local mode", u)
+		}
+	}
+	if _, err := Load(write(t, strings.Replace(localConfig, "http://localhost:8080", "http://127.0.0.1:9000", 1))); err != nil {
+		t.Fatalf("127.0.0.1 with a port: %v", err)
+	}
 	if _, err := Load(write(t, strings.Replace(valid, "human:\n", "human:\n  mode: bogus\n", 1))); err == nil {
 		t.Fatal("an unknown mode must be refused")
 	}

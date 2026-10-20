@@ -324,7 +324,7 @@ func humanServer(cfg config.Config, humans humanapi.Authenticator, rooms client.
 		// No IdP, so no ids to read; Serve refuses nil ones. Access stays nil too (humanSide sets
 		// it only from a human.access block, which local mode refuses): the local user is an
 		// admin, and the D7 repository check gates members only.
-		local := func() string { return "local" }
+		local := func() string { return authn.LocalClientID }
 		webClient, roomctlClient, projectID = local, local, local
 	}
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},

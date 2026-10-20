@@ -47,6 +47,7 @@ func TestAuthenticatorsLocal(t *testing.T) {
 		t.Fatalf("only the run issuer's verifier: built %d, held %d", built, len(a.verifiers))
 	}
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/rooms", nil)
+	r.Host = "localhost:8080"
 	p, err := a.humans.Authenticate(r)
 	if err != nil || p.ID != authn.LocalPrincipal {
 		t.Fatalf("%+v %v", p, err)
