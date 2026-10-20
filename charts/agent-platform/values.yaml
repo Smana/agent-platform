@@ -60,11 +60,32 @@ broker:
     extraIngress: []
     extraEgress: []
 
+# The cluster's DNS domain: the run bridge must reach the broker by its fully qualified name.
+clusterDomain: cluster.local
+
 runController:
   enabled: true
   image:
-    repository: ghcr.io/smana/agent-run-controller
+    repository: ghcr.io/smana/run-controller
     tag: ""
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+  # The run pod's two images, same "<version>@sha256:<digest>" rule as the broker's.
+  images:
+    harness: {repository: ghcr.io/smana/agent-harness, tag: ""}
+    bridge: {repository: ghcr.io/smana/room-bridge, tag: ""}
+  # Secrets in runs.namespace the controller reads: model (api_key, model, base_url) and git.
+  modelSecret: agent-model
+  gitSecret: agent-git
+  # Empty + allowUnsandboxed=false: the controller refuses every run. createRuntimeClass renders
+  # the RuntimeClass of that name for the handler; turn it off when the cluster already has one.
+  runtimeClassName: gvisor
+  runtimeHandler: runsc
+  createRuntimeClass: true
+  allowUnsandboxed: false
+  # Replaces the built-in profiles (github, pypi, npm, golang, crates) when set.
+  egressProfiles: {}
 
 factory:
   enabled: false

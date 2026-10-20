@@ -1,0 +1,33 @@
+{{- if .Values.runController.enabled }}
+{{- $c := .Values.runController -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: run-controller-config
+  labels: {{- include "ap.labelsFor" (dict "root" . "name" "run-controller") | nindent 4 }}
+data:
+  # Strictly decoded by the controller (runctl.LoadConfig). namespace and namePrefix come from
+  # `runs` alone, as the broker's do. The broker URL must be the FQDN: the run pod's resolver
+  # would otherwise try search-path names its CNP refuses.
+  config.yaml: |
+    namespace: {{ .Values.runs.namespace | quote }}
+    namePrefix: {{ .Values.runs.namePrefix | quote }}
+    {{- with $c.runtimeClassName }}
+    runtimeClassName: {{ . | quote }}
+    {{- end }}
+    allowUnsandboxed: {{ $c.allowUnsandboxed }}
+    modelSecret: {{ required "runController.modelSecret is required" $c.modelSecret | quote }}
+    gitSecret: {{ required "runController.gitSecret is required" $c.gitSecret | quote }}
+    broker:
+      url: {{ printf "https://room-broker.%s.svc.%s:8443" .Release.Namespace .Values.clusterDomain | quote }}
+      namespace: {{ .Release.Namespace | quote }}
+      labels: {{- include "ap.labels" . | nindent 8 }}
+      caSecret: {{ required "broker.tls.secretName is required" .Values.broker.tls.secretName | quote }}
+    images:
+      harness: {{ include "ap.image" (dict "root" . "image" $c.images.harness) | quote }}
+      bridge: {{ include "ap.image" (dict "root" . "image" $c.images.bridge) | quote }}
+    {{- with $c.egressProfiles }}
+    egressProfiles:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}

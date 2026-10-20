@@ -1,0 +1,75 @@
+{{- if .Values.runController.enabled }}
+{{- $c := .Values.runController -}}
+{{- $l := include "ap.labelsFor" (dict "root" . "name" "run-controller") -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: run-controller
+  labels: {{- $l | nindent 4 }}
+---
+# Everything in the runs namespace. A run's pod, ServiceAccount, ConfigMaps and CNP are created
+# and read back (the ownership check); the pod is also deleted (revoke); Secrets are read by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: run-controller
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- $l | nindent 4 }}
+rules:
+  - apiGroups: [{{ .Values.runs.group }}]
+    resources: [agentruns]
+    verbs: [get, list, watch]
+  - apiGroups: [{{ .Values.runs.group }}]
+    resources: [agentruns/status]
+    verbs: [update, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [serviceaccounts, configmaps]
+    verbs: [get, create]
+  - apiGroups: [cilium.io]
+    resources: [ciliumnetworkpolicies]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $c.modelSecret | quote }}, {{ $c.gitSecret | quote }}]
+    verbs: [get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: run-controller
+  namespace: {{ .Values.runs.namespace }}
+  labels: {{- $l | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: run-controller}
+subjects:
+  - {kind: ServiceAccount, name: run-controller, namespace: {{ .Release.Namespace }}}
+---
+# The broker's CA, copied into each run: the one Secret it reads outside the runs namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: run-controller-ca
+  labels: {{- $l | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ .Values.broker.tls.secretName | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: run-controller-ca
+  labels: {{- $l | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: run-controller-ca}
+subjects:
+  - {kind: ServiceAccount, name: run-controller, namespace: {{ .Release.Namespace }}}
+{{- end }}

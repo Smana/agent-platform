@@ -90,7 +90,7 @@ tasks:
       - helm lint --strict charts/agent-factory --set image.tag='v0.0.0@sha256:0000'
       - bash charts/agent-factory/tests/render.sh
       - helm dependency build charts/agent-platform
-      - helm lint --strict charts/agent-platform -f charts/agent-platform/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000'
+      - helm lint --strict charts/agent-platform -f charts/agent-platform/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000' --set runController.images.harness.tag='v0.0.0@sha256:0000' --set runController.images.bridge.tag='v0.0.0@sha256:0000'
       - bash charts/agent-platform/tests/render.sh
       - git diff --exit-code -- config/crd api
 
