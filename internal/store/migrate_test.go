@@ -27,6 +27,30 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+// A database ahead of the code, or a pending file older than an applied one, is refused before
+// anything is applied.
+func TestMigrateRefusesUnshippedAndOutOfOrder(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	dsn := emptyOwnedDB(t)
+	if _, err := Migrate(t.Context(), dsn, log); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, dsn, "INSERT INTO room_broker_revisions (version, checksum) VALUES ('99999999999999', 'x')")
+	if _, err := Migrate(t.Context(), dsn, log); err == nil {
+		t.Fatal("a recorded version the binary does not ship must be refused")
+	}
+
+	dsn = emptyOwnedDB(t)
+	if _, err := Migrate(t.Context(), dsn, log); err != nil {
+		t.Fatal(err)
+	}
+	// The first file becomes pending while later ones stay applied.
+	exec(t, dsn, "DELETE FROM room_broker_revisions WHERE version = (SELECT min(version) FROM room_broker_revisions)")
+	if n, err := Migrate(t.Context(), dsn, log); err == nil || n != 0 {
+		t.Fatalf("an out-of-order pending file must be refused with nothing applied: %d %v", n, err)
+	}
+}
+
 func TestMigrateConcurrent(t *testing.T) {
 	dsn := emptyOwnedDB(t)
 	var wg sync.WaitGroup
