@@ -53,13 +53,12 @@ flowchart LR
 
 For platform teams who want coding agents on their cluster, under their own rules.
 
-Not yet for: a laptop tool or a hosted service.
+Not for: a hosted service. A laptop trial exists, scaled down (see the quickstart).
 
 ## Status
 
 v0.15.2, in daily use on one cloud for one public repository, with the merge gate in shadow. It
-runs today on [cloud-native-ref](https://github.com/Smana/cloud-native-ref); a portable install for
-any Kubernetes cluster is the next milestone; the [quickstart](docs/quickstart.md) runs it on a laptop (kind, Linux and Docker). What is proven live and what comes next is on the
+runs today on [cloud-native-ref](https://github.com/Smana/cloud-native-ref); the [quickstart](docs/quickstart.md) runs it on a laptop (kind, Linux and Docker). What is proven live and what comes next is on the
 platform's [status page](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/status.md).
 
 ## Start here

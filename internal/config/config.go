@@ -328,9 +328,8 @@ func (c *Config) Validate() error {
 		if c.Human.Origin != c.PublicURL || c.Human.Groups != localGroups {
 			errs = append(errs, errors.New("human: mode local takes no origin or groups: the origin is publicURL and the groups are fixed"))
 		}
-		// The one place publicURL may be http: a port-forward carries no TLS, and the Origin check
-		// compares against it verbatim.
-		// Exactly as a browser sends it as Origin, and http only: a port-forward carries no TLS.
+		// The one place publicURL may be http: a port-forward carries no TLS. It is exactly what a
+		// browser sends as Origin, which the Origin check compares verbatim.
 		u, err := url.Parse(c.PublicURL)
 		if err != nil || u.Scheme != "http" || u.Scheme+"://"+u.Host != c.PublicURL || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") || u.Port() == "" {
 			errs = append(errs, fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is exactly http://localhost:<port> (or 127.0.0.1)", c.PublicURL))

@@ -14,8 +14,8 @@ task quickstart                 # kind + Cilium + gVisor + cert-manager + CNPG +
 | Need | Detail |
 |---|---|
 | Platform | Linux with Docker (and the `buildx` plugin). macOS is untested (`sha512sum`, bash 3.2); Podman is untested. The live gVisor-in-kind proof is the `quickstart-e2e` CI job |
-| Tools | `docker`, `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `base32`, `yq` (mikefarah v4); `sha512sum` and `bzip2` for gVisor. `up.sh` checks the list first |
-| `MODEL_API_KEY` | Anthropic by default; `MODEL` and `MODEL_BASE_URL` select any OpenAI-compatible endpoint, whose host joins the egress profile |
+| Tools | `docker`, `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `base32`, `yq` (mikefarah v4); `sha512sum`, `bzip2` and `tar` for gVisor. `up.sh` stops at the first one missing |
+| `MODEL_API_KEY` | Anthropic by default; `MODEL` and `MODEL_BASE_URL` select any OpenAI-compatible endpoint, whose host joins the egress profile. For an in-cluster model (`http://<svc>.<ns>.svc.<domain>:<port>`), the port must equal the Service's `targetPort`, and the run may then reach **every pod in the model's namespace on that port**: the rule selects the namespace, not the Service. Run the model in a namespace of its own |
 | `GITHUB_TOKEN`, `REPO` | A fine-grained PAT with Contents read/write on **one throwaway repository**, and that repository as `owner/name`. The repository needs a `main` branch with at least one commit |
 | Images | The latest `Smana/agent-platform` release. From a `main` checkout, set `AP_VERSION` to a release whose images match the chart: until a release that contains the `agent-platform` chart and the run-controller image ships, the default fails at preflight. The GitHub API is rate-limited (60 requests/hour unauthenticated) |
 
@@ -25,11 +25,11 @@ flowchart TD
   K --> C["Cilium<br/>kube-proxy replacement"] --> M["cert-manager<br/>self-signed CA"]
   M --> N["CNPG<br/>one-instance rooms database"] --> S["Secrets<br/>agent-model, agent-git"]
   S --> H["helm install agent-platform<br/>values-quickstart.yaml"]
-  H --> F["port-forward :8080"] --> R["task quickstart:run<br/>Room + AgentRun"] --> W["watch the room"]
+  H --> G["gVisor probe<br/>runsc, DNS, broker :8443"] --> F["print the port-forward command"] --> R["task quickstart:run<br/>Room + AgentRun"] --> W["watch the room"]
 ```
 
-The script is idempotent and pins every version it installs (`hack/quickstart/versions.env`); a second
-`task quickstart` is a no-op. Cluster access is pinned to `.quickstart/kubeconfig`:
+The script is idempotent and pins every version it installs (`hack/quickstart/versions.env`); safe to
+re-run: it upgrades the release to the latest one. Cluster access is pinned to `.quickstart/kubeconfig`:
 `export KUBECONFIG=$PWD/.quickstart/kubeconfig` in your own shell.
 
 ## Start a run
@@ -81,21 +81,22 @@ real thing; the rest is scaled down.
 
 | Symptom | Cause and fix |
 |---|---|
-| A run stays `Pending` | Read its `Ready` condition: `kubectl -n agents get agentrun <run> -o jsonpath='{.status.conditions}'`. `SecretMissing`: `agent-model` or `agent-git` is absent from `agents`. `CreateFailed`: the controller could not create the pod (read the condition message, then the controller's logs). `WaitingForGC`: an object of a previous run with the same name is still being garbage-collected; it clears by itself |
-| A request from the agent times out | Egress is default-deny. `kubectl -n kube-system exec ds/cilium -- hubble observe --verdict DROPPED -n agents`, then widen the egress profile |
+| A run stays `Pending` | Read its `Ready` condition: `kubectl -n agents get agentrun <run> -o jsonpath='{.status.conditions}'`. `SecretMissing`: `agent-model` or `agent-git` is absent from `agents`. `CreateFailed`: the controller could not create the pod; the run stays `Pending` or ends `Failed` (read the condition message, then the controller's logs). `WaitingForGC`: an object of a previous run with the same name is still being garbage-collected; it clears by itself |
+| A request from the agent times out | Egress is default-deny. `kubectl -n kube-system exec ds/cilium -c cilium-agent -- hubble observe --verdict DROPPED -n agents`, then widen the egress profile |
 | Pods under gVisor have no network | gVisor needs Cilium's `socketLB.hostNamespaceOnly=true`; `up.sh` sets it. A hand-installed Cilium without it breaks run networking |
 | `up.sh` fails at "release images" | No release holds the chart's images yet, or the API limit is hit. Set `AP_VERSION=<release tag>` |
-| This machine cannot run gVisor | `ALLOW_UNSANDBOXED=1 task quickstart` runs agents under the default runtime. The environment is then **not sandboxed**: the agent's code runs as a plain container with your PAT and API key. Use it only on a machine you trust with that code. The controller sets the run's `Unsandboxed` condition, (no banner in the room yet) |
+| This machine cannot run gVisor | `ALLOW_UNSANDBOXED=1 task quickstart` runs agents under the default runtime. The environment is then **not sandboxed**: the agent's code runs as a plain container with your PAT and API key. Use it only on a machine you trust with that code. The controller sets the run's `Unsandboxed` condition; the room shows no banner. |
+| `up.sh` stops at "gVisor probe" | It started a run-shaped pod under `runsc` and one check failed, named in the output: `dmesg` (runsc is not the runtime), `dns` (the broker's name does not resolve) or `tcp` (the ClusterIP is unreachable: Cilium `socketLB.hostNamespaceOnly`, or a network policy). Fix the cause, or `ALLOW_UNSANDBOXED=1` to skip the probe |
 | `task quickstart:check` | Offline drift check of the scripts against the chart; no cluster needed |
 
 ## CI: `quickstart-e2e`
 
 The job runs the whole path against a stub model. It needs two Actions secrets and skips without
-them (fork PRs).
+them (fork PRs), with a warning and a step summary saying nothing ran: a green skip proves nothing.
 
 | Secret | Value |
 |---|---|
 | `QUICKSTART_REPO` | A throwaway `owner/name` with a `main` branch and at least one commit |
-| `QUICKSTART_GITHUB_TOKEN` | A fine-grained PAT, Contents read/write on that repository |
+| `QUICKSTART_GITHUB_TOKEN` | A fine-grained PAT, Contents read on that repository (the stub model never pushes) |
 
 For the chart's values and its caveats, see the [chart README](../charts/agent-platform/README.md).

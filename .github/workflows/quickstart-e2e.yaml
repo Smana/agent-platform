@@ -1,6 +1,6 @@
 # The whole quickstart in CI: this checkout's images in kind, a stub model, one AgentRun to Succeeded.
 # Needs the owner's secrets QUICKSTART_REPO (a throwaway owner/name) and QUICKSTART_GITHUB_TOKEN (a
-# fine-grained PAT scoped to it: Contents read/write). The repo needs a `main` branch with at least
+# fine-grained PAT scoped to it: Contents read; the stub model never pushes). The repo needs a `main` branch with at least
 # one commit: the harness branches from it. Without them (a fork PR) every step is skipped, not failed.
 name: quickstart-e2e
 on:
@@ -32,7 +32,15 @@ jobs:
       QUICKSTART_REPO: ${{ secrets.QUICKSTART_REPO }}
     steps:
       - if: env.QUICKSTART_REPO == ''
-        run: echo "QUICKSTART_REPO secret absent, fork PR - skipping the e2e"
+        run: |
+          echo "::warning title=quickstart-e2e skipped::QUICKSTART_REPO is absent: nothing ran, so this green check proves nothing about the quickstart."
+          {
+            echo "### quickstart-e2e skipped: nothing ran"
+            echo
+            echo "A green check here is **not** a pass. Add these Actions secrets (a fork PR never receives them):"
+            echo "- \`QUICKSTART_REPO\`: a throwaway \`owner/name\` with a \`main\` branch and one commit"
+            echo "- \`QUICKSTART_GITHUB_TOKEN\`: a fine-grained PAT, Contents read on that repository"
+          } >> "$GITHUB_STEP_SUMMARY"
       - if: env.QUICKSTART_REPO != ''
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:

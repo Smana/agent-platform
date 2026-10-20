@@ -3,10 +3,15 @@
 package humanapi
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/fanout"
@@ -49,8 +54,22 @@ func TestLocalModeThroughServer(t *testing.T) {
 	if code, _ := get("localhost:8080", "https://evil.example"); code != http.StatusForbidden {
 		t.Fatalf("foreign Origin: %d", code)
 	}
-	h := http.Header{"Origin": {"https://evil.example"}}
-	if _, code, _ := connect(t, e, h); code != http.StatusForbidden {
-		t.Fatalf("WebSocket from a foreign Origin: %d", code)
+	// Dial as the allowed Host, with an Origin the websocket library's own same-host check accepts
+	// (same host, other scheme): only the broker's exact-Origin check can refuse it.
+	addr := e.ts.Listener.Addr().String()
+	dialer := &net.Dialer{}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}}}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, resp, err := websocket.Dial(ctx, "ws://localhost:8080/v1/ws?room="+roomID,
+		&websocket.DialOptions{HTTPClient: client, HTTPHeader: http.Header{"Origin": {"https://localhost:8080"}}})
+	if c != nil {
+		_ = c.CloseNow()
 	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("WebSocket from a foreign Origin: resp %v err %v", resp, err)
+	}
+	_ = resp.Body.Close()
 }

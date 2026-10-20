@@ -46,33 +46,13 @@ If a platform cannot run gVisor, `ALLOW_UNSANDBOXED=1` (exactly `1`; `up.sh`) cl
 `gvisor` RuntimeClass and runs agents under the default runtime. The environment is then **not
 sandboxed**; use it only on a machine you trust with the agent's code.
 
-## Live check (to run in `quickstart-e2e`)
+## Live check
 
-```bash
-. hack/quickstart/versions.env && hack/quickstart/fetch-runsc.sh
-kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NODE_IMAGE"
-# install Cilium, then a RuntimeClass{handler: runsc} and a pod running `dmesg` under it
-# pass: pod Succeeded and its log shows gVisor's banner, not a Linux kernel log
-```
+`up.sh` runs it on every install (skipped under `ALLOW_UNSANDBOXED=1`): `manifests/gvisor-probe.yaml.tmpl`
+is a run-shaped pod under `runsc` that must print `ok:dmesg` (gVisor's own kernel log), `ok:dns` (the
+broker's FQDN resolves) and `ok:tcp` (the ClusterIP :8443 answers, which needs Cilium
+`socketLB.hostNamespaceOnly`). Otherwise `up.sh` stops, names the failed check and offers
+`ALLOW_UNSANDBOXED=1`. `quickstart-e2e` runs `up.sh`, so CI exercises it.
 
-## Prerequisites (`task quickstart`)
-
-`docker` (with buildx), `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `base32`, `yq`
-(mikefarah v4); `fetch-runsc.sh` also needs `sha512sum` and `bzip2`. `up.sh` checks the list before it
-does anything. Images default to the latest `Smana/agent-platform` release (`AP_VERSION` overrides);
-`UP_HELM_ARGS` with your own `*.image.tag` values turns the lookup off. Cluster access is pinned to
-`.quickstart/kubeconfig`: `export KUBECONFIG=$PWD/.quickstart/kubeconfig` in your own shell.
-
-## Starting a run
-
-`RUN_PROMPT='Fix a typo in the README' REPO=owner/name task quickstart:run`. Pass both in the environment,
-not as `task … NAME=value`: go-task runs those values through Go templating (`{{ … }}` is mangled).
-
-## CI: `quickstart-e2e`
-
-Needs two Actions secrets: `QUICKSTART_REPO` (a throwaway `owner/name`) and `QUICKSTART_GITHUB_TOKEN`
-(a fine-grained PAT scoped to that repo, Contents read/write). The repo needs a `main` branch with at
-least one commit: the harness clones it and branches from `main`, which fails on an empty repo.
-Without the secrets (fork PRs) the job skips. A run's model is the stub (`stub-model/`); its
-`base_url` must be `http://<svc>.<ns>.svc.<cluster-domain>:<port>` with the port equal to the
-Service's `targetPort` (the run's network policy sees the backend port).
+Prerequisites, starting a run, the CI secrets and the model-URL rule are in
+[`docs/quickstart.md`](../../docs/quickstart.md), which owns them.
