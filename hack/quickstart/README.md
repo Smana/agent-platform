@@ -1,0 +1,56 @@
+# Quickstart spike: gVisor inside kind
+
+**Question:** can a kind node (a Docker container) run pods under gVisor (`runsc`), so the quickstart
+sandboxes agent workloads the same way a real cluster does?
+
+**Status:** artifacts built and verified statically; the live proof is the `quickstart-e2e` CI job
+(GitHub runners have Docker). Nothing below marked "pending" has been run yet.
+
+## Pinned versions (`versions.env`)
+
+| Component | Version | Released | Why |
+|---|---|---|---|
+| kind | v0.33.0 | 2026-08-26 | Newest stable release at least two weeks old |
+| node image | `kindest/node:v1.37.0@sha256:a1ed56cf…` | with kind v0.33.0 | Newest Kubernetes minor in that release's notes; digest pinned as the notes require |
+| gVisor | 20260928.0 | 2026-09-30 | Newest `YYYYMMDD.N` at least two weeks old (20261005.0 and 20261012.0 are too recent) |
+| Cilium / cert-manager / CNPG | 1.20.3 / v1.21.2 / 1.30.1 | 2026-10-15 / 2026-09-11 / 2026-09-23 | cloud-native-ref's pins, so both repos agree |
+
+## What the spike changed from the plan
+
+- **gVisor publishes a tarball, not bare binaries.** `…/<release>/<arch>/runsc` returns 404 for recent
+  releases; `gvisor.tar.bz2` (+ `.sha512`) holds `runsc`, `containerd-shim-runsc-v1` and a `gvisor-bin/`
+  directory. `fetch-runsc.sh` verifies the tarball's sha512 and extracts it.
+- **Containerd plugin key is `io.containerd.grpc.v1.cri`, not `io.containerd.cri.v1.runtime`.**
+  Evidence (no Docker needed), kind v0.33.0:
+  - `images/base/Dockerfile`: `CONTAINERD_VERSION="v2.3.4"`, runc v1.4.3.
+  - `images/base/files/etc/containerd/config.toml` starts with `version = 2` and configures
+    `[plugins."io.containerd.grpc.v1.cri"…]`.
+  - kind merges `containerdConfigPatches` into that file, so a patch in the v3-only key would be ignored.
+    The comment in `kind-config.yaml` repeats this.
+
+## Platforms
+
+| Platform | Result |
+|---|---|
+| Linux + Docker (amd64, arm64) | pending live run (`quickstart-e2e`) |
+| macOS + Docker Desktop | untested |
+| Podman (rootful) | untested |
+
+Open risk for the live run: whether `runsc` needs its `gvisor-bin/` helpers next to it on the node
+(only `runsc` and the shim are mounted). If the probe pod fails with a missing-binary error, mount the
+directory too.
+
+## Escape hatch
+
+If a platform cannot run gVisor, `ALLOW_UNSANDBOXED=1` (Task 8's `up.sh`) skips the `runsc` mount and the
+`gvisor` RuntimeClass and runs agents under the default runtime. The environment is then **not
+sandboxed**; use it only on a machine you trust with the agent's code.
+
+## Live check (to run in `quickstart-e2e`)
+
+```bash
+. hack/quickstart/versions.env && hack/quickstart/fetch-runsc.sh
+kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NODE_IMAGE"
+# install Cilium, then a RuntimeClass{handler: runsc} and a pod running `dmesg` under it
+# pass: pod Succeeded and its log shows gVisor's banner, not a Linux kernel log
+```

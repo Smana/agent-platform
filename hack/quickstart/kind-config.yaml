@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Single-node kind cluster whose containerd can run pods under gVisor (runtime class handler `runsc`).
+#
+# Plugin key: kindest/node v1.37.0 (kind v0.33.0) builds containerd v2.3.4
+# (kind images/base/Dockerfile, CONTAINERD_VERSION), but its /etc/containerd/config.toml is
+# still `version = 2` (kind images/base/files/etc/containerd/config.toml). Patches merge into
+# that v2-format file, where the CRI plugin is `io.containerd.grpc.v1.cri`; the
+# `io.containerd.cri.v1.runtime` key only exists in version-3 files and would be ignored.
+#
+# hostPath is relative: run kind from the repo root (up.sh does).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: agent-platform
+networking:
+  disableDefaultCNI: true # Cilium
+  kubeProxyMode: none # Cilium kube-proxy replacement
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: .quickstart/bin/runsc
+        containerPath: /usr/local/bin/runsc
+      - hostPath: .quickstart/bin/containerd-shim-runsc-v1
+        containerPath: /usr/local/bin/containerd-shim-runsc-v1
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+      runtime_type = "io.containerd.runsc.v1"
