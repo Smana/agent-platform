@@ -92,7 +92,7 @@ func lock(ctx context.Context, conn *pgx.Conn, log *slog.Logger) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("migrate: lock: %w", ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
