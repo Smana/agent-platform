@@ -6,9 +6,7 @@ app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
 {{- end -}}
 
 {{- define "ap.labels" -}}
-app.kubernetes.io/name: room-broker
-app.kubernetes.io/part-of: agent-platform
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- include "ap.labelsFor" (dict "root" . "name" "room-broker") -}}
 {{- end -}}
 
 {{/* The image by digest: a bare tag can move under a running broker. e2e.unpinnedImages lifts it for kind-loaded images. */}}

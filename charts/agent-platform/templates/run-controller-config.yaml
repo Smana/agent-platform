@@ -21,7 +21,9 @@ data:
     broker:
       url: {{ printf "https://room-broker.%s.svc.%s:8443" .Release.Namespace .Values.clusterDomain | quote }}
       namespace: {{ .Release.Namespace | quote }}
-      labels: {{- include "ap.labels" . | nindent 8 }}
+      # Only the stable selector label: runctl copies every label into each run CNP once, so a
+      # version label would cut in-flight runs off from the broker on upgrade.
+      labels: {app.kubernetes.io/name: room-broker}
       caSecret: {{ required "broker.tls.secretName is required" .Values.broker.tls.secretName | quote }}
     images:
       harness: {{ include "ap.image" (dict "root" . "image" $c.images.harness) | quote }}
