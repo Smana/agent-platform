@@ -16,7 +16,9 @@ import (
 
 type failingAuth struct{ err error }
 
-func (a failingAuth) Authenticate(*http.Request) (authn.Principal, error) { return authn.Principal{}, a.err }
+func (a failingAuth) Authenticate(*http.Request) (authn.Principal, error) {
+	return authn.Principal{}, a.err
+}
 
 // A TokenReview call that fails is the broker's problem, not the credential's: Warn with the cause,
 // once a minute per cause, and never the token. A bad credential stays at Debug.

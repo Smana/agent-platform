@@ -145,9 +145,10 @@ flowchart TD
 
 **Risk: gVisor inside kind.** It works on Linux with Docker; macOS (Docker Desktop's VM), Podman
 and cgroup v1 are unproven. **The plan's first task is a spike on Linux and macOS.** Where it
-fails, `up.sh` stops with the reason and offers `ALLOW_UNSANDBOXED=1`; the controller then sets
-the run's `Unsandboxed` condition and the room shows a banner. The sandbox is never dropped
-silently.
+fails, `up.sh` (after installing the chart) probes gVisor with a run-shaped pod (the kernel log is
+gVisor's, the broker's FQDN resolves, its ClusterIP :8443 connects), stops with the failed check and
+offers `ALLOW_UNSANDBOXED=1`; the controller then sets the run's `Unsandboxed` condition. There is no
+room banner: the condition is the only signal. The sandbox is never dropped silently.
 
 ## What differs from production
 
