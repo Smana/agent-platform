@@ -1,0 +1,13 @@
+apiVersion: agents.ogenki.io/v1alpha1
+kind: AgentRun
+metadata:
+  name: run-${RUN_ID}
+  namespace: agents
+spec:
+  role: implementer
+  repository: ${REPO}
+  principal: human:local
+  dataClass: public
+  roomRef: ${ROOM_ID}
+  task:
+    text: ${TASK_JSON}
