@@ -106,11 +106,11 @@ tasks:
       - hack/quickstart/down.sh
 
   quickstart:run:
-    desc: "Start a run on the quickstart cluster: task quickstart:run TASK='...' REPO=owner/name"
+    desc: "Start a run on the quickstart cluster: task quickstart:run PROMPT='...' REPO=owner/name"
     requires:
-      vars: [TASK, REPO]
-    env: # go-task does not export CLI variables to commands
-      TASK: '{{.TASK}}'
+      vars: [PROMPT, REPO]
+    env: # go-task does not export CLI variables to commands (and TASK is its own built-in, hence PROMPT)
+      PROMPT: '{{.PROMPT}}'
       REPO: '{{.REPO}}'
     cmds:
       - hack/quickstart/run.sh

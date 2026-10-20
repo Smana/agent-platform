@@ -1074,7 +1074,7 @@ Run it. Expected: FAIL, because the templates are missing.
 
 **Interfaces:**
 - Consumes: `hack/quickstart/versions.env` and `kind-config.yaml` (Task 1); the chart (Tasks 6–7).
-- Produces: env contract `MODEL_API_KEY`, `MODEL` (default `claude-sonnet-5-5`), optional `MODEL_BASE_URL`, `GITHUB_TOKEN`, `REPO`, optional `ALLOW_UNSANDBOXED=1`, optional `CHART_REF` (default: the local chart directory). It also produces the `quickstart:run TASK='…'` command.
+- Produces: env contract `MODEL_API_KEY`, `MODEL` (default `claude-sonnet-5-5`), optional `MODEL_BASE_URL`, `GITHUB_TOKEN`, `REPO`, optional `ALLOW_UNSANDBOXED=1`, optional `CHART_REF` (default: the local chart directory). It also produces the `quickstart:run PROMPT='…'` command.
 
 - [ ] **Step 1: Write `up.sh`.** Every step is idempotent: create only if absent, and use `helm upgrade --install`. The script must start with `set -euo pipefail` and an SPDX header.
 
@@ -1131,7 +1131,7 @@ cat <<EOF
 Ready. In another terminal:
   kubectl -n $NS port-forward deploy/room-broker 8080:8080
 then open http://localhost:8080 and start a run:
-  task quickstart:run TASK='Fix a typo in the README'
+  task quickstart:run PROMPT='Fix a typo in the README'
 EOF
 ```
 
@@ -1146,13 +1146,13 @@ The chart's image tags come from `values-quickstart.yaml`, pinned by the release
 
 - [ ] **Step 2: `run.sh`.** It renders `room.yaml.tmpl` and `agentrun.yaml.tmpl` with `envsubst` and applies them.
 - **Room:** `agents.ogenki.io/v1alpha1 Room`, named a fresh C2 id (`head -c5 /dev/urandom | base32 | tr A-Z a-z | tr -d =` gives 8 characters of `[a-z2-7]`), in `agent-platform`. Spec: `owner` and `driver` `human:local`, `dataClass: public`, `repository: $REPO`.
-- **AgentRun:** `agents.ogenki.io/v1alpha1 AgentRun` named `run-<another C2 id>` in `agents`. Spec: `role: implementer`, `repository: $REPO`, `principal: human:local`, `dataClass: public`, `roomRef: <room id>`, `task.text: $TASK`.
+- **AgentRun:** `agents.ogenki.io/v1alpha1 AgentRun` named `run-<another C2 id>` in `agents`. Spec: `role: implementer`, `repository: $REPO`, `principal: human:local`, `dataClass: public`, `roomRef: <room id>`, `task.text: $PROMPT`.
 
 It then prints `http://localhost:8080/r/<room id>`.
 
-- [ ] **Step 3: `down.sh`** runs `kind delete cluster --name agent-platform`. Add the taskfile entries `quickstart`, `quickstart:down` and `quickstart:run` (`TASK` is required).
+- [ ] **Step 3: `down.sh`** runs `kind delete cluster --name agent-platform`. Add the taskfile entries `quickstart`, `quickstart:down` and `quickstart:run` (`PROMPT` is required; `TASK` is go-task's own variable).
 
-- [ ] **Step 4: Run it.** This needs Docker, so run it on a Linux workstation: `MODEL_API_KEY=… GITHUB_TOKEN=… REPO=you/sandbox task quickstart`, then `task quickstart:run TASK='Add a line to the README'`. Watch the room through the port-forward.
+- [ ] **Step 4: Run it.** This needs Docker, so run it on a Linux workstation: `MODEL_API_KEY=… GITHUB_TOKEN=… REPO=you/sandbox task quickstart`, then `task quickstart:run PROMPT='Add a line to the README'`. Watch the room through the port-forward.
 
 Expected: the run reaches Running, the room fills with steps, and the run ends Succeeded, with a branch `agent/<id>` pushed and a pull request opened. Record the wall-clock time from `task quickstart` to the first room event; the target is under ten minutes. Run `task quickstart` a second time: it is a no-op that exits 0. Then run `task quickstart:down`.
 
@@ -1243,7 +1243,7 @@ Every remaining step must be guarded with `if: env.QUICKSTART_REPO != ''`, becau
 1. Builds the room-broker, room-bridge, run-controller and agent-harness images with `docker build` at tag `e2e`, then runs `kind load docker-image`.
 2. Builds and loads stub-model.
 3. Runs `up.sh` with `MODEL_API_KEY=stub MODEL=stub MODEL_BASE_URL=http://stub-model.e2e.svc.cluster.local:8080/v1` and `CHART_REF=charts/agent-platform`. It passes extra Helm args through `UP_HELM_ARGS`: add this env to `up.sh` and append it to the `helm upgrade` line. The args are `--set e2e.unpinnedImages=true --set broker.image.tag=e2e --set runController.image.tag=e2e --set runController.images.harness=ghcr.io/smana/agent-harness:e2e --set runController.images.bridge=ghcr.io/smana/room-bridge:e2e`. Images loaded with `kind load` have no registry digest, so they cannot be pinned by one; the chart's `e2e.unpinnedImages` exists for this path alone. The run-controller config must then also accept a bare tag for `images.*`: check `runctl.validate`, which only requires non-empty values today.
-4. Applies the stub, then `run.sh` with `TASK='quickstart-e2e'`.
+4. Applies the stub, then `run.sh` with `PROMPT='quickstart-e2e'`.
 5. Waits up to 10 minutes for the AgentRun's `.status.phase` to be `Succeeded`, and asserts that the room has at least one event. Through a port-forward, query the broker's room API or `kubectl get room <id> -o jsonpath='{.status.lastSeq}'` > 0.
 6. On failure, dumps `kubectl get agentrun,pods -A -o wide`, the controller, broker and bridge logs, and `hubble observe --verdict DROPPED` if available.
 

@@ -132,7 +132,7 @@ flowchart TD
   N --> S[Secrets agent-model, agent-git]
   S --> H[helm install agent-platform -f values-quickstart.yaml]
   H --> F[port-forward :8080; print the URL and the next command]
-  F --> R["task quickstart:run TASK='…' → kubectl apply Room + AgentRun; watch it in the room"]
+  F --> R["task quickstart:run PROMPT='…' → kubectl apply Room + AgentRun; watch it in the room"]
 ```
 
 | Detail | Choice |
