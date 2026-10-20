@@ -124,6 +124,13 @@ func TestModelFrom(t *testing.T) {
 	if err != nil || m.Host != "stub.e2e.svc" || m.Port != 8080 {
 		t.Fatalf("explicit: %+v %v", m, err)
 	}
+	m, err = ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://stub.e2e.svc.cluster.local:8080")})
+	if err != nil || m.Host != "stub.e2e.svc.cluster.local" || m.Port != 8080 {
+		t.Fatalf("cluster-local http: %+v %v", m, err)
+	}
+	if _, err := ModelFrom(map[string][]byte{"api_key": []byte("k"), "model": []byte("m"), "base_url": []byte("http://api.example.com/v1")}); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("http public host: want a base_url error, got %v", err)
+	}
 	if _, err := ModelFrom(map[string][]byte{"model": []byte("m")}); err == nil {
 		t.Fatal("no api_key: want an error")
 	}
