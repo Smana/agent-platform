@@ -29,6 +29,11 @@ type TokenReviewer interface {
 	Create(ctx context.Context, tr *authv1.TokenReview, opts metav1.CreateOptions) (*authv1.TokenReview, error)
 }
 
+// ErrReviewUnavailable is a TokenReview call that failed (RBAC, a missing auth-delegator binding, an
+// apiserver blip): no verdict on the token. It wraps ErrUnauthenticated, so the caller refuses; the
+// broker logs it apart from a bad credential.
+var ErrReviewUnavailable = fmt.Errorf("%w: token review unavailable", ErrUnauthenticated)
+
 // tokenReviewTTL caps a cached answer: a revoked ServiceAccount stops passing within it.
 const tokenReviewTTL = 5 * time.Minute
 
@@ -67,13 +72,13 @@ func (t *TokenReview) Verify(ctx context.Context, raw, audience string) (*Claims
 	t.mu.Unlock()
 	out, err := t.c.Create(ctx, &authv1.TokenReview{Spec: authv1.TokenReviewSpec{Token: raw, Audiences: []string{audience}}}, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("%w: token review: %w", ErrUnauthenticated, err)
+		return nil, fmt.Errorf("%w: %w", ErrReviewUnavailable, err)
 	}
 	if !out.Status.Authenticated {
 		return nil, fmt.Errorf("%w: the cluster does not authenticate this token", ErrWrongIssuer)
 	}
 	if !slices.Contains(out.Status.Audiences, audience) {
-		return nil, fmt.Errorf("%w: the token's audiences exclude %s", ErrUnauthenticated, audience)
+		return nil, fmt.Errorf("%w: the token's audiences exclude %s", ErrWrongAudience, audience)
 	}
 	until := now.Add(tokenReviewTTL)
 	if exp, ok := unverifiedExp(raw); ok && exp.Before(until) {

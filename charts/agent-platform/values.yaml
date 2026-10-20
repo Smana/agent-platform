@@ -79,7 +79,8 @@ runController:
   modelSecret: agent-model
   gitSecret: agent-git
   # Empty + allowUnsandboxed=false: the controller refuses every run. createRuntimeClass renders
-  # the RuntimeClass of that name for the handler; turn it off when the cluster already has one.
+  # the RuntimeClass of that name for the handler. Off by default: it is cluster-scoped, so opt in only
+  # where no such RuntimeClass exists.
   runtimeClassName: gvisor
   runtimeHandler: runsc
   createRuntimeClass: false # a cluster-scoped name: opt in where no such RuntimeClass exists (the quickstart does)
