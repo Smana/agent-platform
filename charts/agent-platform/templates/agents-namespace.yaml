@@ -4,6 +4,7 @@ kind: Namespace
 metadata:
   name: {{ .Values.runs.namespace }}
 ---
+{{ end -}}
 # An empty rule selects no peer: enforcement on in both directions, nothing allowed. Each run's own
 # CiliumNetworkPolicy adds its allowances.
 apiVersion: cilium.io/v2
@@ -15,4 +16,3 @@ spec:
   endpointSelector: {}
   ingress: [{}]
   egress: [{}]
-{{- end }}

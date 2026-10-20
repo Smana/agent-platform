@@ -5,7 +5,7 @@ metadata:
   labels: {{- include "ap.labels" . | nindent 4 }}
 ---
 # Exactly the verbs the broker calls: the Room controller reads Rooms, updates their finalizer and
-# merge-patches their status; leader election takes a Lease and emits Events.
+# merge-patches their status; the human API creates (new room, fork); leader election takes a Lease and emits Events.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -14,7 +14,7 @@ metadata:
 rules:
   - apiGroups: [agents.ogenki.io]
     resources: [rooms]
-    verbs: [get, list, watch, update]
+    verbs: [get, list, watch, create, update]
   - apiGroups: [agents.ogenki.io]
     resources: [rooms/status]
     verbs: [patch]

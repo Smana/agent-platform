@@ -34,9 +34,14 @@ spec:
           rules:
             dns: [{matchPattern: "*"}]
     # The Room and AgentRun watches, the leader lease and token reviews.
+    # Cilium applies L4 policy after service translation: kubernetes.default:443 is the control
+    # plane's own port (6443 on kind) by then, hence apiServerPorts.
     - toEntities: [kube-apiserver]
       toPorts:
-        - ports: [{port: "443", protocol: TCP}]
+        - ports:
+            {{- range .Values.apiServerPorts }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: {{ .Release.Namespace }}

@@ -32,3 +32,19 @@ allowPrivilegeEscalation: false
 readOnlyRootFilesystem: true
 capabilities: {drop: [ALL]}
 {{- end -}}
+
+{{/* A misconfiguration is a helm error, not a crashloop. */}}
+{{- define "ap.validate" -}}
+{{- $b := .Values.broker -}}
+{{- if not (has ($b.human.mode | default "oidc") (list "oidc" "local")) -}}
+{{- fail (printf "broker.human.mode %q is not oidc or local" $b.human.mode) -}}
+{{- end -}}
+{{- if not (has $b.runIssuer.mode (list "jwks" "tokenreview")) -}}
+{{- fail (printf "broker.runIssuer.mode %q is not jwks or tokenreview" $b.runIssuer.mode) -}}
+{{- end -}}
+{{- $dsn := ne ($b.database.brokerSecret | default "") "" -}}
+{{- range $b.extraEnv -}}{{- if eq .name "ROOMS_DATABASE_URL" -}}{{- $dsn = true -}}{{- end -}}{{- end -}}
+{{- if not $dsn -}}
+{{- fail "no database: set broker.database.brokerSecret, or ROOMS_DATABASE_URL in broker.extraEnv" -}}
+{{- end -}}
+{{- end -}}

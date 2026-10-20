@@ -6,6 +6,7 @@
 # mode, default-deny in the runs namespace, and an image by digest unless e2e says otherwise.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+helm dependency build . >/dev/null
 digest='v0.0.0@sha256:0000'
 fail=0
 out=''
@@ -37,7 +38,9 @@ ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.c
 ykind Service 'select(.metadata.name=="room-broker") | ((.spec.ports | map(.port) | contains([8443,9090])) and ((.spec.ports | map(.port) | contains([8080])) == false))' 'local mode does not expose :8080'
 ykind ClusterRoleBinding 'select(.roleRef.name=="system:auth-delegator") | .subjects[0].name == "room-broker"' 'tokenreview RBAC'
 ykind Role 'select(.metadata.namespace=="agents") | .rules[] | select(.resources[]=="agentruns") | (.apiGroups[0] == "agents.ogenki.io" and ((.verbs|sort|join(",")) == "delete,get,list,patch,watch"))' 'AgentRun verbs in the runs namespace'
-ykind Role 'select(.metadata.namespace==null) | .rules[] | select(.resources[]=="rooms") | ((.verbs|sort|join(",")) == "get,list,update,watch")' 'Room verbs'
+ykind Role 'select(.metadata.namespace==null) | .rules[] | select(.resources[]=="rooms") | ((.verbs|sort|join(",")) == "create,get,list,update,watch")' 'Room verbs (create: new room and fork)'
+ykind CiliumNetworkPolicy 'select(.metadata.name=="room-broker") | .spec.egress[] | select(.toEntities[0]=="kube-apiserver") | (.toPorts[0].ports | map(.port) | join(",")) == "443,6443"' 'the apiserver on 443 and kind'
+ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.metadata.annotations."checksum/config" | length == 64' 'a config change rolls the broker'
 ykind Certificate '.spec.issuerRef.name == "quickstart-ca"' 'the Certificate issuer'
 ykind Namespace '.metadata.name == "agents"' 'the runs namespace'
 ykind CiliumNetworkPolicy 'select(.metadata.namespace=="agents") | (.spec.endpointSelector | length) == 0' 'default-deny in the runs namespace'
@@ -47,6 +50,10 @@ ykind CiliumNetworkPolicy 'select(.metadata.name=="room-broker") | .spec.endpoin
 # production-shaped render: no migrate, no tokenreview binding
 p="$(helm template ap . -n agent-system --set broker.image.tag=$digest --set runController.enabled=false \
      --set broker.runIssuer.mode=jwks --set broker.runIssuer.issuer=https://oidc --set broker.runIssuer.jwksURL=https://oidc/keys \
+     --set broker.database.brokerSecret=dsn --set broker.publicURL=https://rooms.example.com \
+     --set broker.human.issuer=https://idp.example.com --set broker.human.jwksURL=https://idp.example.com/keys \
+     --set broker.human.clientIDFile=/c --set broker.human.projectIDFile=/p --set broker.human.origin=https://rooms.example.com \
+     --set broker.human.groups.admin=a --set broker.human.groups.member=m \
      --set runs.group=cloud.ogenki.io --set runs.namePrefix=xplane-run-)"
 out="$p"
 ynone 'select(.kind=="ClusterRoleBinding")' 'jwks mode binds no auth-delegator'
@@ -54,6 +61,24 @@ ynone 'select(.kind=="Deployment") | .spec.template.spec.initContainers | select
 check 'xplane-run-' 'the production prefix flows through'
 check 'cloud.ogenki.io' 'the production group flows through'
 ykind Service 'select(.metadata.name=="room-broker") | (.spec.ports | map(.port) | contains([8443,8080,9090]))' 'oidc mode exposes :8080'
+
+# the runs namespace brought by the user keeps its default-deny
+out="$(helm template ap . -n x -f values-quickstart.yaml --set createRunsNamespace=false --set broker.image.tag=$digest --set runController.image.tag=$digest)"
+ykind CiliumNetworkPolicy 'select(.metadata.namespace=="agents") | (.spec.endpointSelector | length) == 0' 'default-deny without the Namespace object'
+ynone 'select(.kind=="Namespace")' 'createRunsNamespace=false renders no Namespace'
+
+# a misconfiguration is a helm error
+for bad in '--set broker.human.mode=bogus' '--set broker.runIssuer.mode=tokenReview' '--set broker.database.brokerSecret='; do
+  # shellcheck disable=SC2086
+  if helm template ap . -n x -f values-quickstart.yaml --set broker.image.tag=$digest $bad >/dev/null 2>&1; then
+    echo "FAIL: $bad must not render" >&2; fail=1; fi
+done
+
+# both rendered configs load through the broker's real loader
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+yq 'select(.kind=="ConfigMap") | .data."config.yaml"' - <<<"$q" >"$tmp/quickstart.yaml"
+yq 'select(.kind=="ConfigMap") | .data."config.yaml"' - <<<"$p" >"$tmp/production.yaml"
+go run ./tests/loadconfig "$tmp/quickstart.yaml" "$tmp/production.yaml" || fail=1
 
 # a bare tag is refused unless e2e.unpinnedImages
 if helm template ap . -n x -f values-quickstart.yaml --set broker.image.tag=v1 --set runController.image.tag=$digest >/dev/null 2>&1; then

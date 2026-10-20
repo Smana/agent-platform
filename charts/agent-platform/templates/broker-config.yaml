@@ -1,5 +1,6 @@
 {{- $b := .Values.broker -}}
 {{- $local := include "ap.local" . -}}
+{{- include "ap.validate" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
