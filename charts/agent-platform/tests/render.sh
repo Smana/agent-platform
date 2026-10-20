@@ -43,6 +43,7 @@ ykind CiliumNetworkPolicy 'select(.metadata.name=="room-broker") | .spec.egress[
 ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.metadata.annotations."checksum/config" | length == 64' 'a config change rolls the broker'
 ykind Certificate '.spec.issuerRef.name == "quickstart-ca"' 'the Certificate issuer'
 ykind Namespace '.metadata.name == "agents"' 'the runs namespace'
+ykind Namespace '.metadata.annotations."helm.sh/resource-policy" == "keep"' 'uninstall keeps the runs namespace'
 ykind CiliumNetworkPolicy 'select(.metadata.namespace=="agents") | (.spec.endpointSelector | length) == 0' 'default-deny in the runs namespace'
 ykind CiliumNetworkPolicy 'select(.metadata.namespace=="agents") | ((.spec.ingress | length) == 1 and (.spec.ingress[0] | length) == 0 and (.spec.egress | length) == 1 and (.spec.egress[0] | length) == 0)' 'default-deny: enforcement on, no peer allowed (the empty-rule idiom)'
 ykind CiliumNetworkPolicy 'select(.metadata.name=="room-broker") | .spec.endpointSelector.matchLabels."app.kubernetes.io/name" == "room-broker"' 'broker CNP selects the broker'
