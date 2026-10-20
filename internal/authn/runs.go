@@ -15,7 +15,7 @@ import (
 // only issuer is the cluster's (sub system:serviceaccount:<runs.namespace>:<runs.namePrefix><runId>);
 // a runtime minting its own workload JWTs is one more entry, not a new path (C2 r5).
 type RunIssuer struct {
-	Verifier   *Verifier
+	Verifier   RunVerifier
 	SubPattern *regexp.Regexp // one capture group: the runId; must match the whole subject
 }
 

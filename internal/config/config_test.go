@@ -189,3 +189,27 @@ func TestSystemIssuerOptional(t *testing.T) {
 		t.Fatal("an issuer without jwksURL must be refused")
 	}
 }
+
+// replaceRunIssuers swaps valid's runIssuers block for repl.
+func replaceRunIssuers(body, repl string) string {
+	const old = "runIssuers:\n  - issuer: https://oidc.eks.eu-west-3.amazonaws.com/id/X\n    jwksURL: https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys\n    subPattern: '^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$'\n"
+	if !strings.Contains(body, old) {
+		panic("fixture's runIssuers block changed")
+	}
+	return strings.Replace(body, old, repl, 1)
+}
+
+func TestRunIssuerTokenReviewMode(t *testing.T) {
+	tr := "runIssuers:\n  - mode: tokenreview\n    subPattern: '^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$'\n"
+	if _, err := Load(write(t, replaceRunIssuers(valid, tr))); err != nil {
+		t.Fatalf("tokenreview issuer must load: %v", err)
+	}
+	withURL := "runIssuers:\n  - mode: tokenreview\n    issuer: https://x\n    subPattern: '^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$'\n"
+	if _, err := Load(write(t, replaceRunIssuers(valid, withURL))); err == nil {
+		t.Fatal("tokenreview with an issuer URL must be refused")
+	}
+	bad := "runIssuers:\n  - mode: oidc\n    subPattern: '^x-([a-z2-7]{8})$'\n"
+	if _, err := Load(write(t, replaceRunIssuers(valid, bad))); err == nil {
+		t.Fatal("an unknown mode must be refused")
+	}
+}

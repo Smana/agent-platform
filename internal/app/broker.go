@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -159,7 +161,11 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: redaction rules: %w", err)
 	}
-	a, err := authenticators(ctx, cfg, m, jwksVerifier(log))
+	tr, err := tokenReviewer(cfg)
+	if err != nil {
+		return fmt.Errorf("room-broker: %w", err)
+	}
+	a, err := authenticators(ctx, cfg, m, jwksVerifier(log), tr)
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
@@ -336,6 +342,24 @@ func managerOptions(ns string) ctrl.Options {
 		}},
 		Client: client.Options{Cache: &client.CacheOptions{Unstructured: false}},
 	}
+}
+
+// tokenReviewer is the apiserver client a tokenreview run issuer asks, or nil when none is
+// configured, so a broker on a JWKS-only config needs no kubeconfig here. It builds its own rest
+// config because the manager (and so its config) is created after authenticators.
+func tokenReviewer(cfg config.Config) (authn.TokenReviewer, error) {
+	if !slices.ContainsFunc(cfg.RunIssuers, func(is config.IssuerConfig) bool { return is.Mode == "tokenreview" }) {
+		return nil, nil
+	}
+	restCfg, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("kubeconfig: %w", err)
+	}
+	cs, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("token review client: %w", err)
+	}
+	return cs.AuthenticationV1().TokenReviews(), nil
 }
 
 // newManager builds the manager on managerOptions, logging through log.

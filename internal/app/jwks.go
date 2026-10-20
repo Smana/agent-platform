@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"math/big"
 	"os"
@@ -58,9 +59,10 @@ type auth struct {
 // human one is lazy: the IdP being down must not fail the rollout, nor :8443
 // with it (FORWARD 2.6); until it answers, humans are refused. One verifier
 // serves each (issuer, JWKS URL): the cluster's issuer usually signs both kinds
-// of machine token, and one cache then refreshes once. Every distinct verifier,
+// of machine token, and one cache then refreshes once. tr serves the tokenreview run
+// issuers; it is nil when none is configured. Every distinct verifier,
 // the human one included, is refreshed and gauged (Ruling AQ).
-func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier) (auth, error) {
+func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier, tr authn.TokenReviewer) (auth, error) {
 	byKey := map[[2]string]*authn.Verifier{}
 	var all []*authn.Verifier
 	verifier := func(issuer, jwksURL string, lazy bool) (*authn.Verifier, error) {
@@ -77,9 +79,18 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	}
 	var issuers []authn.RunIssuer
 	for _, is := range cfg.RunIssuers {
-		v, err := verifier(is.Issuer, is.JWKSURL, false)
-		if err != nil {
-			return auth{}, err
+		var v authn.RunVerifier
+		if is.Mode == "tokenreview" {
+			if tr == nil {
+				return auth{}, errors.New("a tokenreview run issuer needs the in-cluster client")
+			}
+			v = authn.NewTokenReview(tr, time.Now)
+		} else {
+			jv, err := verifier(is.Issuer, is.JWKSURL, false)
+			if err != nil {
+				return auth{}, err
+			}
+			v = jv
 		}
 		// config.Load compiled it with one capture group already.
 		issuers = append(issuers, authn.RunIssuer{Verifier: v, SubPattern: regexp.MustCompile(is.SubPattern)})
