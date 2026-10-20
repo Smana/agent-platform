@@ -48,9 +48,10 @@ clusters=$(kind get clusters 2>/dev/null || true)
 grep -qx "$KIND_CLUSTER" <<<"$clusters" || kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NODE_IMAGE"
 for i in agent-harness room-broker room-bridge run-controller stub-model; do
   kind load docker-image --name "$KIND_CLUSTER" "ghcr.io/smana/$i:$TAG"
-  docker rmi "ghcr.io/smana/$i:$TAG" >/dev/null # the node holds it now; the runner's disk is tight
+  # CI only: the runner's disk is tight and the node holds the image now; locally this would wipe your caches.
+  [[ -z ${CI:-} ]] || docker rmi "ghcr.io/smana/$i:$TAG" >/dev/null
 done
-docker builder prune -af >/dev/null
+[[ -z ${CI:-} ]] || docker builder prune -af >/dev/null
 
 step "up.sh (it keeps the cluster that exists)"
 export MODEL_API_KEY=stub MODEL=stub MODEL_BASE_URL="$STUB_URL" CHART_REF=charts/agent-platform
