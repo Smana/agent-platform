@@ -81,7 +81,10 @@ func TestAuthenticators(t *testing.T) {
 		}
 		return raw
 	}
-	humans, _ := a.humans.(*authn.Humans) // oidc mode builds the concrete verifier
+	humans, ok := a.humans.(*authn.Humans) // oidc mode builds the concrete verifier
+	if !ok {
+		t.Fatalf("oidc mode must build *authn.Humans, got %T", a.humans)
+	}
 	if _, err := humans.VerifyHuman(t.Context(), token("web-1", "project-1")); err != nil {
 		t.Fatalf("the ids read from the files: %v", err)
 	}

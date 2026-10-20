@@ -146,6 +146,9 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
+// localGroups are the fixed group names of local mode.
+var localGroups = GroupsConfig{Admin: "admin", Member: "member"}
+
 // ApplyDefaults fills what the file may leave out.
 func (c *Config) ApplyDefaults() {
 	if c.TLS.CertFile == "" {
@@ -162,8 +165,10 @@ func (c *Config) ApplyDefaults() {
 		a.TTL.Duration = MaxAccessTTL
 	}
 	if c.Human.Mode == "local" {
+		// Validate refuses any other value: the Origin check is the only gate, so it accepts
+		// publicURL and nothing else.
 		if c.Human.Groups == (GroupsConfig{}) {
-			c.Human.Groups = GroupsConfig{Admin: "admin", Member: "member"}
+			c.Human.Groups = localGroups
 		}
 		if c.Human.Origin == "" {
 			c.Human.Origin = c.PublicURL
@@ -210,11 +215,15 @@ func (c *Config) Validate() error {
 	}
 	errs = append(errs, c.Human.validate()...)
 	if c.Human.Mode == "local" {
+		if c.Human.Origin != c.PublicURL || c.Human.Groups != localGroups {
+			errs = append(errs, errors.New("human: mode local takes no origin or groups: the origin is publicURL and the groups are fixed"))
+		}
 		// The one place publicURL may be http: a port-forward carries no TLS, and the Origin check
 		// compares against it verbatim.
+		// Exactly as a browser sends it as Origin, and http only: a port-forward carries no TLS.
 		u, err := url.Parse(c.PublicURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") {
-			errs = append(errs, fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is http://localhost:<port>", c.PublicURL))
+		if err != nil || u.Scheme != "http" || u.Scheme+"://"+u.Host != c.PublicURL || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") || u.Port() == "" {
+			errs = append(errs, fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is exactly http://localhost:<port> (or 127.0.0.1)", c.PublicURL))
 		}
 	}
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
