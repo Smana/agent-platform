@@ -31,7 +31,13 @@ func Observe(prev v1alpha1.AgentRunStatus, revoked string, pod *corev1.Pod, podG
 	}
 	st := v1alpha1.AgentRunStatus{Phase: "Pending", StartedAt: prev.StartedAt}
 	if pod != nil && st.StartedAt == "" && pod.Status.Phase != corev1.PodPending {
-		st.StartedAt = pod.CreationTimestamp.UTC().Format(time.RFC3339)
+		// Status.StartTime, not CreationTimestamp: the pod's activeDeadlineSeconds counts from
+		// it, so the broker's deadline (startedAt + maxMinutes) must not fire before the pod's own.
+		started := pod.CreationTimestamp
+		if pod.Status.StartTime != nil {
+			started = *pod.Status.StartTime
+		}
+		st.StartedAt = started.UTC().Format(time.RFC3339)
 	}
 	end := func(phase, reason string, at time.Time) v1alpha1.AgentRunStatus {
 		st.Phase, st.Reason, st.FinishedAt = phase, reason, at.UTC().Format(time.RFC3339)

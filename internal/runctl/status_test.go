@@ -18,7 +18,7 @@ var (
 )
 
 func pod(phase corev1.PodPhase, mut ...func(*corev1.Pod)) *corev1.Pod {
-	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(t0)}, Status: corev1.PodStatus{Phase: phase}}
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(t0)}, Status: corev1.PodStatus{Phase: phase, StartTime: &metav1.Time{Time: t0}}}
 	for _, m := range mut {
 		m(p)
 	}
@@ -78,5 +78,17 @@ func TestObserve(t *testing.T) {
 		if tc.pod != nil && tc.phase != "Pending" && got.StartedAt == "" && tc.prev.StartedAt == "" {
 			t.Errorf("%s: startedAt unset", name)
 		}
+	}
+}
+
+func TestObserveStartedAtUsesPodStartTime(t *testing.T) {
+	start := t0.Add(3 * time.Minute)
+	p := pod(corev1.PodRunning, ready, func(p *corev1.Pod) { p.Status.StartTime = &metav1.Time{Time: start} })
+	if got := Observe(v1alpha1.AgentRunStatus{}, "", p, false, now); got.StartedAt != start.Format(time.RFC3339) {
+		t.Errorf("startedAt %q, want the pod's StartTime %q", got.StartedAt, start.Format(time.RFC3339))
+	}
+	p.Status.StartTime = nil
+	if got := Observe(v1alpha1.AgentRunStatus{}, "", p, false, now); got.StartedAt != t0.Format(time.RFC3339) {
+		t.Errorf("startedAt %q, want the creationTimestamp %q without a StartTime", got.StartedAt, t0.Format(time.RFC3339))
 	}
 }
