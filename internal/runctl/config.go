@@ -6,8 +6,6 @@
 package runctl
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -22,6 +20,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
 // Config is the run-controller's file, from the chart.
@@ -66,8 +65,6 @@ var defaultProfiles = map[string][]string{
 // would otherwise try search-path expansions that the CNP's DNS allowlist refuses.
 var brokerHostRE = regexp.MustCompile(`^[a-z0-9-]+\.[a-z0-9-]+\.svc\.[a-z0-9.-]+$`)
 
-var prefixRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}-$`)
-
 // LoadConfig reads, strictly decodes, defaults and validates the file at path.
 func LoadConfig(path string) (Config, error) {
 	var c Config
@@ -75,13 +72,7 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("config: %w", err)
 	}
-	j, err := yaml.YAMLToJSON(raw)
-	if err != nil {
-		return c, fmt.Errorf("config %s: %w", path, err)
-	}
-	dec := json.NewDecoder(bytes.NewReader(j))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	if err := yaml.UnmarshalStrict(raw, &c); err != nil {
 		return c, fmt.Errorf("config %s: %w", path, err)
 	}
 	if c.EgressProfiles == nil {
@@ -107,13 +98,14 @@ func (c Config) validate() error {
 	req("broker.caSecret", c.Broker.CASecret)
 	req("images.harness", c.Images.Harness)
 	req("images.bridge", c.Images.Bridge)
-	if !prefixRE.MatchString(c.NamePrefix) {
-		errs = append(errs, fmt.Errorf("namePrefix %q must match %s", c.NamePrefix, prefixRE))
+	if err := runwatch.ValidatePrefix(c.NamePrefix); err != nil {
+		errs = append(errs, err)
 	}
-	if u, err := url.Parse(c.Broker.URL); err != nil || u.Scheme != "https" || u.Hostname() == "" {
+	u, err := url.Parse(c.Broker.URL)
+	switch {
+	case err != nil || u.Scheme != "https" || u.Hostname() == "":
 		errs = append(errs, fmt.Errorf("broker.url %q must be an https URL", c.Broker.URL))
-	}
-	if u, err := url.Parse(c.Broker.URL); err == nil && u.Hostname() != "" && !brokerHostRE.MatchString(u.Hostname()) {
+	case !brokerHostRE.MatchString(u.Hostname()):
 		errs = append(errs, fmt.Errorf("broker.url host %q must be <service>.<namespace>.svc.<cluster-domain>, e.g. room-broker.agent-platform.svc.cluster.local", u.Hostname()))
 	}
 	if len(c.Broker.Labels) == 0 {
@@ -161,12 +153,18 @@ func (c Config) FQDNs(r *v1alpha1.AgentRun) []string {
 	out := slices.Clone(c.EgressProfiles["github"])
 	for _, p := range r.Spec.Egress.Profiles {
 		for _, h := range c.EgressProfiles[string(p)] {
-			if !slices.Contains(out, h) {
-				out = append(out, h)
-			}
+			out = addUnique(out, h)
 		}
 	}
 	return out
+}
+
+// addUnique appends h unless list already holds it.
+func addUnique(list []string, h string) []string {
+	if slices.Contains(list, h) {
+		return list
+	}
+	return append(list, h)
 }
 
 // Model is the provider the harness calls directly (3a R4), from modelSecret.

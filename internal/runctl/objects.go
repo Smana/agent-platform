@@ -21,9 +21,12 @@ const (
 	managedBy      = "run-controller"
 )
 
-// Labels are every owned object's.
+// Labels are every owned object's; runID "" (the ServiceAccount, the CA ConfigMap) omits run-id.
 func Labels(r *v1alpha1.AgentRun, runID string) map[string]string {
-	l := map[string]string{LabelRunID: runID, LabelRole: r.Spec.Role, LabelManagedBy: managedBy}
+	l := map[string]string{LabelRole: r.Spec.Role, LabelManagedBy: managedBy}
+	if runID != "" {
+		l[LabelRunID] = runID
+	}
 	if v := r.Labels[LabelTask]; v != "" {
 		l[LabelTask] = v
 	}
@@ -47,9 +50,7 @@ func meta(r *v1alpha1.AgentRun, runID, name string) metav1.ObjectMeta {
 // system:serviceaccount:<ns>:<run name> to the run (C2). It holds no RBAC.
 func ServiceAccount(r *v1alpha1.AgentRun) *corev1.ServiceAccount {
 	no := false
-	sa := &corev1.ServiceAccount{ObjectMeta: meta(r, "", r.Name), AutomountServiceAccountToken: &no}
-	delete(sa.Labels, LabelRunID)
-	return sa
+	return &corev1.ServiceAccount{ObjectMeta: meta(r, "", r.Name), AutomountServiceAccountToken: &no}
 }
 
 // TaskConfigMap is <run>-task: task.md, rules.md and run.json, as the composition writes them.
@@ -69,7 +70,5 @@ func TaskConfigMap(r *v1alpha1.AgentRun, runID string) (*corev1.ConfigMap, error
 
 // CAConfigMap is <run>-ca: the broker's CA, which the bridge verifies :8443 against.
 func CAConfigMap(r *v1alpha1.AgentRun, ca []byte) *corev1.ConfigMap {
-	cm := &corev1.ConfigMap{ObjectMeta: meta(r, "", r.Name+"-ca"), Data: map[string]string{"ca.crt": string(ca)}}
-	delete(cm.Labels, LabelRunID)
-	return cm
+	return &corev1.ConfigMap{ObjectMeta: meta(r, "", r.Name+"-ca"), Data: map[string]string{"ca.crt": string(ca)}}
 }

@@ -62,8 +62,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// has a pod must not be failed with its pod left running.
 	if pod == nil && run.Status.StartedAt == "" {
 		if why := r.Cfg.Invalid(run); why != "" {
-			st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
-			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Invalid", Status: metav1.ConditionTrue, Reason: "Refused", Message: why})
+			fail(st, now, "Refused", why)
 			return ctrl.Result{}, r.writeStatus(ctx, run, *st)
 		}
 	}
@@ -83,34 +82,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 		if missing != "" {
-			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SecretMissing", Message: missing})
-			if st.Phase == "" {
-				st.Phase = "Pending"
-			}
+			pending(st, "SecretMissing", missing)
 			return ctrl.Result{RequeueAfter: secretRetry}, r.writeStatus(ctx, run, *st)
 		}
 		if err := r.create(ctx, run, runID, m, ca); err != nil {
 			// A refusal that retrying cannot cure (a bad object, a forbidden verb, a missing
 			// CRD) ends the run so the broker stops waiting; anything else is retried.
 			if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apimeta.IsNoMatchError(err) {
-				st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
-				apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Invalid", Status: metav1.ConditionTrue, Reason: "CreateFailed", Message: err.Error()})
-				apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed", Message: err.Error()})
+				fail(st, now, "CreateFailed", err.Error())
+				setCond(st, "Ready", metav1.ConditionFalse, "CreateFailed", err.Error())
 				return ctrl.Result{}, r.writeStatus(ctx, run, *st)
 			}
-			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "CreateFailed", Message: err.Error()})
-			if st.Phase == "" {
-				st.Phase = "Pending"
-			}
+			pending(st, "CreateFailed", err.Error())
 			if werr := r.writeStatus(ctx, run, *st); werr != nil {
 				return ctrl.Result{}, errors.Join(err, werr)
 			}
 			return ctrl.Result{}, err
 		}
-		apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created"})
+		setCond(st, "Ready", metav1.ConditionTrue, "Created", "")
 		if r.Cfg.RuntimeClassName == "" {
-			apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: "Unsandboxed", Status: metav1.ConditionTrue, Reason: "AllowUnsandboxed",
-				Message: "the pod runs without a RuntimeClass: allowUnsandboxed is set"})
+			setCond(st, "Unsandboxed", metav1.ConditionTrue, "AllowUnsandboxed", "the pod runs without a RuntimeClass: allowUnsandboxed is set")
 		}
 	}
 	return ctrl.Result{}, r.writeStatus(ctx, run, merge(*st, Observe(run.Status, revoked, pod, gone, now)))
@@ -133,16 +124,47 @@ func (r *Reconciler) pod(ctx context.Context, run *v1alpha1.AgentRun) (*corev1.P
 	return p, false, nil
 }
 
+// setCond sets one status condition.
+func setCond(st *v1alpha1.AgentRunStatus, typ string, status metav1.ConditionStatus, reason, msg string) {
+	apimeta.SetStatusCondition(&st.Conditions, metav1.Condition{Type: typ, Status: status, Reason: reason, Message: msg})
+}
+
+// fail ends the run: phase Failed, finishedAt now, condition Invalid.
+func fail(st *v1alpha1.AgentRunStatus, now time.Time, reason, msg string) {
+	st.Phase, st.FinishedAt = "Failed", now.UTC().Format(time.RFC3339)
+	setCond(st, "Invalid", metav1.ConditionTrue, reason, msg)
+}
+
+// pending marks the run not Ready, and Pending unless it already has a phase.
+func pending(st *v1alpha1.AgentRunStatus, reason, msg string) {
+	setCond(st, "Ready", metav1.ConditionFalse, reason, msg)
+	if st.Phase == "" {
+		st.Phase = "Pending"
+	}
+}
+
+// secretKey reads key from a Secret. missing is true when the Secret or the key (empty
+// counts) is absent; the caller words it.
+func (r *Reconciler) secretKey(ctx context.Context, ns, name, key string) (val []byte, missing bool, err error) {
+	s := &corev1.Secret{}
+	err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, s)
+	if apierrors.IsNotFound(err) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return s.Data[key], len(s.Data[key]) == 0, nil
+}
+
 // inputs reads the model Secret, the git Secret's presence and the broker CA. missing names
 // the first absent one: the chart may create them after the controller starts.
 func (r *Reconciler) inputs(ctx context.Context) (Model, []byte, string, error) {
-	get := func(ns, name string) (*corev1.Secret, error) {
-		s := &corev1.Secret{}
-		return s, r.APIReader.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, s)
-	}
-	ms, err := get(r.Cfg.Namespace, r.Cfg.ModelSecret)
+	c := r.Cfg
+	ms := &corev1.Secret{}
+	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: c.Namespace, Name: c.ModelSecret}, ms)
 	if apierrors.IsNotFound(err) {
-		return Model{}, nil, fmt.Sprintf("Secret %s/%s not found", r.Cfg.Namespace, r.Cfg.ModelSecret), nil
+		return Model{}, nil, fmt.Sprintf("Secret %s/%s not found", c.Namespace, c.ModelSecret), nil
 	} else if err != nil {
 		return Model{}, nil, "", err
 	}
@@ -150,18 +172,18 @@ func (r *Reconciler) inputs(ctx context.Context) (Model, []byte, string, error) 
 	if err != nil {
 		return Model{}, nil, err.Error(), nil
 	}
-	if gs, err := get(r.Cfg.Namespace, r.Cfg.GitSecret); apierrors.IsNotFound(err) || err == nil && len(gs.Data["token"]) == 0 {
-		return Model{}, nil, fmt.Sprintf("Secret %s/%s has no token", r.Cfg.Namespace, r.Cfg.GitSecret), nil
-	} else if err != nil {
+	if _, missing, err := r.secretKey(ctx, c.Namespace, c.GitSecret, "token"); err != nil {
 		return Model{}, nil, "", err
+	} else if missing {
+		return Model{}, nil, fmt.Sprintf("Secret %s/%s has no token", c.Namespace, c.GitSecret), nil
 	}
-	cs, err := get(r.Cfg.Broker.Namespace, r.Cfg.Broker.CASecret)
-	if apierrors.IsNotFound(err) || err == nil && len(cs.Data["ca.crt"]) == 0 {
-		return Model{}, nil, fmt.Sprintf("Secret %s/%s has no ca.crt", r.Cfg.Broker.Namespace, r.Cfg.Broker.CASecret), nil
-	} else if err != nil {
+	ca, missing, err := r.secretKey(ctx, c.Broker.Namespace, c.Broker.CASecret, "ca.crt")
+	if err != nil {
 		return Model{}, nil, "", err
+	} else if missing {
+		return Model{}, nil, fmt.Sprintf("Secret %s/%s has no ca.crt", c.Broker.Namespace, c.Broker.CASecret), nil
 	}
-	return m, cs.Data["ca.crt"], "", nil
+	return m, ca, "", nil
 }
 
 // create makes every owned object, the pod last so its volumes and ServiceAccount exist.

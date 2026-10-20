@@ -66,10 +66,18 @@ func (k Kind) Validate() error {
 	if !nsRE.MatchString(k.Namespace) {
 		errs = append(errs, fmt.Errorf("namespace %q is not a DNS label", k.Namespace))
 	}
-	if !prefixRE.MatchString(k.NamePrefix) {
-		errs = append(errs, fmt.Errorf("namePrefix %q must match %s", k.NamePrefix, prefixRE))
+	if err := ValidatePrefix(k.NamePrefix); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// ValidatePrefix refuses a run-name prefix that, with 8 id characters, is not a DNS label.
+func ValidatePrefix(p string) error {
+	if !prefixRE.MatchString(p) {
+		return fmt.Errorf("namePrefix %q must match %s", p, prefixRE)
+	}
+	return nil
 }
 
 // Configure sets the kind every reader uses, its empty fields defaulted. Call it once at

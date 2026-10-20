@@ -171,7 +171,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("runIssuers[%d] %s: subPattern must compile with one capture group (the runId)", i, is.Issuer))
 		}
 	}
-	if err := c.Runs.Validate(); err == nil {
+	if err := c.Runs.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("runs: %w", err))
+	} else {
 		errs = append(errs, c.runIssuerMatchesKind()...)
 	}
 	errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
@@ -183,9 +185,6 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.Human.validate()...)
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
-	}
-	if err := c.Runs.Validate(); err != nil {
-		errs = append(errs, fmt.Errorf("runs: %w", err))
 	}
 	return errors.Join(errs...)
 }

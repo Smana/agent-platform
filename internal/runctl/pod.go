@@ -46,6 +46,13 @@ func res(cpuReq, memReq, cpuLim, memLim string) corev1.ResourceRequirements {
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: q(cpuLim), corev1.ResourceMemory: q(memLim)}}
 }
 
+func harnessResources(cpu, memory [2]string, scratch string) corev1.ResourceRequirements {
+	rr := res(cpu[0], memory[0], cpu[1], memory[1])
+	rr.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse("1Gi")
+	rr.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse(scratch)
+	return rr
+}
+
 func localGet(path string) []string {
 	return []string{"python3", "-c", fmt.Sprintf("import urllib.request; urllib.request.urlopen('http://127.0.0.1:%d%s', timeout=2)", HarnessPort, path)}
 }
@@ -100,12 +107,10 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 	}
 	harness := corev1.Container{
 		Name: "harness", Image: c.Images.Harness, Env: env,
-		StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/ready")}}, PeriodSeconds: 5, FailureThreshold: 60, TimeoutSeconds: 5},
-		ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/ready")}}, PeriodSeconds: 10, TimeoutSeconds: 5},
-		LivenessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/health")}}, PeriodSeconds: 20, FailureThreshold: 3, TimeoutSeconds: 5},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(size.cpu[0]), corev1.ResourceMemory: resource.MustParse(size.memory[0]), corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(size.cpu[1]), corev1.ResourceMemory: resource.MustParse(size.memory[1]), corev1.ResourceEphemeralStorage: resource.MustParse(size.scratch)}},
+		StartupProbe:    &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/ready")}}, PeriodSeconds: 5, FailureThreshold: 60, TimeoutSeconds: 5},
+		ReadinessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/ready")}}, PeriodSeconds: 10, TimeoutSeconds: 5},
+		LivenessProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/health")}}, PeriodSeconds: 20, FailureThreshold: 3, TimeoutSeconds: 5},
+		Resources:       harnessResources(size.cpu, size.memory, size.scratch),
 		SecurityContext: containerSecurity(),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "workspace", MountPath: "/workspace"}, {Name: "home", MountPath: "/home/openhands"},
@@ -154,9 +159,8 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 			Resources: res("10m", "16Mi", "50m", "32Mi"), SecurityContext: containerSecurity(),
 			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		}}
-		tokenMode := int32(0o440)
 		vols = append(vols,
-			corev1.Volume{Name: "room-token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{DefaultMode: &tokenMode,
+			corev1.Volume{Name: "room-token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{DefaultMode: &mode,
 				Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: "room-broker", ExpirationSeconds: &ttl, Path: "token"}}}}}},
 			corev1.Volume{Name: "room-broker-ca", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: r.Name + "-ca"}}}})
