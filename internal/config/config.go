@@ -47,6 +47,9 @@ type IssuerConfig struct {
 // ids are read from mounted files at use, never literals (Ruling AS-a): the IdP
 // mints them, anew on every gcp-0 build, and a rotation needs no restart.
 type HumanConfig struct {
+	// Mode is "" or "oidc" (the ZITADEL-backed default), or "local": one loopback user behind a
+	// port-forward, for an install with no IdP (adoption 3b).
+	Mode                string       `json:"mode,omitempty"`
 	Issuer              string       `json:"issuer"`
 	JWKSURL             string       `json:"jwksURL"`
 	ClientIDFile        string       `json:"clientIDFile"`                  // the rooms-proxy client id, from agents-secrets
@@ -265,6 +268,14 @@ func (c *Config) ApplyDefaults() {
 	if a := c.Human.Access; a != nil && a.TTL.Duration == 0 {
 		a.TTL.Duration = MaxAccessTTL
 	}
+	if c.Human.Mode == "local" {
+		if c.Human.Groups == (GroupsConfig{}) {
+			c.Human.Groups = GroupsConfig{Admin: "admin", Member: "member"}
+		}
+		if c.Human.Origin == "" {
+			c.Human.Origin = c.PublicURL
+		}
+	}
 }
 
 // Validate reports every problem at once. The run issuers' patterns compile here,
@@ -308,6 +319,14 @@ func (c *Config) Validate() error {
 	if len(c.Human.MCP.Sponsored) > 0 && c.FactoryURL == "" {
 		errs = append(errs, errors.New("human.mcp.sponsored needs factoryURL: run_create posts to the factory's POST /v1/tasks"))
 	}
+	if c.Human.Mode == "local" {
+		// The one place publicURL may be http: a port-forward carries no TLS, and the Origin check
+		// compares against it verbatim.
+		u, err := url.Parse(c.PublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") {
+			errs = append(errs, fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is http://localhost:<port>", c.PublicURL))
+		}
+	}
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
 	}
@@ -336,6 +355,16 @@ func (c *Config) runIssuerMatchesKind() []error {
 }
 
 func (h HumanConfig) validate(system []string) []error {
+	if h.Mode == "local" {
+		var errs []error
+		if h.Issuer != "" || h.JWKSURL != "" || h.ClientIDFile != "" || h.ProjectIDFile != "" || h.RoomctlClientIDFile != "" || h.Access != nil {
+			errs = append(errs, errors.New("human: mode local takes no issuer, jwksURL, client or project files, or access block"))
+		}
+		return errs
+	}
+	if h.Mode != "" && h.Mode != "oidc" {
+		return []error{fmt.Errorf("human: mode %q is not oidc or local", h.Mode)}
+	}
 	errs := issuer("human", IssuerConfig{Issuer: h.Issuer, JWKSURL: h.JWKSURL})
 	if h.ClientIDFile == "" {
 		errs = append(errs, errors.New("human.clientIDFile: is required"))

@@ -213,3 +213,29 @@ func TestRunIssuerTokenReviewMode(t *testing.T) {
 		t.Fatal("an unknown mode must be refused")
 	}
 }
+
+// localConfig is valid with the human block replaced by mode: local.
+var localConfig = func() string {
+	head, _, _ := strings.Cut(valid, "human:\n")
+	return strings.Replace(head, "https://rooms.priv.aws.ogenki.io", "http://localhost:8080", 1) + "human:\n  mode: local\n"
+}()
+
+func TestHumanLocalMode(t *testing.T) {
+	c, err := Load(write(t, localConfig))
+	if err != nil {
+		t.Fatalf("local mode must load: %v", err)
+	}
+	if c.Human.Groups.Admin == "" || c.Human.Groups.Member == "" || c.Human.Origin != "http://localhost:8080" {
+		t.Fatalf("local mode defaults the group names and origin: %+v", c.Human)
+	}
+	mixed := strings.Replace(localConfig, "mode: local", "mode: local\n  issuer: https://idp", 1)
+	if _, err := Load(write(t, mixed)); err == nil {
+		t.Fatal("local mode with OIDC fields must be refused")
+	}
+	if _, err := Load(write(t, strings.Replace(localConfig, "http://localhost:8080", "http://rooms.example.com", 1))); err == nil {
+		t.Fatal("local mode with a non-loopback publicURL must be refused")
+	}
+	if _, err := Load(write(t, strings.Replace(valid, "human:\n", "human:\n  mode: bogus\n", 1))); err == nil {
+		t.Fatal("an unknown mode must be refused")
+	}
+}
