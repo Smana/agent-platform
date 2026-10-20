@@ -14,6 +14,9 @@ spec:
   template:
     metadata:
       labels: {{- include "ap.labels" . | nindent 8 }}
+      annotations:
+        # The broker reads its config once at start: a changed config must roll the pods.
+        checksum/config: {{ include (print $.Template.BasePath "/broker-config.yaml") . | sha256sum }}
     spec:
       serviceAccountName: room-broker
       automountServiceAccountToken: true # the Room and AgentRun watches, the leader lease

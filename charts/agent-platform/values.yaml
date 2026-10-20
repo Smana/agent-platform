@@ -4,8 +4,13 @@ runs:
   group: agents.ogenki.io
   namespace: agents
   namePrefix: run-
-# Create runs.namespace with a default-deny CiliumNetworkPolicy. Off when the namespace is yours.
+# Create the runs.namespace object. The default-deny CiliumNetworkPolicy is rendered either way:
+# turn this off when the namespace exists already (Helm cannot adopt an unowned one).
 createRunsNamespace: true
+
+# Where the kube-apiserver listens AFTER Cilium's service translation: 443 on EKS/GKE, 6443 on
+# kind and kubeadm. Every CiliumNetworkPolicy that reaches the apiserver renders these.
+apiServerPorts: [443, 6443]
 
 broker:
   image:
@@ -47,6 +52,7 @@ broker:
     secretName: room-broker-tls
     issuerRef: {kind: ClusterIssuer, name: ""}
   # Escape hatches for oidc mode's files, ROOMS_MCP_KEY and the IdP's network flows.
+  # Secrets only through valueFrom.secretKeyRef, never a plaintext value.
   extraEnv: []
   extraVolumes: []
   extraVolumeMounts: []
