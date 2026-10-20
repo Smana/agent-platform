@@ -65,6 +65,7 @@ func TestObserve(t *testing.T) {
 			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue}}
 		}), phase: "Failed", reason: "Disrupted", fin: now.Format(time.RFC3339)},
 		"pod gone while running":     {prev: running, pod: nil, gone: true, phase: "Failed", reason: "PodLost", fin: now.Format(time.RFC3339)},
+		"pod gone while pending":     {prev: v1alpha1.AgentRunStatus{Phase: "Pending"}, pod: nil, gone: true, phase: "Failed", reason: "PodLost", fin: now.Format(time.RFC3339)},
 		"pod deleting while running": {prev: running, pod: pod(corev1.PodRunning, func(p *corev1.Pod) { d := metav1.NewTime(now); p.DeletionTimestamp = &d }), phase: "Failed", reason: "PodLost", fin: now.Format(time.RFC3339)},
 		"manual revoke":              {prev: running, revoked: "manual", pod: pod(corev1.PodRunning, ready), phase: "Revoked", reason: "manual", fin: now.Format(time.RFC3339)},
 		"budget revoke":              {prev: running, revoked: "budget-run", pod: pod(corev1.PodRunning, ready), phase: "BudgetExhausted", reason: "budget-run", fin: now.Format(time.RFC3339)},

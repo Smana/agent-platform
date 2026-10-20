@@ -132,7 +132,8 @@ func ours(run *v1alpha1.AgentRun, o client.Object) bool {
 
 // hadPod is that the run's pod was created: a missing pod is then lost, never re-created.
 func hadPod(run *v1alpha1.AgentRun) bool {
-	return run.Status.StartedAt != ""
+	c := apimeta.FindStatusCondition(run.Status.Conditions, "Ready")
+	return run.Status.StartedAt != "" || c != nil && c.Reason == "Created"
 }
 
 // pod is the run's pod; gone is that it existed (hadPod) and does not now. stale names a pod

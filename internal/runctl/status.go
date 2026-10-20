@@ -23,8 +23,8 @@ func RevokeEnds(revoked string) bool {
 
 // Observe is the composition's _phaseOf and _reasonOf over a plain pod: a terminal status is
 // final; then revocation; then the harness's exit; then the pod's failure; then a pod lost
-// after the run started. finishedAt is always set at a terminal phase, so runwatch never falls
-// back to the Ready condition.
+// that the reconciler had created (podGone), whether or not it ever left Pending. finishedAt is
+// always set at a terminal phase, so runwatch never falls back to the Ready condition.
 func Observe(prev v1alpha1.AgentRunStatus, revoked string, pod *corev1.Pod, podGone bool, now time.Time) v1alpha1.AgentRunStatus {
 	if runwatch.Terminal(prev.Phase) {
 		return prev
@@ -51,7 +51,7 @@ func Observe(prev v1alpha1.AgentRunStatus, revoked string, pod *corev1.Pod, podG
 	}
 	started := prev.Phase == "Running"
 	if pod == nil {
-		if started || podGone && prev.StartedAt != "" {
+		if started || podGone {
 			return end("Failed", "PodLost", now)
 		}
 		return st

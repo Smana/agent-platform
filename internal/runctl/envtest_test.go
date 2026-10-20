@@ -437,3 +437,27 @@ func TestEnvtestSameNameRunWaitsForGC(t *testing.T) {
 		t.Fatalf("Ready condition %+v", c)
 	}
 }
+
+func TestEnvtestPendingPodLostIsNotRecreated(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	create(t, e, run("run-jjjjjjjj"))
+	e.reconcile(t, "run-jjjjjjjj")
+	if got := e.get(t, "run-jjjjjjjj"); got.Status.Phase != "Pending" || got.Status.StartedAt != "" {
+		t.Fatalf("pod pending: %+v", got.Status)
+	}
+	p := &corev1.Pod{}
+	if err := e.c.Get(e.ctx, key("run-jjjjjjjj"), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Delete(e.ctx, p, client.GracePeriodSeconds(0)); err != nil {
+		t.Fatal(err)
+	}
+	e.reconcile(t, "run-jjjjjjjj")
+	if got := e.get(t, "run-jjjjjjjj"); got.Status.Phase != "Failed" || got.Status.Reason != "PodLost" || got.Status.FinishedAt == "" {
+		t.Fatalf("pending pod lost: %+v", got.Status)
+	}
+	if err := e.c.Get(e.ctx, key("run-jjjjjjjj"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the agent must not run twice, got %v", err)
+	}
+}
