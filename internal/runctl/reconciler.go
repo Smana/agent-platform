@@ -23,7 +23,10 @@ import (
 	"github.com/Smana/agent-platform/internal/runwatch"
 )
 
-const secretRetry = 30 * time.Second
+const (
+	secretRetry = 30 * time.Second
+	gcRetry     = 5 * time.Second
+)
 
 // Reconciler turns an AgentRun into its owned objects and reports the pod back as status.
 // Owned objects are created once: a run's spec is immutable, so there is nothing to patch.
@@ -54,9 +57,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	st := run.Status.DeepCopy()
 	revoked := run.Annotations[runwatch.RevokedAnnotation]
 
-	pod, gone, err := r.pod(ctx, run)
+	pod, gone, stale, err := r.pod(ctx, run)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if stale != "" {
+		return r.waitForGC(ctx, run, st, stale)
 	}
 	// Invalid depends on config, which can change across a restart: a run that already
 	// has a pod must not be failed with its pod left running.
@@ -85,7 +91,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			pending(st, "SecretMissing", missing)
 			return ctrl.Result{RequeueAfter: secretRetry}, r.writeStatus(ctx, run, *st)
 		}
-		if err := r.create(ctx, run, runID, m, ca); err != nil {
+		stale, err := r.create(ctx, run, runID, m, ca)
+		if stale != "" {
+			return r.waitForGC(ctx, run, st, stale)
+		}
+		if err != nil {
 			// A refusal that retrying cannot cure (a bad object, a forbidden verb, a missing
 			// CRD) ends the run so the broker stops waiting; anything else is retried.
 			if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) || apimeta.IsNoMatchError(err) {
@@ -107,21 +117,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, r.writeStatus(ctx, run, merge(*st, Observe(run.Status, revoked, pod, gone, now)))
 }
 
-// pod is the run's pod; gone is that it existed (the run has a startedAt) and does not now.
-func (r *Reconciler) pod(ctx context.Context, run *v1alpha1.AgentRun) (*corev1.Pod, bool, error) {
-	p := &corev1.Pod{}
-	err := r.Client.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Name}, p)
+// waitForGC holds a run whose name is still taken by the objects of a deleted run of the
+// same name (run ids are deterministic): reusing them would run the old task.
+func (r *Reconciler) waitForGC(ctx context.Context, run *v1alpha1.AgentRun, st *v1alpha1.AgentRunStatus, what string) (ctrl.Result, error) {
+	pending(st, "WaitingForGC", what+" belongs to a previous run of the same name; waiting for its garbage collection")
+	return ctrl.Result{RequeueAfter: gcRetry}, r.writeStatus(ctx, run, *st)
+}
+
+// ours reports whether o is controlled by this very run, not by an earlier one of the same name.
+func ours(run *v1alpha1.AgentRun, o client.Object) bool {
+	ref := metav1.GetControllerOf(o)
+	return ref != nil && ref.UID == run.UID
+}
+
+// hadPod is that the run's pod was created: a missing pod is then lost, never re-created.
+func hadPod(run *v1alpha1.AgentRun) bool {
+	return run.Status.StartedAt != ""
+}
+
+// pod is the run's pod; gone is that it existed (hadPod) and does not now. stale names a pod
+// of that name controlled by another run, which is neither observed nor replaced.
+func (r *Reconciler) pod(ctx context.Context, run *v1alpha1.AgentRun) (p *corev1.Pod, gone bool, stale string, err error) {
+	k := types.NamespacedName{Namespace: run.Namespace, Name: run.Name}
+	p = &corev1.Pod{}
+	err = r.Client.Get(ctx, k, p)
 	if apierrors.IsNotFound(err) {
-		// Observe ends a started run as PodLost on nil: confirm the cache is not just behind.
-		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Name}, p)
+		// Observe ends a run that had a pod as PodLost on nil: confirm the cache is not just behind.
+		err = r.APIReader.Get(ctx, k, p)
 		if apierrors.IsNotFound(err) {
-			return nil, run.Status.StartedAt != "", nil
+			return nil, hadPod(run), "", nil
 		}
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
-	return p, false, nil
+	if !ours(run, p) {
+		return nil, false, "pod " + p.Name, nil
+	}
+	return p, false, "", nil
 }
 
 // setCond sets one status condition.
@@ -187,21 +220,29 @@ func (r *Reconciler) inputs(ctx context.Context) (Model, []byte, string, error) 
 }
 
 // create makes every owned object, the pod last so its volumes and ServiceAccount exist.
-func (r *Reconciler) create(ctx context.Context, run *v1alpha1.AgentRun, runID string, m Model, ca []byte) error {
+// stale names an existing object that another run controls: nothing after it is created.
+func (r *Reconciler) create(ctx context.Context, run *v1alpha1.AgentRun, runID string, m Model, ca []byte) (stale string, err error) {
 	task, err := TaskConfigMap(run, runID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, o := range []client.Object{ServiceAccount(run), task, CAConfigMap(run, ca),
 		NetworkPolicy(run, r.Cfg, m, runID), Pod(run, r.Cfg, m, runID)} {
 		if err := controllerutil.SetControllerReference(run, o, r.Client.Scheme()); err != nil {
-			return err
+			return "", err
 		}
-		if err := r.Client.Create(ctx, o); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create %T %s: %w", o, o.GetName(), err)
+		err := r.Client.Create(ctx, o)
+		if apierrors.IsAlreadyExists(err) {
+			existing := o.DeepCopyObject().(client.Object)
+			if err = r.APIReader.Get(ctx, client.ObjectKeyFromObject(o), existing); err == nil && !ours(run, existing) {
+				return fmt.Sprintf("%T %s", o, o.GetName()), nil
+			}
+		}
+		if err != nil {
+			return "", fmt.Errorf("create %T %s: %w", o, o.GetName(), err)
 		}
 	}
-	return nil
+	return "", nil
 }
 
 // merge lays Observe's phase, reason and times over the reconciler's identity fields and conditions.

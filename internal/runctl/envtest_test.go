@@ -364,3 +364,76 @@ func toUnstructured(t *testing.T, r *v1alpha1.AgentRun) *unstructured.Unstructur
 	u.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("AgentRun"))
 	return u
 }
+
+func TestEnvtestSameNameRunWaitsForGC(t *testing.T) {
+	e := startEnv(t)
+	e.modelSecret(t)
+	create(t, e, run("run-iiiiiiii"))
+	e.reconcile(t, "run-iiiiiiii")
+	old := e.get(t, "run-iiiiiiii")
+	// envtest has no garbage collector: deleting the run leaves its objects behind, as a slow GC would.
+	if err := e.c.Delete(e.ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	create(t, e, run("run-iiiiiiii", func(r *v1alpha1.AgentRun) { r.UID = "" }))
+	fresh := e.get(t, "run-iiiiiiii")
+	if fresh.UID == old.UID {
+		t.Fatal("the recreated run must have a new UID")
+	}
+	waiting := func(what string) {
+		t.Helper()
+		if res := e.reconcile(t, "run-iiiiiiii"); res.RequeueAfter == 0 {
+			t.Fatalf("%s: must requeue", what)
+		}
+		got := e.get(t, "run-iiiiiiii")
+		if c := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); c == nil || c.Status != metav1.ConditionFalse || c.Reason != "WaitingForGC" || c.Message == "" {
+			t.Fatalf("%s: Ready condition %+v", what, c)
+		}
+		if got.Status.Phase == "Running" || got.Status.StartedAt != "" {
+			t.Fatalf("%s: must not run: %+v", what, got.Status)
+		}
+	}
+	p := &corev1.Pod{}
+	waiting("stale pod")
+	if err := e.c.Get(e.ctx, key("run-iiiiiiii"), p); err != nil || metav1.GetControllerOf(p).UID != old.UID {
+		t.Fatalf("the stale pod must be left alone: %v", err)
+	}
+
+	// Only the pod is gone: the stale ServiceAccount, ConfigMaps and policy still block.
+	if err := e.c.Delete(e.ctx, p, client.GracePeriodSeconds(0)); err != nil {
+		t.Fatal(err)
+	}
+	waiting("stale objects, no pod")
+	if err := e.c.Get(e.ctx, key("run-iiiiiiii"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("no pod while a stale owned object remains, got %v", err)
+	}
+
+	cnp := &unstructured.Unstructured{}
+	cnp.SetAPIVersion("cilium.io/v2")
+	cnp.SetKind("CiliumNetworkPolicy")
+	cnp.SetNamespace("agents")
+	cnp.SetName("run-iiiiiiii")
+	for _, o := range []client.Object{&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "run-iiiiiiii", Namespace: "agents"}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "run-iiiiiiii-task", Namespace: "agents"}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "run-iiiiiiii-ca", Namespace: "agents"}}, cnp} {
+		if err := e.c.Delete(e.ctx, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.reconcile(t, "run-iiiiiiii")
+	for _, o := range []client.Object{&corev1.ServiceAccount{}, &corev1.Pod{}, &corev1.ConfigMap{}} {
+		n := "run-iiiiiiii"
+		if _, ok := o.(*corev1.ConfigMap); ok {
+			n += "-task"
+		}
+		if err := e.c.Get(e.ctx, key(n), o); err != nil {
+			t.Fatalf("%T: %v", o, err)
+		}
+		if ref := metav1.GetControllerOf(o); ref == nil || ref.UID != fresh.UID {
+			t.Fatalf("%T is not controlled by the new run: %+v", o, ref)
+		}
+	}
+	if c := apimeta.FindStatusCondition(e.get(t, "run-iiiiiiii").Status.Conditions, "Ready"); c == nil || c.Status != metav1.ConditionTrue || c.Reason != "Created" {
+		t.Fatalf("Ready condition %+v", c)
+	}
+}
