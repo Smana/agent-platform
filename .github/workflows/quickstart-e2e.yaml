@@ -1,0 +1,42 @@
+# The whole quickstart in CI: this checkout's images in kind, a stub model, one AgentRun to Succeeded.
+# Needs the owner's secrets QUICKSTART_REPO (a throwaway owner/name) and QUICKSTART_GITHUB_TOKEN (a
+# fine-grained PAT scoped to it). Without them (a fork PR) every step is skipped, not failed.
+name: quickstart-e2e
+on:
+  pull_request:
+    paths:
+      - charts/**
+      - hack/quickstart/**
+      - cmd/run-controller/**
+      - internal/runctl/**
+      - internal/runwatch/**
+      - internal/app/**
+      - internal/authn/**
+      - internal/store/**
+      - images/**
+      - .github/workflows/quickstart-e2e.yaml
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      QUICKSTART_REPO: ${{ secrets.QUICKSTART_REPO }}
+    steps:
+      - if: env.QUICKSTART_REPO == ''
+        run: echo "QUICKSTART_REPO secret absent, fork PR - skipping the e2e"
+      - if: env.QUICKSTART_REPO != ''
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - if: env.QUICKSTART_REPO != ''
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+      - if: env.QUICKSTART_REPO != ''
+        run: hack/quickstart/e2e.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.QUICKSTART_GITHUB_TOKEN }}
+          REPO: ${{ secrets.QUICKSTART_REPO }}
