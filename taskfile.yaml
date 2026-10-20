@@ -106,12 +106,11 @@ tasks:
       - hack/quickstart/down.sh
 
   quickstart:run:
-    desc: "Start a run on the quickstart cluster: task quickstart:run PROMPT='...' REPO=owner/name"
+    desc: "Start a run: RUN_PROMPT='...' REPO=owner/name task quickstart:run (env form: go-task templates CLI-variable values)"
     requires:
-      vars: [PROMPT, REPO]
-    env: # go-task does not export CLI variables to commands (and TASK is its own built-in, hence PROMPT)
-      PROMPT: '{{.PROMPT}}'
-      REPO: '{{.REPO}}'
+      vars: [RUN_PROMPT, REPO]
+    # RUN_PROMPT/REPO come from the caller's environment: go-task would run a CLI-variable value through
+    # Go templating (`{{ … }}` mangled) and never exports it. TASK and PROMPT are taken (go-task, zsh).
     cmds:
       - hack/quickstart/run.sh
 

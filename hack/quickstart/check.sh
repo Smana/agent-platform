@@ -28,12 +28,12 @@ issuer_name=$(yq '.broker.tls.issuerRef.name' "$qvals")
 [[ -n $ns && -n $runs_ns && -n $prefix && -n $KIND_CLUSTER ]] || bad "a source of truth is empty"
 
 # ---- templates render and parse ----
-export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo PROMPT=$'say "hi": ok\n😀 second line'
+export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo RUN_PROMPT=$'say "hi": ok\n😀 second line'
 # shellcheck disable=SC2016 # envsubst takes a literal variable list
 render() { envsubst '${ROOM_ID} ${RUN_ID} ${REPO}' <"$qs/manifests/$1.yaml.tmpl"; }
 for m in ca-issuer cnpg-cluster room agentrun; do render "$m" >"$tmp/$m.yaml"; yq ea '.' "$tmp/$m.yaml" >/dev/null || bad "$m does not parse"; done
-render agentrun | yq '.spec.task.text = strenv(PROMPT)' >"$tmp/run-final.yaml"
-[[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$PROMPT" ]] || bad "task text does not survive run.sh's templating"
+render agentrun | yq '.spec.task.text = strenv(RUN_PROMPT)' >"$tmp/run-final.yaml"
+[[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$RUN_PROMPT" ]] || bad "task text does not survive run.sh's templating"
 
 # ---- the chart as up.sh installs it ----
 dg='v0.0.0@sha256:0000'
