@@ -1,0 +1,68 @@
+# The ONE source of the run kind: the broker's `runs:` and its run-issuer subPattern both render
+# from here, so they cannot disagree.
+runs:
+  group: agents.ogenki.io
+  namespace: agents
+  namePrefix: run-
+# Create runs.namespace with a default-deny CiliumNetworkPolicy. Off when the namespace is yours.
+createRunsNamespace: true
+
+broker:
+  image:
+    repository: ghcr.io/smana/room-broker
+    # Required: "<version>@sha256:<digest>". Never a bare tag (see e2e.unpinnedImages).
+    tag: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  # Humans. mode oidc: the block below is rendered verbatim into the broker config.
+  # mode local: one loopback user behind a port-forward, no IdP; the broker takes no other key.
+  human:
+    mode: oidc
+    # issuer, jwksURL, clientIDFile, projectIDFile, origin, groups, access ... (internal/config)
+  # Who may call :8443 as a run. mode jwks verifies against issuer/jwksURL; tokenreview asks the
+  # apiserver (a cluster whose issuer is unreachable, e.g. kind) and binds system:auth-delegator.
+  runIssuer:
+    mode: jwks
+    issuer: ""
+    jwksURL: ""
+  # Optional: the factory's system-API tokens. Empty = no systemIssuer in the config.
+  systemIssuer: {}
+  systemPrincipals: {}
+  factoryURL: ""
+  # oidc mode: the https URL humans reach the broker at. Local mode fixes it to http://localhost:8080.
+  publicURL: ""
+  database:
+    # Secret with key `uri`: the broker's DSN (rooms_broker). Empty omits ROOMS_DATABASE_URL:
+    # then supply it through extraEnv.
+    brokerSecret: ""
+    # Secret with key `uri`: the migrate DSN (rooms_owner). Empty = no migrate init container.
+    ownerSecret: ""
+    # Pod label that selects the PostgreSQL pods in the release namespace (CNPG's by default).
+    podLabel: cnpg.io/cluster
+  tls:
+    # The Secret mounted at /etc/room-broker/tls (tls.crt, tls.key). A Certificate is rendered
+    # for it only when issuerRef.name is set; otherwise bring the Secret yourself.
+    secretName: room-broker-tls
+    issuerRef: {kind: ClusterIssuer, name: ""}
+  # Escape hatches for oidc mode's files, ROOMS_MCP_KEY and the IdP's network flows.
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  networkPolicy:
+    extraIngress: []
+    extraEgress: []
+
+runController:
+  enabled: true
+  image:
+    repository: ghcr.io/smana/agent-run-controller
+    tag: ""
+
+factory:
+  enabled: false
+
+# CI only: images `kind load`ed have no registry digest. Accepts a bare tag and never pulls.
+e2e:
+  unpinnedImages: false

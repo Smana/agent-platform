@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: room-broker
+  ports:
+    - {name: bridge, port: 8443, targetPort: bridge}
+    - {name: metrics, port: 9090, targetPort: ops}
+    {{- /* Local mode serves humans on a port-forward only; the broker binds 127.0.0.1 there. */}}
+    {{- if not (include "ap.local" .) }}
+    - {name: human, port: 8080, targetPort: human}
+    {{- end }}

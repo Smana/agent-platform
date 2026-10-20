@@ -1,0 +1,18 @@
+{{- if .Values.createRunsNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.runs.namespace }}
+---
+# An empty rule selects no peer: enforcement on in both directions, nothing allowed. Each run's own
+# CiliumNetworkPolicy adds its allowances.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.runs.namespace }}
+spec:
+  endpointSelector: {}
+  ingress: [{}]
+  egress: [{}]
+{{- end }}
