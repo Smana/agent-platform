@@ -5,6 +5,7 @@ package runctl
 import (
 	"slices"
 	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -16,7 +17,8 @@ import (
 // kubelet's probe of the bridge (C4).
 func NetworkPolicy(r *v1alpha1.AgentRun, c Config, m Model, runID string) *unstructured.Unstructured {
 	web := c.FQDNs(r) // reached on 443
-	if m.Port == 443 {
+	modelNS, inCluster := inClusterNamespace(m.Host)
+	if m.Port == 443 && !inCluster {
 		web = addUnique(web, m.Host)
 	}
 	names := addUnique(slices.Clone(web), m.Host)
@@ -53,7 +55,13 @@ func NetworkPolicy(r *v1alpha1.AgentRun, c Config, m Model, runID string) *unstr
 		},
 		map[string]any{"toFQDNs": matchNames(web), "toPorts": port(443)},
 	}
-	if m.Port != 443 {
+	switch {
+	case inCluster:
+		// Not toFQDNs: that matches the DNS-resolved ClusterIP, but Cilium translates the Service to a
+		// backend pod before policy, so the rule would never match. The port is the backend's.
+		sel := map[string]any{"io.kubernetes.pod.namespace": modelNS}
+		egress = append(egress, map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": sel}}, "toPorts": port(m.Port)})
+	case m.Port != 443:
 		egress = append(egress, map[string]any{"toFQDNs": matchNames([]string{m.Host}), "toPorts": port(m.Port)})
 	}
 	egress = append(egress, roomEgress...)
@@ -68,4 +76,14 @@ func NetworkPolicy(r *v1alpha1.AgentRun, c Config, m Model, runID string) *unstr
 	u.SetNamespace(om.Namespace)
 	u.SetLabels(om.Labels)
 	return u
+}
+
+// inClusterNamespace is the namespace of a Service host (<svc>.<ns>.svc or <svc>.<ns>.svc.<domain>),
+// the only hosts ModelFrom lets use plain http.
+func inClusterNamespace(host string) (string, bool) {
+	p := strings.Split(host, ".")
+	if len(p) >= 3 && p[2] == "svc" && p[0] != "" && p[1] != "" {
+		return p[1], true
+	}
+	return "", false
 }
