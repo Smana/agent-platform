@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/httpx"
@@ -44,7 +43,7 @@ type humanLog interface {
 // server with D7's GitHub check through gh (nil without the factory App), and
 // the leader's lease sweep, added through add. One call carries the parts, so a
 // missing one fails start-up (review 4.4 M2).
-func humanSide(cfg config.Config, humans *authn.Humans, rooms client.Client, ns string, roomLog humanLog, red humanapi.Redactor,
+func humanSide(cfg config.Config, humans humanapi.Authenticator, rooms client.Client, ns string, roomLog humanLog, red humanapi.Redactor,
 	hub humanapi.Hub, runs humanapi.Runs, gh gitHubUsers, add func(manager.Runnable) error, m *metrics.Set, log *slog.Logger,
 ) (*humanapi.Server, error) {
 	actor, err := humanActor(cfg.Human, roomLog, red, runs, rooms, runRequester(cfg.FactoryURL), m)

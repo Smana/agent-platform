@@ -198,7 +198,12 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 		return fmt.Errorf("room-broker: %w", err)
 	}
 	key := mcpKey(getenv)
-	if key == "" {
+	// A local-mode install has no room-tool client unless it sets a key: leave :8090 closed.
+	serveMCP := cfg.Human.Mode != "local" || key != ""
+	switch {
+	case !serveMCP:
+		log.Info(":8090 not started: local mode without ROOMS_MCP_KEY")
+	case key == "":
 		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")
 	}
 	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
@@ -208,19 +213,23 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
 	var lc net.ListenConfig
-	humanLn, err := lc.Listen(ctx, "tcp", humanAddr)
+	humanLn, err := lc.Listen(ctx, "tcp", humanListenAddr(cfg))
 	if err != nil {
 		return fmt.Errorf("room-broker: human listener: %w", err)
 	}
-	mcpLn, err := lc.Listen(ctx, "tcp", mcpAddr)
-	if err != nil {
-		_ = humanLn.Close()
-		return fmt.Errorf("room-broker: room tools listener: %w", err)
+	var mcpLn net.Listener
+	if serveMCP {
+		if mcpLn, err = lc.Listen(ctx, "tcp", mcpAddr); err != nil {
+			_ = humanLn.Close()
+			return fmt.Errorf("room-broker: room tools listener: %w", err)
+		}
 	}
 	opsLn, err := lc.Listen(ctx, "tcp", opsAddr)
 	if err != nil {
 		_ = humanLn.Close()
-		_ = mcpLn.Close()
+		if mcpLn != nil {
+			_ = mcpLn.Close()
+		}
 		return fmt.Errorf("room-broker: ops listener: %w", err)
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -243,7 +252,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	g.Go(func() error { return api.ListenAndServeTLS(gctx, bridgeAddr, tlsCfg, bridgeDrain) })
 	g.Go(func() error { return hub.Run(gctx) })
 	g.Go(func() error { return humans.Serve(gctx, humanLn, humanDrain) })
-	g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
+	if serveMCP {
+		g.Go(func() error { return serveHTTP(gctx, mcpServer(tools, mcpCallTimeout, log), mcpLn, mcpDrain) })
+	}
 	g.Go(func() error { return refreshJWKS(gctx, refreshers, nil) })
 	g.Go(func() error {
 		if err := mgr.Start(gctx); err != nil {
@@ -271,15 +282,32 @@ func fanoutHub(r fanout.Reader, l fanout.Listener, m *metrics.Set, log *slog.Log
 	return hub, nil
 }
 
+// humanListenAddr is :8080, on loopback only in local mode: kubectl port-forward reaches it
+// inside the pod's network namespace, and nothing else can.
+func humanListenAddr(cfg config.Config) string {
+	if cfg.Human.Mode == "local" {
+		return "127.0.0.1" + humanAddr
+	}
+	return humanAddr
+}
+
 // humanServer is the :8080 API over the broker's parts, its acts served by
 // actor. The client ids are read at use (Ruling AS-a); the group names are literals.
-func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, ns string, roomLog humanapi.Log,
+func humanServer(cfg config.Config, humans humanapi.Authenticator, rooms client.Reader, ns string, roomLog humanapi.Log,
 	hub humanapi.Hub, runs humanapi.Runs, actor *humanapi.Actor, m *metrics.Set, log *slog.Logger,
 ) *humanapi.Server {
 	h := cfg.Human
+	webClient, roomctlClient, projectID := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), idFile(h.ProjectIDFile)
+	if h.Mode == "local" {
+		// No IdP, so no ids to read; Serve refuses nil ones. Access stays nil too (humanSide sets
+		// it only from a human.access block, which local mode refuses): the local user is an
+		// admin, and the D7 repository check gates members only.
+		local := func() string { return "local" }
+		webClient, roomctlClient, projectID = local, local, local
+	}
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
-		WebClient: idFile(h.ClientIDFile), PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: idFile(h.RoomctlClientIDFile),
-		ProjectID: idFile(h.ProjectIDFile),
+		WebClient: webClient, PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: roomctlClient,
+		ProjectID: projectID,
 		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log}
 }
 

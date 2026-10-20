@@ -81,21 +81,22 @@ func TestAuthenticators(t *testing.T) {
 		}
 		return raw
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-1", "project-1")); err != nil {
+	humans, _ := a.humans.(*authn.Humans) // oidc mode builds the concrete verifier
+	if _, err := humans.VerifyHuman(t.Context(), token("web-1", "project-1")); err != nil {
 		t.Fatalf("the ids read from the files: %v", err)
 	}
 	writeID(t, clientFile, "web-2")
 	writeID(t, projectFile, "project-2")
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-1", "project-1")); !errors.Is(err, authn.ErrUnauthenticated) {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-1", "project-1")); !errors.Is(err, authn.ErrUnauthenticated) {
 		t.Fatalf("the previous build's ids: %v", err)
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-2", "project-2")); err != nil {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-2", "project-2")); err != nil {
 		t.Fatalf("a rewritten file takes effect without a restart: %v", err)
 	}
 	if err := os.Remove(projectFile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-2", "project-2")); !errors.Is(err, authn.ErrUnauthenticated) {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-2", "project-2")); !errors.Is(err, authn.ErrUnauthenticated) {
 		t.Fatalf("an unreadable project id refuses: %v", err)
 	}
 }

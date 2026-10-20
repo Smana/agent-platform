@@ -16,6 +16,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
 )
 
@@ -49,7 +50,7 @@ func jwksVerifier(log *slog.Logger) newVerifier {
 type auth struct {
 	runs      *authn.Runs
 	systems   *authn.Systems
-	humans    *authn.Humans
+	humans    humanapi.Authenticator // *authn.Humans, or *authn.Local in local mode
 	verifiers []*authn.Verifier
 }
 
@@ -105,9 +106,12 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 		}
 	}
 	h := cfg.Human
-	hv, err := verifier(h.Issuer, h.JWKSURL, true)
-	if err != nil {
-		return auth{}, err
+	var hv *authn.Verifier
+	if h.Mode != "local" { // local mode has no IdP: nothing to verify, nothing to refresh
+		var err error
+		if hv, err = verifier(h.Issuer, h.JWKSURL, true); err != nil {
+			return auth{}, err
+		}
 	}
 	// An issuer behind two JWKS URLs is one series: the fresher fetch.
 	lastRefresh := map[string]func() time.Time{}
@@ -121,7 +125,12 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	if err := m.WatchJWKS(lastRefresh); err != nil {
 		return auth{}, err
 	}
-	humans := authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
+	var humans humanapi.Authenticator
+	if h.Mode == "local" {
+		humans = authn.NewLocal(h.Origin, []string{h.Groups.Admin, h.Groups.Member})
+	} else {
+		humans = authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
+	}
 	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all}, nil
 }
 
