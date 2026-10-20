@@ -2,7 +2,8 @@
 
 // Command room-broker is the room broker (SP2): the log of record, its bridges'
 // API, the Room controller and, from phase 2, its viewers. `room-broker serve`
-// (the default) runs it; `room-broker retention` is the daily purge. Its wiring
+// (the default) runs it; `room-broker retention` is the daily purge and `room-broker migrate` applies the embedded
+// schema (an init container, or a one-off outside the Atlas operator). Its wiring
 // is app.RunBroker.
 package main
 

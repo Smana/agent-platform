@@ -65,8 +65,8 @@ const (
 	metricsDrain = time.Second
 )
 
-// RunBroker runs room-broker's subcommand args[0]: serve (the default) or
-// retention. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
+// RunBroker runs room-broker's subcommand args[0]: serve (the default),
+// retention or migrate. getenv reads ROOMS_CONFIG, ROOMS_DATABASE_URL, POD_NAMESPACE,
 // ROOMS_MCP_KEY and ROOMS_GITHUB_APP_DIR.
 func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func(string) string) error {
 	cmd := "serve"
@@ -78,8 +78,18 @@ func RunBroker(ctx context.Context, log *slog.Logger, args []string, getenv func
 		return serveBroker(ctx, log, getenv)
 	case "retention":
 		return runRetention(ctx, log, getenv)
+	case "migrate":
+		dsn := getenv("ROOMS_DATABASE_URL")
+		if dsn == "" {
+			return errors.New("room-broker migrate: ROOMS_DATABASE_URL is not set")
+		}
+		n, err := store.Migrate(ctx, dsn, log)
+		if err == nil {
+			log.Info("schema up to date", "applied", n)
+		}
+		return err
 	}
-	return fmt.Errorf("room-broker: unknown subcommand %q (serve, retention)", cmd)
+	return fmt.Errorf("room-broker: unknown subcommand %q (serve, retention, migrate)", cmd)
 }
 
 // runRetention is the daily DELETE-only job (§4, OD-17), connected as
