@@ -15,6 +15,9 @@ STUB_URL=http://stub-model.e2e.svc.cluster.local:8080/v1
 dump() {
   echo "--- e2e failed: diagnostics ---" >&2
   kubectl get agentrun,rooms,pods -A -o wide >&2 || true
+  kubectl get events -A --sort-by=.lastTimestamp >&2 || true
+  kubectl get cnp -A -o yaml >&2 || true
+  for ns in agent-platform agents e2e; do kubectl -n "$ns" describe pods >&2 || true; done
   kubectl -n agents describe agentrun >&2 || true
   kubectl -n agent-platform logs deploy/run-controller --tail=200 >&2 || true
   kubectl -n agent-platform logs deploy/room-broker --tail=200 >&2 || true
@@ -22,7 +25,8 @@ dump() {
     kubectl -n agents logs "$p" --all-containers --prefix --tail=200 >&2 || true
   done
   kubectl -n e2e logs deploy/stub-model --tail=50 >&2 || true
-  kubectl -n kube-system exec ds/cilium -c cilium-agent -- timeout 5 cilium-dbg monitor --type drop >&2 || true
+  # The agent's own ring buffer: drops that happened minutes ago, not a live stream.
+  kubectl -n kube-system exec ds/cilium -c cilium-agent -- hubble observe --verdict DROPPED --last 200 >&2 || true
 }
 onexit() {
   local rc=$?
@@ -38,17 +42,20 @@ for i in room-broker room-bridge run-controller; do
 done
 docker build -f hack/quickstart/stub-model/Dockerfile -t "ghcr.io/smana/stub-model:$TAG" .
 
-# up.sh creates the cluster; images are loaded once it exists, before the chart's --wait times out.
-step "up.sh (in the background until the cluster exists, so the images can be loaded)"
-export MODEL_API_KEY=stub MODEL=stub MODEL_BASE_URL="$STUB_URL" CHART_REF=charts/agent-platform
-export UP_HELM_ARGS="--set e2e.unpinnedImages=true --set broker.image.tag=$TAG --set runController.image.tag=$TAG --set runController.images.harness.tag=$TAG --set runController.images.bridge.tag=$TAG"
-hack/quickstart/up.sh &
-up=$!
-until kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER" || ! kill -0 "$up" 2>/dev/null; do sleep 2; done
+step "cluster and image load"
+hack/quickstart/fetch-runsc.sh
+clusters=$(kind get clusters 2>/dev/null || true)
+grep -qx "$KIND_CLUSTER" <<<"$clusters" || kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NODE_IMAGE"
 for i in agent-harness room-broker room-bridge run-controller stub-model; do
   kind load docker-image --name "$KIND_CLUSTER" "ghcr.io/smana/$i:$TAG"
+  docker rmi "ghcr.io/smana/$i:$TAG" >/dev/null # the node holds it now; the runner's disk is tight
 done
-wait "$up"
+docker builder prune -af >/dev/null
+
+step "up.sh (it keeps the cluster that exists)"
+export MODEL_API_KEY=stub MODEL=stub MODEL_BASE_URL="$STUB_URL" CHART_REF=charts/agent-platform
+export UP_HELM_ARGS="--set e2e.unpinnedImages=true --set broker.image.tag=$TAG --set runController.image.tag=$TAG --set runController.images.harness.tag=$TAG --set runController.images.bridge.tag=$TAG"
+hack/quickstart/up.sh
 
 step "stub model"
 kubectl apply -f hack/quickstart/stub-model.yaml.tmpl
@@ -68,11 +75,14 @@ while ((SECONDS < deadline)); do
   phase=$(kubectl -n agents get agentrun "$run" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   echo "phase: ${phase:-<none>}"
   [[ $phase == Succeeded ]] && break
-  [[ $phase == Failed ]] && break
+  case $phase in Failed | BudgetExhausted | Revoked) break ;; esac
   sleep 10
 done
 [[ $phase == Succeeded ]] || { echo "AgentRun ended as '${phase:-<none>}'" >&2; exit 1; }
 
-seq=$(kubectl -n agent-platform get room "$room" -o jsonpath='{.status.lastSeq}')
-((${seq:-0} > 0)) || { echo "room $room recorded no event (lastSeq=${seq:-0})" >&2; exit 1; }
-echo "quickstart-e2e OK: $run Succeeded, room $room lastSeq=$seq"
+# lastSeq is not evidence: the Room's Open event and the broker's own run events raise it with no
+# bridge. Only a harness-origin row proves the bridge mirrored the agent into the room.
+n=$(kubectl -n agent-platform exec rooms-1 -c postgres -- psql -d rooms -tAc \
+  "select count(*) from events where room_id='$room' and origin='harness'")
+((${n:-0} > 0)) || { echo "room $room has no harness-origin event" >&2; exit 1; }
+echo "quickstart-e2e OK: $run Succeeded, room $room has $n harness events"
