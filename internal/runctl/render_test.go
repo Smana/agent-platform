@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -117,5 +118,42 @@ func TestCNPAlwaysDeniesIngress(t *testing.T) {
 		if _, hostOnly := in[0].(map[string]any)["fromEntities"]; hostOnly != (room != "") {
 			t.Fatalf("room %q: the host rule belongs to the bridge's probe only: %v", room, in[0])
 		}
+	}
+}
+
+// An in-cluster model is reached by pod selector on the backend port: Cilium translates the
+// Service before policy, so a toFQDNs rule on the ClusterIP would never match.
+func TestCNPInClusterModel(t *testing.T) {
+	m := Model{BaseURL: "http://stub-model.e2e.svc.cluster.local:8080/v1", Name: "stub", Host: "stub-model.e2e.svc.cluster.local", Port: 8080}
+	spec := NetworkPolicy(goRun(), testConfig(t), m, "abcdefgh").Object["spec"].(map[string]any)
+	var found bool
+	for _, e := range spec["egress"].([]any) {
+		rule := e.(map[string]any)
+		ports, _ := rule["toPorts"].([]any)
+		if len(ports) == 0 || ports[0].(map[string]any)["ports"] == nil {
+			continue
+		}
+		if p := ports[0].(map[string]any)["ports"].([]any)[0].(map[string]any)["port"]; p != "8080" {
+			continue
+		}
+		found = true
+		if _, fq := rule["toFQDNs"]; fq {
+			t.Fatalf("in-cluster model must not be a toFQDNs rule: %v", rule)
+		}
+		sel := rule["toEndpoints"].([]any)[0].(map[string]any)["matchLabels"].(map[string]any)
+		if sel["io.kubernetes.pod.namespace"] != "e2e" {
+			t.Fatalf("selector %v", sel)
+		}
+	}
+	if !found {
+		t.Fatalf("no egress rule on 8080: %v", spec["egress"])
+	}
+	// Still resolvable, and never in the 443 list.
+	dns := spec["egress"].([]any)[0].(map[string]any)["toPorts"].([]any)[0].(map[string]any)["rules"].(map[string]any)["dns"].([]any)
+	if !slices.ContainsFunc(dns, func(d any) bool { return d.(map[string]any)["matchName"] == m.Host }) {
+		t.Fatalf("DNS must allow the model name: %v", dns)
+	}
+	if _, ok := inClusterNamespace("api.anthropic.com"); ok {
+		t.Fatal("an external host is not in-cluster")
 	}
 }

@@ -1,0 +1,99 @@
+{{- $b := .Values.broker -}}
+{{- $local := include "ap.local" . -}}
+{{- $img := include "ap.image" (dict "root" . "image" $b.image) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: room-broker
+  labels: {{- include "ap.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $b.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: room-broker
+  template:
+    metadata:
+      labels: {{- include "ap.labels" . | nindent 8 }}
+      annotations:
+        # The broker reads its config once at start: a changed config must roll the pods.
+        checksum/config: {{ include (print $.Template.BasePath "/broker-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: room-broker
+      automountServiceAccountToken: true # the Room and AgentRun watches, the leader lease
+      terminationGracePeriodSeconds: 30 # the broker's shutdown drains fit 23 s of it
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Lets the nonroot broker read a 0400 Secret; also makes the optional oidc files readable.
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- if $b.database.ownerSecret }}
+      initContainers:
+        # The schema, applied as the owner role before the broker starts; the broker's own role
+        # cannot alter it.
+        - name: migrate
+          image: {{ $img }}
+          {{- include "ap.pullPolicy" . | nindent 10 }}
+          args: [migrate]
+          env:
+            - name: ROOMS_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $b.database.ownerSecret }}, key: uri}
+          securityContext: {{- include "ap.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+      {{- end }}
+      containers:
+        - name: room-broker
+          image: {{ $img }}
+          {{- include "ap.pullPolicy" . | nindent 10 }}
+          env:
+            - name: ROOMS_CONFIG
+              value: /etc/room-broker/config/config.yaml
+            {{- if $b.database.brokerSecret }}
+            - name: ROOMS_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $b.database.brokerSecret }}, key: uri}
+            {{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: {fieldPath: metadata.namespace}
+            {{- with $b.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - {name: bridge, containerPort: 8443}
+            - {name: human, containerPort: 8080}
+            - {name: ops, containerPort: 9090}
+          # Probes are on the ops port: the broker answers them there for the kubelet only.
+          startupProbe:
+            httpGet: {path: /startupz, port: 9090}
+            periodSeconds: 5
+            failureThreshold: 120 # a first start waits for PostgreSQL and the migration
+          livenessProbe:
+            httpGet: {path: /healthz, port: 9090}
+          readinessProbe:
+            httpGet: {path: /readyz, port: 9090}
+          securityContext: {{- include "ap.containerSecurityContext" . | nindent 12 }}
+          resources: {{- toYaml $b.resources | nindent 12 }}
+          volumeMounts:
+            # The config sits beside the TLS pair, not above it: a mount nested in a read-only
+            # ConfigMap mount cannot create its mount point.
+            - {name: config, mountPath: /etc/room-broker/config, readOnly: true}
+            - {name: tls, mountPath: /etc/room-broker/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- with $b.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap: {name: room-broker-config}
+        - name: tls
+          secret: {secretName: {{ $b.tls.secretName }}}
+        - name: tmp
+          emptyDir: {}
+        {{- with $b.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

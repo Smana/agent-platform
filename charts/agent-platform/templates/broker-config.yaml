@@ -1,0 +1,45 @@
+{{- $b := .Values.broker -}}
+{{- $local := include "ap.local" . -}}
+{{- include "ap.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: room-broker-config
+  labels: {{- include "ap.labels" . | nindent 4 }}
+data:
+  # Strictly decoded by the broker (internal/config): an unknown key fails the rollout. tls is
+  # left to its default, /etc/room-broker/tls/tls.{crt,key}, where the Deployment mounts the pair.
+  config.yaml: |
+    {{- if $local }}
+    publicURL: http://localhost:8080
+    {{- else if $b.publicURL }}
+    publicURL: {{ $b.publicURL | quote }}
+    {{- end }}
+    runs:
+      {{- toYaml .Values.runs | nindent 6 }}
+    runIssuers:
+      - subPattern: '{{ include "ap.runSubPattern" . }}'
+        {{- if eq $b.runIssuer.mode "tokenreview" }}
+        mode: tokenreview
+        {{- else }}
+        issuer: {{ required "broker.runIssuer.issuer is required in jwks mode" $b.runIssuer.issuer | quote }}
+        jwksURL: {{ required "broker.runIssuer.jwksURL is required in jwks mode" $b.runIssuer.jwksURL | quote }}
+        {{- end }}
+    {{- with $b.systemIssuer }}
+    systemIssuer:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $b.systemPrincipals }}
+    systemPrincipals:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $b.factoryURL }}
+    factoryURL: {{ . | quote }}
+    {{- end }}
+    {{- if $local }}
+    human:
+      mode: local
+    {{- else }}
+    human:
+      {{- toYaml (omit $b.human "mode") | nindent 6 }}
+    {{- end }}

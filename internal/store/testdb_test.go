@@ -96,26 +96,6 @@ func inDB(dsn, name string) string {
 	return u.String()
 }
 
-// statements splits a txmode-none migration into its statements, every one of
-// them: a GRANT or a COMMENT skipped here would pass the tests and still run on
-// the cluster. These files hold no function body, so once the comment lines are
-// gone a semicolon ends each statement.
-func statements(sql string) []string {
-	var code strings.Builder
-	for line := range strings.Lines(sql) {
-		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
-			code.WriteString(line)
-		}
-	}
-	var out []string
-	for stmt := range strings.SplitSeq(code.String(), ";") {
-		if stmt = strings.TrimSpace(stmt); stmt != "" {
-			out = append(out, stmt)
-		}
-	}
-	return out
-}
-
 // Every statement of a txmode-none file runs, whatever its verb (review 4.3).
 func TestTxModeNoneStatements(t *testing.T) {
 	got := statements(`-- atlas:txmode none

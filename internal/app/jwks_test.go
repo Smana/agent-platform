@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	authv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
@@ -60,7 +62,7 @@ func TestAuthenticators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := authenticators(t.Context(), cfg, m, build)
+	a, err := authenticators(t.Context(), cfg, m, build, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,21 +81,25 @@ func TestAuthenticators(t *testing.T) {
 		}
 		return raw
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-1", "project-1")); err != nil {
+	humans, ok := a.humans.(*authn.Humans) // oidc mode builds the concrete verifier
+	if !ok {
+		t.Fatalf("oidc mode must build *authn.Humans, got %T", a.humans)
+	}
+	if _, err := humans.VerifyHuman(t.Context(), token("web-1", "project-1")); err != nil {
 		t.Fatalf("the ids read from the files: %v", err)
 	}
 	writeID(t, clientFile, "web-2")
 	writeID(t, projectFile, "project-2")
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-1", "project-1")); !errors.Is(err, authn.ErrUnauthenticated) {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-1", "project-1")); !errors.Is(err, authn.ErrUnauthenticated) {
 		t.Fatalf("the previous build's ids: %v", err)
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-2", "project-2")); err != nil {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-2", "project-2")); err != nil {
 		t.Fatalf("a rewritten file takes effect without a restart: %v", err)
 	}
 	if err := os.Remove(projectFile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.humans.VerifyHuman(t.Context(), token("web-2", "project-2")); !errors.Is(err, authn.ErrUnauthenticated) {
+	if _, err := humans.VerifyHuman(t.Context(), token("web-2", "project-2")); !errors.Is(err, authn.ErrUnauthenticated) {
 		t.Fatalf("an unreadable project id refuses: %v", err)
 	}
 }
@@ -126,7 +132,7 @@ func TestAuthenticatorsFailsOnlyOnAMachineIssuer(t *testing.T) {
 				}
 				return authn.NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) { return nil, errors.New("unused") }), nil
 			}
-			if _, err := authenticators(t.Context(), cfg, m, build); !errors.Is(err, c.want) {
+			if _, err := authenticators(t.Context(), cfg, m, build, nil); !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
 			}
 		})
@@ -144,5 +150,37 @@ func TestJWKSVerifier(t *testing.T) {
 	}
 	if _, err := build(ctx, clusterIssuer, unreachable, false); err == nil {
 		t.Fatal("eager, an unreachable issuer was accepted")
+	}
+}
+
+type noReviewer struct{}
+
+func (noReviewer) Create(context.Context, *authv1.TokenReview, metav1.CreateOptions) (*authv1.TokenReview, error) {
+	return nil, errors.New("unused")
+}
+
+func TestAuthenticatorsTokenReviewIssuer(t *testing.T) {
+	cfg := config.Config{
+		RunIssuers: []config.IssuerConfig{{Mode: "tokenreview", SubPattern: `^system:serviceaccount:agents:run-([a-z2-7]{8})$`}},
+		Human:      config.HumanConfig{Issuer: humanIssuer, JWKSURL: humanIssuer + "/oauth/v2/keys"},
+	}
+	m, err := metrics.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var built int
+	build := func(_ context.Context, issuer, _ string, _ bool) (*authn.Verifier, error) {
+		built++
+		return authn.NewVerifierWithKeyfunc(issuer, func(*jwt.Token) (any, error) { return nil, errors.New("unused") }), nil
+	}
+	if _, err := authenticators(t.Context(), cfg, m, build, nil); err == nil {
+		t.Fatal("a tokenreview issuer without a client must be refused")
+	}
+	a, err := authenticators(t.Context(), cfg, m, build, noReviewer{})
+	if err != nil || a.runs == nil {
+		t.Fatalf("authenticators: %v", err)
+	}
+	if built != 1 { // the human verifier only: the run issuer has no JWKS
+		t.Fatalf("built %d JWKS verifiers, want only the human one", built)
 	}
 }

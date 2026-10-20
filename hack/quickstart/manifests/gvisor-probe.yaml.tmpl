@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+# up.sh's gVisor probe: a run-shaped pod (runs namespace, run-id label, default-deny + its own CNP)
+# that proves what a real run needs, and prints "ok:<check>" for each one it passes.
+#   dmesg  runsc is the runtime (gVisor's own kernel log, not the host's)
+#   dns    the broker's FQDN resolves from inside the sandbox
+#   tcp    a connect to the broker's ClusterIP:8443 lands (needs Cilium socketLB.hostNamespaceOnly)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ap-probe
+  namespace: ${RUNS_NS}
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: ap-probe}
+  egress:
+    - toEndpoints:
+        - matchLabels: {io.kubernetes.pod.namespace: kube-system, k8s-app: kube-dns}
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels: {io.kubernetes.pod.namespace: "${NS}", app.kubernetes.io/name: room-broker}
+      toPorts:
+        - ports: [{port: "8443", protocol: TCP}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ap-probe
+  namespace: ${RUNS_NS}
+  labels:
+    app.kubernetes.io/name: ap-probe
+    agents.ogenki.io/run-id: probe # the broker's CNP admits only pods that carry a run-id
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: ${PROBE_IMAGE}
+      command:
+        - sh
+        - -c
+        - |
+          host=room-broker.${NS}.svc.${CLUSTER_DOMAIN}
+          dmesg | head -1 | grep -qi gvisor || { echo "FAIL:dmesg (the first kernel line is not gVisor's: $(dmesg 2>&1 | head -1))"; exit 1; }
+          echo ok:dmesg
+          ip=$(nslookup "$host" 2>&1 | awk '/^Address/ {a=$NF} END {print a}')
+          case "$ip" in [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;; *) echo "FAIL:dns ($host did not resolve)"; exit 1;; esac
+          echo "ok:dns ($ip)"
+          nc -w 5 -z "$ip" 8443 || { echo "FAIL:tcp (no connect to $ip:8443: socketLB.hostNamespaceOnly, or a network policy)"; exit 1; }
+          echo ok:tcp
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+        seccompProfile: {type: RuntimeDefault}

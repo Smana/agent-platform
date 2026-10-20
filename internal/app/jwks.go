@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"math/big"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
 )
 
@@ -48,7 +50,7 @@ func jwksVerifier(log *slog.Logger) newVerifier {
 type auth struct {
 	runs      *authn.Runs
 	systems   *authn.Systems
-	humans    *authn.Humans
+	humans    humanapi.Authenticator // *authn.Humans, or *authn.Local in local mode
 	verifiers []*authn.Verifier
 }
 
@@ -57,9 +59,10 @@ type auth struct {
 // human one is lazy: the IdP being down must not fail the rollout, nor :8443
 // with it (FORWARD 2.6); until it answers, humans are refused. One verifier
 // serves each (issuer, JWKS URL): the cluster's issuer usually signs both kinds
-// of machine token, and one cache then refreshes once. Every distinct verifier,
+// of machine token, and one cache then refreshes once. tr serves the tokenreview run
+// issuers; it is nil when none is configured. Every distinct verifier,
 // the human one included, is refreshed and gauged (Ruling AQ).
-func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier) (auth, error) {
+func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier, tr authn.TokenReviewer) (auth, error) {
 	byKey := map[[2]string]*authn.Verifier{}
 	var all []*authn.Verifier
 	verifier := func(issuer, jwksURL string, lazy bool) (*authn.Verifier, error) {
@@ -76,9 +79,18 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	}
 	var issuers []authn.RunIssuer
 	for _, is := range cfg.RunIssuers {
-		v, err := verifier(is.Issuer, is.JWKSURL, false)
-		if err != nil {
-			return auth{}, err
+		var v authn.RunVerifier
+		if is.Mode == "tokenreview" {
+			if tr == nil {
+				return auth{}, errors.New("a tokenreview run issuer needs the in-cluster client")
+			}
+			v = authn.NewTokenReview(tr, time.Now)
+		} else {
+			jv, err := verifier(is.Issuer, is.JWKSURL, false)
+			if err != nil {
+				return auth{}, err
+			}
+			v = jv
 		}
 		// config.Load compiled it with one capture group already.
 		issuers = append(issuers, authn.RunIssuer{Verifier: v, SubPattern: regexp.MustCompile(is.SubPattern)})
@@ -87,14 +99,19 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	if err != nil {
 		return auth{}, err
 	}
-	sys, err := verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, false)
-	if err != nil {
-		return auth{}, err
+	var sys *authn.Verifier
+	if cfg.SystemIssuer.Issuer != "" {
+		if sys, err = verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, false); err != nil {
+			return auth{}, err
+		}
 	}
 	h := cfg.Human
-	hv, err := verifier(h.Issuer, h.JWKSURL, true)
-	if err != nil {
-		return auth{}, err
+	var hv *authn.Verifier
+	if h.Mode != "local" { // local mode has no IdP: nothing to verify, nothing to refresh
+		var err error
+		if hv, err = verifier(h.Issuer, h.JWKSURL, true); err != nil {
+			return auth{}, err
+		}
 	}
 	// An issuer behind two JWKS URLs is one series: the fresher fetch.
 	lastRefresh := map[string]func() time.Time{}
@@ -108,7 +125,12 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	if err := m.WatchJWKS(lastRefresh); err != nil {
 		return auth{}, err
 	}
-	humans := authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
+	var humans humanapi.Authenticator
+	if h.Mode == "local" {
+		humans = authn.NewLocal(h.Origin, []string{h.Groups.Admin, h.Groups.Member})
+	} else {
+		humans = authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
+	}
 	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all}, nil
 }
 

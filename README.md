@@ -2,7 +2,7 @@
 
 **Run coding agents on your Kubernetes cluster without trusting them.**
 
-- **Sandboxed:** every run is an isolated pod holding only short-lived, scoped credentials, inside a budget it cannot raise.
+- **Sandboxed:** every run is an isolated pod holding only [short-lived, scoped credentials](docs/quickstart.md#what-differs-from-production), inside [a budget it cannot raise](docs/quickstart.md#what-differs-from-production).
 - **Supervised:** approvals, steering and the merge gate sit outside the sandbox, with humans.
 - **On the record:** every run streams into a room that nobody can rewrite, the agent included.
 
@@ -14,6 +14,8 @@
 </a>
 
 **[Watch a run in the live demo →](https://blog.ogenki.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
+
+**[Try it on your laptop →](docs/quickstart.md)** · one command, Linux and Docker, no cloud.
 
 ## What's a room?
 
@@ -51,13 +53,12 @@ flowchart LR
 
 For platform teams who want coding agents on their cluster, under their own rules.
 
-Not yet for: a laptop tool or a hosted service.
+Not for: a hosted service. A laptop trial exists, scaled down (see the quickstart).
 
 ## Status
 
 v0.15.2, in daily use on one cloud for one public repository, with the merge gate in shadow. It
-runs today on [cloud-native-ref](https://github.com/Smana/cloud-native-ref); a portable install for
-any Kubernetes cluster is the next milestone. What is proven live and what comes next is on the
+runs today on [cloud-native-ref](https://github.com/Smana/cloud-native-ref); the [quickstart](docs/quickstart.md) runs it on a laptop (kind, Linux and Docker). What is proven live and what comes next is on the
 platform's [status page](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/status.md).
 
 ## Start here

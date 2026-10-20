@@ -267,6 +267,7 @@ The factory, by the same stages. Its wiring is `internal/app/factory.go`.
 |---|---|---|---|
 | `agent-factory` Deployment, Service, PDB, RBAC and config | `agent-system` | `charts/agent-factory` here | Image `ghcr.io/smana/agent-factory`, this repo |
 | `Task` CRD | cluster; CRs in `agent-system` | `charts/agent-factory`, a copy of `config/crd/` | `api/factory/v1alpha1` here |
+| `agent-platform` chart | broker, run controller, `Room` and `AgentRun` CRDs, runs namespace | `charts/agent-platform` here | The umbrella for a cluster without cloud-native-ref; the laptop profile is the [quickstart](quickstart.md). The broker runs `human.mode: local` and `runIssuers[].mode: tokenreview` there ([integration](integration.md#the-brokers-configuration)); `room-broker migrate` is its schema init container |
 | Factory secrets: `agent-factory-github`, `agent-factory-merger`, `openbao-ca`, `agent-factory-oidc`, `agent-factory-intake` | `agent-system` | Mounted per the [chart README](../charts/agent-factory/README.md), which names each secret's source | The platform's secret store |
 | `room-broker` Deployment and Service (`App` claim `room-broker`) | `agent-system` | [cloud-native-ref](https://github.com/Smana/cloud-native-ref) `infrastructure/base/room-broker/` | Image `ghcr.io/smana/room-broker`, this repo |
 | `Room` CRD | cluster; CRs in `agent-system` | Vendored by cloud-native-ref as `crd-rooms.yaml` | `api/v1alpha1`, `config/crd/` here |

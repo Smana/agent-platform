@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stub-model
+  namespace: e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: stub-model}
+  template:
+    metadata:
+      labels: {app: stub-model}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # the image's USER is the non-numeric `nonroot`, which kubelet cannot verify
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: stub-model
+          image: ghcr.io/smana/stub-model:e2e
+          imagePullPolicy: Never # kind-loaded
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}}
+          livenessProbe: {httpGet: {path: /healthz, port: 8080}}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stub-model
+  namespace: e2e
+spec:
+  selector: {app: stub-model}
+  # targetPort == port: the run's CiliumNetworkPolicy matches the backend port after Service translation.
+  ports: [{port: 8080, targetPort: 8080}]
