@@ -1,0 +1,11 @@
+# Laptop install: no IdP, no issuer reachable from the apiserver. Pair with a port-forward to :8080.
+broker:
+  human:
+    mode: local
+  runIssuer:
+    mode: tokenreview
+  database:
+    brokerSecret: rooms-broker-dsn
+    ownerSecret: rooms-owner-dsn
+  tls:
+    issuerRef: {kind: Issuer, name: quickstart-ca}

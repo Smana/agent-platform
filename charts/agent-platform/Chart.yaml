@@ -1,0 +1,12 @@
+apiVersion: v2
+name: agent-platform
+description: The agent platform in one chart — room broker, run controller and, optionally, the agent factory.
+type: application
+# Set by `helm package --version` from the tag (release) or the PR pre-release.
+version: 0.0.0
+appVersion: "0.0.0"
+dependencies:
+  - name: agent-factory
+    version: 0.0.0
+    repository: file://../agent-factory
+    condition: factory.enabled

@@ -75,6 +75,9 @@ tasks:
         done
       # The factory chart ships the Task CRD: Tasks are runtime objects, never in Git.
       - cp config/crd/agents.ogenki.io_tasks.yaml charts/agent-factory/crds/
+      # The umbrella chart ships the broker's two: Rooms and the AgentRuns it watches.
+      - mkdir -p charts/agent-platform/crds
+      - cp config/crd/agents.ogenki.io_rooms.yaml config/crd/agents.ogenki.io_agentruns.yaml charts/agent-platform/crds/
 
   crd:check:
     desc: The committed CRD is exactly what the types generate.
@@ -83,10 +86,13 @@ tasks:
       - git diff --exit-code -- config/crd api charts
 
   chart:check:
-    desc: Lint and render the factory chart.
+    desc: Lint and render the factory and umbrella charts.
     cmds:
       - helm lint --strict charts/agent-factory --set image.tag='v0.0.0@sha256:0000'
       - bash charts/agent-factory/tests/render.sh
+      - helm dependency build charts/agent-platform
+      - helm lint --strict charts/agent-platform -f charts/agent-platform/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000'
+      - bash charts/agent-platform/tests/render.sh
       - git diff --exit-code -- config/crd api
 
   harness:test:
