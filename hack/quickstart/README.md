@@ -36,9 +36,9 @@ sandboxes agent workloads the same way a real cluster does?
 | macOS + Docker Desktop | untested |
 | Podman (rootful) | untested |
 
-Open risk for the live run: whether `runsc` needs its `gvisor-bin/` helpers next to it on the node
-(only `runsc` and the shim are mounted). If the probe pod fails with a missing-binary error, mount the
-directory too.
+`gvisor-bin/` is required: runsc 20260928.0 looks up its sidecars there, next to itself (its embedded
+fallback stops working after 2026-10). `fetch-runsc.sh` extracts it and `kind-config.yaml` mounts it at
+`/usr/local/bin/gvisor-bin`.
 
 ## Escape hatch
 

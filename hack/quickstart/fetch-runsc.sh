@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Download gVisor (runsc + containerd-shim-runsc-v1) into .quickstart/bin, verified against
-# the published sha512. Idempotent: a verified bundle for the pinned release is left alone.
+# the published sha512, plus the gvisor-bin/ sidecars runsc looks up next to itself. Idempotent: a verified bundle for the pinned release is left alone.
 # Recent gVisor releases publish only gvisor.tar.bz2, not the bare binaries.
 set -euo pipefail
 
@@ -19,7 +19,7 @@ esac
 dir=.quickstart/bin
 stamp="$dir/.gvisor-release"
 want="${GVISOR_RELEASE}-${arch}"
-if [[ -x $dir/runsc && -x $dir/containerd-shim-runsc-v1 && "$(cat "$stamp" 2>/dev/null)" == "$want" ]]; then
+if [[ -x $dir/runsc && -x $dir/containerd-shim-runsc-v1 && -d $dir/gvisor-bin && "$(cat "$stamp" 2>/dev/null)" == "$want" ]]; then
   echo "runsc ${want} already present"
   exit 0
 fi
@@ -35,5 +35,6 @@ rm -rf "$dir"
 mkdir -p "$dir"
 tar -xjf "$tmp/gvisor.tar.bz2" -C "$dir"
 chmod +x "$dir/runsc" "$dir/containerd-shim-runsc-v1"
+[[ -d $dir/gvisor-bin ]] || { echo "gvisor-bin/ missing from the tarball" >&2; exit 1; }
 echo "$want" >"$stamp"
 echo "runsc ${want} ready in $dir"
