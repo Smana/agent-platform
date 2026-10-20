@@ -21,6 +21,9 @@ nodes:
         containerPath: /usr/local/bin/runsc
       - hostPath: .quickstart/bin/containerd-shim-runsc-v1
         containerPath: /usr/local/bin/containerd-shim-runsc-v1
+      # runsc finds its sidecars in gvisor-bin/ next to itself; its embedded fallback expires 2026-10.
+      - hostPath: .quickstart/bin/gvisor-bin
+        containerPath: /usr/local/bin/gvisor-bin
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
