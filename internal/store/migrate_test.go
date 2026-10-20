@@ -4,6 +4,7 @@ package store
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestMigrateRefusesUnshippedAndOutOfOrder(t *testing.T) {
 	}
 	// The first file becomes pending while later ones stay applied.
 	exec(t, dsn, "DELETE FROM room_broker_revisions WHERE version = (SELECT min(version) FROM room_broker_revisions)")
-	if n, err := Migrate(t.Context(), dsn, log); err == nil || n != 0 {
+	if n, err := Migrate(t.Context(), dsn, log); err == nil || n != 0 || !strings.Contains(err.Error(), "history must stay linear") {
 		t.Fatalf("an out-of-order pending file must be refused with nothing applied: %d %v", n, err)
 	}
 }
