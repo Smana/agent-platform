@@ -1,3 +1,10 @@
+{{/* Labels of one component: `ap.labelsFor` takes (dict "root" . "name" "run-controller"); `ap.labels` is the broker's. */}}
+{{- define "ap.labelsFor" -}}
+app.kubernetes.io/name: {{ .name }}
+app.kubernetes.io/part-of: agent-platform
+app.kubernetes.io/version: {{ .root.Chart.AppVersion | quote }}
+{{- end -}}
+
 {{- define "ap.labels" -}}
 app.kubernetes.io/name: room-broker
 app.kubernetes.io/part-of: agent-platform
@@ -41,6 +48,9 @@ capabilities: {drop: [ALL]}
 {{- end -}}
 {{- if not (has $b.runIssuer.mode (list "jwks" "tokenreview")) -}}
 {{- fail (printf "broker.runIssuer.mode %q is not jwks or tokenreview" $b.runIssuer.mode) -}}
+{{- end -}}
+{{- if not .Values.apiServerPorts -}}
+{{- fail "apiServerPorts is empty: every CiliumNetworkPolicy that reaches the apiserver would render no port" -}}
 {{- end -}}
 {{- $dsn := ne ($b.database.brokerSecret | default "") "" -}}
 {{- range $b.extraEnv -}}{{- if eq .name "ROOMS_DATABASE_URL" -}}{{- $dsn = true -}}{{- end -}}{{- end -}}
