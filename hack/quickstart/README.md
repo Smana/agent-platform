@@ -42,7 +42,7 @@ fallback stops working after 2026-10). `fetch-runsc.sh` extracts it and `kind-co
 
 ## Escape hatch
 
-If a platform cannot run gVisor, `ALLOW_UNSANDBOXED=1` (Task 8's `up.sh`) skips the `runsc` mount and the
+If a platform cannot run gVisor, `ALLOW_UNSANDBOXED=1` (exactly `1`; `up.sh`) clears the chart's `runtimeClassName`, skips the
 `gvisor` RuntimeClass and runs agents under the default runtime. The environment is then **not
 sandboxed**; use it only on a machine you trust with the agent's code.
 
@@ -54,3 +54,11 @@ kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NOD
 # install Cilium, then a RuntimeClass{handler: runsc} and a pod running `dmesg` under it
 # pass: pod Succeeded and its log shows gVisor's banner, not a Linux kernel log
 ```
+
+## Prerequisites (`task quickstart`)
+
+`docker` (with buildx), `kind`, `helm`, `kubectl`, `curl`, `git`, `openssl`, `envsubst`, `base32`, `yq`
+(mikefarah v4); `fetch-runsc.sh` also needs `sha512sum` and `bzip2`. `up.sh` checks the list before it
+does anything. Images default to the latest `Smana/agent-platform` release (`AP_VERSION` overrides);
+`UP_HELM_ARGS` with your own `*.image.tag` values turns the lookup off. Cluster access is pinned to
+`.quickstart/kubeconfig`: `export KUBECONFIG=$PWD/.quickstart/kubeconfig` in your own shell.

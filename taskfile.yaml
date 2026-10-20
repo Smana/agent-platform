@@ -11,6 +11,7 @@ tasks:
       - task: test
       - task: crd:check
       - task: chart:check
+      - task: quickstart:check
       - task: migrations
       - task: docs
       - task: scripts
@@ -109,6 +110,9 @@ tasks:
     desc: "Start a run on the quickstart cluster: task quickstart:run TASK='...' REPO=owner/name"
     requires:
       vars: [TASK, REPO]
+    env: # go-task does not export CLI variables to commands
+      TASK: '{{.TASK}}'
+      REPO: '{{.REPO}}'
     cmds:
       - hack/quickstart/run.sh
 
