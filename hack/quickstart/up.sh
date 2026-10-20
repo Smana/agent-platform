@@ -5,14 +5,14 @@
 #      ALLOW_UNSANDBOXED=1 (run agents under the default runtime, no gVisor);
 #      UP_HELM_ARGS (extra `helm upgrade --install` args for the chart, word-split; setting any
 #      image tag there turns off the release-image lookup).
-# Prerequisites: docker (with buildx) kind helm kubectl curl git openssl envsubst base32 yq.
+# Prerequisites: docker (with buildx) kind helm kubectl curl git openssl envsubst base32 yq sha512sum bzip2 tar.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 # shellcheck source=hack/quickstart/versions.env
 . hack/quickstart/versions.env
 step() { printf '\n==> %s\n' "$*"; }
 need() { command -v "$1" >/dev/null || { echo "missing tool: $1" >&2; exit 1; }; }
-for t in docker kind helm kubectl curl git openssl envsubst base32 yq; do need "$t"; done
+for t in docker kind helm kubectl curl git openssl envsubst base32 yq sha512sum bzip2 tar; do need "$t"; done
 for v in MODEL_API_KEY GITHUB_TOKEN REPO; do [ -n "${!v:-}" ] || { echo "set $v" >&2; exit 1; }; done
 [[ "$REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "REPO is owner/name" >&2; exit 1; }
 MODEL="${MODEL:-claude-sonnet-5-5}"
@@ -96,6 +96,33 @@ kubectl -n agents create secret generic agent-git --from-literal=token="$GITHUB_
 
 step "agent-platform"
 helm upgrade --install ap "$CHART" -n "$NS" "${chart_args[@]}" "${extra[@]}" --wait --timeout 10m
+
+if [[ ${ALLOW_UNSANDBOXED:-} != 1 ]]; then
+  step "gVisor probe"
+  # A run-shaped pod: proves runsc runs, DNS resolves the broker, and the ClusterIP answers from inside the sandbox.
+  export RUNS_NS=agents NS PROBE_IMAGE CLUSTER_DOMAIN=cluster.local
+  # shellcheck disable=SC2016 # envsubst takes a literal variable list
+  probe() { envsubst '${RUNS_NS} ${NS} ${PROBE_IMAGE} ${CLUSTER_DOMAIN}' <hack/quickstart/manifests/gvisor-probe.yaml.tmpl; }
+  cleanup_probe() { probe | kubectl delete --ignore-not-found --wait=false -f - >/dev/null 2>&1 || true; }
+  cleanup_probe
+  probe | kubectl apply -f -
+  phase=
+  for _ in $(seq 90); do # 180 s; stop at the first verdict, a failed check should not wait out the clock
+    phase=$(kubectl -n agents get pod ap-probe -o jsonpath='{.status.phase}')
+    [[ $phase == Succeeded || $phase == Failed ]] && break
+    sleep 2
+  done
+  if [[ $phase != Succeeded ]]; then
+    echo "gVisor probe FAILED. What it saw:" >&2
+    kubectl -n agents logs ap-probe >&2 || true
+    kubectl -n agents get events --field-selector involvedObject.name=ap-probe >&2 || true
+    cleanup_probe
+    echo "Runs cannot work on this host. Fix the cause above, or ALLOW_UNSANDBOXED=1 to run agents under the default runtime (no gVisor)." >&2
+    exit 1
+  fi
+  kubectl -n agents logs ap-probe
+  cleanup_probe
+fi
 
 cat <<MSG
 
