@@ -9,3 +9,5 @@ broker:
     ownerSecret: rooms-owner-dsn
   tls:
     issuerRef: {kind: Issuer, name: quickstart-ca}
+runController:
+  createRuntimeClass: true

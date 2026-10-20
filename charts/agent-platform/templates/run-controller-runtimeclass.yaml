@@ -4,6 +4,6 @@ apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: {{ .runtimeClassName }}
-handler: {{ .runtimeHandler }}
+handler: {{ required "runController.runtimeHandler is required to render the RuntimeClass" .runtimeHandler }}
 {{- end }}
 {{- end }}

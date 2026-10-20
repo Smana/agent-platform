@@ -82,7 +82,7 @@ runController:
   # the RuntimeClass of that name for the handler; turn it off when the cluster already has one.
   runtimeClassName: gvisor
   runtimeHandler: runsc
-  createRuntimeClass: true
+  createRuntimeClass: false # a cluster-scoped name: opt in where no such RuntimeClass exists (the quickstart does)
   allowUnsandboxed: false
   # Replaces the built-in profiles (github, pypi, npm, golang, crates) when set.
   egressProfiles: {}

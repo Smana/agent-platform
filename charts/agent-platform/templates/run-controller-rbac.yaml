@@ -19,6 +19,11 @@ rules:
   - apiGroups: [{{ .Values.runs.group }}]
     resources: [agentruns]
     verbs: [get, list, watch]
+  # The pod's ownerReference sets blockOwnerDeletion, which OwnerReferencesPermissionEnforcement
+  # authorizes as update on the owner's finalizers.
+  - apiGroups: [{{ .Values.runs.group }}]
+    resources: [agentruns/finalizers]
+    verbs: [update]
   - apiGroups: [{{ .Values.runs.group }}]
     resources: [agentruns/status]
     verbs: [update, patch]
