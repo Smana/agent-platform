@@ -176,7 +176,10 @@ func (c *Config) Validate() error {
 	} else {
 		errs = append(errs, c.runIssuerMatchesKind()...)
 	}
-	errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
+	// Only the factory calls with a system token: a broker without one has no systemIssuer.
+	if c.SystemIssuer != (IssuerConfig{}) {
+		errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
+	}
 	for sub, id := range c.SystemPrincipals {
 		if !strings.HasPrefix(id, "system:") || id == "system:" {
 			errs = append(errs, fmt.Errorf("systemPrincipals[%s]: %q must be system:<component>", sub, id))
