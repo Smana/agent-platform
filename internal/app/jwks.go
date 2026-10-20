@@ -88,9 +88,11 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	if err != nil {
 		return auth{}, err
 	}
-	sys, err := verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, false)
-	if err != nil {
-		return auth{}, err
+	var sys *authn.Verifier
+	if cfg.SystemIssuer.Issuer != "" {
+		if sys, err = verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, false); err != nil {
+			return auth{}, err
+		}
 	}
 	h := cfg.Human
 	hv, err := verifier(h.Issuer, h.JWKSURL, true)

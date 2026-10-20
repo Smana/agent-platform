@@ -22,6 +22,9 @@ func NewSystems(v *Verifier, allow map[string]string) *Systems { return &Systems
 // Authenticate maps a system caller's token to its principal. A valid token for
 // an unlisted subject is ErrForbidden, not ErrUnauthenticated.
 func (s *Systems) Authenticate(req *http.Request) (Principal, error) {
+	if s.v == nil {
+		return Principal{}, fmt.Errorf("%w: no system issuer is configured", ErrUnauthenticated)
+	}
 	raw, err := Bearer(req)
 	if err != nil {
 		return Principal{}, err

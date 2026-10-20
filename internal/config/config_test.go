@@ -173,3 +173,19 @@ func TestLoadRuns(t *testing.T) {
 		t.Fatalf("want a runs: error, got %v", err)
 	}
 }
+
+const systemIssuerBlock = `systemIssuer:
+  issuer: https://oidc.eks.eu-west-3.amazonaws.com/id/X
+  jwksURL: https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys
+`
+
+func TestSystemIssuerOptional(t *testing.T) {
+	body := strings.Replace(valid, systemIssuerBlock, "", 1)
+	if _, err := Load(write(t, body)); err != nil {
+		t.Fatalf("no systemIssuer must load: %v", err)
+	}
+	half := strings.Replace(valid, systemIssuerBlock, "systemIssuer:\n  issuer: https://x\n", 1)
+	if _, err := Load(write(t, half)); err == nil {
+		t.Fatal("an issuer without jwksURL must be refused")
+	}
+}
