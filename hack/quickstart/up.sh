@@ -72,7 +72,7 @@ step "Cilium $CILIUM_VERSION"
 helm upgrade --install cilium cilium --repo https://helm.cilium.io --version "$CILIUM_VERSION" -n kube-system --wait \
   --set kubeProxyReplacement=true --set socketLB.hostNamespaceOnly=true \
   --set k8sServiceHost="${KIND_CLUSTER}-control-plane" --set k8sServicePort=6443 \
-  --set ipam.mode=kubernetes --set operator.replicas=1
+  --set ipam.mode=kubernetes --set operator.replicas=1 --set hubble.enabled=true # hubble: quickstart-e2e's drop diagnostics
 
 step "cert-manager $CERT_MANAGER_VERSION"
 helm upgrade --install cert-manager cert-manager --repo https://charts.jetstack.io --version "$CERT_MANAGER_VERSION" \

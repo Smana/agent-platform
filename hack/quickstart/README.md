@@ -67,3 +67,12 @@ does anything. Images default to the latest `Smana/agent-platform` release (`AP_
 
 `RUN_PROMPT='Fix a typo in the README' REPO=owner/name task quickstart:run`. Pass both in the environment,
 not as `task … NAME=value`: go-task runs those values through Go templating (`{{ … }}` is mangled).
+
+## CI: `quickstart-e2e`
+
+Needs two Actions secrets: `QUICKSTART_REPO` (a throwaway `owner/name`) and `QUICKSTART_GITHUB_TOKEN`
+(a fine-grained PAT scoped to that repo, Contents read/write). The repo needs a `main` branch with at
+least one commit: the harness clones it and branches from `main`, which fails on an empty repo.
+Without the secrets (fork PRs) the job skips. A run's model is the stub (`stub-model/`); its
+`base_url` must be `http://<svc>.<ns>.svc.<cluster-domain>:<port>` with the port equal to the
+Service's `targetPort` (the run's network policy sees the backend port).

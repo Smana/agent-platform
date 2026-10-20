@@ -19,6 +19,8 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532 # the image's USER is the non-numeric `nonroot`, which kubelet cannot verify
+        runAsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: stub-model

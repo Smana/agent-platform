@@ -58,7 +58,8 @@ func NetworkPolicy(r *v1alpha1.AgentRun, c Config, m Model, runID string) *unstr
 	switch {
 	case inCluster:
 		// Not toFQDNs: that matches the DNS-resolved ClusterIP, but Cilium translates the Service to a
-		// backend pod before policy, so the rule would never match. The port is the backend's.
+		// backend pod before policy, so the rule would never match. Policy sees the backend port: the model
+		// URL's port must equal the Service's targetPort.
 		sel := map[string]any{"io.kubernetes.pod.namespace": modelNS}
 		egress = append(egress, map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": sel}}, "toPorts": port(m.Port)})
 	case m.Port != 443:

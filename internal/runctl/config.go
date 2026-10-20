@@ -193,10 +193,11 @@ func ModelFrom(data map[string][]byte) (Model, error) {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
 		return Model{}, fmt.Errorf("modelSecret base_url %q is not an http(s) URL", m.BaseURL)
 	}
-	// Plain http would send the provider key in cleartext and open port 80: only an
-	// in-cluster service (a stub, a gateway) may be reached that way.
-	if h := u.Hostname(); u.Scheme == "http" && !strings.HasSuffix(h, ".svc") && !strings.Contains(h, ".svc.") {
-		return Model{}, fmt.Errorf("modelSecret base_url %q: http is only allowed for an in-cluster service (*.svc), use https", m.BaseURL)
+	// Plain http would send the provider key in cleartext and open port 80: only an in-cluster
+	// service (a stub, a gateway) may be reached that way, by its fully qualified name: the run's
+	// DNS allowlist cannot resolve a short <svc>.<ns>.svc, which only a search domain completes.
+	if u.Scheme == "http" && !brokerHostRE.MatchString(u.Hostname()) {
+		return Model{}, fmt.Errorf("modelSecret base_url %q: http is only allowed for an in-cluster service, as <service>.<namespace>.svc.<cluster-domain>; use https otherwise", m.BaseURL)
 	}
 	m.Host, m.Port = u.Hostname(), 443
 	if u.Scheme == "http" {
