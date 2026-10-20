@@ -103,5 +103,6 @@ Ready. This shell may not point at the cluster; in another terminal:
   export KUBECONFIG=$PWD/.quickstart/kubeconfig
   kubectl -n $NS port-forward deploy/room-broker 8080:8080
 then open http://localhost:8080 and start a run:
-  task quickstart:run PROMPT='Fix a typo in the README' REPO=$REPO
+  RUN_PROMPT='Fix a typo in the README' REPO=$REPO task quickstart:run
+(variables go in the environment: task would template a value passed as NAME=value)
 MSG

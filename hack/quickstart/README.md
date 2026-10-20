@@ -62,3 +62,8 @@ kind create cluster --config hack/quickstart/kind-config.yaml --image "$KIND_NOD
 does anything. Images default to the latest `Smana/agent-platform` release (`AP_VERSION` overrides);
 `UP_HELM_ARGS` with your own `*.image.tag` values turns the lookup off. Cluster access is pinned to
 `.quickstart/kubeconfig`: `export KUBECONFIG=$PWD/.quickstart/kubeconfig` in your own shell.
+
+## Starting a run
+
+`RUN_PROMPT='Fix a typo in the README' REPO=owner/name task quickstart:run`. Pass both in the environment,
+not as `task … NAME=value`: go-task runs those values through Go templating (`{{ … }}` is mangled).
