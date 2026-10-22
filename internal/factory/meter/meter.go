@@ -296,11 +296,14 @@ type reading struct {
 
 // account is a run as the day ledgers count it (truthful costs TC6): total is its priced cost, or
 // its tokens at the reference rate when it cannot be priced, lifted by base to what earlier
-// meters settled; settled is what the ledgers hold for it, every retained day together.
+// meters settled; settled is what the ledgers charged it as this meter knows it: every retained
+// day as read, what it wrote since, and what R10 takes as charged where no ledger shows it.
 type account struct {
 	total, settled, base int64
-	known                bool // settled was read from the ledgers
-	measured             bool // base is fixed: the run was measured once since
+	known                bool   // settled was read from the ledgers
+	measured             bool   // base is fixed: the run was measured once since
+	doubt                string // the day of a charge whose write reported an error: it may have landed
+	was                  int64  // the run's settled entry on that day before the write
 }
 
 // mono is one monotonic counter's last raw value and the total it gave.
@@ -373,10 +376,9 @@ func (m *Meter) spend(id string, raw map[string]int64) int64 {
 }
 
 // learn reads what the day ledgers settled for each listed run this meter holds no account of:
-// a new run, every run after a failover, or a run whose last charge failed to write and may have
-// landed all the same. One list of the ledgers per tick that meets one; without a Ledger nothing
-// was settled anywhere else. An unread ledger leaves those runs unaccounted, so none of them is
-// charged until a later tick reads it.
+// a new run, or every run after a failover. One list of the ledgers per tick that meets one;
+// without a Ledger nothing was settled anywhere else. An unread ledger leaves those runs
+// unaccounted, so none of them is charged until a later tick reads it.
 func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	var need []string
 	for _, r := range all {
@@ -400,6 +402,39 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	for _, id := range need {
 		a := m.accounts[id]
 		a.settled, a.known = settled[id], true
+		m.accounts[id] = a
+	}
+	return nil
+}
+
+// resolve settles each run whose last charge's write reported an error as the ledger of that
+// write's day shows it: what the run's entry there gained over was is what the write landed. The
+// rest of what the run settled stays as this meter knows it, the part no ledger shows included:
+// R10's lift, and days pruned since they were read. One read per day in doubt; a failed one fails
+// the tick, as learn's does, and leaves the runs in doubt.
+func (m *Meter) resolve(ctx context.Context) error {
+	read := map[string]map[string]int64{}
+	for id, a := range m.accounts {
+		if a.doubt == "" {
+			continue
+		}
+		entries, ok := read[a.doubt]
+		if !ok {
+			cm := &corev1.ConfigMap{}
+			switch err := m.Ledger.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + a.doubt}, cm); {
+			case apierrors.IsNotFound(err):
+				cm = &corev1.ConfigMap{} // the write that would have created it never landed
+			case err != nil:
+				return fmt.Errorf("meter: read the %s ledger: %w", a.doubt, err)
+			}
+			var err error
+			if entries, err = api.SettledColumn(cm); err != nil {
+				return fmt.Errorf("meter: %w", err)
+			}
+			read[a.doubt] = entries
+		}
+		a.settled += max(0, entries[id]-a.was)
+		a.doubt, a.was = "", 0
 		m.accounts[id] = a
 	}
 	return nil
@@ -555,7 +590,8 @@ func (m *Meter) Tick(ctx context.Context) error {
 	}
 	defer m.forget(ctx, all)
 	day := m.now().UTC().Format(api.LedgerDayLayout)
-	learnErr := m.learn(ctx, all) // what earlier meters settled, before the first measure of a run
+	// What a failed write landed, and what earlier meters settled, before any run is charged.
+	learnErr := errors.Join(m.resolve(ctx), m.learn(ctx, all))
 	totals := make(map[string]int64, len(all))
 	usd := map[string]int64{}
 	caps := map[string]int64{}
@@ -609,16 +645,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	var spent map[string]int64
 	settleErr := learnErr
 	if settleErr == nil {
-		// budget-principal reads the ledger, not the live runs (R07)
-		if spent, settleErr = m.settle(ctx, day, delta, inc); settleErr != nil {
-			// A write that reports an error may have landed (a timeout after the commit): the next
-			// tick reads again what the ledgers settled for the runs it charged, keeping their base.
-			for id := range inc {
-				a := m.accounts[id]
-				a.known = false
-				m.accounts[id] = a
-			}
-		}
+		spent, settleErr = m.settle(ctx, day, delta, inc) // budget-principal reads the ledger, not the live runs (R07)
 	}
 	var errs []error
 	if settleErr != nil {
@@ -715,7 +742,9 @@ func (m *Meter) readSpent(ctx context.Context, day string) map[string]int64 {
 // (R07: the day a charge is observed is the day that carries it, not the day the run began).
 // Admission reserves against the same column (R50), so the write retries conflicts like reserve
 // does; a day that stays busy fails the tick, and the charges are retried whole on the next one.
-// Without a Ledger the day lives in this meter's memory alone.
+// A write that reports any other error may have landed all the same (a timeout after the commit):
+// settle leaves each charged run in doubt, with its entry before the write, for resolve. Without a
+// Ledger the day lives in this meter's memory alone.
 func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]int64) (map[string]int64, error) {
 	if m.Ledger == nil {
 		if m.memDay != day { // the memory is one day wide: midnight starts it fresh
@@ -753,6 +782,10 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		if err := api.SetLedgerSpentColumn(cm, spent); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
+		was, err := api.SettledColumn(cm)
+		if err != nil {
+			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
+		}
 		if err := api.AddSettled(cm, inc); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
@@ -767,6 +800,11 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
 			continue // re-read and re-append (R50)
 		default:
+			for id := range inc {
+				a := m.accounts[id]
+				a.doubt, a.was = day, was[id]
+				m.accounts[id] = a
+			}
 			return nil, fmt.Errorf("meter: write the %s ledger: %w", day, err)
 		}
 	}

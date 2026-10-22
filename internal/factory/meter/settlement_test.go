@@ -329,17 +329,24 @@ func TestARunInFlightOnTheSwitchDayIsChargedOnceItEnds(t *testing.T) {
 	}
 }
 
+// twoDays are aaaaaaaa's ledgers 36 and 35 days before 2026-10-22: 1.12 M settled on 20260916,
+// which the pruner deletes that day, and 280 k on 20260917, the oldest day it keeps.
+func twoDays(t *testing.T) []client.Object {
+	t.Helper()
+	return []client.Object{
+		settledIn(t, ledgerDay(t, "20260916", map[string]int64{runs.PrincipalFactory: 1_120_000, "github:alice": 1_120_000}, nil),
+			map[string]int64{"aaaaaaaa": 1_120_000}),
+		settledIn(t, ledgerDay(t, "20260917", map[string]int64{runs.PrincipalFactory: 280_000, "github:alice": 280_000}, nil),
+			map[string]int64{"aaaaaaaa": 280_000}),
+	}
+}
+
 // R10 and the pruner: a run that ended annotated and began before the oldest retained ledger
 // is charged nothing more, though a pruned day held part of its charge and the gateway still
 // exports its counters.
 func TestAnEndedRunsPrunedDaysAreNotChargedAgain(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) // the oldest retained day is 20260917
-	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
-		settledIn(t, ledgerDay(t, "20260916", map[string]int64{runs.PrincipalFactory: 1_120_000, "github:alice": 1_120_000}, nil),
-			map[string]int64{"aaaaaaaa": 1_120_000}),
-		settledIn(t, ledgerDay(t, "20260917", map[string]int64{runs.PrincipalFactory: 280_000, "github:alice": 280_000}, nil),
-			map[string]int64{"aaaaaaaa": 280_000}),
-	).Build()
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(twoDays(t)...).Build()
 	run := glmRun("aaaaaaaa", time.Date(2026, 9, 16, 23, 30, 0, 0, time.UTC))
 	run.Phase, run.Tokens = "Succeeded", 1_000_000
 	src := typed{"aaaaaaaa": glmUsage(1_000_000)}
@@ -357,8 +364,179 @@ func TestAnEndedRunsPrunedDaysAreNotChargedAgain(t *testing.T) {
 	}
 }
 
+// R10's boundary: a run created on the oldest retained day has every day of its charge in the
+// ledgers and is charged what they lack; a run created the day before is not.
+func TestTheOldestRetainedDayBoundsR10(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) // the oldest retained day is 20260917
+	for created, want := range map[time.Time]int64{
+		time.Date(2026, 9, 17, 0, 0, 1, 0, time.UTC):    1_120_000, // its 1.4 M less the 280 k settled
+		time.Date(2026, 9, 16, 23, 59, 59, 0, time.UTC): 0,
+	} {
+		c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(twoDays(t)[1]).Build()
+		run := glmRun("aaaaaaaa", created)
+		run.Phase, run.Tokens = "Succeeded", 1_000_000
+		m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}},
+			typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != want {
+			t.Errorf("created %s: today %v, want %d", created, spent, want)
+		}
+	}
+}
+
+// flaky is a client over objs whose writes of the 20261022 ledger fail while *fail, landing first
+// when *landed: a timeout after the commit.
+func flaky(fail, landed *bool, objs ...client.Object) client.WithWatch {
+	write := func(obj client.Object, do func() error) error {
+		if obj.GetName() != api.LedgerPrefix+"20261022" || !*fail {
+			return do()
+		}
+		if *landed {
+			if err := do(); err != nil {
+				return err
+			}
+		}
+		return errors.New("context deadline exceeded")
+	}
+	return fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(objs...).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			return write(obj, func() error { return cl.Create(ctx, obj, opts...) })
+		},
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			return write(obj, func() error { return cl.Update(ctx, obj, opts...) })
+		},
+	}).Build()
+}
+
+// TC6 and R10: a failed write of an ended run's late spend, landed or lost, is charged once, and
+// the part of the run no ledger shows, R10's lift or a day pruned since it was read, never is.
+func TestALiftSurvivesAFailedWrite(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		created time.Time
+		ledgers []client.Object
+	}{
+		"the switch day, nothing settled": {now.Add(-2 * time.Hour), nil},
+		"a day pruned since it was read":  {time.Date(2026, 9, 16, 23, 30, 0, 0, time.UTC), twoDays(t)},
+	} {
+		for what, landed := range map[string]bool{"lost": false, "landed": true} {
+			t.Run(name+", "+what, func(t *testing.T) {
+				fail := false
+				objs := make([]client.Object, 0, len(tc.ledgers))
+				for _, o := range tc.ledgers {
+					objs = append(objs, o.DeepCopyObject().(client.Object))
+				}
+				c := flaky(&fail, &landed, objs...)
+				run := glmRun("aaaaaaaa", tc.created)
+				run.Phase, run.Tokens = "Succeeded", 1_000_000
+				src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+				m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+				if err := m.Tick(t.Context()); err != nil { // R10: settled up to 1.4 M; 20260916 is pruned
+					t.Fatal(err)
+				}
+				src["aaaaaaaa"] = glmUsage(1_050_000) // a late reading: 70 k more
+				fail = true
+				if err := m.Tick(t.Context()); err == nil {
+					t.Fatal("the failed write is reported")
+				}
+				fail = false
+				for range 2 {
+					if err := m.Tick(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 70_000 {
+					t.Fatalf("today %v, want the late 70 k once", spent)
+				}
+			})
+		}
+	}
+}
+
+// TC6 and R9: a failed write on a day that already holds the run's entry, landed or lost, is
+// charged once, and the run keeps the floor a counter reset made it start from.
+func TestAFailedWriteKeepsTheFloor(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for what, landed := range map[string]bool{"lost": false, "landed": true} {
+		t.Run(what, func(t *testing.T) {
+			fail := false
+			c := flaky(&fail, &landed, halfSettled(t, 1_400_000))
+			run := glmRun("aaaaaaaa", now)
+			run.Tokens = 1_000_000
+			src := typed{}
+			m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+			// The gateway restarted (280 k on its counters, 1.4 M settled), then the run spends
+			// 280 k whose write fails, then 140 k.
+			for i, in := range []int64{200_000, 400_000, 400_000, 500_000} {
+				src["aaaaaaaa"], fail = glmUsage(in), i == 1
+				if err := m.Tick(t.Context()); (err != nil) != fail {
+					t.Fatalf("tick %d: %v", i, err)
+				}
+			}
+			if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 1_820_000 {
+				t.Fatalf("today %v, want the settled 1.4 M, 280 k and 140 k, each once", spent)
+			}
+		})
+	}
+}
+
+// R8 for a write in doubt: a tick that cannot read the failed write's day charges nothing, so a
+// write that landed is charged once when the day reads again.
+func TestAnUnreadDayInDoubtChargesNothing(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	fail, landed, blind := true, true, false
+	c := interceptor.NewClient(flaky(&fail, &landed), interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if blind {
+				blind = false // the next read only: the failed write's day
+				return errors.New("apiserver down")
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+	m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}},
+		typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+	for i, wantErr := range []bool{true, true, false} {
+		fail, blind = i == 0, i == 1
+		if err := m.Tick(t.Context()); (err != nil) != wantErr {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 1_400_000 {
+		t.Fatalf("today %v, want the run's 1.4 M once", spent)
+	}
+}
+
+// TC6: a write that fails at 23:59, landed or lost, is charged once after midnight: the failed
+// write's day, not the new one, tells whether it landed.
+func TestAFailedWriteAcrossMidnightIsChargedOnce(t *testing.T) {
+	for what, landed := range map[string]bool{"lost": false, "landed": true} {
+		t.Run(what, func(t *testing.T) {
+			now := time.Date(2026, 10, 22, 23, 59, 30, 0, time.UTC)
+			fail := true
+			c := flaky(&fail, &landed)
+			m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}},
+				typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+			if err := m.Tick(t.Context()); err == nil {
+				t.Fatal("the failed write is reported")
+			}
+			fail, now = false, now.Add(time.Minute)
+			if err := m.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			d1, _ := spentOf(t, c, "20261022")
+			d2, _ := spentOf(t, c, "20261023")
+			if got := d1[runs.PrincipalFactory] + d2[runs.PrincipalFactory]; got != 1_400_000 {
+				t.Fatalf("%v and %v, want the run's 1.4 M once", d1, d2)
+			}
+		})
+	}
+}
+
 // TC6: a write that lands but reports an error (a timeout after the commit) is charged once: the
-// meter reads the ledgers again before it charges those runs anew.
+// meter reads that day's settled entry again before it charges the run anew.
 func TestAWriteThatLandsDespiteAnErrorIsChargedOnce(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	lie := true

@@ -75,7 +75,7 @@ Decisions on what the spec left open, each with its reason.
 | R5 | `checkedAt`, `source` | `checkedAt` parses as `time.DateOnly`, a future date accepted; `source` is `https` with a host and no userinfo | `Parse` has no clock; the URL is provenance a human follows |
 | R6 | The prefixes | `LedgerPrefix` now names the USD ledger; the token prefix survives as `LegacyLedgerPrefix` for the pruner alone. `LedgerDay` tests the USD prefix first | Every reader and writer moves by one constant. `agent-factory-ledger-` is a prefix of `agent-factory-ledger-usd-` |
 | R7 | `settled.<runId>` value | A decimal integer string, one key per run (a C2 id is key-safe), malformed fails the read | The `spent` column is JSON only because principal ids hold `:` |
-| R8 | Reading the watermark | One `List` of the namespace's ConfigMaps (`api.SettledByRun`) per tick that meets a run this meter holds no account of; learned once per run per leader. A failed read fails the tick as a failed write does: nothing charged, no usage annotation, no stamp, retried | Never charge a run whose settled amount is unknown: it could charge it twice |
+| R8 | Reading the watermark | One `List` of the namespace's ConfigMaps (`api.SettledByRun`) per tick that meets a run this meter holds no account of; learned once per run per leader. A write that reports an error (other than a conflict) leaves each run it charged in doubt with its `settled.<runId>` on that day before the write; the next tick reads that day's ledger (one `Get` per day in doubt) and adds what the entry gained, leaving the rest of what the run settled as the meter knows it (R10's lift, days pruned since they were read). A failed read, of either kind, fails the tick as a failed write does: nothing charged, no usage annotation, no stamp, retried | Never charge a run whose settled amount is unknown: it could charge it twice. A write's outcome is unknown only on its own day's entry, so only that entry is read again (review of Task 4: re-reading every day's sum dropped R10's lift) |
 | R9 | The floor | A run's ledger total is `base + measure`, `base = max(0, settled − measure)` fixed at the first measure after the account is read. `base` also lifts the run's priced USD total, so its run cap and its `Costs` survive a failover after a counter reset; the by-model cost (`agent_factory_model_cost_usd_total`) keeps the counters' view | The spec's "the larger of that sum and its priced counters", applied to the reference-rate measure too |
 | R10 | TC9 and ended runs | A run first seen ended and annotated (`usage-tokens` > 0) is taken as settled up to its current measure, so charged nothing more, when nothing is settled for it, or when it was created before the oldest retained ledger day (the pruner's cutoff, 35 days). Judged at the run's first measure only | Nothing deletes an ended claim, the meter lists every claim, and the gateway keeps exporting an ended run's counters: without R10 the switch tick would charge each listed ended run its whole cost again, where TC9 assumes it is not charged. After the switch an annotated run always has a settled entry, because R11. A run created before the cutoff may have had its first days pruned while a later day is kept: its settled sum then reads short, and a new leader would charge the pruned part again (review of Task 4) |
 | R11 | The usage annotation | Still written only after a successful ledger write | R10 relies on it: an annotation means some ledger charged the run |
@@ -1316,7 +1316,7 @@ git commit -m "feat(factory): the day ledger counts micro-USD, and admission res
 
 **Interfaces:**
 - Consumes: `api.SettledByRun`, `api.AddSettled`, `api.SettledColumn`, `api.LedgerDay`, `api.LegacyLedgerPrefix` (Task 3); `config.RefMicroUSD`, `Budgets.DailyMicroUSD` (Task 2).
-- Produces (unexported, for Task 5's readers): `type account struct{ total, settled, base int64; known, measured bool }`, `Meter.accounts map[string]account`, `(*Meter).learn(ctx, all []runs.Run) error`, `(*Meter).measure(r runs.Run, v int64, priced bool) int64`, `(*Meter).unsettled(id string) int64`, `(*Meter).settle(ctx, day string, delta, inc map[string]int64) (map[string]int64, error)`. `Meter.Remaining` keeps its signature, now in micro-USD (Task 5 replaces it).
+- Produces (unexported, for Task 5's readers): `type account struct{ total, settled, base int64; known, measured bool; doubt string; was int64 }`, `Meter.accounts map[string]account`, `(*Meter).learn(ctx, all []runs.Run) error`, `(*Meter).resolve(ctx) error`, `(*Meter).retainedFrom() string`, `(*Meter).measure(r runs.Run, v int64, priced bool) int64`, `(*Meter).unsettled(id string) int64`, `(*Meter).settle(ctx, day string, delta, inc map[string]int64) (map[string]int64, error)`. `Meter.Remaining` keeps its signature, now in micro-USD (Task 5 replaces it).
 
 - [ ] **Step 1: Write the failing settlement tests**
 
@@ -1654,17 +1654,24 @@ func TestARunInFlightOnTheSwitchDayIsChargedOnceItEnds(t *testing.T) {
 	}
 }
 
+// twoDays are aaaaaaaa's ledgers 36 and 35 days before 2026-10-22: 1.12 M settled on 20260916,
+// which the pruner deletes that day, and 280 k on 20260917, the oldest day it keeps.
+func twoDays(t *testing.T) []client.Object {
+	t.Helper()
+	return []client.Object{
+		settledIn(t, ledgerDay(t, "20260916", map[string]int64{runs.PrincipalFactory: 1_120_000, "github:alice": 1_120_000}, nil),
+			map[string]int64{"aaaaaaaa": 1_120_000}),
+		settledIn(t, ledgerDay(t, "20260917", map[string]int64{runs.PrincipalFactory: 280_000, "github:alice": 280_000}, nil),
+			map[string]int64{"aaaaaaaa": 280_000}),
+	}
+}
+
 // R10 and the pruner: a run that ended annotated and began before the oldest retained ledger
 // is charged nothing more, though a pruned day held part of its charge and the gateway still
 // exports its counters.
 func TestAnEndedRunsPrunedDaysAreNotChargedAgain(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) // the oldest retained day is 20260917
-	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
-		settledIn(t, ledgerDay(t, "20260916", map[string]int64{runs.PrincipalFactory: 1_120_000, "github:alice": 1_120_000}, nil),
-			map[string]int64{"aaaaaaaa": 1_120_000}),
-		settledIn(t, ledgerDay(t, "20260917", map[string]int64{runs.PrincipalFactory: 280_000, "github:alice": 280_000}, nil),
-			map[string]int64{"aaaaaaaa": 280_000}),
-	).Build()
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(twoDays(t)...).Build()
 	run := glmRun("aaaaaaaa", time.Date(2026, 9, 16, 23, 30, 0, 0, time.UTC))
 	run.Phase, run.Tokens = "Succeeded", 1_000_000
 	src := typed{"aaaaaaaa": glmUsage(1_000_000)}
@@ -1682,8 +1689,179 @@ func TestAnEndedRunsPrunedDaysAreNotChargedAgain(t *testing.T) {
 	}
 }
 
+// R10's boundary: a run created on the oldest retained day has every day of its charge in the
+// ledgers and is charged what they lack; a run created the day before is not.
+func TestTheOldestRetainedDayBoundsR10(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC) // the oldest retained day is 20260917
+	for created, want := range map[time.Time]int64{
+		time.Date(2026, 9, 17, 0, 0, 1, 0, time.UTC):    1_120_000, // its 1.4 M less the 280 k settled
+		time.Date(2026, 9, 16, 23, 59, 59, 0, time.UTC): 0,
+	} {
+		c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(twoDays(t)[1]).Build()
+		run := glmRun("aaaaaaaa", created)
+		run.Phase, run.Tokens = "Succeeded", 1_000_000
+		m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}},
+			typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != want {
+			t.Errorf("created %s: today %v, want %d", created, spent, want)
+		}
+	}
+}
+
+// flaky is a client over objs whose writes of the 20261022 ledger fail while *fail, landing first
+// when *landed: a timeout after the commit.
+func flaky(fail, landed *bool, objs ...client.Object) client.WithWatch {
+	write := func(obj client.Object, do func() error) error {
+		if obj.GetName() != api.LedgerPrefix+"20261022" || !*fail {
+			return do()
+		}
+		if *landed {
+			if err := do(); err != nil {
+				return err
+			}
+		}
+		return errors.New("context deadline exceeded")
+	}
+	return fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(objs...).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			return write(obj, func() error { return cl.Create(ctx, obj, opts...) })
+		},
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			return write(obj, func() error { return cl.Update(ctx, obj, opts...) })
+		},
+	}).Build()
+}
+
+// TC6 and R10: a failed write of an ended run's late spend, landed or lost, is charged once, and
+// the part of the run no ledger shows, R10's lift or a day pruned since it was read, never is.
+func TestALiftSurvivesAFailedWrite(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		created time.Time
+		ledgers []client.Object
+	}{
+		"the switch day, nothing settled": {now.Add(-2 * time.Hour), nil},
+		"a day pruned since it was read":  {time.Date(2026, 9, 16, 23, 30, 0, 0, time.UTC), twoDays(t)},
+	} {
+		for what, landed := range map[string]bool{"lost": false, "landed": true} {
+			t.Run(name+", "+what, func(t *testing.T) {
+				fail := false
+				objs := make([]client.Object, 0, len(tc.ledgers))
+				for _, o := range tc.ledgers {
+					objs = append(objs, o.DeepCopyObject().(client.Object))
+				}
+				c := flaky(&fail, &landed, objs...)
+				run := glmRun("aaaaaaaa", tc.created)
+				run.Phase, run.Tokens = "Succeeded", 1_000_000
+				src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+				m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+				if err := m.Tick(t.Context()); err != nil { // R10: settled up to 1.4 M; 20260916 is pruned
+					t.Fatal(err)
+				}
+				src["aaaaaaaa"] = glmUsage(1_050_000) // a late reading: 70 k more
+				fail = true
+				if err := m.Tick(t.Context()); err == nil {
+					t.Fatal("the failed write is reported")
+				}
+				fail = false
+				for range 2 {
+					if err := m.Tick(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 70_000 {
+					t.Fatalf("today %v, want the late 70 k once", spent)
+				}
+			})
+		}
+	}
+}
+
+// TC6 and R9: a failed write on a day that already holds the run's entry, landed or lost, is
+// charged once, and the run keeps the floor a counter reset made it start from.
+func TestAFailedWriteKeepsTheFloor(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for what, landed := range map[string]bool{"lost": false, "landed": true} {
+		t.Run(what, func(t *testing.T) {
+			fail := false
+			c := flaky(&fail, &landed, halfSettled(t, 1_400_000))
+			run := glmRun("aaaaaaaa", now)
+			run.Tokens = 1_000_000
+			src := typed{}
+			m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+			// The gateway restarted (280 k on its counters, 1.4 M settled), then the run spends
+			// 280 k whose write fails, then 140 k.
+			for i, in := range []int64{200_000, 400_000, 400_000, 500_000} {
+				src["aaaaaaaa"], fail = glmUsage(in), i == 1
+				if err := m.Tick(t.Context()); (err != nil) != fail {
+					t.Fatalf("tick %d: %v", i, err)
+				}
+			}
+			if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 1_820_000 {
+				t.Fatalf("today %v, want the settled 1.4 M, 280 k and 140 k, each once", spent)
+			}
+		})
+	}
+}
+
+// R8 for a write in doubt: a tick that cannot read the failed write's day charges nothing, so a
+// write that landed is charged once when the day reads again.
+func TestAnUnreadDayInDoubtChargesNothing(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	fail, landed, blind := true, true, false
+	c := interceptor.NewClient(flaky(&fail, &landed), interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if blind {
+				blind = false // the next read only: the failed write's day
+				return errors.New("apiserver down")
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+	m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}},
+		typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+	for i, wantErr := range []bool{true, true, false} {
+		fail, blind = i == 0, i == 1
+		if err := m.Tick(t.Context()); (err != nil) != wantErr {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if spent, _ := spentOf(t, c, "20261022"); spent[runs.PrincipalFactory] != 1_400_000 {
+		t.Fatalf("today %v, want the run's 1.4 M once", spent)
+	}
+}
+
+// TC6: a write that fails at 23:59, landed or lost, is charged once after midnight: the failed
+// write's day, not the new one, tells whether it landed.
+func TestAFailedWriteAcrossMidnightIsChargedOnce(t *testing.T) {
+	for what, landed := range map[string]bool{"lost": false, "landed": true} {
+		t.Run(what, func(t *testing.T) {
+			now := time.Date(2026, 10, 22, 23, 59, 30, 0, time.UTC)
+			fail := true
+			c := flaky(&fail, &landed)
+			m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}},
+				typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+			if err := m.Tick(t.Context()); err == nil {
+				t.Fatal("the failed write is reported")
+			}
+			fail, now = false, now.Add(time.Minute)
+			if err := m.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			d1, _ := spentOf(t, c, "20261022")
+			d2, _ := spentOf(t, c, "20261023")
+			if got := d1[runs.PrincipalFactory] + d2[runs.PrincipalFactory]; got != 1_400_000 {
+				t.Fatalf("%v and %v, want the run's 1.4 M once", d1, d2)
+			}
+		})
+	}
+}
+
 // TC6: a write that lands but reports an error (a timeout after the commit) is charged once: the
-// meter reads the ledgers again before it charges those runs anew.
+// meter reads that day's settled entry again before it charges the run anew.
 func TestAWriteThatLandsDespiteAnErrorIsChargedOnce(t *testing.T) {
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	lie := true
@@ -2112,11 +2290,14 @@ type reading struct {
 
 // account is a run as the day ledgers count it (truthful costs TC6): total is its priced cost, or
 // its tokens at the reference rate when it cannot be priced, lifted by base to what earlier
-// meters settled; settled is what the ledgers hold for it, every retained day together.
+// meters settled; settled is what the ledgers charged it as this meter knows it: every retained
+// day as read, what it wrote since, and what R10 takes as charged where no ledger shows it.
 type account struct {
 	total, settled, base int64
-	known                bool // settled was read from the ledgers
-	measured             bool // base is fixed: the run was measured once since
+	known                bool   // settled was read from the ledgers
+	measured             bool   // base is fixed: the run was measured once since
+	doubt                string // the day of a charge whose write reported an error: it may have landed
+	was                  int64  // the run's settled entry on that day before the write
 }
 ```
 
@@ -2124,7 +2305,7 @@ In `total`, delete the doc paragraph that starts "A run first seen with no ledge
 paid at its annotation" (and the `//` line before it), and the line `prev.paid = r.Tokens` in the
 `case !known:` branch.
 
-`spend` returns the models' sum, and `learn`, `measure` and `unsettled` follow it:
+`spend` returns the models' sum, and `learn`, `resolve`, `measure` and `unsettled` follow it:
 
 ```go
 // spend is a run's monotonic priced cost from its raw cost by served model, as total is for
@@ -2159,10 +2340,9 @@ func (m *Meter) spend(id string, raw map[string]int64) int64 {
 }
 
 // learn reads what the day ledgers settled for each listed run this meter holds no account of:
-// a new run, every run after a failover, or a run whose last charge failed to write and may have
-// landed all the same. One list of the ledgers per tick that meets one; without a Ledger nothing
-// was settled anywhere else. An unread ledger leaves those runs unaccounted, so none of them is
-// charged until a later tick reads it.
+// a new run, or every run after a failover. One list of the ledgers per tick that meets one;
+// without a Ledger nothing was settled anywhere else. An unread ledger leaves those runs
+// unaccounted, so none of them is charged until a later tick reads it.
 func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	var need []string
 	for _, r := range all {
@@ -2186,6 +2366,39 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	for _, id := range need {
 		a := m.accounts[id]
 		a.settled, a.known = settled[id], true
+		m.accounts[id] = a
+	}
+	return nil
+}
+
+// resolve settles each run whose last charge's write reported an error as the ledger of that
+// write's day shows it: what the run's entry there gained over was is what the write landed. The
+// rest of what the run settled stays as this meter knows it, the part no ledger shows included:
+// R10's lift, and days pruned since they were read. One read per day in doubt; a failed one fails
+// the tick, as learn's does, and leaves the runs in doubt.
+func (m *Meter) resolve(ctx context.Context) error {
+	read := map[string]map[string]int64{}
+	for id, a := range m.accounts {
+		if a.doubt == "" {
+			continue
+		}
+		entries, ok := read[a.doubt]
+		if !ok {
+			cm := &corev1.ConfigMap{}
+			switch err := m.Ledger.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + a.doubt}, cm); {
+			case apierrors.IsNotFound(err):
+				cm = &corev1.ConfigMap{} // the write that would have created it never landed
+			case err != nil:
+				return fmt.Errorf("meter: read the %s ledger: %w", a.doubt, err)
+			}
+			var err error
+			if entries, err = api.SettledColumn(cm); err != nil {
+				return fmt.Errorf("meter: %w", err)
+			}
+			read[a.doubt] = entries
+		}
+		a.settled += max(0, entries[id]-a.was)
+		a.doubt, a.was = "", 0
 		m.accounts[id] = a
 	}
 	return nil
@@ -2258,7 +2471,8 @@ the body becomes (`m.Remaining` stays until Task 5):
 
 ```go
 	day := m.now().UTC().Format(api.LedgerDayLayout)
-	learnErr := m.learn(ctx, all) // what earlier meters settled, before the first measure of a run
+	// What a failed write landed, and what earlier meters settled, before any run is charged.
+	learnErr := errors.Join(m.resolve(ctx), m.learn(ctx, all))
 	totals := make(map[string]int64, len(all))
 	usd := map[string]int64{}
 	caps := map[string]int64{}
@@ -2312,16 +2526,7 @@ the body becomes (`m.Remaining` stays until Task 5):
 	var spent map[string]int64
 	settleErr := learnErr
 	if settleErr == nil {
-		// budget-principal reads the ledger, not the live runs (R07)
-		if spent, settleErr = m.settle(ctx, day, delta, inc); settleErr != nil {
-			// A write that reports an error may have landed (a timeout after the commit): the next
-			// tick reads again what the ledgers settled for the runs it charged, keeping their base.
-			for id := range inc {
-				a := m.accounts[id]
-				a.known = false
-				m.accounts[id] = a
-			}
-		}
+		spent, settleErr = m.settle(ctx, day, delta, inc) // budget-principal reads the ledger, not the live runs (R07)
 	}
 	var errs []error
 	if settleErr != nil {
@@ -2353,7 +2558,8 @@ and the annotation's condition in the loop that follows:
 		}
 ```
 
-`settle`'s doc and signature, and `settled.<runId>` in the same write:
+`settle`'s doc and signature, `settled.<runId>` in the same write, and each charged run left in
+doubt by a write that reports an error:
 
 ```go
 // settle adds this tick's charges to the day's ledger, delta to the spent column by key and inc
@@ -2361,7 +2567,9 @@ and the annotation's condition in the loop that follows:
 // (R07: the day a charge is observed is the day that carries it, not the day the run began).
 // Admission reserves against the same column (R50), so the write retries conflicts like reserve
 // does; a day that stays busy fails the tick, and the charges are retried whole on the next one.
-// Without a Ledger the day lives in this meter's memory alone.
+// A write that reports any other error may have landed all the same (a timeout after the commit):
+// settle leaves each charged run in doubt, with its entry before the write, for resolve. Without a
+// Ledger the day lives in this meter's memory alone.
 func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]int64) (map[string]int64, error) {
 ```
 
@@ -2369,8 +2577,23 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		if err := api.SetLedgerSpentColumn(cm, spent); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
+		was, err := api.SettledColumn(cm)
+		if err != nil {
+			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
+		}
 		if err := api.AddSettled(cm, inc); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
+		}
+```
+
+```go
+		default:
+			for id := range inc {
+				a := m.accounts[id]
+				a.doubt, a.was = day, was[id]
+				m.accounts[id] = a
+			}
+			return nil, fmt.Errorf("meter: write the %s ledger: %w", day, err)
 		}
 ```
 
@@ -2430,9 +2653,10 @@ Expected: PASS.
    Each tick the meter charges a run's priced increase, or its token increase at $1.70 per million
    when the run cannot be priced (never $0), to every key the run is charged to and to its
    `settled.<runId>`, in one write. A meter that first sees a run, a new leader included, reads what
-   the ledgers settled for it and starts it there, and after a write that reported an error it reads
-   them again, since the write may have landed. A run is charged once across a failover, a ledger that
-   cannot be read, a failed write and midnight, with two bounded exceptions:
+   the ledgers settled for it and starts it there. A write that reports an error may have landed all
+   the same: the next tick reads that day's `settled.<runId>` to learn how much did, and charges only
+   the rest. A run is charged once across a failover, a ledger that cannot be read, a failed write,
+   landed or not, and midnight, with two bounded exceptions:
 
    - A gateway counter reset before a new leader's first reading, once the counters have passed what
      was settled, loses what the run spent before the reset: an under-count.
@@ -2440,11 +2664,12 @@ Expected: PASS.
      at $1.70 per million on top of what was settled: an over-count.
 
    The meter deletes the ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>`
-   they replaced the same way. A run that ended with its usage annotated is charged nothing more when
-   nothing is settled for it, or when it began before the oldest retained ledger: what it spent was
-   charged in the token ledgers, or partly in a day since deleted. So the day of the switch to USD
-   starts at $0: runs that ended before it are not charged again, and runs in flight are charged their
-   whole cost.
+   they replaced the same way. A run the meter first sees ended, with its usage annotated, is taken as
+   charged for what it has spent so far when nothing is settled for it, or when it began before the
+   oldest retained ledger: that spend was charged in the token ledgers, or partly in a day since
+   deleted. Only that first sighting is judged so: what the run's later readings add is charged. So
+   the day of the switch to USD starts at $0: runs that ended before it are not charged again, and runs
+   in flight are charged their whole cost.
    ```
 
 3. In Per-person caps, "the meter settles the run's tokens to the fleet and to that person" becomes
