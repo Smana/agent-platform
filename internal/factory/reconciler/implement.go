@@ -421,16 +421,6 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	current(t).Reason = reason
 	r.interventions(ctx, t)
-	if t.Spec.Loop != nil && current(t).Role == "implementer" {
-		end := "other"
-		switch {
-		case envelope.LoopEnd(reason):
-			end = reason
-		case run.Phase == "Succeeded":
-			end = "finished"
-		}
-		record(ctx, func(ctx context.Context) { r.Metrics.LoopRun(ctx, t.Spec.PredictedClass, end) })
-	}
 	if infraLost(run) {
 		done, err := r.handedOff(ctx, t)
 		if err != nil {
@@ -445,6 +435,16 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		default:
 			reason = why
 		}
+	}
+	if t.Spec.Loop != nil && current(t).Role == "implementer" {
+		end := "other"
+		switch {
+		case envelope.LoopEnd(reason):
+			end = reason
+		case run.Phase == "Succeeded":
+			end = "finished"
+		}
+		record(ctx, func(ctx context.Context) { r.Metrics.LoopRun(ctx, t.Spec.PredictedClass, end) })
 	}
 	// R38: the triager's output reaches a public implementer only through a human. Its summary
 	// stays in the room (internal); the issue gets the room link and the next step, nothing else.

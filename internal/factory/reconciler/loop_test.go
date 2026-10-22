@@ -104,3 +104,18 @@ func TestALoopRowReachesImplementerClaimsOnly(t *testing.T) {
 		})
 	}
 }
+
+// Final review M1: a run lost to its sandbox and resumed is not a loop run yet; only the run that ends counts.
+func TestALostLoopRunIsNotCountedBeforeItsResume(t *testing.T) {
+	g, _ := loopRig(t)
+	g.lose(rid(0), runs.ReasonDisrupted)
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Resumes != 1 {
+		t.Fatalf("resumes %d, want 1", tk.Status.Resumes)
+	}
+	for _, m := range g.metrics.recorded {
+		if strings.HasPrefix(m, "loop_run") {
+			t.Fatalf("counted %v before the run that ended", g.metrics.recorded)
+		}
+	}
+}
