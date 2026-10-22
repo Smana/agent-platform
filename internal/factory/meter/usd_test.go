@@ -346,3 +346,14 @@ func TestAnInputBelowItsCacheTokensIsNamedOnce(t *testing.T) {
 		t.Fatalf("cost %+v, want 519075 micro-USD", c)
 	}
 }
+
+// TC1: a row's source and checkedAt are provenance, never a price.
+func TestAPriceRowsProvenanceChangesNoCost(t *testing.T) {
+	p := glm["agent-default"]
+	q := p
+	q.Source, q.CheckedAt = "https://docs.z.ai/guides/overview/pricing", "2026-10-16"
+	u := typedUsage(cohort["#2279"])
+	if a, b := cost(p, u), cost(q, u); a != b {
+		t.Fatalf("cost %d with provenance, %d without", b, a)
+	}
+}

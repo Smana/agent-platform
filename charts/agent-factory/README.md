@@ -72,5 +72,5 @@ default to the platform's values, so an older file loads unchanged: `api.groups`
 ```yaml
 api: {groups: {admin: agents-admin, member: agents-member}}
 caps: {escalatedHours: 72}
-meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}}
+meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40, source: "https://docs.z.ai/guides/overview/pricing", checkedAt: "2026-10-16"}}}
 ```

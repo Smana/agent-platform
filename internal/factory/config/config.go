@@ -359,6 +359,11 @@ type Price struct {
 	// CacheWrite prices cache_creation_input; omitted, the input rate (Z.ai bills no write).
 	CacheWrite float64 `json:"cacheWrite,omitempty"`
 	Output     float64 `json:"output"`
+	// Source is the provider page the row was read from, an https URL, and CheckedAt the day it
+	// was read, YYYY-MM-DD: provenance for the human who confirms a drift finding (truthful costs
+	// TC1). Validated when present; the meter never reads them.
+	Source    string `json:"source,omitempty"`
+	CheckedAt string `json:"checkedAt,omitempty"`
 }
 
 // Template is a team: the roles run in order on one branch.
@@ -786,6 +791,12 @@ func (c *Config) Validate() error {
 		case !finite(p.Input) || !finite(p.CacheRead) || !finite(p.Output) || !finite(p.CacheWrite) ||
 			p.Input <= 0 || p.CacheRead <= 0 || p.Output <= 0 || p.CacheWrite < 0:
 			bad("meter.prices.%s: input, cacheRead and output must be positive, cacheWrite 0 or more", model)
+		}
+		if u, err := url.Parse(p.Source); p.Source != "" && (err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil) {
+			bad("meter.prices.%s: source %q is not an https:// URL", model, p.Source)
+		}
+		if _, err := time.Parse(time.DateOnly, p.CheckedAt); p.CheckedAt != "" && err != nil {
+			bad("meter.prices.%s: checkedAt %q is not a YYYY-MM-DD date", model, p.CheckedAt)
 		}
 	}
 	if len(c.Tiers) != len(tiers()) {
