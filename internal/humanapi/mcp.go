@@ -71,6 +71,12 @@ func (s *Server) mcpTools() []mcpTool {
 				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
 				"As a task, it waits for the next events (ttl: the wait, 10 s to 15 min, default 5 min).",
 			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"},"kinds":{"type":"array","maxItems":10,"items":{"enum":["message","turn","tool_call","tool_result","approval_requested","approval_decided","participant","driver","handoff","state_changed"]}}}}`)},
+		{name: "room_queue", call: s.roomQueue,
+			description: "Queue a note for the room's next run, with the developer's words only. It is stored labelled as machine-sent, and its run reads it as data.",
+			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","text"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"text":{"type":"string","minLength":1,"maxLength":16384}}}`)},
+		{name: "room_fork", call: s.roomFork,
+			description: "Fork a room at a seq into a room you own, with a first run when role is set, as roomctl fork does.",
+			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","at"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"at":{"type":"integer","minimum":1},"role":{"enum":["implementer","reviewer","tester","triager"]},"prUrl":{"type":"string"},"egress":{"type":"array","maxItems":8,"items":{"enum":["pypi","npm","golang","crates"]}},"note":{"type":"string","maxLength":900}}}`)},
 	}
 }
 
