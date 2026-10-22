@@ -292,5 +292,197 @@ class ContinueTest(unittest.TestCase):
         self.assertEqual(req.content[0].text, "go on")
 
 
+class LoopForTest(unittest.TestCase):
+    def loop_for(self, env):
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            return agent_run.loop_for(env), err.getvalue()
+
+    def test_unset_is_todays_run(self):
+        self.assertEqual(self.loop_for({"ROLE": "implementer"}), (None, ""))
+
+    def test_set_on_an_implementer_switches_it_on(self):
+        self.assertEqual(self.loop_for({"ROLE": "implementer", "AGENT_LOOP": "{}"}), (POLICY, ""))
+
+    def test_another_role_or_a_malformed_value_leaves_it_off_and_says_why(self):
+        policy, err = self.loop_for({"ROLE": "reviewer", "AGENT_LOOP": "{}"})
+        self.assertIsNone(policy)
+        self.assertIn("loop policy off: the reviewer role has none", err)
+        policy, err = self.loop_for({"ROLE": "implementer", "AGENT_LOOP": '{"stallSteps": 0}'})
+        self.assertIsNone(policy)
+        self.assertIn("loop policy off: AGENT_LOOP stallSteps must be", err)
+
+
+class DriveTest(unittest.TestCase):
+    """drive() over a scripted conversation: each poll is one finish, each judge call one answer."""
+
+    def drive(self, polls, answers, policy=POLICY, commits=1):
+        self.sent, self.interrupted, state = [], [], lp.State(start="s")
+        path = os.path.join(tempfile.mkdtemp(), "loop.json")
+
+        def http(method, path_, body=None, timeout=30):
+            if path_.endswith("/interrupt"):
+                self.interrupted.append(path_)
+            return {}
+
+        polls = iter(polls)
+
+        def poll(cid, on_tick=None):
+            p = next(polls)
+            if p == "stall":
+                raise agent_run.Stalled()
+            return p
+
+        with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http), \
+                mock.patch("agent_run.evidence", return_value=("e", {"diff"})), \
+                mock.patch("agent_run.ask_judge", side_effect=answers), \
+                mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            result = agent_run.drive({}, "cid", Steps(0), policy, state, "task", path)
+        self.out = out.getvalue()
+        return result, state
+
+    def answer(self, verdict, reason="r"):
+        return json.dumps({"verdict": verdict, "reason": reason, "evidence": ["diff"]}), "glm-5.3-flash"
+
+    def test_met_at_the_first_finish_is_todays_finish(self):
+        self.assertEqual(self.drive([0], [self.answer("met")])[0], (0, None, ""))
+        self.assertIn("agent-run judge 1: met by glm-5.3-flash, evidence diff: r", self.out)
+
+    def test_not_yet_continues_in_the_same_conversation_then_met(self):
+        result, state = self.drive([0, 0], [self.answer("not_yet", "lint fails"), self.answer("met")])
+        self.assertEqual(result, (0, None, ""))
+        [text] = self.sent
+        self.assertIn("\nlint fails\n", text)
+        self.assertEqual((state.sent, state.mark), (1, "h"))
+
+    def test_impossible_and_spent_continuations_exit_1_with_their_reason(self):
+        self.assertEqual(self.drive([0], [self.answer("impossible", "needs a cluster")])[0], (1, "judge_impossible", "needs a cluster"))
+        result, _ = self.drive([0, 0, 0], [self.answer("not_yet", "x")] * 3)
+        self.assertEqual(result, (1, "not_met", "x"))
+
+    def test_a_stall_interrupts_the_agent_and_asks_no_judge(self):
+        result, _ = self.drive(["stall"], [])
+        self.assertEqual(result, (1, "stalled", "no commit after 80 steps"))
+        self.assertEqual(self.interrupted, ["/api/conversations/cid/interrupt"])
+
+    def test_an_error_a_stuck_agent_or_no_judge_end_as_today(self):
+        self.assertEqual(self.drive([1], [])[0], (1, None, ""))
+        self.assertEqual(self.drive([0], [], policy=lp.Policy(80, 2, None))[0], (0, None, ""))
+        self.assertEqual(self.drive([0], [None])[0], (0, None, ""))
+
+    def test_an_unwritable_state_does_not_fail_the_run(self):
+        with mock.patch.object(lp.State, "save", side_effect=OSError("read-only file system")), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            result, state = self.drive([0, 0], [self.answer("not_yet"), self.answer("met")])
+        self.assertEqual((result, state.sent), ((0, None, ""), 1))
+
+    def test_a_malformed_base_is_no_judge_answer(self):
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertIsNone(agent_run.ask_judge({"LLM_BASE_URL": "http://[bad/v1"}, "m", "msg"))
+
+    def test_the_state_is_saved_for_a_resumed_pod(self):
+        _, state = self.drive([0, 0], [self.answer("not_yet"), self.answer("met")])
+        self.assertEqual(state.sent, 1)
+
+
+class FakeBridge(http.server.BaseHTTPRequestHandler):
+    bodies = []
+
+    def do_POST(self):
+        FakeBridge.bodies.append((self.headers.get("Content-Type"), self.rfile.read(int(self.headers.get("Content-Length", 0)))))
+        body = b'{"events": 1, "unmirrored": 0, "sealed": false}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class FinalReadTest(unittest.TestCase):
+    def test_the_end_reason_rides_on_the_final_read(self):
+        FakeBridge.bodies = []
+        server = http.server.HTTPServer(("127.0.0.1", 0), FakeBridge)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        env = {"BRIDGE_URL": "http://127.0.0.1:%d" % server.server_port}
+        agent_run.final_read(env, end="stalled")
+        agent_run.final_read(env)
+        self.assertEqual(FakeBridge.bodies[0], ("application/json", b'{"endReason": "stalled"}'))
+        self.assertEqual(FakeBridge.bodies[1][1], b"", "with no end, the request is today's")
+
+
+class FinalNoteTest(unittest.TestCase):
+    def notes(self, answers):
+        notes = agent_run.ProgressNotes("http://unused", "implementer", clock=lambda: 1000.0)
+        notes.sent, notes.last = agent_run.MAX_NOTES, 990.0
+        sent = []
+        with mock.patch.object(notes, "send", side_effect=lambda text: sent.append(text) or answers.pop(0)):
+            slept = []
+            notes.final("the run ended stalled: " + "x" * 400, sleep=slept.append)
+        return sent, slept
+
+    def test_posted_past_the_cap_after_the_brokers_minute(self):
+        sent, slept = self.notes([True])
+        self.assertEqual(slept, [50.0])
+        self.assertTrue(sent[0].startswith("Harness (implementer): the run ended stalled: xxx"))
+        self.assertEqual(len(sent[0]), 280)
+
+    def test_a_rate_limited_note_is_tried_once_more(self):
+        sent, slept = self.notes([False, True])
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(slept, [50.0, 60.0])
+
+
+class MainLoopTest(unittest.TestCase):
+    """main() with AGENT_LOOP: the start is read before the conversation runs, drive replaces poll,
+    and the end reason reaches the note and the final read."""
+
+    def main(self, env_extra, drive_result=(1, "stalled", "no commit after 80 steps")):
+        with tempfile.TemporaryDirectory() as d:
+            task = os.path.join(d, "task.md")
+            with open(task, "w") as f:
+                f.write("task")
+            env = {"TASK_FILE": task, "RULES_FILE": task, "ROLE": "implementer", "BRIDGE_URL": "http://b",
+                   "MCP_URL": "http://m", **env_extra}
+            order = []
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch("agent_run.LOOP_STATE", os.path.join(d, "loop.json")), \
+                    mock.patch("agent_run.subprocess.Popen"), mock.patch("agent_run.wait_ready"), \
+                    mock.patch("agent_run.persisted", return_value=False), mock.patch("agent_run.clone", return_value=False), \
+                    mock.patch("agent_run.build_request", return_value={}), \
+                    mock.patch("agent_run.head", side_effect=lambda: order.append("head") or "h0"), \
+                    mock.patch("agent_run.http", side_effect=lambda *a, **k: order.append("post") or {"id": "c1"}), \
+                    mock.patch("agent_run.poll", return_value=0) as poll, \
+                    mock.patch("agent_run.drive", return_value=drive_result) as drive, \
+                    mock.patch("agent_run.StepLog"), mock.patch("agent_run.ProgressNotes") as notes, \
+                    mock.patch("agent_run.final_read") as final_read, \
+                    mock.patch("agent_run.stop", return_value="stopped"), mock.patch("agent_run.revoke"), \
+                    mock.patch("sys.stdout", new=io.StringIO()), mock.patch("sys.stderr", new=io.StringIO()):
+                code = agent_run.main()
+                saved = lp.State.load(os.path.join(d, "loop.json"), "none")
+        return code, order, poll, drive, notes.return_value, final_read, saved
+
+    def test_off_is_todays_run(self):
+        code, order, poll, drive, notes, final_read, _ = self.main({})
+        self.assertEqual((code, order), (0, ["post"]))
+        poll.assert_called_once()
+        drive.assert_not_called()
+        notes.final.assert_not_called()
+        final_read.assert_called_once_with(mock.ANY, end=None)
+
+    def test_on_the_start_is_read_first_and_the_end_reaches_the_room(self):
+        code, order, poll, drive, notes, final_read, saved = self.main({"AGENT_LOOP": "{}"})
+        self.assertEqual(code, 1)
+        self.assertEqual(order, ["head", "post"], "the start is read before the conversation runs")
+        self.assertEqual(saved.start, "h0")
+        poll.assert_not_called()
+        notes.final.assert_called_once_with("the run ended stalled: no commit after 80 steps")
+        final_read.assert_called_once_with(mock.ANY, end="stalled")
+
+
 if __name__ == "__main__":
     unittest.main()

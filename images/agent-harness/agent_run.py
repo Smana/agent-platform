@@ -77,6 +77,8 @@ JUDGE_MAX_TOKENS = 2048
 # The cheapest effort that classifies, sent as the agent's own calls send theirs: unsent, GLM thinks
 # at maximum. No temperature: with thinking on, Anthropic accepts none but 1.
 JUDGE_EFFORT = "low"
+# A stalled run's agent is stopped with /interrupt, which cancels its in-flight model call.
+INTERRUPT_TIMEOUT_S = 10
 
 
 @functools.cache
@@ -473,6 +475,24 @@ class ProgressNotes:
             self.failures += 1
             print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
 
+    def final(self, text: str, sleep=time.sleep) -> None:
+        """The run's last note, the loop's end and its reason: sent even past MAX_NOTES, after waiting
+        out the broker's minute, which the agent's own notes share, at most twice. Best effort."""
+        text = _short("Harness (%s): %s" % (self.role, text), 280)
+        for _ in range(2):
+            if self.failures >= NOTE_FAILURES:
+                return
+            if self.last is not None:
+                sleep(max(0.0, MIN_NOTE_GAP_S - (self.clock() - self.last)))
+            try:
+                if self.send(text):
+                    self.sent += 1
+                    return
+                self.last = self.clock()
+            except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+                self.failures += 1
+                print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
+
     def close(self) -> None:
         """Ends the MCP session when the server keeps one. The route may not support it."""
         if not self.session:
@@ -680,6 +700,14 @@ def commits_since(env: dict, mark: str) -> int | None:
     return int(out) if out and out.strip().isdigit() else None
 
 
+def save_state(state, path: str) -> None:
+    """The loop state is kept for a resumed pod; a read-only or full /workspace keeps it in memory only."""
+    try:
+        state.save(path)
+    except OSError as exc:
+        print("agent-run: loop state not saved: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+
+
 def stall_watch(env: dict, steps, policy, state, path: str = LOOP_STATE):
     """poll's on_tick under the loop policy: the step log, then the stall rule until the first commit."""
     def tick():
@@ -692,7 +720,7 @@ def stall_watch(env: dict, steps, policy, state, path: str = LOOP_STATE):
         if n == 0:
             raise Stalled()
         state.committed = True
-        state.save(path)
+        save_state(state, path)
     return tick
 
 
@@ -754,7 +782,11 @@ def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
     the run's token, so the gateway meters it against the run's cap. The proxy pins the alias from its
     own JUDGE_MODEL (profiles P4), so model is a hint; before P4, or with JUDGE_MODEL none, the path
     answers 404 or 403, and the run ends as it would with no judge."""
-    parts = urllib.parse.urlsplit(env.get("LLM_BASE_URL") or "")
+    try:
+        parts = urllib.parse.urlsplit(env.get("LLM_BASE_URL") or "")
+    except ValueError as exc:  # a malformed base is no answer
+        print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return None
     if not JUDGE_PATH.search(parts.path):
         print("agent-run judge unavailable: LLM_BASE_URL has no /v1 to put the judge's path beside", file=sys.stderr, flush=True)
         return None
@@ -780,6 +812,58 @@ def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
 def continue_conversation(cid: str, text: str) -> None:
     """One message into the same conversation, which runs again: its cache reads carry over (L2)."""
     http("POST", "/api/conversations/%s/events" % cid, {"role": "user", "content": [{"type": "text", "text": text}], "run": True})
+
+
+def loop_for(env: dict):
+    """The run's loop policy, or None for today's run: AGENT_LOOP unset, a role other than the
+    implementer's, or a malformed value; the last two say so on stderr."""
+    raw = env.get("AGENT_LOOP")
+    if raw is None:
+        return None
+    if env.get("ROLE") != "implementer":
+        print("agent-run: loop policy off: the %s role has none" % (env.get("ROLE") or "agent"), file=sys.stderr, flush=True)
+        return None
+    try:
+        return loop_policy.parse(raw)
+    except ValueError as exc:
+        print("agent-run: loop policy off: AGENT_LOOP %s" % exc, file=sys.stderr, flush=True)
+        return None
+
+
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE) -> tuple[int, str | None, str]:
+    """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
+    stuck conversation does, so a bridge that drops the reason still has the task escalated."""
+    tick = stall_watch(env, steps, policy, state, path)
+    rounds, fence = 0, "JUDGE-" + secrets.token_hex(4)  # one per run: the judge's reason stays data
+    while True:
+        try:
+            code = poll(cid, on_tick=tick)
+        except Stalled:
+            try:
+                http("POST", "/api/conversations/%s/interrupt" % cid, timeout=INTERRUPT_TIMEOUT_S)
+            except (OSError, ValueError) as exc:  # the run ends stalled whether or not the agent heard
+                print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            return 1, "stalled", "no commit after %d steps" % policy.stall_steps
+        if code or policy.judge_model is None:
+            return code, None, ""
+        n = commits_since(env, state.mark) if state.sent else None
+        new_commit = n is None or n > 0
+        message, offered = evidence(env, task)
+        answer = ask_judge(env, policy.judge_model, message)
+        if answer is None:
+            return 0, None, ""  # no answer: the run ends as it would with no policy
+        rounds += 1
+        v = loop_policy.verdict(answer[0], offered)
+        print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
+                                                               _short(v.reason, 300)), flush=True)
+        d = loop_policy.decide(policy, state, v, new_commit)
+        if isinstance(d, loop_policy.End):
+            save_state(state, path)
+            return (0 if d.reason is None else 1), d.reason, d.note
+        state.mark = head()
+        save_state(state, path)
+        continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
+                                                            policy.continuations, fence))
 
 
 def report(name: str, status: str, started: float, box: float) -> None:
@@ -868,17 +952,19 @@ def checkpoint(env: dict, deadline: float) -> str:
     return refused + ("pushed a checkpoint commit" if committed else "pushed")
 
 
-def final_read(env: dict, steps=None) -> str:
+def final_read(env: dict, steps=None, end: str | None = None) -> str:
     """The room's last read of the harness log (F11, the harness half): the bridge reads the log to
     its end and mirrors it before it answers, while agent-server is still up. On SIGTERM the step
-    log flushes beside it: both read agent-server."""
+    log flushes beside it: both read agent-server. end is the loop policy's end reason, sent as
+    {"endReason": end} for the bridge to record; a bridge that does not read it ignores the body."""
     flush = threading.Thread(target=steps, daemon=True) if steps else None
     if flush:
         flush.start()
     answer = ""
     url = env.get("BRIDGE_URL")
     if url:
-        req = urllib.request.Request(url.rstrip("/") + "/final-read", data=b"", method="POST")
+        body, headers = (json.dumps({"endReason": end}).encode(), {"Content-Type": "application/json"}) if end else (b"", {})
+        req = urllib.request.Request(url.rstrip("/") + "/final-read", data=body, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=FINAL_READ_S) as resp:
             answer = resp.read(512).decode(errors="replace").strip()
     if flush:
@@ -988,7 +1074,7 @@ def main() -> int:
     span, provider, trace_env = start_run_span(env)
     trace_id = format(span.get_span_context().trace_id, "032x") if span else ""
     server = subprocess.Popen(SERVER_CMD, cwd="/", env=server_env({**env, **trace_env}))
-    cid, steps, code, signalled, read = None, None, None, False, False
+    cid, steps, code, end, signalled, read = None, None, None, None, False, False
     try:
         wait_ready()
         # A resumed suspendable run finds its clone and its conversation on its PVC. The same start
@@ -997,18 +1083,31 @@ def main() -> int:
         # run would execute it unconfirmed. The bridge answers it from the room's decision.
         resumed = persisted(env) or clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
-            request = build_request(env, t.read(), r.read(), span)
+            task = t.read()
+            request = build_request(env, task, r.read(), span)
+        policy = loop_for(env)
+        # The start is read before the conversation runs: a resumed pod keeps its first pod's.
+        state = loop_policy.State.load(LOOP_STATE, head()) if policy else None
+        if state:
+            save_state(state, LOOP_STATE)
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)
-        code = poll(cid, on_tick=steps)
+        if policy:
+            code, end, note = drive(env, cid, steps, policy, state, task)
+        else:
+            code = poll(cid, on_tick=steps)
         steps()
         steps.summary()
+        if policy:
+            print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
         if notes:
+            if end:
+                notes.final("the run ended %s: %s" % (end, note))
             notes.close()
         if env.get("BRIDGE_URL"):
-            read = timed("final-read", FINAL_READ_S, lambda: final_read(env))
+            read = timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         # Never on SIGTERM: the close can outlast the grace period and the revoke must not wait.
         if span:
             close_conversation(cid)
@@ -1029,7 +1128,7 @@ def main() -> int:
             # Exit 0 latches the run Succeeded at once, and the broker takes the bridge's writes only
             # while the run is live: the bridge's own flush may come too late, so this read is the
             # room's last. Nothing is paused or checkpointed on this path, which leaves it time.
-            timed("final-read", FINAL_READ_S, lambda: final_read(env))
+            timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         if signalled:
             started = time.monotonic()
             report("stop", "done: " + stop(server, STOP_S), started, STOP_S)
