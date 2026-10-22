@@ -25,6 +25,7 @@ const (
 	tailWait      = 5 * time.Minute // a task's wait when it asks for no ttl
 	minTailWait   = 10 * time.Second
 	maxTailWait   = 15 * time.Minute
+	taskRetention = time.Minute     // how long past its deadline a task still reads, as completed
 	taskSkew      = time.Minute     // how far ahead of this replica's clock a task may have been created
 	taskPoll      = 5 * time.Second // the pollInterval a task suggests
 	maxTaskID     = 2 << 10
@@ -71,7 +72,7 @@ func decodeTask(id string, p authn.Principal, now time.Time) (tailTask, bool) {
 	var t tailTask
 	if err != nil || mcpwire.DecodeArgs(b, &t) != nil || t.V != 1 || t.By != p.ID || !envelope.ValidID(t.Room) ||
 		t.After < 0 || len(t.Kinds) > maxKinds || t.TTL < minTailWait.Milliseconds() || t.TTL > maxTailWait.Milliseconds() ||
-		t.Created < now.Add(-maxTailWait).UnixMilli() || t.Created > now.Add(taskSkew).UnixMilli() {
+		t.Created+t.TTL < now.Add(-taskRetention).UnixMilli() || t.Created > now.Add(taskSkew).UnixMilli() {
 		return tailTask{}, false
 	}
 	for _, k := range t.Kinds {

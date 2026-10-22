@@ -137,7 +137,13 @@ func TestDecodeTask(t *testing.T) {
 		"invalid kind":             {mut(func(t *tailTask) { t.Kinds = []string{"bogus"} }), false},
 		"future created":           {mut(func(t *tailTask) { t.Created = now.Add(2 * taskSkew).UnixMilli() }), false},
 		"ancient created":          {mut(func(t *tailTask) { t.Created = now.Add(-2 * maxTailWait).UnixMilli() }), false},
-		"another principal":        {mut(func(t *tailTask) { t.By = "other" }), false},
+		"max ttl, just past due": {mut(func(t *tailTask) {
+			t.TTL, t.Created = maxTailWait.Milliseconds(), now.Add(-maxTailWait-time.Second).UnixMilli()
+		}), true},
+		"max ttl, past retention": {mut(func(t *tailTask) {
+			t.TTL, t.Created = maxTailWait.Milliseconds(), now.Add(-maxTailWait-2*taskRetention).UnixMilli()
+		}), false},
+		"another principal": {mut(func(t *tailTask) { t.By = "other" }), false},
 	}
 	for name, c := range cases {
 		if _, got := decodeTask(c.id, p, now); got != c.want {
