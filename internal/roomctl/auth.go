@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"golang.org/x/oauth2"
 )
@@ -56,4 +57,16 @@ func Token(ctx context.Context, hc *http.Client, c Config, path string) (string,
 		}
 	}
 	return fresh.AccessToken, nil
+}
+
+// SharedToken is Token for one process's concurrent callers, roomctl mcp's requests: one refresh
+// at a time, so a refresh token the issuer rotates is never spent twice. Each call reads the file
+// again, so a roomctl login in another terminal reaches a running relay without a restart.
+func SharedToken(hc *http.Client, c Config, path string) func(context.Context) (string, error) {
+	var mu sync.Mutex
+	return func(ctx context.Context) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return Token(ctx, hc, c, path)
+	}
 }

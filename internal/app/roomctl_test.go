@@ -3,7 +3,9 @@
 package app
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +41,18 @@ func newRoomctlBroker(t *testing.T) *roomctlBroker {
 	b.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/roomctl" {
 			_, _ = w.Write([]byte(`{"url":"https://elsewhere","issuer":"https://auth.example","clientID":"cli","projectID":"29184"}`))
+			return
+		}
+		if r.URL.Path == "/mcp" {
+			var m struct {
+				ID json.RawMessage `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&m)
+			b.mu.Lock()
+			b.bearer = append(b.bearer, r.Header.Get("Authorization"))
+			b.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{}}`))
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -288,5 +302,35 @@ func TestRoomctlRoomsFiltersAndHint(t *testing.T) {
 	}
 	if got := r.Err.(*strings.Builder).String(); !strings.Contains(got, "https://auth.example") {
 		t.Fatalf("the hint goes to stderr and names the issuer: %q", got)
+	}
+}
+
+// F2: roomctl mcp relays stdio to the broker's /mcp with the developer's token, until stdin ends.
+func TestRoomctlMCP(t *testing.T) {
+	b := newRoomctlBroker(t)
+	r, _ := configured(t, b)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	r.In, r.Out = inR, outW
+	done := make(chan error, 1)
+	go func() { done <- r.Run(t.Context(), []string{"mcp"}) }()
+	if _, err := inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(outR).ReadString('\n')
+	if err != nil || line != `{"id":1,"jsonrpc":"2.0","result":{}}`+"\n" {
+		t.Fatalf("%q %v", line, err)
+	}
+	_ = inW.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.bearer) != 1 || b.bearer[0] != "Bearer tok-dev" {
+		t.Fatalf("%v", b.bearer)
+	}
+	if err := r.Run(t.Context(), []string{"mcp", "extra"}); err == nil {
+		t.Fatal("mcp takes no arguments")
 	}
 }

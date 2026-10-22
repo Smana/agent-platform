@@ -45,6 +45,8 @@ const roomctlUsage = `usage: roomctl <command>
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
+  mcp                             the factory's MCP tools on stdio, for a local coding agent:
+                                  claude mcp add factory -- roomctl mcp
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
                                   a room of your own from events 1..SEQ, with an optional run
 roomctl never steers, interrupts, moves the driver token or decides (ruling P18): use the web UI`
@@ -54,6 +56,7 @@ type Roomctl struct {
 	Dir    string       // config.json and token.json, both owner-only
 	HC     *http.Client // the room list and the IdP: bounded
 	Stream *http.Client // the WebSocket: bounded by the context, not a whole-exchange timeout
+	In     io.Reader    // mcp's messages; nil is stdin
 	Out    io.Writer
 	Err    io.Writer // hints; nil is stderr
 }
@@ -104,7 +107,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "watch", "post", "fork", "doctor":
+	case "login", "token", "rooms", "status", "watch", "post", "fork", "doctor", "mcp":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -128,6 +131,9 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	}
 	if cmd == "doctor" {
 		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath}.Run(ctx, r.Out)
+	}
+	if cmd == "mcp" {
+		return r.mcp(ctx, cfg, tokPath, args)
 	}
 	c := roomctl.Client{URL: cfg.URL, HC: r.HC, Stream: r.Stream, Issuer: cfg.Issuer, Err: r.Err,
 		Token: func(ctx context.Context) (string, error) { return roomctl.Token(ctx, r.HC, cfg, tokPath) }}
@@ -208,6 +214,20 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	}
 	_, err := fmt.Fprintf(hints, "configured %s; next: roomctl login\n", cfg.URL)
 	return err
+}
+
+// mcp relays the broker's MCP server on stdio until the client closes it: one token source for
+// every request, so a refresh happens once (factory interfaces F2).
+func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("mcp: no arguments\n%s", roomctlUsage)
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath)}
+	return relay.Serve(ctx, in, r.Out)
 }
 
 // skill installs the factory-handoff Agent Skill; it needs no configuration or login.
