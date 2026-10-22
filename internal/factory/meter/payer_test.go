@@ -172,8 +172,39 @@ func TestTheChargesFollowTheLedgerThroughItsFailures(t *testing.T) {
 			if s := settledOf(t, c, "20261022"); got.total() != s["aaaaaaaa"] || got.total() != 1_540_000 {
 				t.Fatalf("charged %d, settled %d", got.total(), s["aaaaaaaa"])
 			}
+			// the run's payer is alice, not its principal: the resolve counts under hers
+			if want := (tally{{"github:alice", runs.KindRoom}: 1_540_000}); !maps.Equal(got, want) {
+				t.Fatalf("counted %v, want %v", got, want)
+			}
 		})
 	}
+	t.Run("a deleted run's write in doubt that landed is still counted", func(t *testing.T) {
+		now := at
+		fail, landed := true, true
+		c := flaky(&fail, &landed)
+		got := tally{}
+		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}}
+		src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+		m := usdLedgerMeter(st, src, c, &now)
+		m.OnCharge = got.add
+		if err := m.Tick(t.Context()); err == nil {
+			t.Fatal("the write in doubt is reported")
+		}
+		fail, st.runs = false, nil // the run is deleted
+		m.Source = broken{}
+		_ = m.Tick(t.Context()) // the usage read fails: forget runs, resolve does not
+		m.Source = src
+		if err := m.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		spent, _ := spentOf(t, c, "20261022")
+		if got.total() != spent[runs.PrincipalFactory] || got.total() == 0 {
+			t.Fatalf("counted %d, spent %d", got.total(), spent[runs.PrincipalFactory])
+		}
+		if want := (tally{{"github:alice", runs.KindRoom}: got.total()}); !maps.Equal(got, want) {
+			t.Fatalf("counted %v, want %v", got, want)
+		}
+	})
 	t.Run("a run across midnight", func(t *testing.T) {
 		now := time.Date(2026, 10, 22, 23, 59, 30, 0, time.UTC)
 		c := fake.NewClientBuilder().WithScheme(cmScheme()).Build()
@@ -226,6 +257,9 @@ func TestTheChargesFollowTheLedgerThroughItsFailures(t *testing.T) {
 			if got.total() != 70_000 || spent[runs.PrincipalFactory] != 70_000 || settledOf(t, c, "20261022")["aaaaaaaa"] != 1_470_000 {
 				t.Fatalf("counted %d, spent %v, settled %v: the counter follows spent, not the lift",
 					got.total(), spent, settledOf(t, c, "20261022"))
+			}
+			if want := (tally{{"github:alice", runs.KindRoom}: 70_000}); !maps.Equal(got, want) {
+				t.Fatalf("counted %v, want %v", got, want)
 			}
 		})
 	}

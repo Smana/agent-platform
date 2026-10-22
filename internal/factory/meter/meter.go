@@ -535,8 +535,8 @@ func (m *Meter) forget(ctx context.Context, all []runs.Run) {
 			delete(m.last, id)
 		}
 	}
-	for id := range m.accounts {
-		if !live[id] {
+	for id, a := range m.accounts {
+		if !live[id] && a.doubt == "" { // a write in doubt is resolved first: it may have landed
 			delete(m.accounts, id)
 		}
 	}
