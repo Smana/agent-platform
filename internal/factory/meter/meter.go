@@ -32,6 +32,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -229,9 +230,19 @@ type Meter struct {
 	Every time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// OnRevoke is told of each revocation written, with its reason and the limit that fired:
-	// fmetrics.Set.RunRevoked.
+	// OnRevoke is told of each revocation written, with its reason and the limit that fired, under
+	// a context that binds the run's payer (fmetrics.WithPrincipal): fmetrics.Set.RunRevoked.
 	OnRevoke func(ctx context.Context, reason, limit string)
+	// OnCharge is told of each run's charge once the write that settles it succeeded, or once
+	// resolve finds a write in doubt landed: its payer (runs.Run.Payer), its kind and the
+	// micro-USD (spend per identity SI2). Its sum over payers is what the day's spent columns
+	// gained: R10's lift reaches a run's settled entry, never spent, and is never counted.
+	OnCharge func(ctx context.Context, principal, kind string, microUSD int64)
+	// OnCharges receives, each tick that listed the runs, those the charge info names (SI3):
+	// every run not ended, and each ended one until endSettle after its status.finishedAt. Each
+	// hand-over is a slice of its own, kept by the receiver; Start hands over nil as it returns,
+	// so a meter that stops leading names no run.
+	OnCharges func(live []runs.Run)
 	// OnCost is told, once, of a priced run's USD cost, in total and by the model that served it:
 	// endSettle after the meter, having seen it live, sees it end, or when it is deleted first.
 	// OnFallback of a run of a USD-capped tier capped in tokens instead, once per run.
@@ -311,6 +322,7 @@ type account struct {
 	doubt                string // the day of a charge whose write reported an error: it may have landed
 	was                  int64  // the run's settled entry on that day before the write
 	lift                 int64  // R10's lift, recorded in the settled entry with the run's next charge
+	payer, kind          string // whom and what its charges count for (runs.Run.Payer, Kind)
 }
 
 // mono is one monotonic counter's last raw value and the total it gave.
@@ -442,11 +454,14 @@ func (m *Meter) resolve(ctx context.Context) error {
 		}
 		gain := max(0, entries[id]-a.was)
 		a.settled += gain
-		if gain > 0 {
+		charge := gain
+		if gain > 0 { // the write landed whole: the run's charge, and its lift, which spent never counts
+			charge = max(0, gain-a.lift)
 			a.lift = 0
 		}
 		a.doubt, a.was = "", 0
 		m.accounts[id] = a
+		m.charge(ctx, a, charge)
 	}
 	return nil
 }
@@ -556,6 +571,9 @@ func (m *Meter) Start(ctx context.Context) error {
 	}
 	c, stop := tick(m.Every)
 	defer stop()
+	if m.OnCharges != nil { // the charge info is the leader's (SI3): it ends with the leadership
+		defer m.OnCharges(nil)
+	}
 	for {
 		if err := m.Tick(ctx); err != nil {
 			m.log().Warn("meter tick failed", "err", err)
@@ -579,6 +597,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 	all, err := m.Runs.List(ctx)
 	if err != nil {
 		return fmt.Errorf("meter: list runs: %w", err)
+	}
+	if m.OnCharges != nil {
+		m.OnCharges(m.chargeInfo(all))
 	}
 	used, err := m.Source.RunUsage(ctx)
 	if err != nil {
@@ -648,6 +669,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 				delta[k] += n
 			}
 			inc[r.ID] = n + m.accounts[r.ID].lift
+			a := m.accounts[r.ID]
+			a.payer, a.kind = r.Payer(), r.Kind()
+			m.accounts[r.ID] = a
 		}
 	}
 	if m.Costs != nil {
@@ -667,9 +691,11 @@ func (m *Meter) Tick(ctx context.Context) error {
 	} else {
 		for id, n := range inc { // in the day's ledger: those runs are settled up
 			a := m.accounts[id]
+			charge := n - a.lift // the lift reaches the run's settled entry, never spent
 			a.settled += n
 			a.lift = 0
 			m.accounts[id] = a
+			m.charge(ctx, a, charge)
 		}
 		if m.Day != nil {
 			m.tellDay(day, spent)
@@ -702,7 +728,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 			m.log().Info("run revoked", "run", r.ID, "tokens", n, "usd", float64(usd[r.ID])/1e6,
 				"cap_usd", float64(caps[r.ID])/1e6, "reason", why, "limit", limit)
 			if m.OnRevoke != nil {
-				m.OnRevoke(ctx, why, limit)
+				m.OnRevoke(fmetrics.WithPrincipal(ctx, r.Payer()), why, limit)
 			}
 			if over := n - r.MaxTokens; why == ReasonBudgetRun && limit != LimitRunUSD && r.MaxTokens > 0 && over > 0 && m.OnOvershoot != nil {
 				m.OnOvershoot(ctx, over)
@@ -819,6 +845,28 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 	}
 	return nil, fmt.Errorf("meter: the %s ledger stayed busy", day)
+}
+
+// charge tells OnCharge of n micro-USD the day's spent column now holds for a run, under its payer.
+func (m *Meter) charge(ctx context.Context, a account, n int64) {
+	if n > 0 && m.OnCharge != nil {
+		m.OnCharge(ctx, a.payer, a.kind, n)
+	}
+}
+
+// chargeInfo is the runs the charge info names (SI3): each run not ended, and each ended one
+// while its status.finishedAt is less than endSettle ago, so a panel joins the gateway's last
+// readings of a short run to its payer. A run that ended without a finishedAt is not named: no
+// meter, a new leader included, could tell how long ago.
+func (m *Meter) chargeInfo(all []runs.Run) []runs.Run {
+	now := m.now()
+	var out []runs.Run
+	for _, r := range all {
+		if !runs.Terminal(r.Phase) || (!r.Finished.IsZero() && now.Sub(r.Finished) < endSettle) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // charged are the ledger keys a run's tokens settle to: the fleet and the person it is charged to
