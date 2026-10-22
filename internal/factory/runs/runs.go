@@ -91,6 +91,15 @@ type Spec struct {
 	EgressProfiles                                                                                                                      []string
 	// Suspendable is spec.suspendable (v2 suspend), written only when true: it is immutable.
 	Suspendable bool
+	// Loop is spec.loop (loops design L2, L3), written only when set: it is immutable.
+	Loop *Loop
+}
+
+// Loop is the claim's spec.loop; JudgeModel "" writes no judgeModel, which the composition reads
+// as none.
+type Loop struct {
+	StallSteps, Continuations int32
+	JudgeModel                string
 }
 
 var (
@@ -152,6 +161,13 @@ func Build(s Spec) *unstructured.Unstructured {
 	}
 	if s.Suspendable {
 		spec["suspendable"] = true
+	}
+	if l := s.Loop; l != nil {
+		loop := map[string]any{"stallSteps": int64(l.StallSteps), "continuations": int64(l.Continuations)}
+		if l.JudgeModel != "" {
+			loop["judgeModel"] = l.JudgeModel
+		}
+		spec["loop"] = loop
 	}
 	if len(s.EgressProfiles) > 0 {
 		profiles := make([]any, 0, len(s.EgressProfiles))

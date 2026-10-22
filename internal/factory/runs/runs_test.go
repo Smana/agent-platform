@@ -3,6 +3,7 @@
 package runs
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -380,5 +381,27 @@ func TestChargedToRoundTrips(t *testing.T) {
 	}
 	if r, _ := FromUnstructured(Build(spec())); r.ChargedTo != "" || Build(spec()).GetAnnotations()[AnnChargedTo] != "" {
 		t.Fatal("no person, no annotation")
+	}
+}
+
+// Loop policy part 2: spec.loop is written only when set, judgeModel only when the task names a judge.
+func TestBuildWritesTheLoopOnlyWhenSet(t *testing.T) {
+	base := Spec{RunID: "7f3cq2xz", Role: "implementer", Repository: "Smana/cloud-native-ref"}
+	if _, found, _ := unstructured.NestedMap(Build(base).Object, "spec", "loop"); found {
+		t.Fatal("no loop: no spec.loop (D4)")
+	}
+	for _, c := range []struct {
+		loop Loop
+		want map[string]any
+	}{
+		{Loop{StallSteps: 80, Continuations: 2, JudgeModel: "tier-light"}, map[string]any{"stallSteps": int64(80), "continuations": int64(2), "judgeModel": "tier-light"}},
+		{Loop{StallSteps: 40, Continuations: 0}, map[string]any{"stallSteps": int64(40), "continuations": int64(0)}},
+	} {
+		s := base
+		s.Loop = &c.loop
+		got, _, err := unstructured.NestedMap(Build(s).Object, "spec", "loop")
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("spec.loop = %v (%v), want %v", got, err, c.want)
+		}
 	}
 }

@@ -191,6 +191,11 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 		return err
 	}
 	s.RunID, s.StartSeq, s.ChargedTo = runID(t.Name, len(t.Status.Runs)), last, r.person(t)
+	// The loop policy closes implementer runs only (L2); every one of them, revisions and CI fixes
+	// included, carries the task's policy, read at triage.
+	if l := t.Spec.Loop; l != nil && s.Role == "implementer" {
+		s.Loop = &runs.Loop{StallSteps: l.StallSteps, Continuations: l.Continuations, JudgeModel: l.JudgeModel}
+	}
 	if err := r.Runs.Create(ctx, s); err != nil {
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.

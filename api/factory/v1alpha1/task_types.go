@@ -78,6 +78,25 @@ type TaskSpec struct {
 	Template string `json:"template,omitempty"`
 	// +optional
 	Budget Budget `json:"budget,omitempty"`
+	// The loop policy its implementer runs get as spec.loop, resolved from loops.<class> at
+	// triage so a config change never moves a task already triaged (loops design L2, L3). Unset:
+	// the loop is off for the task's class.
+	// +optional
+	Loop *Loop `json:"loop,omitempty"`
+}
+
+// Loop is a task's loop policy, every value resolved at triage.
+type Loop struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=500
+	StallSteps int32 `json:"stallSteps"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=5
+	Continuations int32 `json:"continuations"`
+	// The judge's alias; empty: no judge.
+	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier
+	// +optional
+	JudgeModel string `json:"judgeModel,omitempty"`
 }
 
 // Source is where the task came from and how far its text is trusted.

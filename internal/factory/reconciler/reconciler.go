@@ -662,6 +662,10 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	t.Spec.Template, t.Spec.PredictedClass, t.Spec.DataClass, t.Spec.Budget = d.Template, d.PredictedClass, d.DataClass, d.Budget
+	t.Spec.Loop = nil
+	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
+		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
+	}
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
 		return err
