@@ -67,8 +67,20 @@ def git_env() -> dict:
     return {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
 
 
+# The repository's own config and hooks are the agent's to write: nothing it names may run during
+# agent-checks' git calls (fsmonitor, hooks, external diff drivers, textconv, clean/smudge filters).
+GUARDS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external="]
+
+
+def guards() -> list[str]:
+    out = subprocess.run(["git", "-C", REPO, *GUARDS, "config", "--get-regexp", r"^filter\..*\.(clean|smudge)$"],
+                         capture_output=True, text=True, env=git_env()).stdout
+    names = {line.split()[0].rsplit(".", 1)[0] for line in out.splitlines() if line.strip()}
+    return GUARDS + [a for n in sorted(names) for a in ("-c", n + ".clean=cat", "-c", n + ".smudge=cat")]
+
+
 def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True, env=git_env())
+    return subprocess.run(["git", "-C", REPO, *guards(), *args], capture_output=True, text=True, env=git_env())
 
 
 def validate(doc) -> dict:
@@ -118,7 +130,7 @@ def declaration() -> tuple[str, str, dict]:
     if not blob:
         raise Undeclared("the default branch declares no checks (%s)" % DECLARATION)
     try:
-        raw = subprocess.run(["git", "-C", REPO, "cat-file", "blob", blob], capture_output=True, env=git_env()).stdout
+        raw = subprocess.run(["git", "-C", REPO, *GUARDS, "cat-file", "blob", blob], capture_output=True, env=git_env()).stdout
         doc = yaml.safe_load(raw.decode("utf-8"))
     except (yaml.YAMLError, UnicodeDecodeError) as exc:
         raise Undeclared("%s: %s" % (DECLARATION, exc)) from exc
@@ -284,13 +296,13 @@ def run_step(step: dict, env: dict, limit: float, log, say) -> dict:
 
 def changed() -> set[str]:
     """Tracked files the work tree changes against HEAD."""
-    return set(git("diff", "--name-only", "HEAD").stdout.split())
+    return set(git("diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD").stdout.split())
 
 
 def touched(base: str, defined_by: list[str]) -> list[str]:
     """The definedBy paths the branch changes against the default branch, committed or not."""
     fork = git("merge-base", base, "HEAD").stdout.strip() or base
-    names = set(git("diff", "--name-only", fork, "HEAD").stdout.split()) | changed()
+    names = set(git("diff", "--no-ext-diff", "--no-textconv", "--name-only", fork, "HEAD").stdout.split()) | changed()
     return sorted(n for n in names if any(n == p or (p.endswith("/") and n.startswith(p)) for p in defined_by))
 
 
@@ -333,7 +345,7 @@ def summary(res: dict) -> str:
     return "\n".join(head + tails + foot)[:SUMMARY_CAP]
 
 
-def checks(decl: dict, base: str, blob: str, only: str | None, say) -> int:
+def checks(decl: dict, base: str, blob: str, only: str | None, say, emit: bool = False) -> int:
     tools = pins(decl["tools"])
     missing = install(tools, say)
     steps = [s for s in decl["steps"] if only in (None, s["name"])]
@@ -362,6 +374,11 @@ def checks(decl: dict, base: str, blob: str, only: str | None, say) -> int:
            "seconds": round(time.monotonic() - start, 1), "log": path}
     text = summary(res)
     record = {**res, "steps": [{k: v for k, v in r.items() if k != "tail"} for r in results]}
+    if emit:
+        # The harness's run (agent-run): the result goes to the pipe only agent-run holds, never to a
+        # path the agent can write.
+        print(json.dumps(record), flush=True)
+        return 1 if any(r["result"] in ("fail", "timeout") for r in results) else 0
     with open(os.path.join(STATE, stem + ".json"), "w") as f:
         json.dump(record, f, indent=1)
     with open(os.path.join(STATE, stem + ".txt"), "w") as f:
@@ -376,11 +393,12 @@ def checks(decl: dict, base: str, blob: str, only: str | None, say) -> int:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="agent-checks", description="The CI's fast subset, in the sandbox.")
     ap.add_argument("--step", help="run this step only")
+    ap.add_argument("--json", action="store_true", help="agent-run's run: say goes to stderr, the result to stdout, no files")
     ap.add_argument("--install", action="store_true", help="install the toolchain only")
     args = ap.parse_args(argv)
 
     def say(message):
-        print("agent-checks: " + message, flush=True)
+        print("agent-checks: " + message, flush=True, file=sys.stderr if args.json else sys.stdout)
     try:
         base, blob, decl = declaration()
     except Undeclared as exc:
@@ -390,13 +408,21 @@ def main(argv: list[str]) -> int:
         say("no step %s; declared: %s" % (args.step, ", ".join(s["name"] for s in decl["steps"])))
         return 2
     os.makedirs(STATE, exist_ok=True)
-    with open(os.path.join(STATE, ".lock"), "w") as lock:
+    try:
+        lock = open(os.path.join(STATE, ".lock"), "w")
+    except OSError as exc:
+        say("cannot take the lock: %s" % exc)
+        return 1
+    with lock:
         waited = time.monotonic()
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                if args.json and time.monotonic() - waited > INSTALL_S + MINUTE:
+                    say("the lock is still held after %ds" % (time.monotonic() - waited))
+                    return 1
                 say("waiting for another agent-checks (the toolchain install, or a run), %ds" % (time.monotonic() - waited))
                 time.sleep(HEARTBEAT_S)
         if args.install:
@@ -404,7 +430,7 @@ def main(argv: list[str]) -> int:
             say("toolchain ready" if not missing else "toolchain incomplete: %s" % ", ".join(missing))
             return 1 if missing else 0
         try:
-            return checks(decl, base, blob, args.step, say)
+            return checks(decl, base, blob, args.step, say, args.json)
         except ToolchainError as exc:
             say(str(exc))
             return 1

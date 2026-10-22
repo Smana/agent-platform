@@ -2,6 +2,7 @@
 run on the head, its note and its deadline. agent-checks itself is test_agent_checks.py's."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,7 +24,7 @@ with open(os.path.join(state, "calls"), "a") as f:
 with open(os.path.join(state, "base"), "w") as f:
     f.write(os.environ.get("AGENT_CHECKS_BASE", ""))
 steps = [{"name": "suites", "result": "pass"}, {"name": "pre-commit", "result": "fail"}]
-json.dump({"version": 1, "head": head, "dirty": False, "partial": False, "steps": steps}, open(os.path.join(state, head + ".json"), "w"))
+print(json.dumps({"version": 1, "head": head, "dirty": False, "partial": False, "steps": steps}))
 '''
 
 
@@ -100,7 +101,7 @@ class FinalChecksTest(unittest.TestCase):
     def test_the_head_is_checked_and_the_note_names_the_failed_step(self):
         notes = FakeNotes()
         res = agent_run.final_checks(self.env, DECL, notes)
-        self.assertEqual(self.calls(), [""])
+        self.assertEqual(self.calls(), ["--json"])
         self.assertEqual(res["head"], self.head)
         self.assertEqual(notes.sent, ["Harness (implementer): checks on %s: 1 pass, 1 fail. Failed: pre-commit." % self.head[:12]])
 
@@ -132,7 +133,7 @@ class FinalChecksTest(unittest.TestCase):
 
     def test_enough_time_left_runs(self):
         agent_run.final_checks({**self.env, "AGENT_RUN_SECONDS": "7200"}, DECL, FakeNotes(), started=0.0, clock=lambda: 100.0)
-        self.assertEqual(self.calls(), [""])
+        self.assertEqual(self.calls(), ["--json"])
 
     def test_a_rate_limited_note_waits_out_the_minute_once(self):
         notes, slept = FakeNotes(limited=1), []
@@ -180,19 +181,19 @@ class FinalChecksTest(unittest.TestCase):
                 notes = FakeNotes()
                 with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
                     agent_run.final_checks(self.env, DECL, notes)
-                self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
+                self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
 
     def test_the_tool_never_runs_past_the_deadline(self):
         seen = []
-        real = subprocess.run
-        def spy(cmd, **kw):
-            if cmd == [agent_run.CHECKS_TOOL]:
+        real = subprocess.Popen.communicate
+        def spy(proc, *a, **kw):
+            if kw.get("timeout") is not None:
                 seen.append(kw["timeout"])
-            return real(cmd, **kw)
-        with mock.patch("agent_run.subprocess.run", spy):
+            return real(proc, *a, **kw)
+        with mock.patch.object(subprocess.Popen, "communicate", spy):
             agent_run.final_checks({**self.env, "AGENT_RUN_SECONDS": "900"}, DECL, FakeNotes(), started=0.0, clock=lambda: 100.0)
         self.assertEqual(len(seen), 1)
-        self.assertLessEqual(seen[0], 900 - 100 - agent_run.CHECKS_MARGIN_S - agent_run.MIN_NOTE_GAP_S * 2)
+        self.assertLessEqual(seen[0], 900 - 100 - agent_run.CHECKS_MARGIN_S - agent_run.MIN_NOTE_GAP_S)
 
     def forged(self, steps, mode=0o444, **extra):
         p = os.path.join(self.state, self.head + ".json")
@@ -206,7 +207,7 @@ class FinalChecksTest(unittest.TestCase):
         notes = FakeNotes()
         with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
             agent_run.final_checks(self.env, DECL, notes)
-        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
         self.assertTrue(os.path.exists(os.path.join(self.state, self.head + ".agent.json")))
 
     def test_the_harness_run_replaces_a_rejected_agent_file(self):
@@ -222,7 +223,7 @@ class FinalChecksTest(unittest.TestCase):
         notes = FakeNotes()
         with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
             agent_run.final_checks(self.env, DECL, notes)
-        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
 
     def test_the_final_run_is_pinned_to_the_startup_base_and_a_result_for_another_base_is_refused(self):
         pinned = {**DECL, "pin": ("b" * 40, "c" * 40)}
@@ -245,6 +246,34 @@ class FinalChecksTest(unittest.TestCase):
         notes = FakeNotes()
         agent_run.final_checks(self.env, pinned, notes)
         self.assertNotIn("(the agent's own run)", notes.sent[0])
+
+    def test_a_planted_file_is_never_the_result_whatever_the_tool_does(self):
+        plant = {"head": self.head, "base": "b" * 40, "declaration": "c" * 40, "dirty": False, "partial": False,
+                 "steps": [{"name": "suites", "result": "pass"}, {"name": "pre-commit", "result": "pass"}]}
+        pinned = {**DECL, "pin": ("b" * 40, "c" * 40)}
+        for name, body in (("exits-1-silently", "exit 1"), ("exits-0-silently", "exit 0"), ("exits-3", "exit 3")):
+            with self.subTest(name):
+                shutil.rmtree(self.state)
+                os.makedirs(self.state)
+                tool = os.path.join(self.tmp, name)
+                with open(tool, "w") as f:
+                    # What a fsmonitor hook of the agent would do during the run: plant a read-only pass.
+                    f.write("#!/bin/sh\ncat > %s <<'EOF'\n%s\nEOF\nchmod 0444 %s\n%s\n" % (
+                        os.path.join(self.state, self.head + ".json"), json.dumps(plant),
+                        os.path.join(self.state, self.head + ".json"), body))
+                os.chmod(tool, 0o755)
+                notes = FakeNotes()
+                with mock.patch.object(agent_run, "CHECKS_TOOL", tool):
+                    agent_run.final_checks(self.env, pinned, notes)
+                self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
+
+    def test_a_tool_that_hangs_is_killed_and_unreadable(self):
+        tool = os.path.join(self.tmp, "hang")
+        with open(tool, "w") as f:
+            f.write("#!/bin/sh\nsleep 30\n")
+        os.chmod(tool, 0o755)
+        with mock.patch.object(agent_run, "CHECKS_TOOL", tool):
+            self.assertIsNone(agent_run._run_tool(DECL, self.head, 1))
 
     def test_a_deeply_nested_result_is_unreadable_not_an_exception(self):
         with open(os.path.join(self.state, self.head + ".json"), "w") as f:

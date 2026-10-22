@@ -651,7 +651,9 @@ def prefetch(start_span=None):
 
 
 def _git_out(*args: str) -> str:
-    return subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True).stdout.strip()
+    # The repository's config is the agent's: nothing it names (fsmonitor, hooks, diff drivers) runs here.
+    return subprocess.run(["git", "-C", REPO_DIR, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                           "-c", "diff.external=", *args], capture_output=True, text=True).stdout.strip()
 
 
 def _load(path: str) -> dict | None:
@@ -703,6 +705,46 @@ def _clean(res, decl, head: str):
     return {**res, "steps": kept}
 
 
+def _run_tool(decl, head: str, timeout: float):
+    """The cleaned result agent-checks prints on stdout, or None: a timeout, an exit other than 0 or 1
+    (1 is failing steps), no JSON object on the last line, or one _clean refuses."""
+    tool_env = {**os.environ, **({"AGENT_CHECKS_BASE": decl["pin"][0]} if decl.get("pin") else {})}
+    try:
+        proc = subprocess.Popen([CHECKS_TOOL, "--json"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=tool_env, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(timeout=max(timeout, 0))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        proc.communicate()
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    lines = out.decode("utf-8", "replace").strip().splitlines()
+    try:
+        raw = json.loads(lines[-1]) if lines else None
+    except (ValueError, RecursionError):
+        return None
+    return _clean(raw, decl, head)
+
+
+def _publish(path: str, res: dict) -> None:
+    """The harness's own result, for the judge and the reviewer: replaces whatever the agent left."""
+    try:
+        os.makedirs(CHECKS_DIR, exist_ok=True)
+        tmp = path + ".harness"
+        with open(tmp, "w") as f:
+            json.dump(res, f)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print("agent-run: checks result not kept: %s" % exc, file=sys.stderr, flush=True)
+
+
 def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 0.0, clock=time.monotonic):
     """RC6: when an implementer's conversation ends finished, its head's checks are the evidence the
     judge and the reviewer read. A full result the agent left for this head on a clean tree stands;
@@ -713,7 +755,7 @@ def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 
         return None
     head = _git_out("rev-parse", "HEAD")
     path = os.path.join(CHECKS_DIR, head + ".json")
-    clean = not _git_out("diff", "--name-only", "HEAD")
+    clean = not _git_out("diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD")
     raw = _load(path)
     res, by_agent = _clean(raw, decl, head), True
     if not (res and clean and not raw.get("dirty") and not raw.get("partial") and not res.get("skipped")):
@@ -722,35 +764,28 @@ def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 
     limit = env.get("AGENT_RUN_SECONDS", "")
     timeout = budget + checks_module().INSTALL_S + 60
     if res is None and limit.isdigit():
-        # Both room notes (the loop's end, then this one) can wait out the broker's minute.
-        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - 2 * MIN_NOTE_GAP_S
+        # This note alone can wait out the broker's minute: on the code == 0 path nothing posts after
+        # the loop policy's judge, and a run that ends with `end` set never gets here.
+        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - MIN_NOTE_GAP_S
         if room < budget:
             res = {"version": 1, "head": head, "skipped": "deadline"}
-            os.makedirs(CHECKS_DIR, exist_ok=True)
-            with open(path, "w") as f:
-                json.dump(res, f)
+            _publish(path, res)
         timeout = min(timeout, room)
     span = start_span(CHECKS_SPAN) if start_span and not by_agent else None
     error = None
     try:
         if res is None:
-            # The agent wrote this file: it is never the harness's result, so it moves aside first.
-            moved = True
+            # The agent wrote this file: it is never the harness's result, so it moves aside first. The
+            # harness's result is what the tool prints to the pipe only agent-run holds, and agent-run
+            # writes the file itself.
             if os.path.lexists(path):
                 try:
                     os.replace(path, os.path.join(CHECKS_DIR, head + ".agent.json"))
                 except OSError:
-                    moved = False
-            tool_env = {**os.environ, **({"AGENT_CHECKS_BASE": decl["pin"][0]} if decl.get("pin") else {})}
-            try:
-                subprocess.run([CHECKS_TOOL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=timeout, env=tool_env)
-            except subprocess.TimeoutExpired:
-                pass
-            made = _load(path) if moved else None
-            res = _clean(made, decl, head) if made is not None else None
-            res = res or {"version": 1, "head": head,
-                          "skipped": "unreadable result" if made is not None or not moved else "no result"}
+                    pass
+            res = _run_tool(decl, head, timeout) or {"version": 1, "head": head, "skipped": "unreadable result"}
+            if not res.get("skipped"):
+                _publish(path, res)
         failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
         error = "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None
     except BaseException:

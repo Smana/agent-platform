@@ -164,9 +164,58 @@ class DeclarationTest(Rig):
     def test_a_replace_ref_cannot_substitute_the_declaration(self):
         base, blob, _ = agent_checks.declaration()
         self.write(self.tmp, "evil.yaml", DECLARED.replace('echo second', 'exit 1'))
-        evil = sh(self.repo, "git", "hash-object", "-w", os.path.join(self.tmp, "evil.yaml"))
-        sh(self.repo, "git", "replace", blob, evil)
-        self.assertEqual(agent_checks.declaration()[1], blob)
+        self.commit(".github/agent-checks.yaml", DECLARED.replace('echo second', 'exit 1'))
+        # The base commit itself is replaced by one that declares something else.
+        sh(self.repo, "git", "replace", base, sh(self.repo, "git", "rev-parse", "HEAD"))
+        got_base, got_blob, decl = agent_checks.declaration()
+        self.assertEqual((got_base, got_blob), (base, blob))
+        self.assertNotIn("exit 1", str(decl))
+
+
+    def test_json_mode_prints_the_result_on_stdout_and_writes_no_file(self):
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(io.StringIO()) as out:
+            code = agent_checks.main(["--json"])
+        res = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertEqual((code, [s["result"] for s in res["steps"]]), (0, ["pass", "pass"]))
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.assertFalse(os.path.exists(os.path.join(agent_checks.STATE, head + ".json")))
+
+    def test_an_fsmonitor_hook_of_the_agent_never_runs(self):
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        plant = os.path.join(agent_checks.STATE, head + ".json")
+        os.makedirs(agent_checks.STATE, exist_ok=True)
+        hook = os.path.join(self.tmp, "fsmonitor.sh")
+        self.write(self.tmp, "fsmonitor.sh", "#!/bin/sh\necho '{}' > %s\nchmod 0444 %s\n" % (plant, plant))
+        os.chmod(hook, 0o755)
+        sh(self.repo, "git", "config", "core.fsmonitor", hook)
+        sh(self.repo, "git", "config", "core.hooksPath", self.tmp)
+        sh(self.repo, "git", "config", "diff.external", "/bin/false")
+        self.write(self.repo, "taskfile.yaml", "version: '3'\n# edit\n")
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(io.StringIO()) as out:
+            code = agent_checks.main(["--json"])
+        res = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertEqual((code, res["steps"][0]["result"], res["dirty"]), (0, "pass", True))
+        self.assertFalse(os.path.exists(plant))
+
+    def test_a_held_lock_ends_the_json_run_with_no_result(self):
+        os.makedirs(agent_checks.STATE, exist_ok=True)
+        import fcntl
+        with open(os.path.join(agent_checks.STATE, ".lock"), "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            with mock.patch.object(agent_checks, "INSTALL_S", 0), mock.patch.dict(os.environ, self.env, clear=True), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                code = agent_checks.main(["--json"])
+        self.assertEqual((code, out.getvalue()), (1, ""))
+
+    def test_an_unwritable_lock_ends_the_json_run_with_no_result(self):
+        os.makedirs(agent_checks.STATE, exist_ok=True)
+        lock = os.path.join(agent_checks.STATE, ".lock")
+        self.write(agent_checks.STATE, ".lock", "")
+        os.chmod(lock, 0o444)
+        with mock.patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = agent_checks.main(["--json"])
+        self.assertEqual((code, out.getvalue()), (1, ""))
 
     def test_nothing_declared_exits_2(self):
         sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", sh(self.repo, "git", "rev-parse", "HEAD"))
