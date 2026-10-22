@@ -468,7 +468,7 @@ func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
 		if err := m.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if used, ids := ledgerOf(t, g); used != 900 || len(ids) != 0 {
+		if used, ids := ledgerOf(t, g); used != 1530 || len(ids) != 0 { // 900 untyped tokens at 1.7
 			t.Fatalf("meter %d: the run's spend once, no reservation: used %d, %v", i, used, ids)
 		}
 	}

@@ -85,10 +85,11 @@ type Store interface {
 }
 
 // Usage is a run's raw counters. Tokens is what the token caps count: input plus output, or an
-// untyped series' value. `Input` is the gateway's `input` series. agentgateway 1.6 includes
-// `cached_input` and `cache_creation_input` in it for an Anthropic call on its non-streaming Chat
-// Completions translation, and leaves them out on a streamed one or native Messages: `cost`
-// subtracts them to price fresh input unless the input is below them (inputExcludesCache).
+// untyped series' value. `Input` is the gateway's `input` series, which counts `cached_input` and
+// `cache_creation_input` inside it on every path the platform runs: agentgateway 1.6's Chat
+// Completions to Messages translation, streamed or not (measured 2026-10-22), and Z.ai's
+// prompt_tokens. `cost` subtracts them to price fresh input, unless the input is below them
+// (inputExcludesCache): only a gateway that leaves them out reports that.
 type Usage struct {
 	Tokens, Input, CacheRead, CacheWrite, Output int64
 	// Typed: the reading carried gen_ai_token_type, so it can be priced.
@@ -254,10 +255,12 @@ type Meter struct {
 	OnUsageError func(ctx context.Context)
 	OnSucceeded  func(ctx context.Context, at time.Time)
 	OnOvershoot  func(ctx context.Context, tokens int64)
-	// Ledger is the store of R50's day ledgers (the manager's client): the meter appends each
-	// tick's increase to the spent column, releases the reservations of runs that ended, stamps
-	// the heartbeat admission reads (#54), and prunes old days. nil: the day's spend lives in this meter's memory alone, and a failover loses it —
-	// fine while EnforcePrincipal is off, which is every wiring that leaves it unset today.
+	// Ledger is the store of R50's day ledgers (the manager's client): the meter charges each
+	// tick's increase, in micro-USD, to the spent column and to each run's settled entry in one
+	// write, releases the reservations of runs that ended, stamps the heartbeat admission reads
+	// (#54), and prunes old days. nil: the day's spend lives in this meter's memory alone, and a
+	// failover loses it — fine while EnforcePrincipal is off, which is every wiring that leaves
+	// it unset today.
 	Ledger client.Client
 	// Tasks lists the factory's Tasks (the manager's cached client: no apiserver call per tick),
 	// so a live task's reserved next run is never released as unclaimed. nil: none is protected.
@@ -267,28 +270,37 @@ type Meter struct {
 	Ticker func(d time.Duration) (c <-chan time.Time, stop func())
 	Log    *slog.Logger
 
-	last    map[string]reading          // per run: the last raw reading and the total it gave
-	mem     map[string]int64            // the day's spend when no Ledger is wired
-	memDay  string                      // the UTC day mem counts; a change resets it
-	dropped map[string]bool             // ended runs whose reservation was dropped
-	orphans map[string]time.Time        // unclaimed reservations, by when this meter first saw them
-	pruned  string                      // the last UTC day whose old ledgers were deleted
-	live    map[string]string           // priced runs seen live, by tier: their cost is still to report
-	ended   map[string]time.Time        // live-seen runs, by when this meter first saw them ended
-	settled map[string]map[string]int64 // reported runs: the micro-USD by served model reported
-	fell    map[string]bool             // runs whose fallback was reported
-	named   map[string]bool             // run and model pairs whose missing price, or input without cache, was reported
+	last     map[string]reading          // per run: the last raw reading and the total it gave
+	accounts map[string]account          // per run: its total as the day ledgers count it, and what they settled
+	mem      map[string]int64            // the day's spend when no Ledger is wired
+	memDay   string                      // the UTC day mem counts; a change resets it
+	dropped  map[string]bool             // ended runs whose reservation was dropped
+	orphans  map[string]time.Time        // unclaimed reservations, by when this meter first saw them
+	pruned   string                      // the last UTC day whose old ledgers were deleted
+	live     map[string]string           // priced runs seen live, by tier: their cost is still to report
+	ended    map[string]time.Time        // live-seen runs, by when this meter first saw them ended
+	settled  map[string]map[string]int64 // reported runs: the micro-USD by served model reported
+	fell     map[string]bool             // runs whose fallback was reported
+	named    map[string]bool             // run and model pairs whose missing price, or input without cache, was reported
 }
 
 type reading struct {
 	raw, total int64
-	paid       int64 // the total already appended to a day's ledger
-	// The USD total in micro-dollars, kept like the tokens' but in memory alone: the factory's
-	// patch limit admits no new annotation, so a failover after a counter reset forgets what
-	// the run spent before that reset.
+	// The USD total in micro-dollars, kept like the tokens' and lifted, when this meter first
+	// measures the run, to what the day ledgers settled for it (account.base): a failover after a
+	// counter reset forgets nothing the run spent before that reset.
 	usd      int64
 	usdKnown bool
-	models   map[string]mono // the USD by served model: usd is their sum
+	models   map[string]mono // the USD by served model: usd is their sum plus the account's base
+}
+
+// account is a run as the day ledgers count it (truthful costs TC6): total is its priced cost, or
+// its tokens at the reference rate when it cannot be priced, lifted by base to what earlier
+// meters settled; settled is what the ledgers hold for it, every retained day together.
+type account struct {
+	total, settled, base int64
+	known                bool // settled was read from the ledgers
+	measured             bool // base is fixed: the run was measured once since
 }
 
 // mono is one monotonic counter's last raw value and the total it gave.
@@ -308,11 +320,6 @@ func (m *Meter) log() *slog.Logger {
 // so the raw value is never the total: the total is the high-water mark (the annotation, which
 // SP1 never lets drop, or this meter's own last total) plus the increases since the last reading.
 // A drop re-baselines and adds nothing, so a reset can hide at most one tick of usage.
-//
-// A run first seen with no ledger memory starts paid at its annotation: the meter that wrote
-// that annotation already appended that much to a day's ledger. A failover can therefore
-// re-bill at most the increase of the annotation the previous leader failed to write, which
-// over-counts — the safe direction for a budget.
 func (m *Meter) total(r runs.Run, raw int64, seen bool) int64 {
 	if m.last == nil {
 		m.last = map[string]reading{}
@@ -326,7 +333,6 @@ func (m *Meter) total(r runs.Run, raw int64, seen bool) int64 {
 	switch {
 	case !known: // a new run, or a new leader: the annotation is the floor
 		t = max(hw, raw)
-		prev.paid = r.Tokens
 	case raw >= prev.raw:
 		t = hw + (raw - prev.raw)
 	}
@@ -335,8 +341,9 @@ func (m *Meter) total(r runs.Run, raw int64, seen bool) int64 {
 	return t
 }
 
-// spend is a run's monotonic USD total from its raw cost by served model, as total is for
-// tokens: each model's counter grows on its own, so a reset of one hides none of the others.
+// spend is a run's monotonic priced cost from its raw cost by served model, as total is for
+// tokens: each model's counter grows on its own, so a reset of one hides none of the others. It
+// returns the models' sum; measure lifts it to the run's USD total.
 func (m *Meter) spend(id string, raw map[string]int64) int64 {
 	if m.last == nil {
 		m.last = map[string]reading{}
@@ -345,7 +352,6 @@ func (m *Meter) spend(id string, raw map[string]int64) int64 {
 	if e.models == nil {
 		e.models = map[string]mono{}
 	}
-	e.usd = 0
 	for model, v := range raw {
 		p := e.models[model]
 		switch {
@@ -357,12 +363,82 @@ func (m *Meter) spend(id string, raw map[string]int64) int64 {
 		p.raw = v
 		e.models[model] = p
 	}
+	var sum int64
 	for _, p := range e.models {
-		e.usd += p.total
+		sum += p.total
 	}
 	e.usdKnown = true
 	m.last[id] = e
-	return e.usd
+	return sum
+}
+
+// learn reads what the day ledgers settled for each listed run this meter holds no account of:
+// a new run, or every run after a failover. One list of the ledgers per tick that meets one;
+// without a Ledger nothing was settled anywhere else. An unread ledger leaves those runs
+// unaccounted, so none of them is charged until a later tick reads it.
+func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
+	var need []string
+	for _, r := range all {
+		if !m.accounts[r.ID].known {
+			need = append(need, r.ID)
+		}
+	}
+	if len(need) == 0 {
+		return nil
+	}
+	var settled map[string]int64
+	if m.Ledger != nil {
+		var err error
+		if settled, err = api.SettledByRun(ctx, m.Ledger, m.Namespace); err != nil {
+			return fmt.Errorf("meter: %w", err)
+		}
+	}
+	if m.accounts == nil {
+		m.accounts = map[string]account{}
+	}
+	for _, id := range need {
+		a := m.accounts[id]
+		a.settled, a.known = settled[id], true
+		m.accounts[id] = a
+	}
+	return nil
+}
+
+// measure takes a seen run's cost this tick, v, priced or at the reference rate, and returns its
+// total as the day ledgers count it. The first measure once the run's account is read fixes base,
+// which lifts v to what earlier meters settled: the larger of the two, as total starts tokens at
+// the annotation (TC6). A run first seen ended, annotated and with nothing settled was charged by
+// the token ledgers before the switch to USD, or in a day since pruned: it is charged nothing more
+// (TC9). A priced v is also the run's USD total, for its cap and its cost.
+func (m *Meter) measure(r runs.Run, v int64, priced bool) int64 {
+	a := m.accounts[r.ID]
+	if a.known && !a.measured {
+		a.base, a.measured = max(0, a.settled-v), true
+		if a.settled == 0 && r.Tokens > 0 && runs.Terminal(r.Phase) {
+			a.settled = v
+		}
+	}
+	a.total = a.base + v
+	if m.accounts == nil {
+		m.accounts = map[string]account{}
+	}
+	m.accounts[r.ID] = a
+	if priced {
+		e := m.last[r.ID]
+		e.usd = a.total
+		m.last[r.ID] = e
+	}
+	return a.total
+}
+
+// unsettled is what the day ledgers have yet to charge for the run: its total less what they
+// settled. Nothing until its account is read and the run measured once.
+func (m *Meter) unsettled(id string) int64 {
+	a := m.accounts[id]
+	if !a.known || !a.measured {
+		return 0
+	}
+	return max(0, a.total-a.settled)
 }
 
 // usdCap is the run's cap in micro-USD, or 0 and why it is capped in tokens instead ("" for a
@@ -393,6 +469,11 @@ func (m *Meter) forget(ctx context.Context, all []runs.Run) {
 	for id := range m.last {
 		if !live[id] {
 			delete(m.last, id)
+		}
+	}
+	for id := range m.accounts {
+		if !live[id] {
+			delete(m.accounts, id)
 		}
 	}
 	for k := range m.named {
@@ -438,12 +519,12 @@ func (m *Meter) Start(ctx context.Context) error {
 	}
 }
 
-// Tick meters every run once: it appends the usage this tick saw to the day's ledger, writes
+// Tick meters every run once: it charges the cost this tick saw to the day's ledger, writes
 // usage as it grew, revokes a live run at any of its caps, stamps the heartbeat admission reads,
 // and keeps the ledgers themselves clean. A failed read of runs or usage writes no usage and no
-// stamp. A ledger that cannot be written writes no usage annotation (a new leader takes the
-// annotation as already paid), no stamp and no upkeep, but still revokes at the per-run caps. A
-// failed annotation is reported and is no revocation. Occupancy is not usage: a tick that could
+// stamp. A ledger that cannot be read or written writes no usage annotation (a run's usage shows
+// only what a day ledger charged), no stamp and no upkeep, but still revokes at the per-run caps.
+// A failed annotation is reported and is no revocation. Occupancy is not usage: a tick that could
 // not read usage still releases the runs that ended (#55), provided the ledger can be written.
 func (m *Meter) Tick(ctx context.Context) error {
 	all, err := m.Runs.List(ctx)
@@ -471,18 +552,15 @@ func (m *Meter) Tick(ctx context.Context) error {
 	}
 	defer m.forget(ctx, all)
 	day := m.now().UTC().Format(api.LedgerDayLayout)
+	learnErr := m.learn(ctx, all) // what earlier meters settled, before the first measure of a run
 	totals := make(map[string]int64, len(all))
 	usd := map[string]int64{}
 	caps := map[string]int64{}
 	costs := map[string]Cost{}
-	delta := map[string]int64{}
-	pending := map[string]int64{}
+	delta := map[string]int64{} // this tick's charges by ledger key
+	inc := map[string]int64{}   // and by run: its settled entry
 	for _, r := range all {
 		u, seen := used[r.ID]
-		paid := r.Tokens // a meter with no memory starts paid at the annotation: its writer appended it
-		if e, known := m.last[r.ID]; known {
-			paid = e.paid
-		}
 		t := m.total(r, u.Tokens, seen) // never the raw counter (R12)
 		totals[r.ID] = t
 		var why string // the pricing verdict: "" priced, or unread
@@ -505,37 +583,42 @@ func (m *Meter) Tick(ctx context.Context) error {
 					m.excludesCache(ctx, r, cmp.Or(name, r.Model))
 				}
 			}
-			v := m.spend(r.ID, raw)
+			v := m.measure(r, m.spend(r.ID, raw), true)
 			usd[r.ID], costs[r.ID] = v, Cost{MicroUSD: v}
 		}
 		if why != "" {
 			costs[r.ID] = Cost{Why: why}
+			m.measure(r, config.RefMicroUSD(t), false) // never $0: the reference rate (TC7)
 		}
 		if caps[r.ID], why = m.usdCap(r, why); why != "" {
 			m.fallback(ctx, r, why)
 		}
-		if inc := t - paid; inc > 0 { // the increase since this run's last settled reading (R07)
+		if n := m.unsettled(r.ID); n > 0 { // charged to the day it is observed in (R07)
 			for _, k := range charged(r) {
-				delta[k] += inc
+				delta[k] += n
 			}
-			pending[r.ID] = t
+			inc[r.ID] = n
 		}
 	}
 	if m.Costs != nil {
 		m.Costs.put(costs)
 	}
-	spent, settleErr := m.settle(ctx, day, delta) // budget-principal reads the ledger, not the live runs (R07)
+	var spent map[string]int64
+	settleErr := learnErr
+	if settleErr == nil {
+		spent, settleErr = m.settle(ctx, day, delta, inc) // budget-principal reads the ledger, not the live runs (R07)
+	}
 	var errs []error
 	if settleErr != nil {
-		// A ledger that cannot be written delays the daily budget, never a run's own cap: the
-		// loop below still revokes. Nothing is marked paid, so the increases are retried whole.
+		// A ledger that cannot be read or written delays the daily budget, never a run's own cap:
+		// the loop below still revokes. Nothing is settled, so the charges are retried whole.
 		errs = append(errs, settleErr)
 		spent = m.readSpent(ctx, day) // read-only; nil when that fails too: budget-principal waits
 	} else {
-		for id, t := range pending { // the increase is in the day's ledger: those runs are paid up
-			p := m.last[id]
-			p.paid = t
-			m.last[id] = p
+		for id, n := range inc { // in the day's ledger: those runs are settled up
+			a := m.accounts[id]
+			a.settled += n
+			m.accounts[id] = a
 		}
 		if m.Remaining != nil {
 			for p, n := range spent {
@@ -546,7 +629,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 	for _, r := range all {
 		n := totals[r.ID]
 		kv := map[string]string{}
-		if n > r.Tokens && settleErr == nil { // an unpaid increase is never annotated: a new leader would skip it
+		// Usage shows only what a day ledger charged: an annotated run with nothing settled is one
+		// the token ledgers charged before the switch (measure).
+		if n > r.Tokens && settleErr == nil {
 			kv[runs.AnnUsage] = strconv.FormatInt(n, 10)
 		}
 		var limit string
@@ -613,12 +698,13 @@ func (m *Meter) readSpent(ctx context.Context, day string) map[string]int64 {
 	return spent
 }
 
-// settle appends this tick's increases to the day's ledger and returns the day's spend per
-// principal (R07: the day an increase is observed is the day that carries it, not the day the
-// run began). Admission reserves against the same column (R50), so the write retries conflicts
-// like reserve does; a day that stays busy fails the tick, and the increases are retried whole
-// on the next one. Without a Ledger the day lives in this meter's memory alone.
-func (m *Meter) settle(ctx context.Context, day string, delta map[string]int64) (map[string]int64, error) {
+// settle adds this tick's charges to the day's ledger, delta to the spent column by key and inc
+// to each run's settled entry in the same write (TC6), and returns the day's spend per principal
+// (R07: the day a charge is observed is the day that carries it, not the day the run began).
+// Admission reserves against the same column (R50), so the write retries conflicts like reserve
+// does; a day that stays busy fails the tick, and the charges are retried whole on the next one.
+// Without a Ledger the day lives in this meter's memory alone.
+func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]int64) (map[string]int64, error) {
 	if m.Ledger == nil {
 		if m.memDay != day { // the memory is one day wide: midnight starts it fresh
 			m.mem, m.memDay = map[string]int64{}, day
@@ -653,6 +739,9 @@ func (m *Meter) settle(ctx context.Context, day string, delta map[string]int64) 
 			spent[p] += n
 		}
 		if err := api.SetLedgerSpentColumn(cm, spent); err != nil {
+			return nil, fmt.Errorf("meter: %w", err)
+		}
+		if err := api.AddSettled(cm, inc); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
 		if existed {
@@ -972,8 +1061,9 @@ func sameDay(a, b time.Time) bool {
 	return a.UTC().Format(api.LedgerDayLayout) == b.UTC().Format(api.LedgerDayLayout)
 }
 
-// prune deletes the day ledgers older than ledgerRetention. Once per UTC day: a missed day of
-// deletions is made up the next one, and the names are dated.
+// prune deletes the day ledgers older than ledgerRetention, the USD ones and the token ones they
+// replaced (#155). Once per UTC day: a missed day of deletions is made up the next one, and the
+// names are dated.
 func (m *Meter) prune(ctx context.Context, day string) error {
 	if m.pruned == day {
 		return nil
@@ -986,14 +1076,12 @@ func (m *Meter) prune(ctx context.Context, day string) error {
 	var errs []error
 	for i := range cms.Items {
 		cm := &cms.Items[i]
-		name, ok := strings.CutPrefix(cm.Name, api.LedgerPrefix)
+		dated, ok := api.LedgerDay(cm.Name, api.LedgerPrefix)
 		if !ok {
-			continue
+			dated, ok = api.LedgerDay(cm.Name, api.LegacyLedgerPrefix)
 		}
-		if _, err := time.Parse(api.LedgerDayLayout, name); err != nil {
-			continue // a name that is not a day is not a ledger to us
-		}
-		if name >= cutoff { // the layout is ordered: so are the strings
+		// A name that is not a day is not a ledger to us; the layout is ordered: so are the strings.
+		if !ok || dated >= cutoff {
 			continue
 		}
 		if err := m.Ledger.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {

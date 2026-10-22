@@ -269,7 +269,7 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | A tier sets `runUSD` or `taskUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A model that served the run has no price (or, without `gen_ai_request_model` in `meter.query`, its claim's model has none). The run is capped at `runTokens`. The log says `run capped in tokens` |
 | `agent_factory_meter_unpriced_model_runs_total{model}` | Runs served by `model`, which has no `meter.prices` row: a backend pins a model the price table lacks. Counted once per run and model, whatever the tier caps in. Alert on any increase |
-| `agent_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input` (a streamed call, or native Messages), and the meter priced all of `input` as fresh. Counted once per run and model. Any increase means the internal route or the harness changed |
+| `agent_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input`, and the meter priced all of `input` as fresh. Every path the platform runs today counts the cache inside `input`, streamed calls included, so any increase means a gateway, a provider or the harness changed |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
 | `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
@@ -287,10 +287,10 @@ ended run's usage, and reports its cost only once the window has passed. A readi
 the window still reaches the by-model counter and the Task's cost. It cannot correct the histogram,
 and the log says `a run spent after its cost was reported`.
 
-A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no
-annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a
-run spent before that reset; the Task status keeps the costs already recorded
-(`runs[].costMicroUSD`, `usage.costMicroUSD`).
+A run's USD total survives a leader failover: the new leader reads what the day ledgers settled
+for the run (`settled.<runId>`, summed over the retained days) and starts the run there when its
+counters read lower, after a gateway counter reset. Its cost by served model still starts from the
+counters, so `agent_factory_model_cost_usd_total` can miss what a run spent before such a reset.
 
 ### Finished rooms close
 

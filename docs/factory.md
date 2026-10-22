@@ -284,9 +284,10 @@ Grouping by served model is what makes a logical name safe to price: the same cl
 dearer. A run's cost is the sum over the models that served it of
 `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`,
 divided by 10⁶; a series without `gen_ai_request_model` is priced by the claim's logical model.
-agentgateway 1.6 counts the cache tokens in `input` on its non-streaming Chat Completions to
-Messages translation, but not on a streamed call or native Messages. A model whose `input` is below
-`cached_input + cache_creation_input` is priced with all of `input` as fresh, and
+Every gateway path the platform runs counts the cache tokens inside `input`: agentgateway 1.6's
+Chat Completions to Messages translation, streamed or not, and Z.ai's `prompt_tokens`. A model
+whose `input` is below `cached_input + cache_creation_input` comes from a gateway that leaves them
+out: it is priced with all of `input` as fresh, and
 `agent_factory_meter_input_excludes_cache_runs_total{model}` counts the run.
 A run served by a model with no price is never $0: it is held to its token caps, and
 `agent_factory_meter_unpriced_model_runs_total{model}` names the model.
@@ -333,6 +334,14 @@ Admission refuses (enforced) or counts (shadow) a run whose reservation does not
 day's spend and reservations: a task run reserves its `runUSD`, or its `runTokens` at $1.70 per
 million on a tier capped in tokens, and a `POST /v1/runs` its `maxTokens` at $1.70 per million.
 
+Each tick the meter charges a run's priced increase, or its token increase at $1.70 per million
+when the run cannot be priced (never $0), to every key the run is charged to and to its
+`settled.<runId>`. A meter that first sees a run, a new leader included, starts it at what the
+ledgers settled for it, so a failover charges a run neither twice nor less. The meter deletes the
+ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>` they replaced the
+same way. The day of the switch to USD starts at $0: runs that ended before it are not charged
+again, and runs in flight are charged their whole cost.
+
 ### Per-person caps
 
 Off by default (`budgets.perPerson.enabled: false`): every run is admitted exactly as before.
@@ -347,7 +356,7 @@ one ledger entry, so no run holds one reservation without the other.
 | A schedule's or RunLore's task, a system caller's API run | The fleet alone, as before |
 
 Each run record keeps its person in `status.runs[].chargedTo`, and the claim in
-`agents.ogenki.io/charged-to`: the meter settles the run's tokens to the fleet and to that person,
+`agents.ogenki.io/charged-to`: the meter settles the run's cost to the fleet and to that person,
 never to the token's `human:<sub>`, so one person has one ledger key whichever path they use. Logins
 are lowercased.
 
