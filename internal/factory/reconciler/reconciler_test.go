@@ -31,6 +31,7 @@ import (
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
@@ -59,7 +60,7 @@ func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
 		created = f.now()
 	}
 	f.specs[s.RunID] = s
-	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, RoomRef: s.RoomRef,
+	f.runs[s.RunID] = runs.Run{ID: s.RunID, TaskID: s.TaskID, Role: s.Role, Principal: s.Principal, ChargedTo: s.ChargedTo, RoomRef: s.RoomRef,
 		Phase: "Pending", MaxTokens: s.MaxTokens, StartSeq: s.StartSeq, Head: s.Head, Created: created, TaskText: s.TaskText}
 	return nil
 }
@@ -256,6 +257,7 @@ func (l *fakeLog) end(runID, phase, reason string) {
 type fakeMetrics struct {
 	mu       sync.Mutex
 	recorded []string
+	bound    []string // the series that name a payer: "<series> <the payer ctx binds>" (spend per identity SI4)
 }
 
 func (m *fakeMetrics) add(s string) {
@@ -263,11 +265,22 @@ func (m *fakeMetrics) add(s string) {
 	defer m.mu.Unlock()
 	m.recorded = append(m.recorded, s)
 }
+
+func (m *fakeMetrics) who(ctx context.Context, s string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bound = append(m.bound, s+" "+fmetrics.PrincipalOf(ctx))
+}
 func (m *fakeMetrics) TimeToPR(_ context.Context, _ time.Duration, source, tier, template string) {
 	m.add("time_to_pr " + source + " " + tier + " " + template)
 }
-func (m *fakeMetrics) PROutcome(_ context.Context, class, outcome string) {
+func (m *fakeMetrics) PROpened(ctx context.Context) { m.who(ctx, "pr_opened") }
+func (m *fakeMetrics) PROutcome(ctx context.Context, class, outcome string) {
 	m.add("pr " + class + " " + outcome)
+	m.who(ctx, "pr "+outcome)
+}
+func (m *fakeMetrics) HumanWait(ctx context.Context, phase string, d time.Duration) {
+	m.who(ctx, fmt.Sprintf("wait %s %.0f", phase, d.Seconds()))
 }
 func (m *fakeMetrics) TaskTokens(_ context.Context, tokens int64, tier, template, class string) {
 	m.add("task_tokens " + strconv.FormatInt(tokens, 10) + " " + tier + " " + template + " " + class)
@@ -276,14 +289,18 @@ func (m *fakeMetrics) Intervention(_ context.Context, kind string) { m.add("inte
 func (m *fakeMetrics) TierFit(_ context.Context, classifier, tier, fit string, control bool) {
 	m.add("tier_fit " + classifier + " " + tier + " " + fit + " " + strconv.FormatBool(control))
 }
-func (m *fakeMetrics) Revoked(_ context.Context, reason string) { m.add("revoked " + reason) }
+func (m *fakeMetrics) Revoked(ctx context.Context, reason string) {
+	m.add("revoked " + reason)
+	m.who(ctx, "revoked "+reason)
+}
 func (m *fakeMetrics) PrincipalShadow(_ context.Context, principal string) {
 	m.add("revoked budget-principal-shadow")
 	m.add("shadow " + principal)
 }
-func (m *fakeMetrics) RunRevoked(_ context.Context, reason, limit string) {
+func (m *fakeMetrics) RunRevoked(ctx context.Context, reason, limit string) {
 	m.add("revoked " + reason)
 	m.add("limit " + limit)
+	m.who(ctx, "revoked "+reason)
 }
 func (m *fakeMetrics) RunBudgetFallback(_ context.Context, scope, why string) {
 	m.add("fallback " + scope + " " + why)
@@ -446,6 +463,10 @@ func TestLabelToNarratedRun(t *testing.T) {
 		"tier_fit static standard over false", "task_tokens 0 standard solo review"}
 	if strings.Join(g.metrics.recorded, "|") != strings.Join(want, "|") {
 		t.Fatalf("%q", g.metrics.recorded)
+	}
+	// Spend per identity SI4: per-person caps off, the task is the fleet's.
+	if want := "pr_opened system:factory|pr human_merged system:factory"; strings.Join(g.metrics.bound, "|") != want {
+		t.Fatalf("%q, want %q", g.metrics.bound, want)
 	}
 }
 
