@@ -132,7 +132,9 @@ const (
 	// LedgerSettled prefixes one key per metered run, settled.<runId>: the micro-USD charged to
 	// that run that day, written by the meter in the same write as spent. Per key, spent is the
 	// sum of settled over the runs charged to it; summed over the retained days, it is how much
-	// of a run any meter has charged, so a new leader charges neither twice nor less (TC6).
+	// of a run any meter has charged, so a new leader charges neither twice nor less (TC6). One
+	// exception: on the day a lifted run (R10) is first charged, its settled entry also holds the
+	// lift, which spent never counted, so settled exceeds that run's share of spent by it.
 	LedgerSettled = "settled."
 	// LedgerDayLayout labels the ledger with the UTC day it counts.
 	LedgerDayLayout = "20060102"

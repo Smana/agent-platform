@@ -300,13 +300,17 @@ type reading struct {
 // account is a run as the day ledgers count it (truthful costs TC6): total is its priced cost, or
 // its tokens at the reference rate when it cannot be priced, lifted by base to what earlier
 // meters settled; settled is what the ledgers charged it as this meter knows it: every retained
-// day as read, what it wrote since, and what R10 takes as charged where no ledger shows it.
+// day as read plus what it wrote since. lift is R10's: what an ended run is taken as charged
+// where no ledger shows it. It is not in settled: it stays pending and is written into the run's
+// settled entry with its next charge (never into spent), so a new leader reading that entry sees
+// the lift and does not charge the run's pre-switch cost again.
 type account struct {
 	total, settled, base int64
 	known                bool   // settled was read from the ledgers
 	measured             bool   // base is fixed: the run was measured once since
 	doubt                string // the day of a charge whose write reported an error: it may have landed
 	was                  int64  // the run's settled entry on that day before the write
+	lift                 int64  // R10's lift, recorded in the settled entry with the run's next charge
 }
 
 // mono is one monotonic counter's last raw value and the total it gave.
@@ -436,7 +440,11 @@ func (m *Meter) resolve(ctx context.Context) error {
 			}
 			read[a.doubt] = entries
 		}
-		a.settled += max(0, entries[id]-a.was)
+		gain := max(0, entries[id]-a.was)
+		a.settled += gain
+		if gain > 0 {
+			a.lift = 0
+		}
 		a.doubt, a.was = "", 0
 		m.accounts[id] = a
 	}
@@ -456,7 +464,7 @@ func (m *Meter) measure(r runs.Run, v int64, priced bool) int64 {
 		a.base, a.measured = max(0, a.settled-v), true
 		if runs.Terminal(r.Phase) && r.Tokens > 0 &&
 			(a.settled == 0 || r.Created.UTC().Format(api.LedgerDayLayout) < m.retainedFrom()) {
-			a.settled = max(a.settled, v)
+			a.lift = max(0, v-a.settled)
 		}
 	}
 	a.total = a.base + v
@@ -479,7 +487,7 @@ func (m *Meter) unsettled(id string) int64 {
 	if !a.known || !a.measured {
 		return 0
 	}
-	return max(0, a.total-a.settled)
+	return max(0, a.total-a.settled-a.lift)
 }
 
 // usdCap is the run's cap in micro-USD, or 0 and why it is capped in tokens instead ("" for a
@@ -639,7 +647,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 			for _, k := range charged(r) {
 				delta[k] += n
 			}
-			inc[r.ID] = n
+			inc[r.ID] = n + m.accounts[r.ID].lift
 		}
 	}
 	if m.Costs != nil {
@@ -660,6 +668,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 		for id, n := range inc { // in the day's ledger: those runs are settled up
 			a := m.accounts[id]
 			a.settled += n
+			a.lift = 0
 			m.accounts[id] = a
 		}
 		if m.Day != nil {
