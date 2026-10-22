@@ -50,7 +50,7 @@ async def handle(r, w):
 
 
 async def main():
-    server = await asyncio.start_server(handle, "127.0.0.1", int(sys.argv[1]))
+    server = await asyncio.start_server(handle, "0.0.0.0", int(sys.argv[1]))
     async with server:
         await server.serve_forever()
 
