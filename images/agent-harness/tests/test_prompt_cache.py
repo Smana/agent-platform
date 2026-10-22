@@ -9,11 +9,13 @@ SDK's real LLM, as agent-run configures it, against a stand-in gateway that reco
 import asyncio
 import http.server
 import importlib.util
+import io
 import json
 import os
 import sys
 import threading
 import unittest
+from unittest import mock
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, HERE)
@@ -146,6 +148,32 @@ class WireTest(unittest.TestCase):
         sent = json.dumps(self.send("public"))
         self.assertNotIn("prompt_cache_breakpoint", sent)
         self.assertNotIn("cache_control", sent)
+
+
+class NotAppliedTest(unittest.TestCase):
+    """The line AgentCacheMarkerMissing greps (observability/base/agent-platform/vmrule-logs.yaml in
+    ai-native-ref): `prompt cache NOT applied`. A reworded line would silence the alert."""
+
+    ALERT_GREP = "prompt cache NOT applied"
+
+    def test_an_sdk_without_the_method_says_so_and_stays_unpatched(self):
+        for missing in ("_transport_call", "_atransport_call"):
+            with self.subTest(missing=missing):
+                present = [n for n in ("_transport_call", "_atransport_call") if n != missing]
+                llm = type("LLM", (), {n: (lambda self, **kw: None) for n in present})
+                before = {n: getattr(llm, n) for n in present}
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    self.assertFalse(load_site().patch_cache_breakpoints(llm))
+                self.assertIn(self.ALERT_GREP, err.getvalue())
+                self.assertEqual({n: getattr(llm, n) for n in present}, before)
+
+    def test_an_sdk_that_cannot_be_imported_says_so_too(self):
+        site = load_site()
+        with mock.patch.dict(os.environ, {"PYTHONPATH": ""}), \
+                mock.patch.dict(sys.modules, {"openhands.sdk.llm.llm": None}), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            site._install()
+        self.assertIn(self.ALERT_GREP, err.getvalue())
 
 
 if __name__ == "__main__":
