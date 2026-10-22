@@ -123,9 +123,12 @@ func readyTransition(u *unstructured.Unstructured) time.Time {
 // refused is that the broker answered the run's bridge room_busy (F15): a run that
 // failed with no harness status mirrored never held the room, so it ended
 // room_busy. A refused run cannot succeed, since its harness never starts: one
-// that did was admitted later, and ends on what it did. It is pure: a run with no end time (no finishedAt,
+// that did was admitted later, and ends on what it did. loopEnd is the loop policy's end reason the
+// bridge recorded (harness_end): it names a Failed run's end before the harness status does, since a
+// stalled conversation is paused, not finished (loop policy harness R13). It counts on a Failed run
+// only, which is what agent-run's exit 1 becomes. A recorded end outranks deadline and pod_lost on that run, so an agent can relabel only its own run. It is pure: a run with no end time (no finishedAt,
 // no Ready transition) is never judged past its deadline.
-func EndReason(r Run, harnessStatus string, refused bool) string {
+func EndReason(r Run, harnessStatus, loopEnd string, refused bool) string {
 	if r.Deleted {
 		return "deleted"
 	}
@@ -140,6 +143,9 @@ func EndReason(r Run, harnessStatus string, refused bool) string {
 	}
 	if refused && harnessStatus == "" && r.Phase == "Failed" {
 		return RoomBusy
+	}
+	if r.Phase == "Failed" && envelope.LoopEnd(loopEnd) {
+		return loopEnd
 	}
 	switch harnessStatus {
 	case "finished":

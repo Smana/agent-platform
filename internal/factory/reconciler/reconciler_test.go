@@ -47,7 +47,8 @@ type fakeRuns struct {
 	specs   map[string]runs.Spec
 	runs    map[string]runs.Run
 	patches map[string]map[string]string
-	now     func() time.Time // stamps a created claim; nil means time.Now
+	now     func() time.Time      // stamps a created claim; nil means time.Now
+	refuse  func(runs.Spec) error // a refusal the cluster gives a create; nil accepts
 }
 
 func newRuns() *fakeRuns {
@@ -55,6 +56,11 @@ func newRuns() *fakeRuns {
 }
 
 func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
+	if f.refuse != nil {
+		if err := f.refuse(s); err != nil {
+			return err
+		}
+	}
 	created := time.Now()
 	if f.now != nil {
 		created = f.now()
@@ -311,6 +317,9 @@ func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string
 }
 func (m *fakeMetrics) MergeDecision(_ context.Context, class, verdict, reason string) {
 	m.add("merge_decision " + class + " " + verdict + " " + reason)
+}
+func (m *fakeMetrics) LoopRun(_ context.Context, class, end string) {
+	m.add("loop_run " + class + " " + end)
 }
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {

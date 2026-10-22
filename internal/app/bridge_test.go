@@ -126,7 +126,7 @@ func (h startedHandler) WithGroup(string) slog.Handler      { return h }
 func TestHealthz(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(map[bool]string{true: "healthy is 200", false: "unhealthy is 503"}[healthy], func(t *testing.T) {
-			noRead := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
+			noRead := func(context.Context, string) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
 			h := healthHandler(func(time.Time) bool { return healthy }, func() bridge.Admission { return bridge.Admission{} }, noRead, time.Now)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
@@ -230,7 +230,7 @@ func TestAdmissionEndpoint(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			noRead := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
+			noRead := func(context.Context, string) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{}, nil }
 			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return c.a }, noRead, time.Now)
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/admission", nil)
 			req.RemoteAddr = c.from
@@ -339,14 +339,16 @@ func TestLoopback(t *testing.T) {
 // F11, the harness half: agent-run asks for the final read on loopback, POST only, and waits at
 // most finalReadWait for the answer.
 func TestFinalReadEndpoint(t *testing.T) {
-	read := func(context.Context) (bridge.FinalReadResult, error) { return bridge.FinalReadResult{Events: 7}, nil }
-	never := func(ctx context.Context) (bridge.FinalReadResult, error) {
+	read := func(context.Context, string) (bridge.FinalReadResult, error) {
+		return bridge.FinalReadResult{Events: 7}, nil
+	}
+	never := func(ctx context.Context, _ string) (bridge.FinalReadResult, error) {
 		<-ctx.Done()
 		return bridge.FinalReadResult{}, ctx.Err()
 	}
 	for _, c := range []struct {
 		name, method, from string
-		read               func(context.Context) (bridge.FinalReadResult, error)
+		read               func(context.Context, string) (bridge.FinalReadResult, error)
 		code               int
 		body               string
 	}{
@@ -363,6 +365,33 @@ func TestFinalReadEndpoint(t *testing.T) {
 			h.ServeHTTP(rec, req)
 			if rec.Code != c.code || !strings.Contains(rec.Body.String(), c.body) {
 				t.Fatalf("%s /final-read from %s = %d %q, want %d %q", c.method, c.from, rec.Code, rec.Body.String(), c.code, c.body)
+			}
+		})
+	}
+}
+
+// Part 2 of the loop policy: agent-run's {"endReason": …} reaches the bridge's final read; no body,
+// or one that does not parse, reads as none and the read still runs.
+func TestFinalReadCarriesTheLoopEnd(t *testing.T) {
+	for _, c := range []struct{ name, body, want string }{
+		{"the end reason", `{"endReason": "stalled"}`, "stalled"},
+		{"no body", "", ""},
+		{"not JSON", "stalled", ""},
+		{"too long to be one", `{"endReason": "` + strings.Repeat("x", 300) + `"}`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := "unset"
+			read := func(_ context.Context, end string) (bridge.FinalReadResult, error) {
+				got = end
+				return bridge.FinalReadResult{}, nil
+			}
+			h := healthHandler(func(time.Time) bool { return true }, func() bridge.Admission { return bridge.Admission{} }, read, time.Now)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/final-read", strings.NewReader(c.body))
+			req.RemoteAddr = "127.0.0.1:41234"
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || got != c.want {
+				t.Fatalf("POST %q = %d, end %q; want 200 and %q", c.body, rec.Code, got, c.want)
 			}
 		})
 	}

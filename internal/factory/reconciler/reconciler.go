@@ -89,6 +89,7 @@ type metrics interface {
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	MergeDecision(ctx context.Context, class, verdict, reason string)
 	Resumed(ctx context.Context, reason string)
+	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 }
 
@@ -662,6 +663,10 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	t.Spec.Template, t.Spec.PredictedClass, t.Spec.DataClass, t.Spec.Budget = d.Template, d.PredictedClass, d.DataClass, d.Budget
+	t.Spec.Loop = nil
+	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
+		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
+	}
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
 		return err
@@ -883,6 +888,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if err := r.startRun(ctx, t, s, trigger); err != nil {
 		return err
+	}
+	if t.Status.Phase == v1alpha1.PhaseEscalated { // the cluster refused the loop claim: no run exists
+		return nil
 	}
 	// Consumed once the run exists, and only what its brief quoted (F-A). A failure only means
 	// the next brief repeats them.

@@ -371,13 +371,25 @@ func (s *Store) Cursor(ctx context.Context, roomID, originClient string) (int64,
 // LastHarnessStatus is the run's last execution_status the bridge mirrored (ruling P15).
 func (s *Store) LastHarnessStatus(ctx context.Context, roomID, runID string) (string, error) {
 	var status string
-	err := s.pool.QueryRow(ctx, `SELECT payload->>'status' FROM events WHERE room_id = $1 AND run_id = $2
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(payload->>'status', '') FROM events WHERE room_id = $1 AND run_id = $2
 		AND type = 'state_changed' AND payload->>'kind' = 'harness_status' ORDER BY seq DESC LIMIT 1`,
 		roomID, runID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	return status, err
+}
+
+// LastHarnessEnd is the run's last loop end reason the bridge recorded (harness_end), "" for none.
+func (s *Store) LastHarnessEnd(ctx context.Context, roomID, runID string) (string, error) {
+	var reason string
+	err := s.pool.QueryRow(ctx, `SELECT coalesce(payload->>'reason', '') FROM events WHERE room_id = $1 AND run_id = $2
+		AND type = 'state_changed' AND payload->>'kind' = 'harness_end' ORDER BY seq DESC LIMIT 1`,
+		roomID, runID).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return reason, err
 }
 
 // unfinishedSQL reads only broker-origin events, through the partial index

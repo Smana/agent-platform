@@ -78,7 +78,7 @@ the broker assigns. The rest of this page names the parts.
 | **Bridge lease** | Which run's bridge holds the room. A second live run's bridge is refused `409 room_busy`. The lease also fences writes: a displaced bridge cannot append | `rooms.bridge_run` (`bridge_seen_at` is no longer written; a later migration drops it) |
 | **Data class** | `public` or `internal`: which model backends a run may reach. A room's runs inherit its class; an internal room's verdict comment carries no summary. Fixed at creation | `Room.spec.dataClass` |
 | **Redaction** | Replacing a detected secret with `[REDACTED:<rule>]` before the event is stored, and listing the rule in `redactions` | The broker |
-| **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `room_busy` (the room refused the run, which never started), `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation. That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` |
+| **End reason** | Why a run ended: `agent_finished`, `agent_error`, `agent_stuck`, `deadline`, `pod_lost`, `room_busy` (the room refused the run, which never started), `judge_impossible`, `stalled`, `not_met` (the loop policy ended a failed implementer run: the bridge's `harness_end`, read before the harness status), `revoked`, `deleted`, `budget-run`, or a `BudgetExhausted` run's `agents.ogenki.io/revoked` annotation. That annotation is free text, so it is redacted, then cut to 64 bytes. The `AgentRun` only ever says `Failed`; the room says why | `state_changed{run_phase}` |
 
 ## A room's phases
 

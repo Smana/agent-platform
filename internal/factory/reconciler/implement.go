@@ -191,10 +191,21 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 		return err
 	}
 	s.RunID, s.StartSeq, s.ChargedTo = runID(t.Name, len(t.Status.Runs)), last, r.person(t)
+	// The loop policy closes implementer runs only (L2); every one of them, revisions and CI fixes
+	// included, carries the task's policy, read at triage.
+	if l := t.Spec.Loop; l != nil && s.Role == "implementer" {
+		s.Loop = &runs.Loop{StallSteps: l.StallSteps, Continuations: l.Continuations, JudgeModel: l.JudgeModel}
+	}
 	if err := r.Runs.Create(ctx, s); err != nil {
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
 		if !apierrors.IsAlreadyExists(err) {
+			// The cluster refused a claim carrying spec.loop (Strict validation: the host's XRD lacks it).
+			// Retrying cannot help; hand the task to a maintainer instead of backing off forever.
+			if s.Loop != nil && (apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
+				r.log().Warn("loop claim refused by the cluster", "task.id", t.Name, "err", err)
+				return r.end(ctx, t, v1alpha1.PhaseEscalated, "loop_unsupported")
+			}
 			return err
 		}
 		x, found, gerr := r.Runs.Get(ctx, s.RunID)
@@ -430,6 +441,16 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		default:
 			reason = why
 		}
+	}
+	if t.Spec.Loop != nil && current(t).Role == "implementer" {
+		end := "other"
+		switch {
+		case envelope.LoopEnd(reason):
+			end = reason
+		case run.Phase == "Succeeded":
+			end = "finished"
+		}
+		record(ctx, func(ctx context.Context) { r.Metrics.LoopRun(ctx, t.Spec.PredictedClass, end) })
 	}
 	// R38: the triager's output reaches a public implementer only through a human. Its summary
 	// stays in the room (internal); the issue gets the room link and the next step, nothing else.

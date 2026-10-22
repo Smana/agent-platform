@@ -18,6 +18,8 @@ import (
 type Appender interface {
 	Append(ctx context.Context, d envelope.Draft) (envelope.Event, bool, error)
 	LastHarnessStatus(ctx context.Context, roomID, runID string) (string, error)
+	// LastHarnessEnd is the loop policy's end reason the bridge recorded for the run, "" if none.
+	LastHarnessEnd(ctx context.Context, roomID, runID string) (string, error)
 	// Cursor is the highest seq stored for an idempotency scope, 0 if none: here,
 	// whether the bridge API ever refused the run (BusyScope).
 	Cursor(ctx context.Context, roomID, originClient string) (int64, error)
@@ -92,11 +94,15 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 	if err != nil {
 		return fmt.Errorf("runwatch: harness status of run %s: %w", r.ID, err)
 	}
+	end, err := e.Store.LastHarnessEnd(ctx, r.Room, r.ID)
+	if err != nil {
+		return fmt.Errorf("runwatch: loop end of run %s: %w", r.ID, err)
+	}
 	busy, err := e.Store.Cursor(ctx, r.Room, BusyScope+r.ID)
 	if err != nil {
 		return fmt.Errorf("runwatch: refusals of run %s: %w", r.ID, err)
 	}
-	reason, rules := e.endReason(r, status, busy > 0)
+	reason, rules := e.endReason(r, status, end, busy > 0)
 	if err := put(stepEnded, envelope.StateChanged, envelope.StatePayload("run_phase",
 		map[string]any{"phase": r.Phase, "reason": reason}), rules...); err != nil {
 		return err
@@ -109,8 +115,8 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 // constants; a revocation's annotation is free text, so it is redacted, then cut
 // to maxReasonBytes, whole runes kept: cutting first could split a secret past
 // recognition.
-func (e *Events) endReason(r Run, status string, refused bool) (string, []string) {
-	reason := EndReason(r, status, refused)
+func (e *Events) endReason(r Run, status, end string, refused bool) (string, []string) {
+	reason := EndReason(r, status, end, refused)
 	if r.Revoked == "" || reason != r.Revoked {
 		return reason, nil
 	}

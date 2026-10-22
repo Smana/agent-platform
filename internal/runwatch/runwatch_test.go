@@ -138,7 +138,7 @@ func TestALateSyncedTransitionIsNotTheEnd(t *testing.T) {
 	if !ok || !r.FinishedAt.Equal(time.Date(2026, 9, 27, 10, 20, 0, 0, time.UTC)) {
 		t.Fatalf("finished at %s, want Ready's 10:20", r.FinishedAt)
 	}
-	if got := EndReason(r, "", false); got != "pod_lost" {
+	if got := EndReason(r, "", "", false); got != "pod_lost" {
 		t.Fatalf("end reason %s, want pod_lost", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestEndReason(t *testing.T) {
 		{"a refused run whose claim was deleted was deleted", deleted, "", "deleted", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := EndReason(c.r, c.status, c.refused); got != c.want {
+			if got := EndReason(c.r, c.status, "", c.refused); got != c.want {
 				t.Fatalf("got %s want %s", got, c.want)
 			}
 		})
@@ -249,6 +249,7 @@ func TestEndReason(t *testing.T) {
 type fakeStore struct {
 	drafts    []envelope.Draft
 	status    string
+	end       string
 	keys      map[string]bool
 	appendErr error
 	statusErr error
@@ -274,6 +275,10 @@ func (f *fakeStore) Append(_ context.Context, d envelope.Draft) (envelope.Event,
 
 func (f *fakeStore) LastHarnessStatus(context.Context, string, string) (string, error) {
 	return f.status, f.statusErr
+}
+
+func (f *fakeStore) LastHarnessEnd(context.Context, string, string) (string, error) {
+	return f.end, nil
 }
 
 func (f *fakeStore) Cursor(_ context.Context, _, originClient string) (int64, error) {
@@ -540,4 +545,33 @@ func TestOnLiveCountsEachLiveRunOnce(t *testing.T) {
 	w.Upsert(ctx, claim("xplane-run-cccccccc", "", "Running", ""))
 	w.Upsert(ctx, claim("xplane-run-dddddddd", "3kq7x2ma", "Failed", ""))
 	check("no room, or born terminal", 0)
+}
+
+// Loop policy part 2: a recorded loop end names a Failed run's end before its harness status
+// (a stalled conversation is paused); the platform's own ends, and any other phase, keep theirs.
+func TestEndReasonReadsTheLoopEndFirst(t *testing.T) {
+	start := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
+	run := func(phase, revoked string) Run {
+		return Run{Phase: phase, Revoked: revoked, StartedAt: start, FinishedAt: start.Add(20 * time.Minute), MaxMinutes: 60}
+	}
+	for _, c := range []struct {
+		name        string
+		r           Run
+		status, end string
+		want        string
+	}{
+		{"a stall ends a paused conversation", run("Failed", ""), "paused", "stalled", "stalled"},
+		{"the judge said impossible", run("Failed", ""), "finished", "judge_impossible", "judge_impossible"},
+		{"the continuations are spent", run("Failed", ""), "finished", "not_met", "not_met"},
+		{"an unknown end is ignored", run("Failed", ""), "finished", "met", "agent_finished"},
+		{"a succeeded run ignores an end", run("Succeeded", ""), "finished", "stalled", "agent_finished"},
+		{"the budget wins", run("BudgetExhausted", "budget-run"), "paused", "stalled", "budget-run"},
+		{"a revocation wins", run("Revoked", "manual"), "paused", "stalled", "revoked"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := EndReason(c.r, c.status, c.end, false); got != c.want {
+				t.Fatalf("got %s want %s", got, c.want)
+			}
+		})
+	}
 }

@@ -124,6 +124,7 @@ The payload shape of every `type`.
 | `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge |
 | `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge |
 | `harness_paused` | — | Bridge |
+| `harness_end` | `reason`: `judge_impossible`, `stalled` or `not_met`, the loop policy's end of an implementer run, from agent-run's final read; recorded once per value | Bridge |
 | `harness_event` | `harnessKind`: an event kind the pinned harness version did not have, recorded without its content; or `malformed`, `oversize` or `refused`, a stub keeping the slot of an item the broker could not take, with `detail` (its type), `bytes` and the broker's `reason` | Bridge |
 | `verdict_posted`, `verdict_not_posted` | `verdictSeq`, and `url` or `reason`: `no_pull_request`, `github_refused` with `detail` `http_<status>` or `too_many_comments`, or `expired` with `detail: window_24h` | Broker (leader) |
 | `interrupt` | `runId` | Broker, on the driver's interrupt |

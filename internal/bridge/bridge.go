@@ -171,6 +171,7 @@ type Bridge struct {
 	leaseLost  bool
 	renewedAt  time.Time // the broker last renewed the lease: a hello or an accepted batch
 	lastStatus string    // the status the previous step read, "" if it failed
+	endSent    string    // the loop end reason recorded, "" if none
 
 	sealed     atomic.Bool
 	pastCap    atomic.Bool // the last events poll found the buffer at MaxBuffer

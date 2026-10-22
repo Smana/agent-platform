@@ -17,7 +17,7 @@ import (
 // mapping (phase 1), its acks (phase 4) and its local decisions (phase 5).
 var bridgeKinds = map[string]bool{"harness_status": true, "harness_error": true, "harness_paused": true,
 	"harness_event": true, "delivered": true, "interrupted": true, "undeliverable": true, "policy_decision": true,
-	"decision_applied": true}
+	"decision_applied": true, envelope.HarnessEnd: true}
 
 // knownFields are, per type a bridge may push, the top-level keys a reader of
 // the log looks up. A key that folds onto one of them must be spelled as it.
@@ -83,6 +83,13 @@ func bridgePayload(t envelope.Type, redacted json.RawMessage) (json.RawMessage, 
 		var kind string
 		if json.Unmarshal(obj["kind"], &kind) != nil || !bridgeKinds[kind] {
 			return nil, wire.ReasonBadItem
+		}
+		if kind == envelope.HarnessEnd {
+			// The end reason is a closed set; a missing or foreign one would read as NULL in the store.
+			var reason string
+			if json.Unmarshal(obj["reason"], &reason) != nil || !envelope.LoopEnd(reason) {
+				return nil, wire.ReasonBadItem
+			}
 		}
 		return redacted, ""
 	}

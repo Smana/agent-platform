@@ -134,6 +134,10 @@ type Config struct {
 	Sandbox   Sandbox             `json:"sandbox,omitzero"`
 	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
 	Runs runwatch.Kind `json:"runs,omitzero"`
+	// Loops is the loop policy per task class (loops design L2, L3), keyed by a class, review
+	// or default. Each row is whole: a class with no row reads default's, and a row is read
+	// alone, never merged with default's (LoopFor).
+	Loops map[string]Loop `json:"loops,omitempty"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
 	// Ignored are the keys the file sets that this release accepts and ignores, for the binary
@@ -995,6 +999,7 @@ func (c *Config) Validate() error {
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)
 	}
+	c.validateLoops(bad)
 	return errors.Join(errs...)
 }
 
@@ -1098,5 +1103,90 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	}
 	if b := r.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
 		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
+	}
+}
+
+// Loop is one row of loops. A row switches its class's loop on when it sets any of the three
+// keys (D4: no row, or a row without them, is today's run); an unset key then takes the
+// design's default. Rows are keyed by class so the scoper's switch (scoper design SC2,
+// loops.<class>.scope) joins them as one more key.
+type Loop struct {
+	// StallSteps ends a run with no commit by this many steps (L3): 1 to 500, default 80.
+	StallSteps *int32 `json:"stallSteps,omitempty"`
+	// Continuations is how many not_yet verdicts continue the conversation (L2): 0 to 5, default 2.
+	Continuations *int32 `json:"continuations,omitempty"`
+	// Judge is the completion judge's alias, or none for no judge (L2): default tier-light.
+	Judge string `json:"judge,omitempty"`
+}
+
+// The loop policy's defaults (loops design, "The policy, in the factory config") and the
+// harness's bounds (loop policy harness R16), which the XRD repeats.
+const (
+	DefaultStallSteps    = 80
+	DefaultContinuations = 2
+	DefaultJudge         = "tier-light"
+	NoJudge              = "none"
+	MaxStallSteps        = 500
+	MaxContinuations     = 5
+)
+
+// On reports whether the row switches the loop policy on.
+func (l Loop) On() bool { return l.StallSteps != nil || l.Continuations != nil || l.Judge != "" }
+
+// LoopPolicy is a class's loop policy, every value resolved; JudgeModel "" is no judge.
+type LoopPolicy struct {
+	StallSteps, Continuations int32
+	JudgeModel                string
+}
+
+// LoopFor is class's loop policy, nil when its loop is off: its row, else default's.
+func (c *Config) LoopFor(class string) *LoopPolicy {
+	row, ok := c.Loops[class]
+	if !ok {
+		row = c.Loops["default"]
+	}
+	if !row.On() {
+		return nil
+	}
+	p := &LoopPolicy{StallSteps: DefaultStallSteps, Continuations: DefaultContinuations, JudgeModel: DefaultJudge}
+	if row.StallSteps != nil {
+		p.StallSteps = *row.StallSteps
+	}
+	if row.Continuations != nil {
+		p.Continuations = *row.Continuations
+	}
+	switch row.Judge {
+	case "":
+	case NoJudge:
+		p.JudgeModel = ""
+	default:
+		p.JudgeModel = row.Judge
+	}
+	return p
+}
+
+// validateLoops: a row's key is default, review or a class some repository declares; its values
+// are within the harness's bounds; and only cloud-native-ref's AgentRun carries spec.loop.
+func (c *Config) validateLoops(bad func(string, ...any)) {
+	for _, name := range slices.Sorted(maps.Keys(c.Loops)) {
+		row := c.Loops[name]
+		if name != "default" && name != "review" && !slices.ContainsFunc(c.Repos(), func(r Repository) bool {
+			_, ok := r.Classes[name]
+			return ok
+		}) {
+			bad("loops.%s: %q is not default, review or a class a repository declares", name, name)
+		}
+		if s := row.StallSteps; s != nil && (*s < 1 || *s > MaxStallSteps) {
+			bad("loops.%s.stallSteps must be 1..%d", name, MaxStallSteps)
+		}
+		if n := row.Continuations; n != nil && (*n < 0 || *n > MaxContinuations) {
+			bad("loops.%s.continuations must be 0..%d", name, MaxContinuations)
+		}
+		if j := row.Judge; j != "" && j != NoJudge && !slices.Contains(models(), j) {
+			bad("loops.%s.judge %q is none or one of %v", name, j, models())
+		}
+		if row.On() && c.Runs.Group != runwatch.DefaultKind.Group {
+			bad("loops.%s: the loop policy needs cloud-native-ref's AgentRun (runs.group %s): this runtime's has no spec.loop", name, runwatch.DefaultKind.Group)
+		}
 	}
 }

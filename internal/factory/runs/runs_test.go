@@ -3,6 +3,8 @@
 package runs
 
 import (
+	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func spec() Spec {
@@ -380,5 +383,61 @@ func TestChargedToRoundTrips(t *testing.T) {
 	}
 	if r, _ := FromUnstructured(Build(spec())); r.ChargedTo != "" || Build(spec()).GetAnnotations()[AnnChargedTo] != "" {
 		t.Fatal("no person, no annotation")
+	}
+}
+
+// Loop policy part 2: spec.loop is written only when set, judgeModel only when the task names a judge.
+func TestBuildWritesTheLoopOnlyWhenSet(t *testing.T) {
+	base := Spec{RunID: "7f3cq2xz", Role: "implementer", Repository: "Smana/cloud-native-ref"}
+	if _, found, _ := unstructured.NestedMap(Build(base).Object, "spec", "loop"); found {
+		t.Fatal("no loop: no spec.loop (D4)")
+	}
+	for _, c := range []struct {
+		loop Loop
+		want map[string]any
+	}{
+		{Loop{StallSteps: 80, Continuations: 2, JudgeModel: "tier-light"}, map[string]any{"stallSteps": int64(80), "continuations": int64(2), "judgeModel": "tier-light"}},
+		{Loop{StallSteps: 40, Continuations: 0}, map[string]any{"stallSteps": int64(40), "continuations": int64(0)}},
+	} {
+		s := base
+		s.Loop = &c.loop
+		got, _, err := unstructured.NestedMap(Build(s).Object, "spec", "loop")
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("spec.loop = %v (%v), want %v", got, err, c.want)
+		}
+	}
+}
+
+// Loop policy part 2 (final review I2): only a claim carrying spec.loop is created under Strict
+// field validation, so an XRD that would prune it refuses the claim instead of running loop-off.
+func TestCreateIsStrictOnlyForALoopClaim(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		loop *Loop
+		want string
+	}{
+		{"no loop", nil, ""},
+		{"a loop", &Loop{StallSteps: 80, Continuations: 2}, "Strict"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			s := runtime.NewScheme()
+			Scheme(s)
+			cl := fake.NewClientBuilder().WithScheme(s).WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					co := &client.CreateOptions{}
+					co.ApplyOptions(opts)
+					got = co.FieldValidation
+					return cl.Create(ctx, obj, opts...)
+				}}).Build()
+			sp := spec()
+			sp.Loop = c.loop
+			if err := (Client{C: cl}).Create(t.Context(), sp); err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Fatalf("fieldValidation %q, want %q", got, c.want)
+			}
+		})
 	}
 }

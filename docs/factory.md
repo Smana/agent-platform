@@ -189,9 +189,11 @@ every maintainer.
 | `stuck` | The run showed no room activity for 10 minutes |
 | `deadline` | The run hit its wall-clock limit (`tiers.<tier>.runMinutes`) |
 | `agent_error`, `agent_stuck` | The agent stopped on an error, or said it was stuck |
+| `judge_impossible`, `stalled`, `not_met` | Under the [loop policy](#the-config-file) (`loops`): the completion judge found the task impossible, the run made no commit within its step limit, or the judge still found the acceptance checks unmet after the last continuation. The issue gets the category; the judge's text stays in the room |
 | `pod_lost`, `Disrupted`, `PodLost`, `PodFailed` | The sandbox failed or was lost and was not resumed. A sandbox lost to its node is resumed by itself, up to `resume.maxPerTask` times |
 | `resumes_exhausted`, `resume_budget` | The sandbox was lost again, and no resume or no budget is left |
 | `run_unschedulable` | The cluster did not admit the run within `caps.maxPendingMinutes` |
+| `loop_unsupported` | The class has a `loops` row, but the cluster refused the run claim's `spec.loop` (its AgentRun schema predates the loop policy). No run started and none is retried: roll out crossplane-configuration with `spec.loop` first ([operations](operations.md)) |
 | `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
@@ -528,6 +530,7 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `spec.predictedClass` | The merge class triage predicted. Intent, not authority: only the gate merges |
 | `spec.template` | `solo`, `pair`, `trio` or `investigate` |
 | `spec.budget` | `tier`, `model`, `runTokens` (≤ 5,000,000), `taskTokens`, `runMinutes` (≤ 480), `runMicroUSD`, `taskMicroUSD` (0: the token caps) |
+| `spec.loop` | `stallSteps`, `continuations`, `judgeModel` (empty: no judge): the class's `loops` row, resolved at triage; every implementer run of the task gets it as `spec.loop`. Unset: the loop is off |
 | `status.phase`, `status.reason`, `status.phaseSince` | The phase above, why, and since when |
 | `status.classification` | The classifier's `tier`, `confidence`, `classifier`, `fallback` (`none`, `default`, `static`), `shadow` verdicts, `control` (forced to `frontier`) and `fit` (scored at the end) |
 | `status.runs[]` | Each run: `id`, `role`, `trigger` (`initial`, `review`, `human`, `ci`, `retry`, `resume`), `round`, `phase`, `reason`, `verdict`, `tokens`, `costMicroUSD`, `unpriced`, `startSeq`, `headSHA`, `started`, `finished`, and `provenance`, what it ran on: `factoryVersion` (the claim's CREATE-only `agents.ogenki.io/factory-version`), `compositionRevision` (the claim's `spec.crossplane.compositionRevisionRef.name`), `harnessImage` (the claim's `status.harnessImage`, the harness container's `imageID`) and `servedModels` (the meter's `gen_ai_request_model`, at most 8, each at most 64 characters: a longer name is skipped, never truncated). Each is written once, as it becomes known; empty means unknown. A run created before the upgrade (its claim has no factory version) stays empty, and a value over the CRD's bound is not recorded |
@@ -582,6 +585,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
 | `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 | `sandbox` | `suspend: {enabled}`: a run `POST /v1/runs` starts in an attended room gets `spec.suspendable: true`, which lets the room broker suspend it while its approval waits on an idle room (the broker's `suspend` config). Fixed on the claim at create | `enabled` false |
+| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s; it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`. Needs cloud-native-ref's `AgentRun` (`runs` left at its default) | None: every run as before |
 
 Each `repositories` entry:
 

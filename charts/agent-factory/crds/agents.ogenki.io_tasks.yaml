@@ -114,6 +114,34 @@ spec:
                   filter.
                 maxLength: 64
                 type: string
+              loop:
+                description: |-
+                  The loop policy its implementer runs get as spec.loop, resolved from loops.<class> at
+                  triage so a config change never moves a task already triaged (loops design L2, L3). Unset:
+                  the loop is off for the task's class.
+                properties:
+                  continuations:
+                    format: int32
+                    maximum: 5
+                    minimum: 0
+                    type: integer
+                  judgeModel:
+                    description: 'The judge''s alias; empty: no judge.'
+                    enum:
+                    - agent-default
+                    - tier-light
+                    - tier-standard
+                    - tier-frontier
+                    type: string
+                  stallSteps:
+                    format: int32
+                    maximum: 500
+                    minimum: 1
+                    type: integer
+                required:
+                - continuations
+                - stallSteps
+                type: object
               predictedClass:
                 description: 'Intent, not authority: it picks team and budget; only
                   policy-bot merges (§2).'

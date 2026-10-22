@@ -91,6 +91,15 @@ type Spec struct {
 	EgressProfiles                                                                                                                      []string
 	// Suspendable is spec.suspendable (v2 suspend), written only when true: it is immutable.
 	Suspendable bool
+	// Loop is spec.loop (loops design L2, L3), written only when set: it is immutable.
+	Loop *Loop
+}
+
+// Loop is the claim's spec.loop; JudgeModel "" writes no judgeModel, which the composition reads
+// as none.
+type Loop struct {
+	StallSteps, Continuations int32
+	JudgeModel                string
 }
 
 var (
@@ -152,6 +161,13 @@ func Build(s Spec) *unstructured.Unstructured {
 	}
 	if s.Suspendable {
 		spec["suspendable"] = true
+	}
+	if l := s.Loop; l != nil {
+		loop := map[string]any{"stallSteps": int64(l.StallSteps), "continuations": int64(l.Continuations)}
+		if l.JudgeModel != "" {
+			loop["judgeModel"] = l.JudgeModel
+		}
+		spec["loop"] = loop
 	}
 	if len(s.EgressProfiles) > 0 {
 		profiles := make([]any, 0, len(s.EgressProfiles))
@@ -271,7 +287,13 @@ func (c Client) Create(ctx context.Context, s Spec) error {
 	if err := s.Validate(); err != nil {
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
-	if err := c.C.Create(ctx, Build(s)); err != nil {
+	// A claim that carries spec.loop is created under Strict field validation: a host XRD without
+	// spec.loop would prune it and run loop-off while the Task records the policy; refuse instead.
+	var opts []client.CreateOption
+	if s.Loop != nil {
+		opts = append(opts, client.FieldValidation("Strict"))
+	}
+	if err := c.C.Create(ctx, Build(s), opts...); err != nil {
 		if apierrors.IsAlreadyExists(err) && c.replayOf(ctx, s) {
 			return nil
 		}
