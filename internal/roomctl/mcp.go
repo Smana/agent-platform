@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,22 +29,28 @@ const (
 	maxInFlight = 8       // requests relayed at once; past it, a request is refused, never queued
 	defaultPoll = 5 * time.Second
 	maxPoll     = 30 * time.Second
+	elicitWait  = 10 * time.Minute // how long issue_file waits for the developer's answer
 )
 
 // Relay is roomctl mcp: an MCP server on stdio for a local coding agent. It relays each message to
-// the broker's /mcp with the developer's token (factory interfaces F2). It blocks tasks/result
-// itself, polling tasks/get, so no request to the broker outlives its proxy.
+// the broker's /mcp with the developer's token (factory interfaces F2), and serves one tool of its
+// own, issue_file, which files a drafted issue with the developer's gh once they confirm it (F3).
+// It blocks tasks/result itself, polling tasks/get, so no request to the broker outlives its proxy.
 type Relay struct {
 	URL   string                                // https://rooms.<private domain>
 	Token func(context.Context) (string, error) // a valid access token, asked for on every request
 	HC    *http.Client                          // httpx: each request bounded
+	File  IssueFiler                            // files an accepted draft; nil refuses issue_file
 	// After waits d; nil is time.After. Tests step their own.
 	After func(d time.Duration) <-chan time.Time
 
 	out     io.Writer
 	outMu   sync.Mutex
 	mu      sync.Mutex
-	version string // the revision initialize settled on
+	version string                          // the revision initialize settled on
+	elicit  bool                            // the client can ask its human (elicitation)
+	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
+	nextID  int
 }
 
 // message is any JSON-RPC message, read far enough to route it.
@@ -57,9 +64,10 @@ type message struct {
 }
 
 // Serve relays the messages read from in, one per line, writing each answer to out, until in ends
-// or ctx does. Requests run concurrently, at most maxInFlight.
+// or ctx does. Requests run concurrently, at most maxInFlight; the client's answers to the relay's
+// own requests are read at once, so a request waiting on one never blocks the line.
 func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	r.out = out
+	r.out, r.waiting = out, map[string]chan json.RawMessage{}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g := &errgroup.Group{}
@@ -76,7 +84,8 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			r.write(mcpwire.Response(nil, nil, &mcpwire.Error{Code: mcpwire.ParseError, Message: "parse error"}))
 			continue
 		}
-		if m.Method == "" { // an answer: the relay sends no request of its own
+		if m.Method == "" { // an answer to one of the relay's requests
+			r.answered(m)
 			continue
 		}
 		raw := append([]byte(nil), line...)
@@ -97,6 +106,15 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 	}
 	switch m.Method {
 	case "initialize":
+		var p struct {
+			Capabilities struct {
+				Elicitation json.RawMessage `json:"elicitation"`
+			} `json:"capabilities"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		r.mu.Lock()
+		r.elicit = len(p.Capabilities.Elicitation) > 0 && string(p.Capabilities.Elicitation) != "null"
+		r.mu.Unlock()
 		res, err := r.relay(ctx, raw)
 		if err == nil {
 			var v struct {
@@ -108,6 +126,23 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 				r.mu.Unlock()
 			}
 		}
+		r.reply(m, res, err)
+	case "tools/list":
+		res, err := r.relay(ctx, raw)
+		if err == nil {
+			res, err = withIssueFile(res)
+		}
+		r.reply(m, res, err)
+	case "tools/call":
+		var c struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal(m.Params, &c) == nil && c.Name == issueFileTool {
+			r.write(mcpwire.Response(m.ID, r.issueFile(ctx, c.Arguments), nil))
+			return
+		}
+		res, err := r.relay(ctx, raw)
 		r.reply(m, res, err)
 	case "tasks/result":
 		res, err := r.taskResult(ctx, m, raw)
@@ -272,6 +307,47 @@ func (r *Relay) after(d time.Duration) <-chan time.Time {
 		return r.After(d)
 	}
 	return time.After(d)
+}
+
+// ask sends the client a request of the relay's own and waits for its answer, its result or its
+// error object, for at most elicitWait.
+func (r *Relay) ask(ctx context.Context, method string, params any) (message, error) {
+	r.mu.Lock()
+	r.nextID++
+	id := "roomctl-" + strconv.Itoa(r.nextID)
+	ch := make(chan json.RawMessage, 1)
+	r.waiting[id] = ch
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.waiting, id)
+		r.mu.Unlock()
+	}()
+	r.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	ctx, cancel := context.WithTimeout(ctx, elicitWait)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		return message{}, ctx.Err()
+	case raw := <-ch:
+		var m message
+		return m, json.Unmarshal(raw, &m)
+	}
+}
+
+// answered hands the client's answer to the request of the relay's that waits for it.
+func (r *Relay) answered(m message) {
+	var id string
+	if json.Unmarshal(m.ID, &id) != nil {
+		return
+	}
+	r.mu.Lock()
+	ch, ok := r.waiting[id]
+	r.mu.Unlock()
+	if ok {
+		raw, _ := json.Marshal(m)
+		ch <- raw
+	}
 }
 
 // write sends one message to the client, a line at a time.

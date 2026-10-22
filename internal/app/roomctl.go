@@ -226,7 +226,7 @@ func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, ar
 	if in == nil {
 		in = os.Stdin
 	}
-	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath)}
+	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH}
 	return relay.Serve(ctx, in, r.Out)
 }
 
