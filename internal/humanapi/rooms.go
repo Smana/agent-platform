@@ -162,8 +162,11 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
-	ID        string `json:"id"`
-	Phase     string `json:"phase"`
+	ID    string `json:"id"`
+	URL   string `json:"url"` // the room's page
+	Phase string `json:"phase"`
+	// State is the coarse state (summary.Coarse) of the task's phase, else the room's.
+	State     string `json:"state,omitempty"`
 	Owner     string `json:"owner"`
 	Driver    string `json:"driver"`
 	DataClass string `json:"dataClass"`
@@ -333,15 +336,27 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		if f.needsMe && needs == 0 {
 			continue
 		}
-		row := roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
-			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo, NeedsMe: needs > 0, NeedsYou: needs, You: you}
+		row := roomRow{ID: room.Name, URL: s.PublicURL + "/r/" + room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner,
+			Driver: room.Status.Driver, DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo,
+			NeedsMe: needs > 0, NeedsYou: needs, You: you}
 		if t := room.Status.Task; t != nil {
 			row.Task, row.Issue, row.Title, row.PR = t.Phase, int(t.Issue), t.IssueTitle, int(t.PR)
 		}
+		row.State = summary.Coarse(row.Task, row.Phase, s.nextRun(room.Name))
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
 	return out, access, nil
+}
+
+// nextRun reports a live run in room that is not running yet: requested, pending or suspended.
+func (s *Server) nextRun(room string) bool {
+	for _, r := range s.Runs.InRoom(room) {
+		if r.Live() && r.Phase != "Running" {
+			return true
+		}
+	}
+	return false
 }
 
 // stampLastEvent sets each row's LastEventAt from one store read for every listed room. The list

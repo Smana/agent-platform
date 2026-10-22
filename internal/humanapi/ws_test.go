@@ -972,7 +972,7 @@ func TestRoomList(t *testing.T) {
 		t.Fatalf("%d %v", code, err)
 	}
 	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"needsYou":0,"owner":"human:own","phase":"Active",` +
-		`"repository":"Smana/agent-platform","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
+		`"repository":"Smana/agent-platform","state":"running","url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)
 	}

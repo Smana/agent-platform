@@ -42,7 +42,7 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 // summaryOf is the room's summary/v1 as p sees it, notes after after: readRoom's refusals, or
 // errLogUnreadable.
 func (s *Server) summaryOf(ctx context.Context, id string, p authn.Principal, after int64) (summary.Summary, error) {
-	_, _, sub, err := s.readRoom(ctx, id, p)
+	room, _, sub, err := s.readRoom(ctx, id, p)
 	if err != nil {
 		return summary.Summary{}, err
 	}
@@ -62,6 +62,15 @@ func (s *Server) summaryOf(ctx context.Context, id string, p authn.Principal, af
 	}
 	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, s.now())
 	s.warnNoRepository(view, fold.Facts, id, sub)
+	// The fold's task phase is fresher than the Room's projection; a sealed log is a closed room.
+	task, phase := "", room.Status.Phase
+	if fold.Facts != nil {
+		task = fold.Facts.Phase
+	}
+	if fold.Sealed != "" {
+		phase = "Closed"
+	}
+	view.Status.State = summary.Coarse(task, phase, s.nextRun(id))
 	return view, nil
 }
 
