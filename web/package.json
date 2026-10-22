@@ -14,7 +14,7 @@
     "demo": "bash scripts/demo-site.sh .demo-site && SERVE_ROOT=.demo-site node preview/serve.mjs"
   },
   "dependencies": {
-    "markdown-it": "14.3.2"
+    "markdown-it": "14.3.3"
   },
   "devDependencies": {
     "@types/markdown-it": "14.2.0",
