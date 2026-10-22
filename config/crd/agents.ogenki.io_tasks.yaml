@@ -495,6 +495,35 @@ spec:
                     phase:
                       maxLength: 64
                       type: string
+                    provenance:
+                      description: What the run ran on (R10), each field filled once
+                        as it becomes known.
+                      properties:
+                        compositionRevision:
+                          description: The CompositionRevision Crossplane bound the
+                            claim to, as first read.
+                          maxLength: 253
+                          type: string
+                        factoryVersion:
+                          description: The factory build that created the claim (version.Version),
+                            from its CREATE-only annotation.
+                          maxLength: 64
+                          type: string
+                        harnessImage:
+                          description: |-
+                            The harness container's imageID, <repository>@sha256:<digest>, as the composition read it
+                            from the run's pod.
+                          maxLength: 320
+                          type: string
+                        servedModels:
+                          description: The models that served the run, as the meter
+                            read gen_ai_request_model; sorted.
+                          items:
+                            maxLength: 64
+                            type: string
+                          maxItems: 8
+                          type: array
+                      type: object
                     reason:
                       description: The room's end reason (SP2 P15), else the AgentRun's.
                       maxLength: 1024

@@ -26,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/agent-platform/internal/version"
 )
 
 // The claim's labels, annotations, principal and queues. The namespace and AnnRevoked are the
@@ -53,6 +54,9 @@ const (
 	// The person the run is charged to beside the fleet (v2 per-person caps D2): the meter
 	// settles its tokens to both keys. CREATE only; absent, the run's principal pays alone.
 	AnnChargedTo = "agents.ogenki.io/charged-to"
+	// The factory build that created the claim (R10): version.Version, CREATE only, so a replay
+	// that finds the claim reads back the build that made it, not its own.
+	AnnFactoryVersion = "agents.ogenki.io/factory-version"
 )
 
 // The AgentRun's status.reason for a run's pod (disruption design §3). The factory resumes a run
@@ -169,7 +173,7 @@ func Build(s Spec) *unstructured.Unstructured {
 	}
 	u.SetLabels(labels)
 	// All are written at CREATE only: the phase-5 patch limit never has to admit them.
-	ann := map[string]string{}
+	ann := map[string]string{AnnFactoryVersion: version.Version}
 	if s.Traceparent != "" {
 		ann[AnnTraceparent] = s.Traceparent
 	}
@@ -189,9 +193,7 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.ChargedTo != "" {
 		ann[AnnChargedTo] = s.ChargedTo
 	}
-	if len(ann) > 0 {
-		u.SetAnnotations(ann)
-	}
+	u.SetAnnotations(ann)
 	return u
 }
 
@@ -202,8 +204,12 @@ func Terminal(phase string) bool { return runwatch.Terminal(phase) }
 type Run struct {
 	ID, TaskID, Role, Principal, Phase, Reason, PullRequest, Revoked, Branch, RoomRef, Repository string
 	Head, TaskText, RequestHash, Tier, Model, ChargedTo                                           string
-	Tokens, MaxTokens, StartSeq                                                                   int64
-	Created, Finished                                                                             time.Time
+	// What the run ran on (R10): the factory build that created the claim, the
+	// CompositionRevision Crossplane bound it to, and the harness image the composition read
+	// from its pod. Empty until known.
+	FactoryVersion, CompositionRevision, HarnessImage string
+	Tokens, MaxTokens, StartSeq                       int64
+	Created, Finished                                 time.Time
 	// Deleting: the claim carries a deletion timestamp. Its finalizers can keep it listed, in
 	// whatever phase it had, long after the run itself was stopped (#55).
 	Deleting bool
@@ -222,7 +228,9 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		RoomRef: str("spec", "roomRef"), Repository: str("spec", "repository"), Phase: str("status", "phase"), Reason: str("status", "reason"),
 		PullRequest: str("status", "pullRequest"), Revoked: u.GetAnnotations()[AnnRevoked], Head: u.GetAnnotations()[AnnHead],
 		RequestHash: u.GetAnnotations()[AnnRequestHash], Tier: u.GetLabels()[LabelTier], Model: str("spec", "model"),
-		TaskText: str("spec", "task", "text"), ChargedTo: u.GetAnnotations()[AnnChargedTo]}
+		TaskText: str("spec", "task", "text"), ChargedTo: u.GetAnnotations()[AnnChargedTo],
+		FactoryVersion: u.GetAnnotations()[AnnFactoryVersion], CompositionRevision: str("spec", "crossplane", "compositionRevisionRef", "name"),
+		HarnessImage: str("status", "harnessImage")}
 	// The CREATE-only start seq (R48): absent means the room was empty when the run was created.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnStartSeq], 10, 64); err == nil {
 		r.StartSeq = v
@@ -336,7 +344,7 @@ func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) e
 	if err := validID("annotate", id); err != nil {
 		return err
 	}
-	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo} {
+	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo, AnnFactoryVersion} {
 		if _, ok := kv[k]; ok {
 			return fmt.Errorf("annotate run %s: %s is set at CREATE only", id, k)
 		}

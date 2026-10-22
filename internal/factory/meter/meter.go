@@ -116,6 +116,9 @@ type Source interface {
 type Cost struct {
 	MicroUSD int64
 	Why      string
+	// Served is the models that served the run's typed reading, by gen_ai_request_model, sorted
+	// (R10); nil when the query does not group by model.
+	Served []string
 }
 
 // Costs hands each tick's run costs to the reconciler, which sums a task's for its USD cap
@@ -157,6 +160,18 @@ func cost(p config.Price, u Usage) int64 {
 // input without them yields one. An input at or above them is read as including them, the shape
 // the internal runs' route reports; a run whose calls mix both shapes is priced as the larger.
 func inputExcludesCache(input, read, write int64) bool { return input < read+write }
+
+// served is the models with tokens in a typed reading, sorted; "" (no model label) is none.
+func (u Usage) served() []string {
+	var out []string
+	for name, mu := range u.Models {
+		if name != "" && mu != (ModelUsage{}) {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
 
 // byModel is the typed counters by served model, "" holding a reading without the model label.
 func (u Usage) byModel() map[string]ModelUsage {
@@ -660,6 +675,11 @@ func (m *Meter) Tick(ctx context.Context) error {
 		if why != "" {
 			costs[r.ID] = Cost{Why: why}
 			m.measure(r, config.RefMicroUSD(t), false) // never $0: the reference rate (TC7)
+		}
+		if seen && u.Typed {
+			c := costs[r.ID]
+			c.Served = u.served()
+			costs[r.ID] = c
 		}
 		if caps[r.ID], why = m.usdCap(r, why); why != "" {
 			m.fallback(ctx, r, why)

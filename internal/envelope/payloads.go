@@ -130,6 +130,17 @@ type RunFact struct {
 	Role      string    `json:"role"`
 	Trigger   string    `json:"trigger,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
+	// What the run ran on (R10), as far as the factory knows it yet.
+	Provenance *ProvenanceFact `json:"provenance,omitempty"`
+}
+
+// ProvenanceFact is what a run ran on (R10): the factory build, the AgentRun CompositionRevision,
+// the harness image digest and the models that served it. Each empty until known.
+type ProvenanceFact struct {
+	FactoryVersion      string   `json:"factoryVersion,omitempty"`
+	CompositionRevision string   `json:"compositionRevision,omitempty"`
+	HarnessImage        string   `json:"harnessImage,omitempty"`
+	ServedModels        []string `json:"servedModels,omitempty"`
 }
 
 // BudgetFact is the token budget and usage of a task.
