@@ -602,7 +602,10 @@ def declared(env: dict):
     try:
         ac = checks_module()
         try:
-            return ac.declaration()[2]
+            # Read once, before the conversation: the base and the blob stay the run's, whatever the
+            # agent does to refs afterwards (RC2).
+            base, blob, decl = ac.declaration()
+            return {**decl, "pin": (base, blob)}
         except ac.Undeclared as exc:
             print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
     except Exception as exc:  # noqa: BLE001 -- the checks never fail the run
@@ -655,7 +658,7 @@ def _load(path: str) -> dict | None:
     try:
         with open(path) as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
 
 
@@ -686,12 +689,18 @@ def _clean(res, decl, head: str):
     skipped = res.get("skipped")
     if skipped is not None:
         return {"version": 1, "head": head, "skipped": skipped} if isinstance(skipped, str) and skipped in CHECKS_SKIPS else None
+    pin = decl.get("pin")
+    if pin and (res.get("base"), res.get("declaration")) != tuple(pin):
+        return None
     names = {s.get("name") for s in decl.get("steps", []) if isinstance(s, dict)}
     steps = res.get("steps")
     if not isinstance(steps, list) or not all(isinstance(s, dict) and isinstance(s.get("result"), str)
                                            and s["result"] in CHECKS_RESULTS and isinstance(s.get("name"), str) for s in steps):
         return None
-    return {**res, "steps": [s for s in steps if s.get("name") in names]}
+    kept = [s for s in steps if s.get("name") in names]
+    if len({s["name"] for s in kept}) != len(kept):
+        return None
+    return {**res, "steps": kept}
 
 
 def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 0.0, clock=time.monotonic):
@@ -713,7 +722,8 @@ def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 
     limit = env.get("AGENT_RUN_SECONDS", "")
     timeout = budget + checks_module().INSTALL_S + 60
     if res is None and limit.isdigit():
-        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - MIN_NOTE_GAP_S
+        # Both room notes (the loop's end, then this one) can wait out the broker's minute.
+        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - 2 * MIN_NOTE_GAP_S
         if room < budget:
             res = {"version": 1, "head": head, "skipped": "deadline"}
             os.makedirs(CHECKS_DIR, exist_ok=True)
@@ -724,12 +734,23 @@ def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 
     error = None
     try:
         if res is None:
+            # The agent wrote this file: it is never the harness's result, so it moves aside first.
+            moved = True
+            if os.path.lexists(path):
+                try:
+                    os.replace(path, os.path.join(CHECKS_DIR, head + ".agent.json"))
+                except OSError:
+                    moved = False
+            tool_env = {**os.environ, **({"AGENT_CHECKS_BASE": decl["pin"][0]} if decl.get("pin") else {})}
             try:
                 subprocess.run([CHECKS_TOOL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=timeout)
+                               stderr=subprocess.DEVNULL, timeout=timeout, env=tool_env)
             except subprocess.TimeoutExpired:
                 pass
-            res = _clean(_load(path), decl, head) or {"version": 1, "head": head, "skipped": "unreadable result"}
+            made = _load(path) if moved else None
+            res = _clean(made, decl, head) if made is not None else None
+            res = res or {"version": 1, "head": head,
+                          "skipped": "unreadable result" if made is not None or not moved else "no result"}
         failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
         error = "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None
     except BaseException:

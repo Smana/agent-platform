@@ -150,6 +150,24 @@ class DeclarationTest(Rig):
         self.assertEqual([s["result"] for s in res["steps"]], ["pass", "pass"])
         self.assertEqual(res["declaration"], sh(self.repo, "git", "rev-parse", "origin/main:.github/agent-checks.yaml"))
 
+    def test_repointing_origin_head_after_startup_changes_nothing(self):
+        base, blob, _ = agent_checks.declaration()
+        self.commit(".github/agent-checks.yaml", DECLARED.replace('echo second', 'exit 1'))
+        sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", sh(self.repo, "git", "rev-parse", "HEAD"))
+        sh(self.repo, "git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.assertNotEqual(agent_checks.declaration()[0], base)
+        code, _ = self.run_checks(env={"AGENT_CHECKS_BASE": base})
+        res = self.result()
+        self.assertEqual((code, res["base"], res["declaration"]), (0, base, blob))
+        self.assertEqual([s["result"] for s in res["steps"]], ["pass", "pass"])
+
+    def test_a_replace_ref_cannot_substitute_the_declaration(self):
+        base, blob, _ = agent_checks.declaration()
+        self.write(self.tmp, "evil.yaml", DECLARED.replace('echo second', 'exit 1'))
+        evil = sh(self.repo, "git", "hash-object", "-w", os.path.join(self.tmp, "evil.yaml"))
+        sh(self.repo, "git", "replace", blob, evil)
+        self.assertEqual(agent_checks.declaration()[1], blob)
+
     def test_nothing_declared_exits_2(self):
         sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", sh(self.repo, "git", "rev-parse", "HEAD"))
         os.remove(os.path.join(self.repo, ".github/agent-checks.yaml"))

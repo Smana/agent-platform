@@ -62,8 +62,13 @@ class Undeclared(Exception):
     """The repository declares nothing usable: exit 2."""
 
 
+def git_env() -> dict:
+    """refs/replace is the agent's to write: no replacement object may stand in for a blob or a commit."""
+    return {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+
+
 def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True, env=git_env())
 
 
 def validate(doc) -> dict:
@@ -104,14 +109,16 @@ def validate(doc) -> dict:
 
 def declaration() -> tuple[str, str, dict]:
     """(default branch commit, declaration blob, declaration), from the clone's default branch."""
-    base = git("rev-parse", "--verify", "--quiet", DEFAULT_BRANCH + "^{commit}").stdout.strip()
+    # AGENT_CHECKS_BASE is the commit agent-run read at startup, before the agent could move the ref.
+    ref = os.environ.get("AGENT_CHECKS_BASE") or DEFAULT_BRANCH
+    base = git("rev-parse", "--verify", "--quiet", ref + "^{commit}").stdout.strip()
     if not base:
         raise Undeclared("the clone has no default branch (%s)" % DEFAULT_BRANCH)
     blob = git("rev-parse", "--verify", "--quiet", "%s:%s" % (base, DECLARATION)).stdout.strip()
     if not blob:
         raise Undeclared("the default branch declares no checks (%s)" % DECLARATION)
     try:
-        raw = subprocess.run(["git", "-C", REPO, "cat-file", "blob", blob], capture_output=True).stdout
+        raw = subprocess.run(["git", "-C", REPO, "cat-file", "blob", blob], capture_output=True, env=git_env()).stdout
         doc = yaml.safe_load(raw.decode("utf-8"))
     except (yaml.YAMLError, UnicodeDecodeError) as exc:
         raise Undeclared("%s: %s" % (DECLARATION, exc)) from exc

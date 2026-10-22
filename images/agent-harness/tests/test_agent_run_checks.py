@@ -20,6 +20,8 @@ state = os.environ["FAKE_CHECKS_DIR"]
 head = subprocess.run(["git", "-C", os.environ["FAKE_REPO"], "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 with open(os.path.join(state, "calls"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
+with open(os.path.join(state, "base"), "w") as f:
+    f.write(os.environ.get("AGENT_CHECKS_BASE", ""))
 steps = [{"name": "suites", "result": "pass"}, {"name": "pre-commit", "result": "fail"}]
 json.dump({"version": 1, "head": head, "dirty": False, "partial": False, "steps": steps}, open(os.path.join(state, head + ".json"), "w"))
 '''
@@ -178,7 +180,7 @@ class FinalChecksTest(unittest.TestCase):
                 notes = FakeNotes()
                 with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
                     agent_run.final_checks(self.env, DECL, notes)
-                self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
+                self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
 
     def test_the_tool_never_runs_past_the_deadline(self):
         seen = []
@@ -190,7 +192,64 @@ class FinalChecksTest(unittest.TestCase):
         with mock.patch("agent_run.subprocess.run", spy):
             agent_run.final_checks({**self.env, "AGENT_RUN_SECONDS": "900"}, DECL, FakeNotes(), started=0.0, clock=lambda: 100.0)
         self.assertEqual(len(seen), 1)
-        self.assertLessEqual(seen[0], 900 - 100 - agent_run.CHECKS_MARGIN_S - agent_run.MIN_NOTE_GAP_S)
+        self.assertLessEqual(seen[0], 900 - 100 - agent_run.CHECKS_MARGIN_S - agent_run.MIN_NOTE_GAP_S * 2)
+
+    def forged(self, steps, mode=0o444, **extra):
+        p = os.path.join(self.state, self.head + ".json")
+        with open(p, "w") as f:
+            json.dump({"head": self.head, "dirty": True, "steps": steps, **extra}, f)
+        os.chmod(p, mode)
+
+    def test_a_rejected_agent_file_is_never_posted_as_the_harness_run(self):
+        # The agent's dirty result, made read-only so the harness's own write would fail.
+        self.forged([{"name": "suites", "result": "pass"}] * 5)
+        notes = FakeNotes()
+        with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
+            agent_run.final_checks(self.env, DECL, notes)
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
+        self.assertTrue(os.path.exists(os.path.join(self.state, self.head + ".agent.json")))
+
+    def test_the_harness_run_replaces_a_rejected_agent_file(self):
+        self.forged([{"name": "suites", "result": "pass"}] * 5)
+        notes = FakeNotes()
+        agent_run.final_checks(self.env, DECL, notes)
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s: 1 pass, 1 fail. Failed: pre-commit." % self.head[:12]])
+
+    def test_duplicate_step_names_are_unreadable(self):
+        with open(os.path.join(self.state, self.head + ".json"), "w") as f:
+            json.dump({"head": self.head, "dirty": False, "partial": False,
+                       "steps": [{"name": "suites", "result": "pass"}] * 3}, f)
+        notes = FakeNotes()
+        with mock.patch.object(agent_run, "CHECKS_TOOL", "/bin/true"):
+            agent_run.final_checks(self.env, DECL, notes)
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: no result." % self.head[:12]])
+
+    def test_the_final_run_is_pinned_to_the_startup_base_and_a_result_for_another_base_is_refused(self):
+        pinned = {**DECL, "pin": ("b" * 40, "c" * 40)}
+        notes = FakeNotes()
+        agent_run.final_checks(self.env, pinned, notes)
+        with open(os.path.join(self.state, "base")) as f:
+            self.assertEqual(f.read(), "b" * 40)
+        # The fake tool's result names no base: refused, so nothing but the skip is posted.
+        self.assertEqual(notes.sent, ["Harness (implementer): checks on %s skipped: unreadable result." % self.head[:12]])
+        for pair in (("b" * 40, "c" * 40),):
+            with open(os.path.join(self.state, self.head + ".json"), "w") as f:
+                json.dump({"head": self.head, "base": pair[0], "declaration": pair[1], "dirty": False, "partial": False,
+                           "steps": [{"name": "suites", "result": "pass"}]}, f)
+            notes = FakeNotes()
+            agent_run.final_checks(self.env, pinned, notes)
+            self.assertIn("1 pass (the agent's own run)", notes.sent[0])
+        with open(os.path.join(self.state, self.head + ".json"), "w") as f:
+            json.dump({"head": self.head, "base": "d" * 40, "declaration": "c" * 40, "dirty": False, "partial": False,
+                       "steps": [{"name": "suites", "result": "pass"}]}, f)
+        notes = FakeNotes()
+        agent_run.final_checks(self.env, pinned, notes)
+        self.assertNotIn("(the agent's own run)", notes.sent[0])
+
+    def test_a_deeply_nested_result_is_unreadable_not_an_exception(self):
+        with open(os.path.join(self.state, self.head + ".json"), "w") as f:
+            f.write("[" * 100000)
+        self.assertIsNone(agent_run._load(os.path.join(self.state, self.head + ".json")))
 
     def test_an_undeclared_step_name_never_reaches_the_note(self):
         with open(os.path.join(self.state, self.head + ".json"), "w") as f:
@@ -229,7 +288,7 @@ class MainChecksTest(unittest.TestCase):
         pre, final, rules = self._main({"AGENT_CHECKS": "1"})
         pre.assert_called_once()
         self.assertTrue(rules.startswith("rules\nRepository checks:\n- Before every push"))
-        self.assertEqual(final.call_args.args[1], DECL)
+        self.assertEqual(final.call_args.args[1], {**DECL, "pin": ("base", "blob")})
 
     def test_without_the_switch_nothing_changes(self):
         pre, final, rules = self._main({})

@@ -6,7 +6,7 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 |---|---|
 | `agent_run.py` → `agent-run` | Entrypoint: start agent-server, clone and resume `$BRANCH`, POST the conversation, wait (under the [loop policy](#loop-policy) when it is on), revoke, exit 0/1. On SIGTERM, within 15 s: pause, checkpoint an implementer's work (`Agent-Checkpoint: disruption`; never a GitHub token, never over 200 files or 5 MiB), the room-bridge's final read, stop, revoke. A SIGTERM after the run ended keeps its exit code |
 | `loop_policy.py` | The loop policy's rules: the switch, the judge's input and verdict, the continuation, the state |
-| `agent_checks.py` → `agent-checks` | v3 feature 3: the CI's fast subset the repository declares in `.github/agent-checks.yaml` (read from the default branch), with its tools installed by mise (`/opt/agent/bin/mise`, off `PATH`) at the work tree's `mise.toml` pins into `/workspace/.toolchain`. Each step runs in its own process group without `CI` or any credential path; the result is `/workspace/.agent-checks/<sha>.json` and `.txt`. Evidence, never a gate |
+| `agent_checks.py` → `agent-checks` | v3 feature 3: the CI's fast subset the repository declares in `.github/agent-checks.yaml` (read from the default branch), with its tools installed by mise (`/opt/agent/bin/mise`, off `PATH`) at the work tree's `mise.toml` pins into `/workspace/.toolchain`. Each step runs in its own process group without `CI` or any credential path; the result is `/workspace/.agent-checks/<sha>.json` and `.txt`. Evidence, never a gate. The run is pinned to the base and declaration blob `agent-run` read at startup (`AGENT_CHECKS_BASE`, no `refs/replace`), and a result file the agent left is moved aside, never posted as the harness's own. Residual: under one uid a live agent process can still rewrite a result after it is written; the reviewer's run and the CI are the backstop |
 | `git_credential_agent.py` → `git-credential-agent` | git credential helper; exchanges through identity-proxy `:4001`, caches in memory; `agent-run` calls its `revoke` on exit |
 | `gh` | gh with that token in `GH_TOKEN`; `gh pr create` (or `new`) then appends the provenance footer (`pr_footer.py`, SP2 design §5) |
 | `commit-msg` | adds `Agent-Run: $RUN_ID`, `Agent-Task: $TASK_ID` when set, and `Agent-Checkpoint: disruption` on agent-run's SIGTERM checkpoint |
@@ -19,9 +19,51 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `LLM_API_KEY_FILE` | the model API key is read from this file (run-controller only) | the placeholder key; the identity-proxy injects the real one |
 | `GIT_TOKEN_FILE` | the git credential helper prints this file's token; it never calls octo-sts and never revokes (run-controller only) | octo-sts exchange through identity-proxy `:4001`, revoked on exit |
 | `MCP_URL` | the platform MCP entry and progress notes are wired | no platform tools, no progress notes |
+| `AGENT_CHECKS` | `1`: the toolchain installs in the background after the clone, the rules gain the repository-checks rule, and a `finished` implementer run checks its head, notes the result in the room and emits the span `agent-run.checks` | today's run |
+| `AGENT_RUN_SECONDS` | the pod's deadline: the final checks are skipped (`skipped: deadline`) when less than the declaration's budget plus 2 min is left | the final checks always run |
 | `AGENT_LOOP` | an implementer runs under the [loop policy](#loop-policy): a JSON object holding any of `stallSteps`, `continuations` and `judgeModel`; `{}` is 80, 2 and `tier-light` | no judge and no stall rule: the run ends when its conversation does |
 
-| `AGENT_RUN_SECONDS` | the pod's deadline: the final checks are skipped (`skipped: deadline`) when less than the declaration's budget plus 2 min is left | the final checks always run |
+## Loop policy
+
+An implementer run with `AGENT_LOOP` set ends by the loop policy (loops design L2 and L3, in
+ai-native-ref), not when its agent stops. The rules are in `loop_policy.py`; `agent_run.py` does the
+I/O. Another role, or a value that is not a JSON object of those three keys within bounds
+(`stallSteps` 1 to 500, `continuations` 0 to 5, `judgeModel` an alias or `none`), leaves it off and
+says why on stderr.
+
+| The run ends when | Exit | `endReason` | Room note |
+|---|---|---|---|
+| the judge answers `met`, `judgeModel` is `none`, or no judge answers | 0 | none | none |
+| the judge answers `impossible`, or a second verdict in the run is discarded | 1 | `judge_impossible` | the judge's reason |
+| the agent has made no commit by `stallSteps` steps, or two continuations in a row end with no new commit | 1 | `stalled` | which of the two |
+| the judge answers `not_yet` and the continuations are spent | 1 | `not_met` | the last reason |
+
+- **The judge** is called when the conversation ends `finished`: one call to the identity proxy's
+  `/judge/v1`, beside `LLM_BASE_URL`'s `/v1`, on the run's token, so the gateway meters it against the
+  run's cap. The proxy pins the judge's alias from its own `JUDGE_MODEL`; a refusal (403), a proxy
+  with no judge path (404) or any other failure leaves the run to end as it would with no judge.
+  The judge has no tools and a fresh context. It reads the issue's `## Acceptance check` section
+  (else the fenced issue text), the diff against the base (16 KiB at most) and the head's check runs,
+  read with the run's own `gh` after waiting up to 5 minutes for them to complete. It answers one
+  JSON object; a verdict with no parse or that cites none of the evidence ids it was given is
+  discarded: the first counts `not_yet`, the second `judge_impossible`.
+- **`not_yet`** sends one message into the same conversation, with the judge's reason quoted as data,
+  and the conversation runs again with its history.
+- **A commit** is a non-merge commit on `HEAD` or the run's branch that neither the run's start nor
+  the base branch holds: a fetch or a rebase onto the base counts nothing. The stall rule holds until
+  the first commit. The start and the counts are kept in `/workspace/.agent-loop.json`, so a
+  suspended run's next pod goes on counting.
+- **Its end** is reported three ways: the exit code; `{"endReason": "<reason>"}` in the body of the
+  run's final read, for the bridge to record; and a `room_progress` note, sent after the broker's
+  minute. `agent-run judge <n>:` and `agent-run loop end:` lines show each verdict and the end.
+
+Nothing here is a control: the budget, the deadline and OpenHands' stuck detector still bound the
+run, and an agent that games the rules only ends its own run.
+
+**The stall limit** is read from the factory's history: `scripts/stall-steps.sql` lists every
+implementer run's steps to its first commit from the room log, and `scripts/stall-steps.sh` keeps
+the runs merged pull requests name and prints N, the smallest multiple of 10 above their p90 once
+20 runs have one, and 80 until then.
 
 ## Model errors
 
