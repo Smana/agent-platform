@@ -151,9 +151,9 @@ class AsyncModelRetryTest(ModelRetryTest):
 
 class HardTimeoutTest(unittest.TestCase):
     """SDK 1.56 wraps each async model call in LLM.timeout (300 s by default): the #99 retries and their
-    waits now share that one window. Scaled down here: timeout 4 s, waits (1, 2) s, really slept."""
+    waits now share that one window. Scaled down here: timeout 6 s, waits (1, 2) s, really slept."""
 
-    TIMEOUT_S = 4
+    TIMEOUT_S = 6
 
     def setUp(self):
         import openai
@@ -192,13 +192,13 @@ class HardTimeoutTest(unittest.TestCase):
     def test_fast_failures_retry_within_the_window(self):
         out = self.call(0, 503, 503)
         self.assertEqual(out.message.content[0].text, "ok")
-        self.assertEqual(Gateway.hits, 3, "1 s + 2 s of waits fit in 4 s")
+        self.assertEqual(Gateway.hits, 3, "1 s + 2 s of waits fit in 6 s")
 
     def test_a_retry_that_would_outlast_the_window_ends_in_the_sdk_timeout(self):
         from openhands.sdk.llm.exceptions import LLMTimeoutError
 
-        out = self.call(1, 503, 503)
-        self.assertIsInstance(out, LLMTimeoutError, "the third attempt is never sent: 1+1+1+2 s > 4 s")
+        out = self.call(2, 503, 503)
+        self.assertIsInstance(out, LLMTimeoutError, "the third attempt is never sent: 2+1+2+2 s > 6 s")
         self.assertEqual(Gateway.hits, 2)
 
 
