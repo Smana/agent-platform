@@ -3,6 +3,7 @@
 package humanapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/fanout"
 )
 
@@ -103,5 +105,43 @@ func TestMCPTailTask(t *testing.T) {
 	}
 	if _, out := rpc(t, e, viaRoomctl("dev"), "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": roomID}, "task": map[string]any{}}); rpcCode(out) != -32601 {
 		t.Fatalf("a tool that does not run as a task: %v", out)
+	}
+}
+
+// A task id is an unauthenticated cursor: decodeTask bounds every field, and accepts a hand-made id
+// for the caller's own principal, whose reads are authorized afresh.
+func TestDecodeTask(t *testing.T) {
+	now := time.Now()
+	p := authn.Principal{ID: "dev"}
+	ok := tailTask{V: 1, By: "dev", Room: roomID, After: 3, Kinds: []string{"message"}, Created: now.UnixMilli(), TTL: 60000}
+	enc := func(v any) string {
+		b, _ := json.Marshal(v)
+		return taskPrefix + base64.RawURLEncoding.EncodeToString(b)
+	}
+	mut := func(f func(*tailTask)) string { c := ok; f(&c); return enc(c) }
+	cases := map[string]struct {
+		id   string
+		want bool
+	}{
+		"hand-made, own principal": {enc(map[string]any{"v": 1, "by": "dev", "room": roomID, "after": 0, "created": now.UnixMilli(), "ttl": 10000}), true},
+		"issued":                   {ok.id(), true},
+		"bad prefix":               {"x." + strings.TrimPrefix(ok.id(), taskPrefix), false},
+		"bad base64":               {taskPrefix + "!!!", false},
+		"oversized":                {taskPrefix + strings.Repeat("A", maxTaskID), false},
+		"unknown field":            {enc(map[string]any{"v": 1, "by": "dev", "room": roomID, "created": now.UnixMilli(), "ttl": 60000, "x": 1}), false},
+		"v2":                       {mut(func(t *tailTask) { t.V = 2 }), false},
+		"ttl low":                  {mut(func(t *tailTask) { t.TTL = 1 }), false},
+		"ttl high":                 {mut(func(t *tailTask) { t.TTL = maxTailWait.Milliseconds() + 1 }), false},
+		"negative after":           {mut(func(t *tailTask) { t.After = -1 }), false},
+		"bad room":                 {mut(func(t *tailTask) { t.Room = "NOPE" }), false},
+		"invalid kind":             {mut(func(t *tailTask) { t.Kinds = []string{"bogus"} }), false},
+		"future created":           {mut(func(t *tailTask) { t.Created = now.Add(2 * taskSkew).UnixMilli() }), false},
+		"ancient created":          {mut(func(t *tailTask) { t.Created = now.Add(-2 * maxTailWait).UnixMilli() }), false},
+		"another principal":        {mut(func(t *tailTask) { t.By = "other" }), false},
+	}
+	for name, c := range cases {
+		if _, got := decodeTask(c.id, p, now); got != c.want {
+			t.Errorf("%s: accepted %v, want %v", name, got, c.want)
+		}
 	}
 }

@@ -25,6 +25,7 @@ const (
 	tailWait      = 5 * time.Minute // a task's wait when it asks for no ttl
 	minTailWait   = 10 * time.Second
 	maxTailWait   = 15 * time.Minute
+	taskSkew      = time.Minute     // how far ahead of this replica's clock a task may have been created
 	taskPoll      = 5 * time.Second // the pollInterval a task suggests
 	maxTaskID     = 2 << 10
 	taskPrefix    = "tail."
@@ -39,7 +40,10 @@ const (
 )
 
 // tailTask is a room_tail task, carried whole in its id. By binds it to the principal that created
-// it: another caller's id answers as a missing task.
+// it: another caller's id answers as a missing task. The id is an unauthenticated cursor, not a
+// signed token: anyone can forge one for their own principal. That is harmless, because every read
+// is authorized afresh under the caller's principal and decodeTask bounds every field, so a forged
+// id can only shape the caller's own bounded query.
 type tailTask struct {
 	V       int      `json:"v"`
 	By      string   `json:"by"`
@@ -58,7 +62,7 @@ func (t tailTask) id() string {
 func (t tailTask) deadline() time.Time { return time.UnixMilli(t.Created + t.TTL) }
 
 // decodeTask reads id as a task of p's, or reports none.
-func decodeTask(id string, p authn.Principal) (tailTask, bool) {
+func decodeTask(id string, p authn.Principal, now time.Time) (tailTask, bool) {
 	raw, ok := strings.CutPrefix(id, taskPrefix)
 	if !ok || len(id) > maxTaskID {
 		return tailTask{}, false
@@ -66,7 +70,8 @@ func decodeTask(id string, p authn.Principal) (tailTask, bool) {
 	b, err := base64.RawURLEncoding.DecodeString(raw)
 	var t tailTask
 	if err != nil || mcpwire.DecodeArgs(b, &t) != nil || t.V != 1 || t.By != p.ID || !envelope.ValidID(t.Room) ||
-		t.After < 0 || len(t.Kinds) > maxKinds || t.TTL < minTailWait.Milliseconds() || t.TTL > maxTailWait.Milliseconds() {
+		t.After < 0 || len(t.Kinds) > maxKinds || t.TTL < minTailWait.Milliseconds() || t.TTL > maxTailWait.Milliseconds() ||
+		t.Created < now.Add(-maxTailWait).UnixMilli() || t.Created > now.Add(taskSkew).UnixMilli() {
 		return tailTask{}, false
 	}
 	for _, k := range t.Kinds {
@@ -116,7 +121,7 @@ func (s *Server) startTail(ctx context.Context, w http.ResponseWriter, id json.R
 	}
 	wait := tailWait
 	if opts.TTL != nil {
-		wait = min(max(time.Duration(*opts.TTL)*time.Millisecond, minTailWait), maxTailWait)
+		wait = time.Duration(min(max(*opts.TTL, minTailWait.Milliseconds()), maxTailWait.Milliseconds())) * time.Millisecond
 	}
 	t := tailTask{V: 1, By: p.ID, Room: a.Room, After: after, Kinds: a.Kinds, Created: s.now().UnixMilli(), TTL: wait.Milliseconds()}
 	view, _, err := s.taskStatus(ctx, p, t)
@@ -161,13 +166,13 @@ func (s *Server) taskStatus(ctx context.Context, p authn.Principal, t tailTask) 
 }
 
 // taskParams reads tasks/get's and tasks/result's {taskId} as a task of p's, or writes -32602.
-func taskParams(w http.ResponseWriter, req mcpwire.Request, p authn.Principal) (tailTask, bool) {
+func taskParams(w http.ResponseWriter, req mcpwire.Request, p authn.Principal, now time.Time) (tailTask, bool) {
 	var a struct {
 		TaskID string `json:"taskId"`
 	}
 	t, ok := tailTask{}, false
 	if json.Unmarshal(req.Params, &a) == nil {
-		t, ok = decodeTask(a.TaskID, p)
+		t, ok = decodeTask(a.TaskID, p, now)
 	}
 	if !ok {
 		mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.InvalidParams, Message: "no such task"})
@@ -177,7 +182,7 @@ func taskParams(w http.ResponseWriter, req mcpwire.Request, p authn.Principal) (
 
 // tasksGet is tasks/get: the task's status, read from the log.
 func (s *Server) tasksGet(ctx context.Context, w http.ResponseWriter, req mcpwire.Request, p authn.Principal) {
-	t, ok := taskParams(w, req, p)
+	t, ok := taskParams(w, req, p, s.now())
 	if !ok {
 		return
 	}
@@ -192,7 +197,7 @@ func (s *Server) tasksGet(ctx context.Context, w http.ResponseWriter, req mcpwir
 // tasksResult is tasks/result: the page of a terminal task, tied to it by _meta. A working task is
 // -32600: poll tasks/get, as roomctl mcp does.
 func (s *Server) tasksResult(ctx context.Context, w http.ResponseWriter, req mcpwire.Request, p authn.Principal) {
-	t, ok := taskParams(w, req, p)
+	t, ok := taskParams(w, req, p, s.now())
 	if !ok {
 		return
 	}
