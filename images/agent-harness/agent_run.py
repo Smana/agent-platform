@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import loop_policy
+
 AGENT_SERVER = "http://127.0.0.1:8000"
 # Loopback only (plan P13): the API is unauthenticated, and agent-server
 # itself switches to 0.0.0.0 by default once a session key is set.
@@ -60,6 +62,10 @@ REDACTED_KEY = "[REDACTED:model-key]"
 # One line per model-call retry, written by agent-server (site/sitecustomize.py, #99). /tmp is the
 # pod's emptyDir; the agent can write there too, so the count is a signal, never a control.
 RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
+
+# The loop policy (loops design L2, L3; loop_policy.py). Its state sits beside KEY_FILE, on a
+# suspendable run's PVC.
+LOOP_STATE = "/workspace/.agent-loop.json"
 
 
 @functools.cache
@@ -624,6 +630,59 @@ def clone(env: dict) -> bool:
         start = env["BASE_REF"]  # a commit
     subprocess.run(["git", "-C", REPO_DIR, "checkout", "-B", env["BRANCH"], start], check=True)
     return resumed
+
+
+class Stalled(Exception):
+    """No commit by the policy's stallSteps steps (loops L3)."""
+
+
+def _git(*args) -> str | None:
+    """git's stdout in the clone, or None when it fails: the loop never acts on a guess."""
+    try:
+        p = subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True, errors="replace", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def head() -> str:
+    return (_git("rev-parse", "HEAD") or "").strip()
+
+
+def _has(ref: str) -> bool:
+    return _git("rev-parse", "--verify", "--quiet", ref) is not None
+
+
+def base_ref(env: dict) -> str:
+    """The base as clone() resolved it: the remote branch, or BASE_REF itself when it is a commit."""
+    ref = "origin/" + env["BASE_REF"]
+    return ref if _has(ref) else env["BASE_REF"]
+
+
+def commits_since(env: dict, mark: str) -> int | None:
+    """The agent's commits since mark: non-merge commits on HEAD or the run's branch that neither mark
+    nor the base branch holds, so a fetch or a rebase onto the base counts nothing. None when git
+    cannot tell."""
+    branch = "refs/heads/" + env["BRANCH"]
+    tips = ["HEAD"] + ([branch] if _has(branch) else [])
+    out = _git("rev-list", "--count", "--no-merges", *tips, "^" + mark, "^" + base_ref(env))
+    return int(out) if out and out.strip().isdigit() else None
+
+
+def stall_watch(env: dict, steps, policy, state, path: str = LOOP_STATE):
+    """poll's on_tick under the loop policy: the step log, then the stall rule until the first commit."""
+    def tick():
+        steps()
+        if state.committed or steps.steps < policy.stall_steps:
+            return
+        n = commits_since(env, state.start)
+        if n is None:
+            return  # never a stall on a guess
+        if n == 0:
+            raise Stalled()
+        state.committed = True
+        state.save(path)
+    return tick
 
 
 def report(name: str, status: str, started: float, box: float) -> None:
