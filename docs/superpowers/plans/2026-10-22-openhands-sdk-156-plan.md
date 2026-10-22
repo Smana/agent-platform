@@ -23,6 +23,7 @@
 | R7 | **Keep the bridge's shell classifier** (`classify.go`). | See "1.55 AST analysis and the classifier" below: different job, different inputs, and the harness runs no SDK analyzer. |
 | R8 | The new MCP session test lands **with** the bump and asserts 1.55+ behaviour: an HTTP 403 to a `tools/call` no longer disconnects the run's MCP client. | Measured, reproduced on 1.49.6. It changes the premise of capability-profiles spike S0; this plan changes no policy, it records the fact and pins it. |
 | R9 | The new SDK features (child conversations, agent profiles, security analyzer, `persona`) stay **off**: the default agent's tools and `mcp_config` shape are unchanged. | Measured: `get_default_agent(cli_mode=True)` still yields `terminal`, `file_editor`, `task_tracker`, no analyzer. L10 adds the child-conversation tool itself, in its own plan. |
+| R10 | **Accept** that SDK 1.56 bounds the #99 retry loop by `LLM.timeout` (300 s, never set by the harness): each async model call (agent-server's path) is wrapped in `asyncio.timeout`, so the three attempts and the 10 s + 20 s waits share one window instead of 300 s each. Pinned by `HardTimeoutTest`; not patched around. | #99 targets fast 503 bursts, which still retry; only a slow failure near the timeout loses its retry and ends in `LLMTimeoutError`. Moving the retry outside the timeout, or raising `timeout`, is a later decision. Qualifies R2's "unchanged". |
 
 ## Global Constraints
 
@@ -399,7 +400,7 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run on 1.56.0**
 
 Run: `python -m unittest discover -s tests -p test_mcp_session.py -v`
-Expected: 2 tests, OK (about 7 s).
+Expected: 2 tests, OK (about 9.8 s).
 
 - [ ] **Step 3: Prove it detects the old behaviour**
 
@@ -467,4 +468,3 @@ git commit -m "test(bridge): pin the SecurityAnalysisEvent mapping, name agent-s
 - Lifting the `litellm<1.95.1` cap (R4); the Dockerfile's other pins.
 - Using child conversations (L10), agent profiles, the SDK security analyzer, or the `persona` field.
 - Any bridge behaviour change, including the shell classifier (R7).
-- Measuring the prompt-cache prefix across the bump: the tool descriptions and system prompt text may differ in 1.56, so the first internal run after the bump may write the cache once more; the wire test checks markers, not prefix bytes. C5's freeze baseline should be taken on 1.56.0.

@@ -170,7 +170,8 @@ class NotAppliedTest(unittest.TestCase):
     def test_an_sdk_that_cannot_be_imported_says_so_too(self):
         site = load_site()
         with mock.patch.dict(os.environ, {"PYTHONPATH": ""}), \
-                mock.patch.dict(sys.modules, {"openhands.sdk.llm.llm": None}), \
+                mock.patch.dict(sys.modules, {"openhands.sdk.llm.llm": None, "mcp.client.streamable_http": None,
+                                          "mcp.shared.session": None}), \
                 mock.patch("sys.stderr", new=io.StringIO()) as err:
             site._install()
         self.assertIn(self.ALERT_GREP, err.getvalue())

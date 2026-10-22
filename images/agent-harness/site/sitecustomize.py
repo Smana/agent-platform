@@ -147,7 +147,10 @@ def patch_model_retry(llm, openai, sleep=time.sleep, asleep=asyncio.sleep) -> bo
 
     The SDK's own retry (num_retries) cannot leave a 429 out, so agent-run sets it to 0. litellm's
     OpenAI client also retried twice of its own, a 429 included, within 1.5 s: too fast for a
-    provider blip and against OD-7, so max_retries=0 turns it off."""
+    provider blip and against OD-7, so max_retries=0 turns it off.
+
+    SDK 1.56 bounds each async model call by LLM.timeout (300 s by default): the attempts and their
+    waits share that window, so a slow failure near it loses its retry (fast 503 bursts still retry)."""
     sync_call = getattr(llm, "_transport_call", None)
     async_call = getattr(llm, "_atransport_call", None)
     if sync_call is None or async_call is None:

@@ -29,7 +29,7 @@ func raw(t *testing.T, ev map[string]any) RawEvent {
 
 func text(s string) []any { return []any{map[string]any{"type": "text", "text": s}} }
 
-// mappingCases are the spec table (§3 Event mapping) in agent-server 1.49.6's
+// mappingCases are the spec table (§3 Event mapping) in agent-server 1.56.0's
 // event shapes. has is looked for in the last item's payload.
 var mappingCases = []struct {
 	name  string
