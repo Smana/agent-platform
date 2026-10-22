@@ -66,13 +66,21 @@ ciOnly:
 
 
 def sh(cwd, *args, **kw):
-    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True, **kw).stdout.strip()
+    out = subprocess.run(args, cwd=cwd, capture_output=True, text=True, **kw)
+    if out.returncode:
+        raise AssertionError("%s exited %d in %s: %s" % (" ".join(args), out.returncode, cwd, out.stderr.strip() or out.stdout.strip()))
+    return out.stdout.strip()
 
 
 class Rig(unittest.TestCase):
     """A clone of an origin whose main declares DECLARED, on the branch agent/x."""
 
     def setUp(self):
+        # The image's /etc/gitconfig sets core.hooksPath to the commit-msg hook, which refuses a commit
+        # with no RUN_ID: the fixture repositories must not read the system config.
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_NOSYSTEM": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.mkdtemp()
         seed, self.origin, self.repo = (os.path.join(self.tmp, n) for n in ("seed", "origin.git", "repo"))
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]

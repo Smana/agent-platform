@@ -67,6 +67,10 @@ class RuleTest(unittest.TestCase):
 
 class FinalChecksTest(unittest.TestCase):
     def setUp(self):
+        # The image's /etc/gitconfig runs the commit-msg hook, which needs a RUN_ID: no system config here.
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_NOSYSTEM": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.mkdtemp()
         self.repo, self.state = os.path.join(self.tmp, "repo"), os.path.join(self.tmp, "state")
         os.makedirs(self.state)
