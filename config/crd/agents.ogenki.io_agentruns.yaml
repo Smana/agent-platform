@@ -243,8 +243,9 @@ spec:
               rule: self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks)
                 || !self.loop.checks
             - message: loop is immutable and cannot be added or removed after creation
-              rule: has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || self.loop
-                == oldSelf.loop)
+              rule: has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks)
+                == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks
+                == oldSelf.loop.checks)))
           status:
             description: AgentRunStatus is what runwatch and the factory read (C3),
               as the composition writes it.

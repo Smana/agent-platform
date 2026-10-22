@@ -39,7 +39,7 @@ type AgentRunList struct {
 // +kubebuilder:validation:XValidation:rule="has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)",message="queueName is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)",message="suspendable is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks) || !self.loop.checks",message="an internal run runs no repository checks"
-// +kubebuilder:validation:XValidation:rule="has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || self.loop == oldSelf.loop)",message="loop is immutable and cannot be added or removed after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks) == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks == oldSelf.loop.checks)))",message="loop is immutable and cannot be added or removed after creation"
 type AgentRunSpec struct {
 	// +kubebuilder:validation:Enum=implementer;reviewer;tester;triager
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="role is immutable"
