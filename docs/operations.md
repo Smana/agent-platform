@@ -209,11 +209,12 @@ absent rather than 0.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `agent_factory_build_info` | gauge | `version` | Always 1; carries the running version |
-| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier`, `repository` | Tasks by state |
+| `agent_factory_tasks` | gauge | `phase`, `source`, `predicted_class`, `tier`, `repository`, `principal` | Tasks by state and payer ([spend per identity](#spend-per-identity)) |
 | `agent_factory_task_phase_seconds` | gauge | `task`, `phase` | Seconds an open task has spent in its phase |
 | `agent_factory_kill_switch_engaged` | gauge | — | 1 while the stop object exists; `factory/stop` on the control issue engages it by creating that object |
 | `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
-| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository` | `auto_merged`, `human_merged`, `closed`, `reverted` |
+| `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository`, `principal` | `auto_merged`, `human_merged`, `closed`, `reverted` |
+| `agent_factory_prs_opened_total` | counter | `principal`, `repository` | Task pull requests opened, where `agent_factory_time_to_pr_seconds` records |
 | `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
 | `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
 | `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
@@ -224,11 +225,14 @@ absent rather than 0.
 | `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
 | `agent_factory_intake_errors_total` | counter | `source`, `repository` | Failed intake polls or requests: `issue`, `runlore`, `schedule`, `api` |
 | `agent_factory_label_events_truncated_total` | counter | `label` | Label polls that met the forge's event cap and left the label for the next poll |
-| `agent_factory_run_revocations_total` | counter | `reason`, `limit` | Runs the factory revoked; `limit` when the run meter did it (below) |
+| `agent_factory_run_revocations_total` | counter | `reason`, `limit`, `principal` | Runs the factory revoked; `limit` when the run meter did it (below); `principal` the run's payer, or the key over for `budget-principal-shadow` |
 | `agent_factory_run_overshoot_tokens_total` | counter | — | Tokens runs spent past their cap before the meter revoked them: a tick's lag, or a blind interval's spend after an outage |
 | `agent_factory_run_cost_usd` | histogram | `tier` | A priced run's USD cost, reported two minutes after it ended (below) |
 | `agent_factory_run_spend_usd` | gauge | `run`, `model` | A priced run's USD spend so far, until its cost is reported |
 | `agent_factory_model_cost_usd_total` | counter | `model` | USD the runs spent, by served model, added as each run's cost is reported |
+| `agent_factory_charged_usd_total` | counter | `principal`, `kind` | USD the day ledgers charged, by the run's payer and `kind` (`task`, `room`), added when the write that settles it succeeds ([spend per identity](#spend-per-identity)) |
+| `agent_factory_run_charge_info` | gauge | `run`, `principal`, `task`, `room` | 1 for each run not ended, and each ended one for two minutes after its `finishedAt`; leader only. `task` is absent for a room's run |
+| `agent_factory_human_wait_seconds_total` | counter | `principal`, `phase` | Seconds tasks waited in `AwaitingHuman` or `Escalated`, added as each leaves the phase, under the task's payer |
 | `agent_factory_run_budget_usd` | gauge | `tier` | Each tier's USD run cap; absent for a tier capped in tokens |
 | `agent_factory_run_budget_fallbacks_total` | counter | `scope`, `why` | Runs and tasks of a USD-capped tier held to their token cap (below) |
 | `agent_factory_meter_unpriced_model_runs_total` | counter | `model` | Runs a model served with no price (below) |
@@ -241,7 +245,7 @@ absent rather than 0.
 | `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
 | `agent_factory_trace_export_abandoned_total` | counter | — | Task spans given up after the collector refused them for a day |
 | `agent_factory_repository_owned` | gauge | `repository` | 1 while the repository's `.github/agent-factory.yaml` names this factory (`factory` in the config), per replica; 0 means no intake, schedules, API runs or merges there |
-| `agent_factory_admission_refusals_total` | counter | `repository`, `reason` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned`; and `person_budget_exhausted`, an API run or a label refused on its person's day ([per-person caps](factory.md#per-person-caps)) |
+| `agent_factory_admission_refusals_total` | counter | `repository`, `reason`, `principal` | Run requests refused on their repository: `repository_differs_from_the_room`, `repository_differs_from_the_branch`, `repository_permission`, `repository_not_owned`; and `person_budget_exhausted`, an API run or a label refused on its person's day ([per-person caps](factory.md#per-person-caps)) |
 
 A label value outside its known set is recorded as `other`; `repository` takes only the configured repositories' names.
 
@@ -293,6 +297,23 @@ A run's USD total survives a leader failover: the new leader reads what the day 
 for the run (`settled.<runId>`, summed over the retained days) and starts the run there when its
 counters read lower, after a gateway counter reset. Its cost by served model still starts from the
 counters, so `agent_factory_model_cost_usd_total` can miss what a run spent before such a reset.
+
+### Spend per identity
+
+Each run has one payer, the last ledger key the meter charges it to: the person in its
+`charged-to` annotation, else its own principal. A labelled task's runs pay as the labeller (or the
+maintainer whose `/factory retry` sent it back), a schedule's and RunLore's as `system:factory`, an
+API run as its caller's `github:<login>`, or `human:<sub>` with no GitHub link. A task's payer is
+the key its next run is charged to: `system:factory` with per-person caps off.
+
+| Series | What it answers |
+|---|---|
+| `agent_factory_charged_usd_total{principal, kind}` | What the ledgers charged for the work a principal caused. Per person key, a day's increase is that day's `spent`; summed over payers, the fleet's `spent` with per-person caps on. R10's lift reaches a run's `settled.<runId>`, never `spent`, and is never counted. A leader that exits loses the charges of its last scrape interval from its counter, never from the ledger. Read it with `increase_pure` on VictoriaMetrics: a payer's series is born at its first charge |
+| `agent_factory_run_charge_info{run, principal, task, room}` | Which runs, tasks and rooms a principal paid for: join a run's gateway series (`ar_agent` ends in `xplane-run-<run>`) or kube-state-metrics' `agentrun_*{run_id}` on it |
+| `principal` on outcomes, openings, refusals, revocations, waits and `agent_factory_tasks` | The payer the series is recorded under. An API refusal names the caller as authenticated (`human:<sub>`), and a refusal on a person's day that person. The shadow keeps the key over |
+
+`principal` takes a ledger key's shape (`system:<name>`, `github:<login>`, `human:<sub>`), else
+`other`. `run`, `task` and `room` appear only on the per-live-run series.
 
 ### Finished rooms close
 

@@ -115,7 +115,9 @@ packages that need a newer one.
   the factory (SP3 §7, `internal/factory/fmetrics`); counters end `_total`,
   durations `_seconds`. Buckets per histogram family sit on real thresholds (SC-12: fan-out p95
   under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
-  Label values are bounded: never a payload field; `room` only on the per-Active-room gauge.
+  Label values are bounded: never a payload field; `room` only on the per-Active-room gauge and
+  on per-live-run series such as `agent_factory_run_charge_info`, whose `run` label already makes
+  one series per run.
 - **`rooms_build_info{version}` = 1** from the first metric; `agent_factory_build_info{version}`
   in the factory.
 - **Traces: the factory has them, the rooms side does not yet.** The factory emits one root span
