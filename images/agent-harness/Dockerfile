@@ -9,6 +9,12 @@ FROM ghcr.io/openhands/agent-server:1.56.0-python@sha256:718bf6d719f34184810ecae
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
 ARG GH_SHA256_ARM64=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+
+# jdx/mise release (v3 feature 3): agent-checks installs a repository's declared tools with it, at
+# the versions its mise.toml pins. Move MISE_VERSION and both sums together by hand.
+ARG MISE_VERSION=2026.10.3
+ARG MISE_SHA256_AMD64=04147c68e946902f5226dfdcd54d19907aed3cf54d95b2f27d2b9c778bb26f9e
+ARG MISE_SHA256_ARM64=e79866e32624b346f6854d93ca8a24294516cd7c0b48ce0e80af508fb7c3d8b8
 ARG TARGETARCH
 
 USER root
@@ -16,13 +22,25 @@ USER root
 # passwordless sudo; nothing here needs it and NoNewPrivileges is not reliable
 # under gVisor (design §1), so sudo and every setuid and setgid bit go.
 RUN set -eux; \
-    case "${TARGETARCH}" in amd64) sum="${GH_SHA256_AMD64}" ;; arm64) sum="${GH_SHA256_ARM64}" ;; *) exit 1 ;; esac; \
-    /usr/local/bin/python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], '/tmp/gh.tgz')" \
-      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz"; \
+    case "${TARGETARCH}" in \
+      amd64) sum="${GH_SHA256_AMD64}" msum="${MISE_SHA256_AMD64}" march=x64 ;; \
+      arm64) sum="${GH_SHA256_ARM64}" msum="${MISE_SHA256_ARM64}" march=arm64 ;; \
+      *) exit 1 ;; \
+    esac; \
+    fetch() { /usr/local/bin/python -c "import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$1" "$2"; }; \
+    fetch "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" /tmp/gh.tgz; \
     echo "${sum}  /tmp/gh.tgz" | sha256sum -c -; \
     tar -xzf /tmp/gh.tgz -C /tmp; \
     install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/lib/gh-real; \
     rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}"; \
+    fetch "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${march}.tar.gz" /tmp/mise.tgz; \
+    echo "${msum}  /tmp/mise.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/mise.tgz -C /tmp; \
+    install -D -m 0755 /tmp/mise/bin/mise /opt/agent/bin/mise; \
+    rm -rf /tmp/mise.tgz /tmp/mise; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends rsync; \
+    rm -rf /var/lib/apt/lists/*; \
     rm -f /etc/sudoers.d/*; \
     if [ -f /etc/sudoers ]; then sed -i '/NOPASSWD/d' /etc/sudoers; fi; \
     find / -xdev -type f -perm /6000 -exec chmod ug-s {} +
@@ -40,12 +58,19 @@ RUN /usr/local/bin/python -m venv /agent-server/.venv \
       --only-binary=:all: --no-binary=func-timeout -r /tmp/requirements.txt \
  && rm /tmp/requirements.txt
 
-COPY --chmod=0755 agent_run.py git_credential_agent.py loop_policy.py pr_footer.py /opt/agent/
+# The system python3 the repositories' checks run gets the venv's PyYAML (v3 feature 3, R4).
+COPY checks-requirements.txt /tmp/checks-requirements.txt
+RUN /usr/local/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: \
+      -r /tmp/checks-requirements.txt \
+ && rm /tmp/checks-requirements.txt
+
+COPY --chmod=0755 agent_run.py agent_checks.py git_credential_agent.py loop_policy.py pr_footer.py /opt/agent/
 COPY --chmod=0755 site /opt/agent/site
 COPY --chmod=0755 gh /usr/local/bin/gh
 COPY --chmod=0755 commit-msg /etc/agent/git-hooks/commit-msg
 COPY gitconfig /etc/gitconfig
 RUN ln -s /opt/agent/agent_run.py /usr/local/bin/agent-run \
+ && ln -s /opt/agent/agent_checks.py /usr/local/bin/agent-checks \
  && ln -s /opt/agent/git_credential_agent.py /usr/local/bin/git-credential-agent
 
 # agent-server otherwise starts openvscode-server on 0.0.0.0:8001, putting a
