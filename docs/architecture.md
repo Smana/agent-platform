@@ -216,7 +216,7 @@ Broker, bridge and CLI, by pipeline stage:
 | `cmd/room-broker` | `serve` and `retention` subcommands |
 | `cmd/room-bridge` | The sidecar binary |
 | `cmd/run-controller` | The AgentRun controller binary |
-| `cmd/roomctl`, `internal/roomctl` | The human CLI and its client |
+| `cmd/roomctl`, `internal/roomctl` | The human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
 | `internal/roomctl/skill` | The embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
 | `internal/app` | Wiring per binary, the only importer of every adapter |
 | `internal/config` | The broker's config file: strict decode, defaults, validation |
@@ -234,6 +234,7 @@ Broker, bridge and CLI, by pipeline stage:
 | `internal/roomctrl` | The `Room` reconciler: row, first event, finalizer, status projection |
 | `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals |
 | `internal/mcp` | `:8090` MCP server, the `room_*` tools |
+| `internal/mcpwire` | The JSON-RPC wire both MCP servers share: one message in, one answer out |
 | `internal/github`, `internal/verdictpost` | The factory App client; the leader's verdict comments |
 | `internal/brief`, `internal/runrequest` | The fenced brief; manifest and factory run requesters |
 | `internal/prpattern` | A repository's pull-request URL patterns, compiled once per repository in a bounded cache |
@@ -241,7 +242,7 @@ Broker, bridge and CLI, by pipeline stage:
 | `internal/policy` | The permission matrix |
 | `internal/summary` | The pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
 | `internal/ghidentity`, `internal/repoaccess` | A member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
-| `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI |
+| `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI; `POST /mcp`, the humans' MCP server |
 | `web/` | TypeScript UI and its vitest suite |
 | `internal/metrics` | The metric set and the Prometheus exporter room-broker serves |
 

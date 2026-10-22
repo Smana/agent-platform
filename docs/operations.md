@@ -49,7 +49,8 @@ events.
 | `rooms_participants` | gauge | `kind` | Live participants. `kind="run"`: live runs naming a room, counted by every replica's `AgentRun` watch, so aggregate with `max`, never `sum`. `kind="human"`: open viewer WebSockets on this replica, so `sum` across replicas |
 | `rooms_fanout_lag_seconds` | histogram | — | Append to delivery on a viewer's connection; the target is p95 < 0.5 s |
 | `rooms_fanout_listener_up` | gauge | — | 1 while the replica's fan-out hub holds its `LISTEN` connection. At 0 the hub polls every subscribed room each second, so viewers still get every event, up to a second late; `/readyz` ignores it on purpose |
-| `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, `approval_expired`, …) |
+| `rooms_rejected_actions_total` | counter | `reason` | Actions refused (`not_permitted`, `stale_epoch`, `approval_expired`, `mcp_needs_roomctl`, …) |
+| `rooms_human_mcp_calls_total` | counter | `tool`, `outcome` | `POST /mcp` tool calls: `ok`, `refused` (the tool's own refusal or a room read's) or `error`. A `room_tail` task counts `ok` when it is created and `error` when a read of it fails |
 | `rooms_verdict_posts_total` | counter | `result` | Verdict comments `posted`, `not_posted` or `error` |
 | `rooms_driver_changes_total` | counter | — | Driver token changes: a human's request, give or take, and the leader's lease expiries |
 | `rooms_approvals_pending` | gauge | — | Undecided approvals in open rooms: the sum of the Rooms' `status.pendingApprovals` |

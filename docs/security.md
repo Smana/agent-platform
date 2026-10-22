@@ -89,7 +89,8 @@ The permission matrix, enforced by the broker (`internal/policy`, tested row by 
 - **Never an agent approves**: one injected transcript would otherwise approve another's
   action.
 - **Never from `roomctl`**: a token issued to the `roomctl` client cannot decide, steer,
-  interrupt or move the driver token, because a local agent could run it.
+  interrupt or move the driver token, because a local agent could run it. `POST /mcp` takes only
+  that client's tokens, so the same holds there, and the text of both is stored as machine-sent.
 - **Four-eyes** (off by default, per room): the humans in the triggering turn's `causedBy`
   chain cannot decide it.
 - **An invite is two writes**: the Room CR, then the `participant` event. If the append fails after
