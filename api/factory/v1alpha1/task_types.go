@@ -352,6 +352,33 @@ type RunRecord struct {
 	Started *metav1.Time `json:"started,omitempty"`
 	// +optional
 	Finished *metav1.Time `json:"finished,omitempty"`
+	// What the run ran on (R10), each field filled once as it becomes known.
+	// +optional
+	Provenance RunProvenance `json:"provenance,omitempty"`
+}
+
+// RunProvenance is what a run ran on (R10). The reconciler fills each field once, from the
+// run's claim or the meter, and never changes it; ServedModels only grows. Empty: not known
+// yet, or the claim predates the field — never a guess.
+type RunProvenance struct {
+	// The factory build that created the claim (version.Version), from its CREATE-only annotation.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	FactoryVersion string `json:"factoryVersion,omitempty"`
+	// The CompositionRevision Crossplane bound the claim to, as first read.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	CompositionRevision string `json:"compositionRevision,omitempty"`
+	// The harness container's imageID, <repository>@sha256:<digest>, as the composition read it
+	// from the run's pod.
+	// +kubebuilder:validation:MaxLength=320
+	// +optional
+	HarnessImage string `json:"harnessImage,omitempty"`
+	// The models that served the run, as the meter read gen_ai_request_model; sorted.
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=64
+	// +optional
+	ServedModels []string `json:"servedModels,omitempty"`
 }
 
 // PullRequestRef is the task's pull request and what happened to it.
