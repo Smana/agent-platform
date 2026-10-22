@@ -48,7 +48,7 @@ if cmd == "install":
     sys.exit(0)
 if cmd == "env":
     bins = [os.path.join(where(s), "bin") for s in specs]
-    print(json.dumps({"PATH": ":".join(bins + [os.environ["PATH"]])}))
+    print(knobs["env_raw"] if "env_raw" in knobs else json.dumps({"PATH": ":".join(bins + [os.environ["PATH"]])}))
     sys.exit(0)
 sys.exit(3)
 '''
@@ -180,11 +180,18 @@ class DeclarationTest(Rig):
         with self.assertRaisesRegex(agent_checks.Undeclared, "timeoutMinutes"):
             agent_checks.validate(__import__("yaml").safe_load(DECLARED.replace("timeoutMinutes: 2", "timeoutMinutes: true")))
 
-    def test_mise_env_printing_no_json_exits_1(self):
-        with mock.patch.object(agent_checks, "step_env", side_effect=agent_checks.ToolchainError("mise env printed no JSON object")):
-            code, lines = self.run_checks()
-        self.assertEqual(code, 1)
-        self.assertIn("mise env printed no JSON object", self.text(lines))
+    def test_mise_env_printing_something_unusable_exits_1(self):
+        for raw, why in (("not json", "no JSON object"), ("[1]", "not a string"), ('{"PATH": 1}', "not a string"),
+                         ('{"A": null}', "not a string")):
+            with self.subTest(raw=raw):
+                self.write(self.tmp, "fake-mise.json", json.dumps({"env_raw": raw}))
+                code, lines = self.run_checks()
+                self.assertEqual(code, 1)
+                self.assertIn(why, self.text(lines))
+
+    def test_a_step_boolean_timeout_is_refused(self):
+        with self.assertRaisesRegex(agent_checks.Undeclared, "step first: timeoutMinutes"):
+            agent_checks.validate(__import__("yaml").safe_load(DECLARED.replace("stopOnFailure: true", "stopOnFailure: true, timeoutMinutes: true")))
 
     def test_an_unknown_step_exits_2(self):
         code, lines = self.run_checks("--step", "third")
@@ -261,9 +268,13 @@ class StepTest(Rig):
         with open(os.path.join(agent_checks.STATE, res["head"] + ".log")) as f:
             log = f.read()
         self.assertIn("output truncated at 1000 bytes", log)
-        self.assertLess(len(log), 5000)
+        self.assertLess(len(log.encode()), 1000 + 200)  # the cap, then the one marker line
         with open(os.path.join(agent_checks.STATE, res["head"] + ".txt")) as f:
             self.assertLess(len(f.read()), agent_checks.SUMMARY_CAP + 1)
+        tails = []
+        with mock.patch.object(agent_checks, "summary", side_effect=lambda r: tails.extend(t for s in r["steps"] for t in s["tail"]) or "x"):
+            self.run_checks()
+        self.assertTrue(tails and max(map(len, tails)) <= agent_checks.LINE_CAP)
 
     def test_stop_on_failure_skips_the_rest(self):
         self.base_declares(DECLARED.replace("task > first.out; go >> first.out", "exit 3"))

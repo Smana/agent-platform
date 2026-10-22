@@ -227,9 +227,10 @@ def step_env(tools: dict[str, str | None], missing: list[str]) -> dict:
         if out.returncode == 0:
             try:
                 exported = json.loads(out.stdout)
-                assert isinstance(exported, dict)
-            except (ValueError, AssertionError) as exc:
+            except ValueError as exc:
                 raise ToolchainError("mise env printed no JSON object") from exc
+            if not isinstance(exported, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in exported.items()):
+                raise ToolchainError("mise env printed a value that is not a string")
             env.update(exported)
     env["XDG_CACHE_HOME"] = os.path.join(TOOLCHAIN, "cache")
     env["GOPATH"] = os.path.join(TOOLCHAIN, "go")
@@ -251,10 +252,14 @@ def run_step(step: dict, env: dict, limit: float, log, say) -> dict:
         written = 0
         for line in iter(lambda: proc.stdout.readline(LINE_CAP), ""):  # a newline-less flood arrives in chunks
             if written < LOG_CAP:
-                log.write(line)
-                written += len(line)
+                data = line.encode("utf-8", "replace")
+                if written + len(data) > LOG_CAP:
+                    data = data[:LOG_CAP - written]
+                log.write(data.decode("utf-8", "ignore"))
+                written += len(data)
                 if written >= LOG_CAP:
                     log.write("\n=== output truncated at %d bytes\n" % LOG_CAP)
+                    written = LOG_CAP + 1
             tail.append(line.rstrip("\n")[-LINE_CAP:])
         log.flush()
     reader = threading.Thread(target=drain, daemon=True)
