@@ -889,6 +889,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	if err := r.startRun(ctx, t, s, trigger); err != nil {
 		return err
 	}
+	if t.Status.Phase == v1alpha1.PhaseEscalated { // the cluster refused the loop claim: no run exists
+		return nil
+	}
 	// Consumed once the run exists, and only what its brief quoted (F-A). A failure only means
 	// the next brief repeats them.
 	if err := r.Rooms.Consume(ctx, t.Status.RoomRef, refs, current(t).ID); err != nil {

@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -117,5 +121,31 @@ func TestALostLoopRunIsNotCountedBeforeItsResume(t *testing.T) {
 		if strings.HasPrefix(m, "loop_run") {
 			t.Fatalf("counted %v before the run that ended", g.metrics.recorded)
 		}
+	}
+}
+
+// A loop claim the cluster refuses (the host XRD lacks spec.loop, Strict validation) escalates the task
+// as loop_unsupported, with no run and no retry; a refused claim without a loop keeps the error path.
+func TestARefusedLoopClaimEscalates(t *testing.T) {
+	g := newRig(t, issueTask("3buqdlot", 7, "# Fix the link"))
+	steps := int32(40)
+	g.r.Cfg.Loops = map[string]config.Loop{"review": {StallSteps: &steps}}
+	creates := 0
+	g.runs.refuse = func(s runs.Spec) error {
+		if s.Role != "implementer" {
+			return nil
+		}
+		creates++
+		return apierrors.NewInvalid(schema.GroupKind{Group: "agents.ogenki.io", Kind: "AgentRun"}, "x", field.ErrorList{field.Invalid(field.NewPath("spec", "loop"), "x", "unknown field")})
+	}
+	tk := g.reconcile(t, "3buqdlot", 4)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "loop_unsupported" {
+		t.Fatalf("%s %s, want Escalated loop_unsupported", tk.Status.Phase, tk.Status.Reason)
+	}
+	if creates != 1 {
+		t.Fatalf("%d creates, want 1: no retry", creates)
+	}
+	if fit := Fit(tk); fit != "" {
+		t.Fatalf("tier scored %q", fit)
 	}
 }

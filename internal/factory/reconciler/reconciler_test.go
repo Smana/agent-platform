@@ -47,7 +47,8 @@ type fakeRuns struct {
 	specs   map[string]runs.Spec
 	runs    map[string]runs.Run
 	patches map[string]map[string]string
-	now     func() time.Time // stamps a created claim; nil means time.Now
+	now     func() time.Time      // stamps a created claim; nil means time.Now
+	refuse  func(runs.Spec) error // a refusal the cluster gives a create; nil accepts
 }
 
 func newRuns() *fakeRuns {
@@ -55,6 +56,11 @@ func newRuns() *fakeRuns {
 }
 
 func (f *fakeRuns) Create(_ context.Context, s runs.Spec) error {
+	if f.refuse != nil {
+		if err := f.refuse(s); err != nil {
+			return err
+		}
+	}
 	created := time.Now()
 	if f.now != nil {
 		created = f.now()
