@@ -34,7 +34,8 @@ type Sweeper struct {
 	// unclaimed sweep releases it after its grace.
 	Release func(ctx context.Context, r runs.Run) error
 	Every   time.Duration
-	OnSweep func(n int)
+	// OnSweep is told of the runs a sweep revoked, each to count under its payer.
+	OnSweep func(revoked []runs.Run)
 	Log     *slog.Logger
 }
 
@@ -47,10 +48,10 @@ func (s *Sweeper) Start(ctx context.Context) error {
 	t := time.NewTicker(s.Every)
 	defer t.Stop()
 	for {
-		if n, err := s.Sweep(ctx); err != nil {
+		if revoked, err := s.Sweep(ctx); err != nil {
 			s.Log.Warn("stop sweep failed", "err", err)
-		} else if n > 0 && s.OnSweep != nil {
-			s.OnSweep(n)
+		} else if len(revoked) > 0 && s.OnSweep != nil {
+			s.OnSweep(revoked)
 		}
 		select {
 		case <-ctx.Done():
@@ -62,19 +63,19 @@ func (s *Sweeper) Start(ctx context.Context) error {
 
 // Sweep revokes and deletes every non-terminal run while the stop is engaged: the annotation
 // first, so the composition sees the revoke even if the delete then fails. A run already gone
-// mid-sweep is done, not an error. It returns how many runs it revoked: a run that already
+// mid-sweep is done, not an error. It returns the runs it revoked: a run that already
 // carried a revoke, such as one the task reconciler's stop revoked seconds earlier, was counted by
 // whoever wrote it (F30).
-func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
+func (s *Sweeper) Sweep(ctx context.Context) ([]runs.Run, error) {
 	on, err := Engaged(ctx, s.Reader, s.Namespace)
 	if err != nil || !on {
-		return 0, err
+		return nil, err
 	}
 	all, err := s.Runs.List(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var revoked []runs.Run
 	var errs []error
 	for _, r := range all {
 		if runs.Terminal(r.Phase) {
@@ -86,7 +87,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 			continue
 		}
 		if err == nil && r.Revoked == "" {
-			n++
+			revoked = append(revoked, r)
 		}
 		if err := s.Runs.Delete(ctx, r.ID); err != nil {
 			errs = append(errs, err)
@@ -96,5 +97,5 @@ func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 			errs = append(errs, s.Release(ctx, r))
 		}
 	}
-	return n, errors.Join(errs...)
+	return revoked, errors.Join(errs...)
 }

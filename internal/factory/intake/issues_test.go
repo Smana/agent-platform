@@ -26,6 +26,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
@@ -44,10 +45,10 @@ type counter struct {
 	refused   []string
 }
 
-func (c *counter) AdmissionRefused(_ context.Context, reason string) {
+func (c *counter) AdmissionRefused(ctx context.Context, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.refused = append(c.refused, reason)
+	c.refused = append(c.refused, reason+" "+fmetrics.PrincipalOf(ctx))
 }
 
 func (c *counter) LabelEventsTruncated(_ context.Context, label string) {

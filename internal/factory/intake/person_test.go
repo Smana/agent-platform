@@ -51,7 +51,7 @@ func TestALabellerPastTheirDayIsRefusedAtIntake(t *testing.T) {
 				t.Fatalf("refused %v, removed %q", got, f.Removed(7))
 			}
 			if c.refused && (!strings.Contains(say, "`github:smana` ($5.00) is spent") || !strings.Contains(say, "00:00 UTC") ||
-				len(refusals) != 1 || refusals[0] != "person_budget_exhausted") {
+				len(refusals) != 1 || refusals[0] != "person_budget_exhausted github:smana") { // spend per identity SI4: the labeller
 				t.Fatalf("%q %q", say, refusals)
 			}
 			if !c.refused && (say != "" || len(refusals) != 0) {

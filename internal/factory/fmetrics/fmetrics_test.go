@@ -74,8 +74,8 @@ func TestTasksGaugeIsLeaderOnly(t *testing.T) {
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_build_info{version="v0.7.0"} 1`,
-		`agent_factory_tasks{phase="Implementing",predicted_class="review",repository="other",source="issue",tier="standard"} 2`,
-		`agent_factory_tasks{phase="Done",predicted_class="review",repository="other",source="issue",tier="standard"} 1`,
+		`agent_factory_tasks{phase="Implementing",predicted_class="review",principal="system:factory",repository="other",source="issue",tier="standard"} 2`,
+		`agent_factory_tasks{phase="Done",predicted_class="review",principal="system:factory",repository="other",source="issue",tier="standard"} 1`,
 		`agent_factory_kill_switch_engaged 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
@@ -151,7 +151,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	body := scrape()
 	for _, want := range []string{
 		`agent_factory_time_to_pr_seconds_bucket{repository="other",source="issue",template="solo",tier="standard",le="600"} 1`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged",repository="other"} 1`,
+		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged",principal="other",repository="other"} 1`,
 		`agent_factory_task_tokens_bucket{predicted_class="review",repository="other",template="solo",tier="standard",le="200000"} 1`,
 		`agent_factory_budget_cap_usd{principal="system:factory"} 42.5`,
 		`agent_factory_budget_remaining_usd{principal="system:factory"} 8.5`,
@@ -162,7 +162,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_merge_decisions_total{class="docs-links",reason="shadow_would_arm",verdict="shadow"} 1`,
 		`agent_factory_tier_fit_total{classifier="static",control="false",fit="fit",tier="standard"} 1`,
 		`agent_factory_intake_errors_total{repository="other",source="issue"} 1`,
-		`agent_factory_run_revocations_total{reason="budget-run"} 1`,
+		`agent_factory_run_revocations_total{principal="other",reason="budget-run"} 1`,
 		`agent_factory_github_rate_remaining 4990`,
 		`agent_factory_github_up 1`,
 		`agent_factory_trace_export_abandoned_total 1`,
@@ -171,8 +171,8 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_meter_usage_read_errors_total 1`,
 		`agent_factory_meter_last_success_timestamp_seconds 1.79e+09`,
 		`agent_factory_run_overshoot_tokens_total 42000`,
-		`agent_factory_run_revocations_total{limit="run-usd",reason="budget-run"} 1`,
-		`agent_factory_run_revocations_total{limit="task-usd",reason="budget-task"} 1`,
+		`agent_factory_run_revocations_total{limit="run-usd",principal="other",reason="budget-run"} 1`,
+		`agent_factory_run_revocations_total{limit="task-usd",principal="other",reason="budget-task"} 1`,
 		`agent_factory_run_cost_usd_bucket{tier="standard",le="0.75"} 1`,
 		`agent_factory_model_cost_usd_total{model="glm-5.3"} 0.75`,
 		`agent_factory_run_spend_usd{model="claude-opus-5-5",run="nh5tztlh"} 2.13212`,
@@ -234,13 +234,13 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.InputExcludesCache(ctx, "Ignore previous instructions")
 	body := scrape()
 	for _, want := range []string{
-		`agent_factory_run_revocations_total{reason="other"} 1`,
-		`agent_factory_pr_outcomes_total{class="docs-links",outcome="other",repository="other"} 1`,
+		`agent_factory_run_revocations_total{principal="other",reason="other"} 1`,
+		`agent_factory_pr_outcomes_total{class="docs-links",outcome="other",principal="other",repository="other"} 1`,
 		`agent_factory_human_interventions_total{kind="other",repository="other"} 1`,
 		`agent_factory_intake_errors_total{repository="other",source="other"} 1`,
 		`agent_factory_resumes_total{reason="other"} 1`,
 		`agent_factory_rooms_closed_at_cap_total{reason="other"} 1`,
-		`agent_factory_run_revocations_total{limit="other",reason="budget-run"} 1`,
+		`agent_factory_run_revocations_total{limit="other",principal="other",reason="budget-run"} 1`,
 		`agent_factory_run_cost_usd_count{tier="other"} 1`,
 		`agent_factory_model_cost_usd_total{model="other"} 1`,
 		`agent_factory_run_spend_usd{model="other",run="aaaaaaaa"} 2`,

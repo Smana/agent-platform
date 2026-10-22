@@ -75,7 +75,9 @@ type TaskForge interface {
 // metrics is the part of fmetrics.Set the reconciler records.
 type metrics interface {
 	TimeToPR(ctx context.Context, d time.Duration, source, tier, template string)
+	PROpened(ctx context.Context)
 	PROutcome(ctx context.Context, class, outcome string)
+	HumanWait(ctx context.Context, phase string, d time.Duration)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
@@ -172,7 +174,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Client.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	ctx, err := r.bind(fmetrics.WithRepository(ctx, t.Spec.Repository), &t) // v2 D10: the pass's series are the task's repository's
+	// v2 D10 and spend per identity SI4: the pass's series are the task's repository's and its payer's.
+	ctx, err := r.bind(fmetrics.WithPrincipal(fmetrics.WithRepository(ctx, t.Spec.Repository), r.payer(&t)), &t)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -210,6 +213,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		for _, f := range fx.after {
 			f(ctx)
 		}
+		r.waited(ctx, before, &t.Status)
 	}
 	// Only a written outbox is posted (review M-a), only written facts reach the room, and only a
 	// written end exports the task's span: a write that conflicts posts and exports nothing, and its
@@ -330,6 +334,23 @@ func (r *Reconciler) log() *slog.Logger {
 	return r.Log
 }
 
+// payer is the key the task's costs and yield count for (spend per identity SI1): the person its
+// next run is charged to, else the fleet.
+func (r *Reconciler) payer(t *v1alpha1.Task) string {
+	return runs.TaskPayer(t, r.Cfg.Budgets.PerPerson.Enabled)
+}
+
+// waited adds a written exit from AwaitingHuman or Escalated to the payer's waits (SI8): the time
+// from the phase's start to the next phase's, both as the status records them.
+func (r *Reconciler) waited(ctx context.Context, before, after *v1alpha1.TaskStatus) {
+	if before.Phase == after.Phase || before.PhaseSince == nil || after.PhaseSince == nil {
+		return
+	}
+	if before.Phase == v1alpha1.PhaseAwaitingHuman || before.Phase == v1alpha1.PhaseEscalated {
+		r.Metrics.HumanWait(ctx, before.Phase, after.PhaseSince.Sub(before.PhaseSince.Time))
+	}
+}
+
 func (r *Reconciler) to(t *v1alpha1.Task, phase, reason string) {
 	if t.Status.Phase != phase {
 		now := metav1.NewTime(r.Now())
@@ -434,7 +455,7 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 			// revoked, so a deferred count would be lost. A run that carried a revoke was counted
 			// by whoever wrote it, the kill switch's sweeper included (F30).
 			if run.Revoked == "" {
-				r.Metrics.Revoked(ctx, "manual")
+				r.Metrics.Revoked(fmetrics.WithPrincipal(ctx, run.Payer()), "manual") // as the ledger charged it
 			}
 		}
 		if err := r.deleteRun(ctx, run.ID); err != nil {

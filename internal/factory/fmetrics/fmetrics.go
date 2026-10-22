@@ -24,6 +24,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
+	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
 const scope = "github.com/Smana/agent-platform/internal/factory"
@@ -65,6 +66,14 @@ var runRE = regexp.MustCompile(`^[a-z2-7]{8}$`)
 
 // modelRE bounds the model label to a backend's pinned model name (glm-5.3, claude-opus-5-5).
 var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// principalRE is a ledger key's shape (spend per identity SI5): a sponsored or system principal, a
+// person's lowercased GitHub login (v1alpha1.Person), or an API caller's subject with no GitHub
+// link. Its values are the people who may start runs and the principals in the config.
+var principalRE = regexp.MustCompile(`^(system:[a-z0-9][a-z0-9-]{0,62}|github:[a-z0-9][a-z0-9-]{0,38}|human:[A-Za-z0-9][A-Za-z0-9_-]{0,63})$`)
+
+func charges() []string     { return []string{runs.KindTask, runs.KindRoom} }
+func humanPhases() []string { return []string{v1alpha1.PhaseAwaitingHuman, v1alpha1.PhaseEscalated} }
 
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
@@ -113,13 +122,59 @@ type Set struct {
 	unpricedModels  metric.Int64Counter
 	excludesCache   metric.Int64Counter
 	modelCost       metric.Float64Counter
+	charged         metric.Float64Counter
+	prsOpened       metric.Int64Counter
+	humanWait       metric.Float64Counter
 
 	spendMu sync.Mutex
 	spend   map[string]map[string]float64 // the meter's last live spend, run then model
+	live    []runs.Run                    // the meter's last charge info: the runs live or ended within endSettle
 
 	// repos is the config's repository list, the repository label's only values (v2 D10).
 	mu    sync.RWMutex
 	repos []string
+	// perPerson: a task's payer is its person (budgets.perPerson.enabled), else the fleet.
+	perPerson bool
+}
+
+// ChargePeople sets whether tasks pay as their person, per-person caps being on: the tasks
+// gauge's principal (spend per identity SI1).
+func (s *Set) ChargePeople(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.perPerson = on
+}
+
+func (s *Set) taskPayer(t *v1alpha1.Task) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return runs.TaskPayer(t, s.perPerson)
+}
+
+type principalKey struct{}
+
+// WithPrincipal names the payer the series recorded under ctx belong to (spend per identity SI4):
+// the reconciler binds its task's, the API its requester's, the meter and the sweep a run's.
+// Recorded without one, a series reads other.
+func WithPrincipal(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, principalKey{}, principal)
+}
+
+// PrincipalOf is the payer ctx binds, "" when none: for a consumer's test double.
+func PrincipalOf(ctx context.Context) string {
+	p, _ := ctx.Value(principalKey{}).(string)
+	return p
+}
+
+func boundPrincipal(p string) string {
+	if !principalRE.MatchString(p) {
+		return other
+	}
+	return p
+}
+
+func principalOf(ctx context.Context) attribute.KeyValue {
+	return attribute.String("principal", boundPrincipal(PrincipalOf(ctx)))
 }
 
 // ListRepositories sets the values the repository label may take: the config's list, at most
@@ -255,9 +310,19 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	s.modelCost, err = meter.Float64Counter("agent_factory_model_cost_usd_total",
 		metric.WithDescription("USD the factory's runs spent, by the model that served them, counted when each run's cost is reported."))
 	check(err)
+	s.charged, err = meter.Float64Counter("agent_factory_charged_usd_total",
+		metric.WithDescription("USD the day ledgers charged, by the run's payer and kind, added when the write that settles it succeeds (spend per identity SI2)."))
+	check(err)
+	s.prsOpened, err = meter.Int64Counter("agent_factory_prs_opened_total",
+		metric.WithDescription("Task pull requests opened, by the task's payer."))
+	check(err)
+	s.humanWait, err = meter.Float64Counter("agent_factory_human_wait_seconds_total",
+		metric.WithDescription("Seconds tasks waited for a human, by the task's payer, added when a task leaves AwaitingHuman or Escalated."))
+	check(err)
 	check(s.registerSpend(meter))
+	check(s.registerCharges(meter))
 	if tasks != nil {
-		check(registerCollected(meter, tasks, ns, leader, s.repository))
+		check(registerCollected(meter, tasks, ns, leader, s.repository, s.taskPayer))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("fmetrics: %w", err)
@@ -268,7 +333,8 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 // registerCollected reads the tasks and the stop object at each scrape, on the leader only. A
 // failed read observes nothing, so the series go absent rather than read as 0: an unread stop
 // object is not a disengaged one.
-func registerCollected(meter metric.Meter, r client.Reader, ns string, leader func() bool, repo func(string) string) error {
+func registerCollected(meter metric.Meter, r client.Reader, ns string, leader func() bool, repo func(string) string,
+	payer func(*v1alpha1.Task) string) error {
 	tasks, err := meter.Int64ObservableGauge("agent_factory_tasks", metric.WithDescription("Tasks by state (§7)."))
 	if err != nil {
 		return err
@@ -291,13 +357,16 @@ func registerCollected(meter metric.Meter, r client.Reader, ns string, leader fu
 		defer cancel()
 		var l v1alpha1.TaskList
 		if err := r.List(ctx, &l, client.InNamespace(ns)); err == nil {
-			counts := map[[5]string]int64{}
-			for _, t := range l.Items {
-				counts[[5]string{t.Status.Phase, t.Spec.Source.Kind, t.Spec.PredictedClass, t.Spec.Budget.Tier, repo(t.Spec.Repository)}]++
+			counts := map[[6]string]int64{}
+			for i := range l.Items {
+				t := &l.Items[i]
+				counts[[6]string{t.Status.Phase, t.Spec.Source.Kind, t.Spec.PredictedClass, t.Spec.Budget.Tier, repo(t.Spec.Repository),
+					boundPrincipal(payer(t))}]++
 			}
 			for k, n := range counts {
 				o.ObserveInt64(tasks, n, metric.WithAttributes(attribute.String("phase", k[0]), attribute.String("source", k[1]),
-					attribute.String("predicted_class", k[2]), attribute.String("tier", k[3]), attribute.String("repository", k[4])))
+					attribute.String("predicted_class", k[2]), attribute.String("tier", k[3]), attribute.String("repository", k[4]),
+					attribute.String("principal", k[5])))
 			}
 			for _, t := range l.Items {
 				if !v1alpha1.TerminalPhase(t.Status.Phase) && t.Status.PhaseSince != nil {
@@ -333,7 +402,7 @@ func (s *Set) AdmissionRefused(ctx context.Context, reason string) {
 	if !slices.Contains(admissionReasons(), reason) {
 		return
 	}
-	s.refusals.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason), s.repoOf(ctx)))
+	s.refusals.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason), s.repoOf(ctx), principalOf(ctx)))
 }
 
 // TimeToPR records a task's time from intake to its PR opening.
@@ -342,10 +411,32 @@ func (s *Set) TimeToPR(ctx context.Context, d time.Duration, source, tier, templ
 		attribute.String("tier", tier), attribute.String("template", template), s.repoOf(ctx)))
 }
 
+// PROpened counts a task's pull request opening, by its repository and payer: where TimeToPR
+// records, without the histogram's buckets times every principal (spend per identity SI4).
+func (s *Set) PROpened(ctx context.Context) {
+	s.prsOpened.Add(ctx, 1, metric.WithAttributes(s.repoOf(ctx), principalOf(ctx)))
+}
+
 // PROutcome counts a task PR's outcome: auto_merged, human_merged, closed or reverted.
 func (s *Set) PROutcome(ctx context.Context, class, outcome string) {
 	s.prOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
-		attribute.String("outcome", oneOf(outcome, outcomes())), s.repoOf(ctx)))
+		attribute.String("outcome", oneOf(outcome, outcomes())), s.repoOf(ctx), principalOf(ctx)))
+}
+
+// HumanWait adds the time a task waited in AwaitingHuman or Escalated, as it leaves the phase, to
+// its payer's waits (spend per identity SI8). Any other phase is no wait for a human.
+func (s *Set) HumanWait(ctx context.Context, phase string, d time.Duration) {
+	if !slices.Contains(humanPhases(), phase) || d <= 0 {
+		return
+	}
+	s.humanWait.Add(ctx, d.Seconds(), metric.WithAttributes(attribute.String("phase", phase), principalOf(ctx)))
+}
+
+// Charged adds a run's settled micro-USD, in dollars, to its payer's charges by kind: the run
+// meter's OnCharge, once the write that settles it succeeded (spend per identity SI2).
+func (s *Set) Charged(ctx context.Context, principal, kind string, microUSD int64) {
+	s.charged.Add(ctx, float64(microUSD)/1e6, metric.WithAttributes(attribute.String("principal", boundPrincipal(principal)),
+		attribute.String("kind", oneOf(kind, charges()))))
 }
 
 // TaskTokens records a finished task's tokens.
@@ -399,7 +490,7 @@ func (s *Set) LabelEventsTruncated(ctx context.Context, label string) {
 
 // Revoked counts a run the factory revoked, by reason: the run meter's OnRevoke.
 func (s *Set) Revoked(ctx context.Context, reason string) {
-	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations()))))
+	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations())), principalOf(ctx)))
 }
 
 // PrincipalShadow counts a run admitted past a day's cap while budgets.enforcePrincipal is off
@@ -407,13 +498,13 @@ func (s *Set) Revoked(ctx context.Context, reason string) {
 // principal label is bounded by the people who may start runs.
 func (s *Set) PrincipalShadow(ctx context.Context, principal string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "budget-principal-shadow"),
-		attribute.String("principal", principal)))
+		attribute.String("principal", boundPrincipal(principal))))
 }
 
 // RunRevoked counts a revocation by the run meter, by reason and the limit that fired.
 func (s *Set) RunRevoked(ctx context.Context, reason, limit string) {
 	s.revocations.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, revocations())),
-		attribute.String("limit", oneOf(limit, revocationLimits()))))
+		attribute.String("limit", oneOf(limit, revocationLimits())), principalOf(ctx)))
 }
 
 // RunCost records a priced run's USD cost at its end, in total by tier and by the model that
@@ -460,6 +551,44 @@ func (s *Set) registerSpend(meter metric.Meter) error {
 			for model, v := range bounded {
 				o.ObserveFloat64(g, v, metric.WithAttributes(attribute.String("run", run), attribute.String("model", model)))
 			}
+		}
+		return nil
+	}, g)
+	return err
+}
+
+// RunCharges replaces the charge info's runs: the run meter's OnCharges, each tick that listed them.
+func (s *Set) RunCharges(live []runs.Run) {
+	s.spendMu.Lock()
+	defer s.spendMu.Unlock()
+	s.live = live
+}
+
+// registerCharges exposes agent_factory_run_charge_info{run,principal,task,room} = 1 from the
+// meter's last hand-over (spend per identity SI3): the leader's live runs and those ended within
+// endSettle, so a panel joins a run's gateway series to its payer. task is absent for a room's
+// run, room for a run without one. Every id is a C2 id, or the run is left out.
+func (s *Set) registerCharges(meter metric.Meter) error {
+	g, err := meter.Int64ObservableGauge("agent_factory_run_charge_info",
+		metric.WithDescription("1 for each run the meter charges now or charged within its settle window, naming its payer, its task and its room."))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s.spendMu.Lock()
+		defer s.spendMu.Unlock()
+		for _, r := range s.live {
+			if !runRE.MatchString(r.ID) {
+				continue
+			}
+			at := []attribute.KeyValue{attribute.String("run", r.ID), attribute.String("principal", boundPrincipal(r.Payer()))}
+			if runRE.MatchString(r.TaskID) {
+				at = append(at, attribute.String("task", r.TaskID))
+			}
+			if runRE.MatchString(r.RoomRef) {
+				at = append(at, attribute.String("room", r.RoomRef))
+			}
+			o.ObserveInt64(g, 1, metric.WithAttributes(at...))
 		}
 		return nil
 	}, g)

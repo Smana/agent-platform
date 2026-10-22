@@ -362,7 +362,7 @@ func (p *IssuePoller) personSpent(ctx context.Context, n int, last forge.LabelEv
 		return false, err
 	}
 	if p.Errors != nil {
-		p.Errors.AdmissionRefused(ctx, "person_budget_exhausted")
+		p.Errors.AdmissionRefused(fmetrics.WithPrincipal(ctx, person), "person_budget_exhausted") // the labeller (SI4)
 	}
 	return true, p.Forge.RemoveLabel(ctx, n, p.repo().TriggerLabel)
 }

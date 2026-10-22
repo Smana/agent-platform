@@ -598,7 +598,10 @@ func (r *Reconciler) detectPR(ctx context.Context, t *v1alpha1.Task, run runs.Ru
 		return err
 	}
 	d, source, tier, tmpl := r.Now().Sub(t.CreationTimestamp.Time), t.Spec.Source.Kind, t.Spec.Budget.Tier, t.Spec.Template
-	record(ctx, func(ctx context.Context) { r.Metrics.TimeToPR(ctx, d, source, tier, tmpl) })
+	record(ctx, func(ctx context.Context) {
+		r.Metrics.TimeToPR(ctx, d, source, tier, tmpl)
+		r.Metrics.PROpened(ctx)
+	})
 	narrateLater(t, narrate.PROpened(t, pr.Number, pr.URL, run.ID))
 	return nil
 }
