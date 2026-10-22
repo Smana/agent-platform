@@ -320,7 +320,7 @@ One ConfigMap per UTC day, `agent-factory-ledger-usd-<YYYYMMDD>`, holds the days
 |---|---|---|
 | `spent` | Principal → micro-USD charged that day | The meter |
 | `reserved.<runId>` | `{principal, person?, room?, maxMicroUSD}`, dropped when the run ends | Admission |
-| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent` | The meter |
+| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent`; on the first day a run taken as already charged at the switch (below) is charged again, it also holds that spend, which `spent` never counts | The meter |
 
 ```mermaid
 flowchart LR
@@ -340,18 +340,24 @@ when the run cannot be priced (never $0), to every key the run is charged to and
 the ledgers settled for it and starts it there. A write that reports an error may have landed all
 the same: the next tick reads that day's `settled.<runId>` to learn how much did, and charges only
 the rest. A run is charged once across a failover, a ledger that cannot be read, a failed write,
-landed or not, and midnight, with two bounded exceptions:
+landed or not, and midnight, with three bounded exceptions:
 
 - A gateway counter reset before a new leader's first reading, once the counters have passed what
   was settled, loses what the run spent before the reset: an under-count.
 - A run whose served model loses its price after such a reset and failover is charged its tokens
   at $1.70 per million on top of what was settled: an over-count.
+- A write the apiserver reports as failed (a 504) that commits only after the next tick read that
+  day's ledger back is charged twice: an over-count of that tick's charges. It is narrow, as the
+  failed write carries the ledger's old `resourceVersion` and conflicts once any later write
+  lands. Nothing else guards it.
 
 The meter deletes the ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>`
 they replaced the same way. A run the meter first sees ended, with its usage annotated, is taken as
 charged for what it has spent so far when nothing is settled for it, or when it began before the
 oldest retained ledger: that spend was charged in the token ledgers, or partly in a day since
-deleted. Only that first sighting is judged so: what the run's later readings add is charged. So
+deleted. The meter keeps that amount pending and writes it into the run's `settled.<runId>` with
+the run's next charge, so a new leader after a failover does not charge it again. Only that first
+sighting is judged so: what the run's later readings add is charged. So
 the day of the switch to USD starts at $0: runs that ended before it are not charged again, and runs
 in flight are charged their whole cost.
 

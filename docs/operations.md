@@ -190,6 +190,7 @@ the harnesses still hold.
 | Config | Edit `room-broker-config`, then `kubectl rollout restart deployment/room-broker -n agent-system`: the broker reads it once |
 | Factory run-request API port | The chart serves `POST /v1/runs` on `:8082` (Service and container port `api`), plaintext inside the mesh; the RunLore intake stays on `:8080`, and the broker's `:8443` is the only TLS listener. Releases before it served the API on `:8443`: move the factory config's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do |
 | Factory | Pin the chart's version and digest in `ocirepo-agent-factory.yaml` and the image in the factory's values, from the same release. The `HelmRelease` sets `crds: CreateReplace`, since Helm alone never upgrades the `Task` CRD in the chart's `crds/` |
+| Factory v0.16.0 (daily caps in USD) | Set `budgets.factoryDailyUSD`, `humanDailyUSD` and `perPerson.dailyUSD`; move alerts and dashboards to the `_usd` gauges in the same change as the pin. **Breaking:** the gauges `agent_factory_budget_{remaining,cap}_tokens` are replaced by `agent_factory_budget_{remaining,cap}_usd`. The ledger is now `agent-factory-ledger-usd-<YYYYMMDD>` (the token ledgers are no longer read or written, and are pruned after 35 days). The `Reservation` JSON `maxTokens` is now `maxMicroUSD`. The token day keys (`factoryDaily`, `humanDaily`, `perPerson.dailyTokens`) are accepted, ignored and warned about for one release, **not converted**: a non-default value silently falls back to $42.50 / $8.50. **Rollback:** v0.15.x refuses the USD keys and `meter.prices` `source`/`checkedAt` once a host sets them, so rolling back below v0.16.0 needs the token keys back and no `source`/`checkedAt`; the token ledger then misses the day's USD-settled spend |
 | CRD | Vendored with every pin. `task check` fails when the committed CRD differs from what the Go types generate |
 
 ## The factory
@@ -216,7 +217,7 @@ absent rather than 0.
 | `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
 | `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
 | `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
-| `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first tick |
+| `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
 | `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
 | `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
