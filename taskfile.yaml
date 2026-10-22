@@ -42,6 +42,7 @@ tasks:
     desc: The operator scripts under scripts/, against fakes.
     cmds:
       - bash scripts/shadow-merge-tally_test.sh
+      - bash scripts/stall-steps_test.sh
 
   vuln:
     desc: Known vulnerabilities reachable from our code, the stdlib included.

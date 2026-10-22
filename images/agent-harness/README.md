@@ -57,6 +57,11 @@ says why on stderr.
 Nothing here is a control: the budget, the deadline and OpenHands' stuck detector still bound the
 run, and an agent that games the rules only ends its own run.
 
+**The stall limit** is read from the factory's history: `scripts/stall-steps.sql` lists every
+implementer run's steps to its first commit from the room log, and `scripts/stall-steps.sh` keeps
+the runs merged pull requests name and prints N, the smallest multiple of 10 above their p90 once
+20 runs have one, and 80 until then.
+
 ## Model errors
 
 A model call that fails ends the run (`execution_status=error`, the run's end reason `agent_error`), except
