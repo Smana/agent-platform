@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -250,6 +251,7 @@ func absorb(t *v1alpha1.Task, all []runs.Run) (runs.Run, bool) {
 		rec := &t.Status.Runs[i]
 		if x, ok := claims[rec.ID]; ok {
 			rec.Tokens = max(rec.Tokens, x.Tokens)
+			stamp(&rec.Provenance, x)
 			if rec.ID == cur.ID && (!pending(x.Phase) || pending(rec.Phase)) {
 				rec.Phase = x.Phase
 			}
@@ -661,3 +663,25 @@ func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 	}
 	return false
 }
+
+// stamp fills what the run ran on from its claim (R10): each field once, never changed, so a later
+// read of a claim a newer CompositionRevision re-bound still records the one the run started on.
+func stamp(p *v1alpha1.RunProvenance, x runs.Run) {
+	p.FactoryVersion = cmp.Or(p.FactoryVersion, x.FactoryVersion)
+	p.CompositionRevision = cmp.Or(p.CompositionRevision, x.CompositionRevision)
+	p.HarnessImage = cmp.Or(p.HarnessImage, x.HarnessImage)
+}
+
+// served adds the models the meter saw serve the run (R10): a set that only grows, sorted, and
+// bounded by the CRD's maxItems.
+func served(p *v1alpha1.RunProvenance, models []string) {
+	for _, m := range models {
+		if m != "" && !slices.Contains(p.ServedModels, m) && len(p.ServedModels) < maxServedModels {
+			p.ServedModels = append(p.ServedModels, m)
+		}
+	}
+	slices.Sort(p.ServedModels)
+}
+
+// maxServedModels is RunProvenance.ServedModels' maxItems.
+const maxServedModels = 8

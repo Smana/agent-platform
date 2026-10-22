@@ -718,6 +718,7 @@ func (r *Reconciler) price(ctx context.Context, t *v1alpha1.Task) {
 	for i := range t.Status.Runs {
 		rec := &t.Status.Runs[i]
 		if c, ok := r.Costs.Get(rec.ID); ok {
+			served(&rec.Provenance, c.Served)
 			rec.CostMicroUSD = max(rec.CostMicroUSD, c.MicroUSD)
 			if rec.Unpriced == "" {
 				rec.Unpriced = c.Why
