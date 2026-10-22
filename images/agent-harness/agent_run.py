@@ -9,6 +9,7 @@ here is a control (design section 4): every rule it passes to the agent is
 enforced outside the sandbox.
 """
 import functools
+from http.client import HTTPException
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -729,11 +731,21 @@ def evidence(env: dict, task: str) -> tuple[str, set[str]]:
     sha = head()
     merge_base = (_git("merge-base", base_ref(env), "HEAD") or "").strip() or base_ref(env)
     files = [f for f in (_git("diff", "--name-only", merge_base, "HEAD") or "").split("\n") if f]
-    diff = _git("diff", "--no-color", "--no-ext-diff", "--no-textconv", merge_base, "HEAD") or ""
-    return loop_policy.judge_input(loop_policy.acceptance(task), sha, files, redact(diff), wait_checks(env, sha))
+    diff = _git("diff", "--no-color", "--no-ext-diff", "--no-textconv", merge_base, "HEAD")
+    text, offered = loop_policy.judge_input(loop_policy.acceptance(task), sha, files,
+                                            "(diff unavailable)" if diff is None else diff, wait_checks(env, sha))
+    return redact(text), offered  # every part is the agent's: file names, check titles, the diff
 
 
 JUDGE_PATH = re.compile(r"/v1/?$")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a redirect is no answer: the token is never re-sent elsewhere
+
+
+NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
 
 
 def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
@@ -742,20 +754,22 @@ def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
     the run's token, so the gateway meters it against the run's cap. The proxy pins the alias from its
     own JUDGE_MODEL (profiles P4), so model is a hint; before P4, or with JUDGE_MODEL none, the path
     answers 404 or 403, and the run ends as it would with no judge."""
-    base = env.get("LLM_BASE_URL") or ""
-    if not JUDGE_PATH.search(base):
+    parts = urllib.parse.urlsplit(env.get("LLM_BASE_URL") or "")
+    if not JUDGE_PATH.search(parts.path):
         print("agent-run judge unavailable: LLM_BASE_URL has no /v1 to put the judge's path beside", file=sys.stderr, flush=True)
         return None
-    url = JUDGE_PATH.sub("/judge/v1", base) + "/chat/completions"
+    # Only the path changes: the scheme and host stay the proxy's.
+    url = urllib.parse.urlunsplit(parts._replace(path=JUDGE_PATH.sub("/judge/v1", parts.path) + "/chat/completions",
+                                                 query="", fragment=""))
     body = {"model": model, "max_tokens": JUDGE_MAX_TOKENS, "reasoning_effort": JUDGE_EFFORT,
             "messages": [{"role": "system", "content": loop_policy.JUDGE_SYSTEM}, {"role": "user", "content": message}]}
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + _api_key(env)})
     try:
-        with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT_S) as resp:
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + _api_key(env)})
+        with NO_REDIRECT.open(req, timeout=JUDGE_TIMEOUT_S) as resp:
             reply = json.loads(resp.read(1 << 20))
         content = reply["choices"][0]["message"]["content"]
-    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+    except (OSError, HTTPException, ValueError, KeyError, IndexError, TypeError) as exc:
         print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
         return None
     if isinstance(content, list):

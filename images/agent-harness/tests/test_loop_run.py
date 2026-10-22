@@ -2,6 +2,7 @@
 a real clone, the checks and the judge's call against stand-ins, the drive, and the end's report.
 Needs the openhands SDK for the message shape, so it runs in the image: docker build --target test.
 """
+import http.client
 import http.server
 import io
 import json
@@ -204,7 +205,7 @@ class FakeLLM(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class AskJudgeTest(unittest.TestCase):
+class FakeProxy:
     def setUp(self):
         FakeLLM.requests, FakeLLM.status, FakeLLM.content = [], 200, '{"verdict": "met"}'
         server = http.server.HTTPServer(("127.0.0.1", 0), FakeLLM)
@@ -213,6 +214,8 @@ class AskJudgeTest(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self.url = "http://127.0.0.1:%d" % server.server_port
 
+
+class AskJudgeTest(FakeProxy, unittest.TestCase):
     def test_a_fresh_context_with_no_tools_on_the_proxys_judge_path(self):
         answer = agent_run.ask_judge({"LLM_BASE_URL": self.url + "/v1"}, "tier-light", "evidence")
         self.assertEqual(answer, ('{"verdict": "met"}', "glm-5.3-flash"))
@@ -242,6 +245,38 @@ class AskJudgeTest(unittest.TestCase):
             self.assertIsNone(agent_run.ask_judge({"LLM_BASE_URL": self.url + "/api"}, "tier-light", "e"))
         self.assertIn("has no /v1", err.getvalue())
         self.assertEqual(FakeLLM.requests, [], "nothing is sent beside /api")
+
+
+class AskJudgeFailuresTest(FakeProxy, unittest.TestCase):
+    def ask(self, env):
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            return agent_run.ask_judge(env, "tier-light", "e"), err.getvalue()
+
+    def test_a_truncated_response_is_no_answer(self):
+        with mock.patch("http.client.HTTPResponse.read", side_effect=http.client.IncompleteRead(b"x")):
+            answer, err = self.ask({"LLM_BASE_URL": self.url + "/v1"})
+        self.assertIsNone(answer)
+        self.assertIn("judge unavailable", err)
+
+    def test_an_unreadable_key_file_is_no_answer(self):
+        answer, err = self.ask({"LLM_BASE_URL": self.url + "/v1", "LLM_API_KEY_FILE": "/nonexistent/key"})
+        self.assertIsNone(answer)
+        self.assertIn("judge unavailable", err)
+        self.assertEqual(FakeLLM.requests, [])
+
+    def test_a_redirect_is_no_answer_and_is_not_followed(self):
+        FakeLLM.status = 302
+        answer, err = self.ask({"LLM_BASE_URL": self.url + "/v1"})
+        self.assertIsNone(answer)
+        self.assertIn("HTTP Error 302", err)
+        self.assertEqual(len(FakeLLM.requests), 1)
+
+    def test_a_host_only_base_is_no_answer(self):
+        for base in ("http://v1", "http://127.0.0.1:1/api?x=/v1"):
+            with self.subTest(base=base):
+                answer, _ = self.ask({"LLM_BASE_URL": base})
+                self.assertIsNone(answer)
+        self.assertEqual(FakeLLM.requests, [])
 
 
 class ContinueTest(unittest.TestCase):
