@@ -415,10 +415,10 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 }
 
 // resolve settles each run whose last charge's write reported an error as the ledger of that
-// write's day shows it: what the run's entry there gained over was is what the write landed. The
-// rest of what the run settled stays as this meter knows it, the part no ledger shows included:
-// R10's lift, and days pruned since they were read. One read per day in doubt; a failed one fails
-// the tick, as learn's does, and leaves the runs in doubt.
+// write's day shows it: what the run's entry there gained over was is what the write landed. A
+// landed lift is in that entry, so it is cleared here. The rest of what the run settled stays as
+// this meter knows it: the part no ledger shows, and days pruned since they were read. One read
+// per day in doubt; a failed one fails the tick, as learn's does, and leaves the runs in doubt.
 func (m *Meter) resolve(ctx context.Context) error {
 	read := map[string]map[string]int64{}
 	for id, a := range m.accounts {
@@ -481,7 +481,7 @@ func (m *Meter) measure(r runs.Run, v int64, priced bool) int64 {
 }
 
 // unsettled is what the day ledgers have yet to charge for the run: its total less what they
-// settled. Nothing until its account is read and the run measured once.
+// settled and less the lift still pending. Nothing until its account is read and the run measured once.
 func (m *Meter) unsettled(id string) int64 {
 	a := m.accounts[id]
 	if !a.known || !a.measured {

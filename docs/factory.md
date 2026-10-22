@@ -320,7 +320,7 @@ One ConfigMap per UTC day, `agent-factory-ledger-usd-<YYYYMMDD>`, holds the days
 |---|---|---|
 | `spent` | Principal → micro-USD charged that day | The meter |
 | `reserved.<runId>` | `{principal, person?, room?, maxMicroUSD}`, dropped when the run ends | Admission |
-| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent`; on the first day a run taken as already charged at the switch (below) is charged again, it also holds that spend, which `spent` never counts | The meter |
+| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent`; on the first day a run taken as already charged at the switch (below) is next charged, it also holds that spend (a run whose early days were pruned is lifted the same way), which `spent` never counts | The meter |
 
 ```mermaid
 flowchart LR
@@ -340,16 +340,20 @@ when the run cannot be priced (never $0), to every key the run is charged to and
 the ledgers settled for it and starts it there. A write that reports an error may have landed all
 the same: the next tick reads that day's `settled.<runId>` to learn how much did, and charges only
 the rest. A run is charged once across a failover, a ledger that cannot be read, a failed write,
-landed or not, and midnight, with three bounded exceptions:
+landed or not, and midnight, with four bounded exceptions:
 
 - A gateway counter reset before a new leader's first reading, once the counters have passed what
   was settled, loses what the run spent before the reset: an under-count.
 - A run whose served model loses its price after such a reset and failover is charged its tokens
   at $1.70 per million on top of what was settled: an over-count.
 - A write the apiserver reports as failed (a 504) that commits only after the next tick read that
-  day's ledger back is charged twice: an over-count of that tick's charges. It is narrow, as the
-  failed write carries the ledger's old `resourceVersion` and conflicts once any later write
-  lands. Nothing else guards it.
+  day's ledger back is charged twice: an over-count of that tick's charges. It is narrow within a
+  day, as the failed write carries the ledger's old `resourceVersion` and conflicts once any later
+  write lands; across midnight it stays open longer, as yesterday's ledger may get no later write.
+  Nothing else guards it.
+- A lifted run's late spend not yet in a ledger at a failover (the leader's write was lost, or it
+  died before its next tick) is not charged: an under-count bounded by the reading lag at a run's
+  end.
 
 The meter deletes the ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>`
 they replaced the same way. A run the meter first sees ended, with its usage annotated, is taken as
