@@ -89,6 +89,13 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			continue
 		}
 		raw := append([]byte(nil), line...)
+		if len(m.ID) == 0 {
+			// A notification is posted before the next line is read: MCP wants the client's
+			// notifications (initialized above all) to reach the broker ahead of its later requests.
+			// A hung broker holds the line only as long as one forward, which HC bounds.
+			r.handle(ctx, m, raw)
+			continue
+		}
 		if !g.TryGo(func() error { r.handle(ctx, m, raw); return nil }) && len(m.ID) > 0 {
 			r.write(mcpwire.Response(m.ID, nil, &mcpwire.Error{Code: mcpwire.InternalError, Message: "busy: 8 requests in flight"}))
 		}

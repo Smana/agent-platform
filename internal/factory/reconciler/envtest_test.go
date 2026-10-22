@@ -12,6 +12,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -87,28 +88,20 @@ func TestEnvtestTaskToRun(t *testing.T) {
 		t.Fatalf("trace %+v, claim %v %v", got.Status.Trace, u.GetAnnotations(), u.GetLabels())
 	}
 	// Every run of the task is parented on these ids: the CRD refuses a change of them.
-	moved := got.DeepCopy()
-	moved.Status.Trace.TraceID = strings.Repeat("c", 32)
-	if err := c.Status().Update(ctx, moved); err == nil || !strings.Contains(err.Error(), "a task's trace ids never change") {
+	if err := refusedUpdate(ctx, c, client.ObjectKeyFromObject(tk), func(tk *v1alpha1.Task) { tk.Status.Trace.TraceID = strings.Repeat("c", 32) }); err == nil || !strings.Contains(err.Error(), "a task's trace ids never change") {
 		t.Fatalf("a changed trace id is refused: %v", err)
 	}
 	// Review M3: nor removed, which would let a new mint through.
-	dropped := got.DeepCopy()
-	dropped.Status.Trace = nil
-	if err := c.Status().Update(ctx, dropped); err == nil || !strings.Contains(err.Error(), "a task's trace is never removed") {
+	if err := refusedUpdate(ctx, c, client.ObjectKeyFromObject(tk), func(tk *v1alpha1.Task) { tk.Status.Trace = nil }); err == nil || !strings.Contains(err.Error(), "a task's trace is never removed") {
 		t.Fatalf("a removed trace is refused: %v", err)
 	}
 
 	// R49: settled usage stays settled — the omitempty bool's has() guards hold on a real API
 	// server, where false is absent.
-	settled := got.DeepCopy()
-	settled.Status.UsageSettled = true
-	if err := c.Status().Update(ctx, settled); err != nil {
+	if err := refusedUpdate(ctx, c, client.ObjectKeyFromObject(tk), func(tk *v1alpha1.Task) { tk.Status.UsageSettled = true }); err != nil {
 		t.Fatal(err)
 	}
-	unsettled := settled.DeepCopy()
-	unsettled.Status.UsageSettled = false
-	if err := c.Status().Update(ctx, unsettled); err == nil || !strings.Contains(err.Error(), "settled usage stays settled") {
+	if err := refusedUpdate(ctx, c, client.ObjectKeyFromObject(tk), func(tk *v1alpha1.Task) { tk.Status.UsageSettled = false }); err == nil || !strings.Contains(err.Error(), "settled usage stays settled") {
 		t.Fatalf("unsettling is refused: %v", err)
 	}
 
@@ -143,4 +136,22 @@ func eventually(cond func() bool) bool {
 			return cond()
 		}
 	}
+}
+
+// refusedUpdate applies change to a fresh copy of the task and updates its status. The controller
+// writes the same status, so a conflict (409) is retried on a fresh Get, never taken for the answer:
+// the caller sees the API server's validation error, or nil when the update went through.
+func refusedUpdate(ctx context.Context, c client.Client, key client.ObjectKey, change func(*v1alpha1.Task)) error {
+	var err error
+	for range 20 {
+		var cur v1alpha1.Task
+		if err = c.Get(ctx, key, &cur); err != nil {
+			return err
+		}
+		change(&cur)
+		if err = c.Status().Update(ctx, &cur); !apierrors.IsConflict(err) {
+			return err
+		}
+	}
+	return err
 }
