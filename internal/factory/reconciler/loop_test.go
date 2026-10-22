@@ -3,6 +3,8 @@
 package reconciler
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
@@ -36,5 +38,30 @@ func TestALoopRowReachesTheImplementersClaim(t *testing.T) {
 	}
 	if l := g.runs.specs[rid(0)].Loop; l == nil || *l != (runs.Loop{StallSteps: 40, Continuations: 2, JudgeModel: "tier-light"}) {
 		t.Fatalf("claim loop %+v", l)
+	}
+}
+
+// A loop end becomes the task's reason, its narration (the category, no judge prose) and its
+// counter, whatever the config says after triage.
+func TestALoopEndEscalatesWithItsReason(t *testing.T) {
+	prose := map[string]string{"judge_impossible": "cannot be done as asked", "stalled": "made no commit",
+		"not_met": "after the last continuation"}
+	for end, words := range prose {
+		t.Run(end, func(t *testing.T) {
+			g, _ := loopRig(t)
+			g.r.Cfg.Loops = nil // a config change never moves a triaged task
+			g.runs.set(rid(0), "Failed")
+			g.log.end(rid(0), "Failed", end)
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != end {
+				t.Fatalf("%s %s, want Escalated %s", tk.Status.Phase, tk.Status.Reason, end)
+			}
+			if c := strings.Join(g.f.Comments(7), "\n"); !strings.Contains(c, words) {
+				t.Fatalf("the narration names the category: %q", c)
+			}
+			if !slices.Contains(g.metrics.recorded, "loop_run review "+end) {
+				t.Fatalf("metrics %v", g.metrics.recorded)
+			}
+		})
 	}
 }

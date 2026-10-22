@@ -312,6 +312,9 @@ func (m *fakeMetrics) ClassMismatch(_ context.Context, predicted, matched string
 func (m *fakeMetrics) MergeDecision(_ context.Context, class, verdict, reason string) {
 	m.add("merge_decision " + class + " " + verdict + " " + reason)
 }
+func (m *fakeMetrics) LoopRun(_ context.Context, class, end string) {
+	m.add("loop_run " + class + " " + end)
+}
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
 	m.add("room_closed_at_cap " + reason)

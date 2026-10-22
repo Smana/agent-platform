@@ -55,7 +55,9 @@ func (r *Reconciler) stuck(ctx context.Context, t *v1alpha1.Task, run runs.Run) 
 }
 
 // agent_error is not here: it includes gateway and provider failures, which score nothing (R53).
-var underReasons = []string{"stuck", "agent_stuck", "review_rounds_exhausted", "ci_red", "budget-run", "budget-task"}
+// Nor is judge_impossible: a task the judge finds impossible says nothing of the tier.
+var underReasons = []string{"stuck", "agent_stuck", "review_rounds_exhausted", "ci_red", "budget-run", "budget-task",
+	"stalled", "not_met"}
 
 // Fit is §7's after-the-fact score of the tier that ran: under when the task escalated for
 // capability after a full attempt, over when it succeeded on < 20 % of the tier's task budget.

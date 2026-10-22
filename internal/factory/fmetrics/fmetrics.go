@@ -110,6 +110,7 @@ type Set struct {
 	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
+	loopRuns        metric.Int64Counter
 	roomsCapped     metric.Int64Counter
 	usageErrors     metric.Int64Counter
 	meterSuccess    metric.Int64Gauge
@@ -270,6 +271,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
+	check(err)
+	s.loopRuns, err = meter.Int64Counter("agent_factory_loop_runs_total",
+		metric.WithDescription("Implementer runs under the loop policy, by class and how they ended: judge_impossible, stalled, not_met, finished or other (loops design L2, L3)."))
 	check(err)
 	s.roomsCapped, err = meter.Int64Counter("agent_factory_rooms_closed_at_cap_total",
 		metric.WithDescription("Finished tasks' rooms closed a day after the end, by the wait cut short: a driver still holding the room, or facts the broker never took (#92)."))
@@ -630,6 +634,12 @@ func (s *Set) InputExcludesCache(ctx context.Context, model string) {
 // (disruption design §6).
 func (s *Set) Resumed(ctx context.Context, reason string) {
 	s.resumes.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", oneOf(reason, resumeReasons()))))
+}
+
+// LoopRun counts an implementer run under the loop policy once it ends, by its task's class and end.
+func (s *Set) LoopRun(ctx context.Context, class, end string) {
+	s.loopRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("end", oneOf(end, []string{"judge_impossible", "stalled", "not_met", "finished"})), s.repoOf(ctx)))
 }
 
 // RoomClosedAtCap counts a finished task's room closed at the cap instead of after its wait (#92).

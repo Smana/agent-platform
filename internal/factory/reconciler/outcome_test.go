@@ -99,3 +99,13 @@ func TestTaskFinalLinksTheAuditChain(t *testing.T) {
 		}
 	}
 }
+
+// Loop policy part 2: a stall or spent continuations is a capability failure after a full attempt;
+// a task the judge finds impossible says nothing of the tier.
+func TestLoopEndsScoreTheTier(t *testing.T) {
+	for reason, want := range map[string]string{"stalled": "under", "not_met": "under", "judge_impossible": ""} {
+		if got := Fit(&v1alpha1.Task{Status: v1alpha1.TaskStatus{Phase: v1alpha1.PhaseEscalated, Reason: reason}}); got != want {
+			t.Errorf("Fit(%s) = %q, want %q", reason, got, want)
+		}
+	}
+}

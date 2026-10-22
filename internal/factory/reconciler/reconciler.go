@@ -89,6 +89,7 @@ type metrics interface {
 	ClassMismatch(ctx context.Context, predicted, matched string)
 	MergeDecision(ctx context.Context, class, verdict, reason string)
 	Resumed(ctx context.Context, reason string)
+	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 }
 
