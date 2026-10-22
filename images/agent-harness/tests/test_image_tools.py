@@ -26,5 +26,22 @@ class ImageToolsTest(unittest.TestCase):
         self.assertEqual(os.path.realpath(shutil.which("agent-checks")), "/opt/agent/agent_checks.py")
 
 
+class ChecksRequirementsTest(unittest.TestCase):
+    """The system python's PyYAML pin is the lock's own: same version, same hashes."""
+
+    @staticmethod
+    def pyyaml_block(name):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", name)) as f:
+            text = f.read().replace("\\\n", " ")
+        (line,) = [ln.split() for ln in text.splitlines() if ln.startswith("pyyaml==")]
+        return line
+
+    def test_the_checks_requirements_follow_the_lock(self):
+        block = self.pyyaml_block("checks-requirements.txt")
+        self.assertGreater(len(block), 1)
+        self.assertEqual(block, self.pyyaml_block("requirements.txt"))
+
+
 if __name__ == "__main__":
     unittest.main(argv=sys.argv)

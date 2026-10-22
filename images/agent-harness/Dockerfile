@@ -60,7 +60,7 @@ RUN /usr/local/bin/python -m venv /agent-server/.venv \
 
 # The system python3 the repositories' checks run gets the venv's PyYAML (v3 feature 3, R4).
 COPY checks-requirements.txt /tmp/checks-requirements.txt
-RUN /usr/local/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: \
+RUN /usr/local/bin/python -m pip install --no-cache-dir --root-user-action=ignore --require-hashes --only-binary=:all: \
       -r /tmp/checks-requirements.txt \
  && rm /tmp/checks-requirements.txt
 
