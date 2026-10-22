@@ -17,7 +17,7 @@ const (
 
 // Payer is the one ledger key the run's charge is attributed to (spend per identity SI1): the
 // person it is charged to beside the fleet, else its own principal. It is the last key the meter
-// settles the run to, so the payers' charges partition the ledger's.
+// settles the run to (a ChargedTo run is also charged to system:factory in the ledger).
 func (r Run) Payer() string { return cmp.Or(r.ChargedTo, r.Principal) }
 
 // Kind is KindTask for a run of a Task, KindRoom for any other.
