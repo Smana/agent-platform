@@ -685,10 +685,11 @@ def _clean(res, decl, head: str):
         return None
     skipped = res.get("skipped")
     if skipped is not None:
-        return {"version": 1, "head": head, "skipped": skipped} if skipped in CHECKS_SKIPS else None
+        return {"version": 1, "head": head, "skipped": skipped} if isinstance(skipped, str) and skipped in CHECKS_SKIPS else None
     names = {s.get("name") for s in decl.get("steps", []) if isinstance(s, dict)}
     steps = res.get("steps")
-    if not isinstance(steps, list) or not all(isinstance(s, dict) and s.get("result") in CHECKS_RESULTS for s in steps):
+    if not isinstance(steps, list) or not all(isinstance(s, dict) and isinstance(s.get("result"), str)
+                                           and s["result"] in CHECKS_RESULTS and isinstance(s.get("name"), str) for s in steps):
         return None
     return {**res, "steps": [s for s in steps if s.get("name") in names]}
 

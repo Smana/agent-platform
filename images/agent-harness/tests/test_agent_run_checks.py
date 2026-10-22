@@ -169,7 +169,9 @@ class FinalChecksTest(unittest.TestCase):
 
     def test_a_malformed_result_is_unreadable_not_an_exception(self):
         for bad in ([], {"head": self.head, "steps": "x"}, {"head": self.head, "steps": [{"name": "suites"}]},
-                    {"head": "other", "steps": []}, {"head": self.head, "skipped": "<script>"}):
+                    {"head": "other", "steps": []}, {"head": self.head, "skipped": "<script>"},
+                    {"head": self.head, "skipped": []}, {"head": self.head, "steps": [{"name": "suites", "result": []}]},
+                    {"head": self.head, "steps": [{"name": [], "result": "pass"}]}):
             with self.subTest(bad=bad):
                 with open(os.path.join(self.state, self.head + ".json"), "w") as f:
                     json.dump(bad, f)
