@@ -26,8 +26,10 @@ spec:
         - matchName: codeload.github.com
         - matchName: objects.githubusercontent.com
         - matchName: raw.githubusercontent.com
+        - matchName: release-assets.githubusercontent.com
         - matchName: proxy.golang.org
         - matchName: sum.golang.org
+        - matchName: dl.google.com
         - matchName: api.anthropic.com
         - matchName: room-broker.agent-platform.svc.cluster.local
   - toFQDNs:
@@ -36,8 +38,10 @@ spec:
     - matchName: codeload.github.com
     - matchName: objects.githubusercontent.com
     - matchName: raw.githubusercontent.com
+    - matchName: release-assets.githubusercontent.com
     - matchName: proxy.golang.org
     - matchName: sum.golang.org
+    - matchName: dl.google.com
     - matchName: api.anthropic.com
     toPorts:
     - ports:

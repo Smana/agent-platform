@@ -38,6 +38,8 @@ type AgentRunList struct {
 // +kubebuilder:validation:XValidation:rule="has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)",message="roomRef is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)",message="queueName is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)",message="suspendable is immutable and cannot be added or removed after creation"
+// +kubebuilder:validation:XValidation:rule="self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks) || !self.loop.checks",message="an internal run runs no repository checks"
+// +kubebuilder:validation:XValidation:rule="has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || self.loop == oldSelf.loop)",message="loop is immutable and cannot be added or removed after creation"
 type AgentRunSpec struct {
 	// +kubebuilder:validation:Enum=implementer;reviewer;tester;triager
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="role is immutable"
@@ -95,6 +97,16 @@ type AgentRunSpec struct {
 	QueueName string `json:"queueName,omitempty"`
 	// +optional
 	Suspendable bool `json:"suspendable,omitempty"`
+	// +optional
+	Loop AgentRunLoop `json:"loop,omitzero"`
+}
+
+// AgentRunLoop is the run's loop policy, fixed at creation (v3: the loop policy's claim object).
+type AgentRunLoop struct {
+	// Checks runs the repository's checks in the sandbox (v3 feature 3): the harness gets
+	// AGENT_CHECKS=1 and the pod's deadline as AGENT_RUN_SECONDS. A public run only.
+	// +optional
+	Checks bool `json:"checks,omitempty"`
 }
 
 // AgentRunTask is exactly one of text or url.

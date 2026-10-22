@@ -60,7 +60,7 @@ func run(name string, mut ...func(*v1alpha1.AgentRun)) *v1alpha1.AgentRun {
 
 func TestLoadConfigDefaultsTheEgressProfiles(t *testing.T) {
 	c := testConfig(t)
-	if got := c.EgressProfiles["github"]; len(got) != 5 || got[0] != "github.com" {
+	if got := c.EgressProfiles["github"]; len(got) != 6 || got[0] != "github.com" {
 		t.Fatalf("github profile %v", got)
 	}
 	for _, p := range []string{"pypi", "npm", "golang", "crates"} {
