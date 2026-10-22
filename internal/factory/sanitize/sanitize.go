@@ -113,11 +113,18 @@ func lookalike(r rune) (rune, bool) {
 // truncates; RunLore's text is bounded by its caller).
 func Text(s string) (string, Report) { return text(s, defuse) }
 
-// text is Text with its markup step as a parameter, so a step that never settles is testable.
-func text(s string, markup func(string, *Report) string) (string, Report) {
+// Hidden is Text's first step alone: it removes what a reader does not see yet a model reads
+// (default-ignorable code points; controls other than \n and \t) and makes CRLF, U+2028 and U+2029
+// a \n. Markdown stays as written, for text a human reads before it goes anywhere, such as an issue
+// draft, which the factory's intake then sanitises whole (factory interfaces F8). The report counts
+// Invisible and Control only.
+func Hidden(s string) (string, Report) {
 	var rep Report
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.Map(func(r rune) rune {
+	return hidden(s, &rep), rep
+}
+
+func hidden(s string, rep *Report) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case r == '\u2028' || r == '\u2029': // a line break the maintainer never saw as one
 			rep.Control++
@@ -129,12 +136,20 @@ func text(s string, markup func(string, *Report) string) (string, Report) {
 			rep.Control++
 			return -1
 		}
+		return r
+	}, strings.ReplaceAll(s, "\r\n", "\n"))
+}
+
+// text is Text with its markup step as a parameter, so a step that never settles is testable.
+func text(s string, markup func(string, *Report) string) (string, Report) {
+	var rep Report
+	s = strings.Map(func(r rune) rune {
 		if m, ok := lookalike(r); ok {
 			rep.Markup++
 			return m
 		}
 		return r
-	}, s)
+	}, hidden(s, &rep))
 	s = norm.NFKC.String(s)
 	limit := maxGrowth * len(s)
 	for range maxPasses {

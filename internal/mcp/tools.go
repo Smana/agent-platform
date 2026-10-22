@@ -3,11 +3,9 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -15,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/mcpwire"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/prpattern"
 	"github.com/Smana/agent-platform/internal/runwatch"
@@ -94,7 +93,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					SinceSeq int64 `json:"sinceSeq"`
 					Limit    int   `json:"limit"`
 				}
-				if decodeArgs(args, &a) != nil || a.SinceSeq < 0 {
+				if mcpwire.DecodeArgs(args, &a) != nil || a.SinceSeq < 0 {
 					return nil, argError("sinceSeq is a seq, 0 or more; limit 1 to 100")
 				}
 				if a.Limit <= 0 || a.Limit > maxRead {
@@ -113,7 +112,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				var a struct {
 					Text string `json:"text"`
 				}
-				if decodeArgs(args, &a) != nil || !text(a.Text, envelope.MaxHumanMessage) {
+				if mcpwire.DecodeArgs(args, &a) != nil || !text(a.Text, envelope.MaxHumanMessage) {
 					return nil, argError("text: 1 to 16384 bytes, no control characters but tab and newline")
 				}
 				return appendAs(ctx, c, envelope.Message, envelope.MessagePayload{Kind: envelope.KindChat, Text: a.Text, Delivery: envelope.DeliveryNone})
@@ -127,7 +126,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				// The bound is characters, not bytes: text() gets the room's byte cap so a 280-rune note in
 				// any script passes it.
-				if decodeArgs(args, &a) != nil || !text(a.Text, envelope.MaxHumanMessage) ||
+				if mcpwire.DecodeArgs(args, &a) != nil || !text(a.Text, envelope.MaxHumanMessage) ||
 					utf8.RuneCountInString(a.Text) > envelope.MaxProgressNote || strings.ContainsAny(a.Text, "\n\r") {
 					return nil, argError("text: one line of 1 to 280 characters")
 				}
@@ -149,7 +148,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					Summary string `json:"summary"`
 					Commit  string `json:"commit"`
 				}
-				if decodeArgs(args, &a) != nil || !isRole(a.ToRole) || !text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
+				if mcpwire.DecodeArgs(args, &a) != nil || !isRole(a.ToRole) || !text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
 					return nil, argError("toRole is implementer, reviewer, tester or triager; summary 1 to 8192 bytes; commit the full 40-hex sha from git rev-parse HEAD, never an abbreviation")
 				}
 				return appendAs(ctx, c, envelope.Handoff, envelope.HandoffPayload{FromRole: c.Run.Role, ToRole: a.ToRole,
@@ -164,7 +163,7 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 					Summary string `json:"summary"`
 					Commit  string `json:"commit"`
 				}
-				if decodeArgs(args, &a) != nil || (a.Verdict != "approve" && a.Verdict != "changes") ||
+				if mcpwire.DecodeArgs(args, &a) != nil || (a.Verdict != "approve" && a.Verdict != "changes") ||
 					!text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
 					return nil, argError("verdict is approve or changes; summary 1 to 8192 bytes; commit the full 40-hex sha from git rev-parse HEAD, never an abbreviation")
 				}
@@ -213,23 +212,6 @@ func pullRequestOf(prs *prpattern.Cache, r runwatch.Run) string {
 		return r.TaskURL
 	}
 	return ""
-}
-
-// decodeArgs reads one JSON object into dst, refusing unknown fields and
-// anything after it. No arguments, or null, is the empty object.
-func decodeArgs(args json.RawMessage, dst any) error {
-	if len(bytes.TrimSpace(args)) == 0 {
-		return nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(args))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		return err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("trailing data")
-	}
-	return nil
 }
 
 // text reports a non-blank string of at most limit bytes with no control

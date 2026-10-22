@@ -47,9 +47,10 @@ roomctl doctor                                   # check the setup
 | `status <room> [--json] [--after seq:N]` | Where a room stands, task first (below): the issue's number and title, then phase, run, budget, PR, issue, why and next, the last verdict, what needs you, the actions you may take, the agents' notes. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
 | `rooms [--repo owner/name] [--mine] [--needs-me] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, or a PR waiting for your merge. `--json`: the broker's rows as is |
 | `watch <room> [--tail N]` | Follows a room, one line per event: its `seq`, who (`role (id)` for a participant with a room role), what, and its text. Shows the last `N` events first (default 50). It reconnects after a drop and picks up where it stopped |
-| `post <room> [--queue] <text>` | Posts a chat message and prints its `seq`. With `--queue` the text is kept for the next run's brief instead |
+| `post <room> [--queue] <text>` | Posts a chat message and prints its `seq`. With `--queue` the text is kept for the next run's brief instead. The broker stores it labelled as [machine-sent](api.md#machine-sent-text), as any text from roomctl |
 | `skill install [--dir .agents/skills]` | Writes the factory-handoff skill. Needs no config or login |
-| `fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]` | A room of your own from events 1 to `SEQ`, with an optional run. `--role`: `implementer`, `reviewer`, `tester` or `triager`; `--pr`: the reviewer's pull request; `--egress`: extra profiles (`pypi`, `npm`, `golang`, `crates`); `--note`: why you fork. Prints the new room's URL |
+| `mcp` | Serves the factory's MCP tools on stdio, for a local coding agent ([below](#the-mcp-server)) |
+| `fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]` | A room of your own from events 1 to `SEQ`, with an optional run. `--role`: `implementer`, `reviewer`, `tester` or `triager`; `--pr`: the reviewer's pull request; `--egress`: extra profiles (`pypi`, `npm`, `golang`, `crates`); `--note`: why you fork, under 1 KiB once labelled as machine-sent (about 900 bytes). Prints the new room's URL |
 
 Flags may come before or after the positional arguments. Source: `internal/app/roomctl.go`.
 
@@ -72,6 +73,33 @@ Token counts read like the room page's: under 1,000 as is, then `k`, then `M` (9
 `1 M`). Times are UTC, the time alone when on today's date. `why:`, `next:` and `last verdict:` lines appear when the summary has them; a pending
 approval reads `needs you: approve "<what>" by <deadline> → <link>`, a link to its card on the
 room page, never a command. Source: `internal/roomctl/status.go`.
+
+## The MCP server
+
+`roomctl mcp` is an MCP server on stdio. It relays each message to the broker's
+[`/mcp`](api.md#post-mcp) with your token, so your agent configures one command and no token is
+pasted:
+
+```bash
+claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a stdio MCP server works
+```
+
+- The broker's operator turns `/mcp` on (`human.mcp.enabled`). Off, every call answers `mcp_off`.
+- The tools: `rooms_list`, `room_summary`, `room_tail`, `room_queue`, `room_fork` and `issue_draft`
+  from the broker, and `issue_file`, roomctl's own. `room_tail` also runs as an MCP Task that waits
+  for the room's next events; `roomctl mcp` polls it for your agent.
+- `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
+  shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
+  shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself
+  with `gh issue create`. It never labels: `factory/ready` stays yours.
+- No tool approves, steers, stops or labels. Approvals happen on the room page.
+- What your agent queues is stored labelled as [machine-sent](api.md#machine-sent-text).
+- Every request reads `token.json` and refreshes the token when it has expired, one refresh at a
+  time. When the refresh is refused, a call answers `not_logged_in`: run `roomctl login` in a
+  terminal, and the running server uses the new token, with no restart.
+
+The [factory-handoff skill](#the-factory-handoff-skill) does the same jobs through the shell, for an
+agent with no MCP configuration. Configure one of the two.
 
 ## The factory-handoff skill
 

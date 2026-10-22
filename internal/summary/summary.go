@@ -107,7 +107,10 @@ type Summary struct {
 	Room       string `json:"room"`
 	URL        string `json:"url"`
 	Status     struct {
-		Phase       string               `json:"phase"`
+		Phase string `json:"phase"`
+		// State is the coarse state (Coarse): set by the caller, which holds the Room's projected
+		// phase and its runs; the fold alone has neither.
+		State       string               `json:"state,omitempty"`
 		Run         *envelope.RunFact    `json:"run"`
 		Budget      *envelope.BudgetFact `json:"budget"`
 		PR          *envelope.PRFact     `json:"pr"`

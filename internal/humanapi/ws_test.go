@@ -189,7 +189,7 @@ func (v hubView) Range(ctx context.Context, room string, after int64, limit int)
 // headerAuth authenticates X-Test-User as human:<user>, an agents-member, whose
 // Sub is <user>. X-Test-TTL sets the token's remaining life, X-Test-Kind the
 // principal's kind, X-Test-Admin adds agents-admin, X-Test-Forbidden refuses as
-// a foreign Origin would.
+// a foreign Origin would, X-Test-Client sets the client id (default web).
 type headerAuth struct{}
 
 func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
@@ -215,7 +215,11 @@ func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
 	if v, ok := r.Header["X-Test-Kind"]; ok {
 		kind = envelope.ActorKind(v[0])
 	}
-	return authn.Principal{Kind: kind, ID: "human:" + who, Sub: who, Groups: gs, ClientID: "web",
+	client := "web"
+	if c := r.Header.Get("X-Test-Client"); c != "" {
+		client = c
+	}
+	return authn.Principal{Kind: kind, ID: "human:" + who, Sub: who, Groups: gs, ClientID: client,
 		Expiry: time.Now().Add(ttl)}, nil
 }
 
@@ -972,7 +976,7 @@ func TestRoomList(t *testing.T) {
 		t.Fatalf("%d %v", code, err)
 	}
 	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"needsYou":0,"owner":"human:own","phase":"Active",` +
-		`"repository":"Smana/agent-platform","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
+		`"repository":"Smana/agent-platform","state":"running","url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)
 	}

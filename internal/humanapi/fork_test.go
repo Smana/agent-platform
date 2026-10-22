@@ -162,7 +162,8 @@ func TestForkCreatesTheForkersRoomAndItsRun(t *testing.T) {
 	var p map[string]any
 	_ = json.Unmarshal(ev.Payload, &p)
 	if p["kind"] != "forked_from" || p["room"] != room.Name || p["seq"] != 2.0 || p["commit"] != "4be1c9d" ||
-		p["note"] != "try uv, key [REDACTED:test]" || len(ev.Redactions) != 1 || ev.Actor.ID != "human:bob" {
+		p["note"] != "⟦machine-sent via roomctl: a client wrote this on a human's token⟧\ntry uv, key [REDACTED:test]\n⟦end of machine-sent text⟧" ||
+		len(ev.Redactions) != 1 || ev.Actor.ID != "human:bob" {
 		t.Fatalf("forked_from %s %v", ev.Payload, ev.Redactions)
 	}
 	calls := req.calls()
@@ -270,6 +271,7 @@ func TestForkRefusals(t *testing.T) {
 		{"a PR for an implementer", "human:bob", Action{Seq: 1, Role: "implementer", PRURL: "https://github.com/Smana/cloud-native-ref/pull/1"}, "bad_action"},
 		{"a malformed egress profile", "human:bob", Action{Seq: 1, Role: "implementer", EgressProfiles: []string{"Any"}}, "bad_action"},
 		{"a note over 1 KiB", "human:bob", Action{Seq: 1, Note: strings.Repeat("n", 1025)}, "bad_action"},
+		{"a note over 1 KiB once wrapped (F8)", "human:bob", Action{Seq: 1, Note: strings.Repeat("n", 950)}, "bad_action"},
 		{"an owner the Room CRD refuses", "human:bob smith", Action{Seq: 1}, "bad_action"},
 	}
 	for _, c := range cases {

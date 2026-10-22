@@ -147,7 +147,7 @@ flowchart LR
 |---|---|---|
 | Entry | `cmd/room-broker` | `serve` and `retention` subcommands |
 | Entry | `cmd/room-bridge` | the sidecar binary |
-| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client |
+| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
 | Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation |
@@ -165,6 +165,7 @@ flowchart LR
 | Rooms | `internal/suspend` | the suspend trigger: a suspendable run waiting on an approval in an idle attended room is suspended, and resumed once nothing waits, through its claim's annotations |
 | API | `internal/bridgeapi` | `:8443`: hello, events, SSE stream, system API, approvals |
 | API | `internal/mcp` | `:8090` MCP server, the `room_*` tools |
+| API | `internal/mcpwire` | the JSON-RPC wire both MCP servers share: one message in, one answer out |
 | API | `internal/github`, `internal/verdictpost` | the factory App client; the leader's verdict comments |
 | API | `internal/brief`, `internal/runrequest` | fenced brief; manifest and factory run requesters |
 | API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache |
@@ -172,7 +173,7 @@ flowchart LR
 | Viewers | `internal/policy` | the §1 permission matrix |
 | Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
 | Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
-| Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI |
+| Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI; `POST /mcp`, the humans' MCP server |
 | Viewers | `web/` | TypeScript UI and its vitest suite |
 | Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves |
 

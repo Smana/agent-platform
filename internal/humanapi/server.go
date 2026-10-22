@@ -22,6 +22,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/time/rate"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -111,6 +112,8 @@ type Server struct {
 	Identity *ghidentity.Resolver
 	Access   *repoaccess.Checker
 	Logger   *slog.Logger
+	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
+	MCP bool
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)
@@ -136,6 +139,9 @@ type Server struct {
 	conns   map[*context.CancelCauseFunc]struct{}
 	sockets sync.WaitGroup // one per tracked connection: the drain waits on it
 	closing bool
+
+	mcpMu     sync.Mutex
+	mcpLimits map[string]*rate.Limiter // /mcp requests per principal, per replica
 }
 
 // Routes is the :8080 handler.
@@ -159,6 +165,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/roomctl", s.roomctlSetup)
 	mux.HandleFunc("GET /.well-known/roomctl", s.publicSetup)
 	mux.HandleFunc("GET /v1/ws", s.ws)
+	if s.MCP {
+		mux.HandleFunc("POST /mcp", s.mcp)
+		mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {
+			// No GET stream and no session to DELETE: every request is answered on its own POST.
+			w.Header().Set("Allow", http.MethodPost)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response has a write deadline; a hijacked WebSocket's is cleared
 		// by net/http, and each of its frames gets WriteWait instead.

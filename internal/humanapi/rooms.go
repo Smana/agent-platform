@@ -162,8 +162,11 @@ func (s *Server) writeSetup(w http.ResponseWriter) {
 
 // roomRow is one row of GET /api/rooms.
 type roomRow struct {
-	ID        string `json:"id"`
-	Phase     string `json:"phase"`
+	ID    string `json:"id"`
+	URL   string `json:"url"` // the room's page
+	Phase string `json:"phase"`
+	// State is the coarse state (summary.Coarse) of the task's phase, else the room's.
+	State     string `json:"state,omitempty"`
 	Owner     string `json:"owner"`
 	Driver    string `json:"driver"`
 	DataClass string `json:"dataClass"`
@@ -173,10 +176,12 @@ type roomRow struct {
 	Repository  string    `json:"repository"`
 	NeedsMe     bool      `json:"needsMe"`
 	// The task the room works on (#50): Phase above is the room's, Task the task's.
-	Issue    int      `json:"issue,omitempty"`
-	Title    string   `json:"title,omitempty"`
-	Task     string   `json:"task,omitempty"`
-	PR       int      `json:"pr,omitempty"`
+	Issue int    `json:"issue,omitempty"`
+	Title string `json:"title,omitempty"`
+	Task  string `json:"task,omitempty"`
+	PR    int    `json:"pr,omitempty"`
+	// Reason is why the task waits, from its last facts: only while it waits, as the summary's.
+	Reason   string   `json:"reason,omitempty"`
 	NeedsYou int      `json:"needsYou"` // how many things wait for this caller
 	You      wire.You `json:"you"`
 }
@@ -266,10 +271,22 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
+	q := r.URL.Query()
+	rows, access, err := s.roomRows(ctx, p, &roomFilter{repo: q.Get("repo"), mine: q.Get("mine") == "1", needsMe: q.Get("needs_me") == "1"})
+	if err != nil {
+		http.Error(w, err.Error(), roomStatus(err))
+		return
+	}
+	w.Header().Set(accessHeader, access)
+	writeJSON(w, rows)
+}
+
+// roomRows is the room list p reads under f, and the X-Rooms-Access value that says why it may be
+// short. Its one error is errRoomsUnavailable.
+func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter) ([]roomRow, string, error) {
 	var rooms v1alpha1.RoomList
 	if err := s.Rooms.List(ctx, &rooms, client.InNamespace(s.Namespace)); err != nil {
-		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
-		return
+		return nil, "", errRoomsUnavailable
 	}
 	actx, acancel := context.WithTimeout(ctx, accessWait)
 	defer acancel()
@@ -280,8 +297,6 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	// The gate depends on the repository alone, and a failed check is not cached: once per
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
 	readable := map[string]bool{}
-	q := r.URL.Query()
-	f := &roomFilter{repo: q.Get("repo"), mine: q.Get("mine") == "1", needsMe: q.Get("needs_me") == "1"}
 	out := []roomRow{}
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
@@ -323,16 +338,50 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		if f.needsMe && needs == 0 {
 			continue
 		}
-		row := roomRow{ID: room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner, Driver: room.Status.Driver,
-			DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo, NeedsMe: needs > 0, NeedsYou: needs, You: you}
+		row := roomRow{ID: room.Name, URL: s.PublicURL + "/r/" + room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner,
+			Driver: room.Status.Driver, DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo,
+			NeedsMe: needs > 0, NeedsYou: needs, You: you}
 		if t := room.Status.Task; t != nil {
 			row.Task, row.Issue, row.Title, row.PR = t.Phase, int(t.Issue), t.IssueTitle, int(t.PR)
+		}
+		row.State = summary.Coarse(row.Task, row.Phase, s.nextRun(room.Name))
+		if waits[row.Task] {
+			row.Reason = s.waitReason(ctx, room)
 		}
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
-	w.Header().Set(accessHeader, access)
-	writeJSON(w, out)
+	return out, access, nil
+}
+
+// waits are the task phases whose rows carry a reason, as the summary's status does.
+var waits = map[string]bool{"Queued": true, "AwaitingCI": true, "AwaitingHuman": true, "Escalated": true}
+
+// maxRowReason bounds a row's reason, in runes: the factory writes a code.
+const maxRowReason = 64
+
+// waitReason is the reason in room's last task facts, which the Room's status does not project:
+// one indexed read. "" when it cannot be read: the room's summary still says it.
+func (s *Server) waitReason(ctx context.Context, room *v1alpha1.Room) string {
+	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
+	var f envelope.TaskFacts
+	if err != nil || raw == nil || json.Unmarshal(raw, &f) != nil {
+		return ""
+	}
+	if r := []rune(f.Reason); len(r) > maxRowReason {
+		return string(r[:maxRowReason])
+	}
+	return f.Reason
+}
+
+// nextRun reports a live run in room that is not running yet: requested, pending or suspended.
+func (s *Server) nextRun(room string) bool {
+	for _, r := range s.Runs.InRoom(room) {
+		if r.Live() && r.Phase != "Running" {
+			return true
+		}
+	}
+	return false
 }
 
 // stampLastEvent sets each row's LastEventAt from one store read for every listed room. The list
