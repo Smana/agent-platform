@@ -26,7 +26,8 @@ class ParseTest(unittest.TestCase):
     def test_malformed_values_are_refused(self):
         for raw in ("", "[]", "80", '{"stallStep": 80}', '{"stallSteps": 0}', '{"stallSteps": 501}',
                     '{"stallSteps": true}', '{"stallSteps": "80"}', '{"continuations": -1}', '{"continuations": 6}',
-                    '{"judgeModel": ""}', '{"judgeModel": "Tier Light"}', '{"judgeModel": 3}'):
+                    '{"judgeModel": ""}', '{"judgeModel": "Tier Light"}', '{"judgeModel": 3}',
+                    '{"judgeModel": null}', '{"stallSteps": 80.0}', "[" * 100000):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 lp.parse(raw)
 

@@ -33,7 +33,7 @@ def parse(raw: str) -> Policy:
     as the composition writes it. `{}` is the design's defaults. Anything else raises ValueError."""
     try:
         given = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):  # deeply nested input raises the latter
         raise ValueError("is not JSON") from None
     if not isinstance(given, dict):
         raise ValueError("is not a JSON object")
