@@ -29,7 +29,7 @@ func raw(t *testing.T, ev map[string]any) RawEvent {
 
 func text(s string) []any { return []any{map[string]any{"type": "text", "text": s}} }
 
-// mappingCases are the spec table (§3 Event mapping) in agent-server 1.49.6's
+// mappingCases are the spec table (§3 Event mapping) in agent-server 1.56.0's
 // event shapes. has is looked for in the last item's payload.
 var mappingCases = []struct {
 	name  string
@@ -77,6 +77,10 @@ var mappingCases = []struct {
 	{"an unknown kind records that it happened, not what it said", map[string]any{"id": "12", "kind": "SomethingNew",
 		"source": "agent", "secret": "hunter2"},
 		[]envelope.Type{envelope.StateChanged}, `"harnessKind":"SomethingNew"`},
+	{"a security analysis (agent-server 1.54+, no analyzer in the harness) is recorded as an unknown kind",
+		map[string]any{"id": "12b", "kind": "SecurityAnalysisEvent", "source": "agent",
+			"analyzer": "defense_in_depth", "risks": map[string]any{"a1": "HIGH"}},
+		[]envelope.Type{envelope.StateChanged}, `"harnessKind":"SecurityAnalysisEvent"`},
 	{"a known kind with fields of the wrong type still maps", map[string]any{"id": "13", "kind": "ActionEvent",
 		"tool_call_id": 42, "thought": "not a list", "action": "ls"},
 		[]envelope.Type{envelope.ToolCall}, `"args":"ls"`},

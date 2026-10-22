@@ -1,6 +1,6 @@
-openhands-sdk==1.49.6
-openhands-tools==1.49.6
-openhands-agent-server==1.49.6
+openhands-sdk==1.56.0
+openhands-tools==1.56.0
+openhands-agent-server==1.56.0
 # agent_run.py's own root span (observability plan O21); lmnr pulls both in, at the constraints' pins.
 opentelemetry-sdk
 opentelemetry-exporter-otlp-proto-http

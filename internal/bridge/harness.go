@@ -97,7 +97,7 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("agent-server %s %s: status %d", e.Method, e.Path, e.Code)
 }
 
-// Harness speaks agent-server 1.49.6 on loopback (ruling P4). It is not safe for
+// Harness speaks agent-server 1.56.0 on loopback (ruling P4). It is not safe for
 // concurrent Next and Skip calls on one cursor; the bridge owns its cursor.
 type Harness struct {
 	base string

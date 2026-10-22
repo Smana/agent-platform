@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -34,11 +35,12 @@ FINISH = json.dumps({"id": "x", "object": "chat.completion", "created": 0, "mode
 
 class Gateway(http.server.BaseHTTPRequestHandler):
     """Answers each request with the next entry of `script`: a status, or "reset" to drop the connection."""
-    script, hits, ok = [], 0, OK
+    script, hits, ok, delay = [], 0, OK, 0
 
     def do_POST(self):
         self.rfile.read(int(self.headers["content-length"]))
         Gateway.hits += 1
+        time.sleep(Gateway.delay)
         step = Gateway.script.pop(0) if Gateway.script else 200
         if step == "reset":
             self.close_connection = True
@@ -145,6 +147,59 @@ class AsyncModelRetryTest(ModelRetryTest):
 
     def complete(self, messages):
         return asyncio.run(self.llm.agenerate(messages=messages))
+
+
+class HardTimeoutTest(unittest.TestCase):
+    """SDK 1.56 wraps each async model call in LLM.timeout (300 s by default): the #99 retries and their
+    waits now share that one window. Scaled down here: timeout 6 s, waits (1, 2) s, really slept."""
+
+    TIMEOUT_S = 6
+
+    def setUp(self):
+        import openai
+        from openhands.sdk import LLM
+
+        site = load_site()
+        for name in ("_transport_call", "_atransport_call"):
+            self.addCleanup(setattr, LLM, name, getattr(LLM, name))
+        self.assertTrue(site.patch_model_retry(LLM, openai))
+        patcher = mock.patch.object(site, "RETRY_WAITS_S", (1, 2))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(setattr, Gateway, "delay", 0)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        env = {"MODEL": "agent-default", "LLM_BASE_URL": "http://127.0.0.1:%d/v1" % server.server_port,
+               "MCP_URL": "http://127.0.0.1:1/mcp"}
+        spec = agent_run.build_request(env, "t", "r")["agent"]["llm"]
+        self.llm = LLM.model_validate({**spec, "timeout": self.TIMEOUT_S})
+        patcher = mock.patch.dict(os.environ, {"AGENT_RUN_RETRY_LOG": os.path.join(tempfile.mkdtemp(), "retries")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def call(self, delay, *script):
+        from openhands.sdk import Message, TextContent
+
+        Gateway.script, Gateway.hits, Gateway.ok, Gateway.delay = list(script), 0, OK, delay
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            try:
+                return asyncio.run(self.llm.agenerate(messages=[Message(role="user", content=[TextContent(text="hi")])]))
+            except Exception as exc:  # noqa: BLE001 -- the test asserts on it
+                return exc
+
+    def test_fast_failures_retry_within_the_window(self):
+        out = self.call(0, 503, 503)
+        self.assertEqual(out.message.content[0].text, "ok")
+        self.assertEqual(Gateway.hits, 3, "1 s + 2 s of waits fit in 6 s")
+
+    def test_a_retry_that_would_outlast_the_window_ends_in_the_sdk_timeout(self):
+        from openhands.sdk.llm.exceptions import LLMTimeoutError
+
+        out = self.call(2, 503, 503)
+        self.assertIsInstance(out, LLMTimeoutError, "the third attempt is never sent: 2+1+2+2 s > 6 s")
+        self.assertEqual(Gateway.hits, 2)
 
 
 class AgentServerTest(unittest.TestCase):

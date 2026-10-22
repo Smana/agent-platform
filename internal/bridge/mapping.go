@@ -128,7 +128,7 @@ func state(kind string, fields map[string]string) Mapped {
 
 // Map turns one harness event into zero, one or two C4 items, following the spec
 // table (§3 Event mapping). It is total: fields of the wrong type read as empty,
-// a kind agent-server 1.49.6 did not have becomes a harness_event state_changed
+// a kind agent-server 1.56.0 did not have becomes a harness_event state_changed
 // that records the kind and nothing the event said, and a Malformed event one
 // that records only "malformed".
 func Map(e RawEvent, runID string) []Mapped {
@@ -150,7 +150,7 @@ func Map(e RawEvent, runID string) []Mapped {
 		SecurityRisk string          `json:"security_risk"`
 		Observation  struct {
 			Content []textPart `json:"content"`
-			// Not in the brief's fixtures: verify against 1.49.6's Observation.
+			// Not in the brief's fixtures: verify against 1.56.0's Observation.
 			// Without it an error observation maps to ok, a degradation only.
 			IsError bool `json:"is_error"`
 		} `json:"observation"`

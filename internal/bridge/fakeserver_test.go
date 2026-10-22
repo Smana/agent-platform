@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-// fakeAgentServer is agent-server 1.49.6's loopback contract as read from its
+// fakeAgentServer is agent-server 1.56.0's loopback contract as read from its
 // event_router.py and event_service.py: page_id is inclusive, and next_page_id is
 // the id of the first event of the next page.
 type fakeAgentServer struct {
