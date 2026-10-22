@@ -3,6 +3,7 @@
 package runs
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func spec() Spec {
@@ -403,5 +405,39 @@ func TestBuildWritesTheLoopOnlyWhenSet(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, c.want) {
 			t.Fatalf("spec.loop = %v (%v), want %v", got, err, c.want)
 		}
+	}
+}
+
+// Loop policy part 2 (final review I2): only a claim carrying spec.loop is created under Strict
+// field validation, so an XRD that would prune it refuses the claim instead of running loop-off.
+func TestCreateIsStrictOnlyForALoopClaim(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		loop *Loop
+		want string
+	}{
+		{"no loop", nil, ""},
+		{"a loop", &Loop{StallSteps: 80, Continuations: 2}, "Strict"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var got string
+			s := runtime.NewScheme()
+			Scheme(s)
+			cl := fake.NewClientBuilder().WithScheme(s).WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					co := &client.CreateOptions{}
+					co.ApplyOptions(opts)
+					got = co.FieldValidation
+					return cl.Create(ctx, obj, opts...)
+				}}).Build()
+			sp := spec()
+			sp.Loop = c.loop
+			if err := (Client{C: cl}).Create(t.Context(), sp); err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Fatalf("fieldValidation %q, want %q", got, c.want)
+			}
+		})
 	}
 }

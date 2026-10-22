@@ -287,7 +287,13 @@ func (c Client) Create(ctx context.Context, s Spec) error {
 	if err := s.Validate(); err != nil {
 		return fmt.Errorf("create run %s: %w", s.RunID, err)
 	}
-	if err := c.C.Create(ctx, Build(s)); err != nil {
+	// A claim that carries spec.loop is created under Strict field validation: a host XRD without
+	// spec.loop would prune it and run loop-off while the Task records the policy; refuse instead.
+	var opts []client.CreateOption
+	if s.Loop != nil {
+		opts = append(opts, client.FieldValidation("Strict"))
+	}
+	if err := c.C.Create(ctx, Build(s), opts...); err != nil {
 		if apierrors.IsAlreadyExists(err) && c.replayOf(ctx, s) {
 			return nil
 		}
