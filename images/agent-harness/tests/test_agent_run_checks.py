@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -274,6 +275,16 @@ class FinalChecksTest(unittest.TestCase):
         os.chmod(tool, 0o755)
         with mock.patch.object(agent_run, "CHECKS_TOOL", tool):
             self.assertIsNone(agent_run._run_tool(DECL, self.head, 1))
+
+    def test_a_holder_of_the_pipe_in_another_session_cannot_hang_agent_run(self):
+        tool = os.path.join(self.tmp, "holder")
+        with open(tool, "w") as f:
+            f.write("#!/bin/sh\nsetsid sleep 30 &\nexit 0\n")
+        os.chmod(tool, 0o755)
+        started = time.monotonic()
+        with mock.patch.object(agent_run, "CHECKS_TOOL", tool), mock.patch.object(agent_run, "KILL_WAIT_S", 1):
+            self.assertIsNone(agent_run._run_tool(DECL, self.head, 1))
+        self.assertLess(time.monotonic() - started, 10)
 
     def test_a_deeply_nested_result_is_unreadable_not_an_exception(self):
         with open(os.path.join(self.state, self.head + ".json"), "w") as f:

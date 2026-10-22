@@ -582,6 +582,7 @@ CHECKS_RULES = {
 }
 # RC9: the final run is skipped when the pod has less than the declaration's budget plus this left.
 CHECKS_MARGIN_S = 120
+KILL_WAIT_S = 5
 NOTE_MAX = 280
 CHECKS_SKIPS = {"deadline", "no result", "unreadable result"}
 CHECKS_RESULTS = {"pass", "fail", "timeout", "skip"}
@@ -652,8 +653,9 @@ def prefetch(start_span=None):
 
 def _git_out(*args: str) -> str:
     # The repository's config is the agent's: nothing it names (fsmonitor, hooks, diff drivers) runs here.
-    return subprocess.run(["git", "-C", REPO_DIR, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                           "-c", "diff.external=", *args], capture_output=True, text=True).stdout.strip()
+    ac = checks_module()
+    return subprocess.run(["git", "-C", REPO_DIR, *ac.guards(REPO_DIR), *args], capture_output=True, text=True,
+                          env=ac.git_env()).stdout.strip()
 
 
 def _load(path: str) -> dict | None:
@@ -709,6 +711,10 @@ def _run_tool(decl, head: str, timeout: float):
     """The cleaned result agent-checks prints on stdout, or None: a timeout, an exit other than 0 or 1
     (1 is failing steps), no JSON object on the last line, or one _clean refuses."""
     tool_env = {**os.environ, **({"AGENT_CHECKS_BASE": decl["pin"][0]} if decl.get("pin") else {})}
+    # Before the pipe exists: a same-uid process of the agent's can then open neither its read end
+    # through /proc/<agent-run>/fd nor ptrace this process. A refusal means no run.
+    if not checks_module().undumpable():
+        return None
     try:
         proc = subprocess.Popen([CHECKS_TOOL, "--json"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, env=tool_env, start_new_session=True)
@@ -721,7 +727,11 @@ def _run_tool(decl, head: str, timeout: float):
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             proc.kill()
-        proc.communicate()
+        try:
+            proc.communicate(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            # A process in another session still holds the pipe: give up on it.
+            proc.stdout.close()
         return None
     if proc.returncode not in (0, 1):
         return None

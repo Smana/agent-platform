@@ -72,11 +72,24 @@ def git_env() -> dict:
 GUARDS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external="]
 
 
-def guards() -> list[str]:
-    out = subprocess.run(["git", "-C", REPO, *GUARDS, "config", "--get-regexp", r"^filter\..*\.(clean|smudge)$"],
+def guards(repo: str | None = None) -> list[str]:
+    out = subprocess.run(["git", "-C", repo or REPO, *GUARDS, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
                          capture_output=True, text=True, env=git_env()).stdout
     names = {line.split()[0].rsplit(".", 1)[0] for line in out.splitlines() if line.strip()}
-    return GUARDS + [a for n in sorted(names) for a in ("-c", n + ".clean=cat", "-c", n + ".smudge=cat")]
+    return GUARDS + [a for n in sorted(names)
+                     for a in ("-c", n + ".clean=cat", "-c", n + ".smudge=cat", "-c", n + ".process=")]
+
+
+def undumpable() -> bool:
+    """prctl(PR_SET_DUMPABLE, 0): Linux then refuses a same-uid process this one's /proc/<pid>/fd and
+    ptrace (no CAP_SYS_PTRACE). execve resets the flag, so the tool sets it itself at startup. True
+    when it took."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(4, 0, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
@@ -396,6 +409,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--json", action="store_true", help="agent-run's run: say goes to stderr, the result to stdout, no files")
     ap.add_argument("--install", action="store_true", help="install the toolchain only")
     args = ap.parse_args(argv)
+    if args.json and not undumpable():
+        print("agent-checks: cannot make this process undumpable; no result", file=sys.stderr)
+        return 1
 
     def say(message):
         print("agent-checks: " + message, flush=True, file=sys.stderr if args.json else sys.stdout)

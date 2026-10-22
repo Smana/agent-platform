@@ -197,6 +197,50 @@ class DeclarationTest(Rig):
         self.assertEqual((code, res["steps"][0]["result"], res["dirty"]), (0, "pass", True))
         self.assertFalse(os.path.exists(plant))
 
+    def test_a_same_uid_process_cannot_open_the_json_runs_fds_once_it_is_undumpable(self):
+        if os.geteuid() == 0:
+            self.skipTest("root passes the /proc access check whatever the dumpable flag")
+        here = os.path.dirname(agent_checks.__file__)
+        for harden in (False, True):
+            code = ("import sys; sys.path.insert(0, %r)\n" % here
+                    + ("import agent_checks; assert agent_checks.undumpable()\n" if harden else "")
+                    + "print('ready', flush=True); sys.stdin.read()")
+            proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(proc.stdout.readline().strip(), "ready")
+                try:
+                    os.close(os.open("/proc/%d/fd/1" % proc.pid, os.O_WRONLY))
+                    opened = True
+                except OSError:
+                    opened = False
+                self.assertEqual(opened, not harden, "undumpable" if harden else "control: a dumpable process is open")
+            finally:
+                proc.stdin.close()
+                proc.wait()
+                proc.stdout.close()
+
+    def test_a_filter_process_driver_of_the_agent_never_runs(self):
+        marker = os.path.join(self.tmp, "RAN")
+        self.write(self.tmp, "p.sh", "#!/bin/sh\ntouch %s\ncat\n" % marker)
+        os.chmod(os.path.join(self.tmp, "p.sh"), 0o755)
+        self.write(self.repo, ".gitattributes", "taskfile.yaml filter=evil\n")
+        sh(self.repo, *self.git, "add", ".gitattributes")
+        sh(self.repo, *self.git, "commit", "-qm", "attrs")
+        for key, value in (("process", os.path.join(self.tmp, "p.sh")), ("clean", os.path.join(self.tmp, "p.sh")),
+                           ("required", "false")):
+            sh(self.repo, "git", "config", "filter.evil." + key, value)
+        self.write(self.repo, "taskfile.yaml", "version: '3'\n# edit\n")
+        os.utime(os.path.join(self.repo, "taskfile.yaml"), (1, 1))
+        subprocess.run(["git", "-C", self.repo, "diff", "--name-only", "HEAD"], capture_output=True)
+        self.assertTrue(os.path.exists(marker), "control: the filter runs on a plain git diff")
+        os.remove(marker)
+        self.assertEqual(agent_checks.changed(), {"taskfile.yaml"})
+        self.assertFalse(os.path.exists(marker))
+        import agent_run
+        with mock.patch.object(agent_run, "REPO_DIR", self.repo):
+            self.assertEqual(agent_run._git_out("diff", "--name-only", "HEAD"), "taskfile.yaml")
+        self.assertFalse(os.path.exists(marker))
+
     def test_a_held_lock_ends_the_json_run_with_no_result(self):
         os.makedirs(agent_checks.STATE, exist_ok=True)
         import fcntl
