@@ -11,12 +11,10 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -27,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/mcpwire"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
@@ -99,18 +98,6 @@ func (e argError) Error() string { return string(e) }
 type rateError string
 
 func (e rateError) Error() string { return string(e) }
-
-type request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
 
 func (s *Server) reject(ctx context.Context, reason string) {
 	if s.OnReject != nil {
@@ -211,11 +198,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, status, rerr := decode(http.MaxBytesReader(w, r.Body, maxBody))
+	req, status, rerr := mcpwire.Decode(http.MaxBytesReader(w, r.Body, maxBody))
 	if rerr != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		reply(w, nil, nil, rerr)
+		mcpwire.Write(w, nil, nil, rerr)
 		return
 	}
 	if len(req.ID) == 0 { // a notification: accepted, never answered
@@ -232,11 +219,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if slices.Contains(protocols, p.ProtocolVersion) {
 			v = p.ProtocolVersion
 		}
-		reply(w, req.ID, map[string]any{"protocolVersion": v,
+		mcpwire.Write(w, req.ID, map[string]any{"protocolVersion": v,
 			"capabilities": map[string]any{"tools": map[string]bool{"listChanged": false}},
 			"serverInfo":   map[string]string{"name": "room-broker", "version": version.Version}}, nil)
 	case "ping":
-		reply(w, req.ID, map[string]any{}, nil)
+		mcpwire.Write(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
 		tools := []map[string]any{}
 		for _, t := range s.Tools {
@@ -244,43 +231,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": t.InputSchema})
 			}
 		}
-		reply(w, req.ID, map[string]any{"tools": tools}, nil)
+		mcpwire.Write(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
 		s.call(r.Context(), w, req, run)
 	default:
-		reply(w, req.ID, nil, &rpcError{-32601, "the room MCP server exposes tools only"})
+		mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.MethodNotFound, Message: "the room MCP server exposes tools only"})
 	}
 }
 
-// decode reads exactly one JSON-RPC 2.0 message: no batch, nothing after it.
-func decode(body io.Reader) (request, int, *rpcError) {
-	var req request
-	dec := json.NewDecoder(body)
-	err := dec.Decode(&req)
-	if err == nil {
-		if _, trailing := dec.Token(); !errors.Is(trailing, io.EOF) {
-			err = errors.New("trailing data")
-		}
-	}
-	var tooLarge *http.MaxBytesError
-	switch {
-	case errors.As(err, &tooLarge):
-		return req, http.StatusRequestEntityTooLarge, &rpcError{-32600, "request too large"}
-	case err != nil:
-		return req, http.StatusOK, &rpcError{-32700, "parse error"}
-	case req.JSONRPC != "2.0" || req.Method == "":
-		return req, http.StatusOK, &rpcError{-32600, "not a JSON-RPC 2.0 request"}
-	}
-	return req, http.StatusOK, nil
-}
-
-func (s *Server) call(ctx context.Context, w http.ResponseWriter, req request, run runwatch.Run) {
+func (s *Server) call(ctx context.Context, w http.ResponseWriter, req mcpwire.Request, run runwatch.Run) {
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
 	if len(req.Params) == 0 || json.Unmarshal(req.Params, &p) != nil || p.Name == "" {
-		reply(w, req.ID, nil, &rpcError{-32602, "tools/call takes {name, arguments}"})
+		mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.InvalidParams, Message: "tools/call takes {name, arguments}"})
 		return
 	}
 	// An unknown tool and one the role lacks answer alike.
@@ -288,30 +253,26 @@ func (s *Server) call(ctx context.Context, w http.ResponseWriter, req request, r
 	agent := policy.Subject{Kind: envelope.ActorAgent, ID: "agent:" + run.ID}
 	if i < 0 || !slices.Contains(s.Tools[i].Roles, run.Role) || !policy.Allowed(agent, s.Tools[i].Action) {
 		s.reject(ctx, "tool_not_permitted")
-		reply(w, req.ID, toolError("not_permitted: this tool is not one of the "+run.Role+" role's"), nil)
+		mcpwire.Write(w, req.ID, mcpwire.ToolError("not_permitted: this tool is not one of the "+run.Role+" role's"), nil)
 		return
 	}
 	if !s.allow(run.ID) {
 		s.reject(ctx, "rate_limited")
-		reply(w, req.ID, toolError("rate_limited: one room tool call per second"), nil)
+		mcpwire.Write(w, req.ID, mcpwire.ToolError("rate_limited: one room tool call per second"), nil)
 		return
 	}
 	t := s.Tools[i]
 	out, err := t.Call(ctx, Caller{Run: run}, p.Arguments)
 	if err != nil {
-		reply(w, req.ID, toolError(s.failure(ctx, t.Name, run, err)), nil)
+		mcpwire.Write(w, req.ID, mcpwire.ToolError(s.failure(ctx, t.Name, run, err)), nil)
 		return
 	}
-	// The text is the model's copy: HTML left unescaped, so it reads what was written.
-	var text bytes.Buffer
-	enc := json.NewEncoder(&text)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(out); err != nil {
-		reply(w, req.ID, toolError(s.failure(ctx, t.Name, run, err)), nil)
+	res, err := mcpwire.ToolResult(out)
+	if err != nil {
+		mcpwire.Write(w, req.ID, mcpwire.ToolError(s.failure(ctx, t.Name, run, err)), nil)
 		return
 	}
-	reply(w, req.ID, map[string]any{"content": []map[string]string{{"type": "text", "text": string(bytes.TrimSuffix(text.Bytes(), []byte("\n")))}},
-		"structuredContent": out}, nil)
+	mcpwire.Write(w, req.ID, res, nil)
 }
 
 // failure maps a tool's error to what the model is told, in one place. Only an
@@ -343,19 +304,4 @@ func errAttr(err error) slog.Attr {
 		return slog.String("sqlstate", pg.Code)
 	}
 	return slog.String("err", err.Error())
-}
-
-func toolError(msg string) map[string]any {
-	return map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": msg}}}
-}
-
-func reply(w http.ResponseWriter, id json.RawMessage, result any, e *rpcError) {
-	w.Header().Set("Content-Type", "application/json")
-	out := map[string]any{"jsonrpc": "2.0", "id": id} // a nil id encodes as null
-	if e != nil {
-		out["error"] = e
-	} else {
-		out["result"] = result
-	}
-	_ = json.NewEncoder(w).Encode(out)
 }
