@@ -152,7 +152,7 @@ func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, li
 	person := r.person(t)
 	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
 		api.Reservation{Principal: runs.PrincipalFactory, Person: person, MaxTokens: t.Spec.Budget.RunTokens}, limit,
-		r.Cfg.Budgets.DailyCap(person), r.Cfg.Budgets.EnforcePrincipal)
+		r.Cfg.Budgets.DailyMicroUSD(person), r.Cfg.Budgets.EnforcePrincipal)
 }
 
 // person is who the task's next run is charged to beside the fleet, "" with per-person caps off.

@@ -349,15 +349,16 @@ func (p *IssuePoller) personSpent(ctx context.Context, n int, last forge.LabelEv
 	if err != nil {
 		return false, err // no answer is no refusal: the label waits for the next poll
 	}
-	if used < b.DailyCap(person) {
+	day := b.DailyMicroUSD(person)
+	if used < day {
 		return false, nil
 	}
 	if !b.EnforcePrincipal {
-		p.log().Info("labeller's day is spent (shadow)", "issue", n, "person", person, "used", used, "cap", b.DailyCap(person))
+		p.log().Info("labeller's day is spent (shadow)", "issue", n, "person", person, "used_micro_usd", used, "cap_micro_usd", day)
 		return false, nil
 	}
 	if err := p.narrator().PostOnce(ctx, n, fmt.Sprintf("issue-%d", n),
-		narrate.PersonOverBudget(n, person, b.DailyCap(person), last.At)); err != nil {
+		narrate.PersonOverBudget(n, person, day, last.At)); err != nil {
 		return false, err
 	}
 	if p.Errors != nil {

@@ -20,8 +20,8 @@ import (
 )
 
 func personBudgets(enabled, enforce bool) config.Budgets {
-	return config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: enforce,
-		PerPerson: config.PerPerson{Enabled: enabled, DailyTokens: 5_000_000}}
+	return config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: enforce,
+		PerPerson: config.PerPerson{Enabled: enabled, DailyUSD: 5}}
 }
 
 // spentLedger is today's ledger with a spent column.

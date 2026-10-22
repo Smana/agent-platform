@@ -48,10 +48,11 @@ const (
 	minMaxPendingMinutes = 5
 	// defaultEscalatedHours: a week is long enough for a maintainer to come back from leave.
 	defaultEscalatedHours = 168
-	// OD-10's daily token budgets, when the config omits them: R3 wants a week of shadow
-	// numbers first, so the ceilings exist even before an operator writes them down.
-	defaultFactoryDaily = 25_000_000
-	defaultHumanDaily   = 5_000_000
+	// OD-10's daily budgets, when the config omits them: R3 wants a week of shadow numbers first,
+	// so the ceilings exist even before an operator writes them down. OD-10's 25 M and 5 M tokens
+	// at the reference $1.70 per million (truthful costs TC5).
+	defaultFactoryDailyUSD = 42.50
+	defaultHumanDailyUSD   = 8.50
 	// Disruption design §4: how many runs of one task the factory resumes on its own by default,
 	// and the most a config may ask for.
 	defaultResumesPerTask = 2
@@ -135,6 +136,9 @@ type Config struct {
 	Runs runwatch.Kind `json:"runs,omitzero"`
 	// Hash is the sha256 of the parsed file; tasks carry it (status.configHash).
 	Hash string `json:"-"`
+	// Ignored are the keys the file sets that this release accepts and ignores, for the binary
+	// to warn about: Parse has no logger.
+	Ignored []Ignored `json:"-"`
 }
 
 // Broker is SP2's room-broker system API. Its :8443 is TLS (GP-18): the URL is https and the
@@ -351,6 +355,11 @@ func RefUSD(tokens int64) float64 {
 // MicroUSD is usd in the micro-dollars the Task CRD and the meter count in.
 func MicroUSD(usd float64) int64 { return int64(math.Round(usd * 1e6)) }
 
+// RefMicroUSD is tokens reference tokens in micro-USD, 1.7 a token: what the day ledger charges a
+// run the meter cannot price, and reserves for a run capped in tokens (truthful costs TC7). Never
+// $0 for an unknown model.
+func RefMicroUSD(tokens int64) int64 { return int64(math.Round(float64(tokens) * RefUSDPerMToken)) }
+
 // Price is a model's list price in USD per million tokens of each type the gateway reports.
 // The gateway's input count includes the cache reads and writes, so each is priced once.
 type Price struct {
@@ -399,39 +408,68 @@ type Caps struct {
 // Budgets are the admission-time caps SP3 owns (C5). The task cap is enforced unless the config
 // writes enforceTask: false (owner, 2026-10-07: a shadow cap let a task run to 3.35 M of its 3 M);
 // the principal's starts false, a week of shadow numbers first (OD-10, R3). The run cap is always
-// enforced by the meter.
+// enforced by the meter. The days are in USD (truthful costs TC5): the day ledger counts each
+// run's priced cost, a cache read at its own rate.
 type Budgets struct {
-	EnforceTask      bool  `json:"enforceTask"`
-	EnforcePrincipal bool  `json:"enforcePrincipal"`
-	FactoryDaily     int64 `json:"factoryDaily"`
-	HumanDaily       int64 `json:"humanDaily"`
+	EnforceTask      bool    `json:"enforceTask"`
+	EnforcePrincipal bool    `json:"enforcePrincipal"`
+	FactoryDailyUSD  float64 `json:"factoryDailyUSD"`
+	HumanDailyUSD    float64 `json:"humanDailyUSD"`
 	// PerPerson is v2's per-person caps: off, every run is admitted as before.
 	PerPerson PerPerson `json:"perPerson"`
+	// The token days the USD days replaced (#155), accepted for one release so that a file
+	// written for the previous one still loads: Parse names each in Config.Ignored and clears it.
+	IgnoredFactoryDaily *int64 `json:"factoryDaily,omitempty"`
+	IgnoredHumanDaily   *int64 `json:"humanDaily,omitempty"`
 }
 
 // PerPerson charges each run to the person who caused it as well as to the fleet, in one ledger
 // write (v2 per-person caps D2, D3). Enabled alone attributes and counts (shadow); a refusal also
-// needs EnforcePrincipal (D8). The unit is the ledger's reference tokens (D6): the run and task
-// caps already bound the money in USD.
+// needs EnforcePrincipal (D8).
 type PerPerson struct {
 	Enabled bool `json:"enabled"`
-	// DailyTokens is every person's day (D7: one value, no per-person override). Omitted: humanDaily.
-	DailyTokens int64 `json:"dailyTokens"`
+	// DailyUSD is every person's day (D7: one value, no per-person override). Omitted: humanDailyUSD.
+	DailyUSD float64 `json:"dailyUSD"`
+	// IgnoredDailyTokens is the token day DailyUSD replaced, accepted for one release (Budgets).
+	IgnoredDailyTokens *int64 `json:"dailyTokens,omitempty"`
 }
 
 // PrincipalFactory is the fleet's ledger key: the factory's own principal.
 const PrincipalFactory = "system:factory"
 
-// DailyCap is the day of a ledger key: the fleet's for PrincipalFactory, the person day for any
-// other key while per-person caps are on, else humanDaily.
-func (b Budgets) DailyCap(principal string) int64 {
+// DailyMicroUSD is the day of a ledger key, in the ledger's micro-USD: the fleet's for
+// PrincipalFactory, the person day for any other key while per-person caps are on, else
+// humanDailyUSD.
+func (b Budgets) DailyMicroUSD(principal string) int64 {
 	switch {
 	case principal == PrincipalFactory:
-		return b.FactoryDaily
+		return MicroUSD(b.FactoryDailyUSD)
 	case b.PerPerson.Enabled:
-		return b.PerPerson.DailyTokens
+		return MicroUSD(b.PerPerson.DailyUSD)
 	}
-	return b.HumanDaily
+	return MicroUSD(b.HumanDailyUSD)
+}
+
+// Ignored is a key the file sets that this release accepts and ignores, and the key to use.
+type Ignored struct{ Key, Use string }
+
+// dropTokenDays clears the token days and names each one the file set.
+func (b *Budgets) dropTokenDays() []Ignored {
+	var out []Ignored
+	for _, k := range []struct {
+		v        **int64
+		key, use string
+	}{
+		{&b.IgnoredFactoryDaily, "budgets.factoryDaily", "budgets.factoryDailyUSD"},
+		{&b.IgnoredHumanDaily, "budgets.humanDaily", "budgets.humanDailyUSD"},
+		{&b.PerPerson.IgnoredDailyTokens, "budgets.perPerson.dailyTokens", "budgets.perPerson.dailyUSD"},
+	} {
+		if *k.v != nil {
+			out = append(out, Ignored{Key: k.key, Use: k.use})
+			*k.v = nil
+		}
+	}
+	return out
 }
 
 // Resume bounds the automatic resume of a run lost to its infrastructure (disruption design §4).
@@ -596,14 +634,15 @@ func Parse(raw []byte) (*Config, error) {
 	if c.Caps.EscalatedHours == nil {
 		c.Caps.EscalatedHours = new(defaultEscalatedHours)
 	}
-	if c.Budgets.FactoryDaily == 0 {
-		c.Budgets.FactoryDaily = defaultFactoryDaily // OD-10
+	c.Ignored = c.Budgets.dropTokenDays()
+	if c.Budgets.FactoryDailyUSD == 0 {
+		c.Budgets.FactoryDailyUSD = defaultFactoryDailyUSD // OD-10
 	}
-	if c.Budgets.HumanDaily == 0 {
-		c.Budgets.HumanDaily = defaultHumanDaily
+	if c.Budgets.HumanDailyUSD == 0 {
+		c.Budgets.HumanDailyUSD = defaultHumanDailyUSD
 	}
-	if c.Budgets.PerPerson.DailyTokens == 0 {
-		c.Budgets.PerPerson.DailyTokens = c.Budgets.HumanDaily // D7: one day for every person
+	if c.Budgets.PerPerson.DailyUSD == 0 {
+		c.Budgets.PerPerson.DailyUSD = c.Budgets.HumanDailyUSD // D7: one day for every person
 	}
 	if c.Resume.MaxPerTask == 0 {
 		c.Resume.MaxPerTask = defaultResumesPerTask
@@ -870,14 +909,16 @@ func (c *Config) Validate() error {
 	if c.Caps.AwaitingHumanWIP < 1 {
 		bad("caps.awaitingHumanWIP must be positive")
 	}
-	if c.Budgets.FactoryDaily < 1 {
-		bad("budgets.factoryDaily must be positive")
-	}
-	if c.Budgets.HumanDaily < 1 {
-		bad("budgets.humanDaily must be positive")
-	}
-	if c.Budgets.PerPerson.DailyTokens < 1 {
-		bad("budgets.perPerson.dailyTokens must be positive")
+	for _, d := range []struct {
+		key string
+		usd float64
+	}{
+		{"budgets.factoryDailyUSD", c.Budgets.FactoryDailyUSD}, {"budgets.humanDailyUSD", c.Budgets.HumanDailyUSD},
+		{"budgets.perPerson.dailyUSD", c.Budgets.PerPerson.DailyUSD},
+	} {
+		if !finite(d.usd) || MicroUSD(d.usd) < 1 { // the ledger counts micro-USD: less is no day at all
+			bad("%s must be a positive amount", d.key)
+		}
 	}
 	if c.Resume.MaxPerTask < 1 || c.Resume.MaxPerTask > maxResumesPerTask {
 		bad("resume.maxPerTask must be 1..%d (disruption design §4)", maxResumesPerTask)

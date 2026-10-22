@@ -231,7 +231,7 @@ func factoryLedger(spent int64, reserved map[string]int64) *corev1.ConfigMap {
 // R34: the factory's own day is checked before every run it starts, not only by the meter, and
 // read from the day's ledger the meter and the API use (N2), never from the live claims.
 func TestFactoryDailyBudget(t *testing.T) {
-	budgets := config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	budgets := config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5}
 	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
 	g.r.Cfg.Budgets = budgets
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
@@ -254,13 +254,13 @@ func TestFactoryDailyBudget(t *testing.T) {
 // ledger refunds nothing, and the live claims are no measure of the day.
 func TestDeletedRunsSpendStaysInTheDay(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(24_000_000, nil))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, EnforcePrincipal: true}
 	// No claim lists any of the 24 M: every run that spent them was deleted.
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_daily_budget" {
 		t.Fatalf("24 M spent and a 1.5 M run do not fit 25 M: %s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	g = newRig(t, issueTask("3buqdlot", 7, "x"))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, EnforcePrincipal: true}
 	g.runs.runs["zzzzzzzz"] = runs.Run{ID: "zzzzzzzz", Principal: runs.PrincipalFactory, Phase: "Succeeded",
 		Tokens: 25_000_000, Created: now.Add(-time.Hour)}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
@@ -300,7 +300,7 @@ func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"), c.l.DeepCopy())
-			g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+			g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: true}
 			tk := g.reconcile(t, "3buqdlot", 3)
 			queued := tk.Status.Reason == "waiting_daily_budget"
 
@@ -360,7 +360,7 @@ func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
 	}
 	g := newRig(t, objs...)
 	g.r.Cfg.Caps.ActiveTasks = 4
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: true}
 	started, waiting := 0, 0
 	for _, n := range names {
 		switch tk := g.reconcile(t, n, 3); {
@@ -389,7 +389,7 @@ func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
 // R3: in shadow the factory's run is still reserved, and an over day only counts.
 func TestShadowReservesAndNeverHolds(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
 		!slices.Contains(g.metrics.recorded, "revoked budget-principal-shadow") {
 		t.Fatalf("shadow counts, never holds: %s %s %q", tk.Status.Phase, tk.Status.Reason, g.metrics.recorded)
@@ -399,7 +399,7 @@ func TestShadowReservesAndNeverHolds(t *testing.T) {
 	}
 	// A ledger that cannot be read holds nothing in shadow either.
 	g = newRig(t, issueTask("3buqdlot", 7, "x"))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5}
 	g.r.Ledger = brokenLedger{g.c}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("an unreadable ledger in shadow: %s %s", tk.Status.Phase, tk.Status.Reason)
@@ -443,7 +443,7 @@ func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
 	c := losingClient(t, func(tk *v1alpha1.Task) bool { return len(tk.Status.Runs) > 0 })
 	g := newRig(t)
 	g.c, g.r.Client = c, c // g.r.Ledger keeps the rig's own client: the ledger is not the Task's
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: true}
 	g.reconcile(t, "3buqdlot", 2) // Queued
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the write recording the run is lost")

@@ -31,7 +31,7 @@ func seeingMeter(t *testing.T, c client.Client) {
 func reservingRig(t *testing.T) *rig {
 	t.Helper()
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5}
 	return g
 }
 
@@ -171,7 +171,7 @@ func TestAReplayedStopReleases(t *testing.T) {
 	c := losingClient(t, func(tk *v1alpha1.Task) bool { return tk.Status.Phase == v1alpha1.PhaseStopped })
 	g := newRig(t)
 	g.c, g.r.Client = c, c // the ledger stays the rig's
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5}
 	g.reconcile(t, "3buqdlot", 3)
 	g.runs.set(rid(0), "Running")
 	ledger := g.r.Ledger
@@ -193,7 +193,7 @@ func TestAReplayedStopReleases(t *testing.T) {
 func TestABlindMeterHoldsQueuedOnlyWhenEnforced(t *testing.T) {
 	for _, enforce := range []bool{true, false} {
 		g := newRig(t, issueTask("3buqdlot", 7, "x"))
-		g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: enforce}
+		g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: enforce}
 		if err := api.StampMeter(t.Context(), g.r.Ledger, "agent-system", now.Add(-time.Hour), 5*time.Minute); err != nil {
 			t.Fatal(err)
 		}

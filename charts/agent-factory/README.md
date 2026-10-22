@@ -67,10 +67,14 @@ not touch. In `agents`, a second Role manages `AgentRun`s. `tests/render.sh` ass
 rolls the pods). Its keys, defaults and validation are in
 [docs/factory.md](../../docs/factory.md#the-config-file). Keys added since a file was written
 default to the platform's values, so an older file loads unchanged: `api.groups` (`agents-admin`,
-`agents-member`) and a schedule's `probeAuthor` (`renovate[bot]`). For example:
+`agents-member`) and a schedule's `probeAuthor` (`renovate[bot]`). The daily budgets are in USD:
+this release still loads the token days `budgets.factoryDaily`, `budgets.humanDaily` and
+`budgets.perPerson.dailyTokens`, ignores them and logs a warning naming the USD key to use; the
+next one refuses them. For example:
 
 ```yaml
 api: {groups: {admin: agents-admin, member: agents-member}}
+budgets: {factoryDailyUSD: 42.50, humanDailyUSD: 8.50}
 caps: {escalatedHours: 72}
 meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40, source: "https://docs.z.ai/guides/overview/pricing", checkedAt: "2026-10-16"}}}
 ```

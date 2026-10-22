@@ -195,7 +195,7 @@ func personServer(t *testing.T, st *store, enabled, enforce bool, people PersonR
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(objs...).Build()
 	s := mkServer(t, st, c, enforce, false, "7f3cq2xz", 5_000_000)
-	s.Cfg.Budgets.PerPerson = config.PerPerson{Enabled: enabled, DailyTokens: 5_000_000}
+	s.Cfg.Budgets.PerPerson = config.PerPerson{Enabled: enabled, DailyUSD: 5}
 	s.People = people
 	return s
 }

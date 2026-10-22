@@ -126,7 +126,7 @@ starts once the room and the factory are free.
 | `waiting_run_slot` | Every one of `caps.concurrentRuns` factory runs is live |
 | `waiting_active_tasks` | `caps.activeTasks` tasks are active |
 | `waiting_review_wip` | `caps.awaitingHumanWIP` tasks already wait on a maintainer; only a task's first run of a class that is not live waits for this |
-| `waiting_daily_budget` | `budgets.factoryDaily` is spent. It resumes after 00:00 UTC |
+| `waiting_daily_budget` | `budgets.factoryDailyUSD` is spent. It resumes after 00:00 UTC |
 | `waiting_meter_blind` | The meter cannot read usage, so the daily cap cannot be checked |
 | `waiting_room_log` | The room's log is not open on the broker yet |
 | `waiting_broker_permission` | The broker does not let the factory write to rooms yet |
@@ -302,9 +302,16 @@ A task falls back to `taskTokens` while any of its runs is unpriced (`runs[].unp
 tokens and no cost: a cost is never counted as $0. The gateway's per-run bucket (B1, 5 M) charges
 a priced call its price in reference tokens, from the same `meter.prices`, and an unpriced one its
 raw tokens; the meter names a gateway 429 `budget-run` (`gateway-ceiling`) when the run's spend in
-that unit reaches 5 M, and `budget-fleet` below it. The daily budgets, `budgets.factoryDaily` and
-`budgets.humanDaily`, stay in raw tokens. The metrics for each cap are in
+that unit reaches 5 M, and `budget-fleet` below it. The metrics for each cap are in
 [Operations](operations.md#budget-signals).
+
+### Daily budgets
+
+The fleet's day (`budgets.factoryDailyUSD`, $42.50) and each human's (`budgets.humanDailyUSD`,
+$8.50) are in USD: OD-10's 25 M and 5 M tokens at $1.70 per million, with a cache read counted at
+its own rate. A file that still writes the token days (`budgets.factoryDaily`,
+`budgets.humanDaily`, `budgets.perPerson.dailyTokens`) loads in this release: each is ignored and
+named in a startup warning with the key to use, and the next release refuses it.
 
 ### Per-person caps
 
@@ -341,12 +348,11 @@ flowchart LR
 | Setting | Effect |
 |---|---|
 | `budgets.perPerson.enabled` | Charge the person beside the fleet. Alone it only counts: a run past a person's day is admitted and counted as `budget-principal-shadow{principal}` |
-| `budgets.perPerson.dailyTokens` | Every person's day, in the ledger's reference tokens. Default: `humanDaily` |
+| `budgets.perPerson.dailyUSD` | Every person's day, in USD. Default: `humanDailyUSD` |
 | `budgets.enforcePrincipal` | With `enabled`, refuse: intake comments and drops the label, Queued escalates `budget-person`, the API answers `429 person_budget_exhausted`, and the meter revokes a live run once its person's day is spent (`budget-principal`). The fleet's day keeps its wait |
 
-The person's day is in tokens, like the fleet's: the run and task caps already bound the money in
-USD. Turning it on: set `enabled` and watch `budget-principal-shadow{principal}` for a week, then
-set `enforcePrincipal`.
+The person's day is in USD, like the fleet's ([Daily budgets](#daily-budgets)). Turning it on: set
+`enabled` and watch `budget-principal-shadow{principal}` for a week, then set `enforcePrincipal`.
 
 ## The merge gate
 
@@ -517,7 +523,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
 | `templates` | `<name>: {roles, maxReviewRounds, reviewerModel}`; every template but a lone `triager` has an `implementer`; `reviewerModel` (a gateway logical name) needs a `reviewer` role | Required; `reviewerModel` unset: the other tier's model |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
-| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens), `perPerson: {enabled, dailyTokens}` ([per-person caps](#per-person-caps)) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000, `perPerson.enabled` false, `perPerson.dailyTokens` `humanDaily` |
+| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDailyUSD`, `humanDailyUSD` ([daily budgets](#daily-budgets)), `perPerson: {enabled, dailyUSD}` ([per-person caps](#per-person-caps)), each day positive. The token days `factoryDaily`, `humanDaily` and `perPerson.dailyTokens` load in this release only, ignored, each named in a startup warning | `enforceTask` true, `factoryDailyUSD` 42.50, `humanDailyUSD` 8.50, `perPerson.enabled` false, `perPerson.dailyUSD` `humanDailyUSD` |
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |

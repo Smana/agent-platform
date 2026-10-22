@@ -518,11 +518,14 @@ func Refused(number int, reason string, at time.Time) Event {
 
 // PersonOverBudget refuses a label whose labeller's day is spent (v2 per-person caps D4): no Task,
 // the person, their cap and the reset named, so re-labelling after it retries.
-func PersonOverBudget(number int, person string, capTokens int64, at time.Time) Event {
+func PersonOverBudget(number int, person string, capMicroUSD int64, at time.Time) Event {
 	return Event{Key: fmt.Sprintf("refused-person_budget_exhausted-%d", at.Unix()),
-		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily token budget of `%s` (%s tokens) is spent. "+
-			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, Tokens(capTokens))}
+		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily budget of `%s` (%s) is spent. "+
+			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, USD(capMicroUSD))}
 }
+
+// USD is a micro-USD amount as people read it, to the cent: $8.50.
+func USD(micro int64) string { return fmt.Sprintf("$%.2f", float64(micro)/1e6) }
 
 // NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
 // a new review run starts (why is one of verdict_missing, verdict_stale, room_log_too_long). Once

@@ -27,8 +27,8 @@ func TestAChargedRunSettlesToThePersonAndTheFleet(t *testing.T) {
 		ledgerDay(t, "20260927", map[string]int64{"github:alice": 1_800_000}, nil)).Build()
 	remaining := map[string]int64{}
 	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 100_000, "bbbbbbbb": 100_000, "cccccccc": 50_000},
-		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDaily: 25_000_000, HumanDaily: 5_000_000,
-			PerPerson: config.PerPerson{Enabled: true, DailyTokens: 2_000_000}},
+		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDailyUSD: 25, HumanDailyUSD: 5,
+			PerPerson: config.PerPerson{Enabled: true, DailyUSD: 2}},
 		Ledger: c, Namespace: "agent-system",
 		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
 	if err := m.Tick(context.Background()); err != nil {

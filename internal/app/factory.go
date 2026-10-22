@@ -96,6 +96,14 @@ func factoryEnv(getenv func(string) string) (cfgPath, ns string, err error) {
 	return cfgPath, ns, errors.Join(missing...)
 }
 
+// warnIgnored names each key the config sets that this release accepts and ignores: a file written
+// for the previous release loads, and its owner learns which key to move to (#155).
+func warnIgnored(log *slog.Logger, cfg *config.Config) {
+	for _, k := range cfg.Ignored {
+		log.Warn("config key ignored: the daily budgets are in USD", "key", k.Key, "use", k.Use)
+	}
+}
+
 func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	cfgPath, ns, err := factoryEnv(getenv)
 	if err != nil {
@@ -105,6 +113,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	warnIgnored(log, cfg)
 	// Before anything watches or creates a run: every reader takes the kind from here.
 	if err := runwatch.Configure(cfg.Runs); err != nil {
 		return fmt.Errorf("factory config: runs: %w", err)

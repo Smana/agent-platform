@@ -560,7 +560,7 @@ func (s *Server) reserve(ctx context.Context, p authn.Principal, person, id stri
 	if person != "" {
 		mine.Principal, mine.Person = runs.PrincipalFactory, person
 	}
-	over, err := Reserve(ctx, s.Rooms, s.Namespace, s.Now(), id, mine, b.DailyCap(mine.Principal), b.DailyCap(person), b.EnforcePrincipal)
+	over, err := Reserve(ctx, s.Rooms, s.Namespace, s.Now(), id, mine, b.DailyMicroUSD(mine.Principal), b.DailyMicroUSD(person), b.EnforcePrincipal)
 	switch {
 	case errors.Is(err, ErrPersonOverBudget):
 		return http.StatusTooManyRequests, reasonPersonOver

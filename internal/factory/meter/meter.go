@@ -861,7 +861,7 @@ func (m *Meter) liveSpend() map[string]map[string]float64 {
 	return out
 }
 
-func (m *Meter) dailyCap(principal string) int64 { return m.Budgets.DailyCap(principal) }
+func (m *Meter) dailyCap(principal string) int64 { return m.Budgets.DailyMicroUSD(principal) }
 
 func (m *Meter) now() time.Time {
 	if m.Now == nil {
