@@ -40,7 +40,7 @@ func TestTheDailyCapsAreInUSD(t *testing.T) {
 // previous release still rolls out; the strict decoder refuses them once the fields are gone.
 func TestTheTokenDaysAreAcceptedIgnoredAndNamed(t *testing.T) {
 	line := "budgets: {enforceTask: false, enforcePrincipal: false, factoryDailyUSD: 42.50, humanDailyUSD: 8.50}\n"
-	old := "budgets: {enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000, perPerson: {enabled: true, dailyTokens: 2000000}}\n"
+	old := "budgets: {enforcePrincipal: false, factoryDaily: 10000000, humanDaily: 1000000, perPerson: {enabled: true, dailyTokens: 2000000}}\n"
 	cfg, err := Parse([]byte(strings.Replace(good, line, old, 1)))
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestTheTokenDaysAreAcceptedIgnoredAndNamed(t *testing.T) {
 	if b.IgnoredFactoryDaily != nil || b.IgnoredHumanDaily != nil || b.PerPerson.IgnoredDailyTokens != nil {
 		t.Fatalf("an ignored key is cleared, so nothing reads it: %+v", b)
 	}
-	one := strings.Replace(good, line, "budgets: {factoryDailyUSD: 42.50, humanDaily: 5000000}\n", 1)
+	one := strings.Replace(good, line, "budgets: {factoryDailyUSD: 42.50, humanDaily: 1000000}\n", 1)
 	if cfg, err := Parse([]byte(one)); err != nil || !slices.Equal(cfg.Ignored, want[1:2]) {
 		t.Fatalf("one token day beside the USD days: %v %v", err, cfg)
 	}

@@ -195,7 +195,7 @@ every maintainer.
 | `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
-| `budget-principal` | The factory's daily token budget is spent |
+| `budget-principal` | The factory's daily budget in dollars is spent |
 | `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
 | `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
 | `budget-task` | The task cap has no room for another whole run |
