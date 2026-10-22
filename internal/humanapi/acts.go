@@ -183,9 +183,20 @@ var deliveries = map[string]policy.Action{"none": policy.Chat, "queued": policy.
 // it again under the room's row lock.
 var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrupt": true, "driver_give": true}
 
-// Handle serves one act frame of p in room, through the web UI or not (ruling
+// Handle serves one act frame of p in room, through the web UI or roomctl (ruling
 // P18), on the connection session, and returns its ack.
-func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) (out wire.ServerFrame) {
+func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
+	via := ViaRoomctl
+	if webUI {
+		via = ViaWeb
+	}
+	return a.HandleVia(ctx, p, via, session, room, f)
+}
+
+// HandleVia is Handle for an act that came through via: ViaWeb, ViaRoomctl or ViaMCP. Only the web
+// UI's standing may steer and decide (P18), and only its text is stored as typed (F8).
+func (a *Actor) HandleVia(ctx context.Context, p authn.Principal, via, session string, room *v1alpha1.Room, f wire.ClientFrame) (out wire.ServerFrame) {
+	webUI := via == ViaWeb
 	ack := wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq}
 	var act Action
 	defer func() { logAct(ctx, a.Logger, p, room.Name, act, f.ClientSeq, out) }()
@@ -231,6 +242,10 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	if fenced[fenceKey] && (f.DriverEpoch == nil || *f.DriverEpoch != st.DriverEpoch) {
 		return reject(rejectStaleEpoch)
 	}
+	if !webUI && act.Kind == "fork" && strings.TrimSpace(act.Note) != "" {
+		// A fork's note is machine-sent text too (F8); maxNote bounds it once wrapped.
+		act.Note = machineText(via, act.Note)
+	}
 	d := envelope.Draft{RoomID: room.Name, Actor: envelope.Actor{Kind: envelope.ActorHuman, ID: p.ID},
 		Origin: envelope.OriginClient, OriginClient: p.ID + ":" + session, OriginSeq: f.ClientSeq}
 	var ev envelope.Event
@@ -241,7 +256,7 @@ func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, sessi
 	case "fork":
 		ev, ack.Result, why = a.fork(ctx, p, sub.Role == policy.Owner, room, act, d)
 	default:
-		ev, why = a.dispatch(ctx, p, room, st, act, d)
+		ev, why = a.dispatch(ctx, p, room, st, act, via, d)
 	}
 	if why != "" {
 		return reject(why)
@@ -355,14 +370,14 @@ func (a *Actor) redactText(ctx context.Context, s string) (string, []string, err
 	return out, rules, json.Unmarshal(raw, &out)
 }
 
-func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, string) {
+func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.Room, st store.RoomState, act Action, via string, d envelope.Draft) (envelope.Event, string) {
 	state := func(kind string, fields map[string]any) envelope.Draft {
 		d.Type, d.Payload = envelope.StateChanged, envelope.StatePayload(kind, fields)
 		return d
 	}
 	switch act.Kind {
 	case "message":
-		return a.message(ctx, room, st, act, d)
+		return a.message(ctx, room, st, act, via, d)
 	case "remove_queued":
 		return done(a.Log.RemoveQueued(ctx, room.Name, act.Ref, d)) // the author or the driver (§2)
 	case "promote_queued":
@@ -408,12 +423,22 @@ func (a *Actor) dispatch(ctx context.Context, p authn.Principal, room *v1alpha1.
 	return envelope.Event{}, rejectBadAction
 }
 
-// message appends a chat, queues a message, or steers the running run (§2).
-func (a *Actor) message(ctx context.Context, room *v1alpha1.Room, st store.RoomState, act Action, d envelope.Draft) (envelope.Event, string) {
+// message appends a chat, queues a message, or steers the running run (§2). Text from any client
+// but the web UI is machine-sent: stored sanitised and labelled (F8), within the same 16 KiB.
+func (a *Actor) message(ctx context.Context, room *v1alpha1.Room, st store.RoomState, act Action, via string, d envelope.Draft) (envelope.Event, string) {
 	if strings.TrimSpace(act.Text) == "" || len(act.Text) > envelope.MaxHumanMessage {
 		return envelope.Event{}, rejectBadAction
 	}
-	payload := envelope.MessagePayload{Kind: envelope.KindChat, Text: act.Text, Delivery: envelope.Delivery(act.Delivery)}
+	text := act.Text
+	if via != ViaWeb {
+		if text = machineText(via, text); text == "" {
+			return envelope.Event{}, rejectBadAction
+		}
+		if len(text) > envelope.MaxHumanMessage {
+			return envelope.Event{}, rejectTooLarge
+		}
+	}
+	payload := envelope.MessagePayload{Kind: envelope.KindChat, Text: text, Delivery: envelope.Delivery(act.Delivery)}
 	var run runwatch.Run
 	if act.Delivery == "steering" {
 		var ok bool
