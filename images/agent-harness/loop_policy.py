@@ -167,12 +167,20 @@ class State:
     mark: str = ""  # the head when the last continuation was sent
 
     @classmethod
-    def load(cls, path: str, head: str) -> "State":
+    def load(cls, path: str, head: str, resumed: bool = False) -> "State":
+        """The saved state, else a fresh one at head. The agent can write the file, so wrong types
+        are no state. A resumed pod with none starts with the stall rule spent: its step count spans
+        the first pod, whose commits it cannot see."""
         try:
             with open(path) as f:
-                return cls(**json.load(f))
-        except (OSError, ValueError, TypeError):
-            return cls(start=head)
+                state = cls(**json.load(f))
+            ok = (isinstance(state.start, str) and isinstance(state.mark, str) and type(state.committed) is bool
+                  and all(type(n) is int and n >= 0 for n in (state.sent, state.invalid, state.failed)))
+            if ok:
+                return state
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+        return cls(start=head, committed=resumed)
 
     def save(self, path: str) -> None:
         tmp = path + ".tmp"

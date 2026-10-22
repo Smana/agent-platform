@@ -152,6 +152,23 @@ class DecideTest(unittest.TestCase):
 
 
 class StateTest(unittest.TestCase):
+    def test_wrong_types_in_the_file_start_fresh(self):
+        bad = ['{"start": 1}', '{"start": "a", "sent": "2"}', '{"start": "a", "sent": true}',
+               '{"start": "a", "committed": 1}', '{"start": "a", "mark": null}', '[1]', '"x"']
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "loop.json")
+            for raw in bad:
+                with self.subTest(raw=raw):
+                    with open(path, "w") as f:
+                        f.write(raw)
+                    self.assertEqual(lp.State.load(path, "h"), lp.State(start="h"))
+
+    def test_a_resumed_pod_with_no_usable_file_spends_the_stall_rule(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "loop.json")
+            self.assertEqual(lp.State.load(path, "h", resumed=True), lp.State(start="h", committed=True))
+            self.assertEqual(lp.State.load(path, "h"), lp.State(start="h"))
+
     def test_saved_owner_only_and_read_back_by_the_next_pod(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "loop.json")
