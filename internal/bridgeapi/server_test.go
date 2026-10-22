@@ -572,6 +572,12 @@ func TestABridgeCannotForgeVerdictsOrDecisions(t *testing.T) {
 			Payload: raw(`{"kind":"chat","delivery":"none","priority":"high"}`)}, wire.ReasonBadItem},
 		{"a state field in capitals", wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged,
 			Payload: raw(`{"kind":"harness_error","Detail":"x"}`)}, wire.ReasonBadItem},
+		{"a harness_end without a reason", wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged,
+			Payload: raw(`{"kind":"harness_end"}`)}, wire.ReasonBadItem},
+		{"a harness_end with a null reason", wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged,
+			Payload: raw(`{"kind":"harness_end","reason":null}`)}, wire.ReasonBadItem},
+		{"a harness_end with a foreign reason", wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged,
+			Payload: raw(`{"kind":"harness_end","reason":"deadline"}`)}, wire.ReasonBadItem},
 		{"a lone Reason", wire.Item{Stream: wire.StreamStatus, Seq: 1, Type: envelope.StateChanged,
 			Payload: raw(`{"kind":"harness_status","Reason":"x"}`)}, wire.ReasonBadItem},
 		{"a non-object payload", wire.Item{Stream: wire.StreamEvents, Seq: 4, Type: envelope.Turn, Payload: raw(`"turn"`)}, wire.ReasonBadPayload},
@@ -598,8 +604,12 @@ func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	var items []wire.Item
 	for i, kind := range []string{"harness_status", "harness_error", "harness_paused", "harness_event",
 		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied", envelope.HarnessEnd} {
+		var fields map[string]any
+		if kind == envelope.HarnessEnd {
+			fields = map[string]any{"reason": "stalled"}
+		}
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
-			Payload: envelope.StatePayload(kind, nil)})
+			Payload: envelope.StatePayload(kind, fields)})
 	}
 	items = append(items,
 		chat(1, "hi"),

@@ -29,6 +29,15 @@ func TestLastHarnessEnd(t *testing.T) {
 	if got, err := s.LastHarnessEnd(t.Context(), room, "7f3cq2xz"); err != nil || got != "stalled" {
 		t.Fatalf("got %q, %v: want the last, stalled", got, err)
 	}
+	// A reason-less end (an older broker could store one) reads as none, not as a scan error.
+	put(4, envelope.HarnessEnd, nil)
+	if got, err := s.LastHarnessEnd(t.Context(), room, "7f3cq2xz"); err != nil || got != "" {
+		t.Fatalf("reason-less end: %q, %v: want empty, no error", got, err)
+	}
+	put(5, "harness_status", nil)
+	if got, err := s.LastHarnessStatus(t.Context(), room, "7f3cq2xz"); err != nil || got != "" {
+		t.Fatalf("status-less harness_status: %q, %v: want empty, no error", got, err)
+	}
 	if got, err := s.LastHarnessEnd(t.Context(), room, "zzzzzzzz"); err != nil || got != "" {
 		t.Fatalf("another run: %q, %v", got, err)
 	}

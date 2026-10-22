@@ -84,6 +84,13 @@ func bridgePayload(t envelope.Type, redacted json.RawMessage) (json.RawMessage, 
 		if json.Unmarshal(obj["kind"], &kind) != nil || !bridgeKinds[kind] {
 			return nil, wire.ReasonBadItem
 		}
+		if kind == envelope.HarnessEnd {
+			// The end reason is a closed set; a missing or foreign one would read as NULL in the store.
+			var reason string
+			if json.Unmarshal(obj["reason"], &reason) != nil || !envelope.LoopEnd(reason) {
+				return nil, wire.ReasonBadItem
+			}
+		}
 		return redacted, ""
 	}
 	return nil, wire.ReasonBadItem
