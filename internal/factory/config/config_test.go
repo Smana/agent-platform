@@ -53,7 +53,7 @@ templates:
   trio: {roles: [implementer, tester, reviewer], maxReviewRounds: 2}
   investigate: {roles: [triager]}  # R38: proposes a public issue text, never writes
 caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}
-budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}
+budgets: {enforceTask: false, enforcePrincipal: false, factoryDailyUSD: 42.50, humanDailyUSD: 8.50}
 api:
   listen: ":8443"
   repositories: [Smana/cloud-native-ref]
@@ -122,7 +122,7 @@ func TestGoodConfigParses(t *testing.T) {
 // OD-10: an omitted budgets block still carries the daily ceilings, the principal's unenforced
 // (R3). The task cap is enforced unless the config says shadow (owner, 2026-10-07).
 func TestBudgetDefaults(t *testing.T) {
-	line := "budgets: {enforceTask: false, enforcePrincipal: false, factoryDaily: 25000000, humanDaily: 5000000}\n"
+	line := "budgets: {enforceTask: false, enforcePrincipal: false, factoryDailyUSD: 42.50, humanDailyUSD: 8.50}\n"
 	for name, c := range map[string]struct {
 		with    string
 		enforce bool
@@ -140,8 +140,8 @@ func TestBudgetDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if b := cfg.Budgets; b.FactoryDaily != 25_000_000 || b.HumanDaily != 5_000_000 || b.EnforceTask != c.enforce || b.EnforcePrincipal {
-				t.Fatalf("defaults are 25 M and 5 M, the principal's unenforced: %+v", b)
+			if b := cfg.Budgets; b.FactoryDailyUSD != 42.50 || b.HumanDailyUSD != 8.50 || b.EnforceTask != c.enforce || b.EnforcePrincipal {
+				t.Fatalf("defaults are $42.50 and $8.50, the principal's unenforced: %+v", b)
 			}
 		})
 	}
@@ -369,8 +369,9 @@ func TestBadConfigsFail(t *testing.T) {
 		"no concurrent runs":        {"concurrentRuns: 4", "concurrentRuns: 0", "caps must be positive"},
 		"no tasks per day":          {"tasksPerDay: 20", "tasksPerDay: 0", "caps must be positive"},
 		"no awaiting human wip":     {"awaitingHumanWIP: 5", "awaitingHumanWIP: 0", "caps.awaitingHumanWIP must be positive"},
-		"negative factory daily":    {"factoryDaily: 25000000", "factoryDaily: -1", "budgets.factoryDaily must be positive"},
-		"negative human daily":      {"humanDaily: 5000000", "humanDaily: -1", "budgets.humanDaily must be positive"},
+		"negative factory daily":    {"factoryDailyUSD: 42.50", "factoryDailyUSD: -1", "budgets.factoryDailyUSD must be a positive amount"},
+		"negative human daily":      {"humanDailyUSD: 8.50", "humanDailyUSD: -1", "budgets.humanDailyUSD must be a positive amount"},
+		"a day under a micro-USD":   {"humanDailyUSD: 8.50", "humanDailyUSD: 0.0000001", "budgets.humanDailyUSD must be a positive amount"},
 		"issues poll not positive":  {"issues: 60s", "issues: 0s", "poll.issues must be positive"},
 		"tasks poll negative":       {"tasks: 30s", "tasks: -1s", "poll.tasks must be positive"},
 		"meter poll not positive":   {"meter: 30s", "meter: 0s", "poll.meter must be positive"},

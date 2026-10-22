@@ -190,6 +190,7 @@ the harnesses still hold.
 | Config | Edit `room-broker-config`, then `kubectl rollout restart deployment/room-broker -n agent-system`: the broker reads it once |
 | Factory run-request API port | The chart serves `POST /v1/runs` on `:8082` (Service and container port `api`), plaintext inside the mesh; the RunLore intake stays on `:8080`, and the broker's `:8443` is the only TLS listener. Releases before it served the API on `:8443`: move the factory config's `api.listen` and the broker's `factoryURL` (`http://agent-factory.agent-system.svc:8082`) to `:8082` in the same change as the chart, or the broker's `start_run` calls fail until they do |
 | Factory | Pin the chart's version and digest in `ocirepo-agent-factory.yaml` and the image in the factory's values, from the same release. The `HelmRelease` sets `crds: CreateReplace`, since Helm alone never upgrades the `Task` CRD in the chart's `crds/` |
+| Factory v0.16.0 (daily caps in USD) | Set `budgets.factoryDailyUSD`, `humanDailyUSD` and `perPerson.dailyUSD`; move alerts and dashboards to the `_usd` gauges in the same change as the pin. **Breaking:** the gauges `agent_factory_budget_{remaining,cap}_tokens` are replaced by `agent_factory_budget_{remaining,cap}_usd`. The ledger is now `agent-factory-ledger-usd-<YYYYMMDD>` (the token ledgers are no longer read or written, and are pruned after 35 days). The `Reservation` JSON `maxTokens` is now `maxMicroUSD`. The token day keys (`factoryDaily`, `humanDaily`, `perPerson.dailyTokens`) are accepted, ignored and warned about for one release, **not converted**: a non-default value silently falls back to $42.50 / $8.50. **Rollback:** v0.15.x refuses the USD keys and `meter.prices` `source`/`checkedAt` once a host sets them, so rolling back below v0.16.0 needs the token keys back and no `source`/`checkedAt`; the token ledger then misses the day's USD-settled spend |
 | CRD | Vendored with every pin. `task check` fails when the committed CRD differs from what the Go types generate |
 
 ## The factory
@@ -214,8 +215,9 @@ absent rather than 0.
 | `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
 | `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository` | `auto_merged`, `human_merged`, `closed`, `reverted` |
 | `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
-| `agent_factory_budget_remaining_tokens` | gauge | `principal` | Tokens the principal has left today |
-| `agent_factory_budget_cap_tokens` | gauge | `principal` | The principal's daily token cap |
+| `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
+| `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
+| `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
 | `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
 | `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
@@ -269,7 +271,7 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | A tier sets `runUSD` or `taskUSD` and its model has no price | The rollout fails. An unpriced run would cost $0, and $0 never reaches a cap |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="unpriced"}` | A model that served the run has no price (or, without `gen_ai_request_model` in `meter.query`, its claim's model has none). The run is capped at `runTokens`. The log says `run capped in tokens` |
 | `agent_factory_meter_unpriced_model_runs_total{model}` | Runs served by `model`, which has no `meter.prices` row: a backend pins a model the price table lacks. Counted once per run and model, whatever the tier caps in. Alert on any increase |
-| `agent_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input` (a streamed call, or native Messages), and the meter priced all of `input` as fresh. Counted once per run and model. Any increase means the internal route or the harness changed |
+| `agent_factory_meter_input_excludes_cache_runs_total{model}` | Runs whose `input` for `model` was below its cache tokens: the gateway served them on a path that leaves the cache out of `input`, and the meter priced all of `input` as fresh. Every path the platform runs today counts the cache inside `input`, streamed calls included, so any increase means a gateway, a provider or the harness changed |
 | `agent_factory_run_budget_fallbacks_total{scope="run", why="untyped"}` | `meter.query` has no `gen_ai_token_type` grouping, so no run can be priced and every run is capped at `runTokens` |
 | `agent_factory_run_budget_fallbacks_total{scope="task", why}` | A task with a USD cap holds a run the meter could not price, so the task is held to `taskTokens`. Counted once per task. The log says `task capped in tokens` |
 | `agent_factory_run_revocations_total{reason, limit}` | The limit that fired: `run-usd`, `run-tokens`, `task-usd`, `task-tokens`, `gateway-ceiling`, `fleet` or `principal-day`. The `revoked` annotation keeps the reason (`budget-run`, …), because the composition maps each value to a phase |
@@ -278,7 +280,7 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
 | `agent_factory_run_revocations_total{reason="budget-principal-shadow", principal}` | A run admitted past a day's cap while `enforcePrincipal` is off; `principal` is the key over: `system:factory`, or a person with per-person caps on. Zero false refusals for a week is the bar for enforcing |
 | `agent_factory_run_revocations_total{reason="budget-person"}` | A task escalated at Queued because its person's day is spent |
-| `agent_factory_budget_remaining_tokens{principal="github:<login>"}` | A person's day left, once per-person caps are on |
+| `agent_factory_budget_spent_usd{principal="github:<login>"}` | A person's spend today, once per-person caps are on; `agent_factory_budget_cap_usd` is their day |
 
 A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
 after they happen, so the first tick that sees a run ended can read it short. On
@@ -287,10 +289,10 @@ ended run's usage, and reports its cost only once the window has passed. A readi
 the window still reaches the by-model counter and the Task's cost. It cannot correct the histogram,
 and the log says `a run spent after its cost was reported`.
 
-A run's USD total is kept in the meter's memory only, because the factory's patch limit admits no
-annotation besides the existing ones. A leader failover after a gateway counter reset forgets what a
-run spent before that reset; the Task status keeps the costs already recorded
-(`runs[].costMicroUSD`, `usage.costMicroUSD`).
+A run's USD total survives a leader failover: the new leader reads what the day ledgers settled
+for the run (`settled.<runId>`, summed over the retained days) and starts the run there when its
+counters read lower, after a gateway counter reset. Its cost by served model still starts from the
+counters, so `agent_factory_model_cost_usd_total` can miss what a run spent before such a reset.
 
 ### Finished rooms close
 

@@ -39,8 +39,8 @@ func TestALabellerPastTheirDayIsRefusedAtIntake(t *testing.T) {
 			}
 			p, k := poller(t, f, l)
 			p.Ledger, p.Now = k, func() time.Time { return t0 }
-			p.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: c.enforce,
-				PerPerson: config.PerPerson{Enabled: c.enabled, DailyTokens: 5_000_000}}
+			p.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: c.enforce,
+				PerPerson: config.PerPerson{Enabled: c.enabled, DailyUSD: 5}}
 			if err := p.Poll(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -50,7 +50,7 @@ func TestALabellerPastTheirDayIsRefusedAtIntake(t *testing.T) {
 			if got != c.refused || len(f.Removed(7)) != 1 {
 				t.Fatalf("refused %v, removed %q", got, f.Removed(7))
 			}
-			if c.refused && (!strings.Contains(say, "`github:smana` (5.0 M tokens) is spent") || !strings.Contains(say, "00:00 UTC") ||
+			if c.refused && (!strings.Contains(say, "`github:smana` ($5.00) is spent") || !strings.Contains(say, "00:00 UTC") ||
 				len(refusals) != 1 || refusals[0] != "person_budget_exhausted") {
 				t.Fatalf("%q %q", say, refusals)
 			}

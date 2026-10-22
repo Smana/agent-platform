@@ -57,7 +57,8 @@ In the release namespace, the Role reads and writes `Task`s and their status, re
 deletes `Room`s, takes the leader lease and records events. Its one ConfigMap rule (`get`, `list`,
 `watch`, `create`, `update`, `delete`) names no `resourceNames`: it covers the stop object
 `agent-factory-stop`, the meter heartbeat `agent-factory-meter` and the day ledgers
-`agent-factory-ledger-<UTC day>`, whose names carry the date. The namespace is the bound, so the
+`agent-factory-ledger-usd-<UTC day>`, whose names carry the date; the meter also deletes the token
+ledgers they replaced, `agent-factory-ledger-<UTC day>`, once 35 days old. The namespace is the bound, so the
 factory can touch every ConfigMap in it, its own config included: keep no ConfigMap there it must
 not touch. In `agents`, a second Role manages `AgentRun`s. `tests/render.sh` asserts the ConfigMap rule's shape and the 8082 ports.
 
@@ -67,10 +68,14 @@ not touch. In `agents`, a second Role manages `AgentRun`s. `tests/render.sh` ass
 rolls the pods). Its keys, defaults and validation are in
 [docs/factory.md](../../docs/factory.md#the-config-file). Keys added since a file was written
 default to the platform's values, so an older file loads unchanged: `api.groups` (`agents-admin`,
-`agents-member`) and a schedule's `probeAuthor` (`renovate[bot]`). For example:
+`agents-member`) and a schedule's `probeAuthor` (`renovate[bot]`). The daily budgets are in USD:
+this release still loads the token days `budgets.factoryDaily`, `budgets.humanDaily` and
+`budgets.perPerson.dailyTokens`, ignores them and logs a warning naming the USD key to use; the
+next one refuses them. For example:
 
 ```yaml
 api: {groups: {admin: agents-admin, member: agents-member}}
+budgets: {factoryDailyUSD: 42.50, humanDailyUSD: 8.50}
 caps: {escalatedHours: 72}
-meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40}}}
+meter: {prices: {agent-default: {input: 1.40, cacheRead: 0.26, output: 4.40, source: "https://docs.z.ai/guides/overview/pricing", checkedAt: "2026-10-16"}}}
 ```

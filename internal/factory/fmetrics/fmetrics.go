@@ -87,8 +87,9 @@ type Set struct {
 	timeToPR        metric.Float64Histogram
 	prOutcomes      metric.Int64Counter
 	taskTokens      metric.Int64Histogram
-	budgetRemaining metric.Int64Gauge
-	budgetCap       metric.Int64Gauge
+	budgetCap       metric.Float64Gauge
+	budgetRemaining metric.Float64Gauge
+	budgetSpent     metric.Float64Gauge
 	interventions   metric.Int64Counter
 	classMismatch   metric.Int64Counter
 	mergeDecisions  metric.Int64Counter
@@ -172,11 +173,15 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	s.taskTokens, err = meter.Int64Histogram("agent_factory_task_tokens",
 		metric.WithDescription("Tokens per finished task (§7)."), metric.WithExplicitBucketBoundaries(taskTokensBuckets...))
 	check(err)
-	s.budgetRemaining, err = meter.Int64Gauge("agent_factory_budget_remaining_tokens",
-		metric.WithDescription("Tokens left today per principal (§6.2)."))
+	// TC8: the day ledger's unit, USD, and nothing in tokens beside it.
+	s.budgetCap, err = meter.Float64Gauge("agent_factory_budget_cap_usd",
+		metric.WithDescription("The principal's daily cap in USD (§6.2), the dashboard's denominator."))
 	check(err)
-	s.budgetCap, err = meter.Int64Gauge("agent_factory_budget_cap_tokens",
-		metric.WithDescription("The principal's daily token cap (§6.2), the dashboard's denominator."))
+	s.budgetRemaining, err = meter.Float64Gauge("agent_factory_budget_remaining_usd",
+		metric.WithDescription("USD left today per principal (§6.2), 0 once the day is spent."))
+	check(err)
+	s.budgetSpent, err = meter.Float64Gauge("agent_factory_budget_spent_usd",
+		metric.WithDescription("USD spent today per principal, unclamped: how far past its cap a day ran."))
 	check(err)
 	s.interventions, err = meter.Int64Counter("agent_factory_human_interventions_total",
 		metric.WithDescription("How dark the factory really is (§7)."))
@@ -349,14 +354,13 @@ func (s *Set) TaskTokens(ctx context.Context, tokens int64, tier, template, pred
 		attribute.String("template", template), attribute.String("predicted_class", predictedClass), s.repoOf(ctx)))
 }
 
-// BudgetRemaining sets the tokens a principal has left today.
-func (s *Set) BudgetRemaining(ctx context.Context, principal string, tokens int64) {
-	s.budgetRemaining.Record(ctx, tokens, metric.WithAttributes(attribute.String("principal", principal)))
-}
-
-// BudgetCap sets the principal's daily token cap, the gauge's dashboard denominator (§6.2).
-func (s *Set) BudgetCap(ctx context.Context, principal string, tokens int64) {
-	s.budgetCap.Record(ctx, tokens, metric.WithAttributes(attribute.String("principal", principal)))
+// BudgetDay sets a principal's day from the day ledger's micro-USD: its cap, what is left of it
+// (never below 0) and what it spent (unclamped).
+func (s *Set) BudgetDay(ctx context.Context, principal string, spentMicroUSD, capMicroUSD int64) {
+	at := metric.WithAttributes(attribute.String("principal", principal))
+	s.budgetCap.Record(ctx, float64(capMicroUSD)/1e6, at)
+	s.budgetRemaining.Record(ctx, float64(max(0, capMicroUSD-spentMicroUSD))/1e6, at)
+	s.budgetSpent.Record(ctx, float64(spentMicroUSD)/1e6, at)
 }
 
 // Intervention counts a human stepping in: stop, retry, request_changes, steer, takeover, approve.

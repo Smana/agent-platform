@@ -799,7 +799,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			"used_micro_usd", t.Status.Usage.CostMicroUSD, "cap_micro_usd", t.Spec.Budget.TaskMicroUSD)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
-	if limit := r.Cfg.Budgets.FactoryDaily; limit > 0 {
+	if limit := r.Cfg.Budgets.DailyMicroUSD(runs.PrincipalFactory); limit > 0 {
 		over, err := r.reserveFactoryDay(ctx, t, limit)
 		switch {
 		case errors.Is(err, api.ErrPersonOverBudget): // D4/D5: the person's day, not the fleet's: refused, not queued

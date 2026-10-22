@@ -20,8 +20,8 @@ import (
 )
 
 func personBudgets(enabled, enforce bool) config.Budgets {
-	return config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: enforce,
-		PerPerson: config.PerPerson{Enabled: enabled, DailyTokens: 5_000_000}}
+	return config.Budgets{FactoryDailyUSD: 25, HumanDailyUSD: 5, EnforcePrincipal: enforce,
+		PerPerson: config.PerPerson{Enabled: enabled, DailyUSD: 5}}
 }
 
 // spentLedger is today's ledger with a spent column.
@@ -55,7 +55,7 @@ func TestATaskRunIsChargedToItsLabeller(t *testing.T) {
 		g := newRig(t, issueTask("3buqdlot", 7, "x"))
 		g.r.Cfg.Budgets = personBudgets(enabled, true)
 		tk := g.reconcile(t, "3buqdlot", 3)
-		want, person := api.Reservation{Principal: runs.PrincipalFactory, MaxTokens: tk.Spec.Budget.RunTokens}, ""
+		want, person := api.Reservation{Principal: runs.PrincipalFactory, MaxMicroUSD: config.RefMicroUSD(tk.Spec.Budget.RunTokens)}, ""
 		if enabled {
 			want.Person, person = "github:smana", "github:smana"
 		}

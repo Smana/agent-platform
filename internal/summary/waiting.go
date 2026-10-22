@@ -80,7 +80,7 @@ func reasons() map[string]string {
 		"waiting_run_slot":          "the factory runs its tasks one at a time and another one has the slot",
 		"waiting_active_tasks":      "the factory's cap on active tasks is reached",
 		"waiting_review_wip":        "the reviewers are at their limit of pull requests in review",
-		"waiting_daily_budget":      "the factory's daily token budget is spent",
+		"waiting_daily_budget":      "the factory's daily budget in dollars is spent",
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",

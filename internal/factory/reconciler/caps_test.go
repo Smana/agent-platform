@@ -223,7 +223,7 @@ func factoryLedger(spent int64, reserved map[string]int64) *corev1.ConfigMap {
 		panic(err)
 	}
 	for id, n := range reserved {
-		cm.Data[api.LedgerReserved+id] = fmt.Sprintf(`{"principal":%q,"maxTokens":%d}`, runs.PrincipalFactory, n)
+		cm.Data[api.LedgerReserved+id] = fmt.Sprintf(`{"principal":%q,"maxMicroUSD":%d}`, runs.PrincipalFactory, n)
 	}
 	return cm
 }
@@ -231,15 +231,15 @@ func factoryLedger(spent int64, reserved map[string]int64) *corev1.ConfigMap {
 // R34: the factory's own day is checked before every run it starts, not only by the meter, and
 // read from the day's ledger the meter and the API use (N2), never from the live claims.
 func TestFactoryDailyBudget(t *testing.T) {
-	budgets := config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
-	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
+	budgets := config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50}
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(42_500_000, nil))
 	g.r.Cfg.Budgets = budgets
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
 		!slices.Contains(g.metrics.recorded, "revoked budget-principal-shadow") {
 		t.Fatalf("in shadow the day is counted, not enforced (R3): %s %q", tk.Status.Phase, g.metrics.recorded)
 	}
 	budgets.EnforcePrincipal = true
-	g = newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
+	g = newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(42_500_000, nil))
 	g.r.Cfg.Budgets = budgets
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_daily_budget" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
@@ -253,14 +253,14 @@ func TestFactoryDailyBudget(t *testing.T) {
 // N2: a run's spend stays in the day once its claim is deleted (a stop deletes every claim): the
 // ledger refunds nothing, and the live claims are no measure of the day.
 func TestDeletedRunsSpendStaysInTheDay(t *testing.T) {
-	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(24_000_000, nil))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
-	// No claim lists any of the 24 M: every run that spent them was deleted.
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(40_800_000, nil))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, EnforcePrincipal: true}
+	// No claim lists any of the $40.80: every run that spent them was deleted.
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Reason != "waiting_daily_budget" {
-		t.Fatalf("24 M spent and a 1.5 M run do not fit 25 M: %s %s", tk.Status.Phase, tk.Status.Reason)
+		t.Fatalf("$40.80 spent and a $2.55 run do not fit $42.50: %s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	g = newRig(t, issueTask("3buqdlot", 7, "x"))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, EnforcePrincipal: true}
 	g.runs.runs["zzzzzzzz"] = runs.Run{ID: "zzzzzzzz", Principal: runs.PrincipalFactory, Phase: "Succeeded",
 		Tokens: 25_000_000, Created: now.Add(-time.Hour)}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
@@ -292,15 +292,15 @@ func TestQueuedAndTheAPIDecideTheDayAlike(t *testing.T) {
 		refuse bool
 	}{
 		"empty":                 {factoryLedger(0, nil), false},
-		"room for one run":      {factoryLedger(23_500_000, nil), false},
-		"no room for a run":     {factoryLedger(23_600_000, nil), true},
-		"spent":                 {factoryLedger(25_000_000, nil), true},
-		"reservations count":    {factoryLedger(20_000_000, map[string]int64{"aaaaaaaa": 2_000_000, "bbbbbbbb": 2_000_000}), true},
-		"reservations leave it": {factoryLedger(20_000_000, map[string]int64{"aaaaaaaa": 2_000_000}), false},
+		"room for one run":      {factoryLedger(39_950_000, nil), false},
+		"no room for a run":     {factoryLedger(40_120_000, nil), true},
+		"spent":                 {factoryLedger(42_500_000, nil), true},
+		"reservations count":    {factoryLedger(34_000_000, map[string]int64{"aaaaaaaa": 3_400_000, "bbbbbbbb": 3_400_000}), true},
+		"reservations leave it": {factoryLedger(34_000_000, map[string]int64{"aaaaaaaa": 3_400_000}), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"), c.l.DeepCopy())
-			g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+			g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50, EnforcePrincipal: true}
 			tk := g.reconcile(t, "3buqdlot", 3)
 			queued := tk.Status.Reason == "waiting_daily_budget"
 
@@ -351,16 +351,16 @@ func ledgerOf(t *testing.T, g *rig) (int64, []string) {
 
 // #78: Queued reserves each run it starts in the day's ledger before creating its claim, so
 // concurrentRuns' worth of runs admitted on one reading cannot overshoot an enforced day: with
-// room for two 1.5 M runs, two of four tasks start and two wait.
+// room for two $2.55 runs, two of four tasks start and two wait.
 func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
 	names := []string{"3buqdlot", "4buqdlot", "5buqdlot", "6buqdlot"}
-	objs := []client.Object{factoryLedger(22_000_000, nil)}
+	objs := []client.Object{factoryLedger(37_400_000, nil)}
 	for i, n := range names {
 		objs = append(objs, issueTask(n, 7+i, "x"))
 	}
 	g := newRig(t, objs...)
 	g.r.Cfg.Caps.ActiveTasks = 4
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50, EnforcePrincipal: true}
 	started, waiting := 0, 0
 	for _, n := range names {
 		switch tk := g.reconcile(t, n, 3); {
@@ -373,10 +373,10 @@ func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
 		}
 	}
 	if started != 2 || waiting != 2 {
-		t.Fatalf("22 M spent, a 25 M day, 1.5 M runs: %d started, %d wait", started, waiting)
+		t.Fatalf("$37.40 spent, a $42.50 day, $2.55 runs: %d started, %d wait", started, waiting)
 	}
 	used, ids := ledgerOf(t, g)
-	if used != 25_000_000 || len(ids) != 2 {
+	if used != 42_500_000 || len(ids) != 2 {
 		t.Fatalf("the two started runs are reserved: used %d, reservations %v", used, ids)
 	}
 	for _, id := range ids {
@@ -388,18 +388,18 @@ func TestFactoryRunsAreReservedBeforeTheyStart(t *testing.T) {
 
 // R3: in shadow the factory's run is still reserved, and an over day only counts.
 func TestShadowReservesAndNeverHolds(t *testing.T) {
-	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(25_000_000, nil))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g := newRig(t, issueTask("3buqdlot", 7, "x"), factoryLedger(42_500_000, nil))
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing ||
 		!slices.Contains(g.metrics.recorded, "revoked budget-principal-shadow") {
 		t.Fatalf("shadow counts, never holds: %s %s %q", tk.Status.Phase, tk.Status.Reason, g.metrics.recorded)
 	}
-	if used, ids := ledgerOf(t, g); used != 26_500_000 || !slices.Equal(ids, []string{rid(0)}) {
+	if used, ids := ledgerOf(t, g); used != 45_050_000 || !slices.Equal(ids, []string{rid(0)}) {
 		t.Fatalf("shadow still records the run: used %d, reservations %v", used, ids)
 	}
 	// A ledger that cannot be read holds nothing in shadow either.
 	g = newRig(t, issueTask("3buqdlot", 7, "x"))
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50}
 	g.r.Ledger = brokenLedger{g.c}
 	if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("an unreadable ledger in shadow: %s %s", tk.Status.Phase, tk.Status.Reason)
@@ -443,12 +443,12 @@ func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
 	c := losingClient(t, func(tk *v1alpha1.Task) bool { return len(tk.Status.Runs) > 0 })
 	g := newRig(t)
 	g.c, g.r.Client = c, c // g.r.Ledger keeps the rig's own client: the ledger is not the Task's
-	g.r.Cfg.Budgets = config.Budgets{FactoryDaily: 25_000_000, HumanDaily: 5_000_000, EnforcePrincipal: true}
+	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50, EnforcePrincipal: true}
 	g.reconcile(t, "3buqdlot", 2) // Queued
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the write recording the run is lost")
 	}
-	if used, ids := ledgerOf(t, g); used != 1_500_000 || !slices.Equal(ids, []string{rid(0)}) {
+	if used, ids := ledgerOf(t, g); used != 2_550_000 || !slices.Equal(ids, []string{rid(0)}) {
 		t.Fatalf("reserved before the claim: used %d, %v", used, ids)
 	}
 	r := g.runs.runs[rid(0)]
@@ -456,7 +456,7 @@ func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
 	g.runs.runs[rid(0)] = r
 	g.log.end(rid(0), "Failed", "pod_lost")
 	g.reconcile(t, "3buqdlot", 2) // the replay records the claim
-	if used, ids := ledgerOf(t, g); used != 1_500_000 || len(ids) != 1 {
+	if used, ids := ledgerOf(t, g); used != 2_550_000 || len(ids) != 1 {
 		t.Fatalf("the replay reserves nothing twice: used %d, %v", used, ids)
 	}
 	for i, tokens := range []int64{0, 900} { // the second meter is a new leader: the first annotated 900
@@ -468,7 +468,7 @@ func TestAFactoryReservationSettlesOnceAcrossRestarts(t *testing.T) {
 		if err := m.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if used, ids := ledgerOf(t, g); used != 900 || len(ids) != 0 {
+		if used, ids := ledgerOf(t, g); used != 1530 || len(ids) != 0 { // 900 untyped tokens at 1.7
 			t.Fatalf("meter %d: the run's spend once, no reservation: used %d, %v", i, used, ids)
 		}
 	}

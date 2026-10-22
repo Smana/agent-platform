@@ -180,8 +180,8 @@ func reasons() map[string]string {
 		"revoked":                   "the run was stopped by hand",
 		"deleted":                   "the run's claim was deleted",
 		"budget-run":                "the run spent its token budget",
-		"budget-principal":          "the factory's daily token budget is spent",
-		"budget-person":             "the daily token budget of the person its next run is charged to is spent",
+		"budget-principal":          "the factory's daily budget in dollars is spent",
+		"budget-person":             "the daily budget in dollars of the person its next run is charged to is spent",
 		"budget-fleet":              "the agent fleet's daily token budget is spent",
 		"budget-task":               "the task's token budget has no room left for another full run",
 		"run_lost":                  "the run disappeared",
@@ -242,7 +242,7 @@ func reasons() map[string]string {
 		"waiting_run_slot":          "the factory runs its tasks one at a time and another one has the slot",
 		"waiting_active_tasks":      "the factory's cap on active tasks is reached",
 		"waiting_review_wip":        "the reviewers are at their limit of pull requests in review",
-		"waiting_daily_budget":      "the factory's daily token budget is spent",
+		"waiting_daily_budget":      "the factory's daily budget in dollars is spent",
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 	}
@@ -518,11 +518,14 @@ func Refused(number int, reason string, at time.Time) Event {
 
 // PersonOverBudget refuses a label whose labeller's day is spent (v2 per-person caps D4): no Task,
 // the person, their cap and the reset named, so re-labelling after it retries.
-func PersonOverBudget(number int, person string, capTokens int64, at time.Time) Event {
+func PersonOverBudget(number int, person string, capMicroUSD int64, at time.Time) Event {
 	return Event{Key: fmt.Sprintf("refused-person_budget_exhausted-%d", at.Unix()),
-		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily token budget of `%s` (%s tokens) is spent. "+
-			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, Tokens(capTokens))}
+		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily budget of `%s` (%s) is spent. "+
+			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, USD(capMicroUSD))}
 }
+
+// USD is a micro-USD amount as people read it, to the cent: $8.50.
+func USD(micro int64) string { return fmt.Sprintf("$%.2f", float64(micro)/1e6) }
 
 // NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
 // a new review run starts (why is one of verdict_missing, verdict_stale, room_log_too_long). Once

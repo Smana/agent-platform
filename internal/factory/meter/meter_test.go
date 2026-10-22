@@ -358,9 +358,19 @@ func spentOf(t *testing.T, c client.Client, day string) (map[string]int64, bool)
 	return m, true
 }
 
+// settledIn adds settled.<runId> entries to a day ledger: what earlier ticks charged each run.
+func settledIn(t *testing.T, cm *corev1.ConfigMap, settled map[string]int64) *corev1.ConfigMap {
+	t.Helper()
+	if err := api.AddSettled(cm, settled); err != nil {
+		t.Fatal(err)
+	}
+	return cm
+}
+
 // R50/R07: the day's spend comes from the ledger the meter maintains, never from a re-sum of
-// live runs. The ledger already holds the day's earlier spend (what the run annotations record);
-// this tick adds only the increase, and budget-principal fires when the day is spent.
+// live runs. The ledger already holds the day's earlier charges, per key and per run; this tick
+// charges only each run's increase, untyped tokens at the reference rate, and budget-principal
+// fires when the day is spent.
 func TestGateway429sAndThePrincipalsDay(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
@@ -369,14 +379,15 @@ func TestGateway429sAndThePrincipalsDay(t *testing.T) {
 		{ID: "cccccccc", Phase: "Running", MaxTokens: 5_000_000, Tokens: 100, Principal: "human:291", Created: day},      // her day is spent
 		{ID: "dddddddd", Phase: "Succeeded", MaxTokens: 5_000_000, Tokens: 4_900_000, Principal: "human:291", Created: day},
 	}}
-	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
-		ledgerDay(t, "20260927", map[string]int64{"system:factory": 200, "human:291": 4_900_100}, nil)).Build()
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(settledIn(t,
+		ledgerDay(t, "20260927", map[string]int64{"system:factory": 340, "human:291": 8_330_170}, nil),
+		map[string]int64{"aaaaaaaa": 170, "bbbbbbbb": 170, "cccccccc": 170, "dddddddd": 8_330_000})).Build()
 	remaining := map[string]int64{}
 	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 200, "bbbbbbbb": 5_000_000, "cccccccc": 200_000, "dddddddd": 4_900_000},
 		Throttle: throttled{"aaaaaaaa": true, "bbbbbbbb": true}, B1Ceiling: 5_000_000,
-		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDaily: 25_000_000, HumanDaily: 5_000_000},
+		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50},
 		Ledger:  c, Namespace: "agent-system",
-		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
+		Now: func() time.Time { return day }, Day: func(p string, n, c int64) { remaining[p] = max(0, c-n) }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -385,12 +396,13 @@ func TestGateway429sAndThePrincipalsDay(t *testing.T) {
 			t.Errorf("%s: %q, want %q", id, got, want)
 		}
 	}
-	if remaining["human:291"] != 0 || remaining["system:factory"] != 25_000_000-5_000_200 {
+	if remaining["human:291"] != 0 || remaining["system:factory"] != 42_500_000-8_500_340 {
 		t.Fatalf("%v", remaining)
 	}
-	// The ledger now holds the full day: the seeded 5_000_100 plus the tick's increase.
+	// The ledger now holds the full day: the seeded charges plus each run's increase at 1.7
+	// micro-USD a token; dddddddd, settled whole, adds nothing.
 	spent, _ := spentOf(t, c, "20260927")
-	if spent["human:291"] != 5_100_000 || spent["system:factory"] != 5_000_200 {
+	if spent["human:291"] != 8_670_000 || spent["system:factory"] != 8_500_340 {
 		t.Fatalf("ledger %v", spent)
 	}
 }
@@ -424,31 +436,31 @@ func TestMidnightCrossingSplitsSpend(t *testing.T) {
 	src := source{"aaaaaaaa": 100}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).Build()
 	m := &Meter{Runs: st, Source: src, Ledger: c, Namespace: "agent-system",
-		Budgets: config.Budgets{EnforcePrincipal: true, HumanDaily: 120},
+		Budgets: config.Budgets{EnforcePrincipal: true, HumanDailyUSD: 0.000200}, // 200 micro-USD
 		Now:     func() time.Time { return now }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 100 {
-		t.Fatalf("day one: %v", spent)
+	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 170 {
+		t.Fatalf("day one, 100 tokens at 1.7: %v", spent)
 	}
 	if st.patches["aaaaaaaa"][runs.AnnRevoked] != "" {
-		t.Fatalf("100 under a cap of 120 is no revocation: %v", st.patches["aaaaaaaa"])
+		t.Fatalf("170 under a cap of 200 is no revocation: %v", st.patches["aaaaaaaa"])
 	}
 	now = start.Add(2 * time.Hour) // 2026-09-28: the same run, a new ledger
 	src["aaaaaaaa"] = 250
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 100 {
+	if spent, _ := spentOf(t, c, "20260927"); spent["human:291"] != 170 {
 		t.Fatalf("yesterday's ledger never moves: %v", spent)
 	}
-	// 150, not 250: the day counts the increase observed in it, not the run's lifetime total.
-	if spent, _ := spentOf(t, c, "20260928"); spent["human:291"] != 150 {
+	// 255, not 425: the day counts the increase observed in it, not the run's lifetime total.
+	if spent, _ := spentOf(t, c, "20260928"); spent["human:291"] != 255 {
 		t.Fatalf("today: %v", spent)
 	}
 	if st.patches["aaaaaaaa"][runs.AnnRevoked] != "budget-principal" {
-		t.Fatalf("her new day is spent at 150 over 120: %v", st.patches["aaaaaaaa"])
+		t.Fatalf("her new day is spent at 255 over 200: %v", st.patches["aaaaaaaa"])
 	}
 }
 
@@ -456,7 +468,7 @@ func TestMidnightCrossingSplitsSpend(t *testing.T) {
 // reservation stays.
 func TestTerminalRunLosesItsReservation(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	entry := `{"principal":"human:291","maxTokens":2000000}`
+	entry := `{"principal":"human:291","maxMicroUSD":2000000}`
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: day},
 		{ID: "dddddddd", Phase: "Succeeded", Tokens: 1000, Principal: "human:291", Created: day},
@@ -481,31 +493,38 @@ func TestTerminalRunLosesItsReservation(t *testing.T) {
 	}
 }
 
-// R50: a day's ledger outlives its budget but not long: a month plus a week of margin.
+// R50: a day's ledger outlives its budget but not long: a month plus a week of margin. The token
+// ledgers the USD ones replaced (#155) age out the same way.
 func TestLedgersOlderThan35DaysAreDeleted(t *testing.T) {
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: now}}}
+	cm := func(name string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "agent-system"}}
+	}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
 		ledgerDay(t, "20260822", map[string]int64{"human:291": 1}, nil), // 36 days: gone
 		ledgerDay(t, "20260823", map[string]int64{"human:291": 1}, nil), // 35 days: kept
 		ledgerDay(t, "20260927", nil, nil),
-		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: api.LedgerPrefix + "20251301", Namespace: "agent-system"}}, // not a day
+		cm(api.LedgerPrefix+"20251301"),       // not a day
+		cm(api.LegacyLedgerPrefix+"20260822"), // a token ledger, 36 days: gone
+		cm(api.LegacyLedgerPrefix+"20260823"), // 35 days: kept
+		cm(api.LegacyLedgerPrefix+"20251301"), // not a day
 	).Build()
 	m := &Meter{Runs: st, Source: source{}, Ledger: c, Namespace: "agent-system",
 		Now: func() time.Time { return now }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		day  string
-		want bool
-	}{{"20260822", false}, {"20260823", true}, {"20260927", true}, {"20251301", true}} {
-		var cm corev1.ConfigMap
-		err := c.Get(context.Background(),
-			types.NamespacedName{Namespace: "agent-system", Name: api.LedgerPrefix + tc.day}, &cm)
-		if got := err == nil; got != tc.want {
-			t.Errorf("ledger %s exists = %v, want %v", tc.day, got, tc.want)
+	for name, want := range map[string]bool{
+		api.LedgerPrefix + "20260822": false, api.LedgerPrefix + "20260823": true, api.LedgerPrefix + "20260927": true,
+		api.LedgerPrefix + "20251301": true, api.LegacyLedgerPrefix + "20260822": false,
+		api.LegacyLedgerPrefix + "20260823": true, api.LegacyLedgerPrefix + "20251301": true,
+	} {
+		var got corev1.ConfigMap
+		err := c.Get(context.Background(), types.NamespacedName{Namespace: "agent-system", Name: name}, &got)
+		if exists := err == nil; exists != want {
+			t.Errorf("%s exists = %v, want %v", name, exists, want)
 		}
 	}
 }
@@ -544,10 +563,10 @@ func TestRecentlyThrottled(t *testing.T) {
 }
 
 // failingLedger is a ledger day seeded with spent whose Update fails while *fail is set.
-func failingLedger(t *testing.T, spent map[string]int64, fail *bool) client.Client {
+func failingLedger(t *testing.T, spent, settled map[string]int64, fail *bool) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(cmScheme()).
-		WithObjects(ledgerDay(t, "20260927", spent, nil)).
+		WithObjects(settledIn(t, ledgerDay(t, "20260927", spent, nil), settled)).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 				if *fail {
@@ -559,21 +578,21 @@ func failingLedger(t *testing.T, spent map[string]int64, fail *bool) client.Clie
 }
 
 // A ledger that cannot be written delays the daily budget, never a run's own cap (review
-// 2026-10-15, F2); the increase is paid once when the ledger recovers, and the usage annotation
-// (which a new leader takes as already paid) is held back until then.
+// 2026-10-15, F2); the increase is charged once when the ledger recovers, and the usage
+// annotation is held back until then.
 func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	now := func() time.Time { return day }
 
 	t.Run("an over-cap run is revoked and the failure reported", func(t *testing.T) {
 		fail := true
-		c := failingLedger(t, map[string]int64{"human:a": 100}, &fail)
+		c := failingLedger(t, map[string]int64{"human:a": 100}, nil, &fail)
 		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 			{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 1000, Principal: "human:a", Created: day}}}
 		var succeeded, remaining bool
 		m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1500}, Ledger: c, Namespace: "agent-system", Now: now,
 			OnSucceeded: func(context.Context, time.Time) { succeeded = true },
-			Remaining:   func(string, int64, int64) { remaining = true }}
+			Day:         func(string, int64, int64) { remaining = true }}
 		if err := m.Tick(t.Context()); err == nil {
 			t.Fatal("the ledger failure is still reported")
 		}
@@ -589,9 +608,10 @@ func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 		}
 	})
 
+	// The ledger already charged bbbbbbbb its 500 annotated tokens: 850 micro-USD.
 	t.Run("the same meter pays an increase missed during the outage once", func(t *testing.T) {
 		fail := true
-		c := failingLedger(t, map[string]int64{"human:b": 100}, &fail)
+		c := failingLedger(t, map[string]int64{"human:b": 850}, map[string]int64{"bbbbbbbb": 850}, &fail)
 		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 			{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 100_000, Tokens: 500, Principal: "human:b", Created: day}}}
 		src := source{"bbbbbbbb": 500}
@@ -609,14 +629,14 @@ func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 400 {
-			t.Fatalf("ledger %v, want human:b 400 (100 + the increase once)", spent)
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 1360 {
+			t.Fatalf("ledger %v, want human:b 1360 (850 + the 300 tokens' 510 once)", spent)
 		}
 	})
 
 	t.Run("a new leader after the outage still bills the increase once", func(t *testing.T) {
 		fail := true
-		c := failingLedger(t, map[string]int64{"human:b": 100}, &fail)
+		c := failingLedger(t, map[string]int64{"human:b": 850}, map[string]int64{"bbbbbbbb": 850}, &fail)
 		run := runs.Run{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 100_000, Tokens: 500, Principal: "human:b", Created: day}
 		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}
 		m := &Meter{Runs: st, Source: source{"bbbbbbbb": 800}, Ledger: c, Namespace: "agent-system", Now: now}
@@ -636,14 +656,14 @@ func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 		if err := next.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 400 {
-			t.Fatalf("ledger %v, want human:b 400 (100 + the increase once)", spent)
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:b"] != 1360 {
+			t.Fatalf("ledger %v, want human:b 1360 (850 + the 300 tokens' 510 once)", spent)
 		}
 	})
 
 	t.Run("a first typed reading after several failed ticks is revoked at the USD cap", func(t *testing.T) {
 		fail := true
-		c := failingLedger(t, map[string]int64{"human:z": 1}, &fail)
+		c := failingLedger(t, map[string]int64{"human:z": 1}, nil, &fail)
 		st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{{ID: "cccccccc", Phase: "Running",
 			Tier: "standard", Model: "agent-default", MaxTokens: 1_500_000, Principal: "human:c", Created: day}}}
 		src := typed{"cccccccc": {Tokens: 1000}} // untyped: the token cap stands in
@@ -669,8 +689,8 @@ func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 		if err := m.Tick(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		if spent, _ := spentOf(t, c, "20260927"); spent["human:c"] != 2_000_000 {
-			t.Fatalf("ledger %v, want human:c 2000000 (the increase once)", spent)
+		if spent, _ := spentOf(t, c, "20260927"); spent["human:c"] != 2_800_000 {
+			t.Fatalf("ledger %v, want human:c 2800000 (its cost, once)", spent)
 		}
 	})
 }

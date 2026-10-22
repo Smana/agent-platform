@@ -126,7 +126,7 @@ starts once the room and the factory are free.
 | `waiting_run_slot` | Every one of `caps.concurrentRuns` factory runs is live |
 | `waiting_active_tasks` | `caps.activeTasks` tasks are active |
 | `waiting_review_wip` | `caps.awaitingHumanWIP` tasks already wait on a maintainer; only a task's first run of a class that is not live waits for this |
-| `waiting_daily_budget` | `budgets.factoryDaily` is spent. It resumes after 00:00 UTC |
+| `waiting_daily_budget` | `budgets.factoryDailyUSD` is spent. It resumes after 00:00 UTC |
 | `waiting_meter_blind` | The meter cannot read usage, so the daily cap cannot be checked |
 | `waiting_room_log` | The room's log is not open on the broker yet |
 | `waiting_broker_permission` | The broker does not let the factory write to rooms yet |
@@ -195,7 +195,7 @@ every maintainer.
 | `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
-| `budget-principal` | The factory's daily token budget is spent |
+| `budget-principal` | The factory's daily budget in dollars is spent |
 | `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
 | `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
 | `budget-task` | The task cap has no room for another whole run |
@@ -275,7 +275,7 @@ prices both caps stay in tokens.
 
 | Setting | Effect |
 |---|---|
-| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output}` | USD per million tokens, keyed by the model that served the tokens (`glm-5.3`, `claude-opus-5-5`) when `meter.query` groups by `gen_ai_request_model`, else by the tier's logical model. `cacheWrite` defaults to `input`. Each price must be positive |
+| `meter.prices.<model>: {input, cacheRead, cacheWrite?, output, source?, checkedAt?}` | USD per million tokens, keyed by the model that served the tokens (`glm-5.3`, `claude-opus-5-5`) when `meter.query` groups by `gen_ai_request_model`, else by the tier's logical model. `cacheWrite` defaults to `input`. Each price must be positive. `source` (an `https://` URL) and `checkedAt` (`YYYY-MM-DD`) say where and when the row was read: checked when set, never priced |
 | `tiers.<tier>.runUSD`, `tiers.<tier>.taskUSD` | The tier's caps in USD; `taskUSD` may not be below `runUSD`. Keyed by logical model, a tier with either set and no price for its model fails the rollout: an unpriced run would cost $0 |
 | `meter.query` | Must group by `gen_ai_token_type` (`input`, `cached_input`, `cache_creation_input`, `output`), or no run can be priced and every run is capped in tokens. Grouped by `gen_ai_request_model` too, each model is priced at its own rate |
 
@@ -284,9 +284,10 @@ Grouping by served model is what makes a logical name safe to price: the same cl
 dearer. A run's cost is the sum over the models that served it of
 `(input − cached_input − cache_creation_input) × input + cached_input × cacheRead + cache_creation_input × cacheWrite + output × output`,
 divided by 10⁶; a series without `gen_ai_request_model` is priced by the claim's logical model.
-agentgateway 1.6 counts the cache tokens in `input` on its non-streaming Chat Completions to
-Messages translation, but not on a streamed call or native Messages. A model whose `input` is below
-`cached_input + cache_creation_input` is priced with all of `input` as fresh, and
+Every gateway path the platform runs counts the cache tokens inside `input`: agentgateway 1.6's
+Chat Completions to Messages translation, streamed or not, and Z.ai's `prompt_tokens`. A model
+whose `input` is below `cached_input + cache_creation_input` comes from a gateway that leaves them
+out: it is priced with all of `input` as fresh, and
 `agent_factory_meter_input_excludes_cache_runs_total{model}` counts the run.
 A run served by a model with no price is never $0: it is held to its token caps, and
 `agent_factory_meter_unpriced_model_runs_total{model}` names the model.
@@ -302,9 +303,67 @@ A task falls back to `taskTokens` while any of its runs is unpriced (`runs[].unp
 tokens and no cost: a cost is never counted as $0. The gateway's per-run bucket (B1, 5 M) charges
 a priced call its price in reference tokens, from the same `meter.prices`, and an unpriced one its
 raw tokens; the meter names a gateway 429 `budget-run` (`gateway-ceiling`) when the run's spend in
-that unit reaches 5 M, and `budget-fleet` below it. The daily budgets, `budgets.factoryDaily` and
-`budgets.humanDaily`, stay in raw tokens. The metrics for each cap are in
+that unit reaches 5 M, and `budget-fleet` below it. The metrics for each cap are in
 [Operations](operations.md#budget-signals).
+
+### Daily budgets
+
+The fleet's day (`budgets.factoryDailyUSD`, $42.50) and each human's (`budgets.humanDailyUSD`,
+$8.50) are in USD: OD-10's 25 M and 5 M tokens at $1.70 per million, with a cache read counted at
+its own rate. A file that still writes the token days (`budgets.factoryDaily`,
+`budgets.humanDaily`, `budgets.perPerson.dailyTokens`) loads in this release: each is ignored and
+named in a startup warning with the key to use, and the next release refuses it.
+
+One ConfigMap per UTC day, `agent-factory-ledger-usd-<YYYYMMDD>`, holds the days in micro-USD:
+
+| Key | Holds | Written by |
+|---|---|---|
+| `spent` | Principal → micro-USD charged that day | The meter |
+| `reserved.<runId>` | `{principal, person?, room?, maxMicroUSD}`, dropped when the run ends | Admission |
+| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent`; on the first day a run taken as already charged at the switch (below) is next charged, it also holds that spend (a run whose early days were pruned is lifted the same way), which `spent` never counts | The meter |
+
+```mermaid
+flowchart LR
+  adm["admission: POST /v1/runs, Queued"] -->|"reserved.runId: maxMicroUSD"| L["agent-factory-ledger-usd-YYYYMMDD"]
+  L -->|"spent plus reserved: does the run fit the day?"| adm
+  M["meter, each tick"] -->|"spent and settled.runId, one write"| L
+  L -->|"settled, summed over the retained days"| M
+```
+
+Admission refuses (enforced) or counts (shadow) a run whose reservation does not fit beside the
+day's spend and reservations: a task run reserves its `runUSD`, or its `runTokens` at $1.70 per
+million on a tier capped in tokens, and a `POST /v1/runs` its `maxTokens` at $1.70 per million.
+
+Each tick the meter charges a run's priced increase, or its token increase at $1.70 per million
+when the run cannot be priced (never $0), to every key the run is charged to and to its
+`settled.<runId>`, in one write. A meter that first sees a run, a new leader included, reads what
+the ledgers settled for it and starts it there. A write that reports an error may have landed all
+the same: the next tick reads that day's `settled.<runId>` to learn how much did, and charges only
+the rest. A run is charged once across a failover, a ledger that cannot be read, a failed write,
+landed or not, and midnight, with four bounded exceptions:
+
+- A gateway counter reset before a new leader's first reading, once the counters have passed what
+  was settled, loses what the run spent before the reset: an under-count.
+- A run whose served model loses its price after such a reset and failover is charged its tokens
+  at $1.70 per million on top of what was settled: an over-count.
+- A write the apiserver reports as failed (a 504) that commits only after the next tick read that
+  day's ledger back is charged twice: an over-count of that tick's charges. It is narrow within a
+  day, as the failed write carries the ledger's old `resourceVersion` and conflicts once any later
+  write lands; across midnight it stays open longer, as yesterday's ledger may get no later write.
+  Nothing else guards it.
+- A lifted run's late spend not yet in a ledger at a failover (the leader's write was lost, or it
+  died before its next tick) is not charged: an under-count bounded by the reading lag at a run's
+  end.
+
+The meter deletes the ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>`
+they replaced the same way. A run the meter first sees ended, with its usage annotated, is taken as
+charged for what it has spent so far when nothing is settled for it, or when it began before the
+oldest retained ledger: that spend was charged in the token ledgers, or partly in a day since
+deleted. The meter keeps that amount pending and writes it into the run's `settled.<runId>` with
+the run's next charge, so a new leader after a failover does not charge it again. Only that first
+sighting is judged so: what the run's later readings add is charged. So
+the day of the switch to USD starts at $0: runs that ended before it are not charged again, and runs
+in flight are charged their whole cost.
 
 ### Per-person caps
 
@@ -320,7 +379,7 @@ one ledger entry, so no run holds one reservation without the other.
 | A schedule's or RunLore's task, a system caller's API run | The fleet alone, as before |
 
 Each run record keeps its person in `status.runs[].chargedTo`, and the claim in
-`agents.ogenki.io/charged-to`: the meter settles the run's tokens to the fleet and to that person,
+`agents.ogenki.io/charged-to`: the meter settles the run's cost to the fleet and to that person,
 never to the token's `human:<sub>`, so one person has one ledger key whichever path they use. Logins
 are lowercased.
 
@@ -341,12 +400,11 @@ flowchart LR
 | Setting | Effect |
 |---|---|
 | `budgets.perPerson.enabled` | Charge the person beside the fleet. Alone it only counts: a run past a person's day is admitted and counted as `budget-principal-shadow{principal}` |
-| `budgets.perPerson.dailyTokens` | Every person's day, in the ledger's reference tokens. Default: `humanDaily` |
+| `budgets.perPerson.dailyUSD` | Every person's day, in USD. Default: `humanDailyUSD` |
 | `budgets.enforcePrincipal` | With `enabled`, refuse: intake comments and drops the label, Queued escalates `budget-person`, the API answers `429 person_budget_exhausted`, and the meter revokes a live run once its person's day is spent (`budget-principal`). The fleet's day keeps its wait |
 
-The person's day is in tokens, like the fleet's: the run and task caps already bound the money in
-USD. Turning it on: set `enabled` and watch `budget-principal-shadow{principal}` for a week, then
-set `enforcePrincipal`.
+The person's day is in USD, like the fleet's ([Daily budgets](#daily-budgets)). Turning it on: set
+`enabled` and watch `budget-principal-shadow{principal}` for a week, then set `enforcePrincipal`.
 
 ## The merge gate
 
@@ -517,7 +575,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
 | `templates` | `<name>: {roles, maxReviewRounds, reviewerModel}`; every template but a lone `triager` has an `implementer`; `reviewerModel` (a gateway logical name) needs a `reviewer` role | Required; `reviewerModel` unset: the other tier's model |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |
-| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDaily`, `humanDaily` (tokens), `perPerson: {enabled, dailyTokens}` ([per-person caps](#per-person-caps)) | `enforceTask` true, `factoryDaily` 25,000,000, `humanDaily` 5,000,000, `perPerson.enabled` false, `perPerson.dailyTokens` `humanDaily` |
+| `budgets` | `enforceTask`, `enforcePrincipal`, `factoryDailyUSD`, `humanDailyUSD` ([daily budgets](#daily-budgets)), `perPerson: {enabled, dailyUSD}` ([per-person caps](#per-person-caps)), each day positive. The token days `factoryDaily`, `humanDaily` and `perPerson.dailyTokens` load in this release only, ignored, each named in a startup warning | `enforceTask` true, `factoryDailyUSD` 42.50, `humanDailyUSD` 8.50, `perPerson.enabled` false, `perPerson.dailyUSD` `humanDailyUSD` |
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |

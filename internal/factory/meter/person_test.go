@@ -13,7 +13,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
-// v2 per-person caps G4: a run charged to a person settles its tokens to the fleet and to that
+// v2 per-person caps G4: a run charged to a person settles its cost to the fleet and to that
 // person, never to its gateway principal; the person's day past its cap revokes the run (D5),
 // and the gauge reports the person's remaining day.
 func TestAChargedRunSettlesToThePersonAndTheFleet(t *testing.T) {
@@ -24,18 +24,19 @@ func TestAChargedRunSettlesToThePersonAndTheFleet(t *testing.T) {
 		{ID: "cccccccc", Phase: "Running", MaxTokens: 5_000_000, Principal: "system:factory", Created: day}, // a schedule's: the fleet alone
 	}}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
-		ledgerDay(t, "20260927", map[string]int64{"github:alice": 1_800_000}, nil)).Build()
+		ledgerDay(t, "20260927", map[string]int64{"github:alice": 3_060_000}, nil)).Build()
 	remaining := map[string]int64{}
 	m := &Meter{Runs: st, Source: source{"aaaaaaaa": 100_000, "bbbbbbbb": 100_000, "cccccccc": 50_000},
-		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDaily: 25_000_000, HumanDaily: 5_000_000,
-			PerPerson: config.PerPerson{Enabled: true, DailyTokens: 2_000_000}},
+		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50,
+			PerPerson: config.PerPerson{Enabled: true, DailyUSD: 3.40}},
 		Ledger: c, Namespace: "agent-system",
-		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
+		Now: func() time.Time { return day }, Day: func(p string, n, c int64) { remaining[p] = max(0, c-n) }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// Untyped readings at the reference rate: 170,000 micro-USD for each 100 k tokens.
 	spent, _ := spentOf(t, c, "20260927")
-	if spent["github:alice"] != 2_000_000 || spent["system:factory"] != 250_000 || spent["human:291"] != 0 {
+	if spent["github:alice"] != 3_400_000 || spent["system:factory"] != 425_000 || spent["human:291"] != 0 {
 		t.Fatalf("ledger %v", spent)
 	}
 	for id, want := range map[string]string{"aaaaaaaa": "budget-principal", "bbbbbbbb": "budget-principal", "cccccccc": ""} {
@@ -43,7 +44,7 @@ func TestAChargedRunSettlesToThePersonAndTheFleet(t *testing.T) {
 			t.Errorf("%s: %q, want %q", id, got, want)
 		}
 	}
-	if remaining["github:alice"] != 0 || remaining["system:factory"] != 25_000_000-250_000 {
+	if remaining["github:alice"] != 0 || remaining["system:factory"] != 42_500_000-425_000 {
 		t.Fatalf("%v", remaining)
 	}
 }
