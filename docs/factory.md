@@ -313,6 +313,26 @@ its own rate. A file that still writes the token days (`budgets.factoryDaily`,
 `budgets.humanDaily`, `budgets.perPerson.dailyTokens`) loads in this release: each is ignored and
 named in a startup warning with the key to use, and the next release refuses it.
 
+One ConfigMap per UTC day, `agent-factory-ledger-usd-<YYYYMMDD>`, holds the days in micro-USD:
+
+| Key | Holds | Written by |
+|---|---|---|
+| `spent` | Principal → micro-USD charged that day | The meter |
+| `reserved.<runId>` | `{principal, person?, room?, maxMicroUSD}`, dropped when the run ends | Admission |
+| `settled.<runId>` | The micro-USD charged to that run that day, in the same write as `spent` | The meter |
+
+```mermaid
+flowchart LR
+  adm["admission: POST /v1/runs, Queued"] -->|"reserved.runId: maxMicroUSD"| L["agent-factory-ledger-usd-YYYYMMDD"]
+  L -->|"spent plus reserved: does the run fit the day?"| adm
+  M["meter, each tick"] -->|"spent and settled.runId, one write"| L
+  L -->|"settled, summed over the retained days"| M
+```
+
+Admission refuses (enforced) or counts (shadow) a run whose reservation does not fit beside the
+day's spend and reservations: a task run reserves its `runUSD`, or its `runTokens` at $1.70 per
+million on a tier capped in tokens, and a `POST /v1/runs` its `maxTokens` at $1.70 per million.
+
 ### Per-person caps
 
 Off by default (`budgets.perPerson.enabled: false`): every run is admitted exactly as before.

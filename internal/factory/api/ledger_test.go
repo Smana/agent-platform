@@ -40,9 +40,9 @@ func readLedger(t *testing.T, c client.Client) *corev1.ConfigMap {
 // after a crash, or the meter's sweep after the reconciler's — finds nothing and writes nothing,
 // and another run's reservation in the same room is never touched.
 func TestReleaseIsIdempotentByRunID(t *testing.T) {
-	entry := `{"principal":"human:291","room":"3kq7x2ma","maxTokens":2000000}`
+	entry := `{"principal":"human:291","room":"3kq7x2ma","maxMicroUSD":2000000}`
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(
-		ledgerWith(map[string]string{"aaaaaaaa": entry, "bbbbbbbb": `{"principal":"system:factory","maxTokens":1500000}`})).Build()
+		ledgerWith(map[string]string{"aaaaaaaa": entry, "bbbbbbbb": `{"principal":"system:factory","maxMicroUSD":1500000}`})).Build()
 	if err := Release(t.Context(), c, "agent-system", now, "aaaaaaaa"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestReleaseIsIdempotentByRunID(t *testing.T) {
 	}
 	// The room is free again the same day (#55's acceptance).
 	if _, err := Reserve(t.Context(), c, "agent-system", now, "cccccccc",
-		Reservation{Principal: "human:291", Room: "3kq7x2ma", MaxTokens: 2_000_000}, 5_000_000, 0, false); err != nil {
+		Reservation{Principal: "human:291", Room: "3kq7x2ma", MaxMicroUSD: 2_000_000}, 5_000_000, 0, false); err != nil {
 		t.Fatalf("the released room admits a new run: %v", err)
 	}
 	// No ledger that day: nothing to release.
@@ -76,7 +76,7 @@ func TestReleaseIsIdempotentByRunID(t *testing.T) {
 // #54: admission under an enforced daily cap needs a meter that sees. No heartbeat, or one past
 // its own blind interval, refuses; a fresh one admits; in shadow nothing is read and nothing held.
 func TestABlindMeterRefusesEnforcedAdmission(t *testing.T) {
-	mine := Reservation{Principal: runs.PrincipalFactory, MaxTokens: 1_500_000}
+	mine := Reservation{Principal: runs.PrincipalFactory, MaxMicroUSD: 1_500_000}
 	for name, c := range map[string]struct {
 		stamp   time.Time // zero: the meter never stamped
 		enforce bool

@@ -347,7 +347,7 @@ func TestTwoAdmissionsOneSlot(t *testing.T) {
 		code   int
 		reason string
 	}{
-		"one budget slot": {daily: 2_000_000, code: http.StatusTooManyRequests, reason: "over_budget"},
+		"one budget slot": {daily: 3_400_000, code: http.StatusTooManyRequests, reason: "over_budget"},
 		"one room slot":   {room: true, daily: 25_000_000, code: http.StatusConflict, reason: "room_busy"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -450,7 +450,7 @@ func TestConcurrentReservationsAdmitOnlyWhatFits(t *testing.T) {
 			wg.Go(func() {
 				for { // a caller retries ErrLedgerBusy: the reconciler's requeue, the API's 503
 					o, err := Reserve(t.Context(), c, "agent-system", now, id,
-						Reservation{Principal: runs.PrincipalFactory, MaxTokens: 1_500_000}, 25_000_000, 0, enforce)
+						Reservation{Principal: runs.PrincipalFactory, MaxMicroUSD: 1_500_000}, 25_000_000, 0, enforce)
 					mu.Lock()
 					switch {
 					case errors.Is(err, ErrLedgerBusy):

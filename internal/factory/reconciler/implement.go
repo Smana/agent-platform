@@ -19,6 +19,7 @@ import (
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/api"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
@@ -151,8 +152,17 @@ func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, li
 	}
 	person := r.person(t)
 	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
-		api.Reservation{Principal: runs.PrincipalFactory, Person: person, MaxTokens: t.Spec.Budget.RunTokens}, limit,
+		api.Reservation{Principal: runs.PrincipalFactory, Person: person, MaxMicroUSD: runMicroUSD(t.Spec.Budget)}, limit,
 		r.Cfg.Budgets.DailyMicroUSD(person), r.Cfg.Budgets.EnforcePrincipal)
+}
+
+// runMicroUSD is what one run of the task may spend, as the day ledger reserves it: its USD run
+// cap, or its token cap at the reference rate for a tier capped in tokens (TC7).
+func runMicroUSD(b v1alpha1.Budget) int64 {
+	if b.RunMicroUSD > 0 {
+		return b.RunMicroUSD
+	}
+	return config.RefMicroUSD(b.RunTokens)
 }
 
 // person is who the task's next run is charged to beside the fleet, "" with per-person caps off.

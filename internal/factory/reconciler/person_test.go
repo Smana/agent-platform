@@ -55,7 +55,7 @@ func TestATaskRunIsChargedToItsLabeller(t *testing.T) {
 		g := newRig(t, issueTask("3buqdlot", 7, "x"))
 		g.r.Cfg.Budgets = personBudgets(enabled, true)
 		tk := g.reconcile(t, "3buqdlot", 3)
-		want, person := api.Reservation{Principal: runs.PrincipalFactory, MaxTokens: tk.Spec.Budget.RunTokens}, ""
+		want, person := api.Reservation{Principal: runs.PrincipalFactory, MaxMicroUSD: config.RefMicroUSD(tk.Spec.Budget.RunTokens)}, ""
 		if enabled {
 			want.Person, person = "github:smana", "github:smana"
 		}

@@ -102,8 +102,8 @@ func TestRetryTakesNoSecondReservation(t *testing.T) {
 	postKey(h, "alice", "k1", base())
 	postKey(h, "alice", "k1", base())
 	used, err := DayUsed(context.Background(), cl, "agent-system", "human:291", now)
-	if err != nil || used != 2_000_000 {
-		t.Fatalf("used %d err %v: one reservation of the default 2M expected", used, err)
+	if err != nil || used != 3_400_000 {
+		t.Fatalf("used %d err %v: one reservation of the default 2 M tokens at $1.70 per M expected", used, err)
 	}
 }
 

@@ -456,7 +456,7 @@ func TestMidnightCrossingSplitsSpend(t *testing.T) {
 // reservation stays.
 func TestTerminalRunLosesItsReservation(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	entry := `{"principal":"human:291","maxTokens":2000000}`
+	entry := `{"principal":"human:291","maxMicroUSD":2000000}`
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", Principal: "human:291", Created: day},
 		{ID: "dddddddd", Phase: "Succeeded", Tokens: 1000, Principal: "human:291", Created: day},

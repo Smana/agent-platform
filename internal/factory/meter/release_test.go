@@ -75,7 +75,7 @@ func TestABlindMeterIsSeenAndItsOvershootRecorded(t *testing.T) {
 	}
 	admit := func() error {
 		_, err := api.Reserve(t.Context(), c, "agent-system", clock, "bbbbbbbb",
-			api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, 0, true)
+			api.Reservation{Principal: "human:291", MaxMicroUSD: 1}, 5_000_000, 0, true)
 		if rerr := api.Release(t.Context(), c, "agent-system", clock, "bbbbbbbb"); rerr != nil {
 			t.Fatal(rerr)
 		}
@@ -103,7 +103,7 @@ func TestABlindMeterIsSeenAndItsOvershootRecorded(t *testing.T) {
 		t.Fatalf("past it, an enforced admission is refused: %v", err)
 	}
 	if _, err := api.Reserve(t.Context(), c, "agent-system", clock, "cccccccc",
-		api.Reservation{Principal: "human:291", MaxTokens: 1}, 5_000_000, 0, false); err != nil {
+		api.Reservation{Principal: "human:291", MaxMicroUSD: 1}, 5_000_000, 0, false); err != nil {
 		t.Fatalf("in shadow a blind meter holds nothing: %v", err)
 	}
 	src.down = false
@@ -124,7 +124,7 @@ func TestABlindMeterIsSeenAndItsOvershootRecorded(t *testing.T) {
 // #55: occupancy is not usage. A blind meter still releases a run that ended.
 func TestABlindMeterStillReleases(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	entry := `{"principal":"human:291","room":"3kq7x2ma","maxTokens":2000000}`
+	entry := `{"principal":"human:291","room":"3kq7x2ma","maxMicroUSD":2000000}`
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 		{ID: "dddddddd", Phase: "Succeeded", Principal: "human:291", Created: day}}}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
@@ -142,7 +142,7 @@ func TestABlindMeterStillReleases(t *testing.T) {
 // the terminal one: Deleting releases it.
 func TestADeletingClaimLosesItsReservation(t *testing.T) {
 	day := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	entry := `{"principal":"system:factory","maxTokens":1500000}`
+	entry := `{"principal":"system:factory","maxMicroUSD":1500000}`
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
 		{ID: "aaaaaaaa", Phase: "Running", Principal: "system:factory", Created: day, Deleting: true},
 		{ID: "bbbbbbbb", Phase: "Running", Principal: "system:factory", Created: day}}}
@@ -164,7 +164,7 @@ func TestADeletingClaimLosesItsReservation(t *testing.T) {
 func TestAnUnclaimedReservationIsReleasedAfterTheGrace(t *testing.T) {
 	at := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	clock := at
-	entry := `{"principal":"system:factory","maxTokens":1500000}`
+	entry := `{"principal":"system:factory","maxMicroUSD":1500000}`
 	st := &store{patches: map[string]map[string]string{}}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
 		ledgerDay(t, "20260927", nil, map[string]string{"aaaaaaaa": entry, "bbbbbbbb": entry})).Build()
@@ -224,7 +224,7 @@ func TestAQueuedTasksNextRunKeepsItsReservation(t *testing.T) {
 	at := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	clock := at
 	queued, ended := taskid.Run("3buqdlot", 1), taskid.Run("4buqdlot", 0)
-	entry := `{"principal":"system:factory","maxTokens":1500000}`
+	entry := `{"principal":"system:factory","maxMicroUSD":1500000}`
 	c := fake.NewClientBuilder().WithScheme(taskScheme()).WithObjects(
 		ledgerDay(t, "20260927", nil, map[string]string{queued: entry, ended: entry}),
 		taskIn("3buqdlot", v1alpha1.PhaseQueued, 1), taskIn("4buqdlot", v1alpha1.PhaseStopped, 0)).Build()
@@ -254,7 +254,7 @@ func TestAnUnreadTaskListReleasesNoUnclaimedReservation(t *testing.T) {
 	at := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	clock := at
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects( // no Task kind: every list fails
-		ledgerDay(t, "20260927", nil, map[string]string{"aaaaaaaa": `{"principal":"system:factory","maxTokens":1}`})).Build()
+		ledgerDay(t, "20260927", nil, map[string]string{"aaaaaaaa": `{"principal":"system:factory","maxMicroUSD":1}`})).Build()
 	m := &Meter{Runs: &store{patches: map[string]map[string]string{}}, Source: source{}, Ledger: c, Tasks: c,
 		Namespace: "agent-system", Now: func() time.Time { return clock }}
 	for _, d := range []time.Duration{0, orphanGrace} {

@@ -30,12 +30,12 @@ const alice = "github:alice"
 func TestOneEntryChargesThePersonAndTheFleet(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(ledgerWith(nil)).Build()
 	rv := readLedger(t, c).ResourceVersion
-	mine := Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxTokens: 1_500_000}
+	mine := Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxMicroUSD: 1_500_000}
 	if over, err := Reserve(t.Context(), c, "agent-system", now, "aaaaaaaa", mine, 25_000_000, 5_000_000, false); err != nil || over != "" {
 		t.Fatal(over, err)
 	}
 	cm := readLedger(t, c)
-	if cm.Data[LedgerReserved+"aaaaaaaa"] != `{"principal":"system:factory","person":"github:alice","maxTokens":1500000}` {
+	if cm.Data[LedgerReserved+"aaaaaaaa"] != `{"principal":"system:factory","person":"github:alice","maxMicroUSD":1500000}` {
 		t.Fatalf("one entry naming both: %v", cm.Data)
 	}
 	if rvNum(t, cm.ResourceVersion) != rvNum(t, rv)+1 {
@@ -83,7 +83,7 @@ func TestThePersonDayRefusesFirst(t *testing.T) {
 				t.Fatal(err)
 			}
 			over, err := Reserve(t.Context(), k, "agent-system", now, "aaaaaaaa",
-				Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxTokens: 1_500_000}, 25_000_000, 5_000_000, c.enforce)
+				Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxMicroUSD: 1_500_000}, 25_000_000, 5_000_000, c.enforce)
 			if !errors.Is(err, c.err) || (c.err == nil && err != nil) || over != c.over {
 				t.Fatalf("over %q err %v", over, err)
 			}
@@ -110,10 +110,10 @@ func TestLabelAndAPIAdmissionsShareThePersonDay(t *testing.T) {
 			t.Fatal(err)
 		}
 		entries := map[string]Reservation{
-			"aaaaaaaa": {Principal: runs.PrincipalFactory, Person: alice, MaxTokens: 1_500_000},                   // the label's task run
-			"bbbbbbbb": {Principal: runs.PrincipalFactory, Person: alice, Room: "3kq7x2ma", MaxTokens: 1_500_000}, // API, room A
-			"cccccccc": {Principal: runs.PrincipalFactory, Person: alice, Room: "4mz8y3nb", MaxTokens: 1_500_000}, // API, room B
-			"dddddddd": {Principal: runs.PrincipalFactory, Person: alice, MaxTokens: 1_500_000},                   // a retry of another task
+			"aaaaaaaa": {Principal: runs.PrincipalFactory, Person: alice, MaxMicroUSD: 1_500_000},                   // the label's task run
+			"bbbbbbbb": {Principal: runs.PrincipalFactory, Person: alice, Room: "3kq7x2ma", MaxMicroUSD: 1_500_000}, // API, room A
+			"cccccccc": {Principal: runs.PrincipalFactory, Person: alice, Room: "4mz8y3nb", MaxMicroUSD: 1_500_000}, // API, room B
+			"dddddddd": {Principal: runs.PrincipalFactory, Person: alice, MaxMicroUSD: 1_500_000},                   // a retry of another task
 		}
 		var (
 			wg           sync.WaitGroup
@@ -165,7 +165,7 @@ func TestLabelAndAPIAdmissionsShareThePersonDay(t *testing.T) {
 // An entry that names its principal as its person counts it once.
 func TestAPersonWhoIsThePrincipalCountsOnce(t *testing.T) {
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "x"}, Data: map[string]string{
-		LedgerReserved + "aaaaaaaa": `{"principal":"github:alice","person":"github:alice","maxTokens":7}`}}
+		LedgerReserved + "aaaaaaaa": `{"principal":"github:alice","person":"github:alice","maxMicroUSD":7}`}}
 	r, err := ledgerReservations(cm)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestTheAPIChargesThePersonOfTheToken(t *testing.T) {
 		if w := post(s.Handler(), "alice", base()); w.Code != http.StatusCreated {
 			t.Fatalf("%d %s", w.Code, w.Body)
 		}
-		if r := entry(t, s, "7f3cq2xz"); r != (Reservation{Principal: "human:291", MaxTokens: 2_000_000}) || st.created[0].ChargedTo != "" {
+		if r := entry(t, s, "7f3cq2xz"); r != (Reservation{Principal: "human:291", MaxMicroUSD: 3_400_000}) || st.created[0].ChargedTo != "" {
 			t.Fatalf("%+v %+v", r, st.created[0])
 		}
 	})
@@ -230,7 +230,7 @@ func TestTheAPIChargesThePersonOfTheToken(t *testing.T) {
 		if w := post(s.Handler(), "alice", base()); w.Code != http.StatusCreated {
 			t.Fatalf("%d %s", w.Code, w.Body)
 		}
-		if r := entry(t, s, "7f3cq2xz"); r != (Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxTokens: 2_000_000}) ||
+		if r := entry(t, s, "7f3cq2xz"); r != (Reservation{Principal: runs.PrincipalFactory, Person: alice, MaxMicroUSD: 3_400_000}) ||
 			st.created[0].ChargedTo != alice || st.created[0].Principal != "human:291" {
 			t.Fatalf("the gateway principal stays the token's, the charge is alice's: %+v %+v", r, st.created[0])
 		}

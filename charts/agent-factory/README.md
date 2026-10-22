@@ -57,7 +57,8 @@ In the release namespace, the Role reads and writes `Task`s and their status, re
 deletes `Room`s, takes the leader lease and records events. Its one ConfigMap rule (`get`, `list`,
 `watch`, `create`, `update`, `delete`) names no `resourceNames`: it covers the stop object
 `agent-factory-stop`, the meter heartbeat `agent-factory-meter` and the day ledgers
-`agent-factory-ledger-<UTC day>`, whose names carry the date. The namespace is the bound, so the
+`agent-factory-ledger-usd-<UTC day>`, whose names carry the date; the meter also deletes the token
+ledgers they replaced, `agent-factory-ledger-<UTC day>`, once 35 days old. The namespace is the bound, so the
 factory can touch every ConfigMap in it, its own config included: keep no ConfigMap there it must
 not touch. In `agents`, a second Role manages `AgentRun`s. `tests/render.sh` asserts the ConfigMap rule's shape and the 8082 ports.
 

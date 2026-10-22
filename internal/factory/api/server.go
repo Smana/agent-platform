@@ -112,20 +112,28 @@ var (
 	prURL    = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`)
 )
 
-// Ledger layout (R50). One ConfigMap per UTC day, agent-factory-ledger-<YYYYMMDD>, in the
+// Ledger layout (R50). One ConfigMap per UTC day, agent-factory-ledger-usd-<YYYYMMDD>, in the
 // factory's namespace: the apiserver's resourceVersion is the transaction, so two replicas
-// cannot take one slot. Exported so the meter (Task 5.3) reads and writes the same encoding:
-// admission owns the reservations, the meter owns the spend.
+// cannot take one slot. Every amount is micro-USD (truthful costs TC6). Exported so the meter
+// reads and writes the same encoding: admission owns the reservations, the meter owns the spend.
 const (
-	LedgerPrefix = "agent-factory-ledger-"
-	// LedgerSpent is one JSON map, principal → tokens. It is a map rather than one key per
+	LedgerPrefix = "agent-factory-ledger-usd-"
+	// LegacyLedgerPrefix names the token ledgers the USD ones replaced (#155): nothing reads or
+	// writes them; the meter's pruner deletes them once they are older than its retention.
+	LegacyLedgerPrefix = "agent-factory-ledger-"
+	// LedgerSpent is one JSON map, principal → micro-USD. It is a map rather than one key per
 	// principal because principal ids carry ":", which no ConfigMap key may hold. The meter
-	// (Task 5.3) owns this column; admission only reads it.
+	// owns this column; admission only reads it.
 	LedgerSpent = "spent"
 	// LedgerReserved prefixes one key per admitted run — reserved.<runId>, whose C2 id is
-	// key-safe — holding {principal, room, maxTokens}. Release drops the entry when the run
-	// ends or its claim goes (#55); the spend it made stays: deleting a run refunds nothing.
+	// key-safe — holding {principal, person, room, maxMicroUSD}. Release drops the entry when the
+	// run ends or its claim goes (#55); the spend it made stays: deleting a run refunds nothing.
 	LedgerReserved = "reserved."
+	// LedgerSettled prefixes one key per metered run, settled.<runId>: the micro-USD charged to
+	// that run that day, written by the meter in the same write as spent. Per key, spent is the
+	// sum of settled over the runs charged to it; summed over the retained days, it is how much
+	// of a run any meter has charged, so a new leader charges neither twice nor less (TC6).
+	LedgerSettled = "settled."
 	// LedgerDayLayout labels the ledger with the UTC day it counts.
 	LedgerDayLayout = "20060102"
 	// LedgerAttempts bounds the conflict-retry loop: steady contention of that depth is
@@ -133,15 +141,15 @@ const (
 	LedgerAttempts = 5
 )
 
-// Reservation is one ledger entry: what the run may spend, on whose behalf and on which room.
-// Person is the second key the same entry charges (v2 per-person caps D3): the person who caused
-// the run, beside the fleet as Principal. One key per run is what makes both reservations one
-// write: no run ever holds one without the other.
+// Reservation is one ledger entry: what the run may spend, in micro-USD, on whose behalf and on
+// which room. Person is the second key the same entry charges (v2 per-person caps D3): the person
+// who caused the run, beside the fleet as Principal. One key per run is what makes both
+// reservations one write: no run ever holds one without the other.
 type Reservation struct {
-	Principal string `json:"principal"`
-	Person    string `json:"person,omitempty"`
-	Room      string `json:"room,omitempty"`
-	MaxTokens int64  `json:"maxTokens"`
+	Principal   string `json:"principal"`
+	Person      string `json:"person,omitempty"`
+	Room        string `json:"room,omitempty"`
+	MaxMicroUSD int64  `json:"maxMicroUSD"`
 }
 
 // NeedLeaderElection is false: every replica serves intake.
@@ -553,10 +561,11 @@ func (s *Server) person(ctx context.Context, p authn.Principal, repository strin
 }
 
 // reserve is R50's admission on the day's ledger (Reserve), its refusals said in HTTP. A run
-// charged to a person reserves the fleet and the person in one entry (D2, D3).
+// charged to a person reserves the fleet and the person in one entry (D2, D3). A run request caps
+// in tokens, so it reserves its maxTokens at the reference rate until F4 brings max_cost (TC7).
 func (s *Server) reserve(ctx context.Context, p authn.Principal, person, id string, in RunRequest) (int, string) {
 	b := s.Cfg.Budgets
-	mine := Reservation{Principal: p.ID, Room: in.RoomRef, MaxTokens: in.MaxTokens}
+	mine := Reservation{Principal: p.ID, Room: in.RoomRef, MaxMicroUSD: config.RefMicroUSD(in.MaxTokens)}
 	if person != "" {
 		mine.Principal, mine.Person = runs.PrincipalFactory, person
 	}
@@ -595,7 +604,7 @@ var (
 )
 
 // Reserve is R50's atomic admission, shared by the API and the factory's Queued (#78): read the
-// UTC day of now's ledger, check spent + reserved + maxTokens against limit and that no
+// UTC day of now's ledger, check spent + reserved + maxMicroUSD against limit and that no
 // reservation holds mine.Room, then write reserved.<id> — the Update conflicts against a
 // concurrent writer's, and the retry re-reads and re-checks, so exactly one admission per slot
 // lands whatever the interleaving. Unless enforce (R3's shadow), an over day is reported as over,
@@ -645,12 +654,12 @@ func Reserve(ctx context.Context, c client.Client, ns string, now time.Time, id 
 		}
 		over = ""
 		switch {
-		case mine.Person != "" && OverDaily(dayUsed(spent, reserved, mine.Person), mine.MaxTokens, personLimit):
+		case mine.Person != "" && OverDaily(dayUsed(spent, reserved, mine.Person), mine.MaxMicroUSD, personLimit):
 			over = mine.Person
 			if enforce {
 				return over, ErrPersonOverBudget
 			}
-		case OverDaily(dayUsed(spent, reserved, mine.Principal), mine.MaxTokens, limit):
+		case OverDaily(dayUsed(spent, reserved, mine.Principal), mine.MaxMicroUSD, limit):
 			over = mine.Principal
 			if enforce {
 				return over, ErrOverBudget
@@ -705,26 +714,26 @@ func (s *Server) dropReservation(ctx context.Context, id string) {
 	_ = s.Rooms.Update(ctx, cm)
 }
 
-// OverDaily is the daily cap's one decision (R50): a run that may spend maxTokens does not fit
-// beside what the principal's day already holds. The API's admission and the factory's Queued
-// (N2) both decide on it.
-func OverDaily(used, maxTokens, limit int64) bool { return used+maxTokens > limit }
+// OverDaily is the daily cap's one decision (R50), in micro-USD (TC7): a run that may spend
+// maxMicroUSD does not fit beside what the principal's day already holds. The API's admission and
+// the factory's Queued (N2) both decide on it.
+func OverDaily(usedMicroUSD, maxMicroUSD, limit int64) bool { return usedMicroUSD+maxMicroUSD > limit }
 
-// dayUsed is what principal holds of its day: the meter's settled spend plus its admitted runs'
-// reservations, as their principal or their person.
+// dayUsed is what principal holds of its day, in micro-USD: the meter's settled spend plus its
+// admitted runs' reservations, as their principal or their person.
 func dayUsed(spent map[string]int64, reserved map[string]Reservation, principal string) int64 {
 	used := spent[principal]
 	for _, v := range reserved {
 		if v.Principal == principal || v.Person == principal {
-			used += v.MaxTokens
+			used += v.MaxMicroUSD
 		}
 	}
 	return used
 }
 
-// DayUsed reads principal's use of the UTC day of now from that day's ledger, as admission does:
-// a missing ledger is a day with nothing used. c must read ConfigMaps live: the factory's cached
-// watch sees the stop object only.
+// DayUsed reads principal's use of the UTC day of now from that day's ledger, in micro-USD, as
+// admission does: a missing ledger is a day with nothing used. c must read ConfigMaps live: the
+// factory's cached watch sees the stop object only.
 func DayUsed(ctx context.Context, c client.Reader, ns, principal string, now time.Time) (int64, error) {
 	cm := &corev1.ConfigMap{}
 	err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: LedgerPrefix + now.UTC().Format(LedgerDayLayout)}, cm)
