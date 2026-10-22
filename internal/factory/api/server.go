@@ -232,7 +232,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusForbidden, "repository_not_allowed") // OD-6
 		return
 	}
-	ctx := fmetrics.WithRepository(r.Context(), in.Repository)
+	// Spend per identity SI4: a refusal names the requester as authenticated. Resolving their
+	// GitHub link here would cost the call mayWrite saves for a request every local rule admits.
+	ctx := fmetrics.WithPrincipal(fmetrics.WithRepository(r.Context(), in.Repository), p.ID)
 	if s.Owned == nil || !s.Owned(in.Repository) { // v2 D7: another factory's, or nobody's
 		s.refuseRepository(ctx, w, http.StatusConflict, "repository_not_owned")
 		return
@@ -324,7 +326,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if code, reason := s.reserve(ctx, p, person, id, in); code != 0 {
 		if reason == reasonPersonOver {
-			s.refuseRepository(ctx, w, code, reason)
+			s.refuseRepository(fmetrics.WithPrincipal(ctx, person), w, code, reason) // the key over, as the shadow names it
 			return
 		}
 		refuse(w, code, reason)

@@ -154,6 +154,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	m.ListRepositories(conns.names()...)
+	m.ChargePeople(cfg.Budgets.PerPerson.Enabled)
 	// v2 D7: a repository is acted on only while its default branch names this factory.
 	fenced := &fence.Fence{Name: cfg.Factory, Repositories: conns.names(), Read: conns.fenceFile,
 		Every: fenceEvery, Stale: fenceStale, Now: time.Now, OnState: m.RepositoryOwned, Log: log}
@@ -240,6 +241,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			},
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.RunRevoked, Log: log,
+			OnCharge: m.Charged, OnCharges: m.RunCharges,
 			Prices: cfg.Meter.Prices, RunUSD: runUSD, OnCost: m.RunCost, OnLateCost: m.LateCost, OnSpend: m.RunSpend, Costs: costs,
 			OnFallback: func(ctx context.Context, why string) { m.RunBudgetFallback(ctx, "run", why) },
 			OnUnpriced: m.ModelUnpriced, OnInputExcludesCache: m.InputExcludesCache,
@@ -252,9 +254,9 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			Release: func(ctx context.Context, r runs.Run) error {
 				return api.Release(ctx, live, ns, time.Now(), r.ID) // admission reads today's ledger only
 			},
-			OnSweep: func(n int) {
-				for range n {
-					m.Revoked(ctx, "manual")
+			OnSweep: func(revoked []runs.Run) {
+				for _, r := range revoked {
+					m.Revoked(fmetrics.WithPrincipal(ctx, r.Payer()), "manual")
 				}
 			}, Log: log},
 		apiSrv, fenced,

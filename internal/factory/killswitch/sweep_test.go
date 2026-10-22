@@ -43,13 +43,18 @@ func TestTheStopSweepsEveryRun(t *testing.T) {
 	}}
 	c := fake.NewClientBuilder().Build()
 	s := &Sweeper{Reader: c, Namespace: "agent-system", Runs: st}
-	if n, err := s.Sweep(context.Background()); n != 0 || err != nil || len(st.runs) != 4 {
+	if revoked, err := s.Sweep(context.Background()); len(revoked) != 0 || err != nil || len(st.runs) != 4 {
 		t.Fatal("no stop object: nothing is touched")
 	}
 	_ = c.Create(context.Background(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: ConfigMap, Namespace: "agent-system"}})
-	n, err := s.Sweep(context.Background())
-	if err != nil || n != 2 || st.revoked["bbbbbbbb"] != "manual" || st.revoked["aaaaaaaa"] != "manual" {
-		t.Fatalf("every live run, the human's included, each revoked run counted once: %d %v %v", n, st.revoked, err)
+	revoked, err := s.Sweep(context.Background())
+	ids := []string{}
+	for _, r := range revoked {
+		ids = append(ids, r.ID)
+	}
+	slices.Sort(ids)
+	if err != nil || !slices.Equal(ids, []string{"aaaaaaaa", "bbbbbbbb"}) || st.revoked["bbbbbbbb"] != "manual" || st.revoked["aaaaaaaa"] != "manual" {
+		t.Fatalf("every live run, the human's included, each revoked run counted once: %v %v %v", ids, st.revoked, err)
 	}
 	if _, left := st.runs["dddddddd"]; left {
 		t.Fatal("a run already revoked is still deleted, just not counted again")
