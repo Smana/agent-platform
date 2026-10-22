@@ -805,7 +805,7 @@ def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
         print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
         return None
     if isinstance(content, list):
-        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        content = " ".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
     return str(content or ""), str(reply.get("model") or "")
 
 
@@ -841,29 +841,39 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
         except Stalled:
             try:
                 http("POST", "/api/conversations/%s/interrupt" % cid, timeout=INTERRUPT_TIMEOUT_S)
-            except (OSError, ValueError) as exc:  # the run ends stalled whether or not the agent heard
+            except (OSError, ValueError, HTTPException) as exc:  # the run ends stalled whether or not the agent heard
                 print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
             return 1, "stalled", "no commit after %d steps" % policy.stall_steps
         if code or policy.judge_model is None:
             return code, None, ""
-        n = commits_since(env, state.mark) if state.sent else None
-        new_commit = n is None or n > 0
-        message, offered = evidence(env, task)
-        answer = ask_judge(env, policy.judge_model, message)
-        if answer is None:
-            return 0, None, ""  # no answer: the run ends as it would with no policy
-        rounds += 1
-        v = loop_policy.verdict(answer[0], offered)
-        print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
-                                                               _short(v.reason, 300)), flush=True)
-        d = loop_policy.decide(policy, state, v, new_commit)
-        if isinstance(d, loop_policy.End):
+        sent = None  # the continuation, once the judge asked for one
+        try:
+            n = commits_since(env, state.mark) if state.sent else None
+            new_commit = n is None or n > 0
+            message, offered = evidence(env, task)
+            answer = ask_judge(env, policy.judge_model, message)
+            if answer is None:
+                return 0, None, ""  # no answer: the run ends as it would with no policy
+            rounds += 1
+            v = loop_policy.verdict(answer[0], offered)
+            print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
+                                                                   _short(v.reason, 300)), flush=True)
+            d = loop_policy.decide(policy, state, v, new_commit)
+            if isinstance(d, loop_policy.End):
+                save_state(state, path)
+                return (0 if d.reason is None else 1), d.reason, d.note
+            state.mark = head()
             save_state(state, path)
-            return (0 if d.reason is None else 1), d.reason, d.note
-        state.mark = head()
-        save_state(state, path)
-        continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
-                                                            policy.continuations, fence))
+            sent = d.reason
+            continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
+                                                                policy.continuations, fence))
+        except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
+            print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            if sent is None:
+                return 0, None, ""  # today's end
+            # The judge said not_yet but the message did not go (SDK 1.56 answers 429 when its run
+            # capacity is full: saved, no run started). Ending as met would hand off silently.
+            return 1, "not_met", sent
 
 
 def report(name: str, status: str, started: float, box: float) -> None:
@@ -1086,8 +1096,9 @@ def main() -> int:
             task = t.read()
             request = build_request(env, task, r.read(), span)
         policy = loop_for(env)
-        # The start is read before the conversation runs: a resumed pod keeps its first pod's.
-        state = loop_policy.State.load(LOOP_STATE, head()) if policy else None
+        # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
+        # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
+        state = loop_policy.State.load(LOOP_STATE, head(), resumed=resumed) if policy else None
         if state:
             save_state(state, LOOP_STATE)
         cid = http("POST", "/api/conversations", request)["id"]
@@ -1141,9 +1152,9 @@ def main() -> int:
         if span:
             # Boxed on the signal path: a collector that never answers holds an export for up to two
             # 5 s connects, and the pod's grace has no room left for it after the revoke.
-            end = threading.Thread(target=lambda: (span.end(), provider.shutdown()), daemon=True)
-            end.start()
-            end.join(EXPORT_S if signalled else None)
+            export = threading.Thread(target=lambda: (span.end(), provider.shutdown()), daemon=True)
+            export.start()
+            export.join(EXPORT_S if signalled else None)
 
 if __name__ == "__main__":
     sys.exit(main())

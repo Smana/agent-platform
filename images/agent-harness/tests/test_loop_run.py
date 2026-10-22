@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
 import unittest
 from unittest import mock
 
@@ -252,6 +253,13 @@ class AskJudgeFailuresTest(FakeProxy, unittest.TestCase):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             return agent_run.ask_judge(env, "tier-light", "e"), err.getvalue()
 
+    def test_a_content_list_part_without_string_text_is_skipped_not_a_crash(self):
+        FakeLLM.content = [{"type": "text", "text": 5}, {"type": "text", "text": '{"verdict": "met"}'}, 7, {"type": "image"}]
+        answer, _ = self.ask({"LLM_BASE_URL": self.url + "/v1"})
+        self.assertEqual(answer, ('{"verdict": "met"}', "glm-5.3-flash"))
+        FakeLLM.content = [{"type": "text", "text": None}]
+        self.assertEqual(self.ask({"LLM_BASE_URL": self.url + "/v1"})[0], ("", "glm-5.3-flash"))
+
     def test_a_truncated_response_is_no_answer(self):
         with mock.patch("http.client.HTTPResponse.read", side_effect=http.client.IncompleteRead(b"x")):
             answer, err = self.ask({"LLM_BASE_URL": self.url + "/v1"})
@@ -342,6 +350,34 @@ class DriveTest(unittest.TestCase):
         self.out = out.getvalue()
         return result, state
 
+    def drive_raw(self, polls, answers=(), send=None, interrupt=None, evidence=None, commits=None):
+        """drive() where evidence, the judge, git or a POST may raise."""
+        polls = iter(polls)
+
+        def poll(cid, on_tick=None):
+            p = next(polls)
+            if p == "stall":
+                raise agent_run.Stalled()
+            return p
+
+        def http_(method, path_, body=None, timeout=30):
+            if interrupt and path_.endswith("/interrupt"):
+                raise interrupt
+            return {}
+
+        def cont(cid, text):
+            if send:
+                raise send
+
+        ev = {"side_effect": evidence} if evidence else {"return_value": ("e", {"diff"})}
+        cs = {"side_effect": commits} if commits else {"return_value": 1}
+        with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http_), \
+                mock.patch("agent_run.continue_conversation", side_effect=cont), mock.patch("agent_run.head", return_value="h"), \
+                mock.patch("agent_run.evidence", **ev), mock.patch("agent_run.commits_since", **cs), \
+                mock.patch("agent_run.ask_judge", side_effect=answers), mock.patch("sys.stdout", new=io.StringIO()):
+            return agent_run.drive({}, "cid", Steps(0), POLICY, lp.State(start="s", sent=1), "task",
+                                   os.path.join(tempfile.mkdtemp(), "loop.json"))
+
     def answer(self, verdict, reason="r"):
         return json.dumps({"verdict": verdict, "reason": reason, "evidence": ["diff"]}), "glm-5.3-flash"
 
@@ -376,6 +412,25 @@ class DriveTest(unittest.TestCase):
                 mock.patch("sys.stderr", new=io.StringIO()):
             result, state = self.drive([0, 0], [self.answer("not_yet"), self.answer("met")])
         self.assertEqual((result, state.sent), ((0, None, ""), 1))
+
+    def test_any_failure_in_the_judge_round_is_todays_end(self):
+        boom = TypeError("x")
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            for name, kw in (("evidence", {"evidence": boom}), ("ask_judge", {"answers": boom}), ("commits_since", {"commits": boom})):
+                with self.subTest(name=name):
+                    self.assertEqual(self.drive_raw([0], **kw), (0, None, ""))
+
+    def test_a_failed_continuation_is_not_met(self):
+        # an HTTPError, a 429 from SDK 1.56 (message saved, no run started) or a dropped connection
+        for exc in (urllib.error.HTTPError("u", 429, "full", {}, None), OSError("reset"), http.client.BadStatusLine("x")):
+            with self.subTest(exc=type(exc).__name__), mock.patch("sys.stderr", new=io.StringIO()):
+                result = self.drive_raw([0], [self.answer("not_yet", "lint fails")], send=exc)
+                self.assertEqual(result, (1, "not_met", "lint fails"))
+
+    def test_an_interrupt_that_raises_an_http_exception_still_ends_stalled(self):
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            result = self.drive_raw(["stall"], interrupt=http.client.BadStatusLine("x"))
+        self.assertEqual(result, (1, "stalled", "no commit after 80 steps"))
 
     def test_a_malformed_base_is_no_judge_answer(self):
         with mock.patch("sys.stderr", new=io.StringIO()):
@@ -441,7 +496,7 @@ class MainLoopTest(unittest.TestCase):
     """main() with AGENT_LOOP: the start is read before the conversation runs, drive replaces poll,
     and the end reason reaches the note and the final read."""
 
-    def main(self, env_extra, drive_result=(1, "stalled", "no commit after 80 steps")):
+    def main(self, env_extra, drive_result=(1, "stalled", "no commit after 80 steps"), resumed=False, state_file=None):
         with tempfile.TemporaryDirectory() as d:
             task = os.path.join(d, "task.md")
             with open(task, "w") as f:
@@ -449,10 +504,13 @@ class MainLoopTest(unittest.TestCase):
             env = {"TASK_FILE": task, "RULES_FILE": task, "ROLE": "implementer", "BRIDGE_URL": "http://b",
                    "MCP_URL": "http://m", **env_extra}
             order = []
+            if state_file is not None:
+                with open(os.path.join(d, "loop.json"), "w") as f:
+                    f.write(state_file)
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch("agent_run.LOOP_STATE", os.path.join(d, "loop.json")), \
                     mock.patch("agent_run.subprocess.Popen"), mock.patch("agent_run.wait_ready"), \
-                    mock.patch("agent_run.persisted", return_value=False), mock.patch("agent_run.clone", return_value=False), \
+                    mock.patch("agent_run.persisted", return_value=resumed), mock.patch("agent_run.clone", return_value=False), \
                     mock.patch("agent_run.build_request", return_value={}), \
                     mock.patch("agent_run.head", side_effect=lambda: order.append("head") or "h0"), \
                     mock.patch("agent_run.http", side_effect=lambda *a, **k: order.append("post") or {"id": "c1"}), \
@@ -482,6 +540,15 @@ class MainLoopTest(unittest.TestCase):
         poll.assert_not_called()
         notes.final.assert_called_once_with("the run ended stalled: no commit after 80 steps")
         final_read.assert_called_once_with(mock.ANY, end="stalled")
+
+    def test_a_resumed_pod_with_no_state_file_never_stalls_falsely(self):
+        saved = self.main({"AGENT_LOOP": "{}"}, resumed=True)[-1]
+        self.assertEqual((saved.start, saved.committed), ("h0", True))
+        saved = self.main({"AGENT_LOOP": "{}"}, resumed=True, state_file='{"start": 3}')[-1]
+        self.assertTrue(saved.committed)
+
+    def test_a_first_pod_starts_with_the_stall_rule_live(self):
+        self.assertFalse(self.main({"AGENT_LOOP": "{}"})[-1].committed)
 
 
 if __name__ == "__main__":
