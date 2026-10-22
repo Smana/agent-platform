@@ -413,7 +413,8 @@ def milestones(command: str) -> set[str]:
         elif (prog in ("pytest", "py.test") or (prog.startswith("python") and rest[:2] == ["-m", "pytest"])
               or (prog in ("go", "cargo", "make") and rest[:1] == ["test"])
               or (prog == "npm" and (rest[:1] == ["test"] or rest[:2] == ["run", "test"]))
-              or (prog == "task" and rest[:1] and CHECK_TARGET.fullmatch(rest[0]))):
+              or (prog == "task" and rest[:1] and CHECK_TARGET.fullmatch(rest[0]))
+              or prog == "agent-checks"):
             found.add("checks")
     return found
 
@@ -567,6 +568,161 @@ class ProgressNotes:
                 return False
             raise RuntimeError(message[:200])
         return True
+
+
+# v3 feature 3: the repository's checks in the sandbox, on a check-enabled run only (AGENT_CHECKS=1,
+# set by the composition from the claim's spec.loop.checks). agent-checks sits beside this file.
+CHECKS_TOOL = "/usr/local/bin/agent-checks"
+CHECKS_DIR = "/workspace/.agent-checks"
+CHECKS_RULES = {
+    "implementer": "Before every push, run `agent-checks` and fix what it reports. It runs the CI's fast subset; the "
+                   "CI stays the judge. If a failure is not your change's, say so in the pull request.",
+    "reviewer": "Before your verdict, run `agent-checks` on the pull request's head and cite its first line as your "
+                "evidence. It runs the CI's fast subset; the CI stays the judge.",
+}
+# RC9: the final run is skipped when the pod has less than the declaration's budget plus this left.
+CHECKS_MARGIN_S = 120
+NOTE_MAX = 280
+CHECKS_SPAN, INSTALL_SPAN = "agent-run.checks", "agent-run.checks.install"
+
+
+def checks_module():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import agent_checks
+
+    return agent_checks
+
+
+def declared(env: dict):
+    """The checks the clone's default branch declares, on a check-enabled run; None otherwise."""
+    if env.get("AGENT_CHECKS") != "1":
+        return None
+    ac = checks_module()
+    try:
+        return ac.declaration()[2]
+    except ac.Undeclared as exc:
+        print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
+        return None
+
+
+def checks_rules(env: dict, decl) -> str:
+    """The rule appended to the platform rules (RC4), for the roles that run the checks."""
+    rule = CHECKS_RULES.get(env.get("ROLE", "")) if decl else None
+    return "\nRepository checks:\n- %s\n" % rule if rule else ""
+
+
+def _end(span, error: str | None) -> None:
+    if not span:
+        return
+    if error:
+        from opentelemetry.trace import Status, StatusCode
+
+        span.set_attribute("error.type", error)  # the collector keeps error.type and drops the rest
+        span.set_status(Status(StatusCode.ERROR))
+    span.end()
+
+
+def prefetch(start_span=None):
+    """agent-checks --install in the background, right after the clone, so the toolchain installs
+    while the model reads the task (RC1). A waiter thread ends its span when it exits."""
+    os.makedirs(CHECKS_DIR, exist_ok=True)
+    span = start_span(INSTALL_SPAN) if start_span else None
+    with open(os.path.join(CHECKS_DIR, "prefetch.log"), "a") as log:
+        proc = subprocess.Popen([CHECKS_TOOL, "--install"], stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    threading.Thread(target=lambda: _end(span, "install_incomplete" if proc.wait() else None), daemon=True).start()
+    return proc
+
+
+def _git_out(*args: str) -> str:
+    return subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True).stdout.strip()
+
+
+def _load(path: str) -> dict | None:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def checks_note(role: str, res: dict, by_agent: bool) -> str:
+    """The room note's fixed text (RC6): the head, the counts and the failed steps' names, which come
+    from the base's declaration. Nothing the agent wrote."""
+    lead = "Harness (%s): checks on %s" % (role, res["head"][:12])
+    if res.get("skipped"):
+        return "%s skipped: %s." % (lead, res["skipped"])
+    counts = {}
+    for s in res.get("steps", []):
+        counts[s["result"]] = counts.get(s["result"], 0) + 1
+    text = "%s: %s%s." % (lead, ", ".join("%d %s" % (counts[r], r) for r in ("pass", "fail", "timeout", "skip") if r in counts),
+                          " (the agent's own run)" if by_agent else "")
+    failed = [s["name"] for s in res.get("steps", []) if s["result"] in ("fail", "timeout")]
+    for i in range(len(failed), 0, -1):
+        more = " Failed: %s%s." % (", ".join(failed[:i]), ", …" if i < len(failed) else "")
+        if len(text + more) <= NOTE_MAX:
+            return text + more
+    return text[:NOTE_MAX]
+
+
+def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 0.0, clock=time.monotonic):
+    """RC6: when an implementer's conversation ends finished, its head's checks are the evidence the
+    judge and the reviewer read. A full result the agent left for this head on a clean tree stands;
+    otherwise agent-checks runs, unless the pod lacks the budget plus CHECKS_MARGIN_S. Writes
+    CHECKS_DIR/<head>.json, posts the note, emits the span; returns the result, or None when off."""
+    if not decl or env.get("ROLE") != "implementer":
+        return None
+    head = _git_out("rev-parse", "HEAD")
+    path = os.path.join(CHECKS_DIR, head + ".json")
+    clean = not _git_out("diff", "--name-only", "HEAD")
+    res, by_agent = _load(path), True
+    if not (res and clean and not res.get("dirty") and not res.get("partial") and not res.get("skipped")):
+        res, by_agent = None, False
+    budget = decl["minutes"] * 60
+    limit = env.get("AGENT_RUN_SECONDS", "")
+    if res is None and limit.isdigit() and int(limit) - (clock() - started) < budget + CHECKS_MARGIN_S:
+        res = {"version": 1, "head": head, "skipped": "deadline"}
+        os.makedirs(CHECKS_DIR, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(res, f)
+    span = start_span(CHECKS_SPAN) if start_span and not by_agent else None
+    if res is None:
+        try:
+            subprocess.run([CHECKS_TOOL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=budget + checks_module().INSTALL_S + 60)
+        except subprocess.TimeoutExpired:
+            pass
+        res = _load(path) or {"version": 1, "head": head, "skipped": "no result"}
+    failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
+    _end(span, "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None)
+    text = checks_note(env.get("ROLE"), res, by_agent)
+    print("agent-run " + text.split(": ", 1)[1], flush=True)
+    if notes:
+        post_once(notes, text)
+    return res
+
+
+def post_once(notes, text: str, sleep=time.sleep) -> None:
+    """The final note, outside the milestone cap: on the broker's one-a-minute limit, it waits out
+    the rest of the minute once."""
+    try:
+        if not notes.send(text):
+            left = MIN_NOTE_GAP_S - (notes.clock() - notes.last) if notes.last is not None else MIN_NOTE_GAP_S
+            sleep(max(0.0, min(MIN_NOTE_GAP_S, left)))
+            notes.send(text)
+    except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+        print("agent-run: checks note not posted: %s" % exc, file=sys.stderr, flush=True)
+
+
+def checks_ledger() -> str:
+    """How often the agent ran agent-checks itself, from its ledger: a signal, the agent can write it."""
+    try:
+        with open(os.path.join(CHECKS_DIR, "runs.jsonl")) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError):
+        return ""
+    return "agent-run checks ledger: %d runs, %d of one step, %.0fs" % (
+        len(rows), sum(1 for r in rows if r.get("partial")), sum(r.get("seconds", 0) for r in rows))
 
 
 def model_retries() -> int:
@@ -1076,6 +1232,7 @@ def server_env(env: dict) -> dict:
 
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_sigterm)
+    started = time.monotonic()
     env = dict(os.environ)
     # agent-server's conversations_path and bash_events_dir are relative to
     # its cwd; pin it to "/" so its state lands in the intended paths
@@ -1092,9 +1249,12 @@ def main() -> int:
         # either: it waits on a call's approval, a new message would reject that call, and a bare
         # run would execute it unconfirmed. The bridge answers it from the room's decision.
         resumed = persisted(env) or clone(env)
+        decl = declared(env)
+        if decl:
+            prefetch(child_spans(provider, span))
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             task = t.read()
-            request = build_request(env, task, r.read(), span)
+            request = build_request(env, task, r.read() + checks_rules(env, decl), span)
         policy = loop_for(env)
         # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
         # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
@@ -1113,6 +1273,10 @@ def main() -> int:
         steps.summary()
         if policy:
             print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
+        if code == 0:
+            final_checks(env, decl, notes, child_spans(provider, span), started)
+        if decl and (ledger := checks_ledger()):
+            print(ledger, flush=True)
         if notes:
             if end:
                 notes.final("the run ended %s: %s" % (end, note))
