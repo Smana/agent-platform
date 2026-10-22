@@ -28,7 +28,10 @@ const mcpBody = 128 << 10
 
 // mcpProtocols are the MCP revisions /mcp serves, the initialize-based ones, oldest first. A
 // 2026-07-28 client falls back to them on the 400 its per-request version gets.
-var mcpProtocols = []string{"2025-06-18", "2025-11-25"}
+var mcpProtocols = []string{"2025-06-18", mcpTasks}
+
+// mcpTasks is the first revision with tasks (F5).
+const mcpTasks = "2025-11-25"
 
 // reasonMCPClient refuses /mcp to any token but roomctl's.
 const reasonMCPClient = "mcp_needs_roomctl"
@@ -66,7 +69,7 @@ func (s *Server) mcpTools() []mcpTool {
 			description: "Where a room stands, as summary/v1: status with its coarse state, what needs you (approvals link to the room page, never a command), " +
 				"what you may do, and the agents' notes after the cursor `after`, under untrusted: true.",
 			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"after":{"type":"string","pattern":"^(seq:)?[0-9]+$"}}}`)},
-		{name: "room_tail", call: s.roomTail,
+		{name: "room_tail", call: s.roomTail, tasks: true,
 			description: "The room's events after a cursor, a page at a time (at most 100), under untrusted: true; without a cursor, the last 50. " +
 				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
 				"As a task, it waits for the next events (ttl: the wait, 10 s to 15 min, default 5 min).",
@@ -138,6 +141,14 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		mcpwire.Write(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
 		s.mcpCall(w, r, req, p)
+	case "tasks/get", "tasks/result":
+		ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
+		defer cancel()
+		if req.Method == "tasks/get" {
+			s.tasksGet(ctx, w, req, p)
+		} else {
+			s.tasksResult(ctx, w, req, p)
+		}
 	default:
 		mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.MethodNotFound, Message: "method not found: " + req.Method})
 	}
@@ -154,6 +165,11 @@ func (s *Server) mcpInitialize(w http.ResponseWriter, req mcpwire.Request) {
 		v = p.ProtocolVersion
 	}
 	caps := map[string]any{"tools": map[string]bool{"listChanged": false}}
+	if v == mcpTasks {
+		// Task-augmented tools/call only: no tasks/list, since the broker keeps no task to list, and
+		// no tasks/cancel, since a tail holds nothing to stop.
+		caps["tasks"] = map[string]any{"requests": map[string]any{"tools": map[string]any{"call": map[string]any{}}}}
+	}
 	mcpwire.Write(w, req.ID, map[string]any{"protocolVersion": v, "capabilities": caps,
 		"serverInfo": map[string]string{"name": "room-broker", "version": version.Version}, "instructions": mcpInstructions}, nil)
 }
@@ -176,13 +192,17 @@ func (s *Server) mcpCall(w http.ResponseWriter, r *http.Request, req mcpwire.Req
 		return
 	}
 	t := tools[i]
-	if len(c.Task) > 0 && string(c.Task) != "null" {
-		// The spec's answer to a task on a tool that does not run as one.
-		mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.MethodNotFound, Message: t.name + " does not run as a task"})
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
+	if len(c.Task) > 0 && string(c.Task) != "null" {
+		if !t.tasks {
+			// The spec's answer to a task on a tool that does not run as one.
+			mcpwire.Write(w, req.ID, nil, &mcpwire.Error{Code: mcpwire.MethodNotFound, Message: t.name + " does not run as a task"})
+			return
+		}
+		s.startTail(ctx, w, req.ID, p, c.Arguments, c.Task)
+		return
+	}
 	out, err := t.call(ctx, p, c.Arguments)
 	s.writeTool(ctx, w, req.ID, t.name, out, err)
 }
