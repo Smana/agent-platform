@@ -4,6 +4,7 @@ package meter
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -229,7 +230,7 @@ func TestARunIsPricedByTheModelThatServedIt(t *testing.T) {
 			if err := m.Tick(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if c, _ := m.Costs.Get("aaaaaaaa"); c != (Cost{MicroUSD: want.micro}) {
+			if c, _ := m.Costs.Get("aaaaaaaa"); c.MicroUSD != want.micro || c.Why != "" || !slices.Equal(c.Served, []string{model}) {
 				t.Errorf("cost %+v, want %d µUSD", c, want.micro)
 			}
 			if got := len(revoked) == 1 && revoked[0] == (revocation{ReasonBudgetRun, LimitRunUSD}); got != want.revoked || len(fell) != 0 {
