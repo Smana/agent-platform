@@ -105,6 +105,10 @@ func TestMCPTakesRoomctlTokensOnly(t *testing.T) {
 	if code, _ := rpc(t, noClient, viaRoomctl("dev"), "ping", nil); code != http.StatusForbidden {
 		t.Fatalf("a broker without a roomctl client admits nobody: %d", code)
 	}
+	same := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.WebClient = func() string { return "roomctl" } })
+	if code, _ := rpc(t, same, viaRoomctl("dev"), "ping", nil); code != http.StatusForbidden {
+		t.Fatalf("a roomctl client that is the web client admits nobody: %d", code)
+	}
 }
 
 func TestMCPInitialize(t *testing.T) {
