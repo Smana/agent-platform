@@ -189,7 +189,7 @@ func (v hubView) Range(ctx context.Context, room string, after int64, limit int)
 // headerAuth authenticates X-Test-User as human:<user>, an agents-member, whose
 // Sub is <user>. X-Test-TTL sets the token's remaining life, X-Test-Kind the
 // principal's kind, X-Test-Admin adds agents-admin, X-Test-Forbidden refuses as
-// a foreign Origin would.
+// a foreign Origin would, X-Test-Client sets the client id (default web).
 type headerAuth struct{}
 
 func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
@@ -215,7 +215,11 @@ func (headerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
 	if v, ok := r.Header["X-Test-Kind"]; ok {
 		kind = envelope.ActorKind(v[0])
 	}
-	return authn.Principal{Kind: kind, ID: "human:" + who, Sub: who, Groups: gs, ClientID: "web",
+	client := "web"
+	if c := r.Header.Get("X-Test-Client"); c != "" {
+		client = c
+	}
+	return authn.Principal{Kind: kind, ID: "human:" + who, Sub: who, Groups: gs, ClientID: client,
 		Expiry: time.Now().Add(ttl)}, nil
 }
 

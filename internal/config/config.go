@@ -49,6 +49,14 @@ type HumanConfig struct {
 	// Access turns on D7: a member sees a room only if they can read its repository
 	// on GitHub. Unset, rooms are visible to admins only, never to every member.
 	Access *AccessConfig `json:"access,omitempty"`
+	// MCP serves /mcp, the MCP server roomctl mcp relays (factory interfaces F2). Off unless
+	// enabled: v3 ships each feature behind a switch (D4).
+	MCP MCPConfig `json:"mcp,omitzero"`
+}
+
+// MCPConfig switches the human listener's MCP server.
+type MCPConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // AccessConfig is D7's GitHub check. ReaderFile is the ZITADEL link reader's mounted
@@ -226,6 +234,9 @@ func (h HumanConfig) validate() []error {
 	}
 	if h.Groups.Admin != "" && h.Groups.Admin == h.Groups.Member {
 		errs = append(errs, errors.New("human.groups: admin and member must differ"))
+	}
+	if h.MCP.Enabled && h.RoomctlClientIDFile == "" {
+		errs = append(errs, errors.New("human.mcp.enabled: needs human.roomctlClientIDFile, since /mcp takes roomctl's tokens only"))
 	}
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {

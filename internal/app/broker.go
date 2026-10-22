@@ -274,7 +274,8 @@ func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, n
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
 		WebClient: idFile(h.ClientIDFile), PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: idFile(h.RoomctlClientIDFile),
 		ProjectID: idFile(h.ProjectIDFile),
-		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log}
+		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log,
+		MCP: h.MCP.Enabled}
 }
 
 // roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.

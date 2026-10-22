@@ -112,6 +112,9 @@ type Set struct {
 	Dropped metric.Int64Counter
 	// VerdictPosts is rooms_verdict_posts_total{result}: posted, not_posted or error (phase 3).
 	VerdictPosts metric.Int64Counter
+	// MCPCalls is rooms_human_mcp_calls_total{tool, outcome}: the /mcp tool calls, ok, refused or
+	// error (factory interfaces F2). tool is one of the server's own names.
+	MCPCalls metric.Int64Counter
 
 	meter         metric.Meter
 	appended      metric.Int64Counter
@@ -169,6 +172,8 @@ func New(meter metric.Meter) (*Set, error) {
 	s.Dropped, err = meter.Int64Counter("rooms_connections_dropped_total", metric.WithDescription("Connections the broker closed, by reason."))
 	check(err)
 	s.VerdictPosts, err = meter.Int64Counter("rooms_verdict_posts_total", metric.WithDescription("Verdict comments, by result."))
+	check(err)
+	s.MCPCalls, err = meter.Int64Counter("rooms_human_mcp_calls_total", metric.WithDescription("Tool calls on the human MCP server, by tool and outcome."))
 	check(err)
 	// Ruling AP: counted by the broker from the events bridges append, since
 	// nothing dials into a sandbox to scrape a bridge.
