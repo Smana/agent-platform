@@ -132,5 +132,130 @@ class StallWatchTest(unittest.TestCase):
         self.assertFalse(state.committed)
 
 
+class CheckRunsTest(unittest.TestCase):
+    def gh(self, script):
+        """A gh on PATH that records its arguments and runs script."""
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        with open(os.path.join(self.dir, "gh"), "w") as f:
+            f.write('#!/bin/sh\necho "$*" > "$(dirname "$0")/args"\n' + script)
+        os.chmod(os.path.join(self.dir, "gh"), 0o755)
+        mock.patch.dict(os.environ, {"PATH": self.dir + os.pathsep + os.environ["PATH"]}).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def test_reads_name_status_conclusion_and_title(self):
+        api = {"check_runs": [{"name": "check", "status": "completed", "conclusion": "failure",
+                               "output": {"title": "2 errors", "summary": "long"}}]}
+        self.gh("echo '%s'" % json.dumps(api))
+        self.assertEqual(agent_run.check_runs({"REPOSITORY": "o/r"}, "abc"),
+                         [{"name": "check", "status": "completed", "conclusion": "failure", "title": "2 errors"}])
+        with open(os.path.join(self.dir, "args")) as f:
+            self.assertEqual(f.read().strip(), "api repos/o/r/commits/abc/check-runs?per_page=100")
+
+    def test_an_unknown_head_is_none(self):
+        self.gh("echo 'No commit found for SHA' >&2; exit 1")
+        self.assertIsNone(agent_run.check_runs({"REPOSITORY": "o/r"}, "abc"))
+
+    def test_waits_for_pending_checks_then_stops_waiting(self):
+        clock, slept = [0.0], []
+        pending, done = [dict(RUNS[1])], [dict(RUNS[1], status="completed", conclusion="success")]
+
+        def sleep(s):
+            slept.append(s)
+            clock[0] += s
+
+        for answers, want, waited in (([pending, done], done, [30]),
+                                       ([pending] * 20, pending, [30] * 10),
+                                       ([[]] * 20, [], [30] * 2)):
+            with self.subTest(want=want, waited=len(waited)):
+                clock[0], slept[:] = 0.0, []
+                with mock.patch("agent_run.check_runs", side_effect=answers):
+                    self.assertEqual(agent_run.wait_checks({}, "abc", clock=lambda: clock[0], sleep=sleep), want)
+                self.assertEqual(slept, waited)
+
+
+class EvidenceTest(Clone, unittest.TestCase):
+    def test_the_diff_against_the_base_and_the_heads_checks(self):
+        self.commit(self.repo, "docs.md")
+        sha = agent_run.head()
+        with mock.patch("agent_run.wait_checks", return_value=RUNS[:1]) as checks:
+            text, offered = agent_run.evidence(self.env, BRIEF)
+        checks.assert_called_once_with(self.env, sha)
+        self.assertEqual(offered, {"acceptance", "diff", "check:check", "file:docs.md"})
+        self.assertIn("`task docs-links` passes.", text)
+        self.assertIn("+docs.md", text)
+        self.assertIn("CHECKS' OUTPUT on " + sha, text)
+
+
+class FakeLLM(http.server.BaseHTTPRequestHandler):
+    """The identity proxy's chat completions route as the judge's call reaches it."""
+    requests, status, content = [], 200, ""
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        FakeLLM.requests.append((self.path, dict(self.headers), body))
+        out = json.dumps({"model": "glm-5.3-flash", "choices": [{"message": {"role": "assistant", "content": FakeLLM.content}}]}).encode()
+        self.send_response(FakeLLM.status)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *args):
+        pass
+
+
+class AskJudgeTest(unittest.TestCase):
+    def setUp(self):
+        FakeLLM.requests, FakeLLM.status, FakeLLM.content = [], 200, '{"verdict": "met"}'
+        server = http.server.HTTPServer(("127.0.0.1", 0), FakeLLM)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.url = "http://127.0.0.1:%d" % server.server_port
+
+    def test_a_fresh_context_with_no_tools_on_the_proxys_judge_path(self):
+        answer = agent_run.ask_judge({"LLM_BASE_URL": self.url + "/v1"}, "tier-light", "evidence")
+        self.assertEqual(answer, ('{"verdict": "met"}', "glm-5.3-flash"))
+        [(path, headers, body)] = FakeLLM.requests
+        self.assertEqual(path, "/judge/v1/chat/completions", "the proxy pins the judge's alias there (P4)")
+        self.assertEqual(headers["Authorization"], "Bearer " + agent_run.PLACEHOLDER_KEY)
+        self.assertEqual(body["model"], "tier-light")
+        self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
+        self.assertEqual(body["messages"][1]["content"], "evidence")
+        self.assertEqual(body["reasoning_effort"], "low")
+        self.assertNotIn("tools", body)
+        self.assertNotIn("temperature", body)
+
+    def test_a_refused_or_missing_judge_path_is_no_answer(self):
+        # 403: JUDGE_MODEL none, or outside the profile. 404: a proxy before P4. 429: the run's budget.
+        for status in (403, 404, 429):
+            with self.subTest(status=status):
+                FakeLLM.status = status
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    self.assertIsNone(agent_run.ask_judge({"LLM_BASE_URL": self.url + "/v1/"}, "tier-light", "e"))
+                self.assertIn("agent-run judge unavailable: HTTP Error %d" % status, err.getvalue())
+
+    def test_no_proxy_or_no_v1_is_no_answer(self):
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertIsNone(agent_run.ask_judge({"LLM_BASE_URL": "http://127.0.0.1:1/v1"}, "tier-light", "e"))
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertIsNone(agent_run.ask_judge({"LLM_BASE_URL": self.url + "/api"}, "tier-light", "e"))
+        self.assertIn("has no /v1", err.getvalue())
+        self.assertEqual(FakeLLM.requests, [], "nothing is sent beside /api")
+
+
+class ContinueTest(unittest.TestCase):
+    def test_the_message_is_a_send_message_request_the_sdk_accepts(self):
+        from openhands.agent_server.models import SendMessageRequest
+        calls = []
+        with mock.patch("agent_run.http", side_effect=lambda *a, **k: calls.append(a) or {}):
+            agent_run.continue_conversation("cid", "go on")
+        method, path, body = calls[0]
+        self.assertEqual((method, path), ("POST", "/api/conversations/cid/events"))
+        req = SendMessageRequest.model_validate(body)
+        self.assertTrue(req.run)
+        self.assertEqual(req.content[0].text, "go on")
+
+
 if __name__ == "__main__":
     unittest.main()

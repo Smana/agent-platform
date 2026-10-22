@@ -67,6 +67,15 @@ RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries"
 # suspendable run's PVC.
 LOOP_STATE = "/workspace/.agent-loop.json"
 
+# The checks' wait and the judge's call stay inside the factory's 10-minute no-activity window
+# (StuckAfter), counted from the finish the bridge mirrors.
+CHECKS_WAIT_S, CHECKS_APPEAR_S, CHECKS_POLL_S = 300, 60, 30
+JUDGE_TIMEOUT_S = 120
+JUDGE_MAX_TOKENS = 2048
+# The cheapest effort that classifies, sent as the agent's own calls send theirs: unsent, GLM thinks
+# at maximum. No temperature: with thinking on, Anthropic accepts none but 1.
+JUDGE_EFFORT = "low"
+
 
 @functools.cache
 def _read_secret(path: str) -> str:
@@ -683,6 +692,80 @@ def stall_watch(env: dict, steps, policy, state, path: str = LOOP_STATE):
         state.committed = True
         state.save(path)
     return tick
+
+
+def check_runs(env: dict, sha: str) -> list[dict] | None:
+    """The head's check runs, read with the run's own gh (its token has checks: read); None when
+    GitHub knows no such head or does not answer."""
+    try:
+        p = subprocess.run(["gh", "api", "repos/%s/commits/%s/check-runs?per_page=100" % (env["REPOSITORY"], sha)],
+                           capture_output=True, text=True, errors="replace", timeout=30)
+        runs = json.loads(p.stdout).get("check_runs") if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return None
+    if not isinstance(runs, list):
+        return None
+    return [{"name": str(r.get("name") or ""), "status": str(r.get("status") or ""),
+             "conclusion": str(r.get("conclusion") or ""), "title": str((r.get("output") or {}).get("title") or "")}
+            for r in runs if isinstance(r, dict)]
+
+
+def wait_checks(env: dict, sha: str, clock=time.monotonic, sleep=time.sleep) -> list[dict] | None:
+    """check_runs once all have completed, or as they stand after CHECKS_WAIT_S (CHECKS_APPEAR_S while
+    none has appeared). The judge reads a pending check as evidence of nothing."""
+    started = clock()
+    while True:
+        runs = check_runs(env, sha)
+        if runs is None or (runs and all(r["status"] == "completed" for r in runs)):
+            return runs
+        if clock() - started >= (CHECKS_WAIT_S if runs else CHECKS_APPEAR_S):
+            return runs
+        sleep(CHECKS_POLL_S)
+
+
+def evidence(env: dict, task: str) -> tuple[str, set[str]]:
+    """The judge's user message and the ids it may cite: the acceptance checks, the diff against the
+    base and the head's check runs. Redacted: the diff is the agent's."""
+    sha = head()
+    merge_base = (_git("merge-base", base_ref(env), "HEAD") or "").strip() or base_ref(env)
+    files = [f for f in (_git("diff", "--name-only", merge_base, "HEAD") or "").split("\n") if f]
+    diff = _git("diff", "--no-color", "--no-ext-diff", "--no-textconv", merge_base, "HEAD") or ""
+    return loop_policy.judge_input(loop_policy.acceptance(task), sha, files, redact(diff), wait_checks(env, sha))
+
+
+JUDGE_PATH = re.compile(r"/v1/?$")
+
+
+def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
+    """The judge's answer and the model that gave it, in a fresh context with no tools (loops L2), or
+    None when no answer came. It goes to the identity proxy's /judge/v1 beside LLM_BASE_URL's /v1, on
+    the run's token, so the gateway meters it against the run's cap. The proxy pins the alias from its
+    own JUDGE_MODEL (profiles P4), so model is a hint; before P4, or with JUDGE_MODEL none, the path
+    answers 404 or 403, and the run ends as it would with no judge."""
+    base = env.get("LLM_BASE_URL") or ""
+    if not JUDGE_PATH.search(base):
+        print("agent-run judge unavailable: LLM_BASE_URL has no /v1 to put the judge's path beside", file=sys.stderr, flush=True)
+        return None
+    url = JUDGE_PATH.sub("/judge/v1", base) + "/chat/completions"
+    body = {"model": model, "max_tokens": JUDGE_MAX_TOKENS, "reasoning_effort": JUDGE_EFFORT,
+            "messages": [{"role": "system", "content": loop_policy.JUDGE_SYSTEM}, {"role": "user", "content": message}]}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + _api_key(env)})
+    try:
+        with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT_S) as resp:
+            reply = json.loads(resp.read(1 << 20))
+        content = reply["choices"][0]["message"]["content"]
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return None
+    if isinstance(content, list):
+        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return str(content or ""), str(reply.get("model") or "")
+
+
+def continue_conversation(cid: str, text: str) -> None:
+    """One message into the same conversation, which runs again: its cache reads carry over (L2)."""
+    http("POST", "/api/conversations/%s/events" % cid, {"role": "user", "content": [{"type": "text", "text": text}], "run": True})
 
 
 def report(name: str, status: str, started: float, box: float) -> None:
