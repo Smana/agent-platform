@@ -41,6 +41,41 @@ jobs:
           target: test
           push: false
 
+  # v3 feature 3, offline proof 4: the harness image under gVisor, behind a proxy allowing exactly a
+  # check-enabled run's hosts, runs both repositories' declared checks on their main. Not required:
+  # it reads two other repositories and the network. A repository that declares nothing yet skips.
+  harness-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Install gVisor (release-20261005.0)
+        run: |
+          set -eux
+          curl -fsSLo /tmp/gvisor.tar.zstd https://storage.googleapis.com/gvisor/releases/release/20261005.0/x86_64/gvisor.tar.zstd
+          echo "27fed731b432d6a39d908956623fd273979fda66b3ccf4b9c12413ea417c516e18a9dc3cced403fb28efe495d64dce4251f51cf8c4d9f4a72f9833bd96b6bb35  /tmp/gvisor.tar.zstd" | sha512sum -c -
+          mkdir /tmp/gvisor && tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp/gvisor
+          sudo install -m 0755 "$(find /tmp/gvisor -name runsc -type f | head -1)" /usr/local/bin/runsc
+          sudo runsc install
+          sudo systemctl restart docker
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: images/agent-harness
+          load: true
+          push: false
+          tags: agent-harness:checks
+      - name: The run's token, a file as the run-controller mounts it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: install -m 0644 /dev/null "$RUNNER_TEMP/token" && printf '%s' "$GH_TOKEN" > "$RUNNER_TEMP/token"
+      - run: images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/ai-native-ref golang,pypi "$RUNNER_TEMP/token"
+      - run: images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/cloud-native-ref pypi "$RUNNER_TEMP/token"
+
   # One throwaway image per PR push, tagged v<next-patch>-pr<N>.<sha8>: it sorts after
   # the last release and before the next, and each push is its own immutable tag.
   # Never `latest`, never the release tag (the same channel as crossplane-configuration).

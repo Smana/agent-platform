@@ -94,6 +94,13 @@ tasks:
     cmds:
       - docker build --target test images/agent-harness
 
+  harness:checks:
+    desc: "v3 feature 3, offline proof 4: the harness under runsc runs both repositories' checks behind an allowlist proxy (docker with runsc; TOKEN_FILE=<a GitHub token file>)"
+    cmds:
+      - docker build -t agent-harness:checks images/agent-harness
+      - images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/ai-native-ref golang,pypi {{.TOKEN_FILE}}
+      - images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/cloud-native-ref pypi {{.TOKEN_FILE}}
+
   # web/ builds on the nodejs mise.toml pins, from package-lock.json only (npm ci).
   ui:build:
     dir: web
