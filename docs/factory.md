@@ -336,11 +336,22 @@ million on a tier capped in tokens, and a `POST /v1/runs` its `maxTokens` at $1.
 
 Each tick the meter charges a run's priced increase, or its token increase at $1.70 per million
 when the run cannot be priced (never $0), to every key the run is charged to and to its
-`settled.<runId>`. A meter that first sees a run, a new leader included, starts it at what the
-ledgers settled for it, so a failover charges a run neither twice nor less. The meter deletes the
-ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>` they replaced the
-same way. The day of the switch to USD starts at $0: runs that ended before it are not charged
-again, and runs in flight are charged their whole cost.
+`settled.<runId>`, in one write. A meter that first sees a run, a new leader included, reads what
+the ledgers settled for it and starts it there, and after a write that reported an error it reads
+them again, since the write may have landed. A run is charged once across a failover, a ledger that
+cannot be read, a failed write and midnight, with two bounded exceptions:
+
+- A gateway counter reset before a new leader's first reading, once the counters have passed what
+  was settled, loses what the run spent before the reset: an under-count.
+- A run whose served model loses its price after such a reset and failover is charged its tokens
+  at $1.70 per million on top of what was settled: an over-count.
+
+The meter deletes the ledgers after 35 days, and the token ledgers `agent-factory-ledger-<YYYYMMDD>`
+they replaced the same way. A run that ended with its usage annotated is charged nothing more when
+nothing is settled for it, or when it began before the oldest retained ledger: what it spent was
+charged in the token ledgers, or partly in a day since deleted. So the day of the switch to USD
+starts at $0: runs that ended before it are not charged again, and runs in flight are charged their
+whole cost.
 
 ### Per-person caps
 

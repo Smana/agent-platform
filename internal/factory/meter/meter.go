@@ -373,9 +373,10 @@ func (m *Meter) spend(id string, raw map[string]int64) int64 {
 }
 
 // learn reads what the day ledgers settled for each listed run this meter holds no account of:
-// a new run, or every run after a failover. One list of the ledgers per tick that meets one;
-// without a Ledger nothing was settled anywhere else. An unread ledger leaves those runs
-// unaccounted, so none of them is charged until a later tick reads it.
+// a new run, every run after a failover, or a run whose last charge failed to write and may have
+// landed all the same. One list of the ledgers per tick that meets one; without a Ledger nothing
+// was settled anywhere else. An unread ledger leaves those runs unaccounted, so none of them is
+// charged until a later tick reads it.
 func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	var need []string
 	for _, r := range all {
@@ -407,15 +408,17 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 // measure takes a seen run's cost this tick, v, priced or at the reference rate, and returns its
 // total as the day ledgers count it. The first measure once the run's account is read fixes base,
 // which lifts v to what earlier meters settled: the larger of the two, as total starts tokens at
-// the annotation (TC6). A run first seen ended, annotated and with nothing settled was charged by
-// the token ledgers before the switch to USD, or in a day since pruned: it is charged nothing more
-// (TC9). A priced v is also the run's USD total, for its cap and its cost.
+// the annotation (TC6). A run first seen ended and annotated is charged nothing more when nothing
+// is settled for it, since the token ledgers charged it before the switch to USD, or when it began
+// before the oldest retained ledger, since a pruned day holds some of its charge (TC9). A priced v
+// is also the run's USD total, for its cap and its cost.
 func (m *Meter) measure(r runs.Run, v int64, priced bool) int64 {
 	a := m.accounts[r.ID]
 	if a.known && !a.measured {
 		a.base, a.measured = max(0, a.settled-v), true
-		if a.settled == 0 && r.Tokens > 0 && runs.Terminal(r.Phase) {
-			a.settled = v
+		if runs.Terminal(r.Phase) && r.Tokens > 0 &&
+			(a.settled == 0 || r.Created.UTC().Format(api.LedgerDayLayout) < m.retainedFrom()) {
+			a.settled = max(a.settled, v)
 		}
 	}
 	a.total = a.base + v
@@ -606,7 +609,16 @@ func (m *Meter) Tick(ctx context.Context) error {
 	var spent map[string]int64
 	settleErr := learnErr
 	if settleErr == nil {
-		spent, settleErr = m.settle(ctx, day, delta, inc) // budget-principal reads the ledger, not the live runs (R07)
+		// budget-principal reads the ledger, not the live runs (R07)
+		if spent, settleErr = m.settle(ctx, day, delta, inc); settleErr != nil {
+			// A write that reports an error may have landed (a timeout after the commit): the next
+			// tick reads again what the ledgers settled for the runs it charged, keeping their base.
+			for id := range inc {
+				a := m.accounts[id]
+				a.known = false
+				m.accounts[id] = a
+			}
+		}
 	}
 	var errs []error
 	if settleErr != nil {
@@ -1061,6 +1073,11 @@ func sameDay(a, b time.Time) bool {
 	return a.UTC().Format(api.LedgerDayLayout) == b.UTC().Format(api.LedgerDayLayout)
 }
 
+// retainedFrom is the oldest UTC day whose ledger prune keeps: every older one is deleted.
+func (m *Meter) retainedFrom() string {
+	return m.now().UTC().Add(-ledgerRetention).Format(api.LedgerDayLayout)
+}
+
 // prune deletes the day ledgers older than ledgerRetention, the USD ones and the token ones they
 // replaced (#155). Once per UTC day: a missed day of deletions is made up the next one, and the
 // names are dated.
@@ -1072,7 +1089,7 @@ func (m *Meter) prune(ctx context.Context, day string) error {
 	if err := m.Ledger.List(ctx, &cms, client.InNamespace(m.Namespace)); err != nil {
 		return fmt.Errorf("meter: list ledgers: %w", err)
 	}
-	cutoff := m.now().UTC().Add(-ledgerRetention).Format(api.LedgerDayLayout)
+	cutoff := m.retainedFrom()
 	var errs []error
 	for i := range cms.Items {
 		cm := &cms.Items[i]
