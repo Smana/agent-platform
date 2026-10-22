@@ -9,6 +9,7 @@ here is a control (design section 4): every rule it passes to the agent is
 enforced outside the sandbox.
 """
 import functools
+from http.client import HTTPException
 import json
 import os
 import re
@@ -20,8 +21,11 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
+
+import loop_policy
 
 AGENT_SERVER = "http://127.0.0.1:8000"
 # Loopback only (plan P13): the API is unauthenticated, and agent-server
@@ -60,6 +64,21 @@ REDACTED_KEY = "[REDACTED:model-key]"
 # One line per model-call retry, written by agent-server (site/sitecustomize.py, #99). /tmp is the
 # pod's emptyDir; the agent can write there too, so the count is a signal, never a control.
 RETRY_LOG = os.environ.get("AGENT_RUN_RETRY_LOG", "/tmp/agent-run-model-retries")
+
+# The loop policy (loops design L2, L3; loop_policy.py). Its state sits beside KEY_FILE, on a
+# suspendable run's PVC.
+LOOP_STATE = "/workspace/.agent-loop.json"
+
+# The checks' wait and the judge's call stay inside the factory's 10-minute no-activity window
+# (StuckAfter), counted from the finish the bridge mirrors.
+CHECKS_WAIT_S, CHECKS_APPEAR_S, CHECKS_POLL_S = 300, 60, 30
+JUDGE_TIMEOUT_S = 120
+JUDGE_MAX_TOKENS = 2048
+# The cheapest effort that classifies, sent as the agent's own calls send theirs: unsent, GLM thinks
+# at maximum. No temperature: with thinking on, Anthropic accepts none but 1.
+JUDGE_EFFORT = "low"
+# A stalled run's agent is stopped with /interrupt, which cancels its in-flight model call.
+INTERRUPT_TIMEOUT_S = 10
 
 
 @functools.cache
@@ -456,6 +475,24 @@ class ProgressNotes:
             self.failures += 1
             print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
 
+    def final(self, text: str, sleep=time.sleep) -> None:
+        """The run's last note, the loop's end and its reason: sent even past MAX_NOTES, after waiting
+        out the broker's minute, which the agent's own notes share, at most twice. Best effort."""
+        text = _short("Harness (%s): %s" % (self.role, text), 280)
+        for _ in range(2):
+            if self.failures >= NOTE_FAILURES:
+                return
+            if self.last is not None:
+                sleep(max(0.0, MIN_NOTE_GAP_S - (self.clock() - self.last)))
+            try:
+                if self.send(text):
+                    self.sent += 1
+                    return
+                self.last = self.clock()
+            except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+                self.failures += 1
+                print("agent-run: progress note not posted: %s" % exc, file=sys.stderr, flush=True)
+
     def close(self) -> None:
         """Ends the MCP session when the server keeps one. The route may not support it."""
         if not self.session:
@@ -626,6 +663,219 @@ def clone(env: dict) -> bool:
     return resumed
 
 
+class Stalled(Exception):
+    """No commit by the policy's stallSteps steps (loops L3)."""
+
+
+def _git(*args) -> str | None:
+    """git's stdout in the clone, or None when it fails: the loop never acts on a guess."""
+    try:
+        p = subprocess.run(["git", "-C", REPO_DIR, *args], capture_output=True, text=True, errors="replace", timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def head() -> str:
+    return (_git("rev-parse", "HEAD") or "").strip()
+
+
+def _has(ref: str) -> bool:
+    return _git("rev-parse", "--verify", "--quiet", ref) is not None
+
+
+def base_ref(env: dict) -> str:
+    """The base as clone() resolved it: the remote branch, or BASE_REF itself when it is a commit."""
+    ref = "origin/" + env["BASE_REF"]
+    return ref if _has(ref) else env["BASE_REF"]
+
+
+def commits_since(env: dict, mark: str) -> int | None:
+    """The agent's commits since mark: non-merge commits on HEAD or the run's branch that neither mark
+    nor the base branch holds, so a fetch or a rebase onto the base counts nothing. None when git
+    cannot tell."""
+    branch = "refs/heads/" + env["BRANCH"]
+    tips = ["HEAD"] + ([branch] if _has(branch) else [])
+    out = _git("rev-list", "--count", "--no-merges", *tips, "^" + mark, "^" + base_ref(env))
+    return int(out) if out and out.strip().isdigit() else None
+
+
+def save_state(state, path: str) -> None:
+    """The loop state is kept for a resumed pod; a read-only or full /workspace keeps it in memory only."""
+    try:
+        state.save(path)
+    except OSError as exc:
+        print("agent-run: loop state not saved: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+
+
+def stall_watch(env: dict, steps, policy, state, path: str = LOOP_STATE):
+    """poll's on_tick under the loop policy: the step log, then the stall rule until the first commit."""
+    def tick():
+        steps()
+        if state.committed or steps.steps < policy.stall_steps:
+            return
+        n = commits_since(env, state.start)
+        if n is None:
+            return  # never a stall on a guess
+        if n == 0:
+            raise Stalled()
+        state.committed = True
+        save_state(state, path)
+    return tick
+
+
+def check_runs(env: dict, sha: str) -> list[dict] | None:
+    """The head's check runs, read with the run's own gh (its token has checks: read); None when
+    GitHub knows no such head or does not answer."""
+    try:
+        p = subprocess.run(["gh", "api", "repos/%s/commits/%s/check-runs?per_page=100" % (env["REPOSITORY"], sha)],
+                           capture_output=True, text=True, errors="replace", timeout=30)
+        runs = json.loads(p.stdout).get("check_runs") if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return None
+    if not isinstance(runs, list):
+        return None
+    return [{"name": str(r.get("name") or ""), "status": str(r.get("status") or ""),
+             "conclusion": str(r.get("conclusion") or ""), "title": str((r.get("output") or {}).get("title") or "")}
+            for r in runs if isinstance(r, dict)]
+
+
+def wait_checks(env: dict, sha: str, clock=time.monotonic, sleep=time.sleep) -> list[dict] | None:
+    """check_runs once all have completed, or as they stand after CHECKS_WAIT_S (CHECKS_APPEAR_S while
+    none has appeared). The judge reads a pending check as evidence of nothing."""
+    started = clock()
+    while True:
+        runs = check_runs(env, sha)
+        if runs is None or (runs and all(r["status"] == "completed" for r in runs)):
+            return runs
+        if clock() - started >= (CHECKS_WAIT_S if runs else CHECKS_APPEAR_S):
+            return runs
+        sleep(CHECKS_POLL_S)
+
+
+def evidence(env: dict, task: str) -> tuple[str, set[str]]:
+    """The judge's user message and the ids it may cite: the acceptance checks, the diff against the
+    base and the head's check runs. Redacted: the diff is the agent's."""
+    sha = head()
+    merge_base = (_git("merge-base", base_ref(env), "HEAD") or "").strip() or base_ref(env)
+    files = [f for f in (_git("diff", "--name-only", merge_base, "HEAD") or "").split("\n") if f]
+    diff = _git("diff", "--no-color", "--no-ext-diff", "--no-textconv", merge_base, "HEAD")
+    text, offered = loop_policy.judge_input(loop_policy.acceptance(task), sha, files,
+                                            "(diff unavailable)" if diff is None else diff, wait_checks(env, sha))
+    return redact(text), offered  # every part is the agent's: file names, check titles, the diff
+
+
+JUDGE_PATH = re.compile(r"/v1/?$")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a redirect is no answer: the token is never re-sent elsewhere
+
+
+NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
+
+
+def ask_judge(env: dict, model: str, message: str) -> tuple[str, str] | None:
+    """The judge's answer and the model that gave it, in a fresh context with no tools (loops L2), or
+    None when no answer came. It goes to the identity proxy's /judge/v1 beside LLM_BASE_URL's /v1, on
+    the run's token, so the gateway meters it against the run's cap. The proxy pins the alias from its
+    own JUDGE_MODEL (profiles P4), so model is a hint; before P4, or with JUDGE_MODEL none, the path
+    answers 404 or 403, and the run ends as it would with no judge."""
+    try:
+        parts = urllib.parse.urlsplit(env.get("LLM_BASE_URL") or "")
+    except ValueError as exc:  # a malformed base is no answer
+        print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return None
+    if not JUDGE_PATH.search(parts.path):
+        print("agent-run judge unavailable: LLM_BASE_URL has no /v1 to put the judge's path beside", file=sys.stderr, flush=True)
+        return None
+    # Only the path changes: the scheme and host stay the proxy's.
+    url = urllib.parse.urlunsplit(parts._replace(path=JUDGE_PATH.sub("/judge/v1", parts.path) + "/chat/completions",
+                                                 query="", fragment=""))
+    body = {"model": model, "max_tokens": JUDGE_MAX_TOKENS, "reasoning_effort": JUDGE_EFFORT,
+            "messages": [{"role": "system", "content": loop_policy.JUDGE_SYSTEM}, {"role": "user", "content": message}]}
+    try:
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + _api_key(env)})
+        with NO_REDIRECT.open(req, timeout=JUDGE_TIMEOUT_S) as resp:
+            reply = json.loads(resp.read(1 << 20))
+        content = reply["choices"][0]["message"]["content"]
+    except (OSError, HTTPException, ValueError, KeyError, IndexError, TypeError) as exc:
+        print("agent-run judge unavailable: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return None
+    if isinstance(content, list):
+        content = " ".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return str(content or ""), str(reply.get("model") or "")
+
+
+def continue_conversation(cid: str, text: str) -> None:
+    """One message into the same conversation, which runs again: its cache reads carry over (L2)."""
+    http("POST", "/api/conversations/%s/events" % cid, {"role": "user", "content": [{"type": "text", "text": text}], "run": True})
+
+
+def loop_for(env: dict):
+    """The run's loop policy, or None for today's run: AGENT_LOOP unset, a role other than the
+    implementer's, or a malformed value; the last two say so on stderr."""
+    raw = env.get("AGENT_LOOP")
+    if raw is None:
+        return None
+    if env.get("ROLE") != "implementer":
+        print("agent-run: loop policy off: the %s role has none" % (env.get("ROLE") or "agent"), file=sys.stderr, flush=True)
+        return None
+    try:
+        return loop_policy.parse(raw)
+    except ValueError as exc:
+        print("agent-run: loop policy off: AGENT_LOOP %s" % exc, file=sys.stderr, flush=True)
+        return None
+
+
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE) -> tuple[int, str | None, str]:
+    """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
+    stuck conversation does, so a bridge that drops the reason still has the task escalated."""
+    tick = stall_watch(env, steps, policy, state, path)
+    rounds, fence = 0, "JUDGE-" + secrets.token_hex(4)  # one per run: the judge's reason stays data
+    while True:
+        try:
+            code = poll(cid, on_tick=tick)
+        except Stalled:
+            try:
+                http("POST", "/api/conversations/%s/interrupt" % cid, timeout=INTERRUPT_TIMEOUT_S)
+            except (OSError, ValueError, HTTPException) as exc:  # the run ends stalled whether or not the agent heard
+                print("agent-run: interrupt failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            return 1, "stalled", "no commit after %d steps" % policy.stall_steps
+        if code or policy.judge_model is None:
+            return code, None, ""
+        sent = None  # the continuation, once the judge asked for one
+        try:
+            n = commits_since(env, state.mark) if state.sent else None
+            new_commit = n is None or n > 0
+            message, offered = evidence(env, task)
+            answer = ask_judge(env, policy.judge_model, message)
+            if answer is None:
+                return 0, None, ""  # no answer: the run ends as it would with no policy
+            rounds += 1
+            v = loop_policy.verdict(answer[0], offered)
+            print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
+                                                                   _short(v.reason, 300)), flush=True)
+            d = loop_policy.decide(policy, state, v, new_commit)
+            if isinstance(d, loop_policy.End):
+                save_state(state, path)
+                return (0 if d.reason is None else 1), d.reason, d.note
+            state.mark = head()
+            save_state(state, path)
+            sent = d.reason
+            continue_conversation(cid, loop_policy.continuation(_short(d.reason, loop_policy.REASON_MAX), state.sent,
+                                                                policy.continuations, fence))
+        except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
+            print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+            if sent is None:
+                return 0, None, ""  # today's end
+            # The judge said not_yet but the message did not go (SDK 1.56 answers 429 when its run
+            # capacity is full: saved, no run started). Ending as met would hand off silently.
+            return 1, "not_met", sent
+
+
 def report(name: str, status: str, started: float, box: float) -> None:
     """One line per shutdown step: the 15 s budget is measured from these under gVisor."""
     print("agent-run shutdown %s %s in %.2fs (box %ss)" % (name, status, time.monotonic() - started, box),
@@ -712,17 +962,19 @@ def checkpoint(env: dict, deadline: float) -> str:
     return refused + ("pushed a checkpoint commit" if committed else "pushed")
 
 
-def final_read(env: dict, steps=None) -> str:
+def final_read(env: dict, steps=None, end: str | None = None) -> str:
     """The room's last read of the harness log (F11, the harness half): the bridge reads the log to
     its end and mirrors it before it answers, while agent-server is still up. On SIGTERM the step
-    log flushes beside it: both read agent-server."""
+    log flushes beside it: both read agent-server. end is the loop policy's end reason, sent as
+    {"endReason": end} for the bridge to record; a bridge that does not read it ignores the body."""
     flush = threading.Thread(target=steps, daemon=True) if steps else None
     if flush:
         flush.start()
     answer = ""
     url = env.get("BRIDGE_URL")
     if url:
-        req = urllib.request.Request(url.rstrip("/") + "/final-read", data=b"", method="POST")
+        body, headers = (json.dumps({"endReason": end}).encode(), {"Content-Type": "application/json"}) if end else (b"", {})
+        req = urllib.request.Request(url.rstrip("/") + "/final-read", data=body, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=FINAL_READ_S) as resp:
             answer = resp.read(512).decode(errors="replace").strip()
     if flush:
@@ -832,7 +1084,7 @@ def main() -> int:
     span, provider, trace_env = start_run_span(env)
     trace_id = format(span.get_span_context().trace_id, "032x") if span else ""
     server = subprocess.Popen(SERVER_CMD, cwd="/", env=server_env({**env, **trace_env}))
-    cid, steps, code, signalled, read = None, None, None, False, False
+    cid, steps, code, end, signalled, read = None, None, None, None, False, False
     try:
         wait_ready()
         # A resumed suspendable run finds its clone and its conversation on its PVC. The same start
@@ -841,18 +1093,32 @@ def main() -> int:
         # run would execute it unconfirmed. The bridge answers it from the room's decision.
         resumed = persisted(env) or clone(env)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
-            request = build_request(env, t.read(), r.read(), span)
+            task = t.read()
+            request = build_request(env, task, r.read(), span)
+        policy = loop_for(env)
+        # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
+        # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
+        state = loop_policy.State.load(LOOP_STATE, head(), resumed=resumed) if policy else None
+        if state:
+            save_state(state, LOOP_STATE)
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes)
-        code = poll(cid, on_tick=steps)
+        if policy:
+            code, end, note = drive(env, cid, steps, policy, state, task)
+        else:
+            code = poll(cid, on_tick=steps)
         steps()
         steps.summary()
+        if policy:
+            print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
         if notes:
+            if end:
+                notes.final("the run ended %s: %s" % (end, note))
             notes.close()
         if env.get("BRIDGE_URL"):
-            read = timed("final-read", FINAL_READ_S, lambda: final_read(env))
+            read = timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         # Never on SIGTERM: the close can outlast the grace period and the revoke must not wait.
         if span:
             close_conversation(cid)
@@ -873,7 +1139,7 @@ def main() -> int:
             # Exit 0 latches the run Succeeded at once, and the broker takes the bridge's writes only
             # while the run is live: the bridge's own flush may come too late, so this read is the
             # room's last. Nothing is paused or checkpointed on this path, which leaves it time.
-            timed("final-read", FINAL_READ_S, lambda: final_read(env))
+            timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         if signalled:
             started = time.monotonic()
             report("stop", "done: " + stop(server, STOP_S), started, STOP_S)
@@ -886,9 +1152,9 @@ def main() -> int:
         if span:
             # Boxed on the signal path: a collector that never answers holds an export for up to two
             # 5 s connects, and the pod's grace has no room left for it after the revoke.
-            end = threading.Thread(target=lambda: (span.end(), provider.shutdown()), daemon=True)
-            end.start()
-            end.join(EXPORT_S if signalled else None)
+            export = threading.Thread(target=lambda: (span.end(), provider.shutdown()), daemon=True)
+            export.start()
+            export.join(EXPORT_S if signalled else None)
 
 if __name__ == "__main__":
     sys.exit(main())
