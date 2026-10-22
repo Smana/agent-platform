@@ -32,7 +32,8 @@ func taskStates() map[string]string {
 // is the Room's projected phase (Open, Active, Idle, AwaitingHuman or Closed); nextRun is whether a
 // live run in it has not started running yet. A known task phase decides, except in a closed room,
 // which stops a task it left unfinished; otherwise the room's phase decides. An idle room waits for
-// its owner unless a run is on its way. "" when neither phase is known.
+// its owner unless a run is on its way. A room with no phase yet and no task has not started: queued.
+// "" when the room phase is one this broker does not know (omitted, never a guess).
 func Coarse(task, room string, nextRun bool) string {
 	if s, ok := taskStates()[task]; ok {
 		if room == "Closed" && s != StateDone && s != StateFailed && s != StateStopped {
@@ -41,7 +42,7 @@ func Coarse(task, room string, nextRun bool) string {
 		return s
 	}
 	switch room {
-	case "Open":
+	case "Open", "":
 		return StateQueued
 	case "Active":
 		return StateRunning

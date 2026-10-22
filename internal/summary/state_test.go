@@ -39,7 +39,8 @@ func TestCoarse(t *testing.T) {
 		{"", "AwaitingHuman", false, StateWaiting},
 		{"", "Closed", false, StateStopped},
 		{"Pondering", "Active", false, StateRunning},
-		{"", "", false, ""},
+		{"", "", false, StateQueued},
+		{"", "Pondering", false, ""},
 	} {
 		if got := Coarse(c.task, c.room, c.nextRun); got != c.want {
 			t.Errorf("Coarse(%q, %q, %v) = %q, want %q", c.task, c.room, c.nextRun, got, c.want)
