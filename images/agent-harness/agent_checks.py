@@ -48,8 +48,14 @@ STEP_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 SCRUBBED = {"CI", "GITHUB_ACTIONS", "GH_TOKEN", "GITHUB_TOKEN", "GIT_TOKEN_FILE", "GIT_TOKEN_CACHE",
             "LLM_API_KEY_FILE", "LLM_API_KEY", "OH_SECRET_KEY", "SESSION_API_KEY", "STS_URL"}
 SCRUBBED_PREFIXES = ("OH_SESSION_API_KEYS_", "MISE_")
+# A step's output: the log's byte cap, then one marker line; each kept tail line's length.
+LOG_CAP, LINE_CAP = 50 * 1024 * 1024, 4096
 RESULTS = ("pass", "fail", "timeout", "skip")
 LEDGER = "runs.jsonl"
+
+
+class ToolchainError(Exception):
+    """mise answered with something agent-checks cannot use: exit 1."""
 
 
 class Undeclared(Exception):
@@ -71,7 +77,7 @@ def validate(doc) -> dict:
     need(not extra, "unknown keys %s" % sorted(extra))
     need(doc.get("version") == 1, "version must be 1")
     minutes = doc.get("timeoutMinutes", DEFAULT_MINUTES)
-    need(isinstance(minutes, int) and 1 <= minutes <= MAX_MINUTES, "timeoutMinutes must be 1 to %d" % MAX_MINUTES)
+    need(isinstance(minutes, int) and not isinstance(minutes, bool) and 1 <= minutes <= MAX_MINUTES, "timeoutMinutes must be 1 to %d" % MAX_MINUTES)
     for key in ("tools", "definedBy"):
         value = doc.get(key, [])
         need(isinstance(value, list) and all(isinstance(t, str) and t for t in value), "%s must be a list of strings" % key)
@@ -87,7 +93,7 @@ def validate(doc) -> dict:
         need(isinstance(s.get("run"), str) and s["run"].strip(), "step %s has no run" % s["name"])
         need(isinstance(s.get("ci"), str) and s["ci"], "step %s names no ci check" % s["name"])
         t = s.get("timeoutMinutes", minutes)
-        need(isinstance(t, int) and 1 <= t <= minutes, "step %s: timeoutMinutes must be 1 to %d" % (s["name"], minutes))
+        need(isinstance(t, int) and not isinstance(t, bool) and 1 <= t <= minutes, "step %s: timeoutMinutes must be 1 to %d" % (s["name"], minutes))
         need(isinstance(s.get("stopOnFailure", False), bool), "step %s: stopOnFailure is a boolean" % s["name"])
     ci_only = doc.get("ciOnly", [])
     need(isinstance(ci_only, list) and all(isinstance(c, dict) and set(c) == {"check", "part", "why"} for c in ci_only),
@@ -105,8 +111,9 @@ def declaration() -> tuple[str, str, dict]:
     if not blob:
         raise Undeclared("the default branch declares no checks (%s)" % DECLARATION)
     try:
-        doc = yaml.safe_load(git("cat-file", "blob", blob).stdout)
-    except yaml.YAMLError as exc:
+        raw = subprocess.run(["git", "-C", REPO, "cat-file", "blob", blob], capture_output=True).stdout
+        doc = yaml.safe_load(raw.decode("utf-8"))
+    except (yaml.YAMLError, UnicodeDecodeError) as exc:
         raise Undeclared("%s: %s" % (DECLARATION, exc)) from exc
     return base, blob, validate(doc)
 
@@ -207,7 +214,8 @@ def install(tools: dict[str, str | None], say) -> list[str]:
 
 
 def step_env(tools: dict[str, str | None], missing: list[str]) -> dict:
-    """The agent's environment, scrubbed (RC5), with the installed tools first on PATH as `mise env`
+    """The agent's environment, scrubbed (RC5: the environment only; a step runs as the agent's own
+    user and no isolation is claimed), with the installed tools first on PATH as `mise env`
     gives them (PATH, GOROOT, GOBIN: what the CI's mise-action exports), and the caches under the
     toolchain: the 10 Gi workspace, kept by a suspendable run's PVC, not HOME's 2 Gi."""
     env = {k: v for k, v in os.environ.items() if k not in SCRUBBED and not k.startswith(SCRUBBED_PREFIXES)}
@@ -217,7 +225,12 @@ def step_env(tools: dict[str, str | None], missing: list[str]) -> dict:
         out = subprocess.run([MISE, "env", "--json", *specs], cwd=TOOLCHAIN, capture_output=True, text=True,
                              env={**mise_env(), "MISE_OFFLINE": "1", "PATH": env.get("PATH", "/usr/bin:/bin")})
         if out.returncode == 0:
-            env.update(json.loads(out.stdout))
+            try:
+                exported = json.loads(out.stdout)
+                assert isinstance(exported, dict)
+            except (ValueError, AssertionError) as exc:
+                raise ToolchainError("mise env printed no JSON object") from exc
+            env.update(exported)
     env["XDG_CACHE_HOME"] = os.path.join(TOOLCHAIN, "cache")
     env["GOPATH"] = os.path.join(TOOLCHAIN, "go")
     return env
@@ -235,9 +248,14 @@ def run_step(step: dict, env: dict, limit: float, log, say) -> dict:
                             text=True, errors="replace")
 
     def drain():
-        for line in proc.stdout:
-            log.write(line)
-            tail.append(line.rstrip("\n"))
+        written = 0
+        for line in iter(lambda: proc.stdout.readline(LINE_CAP), ""):  # a newline-less flood arrives in chunks
+            if written < LOG_CAP:
+                log.write(line)
+                written += len(line)
+                if written >= LOG_CAP:
+                    log.write("\n=== output truncated at %d bytes\n" % LOG_CAP)
+            tail.append(line.rstrip("\n")[-LINE_CAP:])
         log.flush()
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
@@ -373,7 +391,11 @@ def main(argv: list[str]) -> int:
             missing = install(pins(decl["tools"]), say)
             say("toolchain ready" if not missing else "toolchain incomplete: %s" % ", ".join(missing))
             return 1 if missing else 0
-        return checks(decl, base, blob, args.step, say)
+        try:
+            return checks(decl, base, blob, args.step, say)
+        except ToolchainError as exc:
+            say(str(exc))
+            return 1
 
 
 if __name__ == "__main__":

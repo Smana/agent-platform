@@ -167,6 +167,25 @@ class DeclarationTest(Rig):
                 with self.assertRaisesRegex(agent_checks.Undeclared, why):
                     agent_checks.validate(__import__("yaml").safe_load(bad))
 
+    def test_a_binary_declaration_exits_2(self):
+        self.write(self.repo, ".github/agent-checks.yaml", "")
+        with open(os.path.join(self.repo, ".github/agent-checks.yaml"), "wb") as f:
+            f.write(b"version: 1\n\xff\xfe\x80")
+        sh(self.repo, *self.git, "commit", "-qam", "binary")
+        sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", sh(self.repo, "git", "rev-parse", "HEAD"))
+        code, _ = self.run_checks()
+        self.assertEqual(code, 2)
+
+    def test_a_boolean_is_not_a_timeout(self):
+        with self.assertRaisesRegex(agent_checks.Undeclared, "timeoutMinutes"):
+            agent_checks.validate(__import__("yaml").safe_load(DECLARED.replace("timeoutMinutes: 2", "timeoutMinutes: true")))
+
+    def test_mise_env_printing_no_json_exits_1(self):
+        with mock.patch.object(agent_checks, "step_env", side_effect=agent_checks.ToolchainError("mise env printed no JSON object")):
+            code, lines = self.run_checks()
+        self.assertEqual(code, 1)
+        self.assertIn("mise env printed no JSON object", self.text(lines))
+
     def test_an_unknown_step_exits_2(self):
         code, lines = self.run_checks("--step", "third")
         self.assertEqual(code, 2)
@@ -233,6 +252,18 @@ class StepTest(Rig):
         time.sleep(0.2)
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
+
+    def test_a_runaway_writer_is_bounded_in_the_log_and_the_tail(self):
+        self.base_declares(DECLARED.replace('echo second', "head -c 3000000 /dev/zero | tr '\\\\0' x; echo; echo end; exit 1"))
+        with mock.patch.object(agent_checks, "LOG_CAP", 1000):
+            self.run_checks()
+        res = self.result()
+        with open(os.path.join(agent_checks.STATE, res["head"] + ".log")) as f:
+            log = f.read()
+        self.assertIn("output truncated at 1000 bytes", log)
+        self.assertLess(len(log), 5000)
+        with open(os.path.join(agent_checks.STATE, res["head"] + ".txt")) as f:
+            self.assertLess(len(f.read()), agent_checks.SUMMARY_CAP + 1)
 
     def test_stop_on_failure_skips_the_rest(self):
         self.base_declares(DECLARED.replace("task > first.out; go >> first.out", "exit 3"))
