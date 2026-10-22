@@ -248,8 +248,9 @@ type Meter struct {
 	// OnInputExcludesCache is told, once per run, of a model whose input read below its cache
 	// tokens: the gateway reported it without them, and it was priced as fresh input whole.
 	OnInputExcludesCache func(ctx context.Context, model string)
-	// Remaining reports each principal's day budget after this tick: the fmetrics gauge.
-	Remaining func(principal string, remaining, limit int64)
+	// Day reports each principal's day after a tick that settled, in micro-USD: what it spent,
+	// unclamped, and its cap. The fmetrics gauges.
+	Day func(principal string, spent, limit int64)
 	// OnUsageError is told of each failed usage read; OnSucceeded of each tick that metered,
 	// with its time; OnOvershoot of what a run spent past its cap when revoked (#54).
 	OnUsageError func(ctx context.Context)
@@ -277,6 +278,8 @@ type Meter struct {
 	dropped  map[string]bool             // ended runs whose reservation was dropped
 	orphans  map[string]time.Time        // unclaimed reservations, by when this meter first saw them
 	pruned   string                      // the last UTC day whose old ledgers were deleted
+	told     map[string]bool             // the principals Day was told of on toldDay
+	toldDay  string                      // the UTC day told counts
 	live     map[string]string           // priced runs seen live, by tier: their cost is still to report
 	ended    map[string]time.Time        // live-seen runs, by when this meter first saw them ended
 	settled  map[string]map[string]int64 // reported runs: the micro-USD by served model reported
@@ -659,10 +662,8 @@ func (m *Meter) Tick(ctx context.Context) error {
 			a.settled += n
 			m.accounts[id] = a
 		}
-		if m.Remaining != nil {
-			for p, n := range spent {
-				m.Remaining(p, max(0, m.dailyCap(p)-n), m.dailyCap(p))
-			}
+		if m.Day != nil {
+			m.tellDay(day, spent)
 		}
 	}
 	for _, r := range all {
@@ -1001,6 +1002,24 @@ func (m *Meter) liveSpend() map[string]map[string]float64 {
 }
 
 func (m *Meter) dailyCap(principal string) int64 { return m.Budgets.DailyMicroUSD(principal) }
+
+// tellDay hands Day every principal in day's ledger. At a day's first tick it first tells each
+// principal of the day before that is not in it yet a spend of 0: a gauge moves only when
+// recorded, and an 80% alert must not outlive midnight (TC8).
+func (m *Meter) tellDay(day string, spent map[string]int64) {
+	if m.toldDay != day {
+		for p := range m.told {
+			if _, ok := spent[p]; !ok {
+				m.Day(p, 0, m.dailyCap(p))
+			}
+		}
+		m.told, m.toldDay = map[string]bool{}, day
+	}
+	for p, n := range spent {
+		m.Day(p, n, m.dailyCap(p))
+		m.told[p] = true
+	}
+}
 
 func (m *Meter) now() time.Time {
 	if m.Now == nil {

@@ -123,8 +123,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.TimeToPR(ctx, 7*time.Minute, "issue", "standard", "solo")
 	s.PROutcome(ctx, "docs-links", "human_merged")
 	s.TaskTokens(ctx, 120_000, "standard", "solo", "review")
-	s.BudgetRemaining(ctx, "system:factory", 24_000_000)
-	s.BudgetCap(ctx, "system:factory", 25_000_000)
+	s.BudgetDay(ctx, "system:factory", 34_000_000, 42_500_000)
 	s.Intervention(ctx, "stop")
 	s.ClassMismatch(ctx, "docs-links", "review")
 	s.MergeDecision(ctx, "docs-links", "shadow", "shadow_would_arm")
@@ -154,8 +153,9 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_time_to_pr_seconds_bucket{repository="other",source="issue",template="solo",tier="standard",le="600"} 1`,
 		`agent_factory_pr_outcomes_total{class="docs-links",outcome="human_merged",repository="other"} 1`,
 		`agent_factory_task_tokens_bucket{predicted_class="review",repository="other",template="solo",tier="standard",le="200000"} 1`,
-		`agent_factory_budget_remaining_tokens{principal="system:factory"} 2.4e+07`,
-		`agent_factory_budget_cap_tokens{principal="system:factory"} 2.5e+07`,
+		`agent_factory_budget_cap_usd{principal="system:factory"} 42.5`,
+		`agent_factory_budget_remaining_usd{principal="system:factory"} 8.5`,
+		`agent_factory_budget_spent_usd{principal="system:factory"} 34`,
 		`agent_factory_human_interventions_total{kind="stop",repository="other"} 1`,
 		`agent_factory_label_events_truncated_total{label="factory/ready"} 1`,
 		`agent_factory_class_mismatch_total{matched="review",predicted="docs-links"} 1`,
@@ -185,9 +185,30 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 			t.Errorf("missing %s", want)
 		}
 	}
-	for _, unwanted := range []string{"rooms_build_info", "otel_scope", "target_info", "_total_total", "_seconds_seconds"} {
+	for _, unwanted := range []string{"rooms_build_info", "otel_scope", "target_info", "_total_total", "_seconds_seconds",
+		"agent_factory_budget_remaining_tokens", "agent_factory_budget_cap_tokens"} { // TC8: one unit per day
 		if strings.Contains(body, unwanted) {
 			t.Errorf("exposes %s", unwanted)
+		}
+	}
+	if t.Failed() {
+		t.Log(body)
+	}
+}
+
+// TC8: a principal's day in USD from the ledger's micro-USD: its cap, what is left of it, never
+// below 0, and its spend, unclamped, which shows by how much a day was overrun.
+func TestTheBudgetGaugesAreInUSD(t *testing.T) {
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return false })
+	s.BudgetDay(t.Context(), "github:alice", 9_350_000, 8_500_000)
+	body := scrape()
+	for _, want := range []string{
+		`agent_factory_budget_cap_usd{principal="github:alice"} 8.5`,
+		`agent_factory_budget_remaining_usd{principal="github:alice"} 0`,
+		`agent_factory_budget_spent_usd{principal="github:alice"} 9.35`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("missing %s", want)
 		}
 	}
 	if t.Failed() {

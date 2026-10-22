@@ -30,7 +30,7 @@ func TestAChargedRunSettlesToThePersonAndTheFleet(t *testing.T) {
 		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50,
 			PerPerson: config.PerPerson{Enabled: true, DailyUSD: 3.40}},
 		Ledger: c, Namespace: "agent-system",
-		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
+		Now: func() time.Time { return day }, Day: func(p string, n, c int64) { remaining[p] = max(0, c-n) }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}

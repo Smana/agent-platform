@@ -214,8 +214,9 @@ absent rather than 0.
 | `agent_factory_time_to_pr_seconds` | histogram | `source`, `tier`, `template`, `repository` | From intake to the pull request opening |
 | `agent_factory_pr_outcomes_total` | counter | `class`, `outcome`, `repository` | `auto_merged`, `human_merged`, `closed`, `reverted` |
 | `agent_factory_task_tokens` | histogram | `tier`, `template`, `predicted_class`, `repository` | Tokens per finished task |
-| `agent_factory_budget_remaining_tokens` | gauge | `principal` | Tokens the principal has left today |
-| `agent_factory_budget_cap_tokens` | gauge | `principal` | The principal's daily token cap |
+| `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
+| `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
+| `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first tick |
 | `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
 | `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
@@ -278,7 +279,7 @@ The budget model, prices and caps are in [the factory's budgets](factory.md#budg
 | `agent_factory_model_cost_usd_total{model}` | Spend by served model, added when each run's cost is reported, plus any spend a run's readings show after that while its claim exists: `increase(...[1d])` is a day's bill per model |
 | `agent_factory_run_revocations_total{reason="budget-principal-shadow", principal}` | A run admitted past a day's cap while `enforcePrincipal` is off; `principal` is the key over: `system:factory`, or a person with per-person caps on. Zero false refusals for a week is the bar for enforcing |
 | `agent_factory_run_revocations_total{reason="budget-person"}` | A task escalated at Queued because its person's day is spent |
-| `agent_factory_budget_remaining_tokens{principal="github:<login>"}` | A person's day left, once per-person caps are on |
+| `agent_factory_budget_spent_usd{principal="github:<login>"}` | A person's spend today, once per-person caps are on; `agent_factory_budget_cap_usd` is their day |
 
 A run's last calls reach the meter a scrape interval plus VictoriaMetrics' 30 s latency offset
 after they happen, so the first tick that sees a run ended can read it short. On

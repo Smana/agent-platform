@@ -387,7 +387,7 @@ func TestGateway429sAndThePrincipalsDay(t *testing.T) {
 		Throttle: throttled{"aaaaaaaa": true, "bbbbbbbb": true}, B1Ceiling: 5_000_000,
 		Budgets: config.Budgets{EnforcePrincipal: true, FactoryDailyUSD: 42.50, HumanDailyUSD: 8.50},
 		Ledger:  c, Namespace: "agent-system",
-		Now: func() time.Time { return day }, Remaining: func(p string, n, _ int64) { remaining[p] = n }}
+		Now: func() time.Time { return day }, Day: func(p string, n, c int64) { remaining[p] = max(0, c-n) }}
 	if err := m.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestARunIsRevokedEvenWhenTheLedgerFails(t *testing.T) {
 		var succeeded, remaining bool
 		m := &Meter{Runs: st, Source: source{"aaaaaaaa": 1500}, Ledger: c, Namespace: "agent-system", Now: now,
 			OnSucceeded: func(context.Context, time.Time) { succeeded = true },
-			Remaining:   func(string, int64, int64) { remaining = true }}
+			Day:         func(string, int64, int64) { remaining = true }}
 		if err := m.Tick(t.Context()); err == nil {
 			t.Fatal("the ledger failure is still reported")
 		}
