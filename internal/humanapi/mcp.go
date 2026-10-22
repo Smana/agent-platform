@@ -56,7 +56,22 @@ func (e toolError) Error() string { return string(e) }
 
 // mcpTools is the tool list, in tools/list order.
 func (s *Server) mcpTools() []mcpTool {
-	return []mcpTool{}
+	return []mcpTool{
+		{name: "rooms_list", call: s.roomsList,
+			description: "The factory rooms you can read, one row each: its state (queued, running, waiting_for_human, done, failed, stopped), " +
+				"phase, the task's issue, title, phase, reason and PR, what waits for you (needsYou) and its url. access says why the list may be short. " +
+				"Filters: repo (owner/name), mine (tasks of issues you filed or labelled, PRs you authored or review), needsMe.",
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"},"mine":{"type":"boolean"},"needsMe":{"type":"boolean"}}}`)},
+		{name: "room_summary", call: s.roomSummaryTool,
+			description: "Where a room stands, as summary/v1: status with its coarse state, what needs you (approvals link to the room page, never a command), " +
+				"what you may do, and the agents' notes after the cursor `after`, under untrusted: true.",
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"after":{"type":"string","pattern":"^(seq:)?[0-9]+$"}}}`)},
+		{name: "room_tail", call: s.roomTail,
+			description: "The room's events after a cursor, a page at a time (at most 100), under untrusted: true; without a cursor, the last 50. " +
+				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
+				"As a task, it waits for the next events (ttl: the wait, 10 s to 15 min, default 5 min).",
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"},"kinds":{"type":"array","maxItems":10,"items":{"enum":["message","turn","tool_call","tool_result","approval_requested","approval_decided","participant","driver","handoff","state_changed"]}}}}`)},
+	}
 }
 
 // mcp is POST /mcp: one JSON-RPC message. Refusals before the message is read are HTTP statuses,
