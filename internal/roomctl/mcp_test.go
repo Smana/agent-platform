@@ -26,9 +26,10 @@ type mcpBroker struct {
 	mu       sync.Mutex
 	methods  []string
 	headers  []http.Header
-	polls    int    // tasks/get answers "working" this many times first
-	status   int    // when set, every request is refused with it
-	draftErr string // when set, issue_draft refuses with it
+	polls    int           // tasks/get answers "working" this many times first
+	status   int           // when set, every request is refused with it
+	draftErr string        // when set, issue_draft refuses with it
+	noteWait time.Duration // a notification is recorded this long after it arrives
 }
 
 func newMCPBroker(t *testing.T) *mcpBroker {
@@ -37,6 +38,9 @@ func newMCPBroker(t *testing.T) *mcpBroker {
 	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var m message
 		_ = json.NewDecoder(r.Body).Decode(&m)
+		if len(m.ID) == 0 {
+			time.Sleep(b.noteWait)
+		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.methods, b.headers = append(b.methods, m.Method), append(b.headers, r.Header.Clone())
@@ -182,6 +186,19 @@ func TestRelayCarriesTheTokenAndTheVersion(t *testing.T) {
 	}
 	if res := s.request(t, 3, "resources/list", nil); fmt.Sprint(res["error"]) != "map[code:-32601 message:method not found]" {
 		t.Fatalf("the broker's own error, as is: %v", res)
+	}
+}
+
+// F2: a notification reaches the broker before any later request, however slow the broker is to take it.
+func TestRelayPostsNotificationsInOrder(t *testing.T) {
+	b := newMCPBroker(t)
+	b.noteWait = 50 * time.Millisecond
+	s := relayTo(t, b, tok)
+	s.request(t, 1, "initialize", map[string]any{"protocolVersion": "2025-11-25"})
+	s.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	s.request(t, 2, "tools/call", map[string]any{"name": "rooms_list", "arguments": map[string]any{}})
+	if methods, _ := b.seen(); strings.Join(methods, ",") != "initialize,notifications/initialized,tools/call" {
+		t.Fatalf("methods %v", methods)
 	}
 }
 
