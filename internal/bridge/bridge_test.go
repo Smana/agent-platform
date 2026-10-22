@@ -798,7 +798,7 @@ func TestAFinalReadMirrorsTheLogBeforeItAnswers(t *testing.T) {
 	for i := 3; i < 7; i++ {
 		f.add(chatEvent(fmt.Sprint("hi ", i)))
 	}
-	res, err := r.b.FinalRead(ctx)
+	res, err := r.b.FinalRead(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +821,7 @@ func TestAFinalReadOnASealedRoomAnswersSealed(t *testing.T) {
 	})
 	calls := len(fb.callLog())
 	f.add(chatEvent("after the seal"))
-	res, err := r.b.FinalRead(ctx)
+	res, err := r.b.FinalRead(ctx, "")
 	if err != nil || res != (FinalReadResult{Events: 1, Unmirrored: res.Unmirrored, Sealed: true}) {
 		t.Fatalf("got %+v, %v: want a sealed answer over the one event read before the seal", res, err)
 	}
@@ -845,8 +845,34 @@ func TestAFinalReadAnswersBeforeItsDeadline(t *testing.T) {
 	call, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	start := time.Now()
-	res, err := r.b.FinalRead(call)
+	res, err := r.b.FinalRead(call, "")
 	if took := time.Since(start); err != nil || res.Unmirrored == 0 || res.Events != 2 || took >= time.Second {
 		t.Fatalf("got %+v, %v after %v: want an answer naming the unmirrored items inside the deadline", res, err, took)
+	}
+}
+
+// Part 2 of the loop policy: a final read carrying a loop end records it once as harness_end on
+// the status stream, before it answers; any other value records nothing.
+func TestAFinalReadRecordsTheLoopEnd(t *testing.T) {
+	f := &fakeAgentServer{pageSize: 2, status: "paused"}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	r.b.Interval = time.Hour
+	ctx, _ := r.run(t)
+	eventually(ctx, t, "the first step mirrors the status", func() bool { return len(fb.stored(wire.StreamStatus)) > 0 })
+	for _, end := range []string{"stalled", "stalled", "met", "bogus"} {
+		if _, err := r.b.FinalRead(ctx, end); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ends []string
+	for _, it := range fb.stored(wire.StreamStatus) {
+		var p struct{ Kind, Reason string }
+		if json.Unmarshal(it.Payload, &p) == nil && p.Kind == envelope.HarnessEnd {
+			ends = append(ends, p.Reason)
+		}
+	}
+	if !slices.Equal(ends, []string{"stalled"}) {
+		t.Fatalf("harness_end recorded %v, want [stalled] once", ends)
 	}
 }

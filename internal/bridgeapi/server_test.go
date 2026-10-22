@@ -597,7 +597,7 @@ func TestABridgeCannotForgeVerdictsOrDecisions(t *testing.T) {
 func TestABridgePushesWhatItsMappingProduces(t *testing.T) {
 	var items []wire.Item
 	for i, kind := range []string{"harness_status", "harness_error", "harness_paused", "harness_event",
-		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied"} {
+		"delivered", "interrupted", "undeliverable", "policy_decision", "decision_applied", envelope.HarnessEnd} {
 		items = append(items, wire.Item{Stream: wire.StreamStatus, Seq: int64(i + 1), Type: envelope.StateChanged,
 			Payload: envelope.StatePayload(kind, nil)})
 	}

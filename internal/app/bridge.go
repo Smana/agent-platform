@@ -39,6 +39,8 @@ const (
 	// finalReadWait bounds a final read: agent-run gives it 3 s of its 15 s shutdown and gives up
 	// at the same mark (disruption design §2).
 	finalReadWait = 3 * time.Second
+	// maxFinalReadBody bounds the final read's body: {"endReason": "judge_impossible"} with room to spare.
+	maxFinalReadBody = 256
 )
 
 type bridgeConfig struct {
@@ -103,7 +105,7 @@ func loadBridgeConfig(getenv func(string) string) (bridgeConfig, error) {
 // 409 and the reason once it never will; and POST /final-read for agent-run on loopback (F11, the
 // harness half): the log read to its end and mirrored, then the answer.
 func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admission,
-	finalRead func(context.Context) (bridge.FinalReadResult, error), now func() time.Time,
+	finalRead func(context.Context, string) (bridge.FinalReadResult, error), now func() time.Time,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -134,9 +136,15 @@ func healthHandler(healthy func(time.Time) bool, admission func() bridge.Admissi
 			http.Error(w, "loopback only", http.StatusForbidden)
 			return
 		}
+		// agent-run's loop end (harness R13): {"endReason": …}, or no body. A body that does not
+		// parse records nothing; the read itself still runs, as F11 needs.
+		var body struct {
+			EndReason string `json:"endReason"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFinalReadBody)).Decode(&body)
 		ctx, cancel := context.WithTimeout(r.Context(), finalReadWait)
 		defer cancel()
-		res, err := finalRead(ctx)
+		res, err := finalRead(ctx, body.EndReason)
 		if err != nil {
 			http.Error(w, "the final read did not answer in time", http.StatusGatewayTimeout)
 			return
