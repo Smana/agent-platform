@@ -67,3 +67,15 @@ func TestFactsCarryTheCurrentRunsProvenance(t *testing.T) {
 		t.Fatalf("%+v", f.Run)
 	}
 }
+
+// R6: a task whose runs carry no provenance hashes exactly as it did before the field existed
+// (the literal was computed at 88029ee), so an upgrade re-posts nothing. Dropping omitempty or
+// making the pointer a value changes the key and fails here.
+func TestTheFactsKeyOfATaskWithoutProvenanceIsUnchanged(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, "x")
+	tk.Status.Phase = v1alpha1.PhaseImplementing
+	tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial"}}
+	if got := factsKey(factsOf(tk)); got != "17964e2eb75a3132" {
+		t.Fatalf("facts key %s", got)
+	}
+}

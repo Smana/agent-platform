@@ -381,6 +381,11 @@ type RunProvenance struct {
 	ServedModels []string `json:"servedModels,omitempty"`
 }
 
+// IsZero reports whether no fact is known yet.
+func (p RunProvenance) IsZero() bool {
+	return p.FactoryVersion == "" && p.CompositionRevision == "" && p.HarnessImage == "" && len(p.ServedModels) == 0
+}
+
 // PullRequestRef is the task's pull request and what happened to it.
 type PullRequestRef struct {
 	Number int `json:"number"`

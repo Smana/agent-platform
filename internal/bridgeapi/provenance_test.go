@@ -18,7 +18,10 @@ func TestTaskFactsCarryARunsProvenance(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("code %d: %s", rec.Code, rec.Body)
 	}
-	evs, _ := log.Range(t.Context(), room, 0, 10)
+	evs, err := log.Range(t.Context(), room, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var p struct {
 		Run struct {
 			Provenance struct {

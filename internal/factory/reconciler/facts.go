@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,9 +24,9 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	if len(t.Status.Runs) > 0 {
 		run := current(t)
 		f.Run = &envelope.RunFact{ID: run.ID, Role: run.Role, Trigger: run.Trigger}
-		if p := run.Provenance; p.FactoryVersion != "" || p.CompositionRevision != "" || p.HarnessImage != "" || len(p.ServedModels) > 0 {
+		if p := run.Provenance; !p.IsZero() {
 			f.Run.Provenance = &envelope.ProvenanceFact{FactoryVersion: p.FactoryVersion, CompositionRevision: p.CompositionRevision,
-				HarnessImage: p.HarnessImage, ServedModels: p.ServedModels}
+				HarnessImage: p.HarnessImage, ServedModels: slices.Clone(p.ServedModels)}
 		}
 		if run.Started != nil {
 			// As the CRD stores it, so the hash of a task read back matches the one posted.
