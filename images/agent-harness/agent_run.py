@@ -583,6 +583,8 @@ CHECKS_RULES = {
 # RC9: the final run is skipped when the pod has less than the declaration's budget plus this left.
 CHECKS_MARGIN_S = 120
 NOTE_MAX = 280
+CHECKS_SKIPS = {"deadline", "no result", "unreadable result"}
+CHECKS_RESULTS = {"pass", "fail", "timeout", "skip"}
 CHECKS_SPAN, INSTALL_SPAN = "agent-run.checks", "agent-run.checks.install"
 
 
@@ -597,12 +599,15 @@ def declared(env: dict):
     """The checks the clone's default branch declares, on a check-enabled run; None otherwise."""
     if env.get("AGENT_CHECKS") != "1":
         return None
-    ac = checks_module()
     try:
-        return ac.declaration()[2]
-    except ac.Undeclared as exc:
+        ac = checks_module()
+        try:
+            return ac.declaration()[2]
+        except ac.Undeclared as exc:
+            print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
+    except Exception as exc:  # noqa: BLE001 -- the checks never fail the run
         print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
-        return None
+    return None
 
 
 def checks_rules(env: dict, decl) -> str:
@@ -626,11 +631,19 @@ def prefetch(start_span=None):
     """agent-checks --install in the background, right after the clone, so the toolchain installs
     while the model reads the task (RC1). A waiter thread ends its span when it exits."""
     os.makedirs(CHECKS_DIR, exist_ok=True)
-    span = start_span(INSTALL_SPAN) if start_span else None
     with open(os.path.join(CHECKS_DIR, "prefetch.log"), "a") as log:
         proc = subprocess.Popen([CHECKS_TOOL, "--install"], stdin=subprocess.DEVNULL, stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True)
-    threading.Thread(target=lambda: _end(span, "install_incomplete" if proc.wait() else None), daemon=True).start()
+    span = start_span(INSTALL_SPAN) if start_span else None
+
+    def wait():
+        error = "install_incomplete"
+        try:
+            error = "install_incomplete" if proc.wait() else None
+        finally:
+            _end(span, error)
+
+    threading.Thread(target=wait, daemon=True).start()
     return proc
 
 
@@ -665,36 +678,64 @@ def checks_note(role: str, res: dict, by_agent: bool) -> str:
     return text[:NOTE_MAX]
 
 
+def _clean(res, decl, head: str):
+    """The result as the note may read it: the right head, a known shape, and only the steps the base
+    declares (the file is agent-writable). None when it cannot be read."""
+    if not isinstance(res, dict) or res.get("head") != head:
+        return None
+    skipped = res.get("skipped")
+    if skipped is not None:
+        return {"version": 1, "head": head, "skipped": skipped} if skipped in CHECKS_SKIPS else None
+    names = {s.get("name") for s in decl.get("steps", []) if isinstance(s, dict)}
+    steps = res.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(s, dict) and s.get("result") in CHECKS_RESULTS for s in steps):
+        return None
+    return {**res, "steps": [s for s in steps if s.get("name") in names]}
+
+
 def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 0.0, clock=time.monotonic):
     """RC6: when an implementer's conversation ends finished, its head's checks are the evidence the
     judge and the reviewer read. A full result the agent left for this head on a clean tree stands;
-    otherwise agent-checks runs, unless the pod lacks the budget plus CHECKS_MARGIN_S. Writes
-    CHECKS_DIR/<head>.json, posts the note, emits the span; returns the result, or None when off."""
+    otherwise agent-checks runs, unless the pod lacks the budget plus CHECKS_MARGIN_S and the note's
+    wait. The run never outlasts AGENT_RUN_SECONDS. Writes CHECKS_DIR/<head>.json, posts the note,
+    emits the span; returns the result, or None when off."""
     if not decl or env.get("ROLE") != "implementer":
         return None
     head = _git_out("rev-parse", "HEAD")
     path = os.path.join(CHECKS_DIR, head + ".json")
     clean = not _git_out("diff", "--name-only", "HEAD")
-    res, by_agent = _load(path), True
-    if not (res and clean and not res.get("dirty") and not res.get("partial") and not res.get("skipped")):
+    raw = _load(path)
+    res, by_agent = _clean(raw, decl, head), True
+    if not (res and clean and not raw.get("dirty") and not raw.get("partial") and not res.get("skipped")):
         res, by_agent = None, False
     budget = decl["minutes"] * 60
     limit = env.get("AGENT_RUN_SECONDS", "")
-    if res is None and limit.isdigit() and int(limit) - (clock() - started) < budget + CHECKS_MARGIN_S:
-        res = {"version": 1, "head": head, "skipped": "deadline"}
-        os.makedirs(CHECKS_DIR, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(res, f)
+    timeout = budget + checks_module().INSTALL_S + 60
+    if res is None and limit.isdigit():
+        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - MIN_NOTE_GAP_S
+        if room < budget:
+            res = {"version": 1, "head": head, "skipped": "deadline"}
+            os.makedirs(CHECKS_DIR, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(res, f)
+        timeout = min(timeout, room)
     span = start_span(CHECKS_SPAN) if start_span and not by_agent else None
-    if res is None:
-        try:
-            subprocess.run([CHECKS_TOOL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=budget + checks_module().INSTALL_S + 60)
-        except subprocess.TimeoutExpired:
-            pass
-        res = _load(path) or {"version": 1, "head": head, "skipped": "no result"}
-    failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
-    _end(span, "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None)
+    error = None
+    try:
+        if res is None:
+            try:
+                subprocess.run([CHECKS_TOOL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                pass
+            res = _clean(_load(path), decl, head) or {"version": 1, "head": head, "skipped": "unreadable result"}
+        failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
+        error = "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None
+    except BaseException:
+        error = "checks_error"
+        raise
+    finally:
+        _end(span, error)
     text = checks_note(env.get("ROLE"), res, by_agent)
     print("agent-run " + text.split(": ", 1)[1], flush=True)
     if notes:
@@ -1251,7 +1292,10 @@ def main() -> int:
         resumed = persisted(env) or clone(env)
         decl = declared(env)
         if decl:
-            prefetch(child_spans(provider, span))
+            try:
+                prefetch(child_spans(provider, span))
+            except Exception as exc:  # noqa: BLE001 -- the run goes on without the prefetch
+                print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             task = t.read()
             request = build_request(env, task, r.read() + checks_rules(env, decl), span)
@@ -1274,7 +1318,10 @@ def main() -> int:
         if policy:
             print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
         if code == 0:
-            final_checks(env, decl, notes, child_spans(provider, span), started)
+            try:
+                final_checks(env, decl, notes, child_spans(provider, span) if decl else None, started)
+            except Exception as exc:  # noqa: BLE001 -- the checks never fail a finished run
+                print("agent-run: final checks failed: %s" % exc, file=sys.stderr, flush=True)
         if decl and (ledger := checks_ledger()):
             print(ledger, flush=True)
         if notes:
@@ -1305,8 +1352,8 @@ def main() -> int:
             # room's last. Nothing is paused or checkpointed on this path, which leaves it time.
             timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         if signalled:
-            started = time.monotonic()
-            report("stop", "done: " + stop(server, STOP_S), started, STOP_S)
+            stop_started = time.monotonic()
+            report("stop", "done: " + stop(server, STOP_S), stop_started, STOP_S)
             timed("revoke", REVOKE_S, revoke)
         else:
             stop(server, 10)
