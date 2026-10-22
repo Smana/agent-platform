@@ -660,7 +660,7 @@ def timed(name: str, box: float, step) -> bool:
 
 def pause(cid: str) -> None:
     """Stops new tool calls, so the work tree stops changing. /interrupt, not /pause: /pause waits
-    out the in-flight LLM call, /interrupt cancels it (agent-server 1.49.6)."""
+    out the in-flight LLM call, /interrupt cancels it (agent-server 1.56.0)."""
     http("POST", "/api/conversations/%s/interrupt" % cid, timeout=PAUSE_S)
 
 

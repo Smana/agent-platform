@@ -1,4 +1,4 @@
-"""agent-run's contract with agent-server 1.49.6, checked against the SDK's own models.
+"""agent-run's contract with agent-server 1.56.0, checked against the SDK's own models.
 
 Needs the openhands SDK, so it runs inside the image: docker build --target test.
 """
@@ -507,7 +507,7 @@ class ProgressNotesTest(unittest.TestCase):
             self.assertEqual(agent_run.milestones(command), set(), command)
 
     def test_the_observation_is_read_in_the_shape_the_sdk_emits(self):
-        # A TerminalObservation as agent-server 1.49.6 serialises it (openhands/tools/terminal/definition.py:146,
+        # A TerminalObservation as agent-server 1.56.0 serialises it (openhands/tools/terminal/definition.py:146,
         # exit_code at :152, set from the session's metadata in terminal_session.py:232): the exit code is
         # top-level on the observation. metadata.exit_code is -1 until a command ends and is not read.
         real = {"content": [{"cache_prompt": False, "type": "text", "text": "ok"}], "is_error": False,
