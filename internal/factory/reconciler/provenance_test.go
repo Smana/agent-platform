@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/meter"
 )
 
@@ -48,5 +49,21 @@ func TestAnUnpricedRunStillRecordsWhatServedIt(t *testing.T) {
 	p := g.reconcile(t, "3buqdlot", 1).Status.Runs[0].Provenance
 	if !slices.Equal(p.ServedModels, []string{"mystery-1"}) {
 		t.Fatalf("unpriced: %+v", p)
+	}
+}
+
+// R10 with ruling R6: the facts carry the current run's provenance, and no provenance key at all
+// while it is empty, so a task whose runs predate the field hashes as before.
+func TestFactsCarryTheCurrentRunsProvenance(t *testing.T) {
+	tk := issueTask("3buqdlot", 7, "x")
+	tk.Status.Phase = v1alpha1.PhaseImplementing
+	tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial"}}
+	if f := factsOf(tk); f.Run.Provenance != nil {
+		t.Fatalf("no fact yet, no provenance: %+v", f.Run.Provenance)
+	}
+	tk.Status.Runs[0].Provenance = v1alpha1.RunProvenance{FactoryVersion: "v0.16.0", ServedModels: []string{"glm-5.3"}}
+	f := factsOf(tk)
+	if p := f.Run.Provenance; p == nil || p.FactoryVersion != "v0.16.0" || !slices.Equal(p.ServedModels, []string{"glm-5.3"}) {
+		t.Fatalf("%+v", f.Run)
 	}
 }

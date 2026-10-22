@@ -23,6 +23,10 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	if len(t.Status.Runs) > 0 {
 		run := current(t)
 		f.Run = &envelope.RunFact{ID: run.ID, Role: run.Role, Trigger: run.Trigger}
+		if p := run.Provenance; p.FactoryVersion != "" || p.CompositionRevision != "" || p.HarnessImage != "" || len(p.ServedModels) > 0 {
+			f.Run.Provenance = &envelope.ProvenanceFact{FactoryVersion: p.FactoryVersion, CompositionRevision: p.CompositionRevision,
+				HarnessImage: p.HarnessImage, ServedModels: p.ServedModels}
+		}
 		if run.Started != nil {
 			// As the CRD stores it, so the hash of a task read back matches the one posted.
 			f.Run.StartedAt = run.Started.UTC().Truncate(time.Second)
