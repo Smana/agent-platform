@@ -9,6 +9,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/meter"
+	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
 // R10: the record takes what the run ran on from its claim as each fact appears, never changes a
@@ -77,5 +78,44 @@ func TestTheFactsKeyOfATaskWithoutProvenanceIsUnchanged(t *testing.T) {
 	tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial"}}
 	if got := factsKey(factsOf(tk)); got != "17964e2eb75a3132" {
 		t.Fatalf("facts key %s", got)
+	}
+}
+
+// A value over its CRD bound is never recorded (the API server would refuse every status write of
+// the task), and a name is skipped, not truncated; the set stops at the CRD's 8.
+func TestProvenanceSkipsWhatTheCRDWouldRefuse(t *testing.T) {
+	long := strings.Repeat("m", 65)
+	var p v1alpha1.RunProvenance
+	served(&p, []string{long, "glm-5.3", strings.Repeat("m", 64)})
+	if !slices.Equal(p.ServedModels, []string{"glm-5.3", strings.Repeat("m", 64)}) {
+		t.Fatalf("long model: %q", p.ServedModels)
+	}
+	var q v1alpha1.RunProvenance
+	var nine []string
+	for _, c := range "abcdefghi" {
+		nine = append(nine, "model-"+string(c))
+	}
+	served(&q, nine)
+	if len(q.ServedModels) != 8 || q.ServedModels[7] != "model-h" {
+		t.Fatalf("nine models: %q", q.ServedModels)
+	}
+	var s v1alpha1.RunProvenance
+	stamp(&s, runs.Run{FactoryVersion: strings.Repeat("v", 65), CompositionRevision: strings.Repeat("c", 254), HarnessImage: strings.Repeat("i", 321)})
+	if !s.IsZero() {
+		t.Fatalf("over-long: %+v", s)
+	}
+	stamp(&s, runs.Run{FactoryVersion: "v1", CompositionRevision: strings.Repeat("c", 253), HarnessImage: strings.Repeat("i", 320)})
+	if s.FactoryVersion != "v1" || len(s.CompositionRevision) != 253 || len(s.HarnessImage) != 320 {
+		t.Fatalf("at the bound: %+v", s)
+	}
+}
+
+// A run created before the upgrade (its claim has no factory version) stays empty, whatever its
+// claim is bound to now.
+func TestAPreUpgradeRunStaysEmpty(t *testing.T) {
+	var p v1alpha1.RunProvenance
+	stamp(&p, runs.Run{CompositionRevision: "xagentruns.cloud.ogenki.io-41b6efe", HarnessImage: "ghcr.io/x@sha256:" + strings.Repeat("c", 64)})
+	if !p.IsZero() {
+		t.Fatalf("%+v", p)
 	}
 }

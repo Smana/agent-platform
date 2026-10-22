@@ -666,22 +666,41 @@ func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 
 // stamp fills what the run ran on from its claim (R10): each field once, never changed, so a later
 // read of a claim a newer CompositionRevision re-bound still records the one the run started on.
+// A claim without a factory version predates the field: its run stays empty, as the spec says. A
+// value over its CRD bound is not recorded, since the API server would refuse every status write.
 func stamp(p *v1alpha1.RunProvenance, x runs.Run) {
-	p.FactoryVersion = cmp.Or(p.FactoryVersion, x.FactoryVersion)
-	p.CompositionRevision = cmp.Or(p.CompositionRevision, x.CompositionRevision)
-	p.HarnessImage = cmp.Or(p.HarnessImage, x.HarnessImage)
+	fill := func(dst *string, v string, bound int) {
+		if len(v) <= bound {
+			*dst = cmp.Or(*dst, v)
+		}
+	}
+	fill(&p.FactoryVersion, x.FactoryVersion, maxFactoryVersionLen)
+	if x.FactoryVersion == "" {
+		return
+	}
+	fill(&p.CompositionRevision, x.CompositionRevision, maxCompositionRevisionLen)
+	fill(&p.HarnessImage, x.HarnessImage, maxHarnessImageLen)
 }
 
 // served adds the models the meter saw serve the run (R10): a set that only grows, sorted, and
-// bounded by the CRD's maxItems.
+// bounded by the CRD's maxItems and maxLength. A longer name is skipped, never truncated: a
+// truncated name would be a guess, and an unbounded label would wedge the task's status writes.
 func served(p *v1alpha1.RunProvenance, models []string) {
 	for _, m := range models {
-		if m != "" && !slices.Contains(p.ServedModels, m) && len(p.ServedModels) < maxServedModels {
+		if m != "" && len(m) <= maxServedModelLen && !slices.Contains(p.ServedModels, m) && len(p.ServedModels) < maxServedModels {
 			p.ServedModels = append(p.ServedModels, m)
 		}
 	}
 	slices.Sort(p.ServedModels)
 }
+
+// The CRD's bounds on RunProvenance (Interfaces table of the run-provenance spec).
+const (
+	maxFactoryVersionLen      = 64
+	maxCompositionRevisionLen = 253
+	maxHarnessImageLen        = 320
+	maxServedModelLen         = 64
+)
 
 // maxServedModels is RunProvenance.ServedModels' maxItems.
 const maxServedModels = 8
