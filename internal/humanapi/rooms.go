@@ -266,10 +266,22 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
+	q := r.URL.Query()
+	rows, access, err := s.roomRows(ctx, p, &roomFilter{repo: q.Get("repo"), mine: q.Get("mine") == "1", needsMe: q.Get("needs_me") == "1"})
+	if err != nil {
+		http.Error(w, err.Error(), roomStatus(err))
+		return
+	}
+	w.Header().Set(accessHeader, access)
+	writeJSON(w, rows)
+}
+
+// roomRows is the room list p reads under f, and the X-Rooms-Access value that says why it may be
+// short. Its one error is errRoomsUnavailable.
+func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter) ([]roomRow, string, error) {
 	var rooms v1alpha1.RoomList
 	if err := s.Rooms.List(ctx, &rooms, client.InNamespace(s.Namespace)); err != nil {
-		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
-		return
+		return nil, "", errRoomsUnavailable
 	}
 	actx, acancel := context.WithTimeout(ctx, accessWait)
 	defer acancel()
@@ -280,8 +292,6 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	// The gate depends on the repository alone, and a failed check is not cached: once per
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
 	readable := map[string]bool{}
-	q := r.URL.Query()
-	f := &roomFilter{repo: q.Get("repo"), mine: q.Get("mine") == "1", needsMe: q.Get("needs_me") == "1"}
 	out := []roomRow{}
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
@@ -331,8 +341,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
-	w.Header().Set(accessHeader, access)
-	writeJSON(w, out)
+	return out, access, nil
 }
 
 // stampLastEvent sets each row's LastEventAt from one store read for every listed room. The list

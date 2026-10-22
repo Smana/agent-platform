@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/summary"
@@ -28,26 +29,30 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	id := r.PathValue("id")
-	room, st, ok := s.lookup(w, r, id, p)
-	if !ok {
-		return
-	}
-	sub, _ := s.you(room, p, st.Driver)
-	if !policy.Allowed(sub, policy.Read) {
-		http.Error(w, noSuchRoom, http.StatusNotFound)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
+	view, err := s.summaryOf(ctx, r.PathValue("id"), p, after)
+	if err != nil {
+		http.Error(w, err.Error(), roomStatus(err))
+		return
+	}
+	writeJSON(w, view)
+}
+
+// summaryOf is the room's summary/v1 as p sees it, notes after after: readRoom's refusals, or
+// errLogUnreadable.
+func (s *Server) summaryOf(ctx context.Context, id string, p authn.Principal, after int64) (summary.Summary, error) {
+	_, _, sub, err := s.readRoom(ctx, id, p)
+	if err != nil {
+		return summary.Summary{}, err
+	}
 	// Each page is folded, then dropped: the read holds one page, whatever the log's length.
 	var fold summary.State
 	for last := int64(0); ; {
 		page, err := s.Log.Range(ctx, id, last, pageSize)
 		if err != nil {
 			s.log().Warn("summary: log unreadable", "room", id, "err", err)
-			http.Error(w, "room log unreadable", http.StatusServiceUnavailable)
-			return
+			return summary.Summary{}, errLogUnreadable
 		}
 		fold.Add(page)
 		if len(page) < pageSize {
@@ -57,7 +62,7 @@ func (s *Server) roomSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	view := summary.View(fold, id, s.PublicURL+"/r/"+id, sub, after, s.now())
 	s.warnNoRepository(view, fold.Facts, id, sub)
-	writeJSON(w, view)
+	return view, nil
 }
 
 // warnNoRepository logs what the pure fold no longer does: the task facts name no repository, so

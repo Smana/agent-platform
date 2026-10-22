@@ -263,40 +263,13 @@ func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 // noSuchRoom answers a missing room and one the caller may not read alike (D7).
 const noSuchRoom = "no such room"
 
-// lookup reads the room, checks that p may see it (D7), then reads its log row,
-// before the upgrade and within routeTimeout, or writes the refusal.
+// lookup is gateRoom before the upgrade and within routeTimeout, or writes the refusal.
 func (s *Server) lookup(w http.ResponseWriter, r *http.Request, id string, p authn.Principal) (*v1alpha1.Room, store.RoomState, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), routeTimeout)
 	defer cancel()
-	room, found, err := s.room(ctx, id)
+	room, st, err := s.gateRoom(ctx, id, p)
 	if err != nil {
-		http.Error(w, "rooms unavailable", http.StatusServiceUnavailable)
-		return nil, store.RoomState{}, false
-	}
-	if !found {
-		http.Error(w, noSuchRoom, http.StatusNotFound)
-		return nil, store.RoomState{}, false
-	}
-	// Before the log: a log error must not tell an unreadable room from a missing one.
-	actx, acancel := context.WithTimeout(ctx, accessWait)
-	ok, err := s.admits(actx, room, p)
-	acancel()
-	if err != nil {
-		s.log().Warn("room access unverified", "room", id, "err", err)
-		http.Error(w, reasonAccessUnverified, http.StatusServiceUnavailable)
-		return nil, store.RoomState{}, false
-	}
-	if !ok {
-		http.Error(w, noSuchRoom, http.StatusNotFound)
-		return nil, store.RoomState{}, false
-	}
-	st, err := s.Log.Room(ctx, id)
-	if errors.Is(err, store.ErrNoRoom) {
-		http.Error(w, noSuchRoom, http.StatusNotFound)
-		return nil, store.RoomState{}, false
-	}
-	if err != nil {
-		http.Error(w, "log unavailable", http.StatusServiceUnavailable)
+		http.Error(w, err.Error(), roomStatus(err))
 		return nil, store.RoomState{}, false
 	}
 	return room, st, true
