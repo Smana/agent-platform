@@ -65,3 +65,42 @@ func TestALoopEndEscalatesWithItsReason(t *testing.T) {
 		})
 	}
 }
+
+// The loop row reaches implementer claims only, on every run of the task, as triage recorded it.
+func TestALoopRowReachesImplementerClaimsOnly(t *testing.T) {
+	steps := int32(5)
+	triaged := runs.Loop{StallSteps: 40, Continuations: 2, JudgeModel: "tier-light"}
+	for _, tc := range []struct {
+		name, role, trigger string
+		changeConfig        bool
+		want                *runs.Loop
+	}{
+		{"reviewer", "reviewer", "verifier", false, nil},
+		{"tester", "tester", "verifier", false, nil},
+		{"triager", "triager", "triage", false, nil},
+		{"implementer revision", "implementer", "revision", false, &triaged},
+		{"implementer CI fix", "implementer", "ci", false, &triaged},
+		{"implementer retry", "implementer", "retry", false, &triaged},
+		{"config row changed after triage", "implementer", "revision", true, &triaged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, tk := loopRig(t)
+			if tc.changeConfig {
+				g.r.Cfg.Loops = map[string]config.Loop{"review": {StallSteps: &steps}}
+			}
+			s := g.r.implementerSpec(tk, "text")
+			s.Role = tc.role
+			before := *tk.Spec.Loop
+			if err := g.r.startRun(t.Context(), tk, s, tc.trigger); err != nil {
+				t.Fatal(err)
+			}
+			got := g.runs.specs[runID(tk.Name, len(tk.Status.Runs)-1)].Loop
+			if (got == nil) != (tc.want == nil) || got != nil && *got != *tc.want {
+				t.Fatalf("claim loop %+v, want %+v", got, tc.want)
+			}
+			if *tk.Spec.Loop != before {
+				t.Fatalf("task loop moved: %+v", tk.Spec.Loop)
+			}
+		})
+	}
+}
