@@ -304,14 +304,6 @@ type Triage struct {
 	ControlPercent int `json:"controlPercent"`
 }
 
-// Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; a shadow
-// class is decided exactly like a live one and never armed until the wave (R32, owner,
-// 2026-09-27); an unmarked class is a prediction and a PR label only (OD-8). Never both.
-type Class struct {
-	Live   bool `json:"live,omitempty"`
-	Shadow bool `json:"shadow,omitempty"`
-}
-
 // Merge is §5.1's merge actor and §6.4's rollback.
 type Merge struct {
 	// The 8 contexts classic protection requires, by name (GitHub Actions, app 15368).
@@ -1028,10 +1020,8 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 			bad("class %s is required (OD-8)", name)
 		}
 	}
-	for name, cl := range r.Classes {
-		if cl.Live && cl.Shadow {
-			bad("class %s: live and shadow never together (R32)", name)
-		}
+	for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
+		validateClass(name, r.Classes[name], bad)
 	}
 	if _, ok := r.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")
