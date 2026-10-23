@@ -212,6 +212,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	if p.Sponsored { // F4: a machine starts work only as a Task, never as a bare run
+		refuse(w, http.StatusForbidden, "sponsored_only_tasks")
+		return
+	}
 	if s.Stopped(r.Context()) { // §6.1: the stop object pauses intake, this API included
 		refuse(w, http.StatusServiceUnavailable, "kill_switch")
 		return

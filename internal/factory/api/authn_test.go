@@ -89,3 +89,28 @@ func TestAuthenticate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// F4, R2: the third branch runs after the human clients and before the cluster's issuer; a human
+// token still reads as the human.
+func TestAuthenticatorSponsoredBranch(t *testing.T) {
+	zitadel := newSigner(t)
+	v := zitadel.verifier("https://auth.ogenki.io")
+	a := &Authenticator{Humans: v, Groups: policy.Groups{Admin: "agents-admin", Member: "agents-member"},
+		ClientIDs: func() []string { return []string{"rooms-proxy-id", "roomctl-id"} },
+		Sponsored: &authn.Sponsored{V: v, Clients: []authn.SponsoredClient{{Name: "slack-app", ClientID: func() string { return "slack-id" }}},
+			Exclude: func() []string { return []string{"rooms-proxy-id", "roomctl-id"} }}}
+	call := func(tok string) (authn.Principal, error) {
+		r := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/tasks", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		return a.Authenticate(r)
+	}
+	sp := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "345", "client_id": "slack-id"})
+	if p, err := call(sp); err != nil || p.ID != "system:slack-app" || !p.Sponsored || p.AccessToken != sp {
+		t.Fatalf("a sponsored token: %+v %v", p, err)
+	}
+	human := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "291", "client_id": "roomctl-id",
+		"groups": []string{"agents-member"}})
+	if p, err := call(human); err != nil || p.ID != "human:291" || p.Sponsored {
+		t.Fatalf("a human token: %+v %v", p, err)
+	}
+}
