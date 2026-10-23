@@ -46,6 +46,10 @@ func nextTrigger(t *v1alpha1.Task) string {
 // queued messages that brief quoted: the only ones the run may consume (F-A).
 func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (runs.Spec, []int64, string, error) {
 	trigger := nextTrigger(t)
+	sc, err := r.taskScope(ctx, t)
+	if err != nil {
+		return runs.Spec{}, nil, "", err
+	}
 	text, ok, err := r.resumeBrief(ctx, t)
 	if err != nil {
 		return runs.Spec{}, nil, "", err
@@ -62,7 +66,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		return r.implementerSpec(t, text), refs, trigger, nil
 	}
 	if t.Status.PullRequest == nil {
-		return r.implementerSpec(t, resumed(t, trigger)+FirstBrief(t, r.Nonce())), nil, trigger, nil
+		return r.implementerSpec(t, resumed(t, trigger)+firstBrief(t, r.Nonce(), sc)), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
 	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, briefSince(t), briefEvent)
@@ -73,7 +77,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
-	text, refs := ReviseBrief(t, evs, q, r.Nonce())
+	text, refs := reviseBrief(t, evs, q, r.Nonce(), sc)
 	return r.implementerSpec(t, resumed(t, trigger)+text), refs, trigger, nil
 }
 

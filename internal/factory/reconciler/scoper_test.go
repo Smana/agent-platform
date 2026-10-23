@@ -107,6 +107,9 @@ func TestAReadyScopeStartsTheImplementer(t *testing.T) {
 	if s.Role != "implementer" || tk.Status.Runs[1].Trigger != "initial" || s.Tier != "standard" {
 		t.Fatalf("the implementer %+v, trigger %q", s, tk.Status.Runs[1].Trigger)
 	}
+	if !strings.Contains(s.TaskText, "SCOPE-DATA-n0nce234") || !strings.Contains(s.TaskText, "Point the link at runbook 08.") {
+		t.Fatalf("the implementer's brief lacks the scope:\n%s", s.TaskText)
+	}
 	if !slices.Contains(g.metrics.recorded, "scoper review ready") {
 		t.Fatalf("metrics %v", g.metrics.recorded)
 	}

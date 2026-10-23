@@ -132,3 +132,24 @@ func (r *Reconciler) bounce(ctx context.Context, t *v1alpha1.Task, sc *envelope.
 func scoperRun(t *v1alpha1.Task) bool {
 	return scoperDue(t) && len(t.Status.Runs) > 0 && current(t).Role == "triager"
 }
+
+// taskScope is the task's scope for an implementer brief: the handoff status.scope names, nil when
+// the scoper left none or never ran.
+func (r *Reconciler) taskScope(ctx context.Context, t *v1alpha1.Task) (*Scoped, error) {
+	st := t.Status.Scope
+	if st == nil || st.Seq == 0 {
+		return nil, nil
+	}
+	evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, st.Seq-1, func(e envelope.Event) bool {
+		return e.Seq == st.Seq && e.Type == envelope.Handoff
+	})
+	if err != nil || len(evs) == 0 {
+		return nil, err
+	}
+	var p envelope.HandoffPayload
+	// Checked again: the room is the broker's, but this text reaches a prompt.
+	if json.Unmarshal(evs[0].Payload, &p) != nil || p.Scope == nil || p.ToRole != "implementer" || p.Scope.Validate() != nil {
+		return nil, nil
+	}
+	return &Scoped{Scope: *p.Scope, Seq: st.Seq, Assumed: st.State == "assumed"}, nil
+}
