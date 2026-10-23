@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,9 @@ func startSlackApp(ctx context.Context, log *slog.Logger, args []string, getenv 
 	if cfg.IssuerURL == "" || cfg.ClientIDFile == "" || cfg.ClientSecretFile == "" || cfg.ProjectIDFile == "" {
 		return nil, errors.New("config: issuerURL, clientIDFile, clientSecretFile and projectIDFile are required")
 	}
+	if err := checkSlackInputs(cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 	exp, err := metrics.NewExporter(metrics.SlackBuildInfo, version.Version)
 	if err != nil {
 		return nil, err
@@ -96,9 +100,6 @@ func startSlackApp(ctx context.Context, log *slog.Logger, args []string, getenv 
 		return nil, fmt.Errorf("cluster client: %w", err)
 	}
 	a := newSlackApp(cfg, cl, rec, log)
-	if a.BotUserID == "" {
-		return nil, fmt.Errorf("config: botUserIDFile %s is empty or unreadable", cfg.BotUserIDFile)
-	}
 
 	var lc net.ListenConfig
 	lns := make([]net.Listener, 0, 3)
@@ -155,6 +156,44 @@ func startSlackApp(ctx context.Context, log *slog.Logger, args []string, getenv 
 	}}, nil
 }
 
+// checkSlackInputs refuses to start on a file the App reads later and cannot: each secret file
+// must be readable and non-empty, the webhook key must parse, the issuer must be an https URL
+// (http only on loopback, for tests). It names the field, never the content.
+func checkSlackInputs(cfg slackapp.Config) error {
+	var errs []error
+	for _, f := range []struct{ field, path string }{
+		{"signingSecretFile", cfg.SigningSecretFile}, {"botTokenFile", cfg.BotTokenFile},
+		{"webhookKeyFile", cfg.WebhookKeyFile}, {"clientIDFile", cfg.ClientIDFile},
+		{"clientSecretFile", cfg.ClientSecretFile}, {"projectIDFile", cfg.ProjectIDFile},
+		{"botUserIDFile", cfg.BotUserIDFile},
+	} {
+		if fileValue(f.path) == "" {
+			errs = append(errs, fmt.Errorf("%s is empty or unreadable", f.field))
+		}
+	}
+	if _, err := webhook.ReadKeys(cfg.WebhookKeyFile); err != nil && fileValue(cfg.WebhookKeyFile) != "" {
+		errs = append(errs, errors.New("webhookKeyFile does not hold one or two base64 keys of at least 32 bytes"))
+	}
+	u, err := url.Parse(cfg.IssuerURL)
+	switch {
+	case err != nil || u.Hostname() == "" || !u.IsAbs():
+		errs = append(errs, errors.New("issuerURL must be an absolute https URL"))
+	case u.Scheme == "https":
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+	default:
+		errs = append(errs, errors.New("issuerURL must be an https URL (http only on a loopback host)"))
+	}
+	return errors.Join(errs...)
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // routed serves h on exactly one route; anything else is a 404.
 func routed(pattern string, h http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -162,10 +201,11 @@ func routed(pattern string, h http.Handler) http.Handler {
 	return mux
 }
 
-// slackServer bounds a listener (nothing here streams).
+// slackServer bounds a listener (nothing here streams). WriteTimeout outlasts the webhook
+// handler's 30s context, so a slow delivery answers 200 or 502 instead of a cut connection.
 func slackServer(h http.Handler, log *slog.Logger) *http.Server {
 	return &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
-		WriteTimeout: 10 * time.Second, MaxHeaderBytes: 16 << 10,
+		WriteTimeout: 45 * time.Second, MaxHeaderBytes: 16 << 10,
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn)}
 }
 

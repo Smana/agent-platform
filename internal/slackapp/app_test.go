@@ -586,3 +586,22 @@ func TestWebhookStaleTimestamp(t *testing.T) {
 		t.Fatalf("%d", st)
 	}
 }
+
+// A draft whose metadata would pass Slack's cap is not posted: the thread is told it is too long,
+// without any of its text, and nothing is left to check-mark.
+func TestOversizedDraftIsNotPosted(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	body := strings.Repeat("secret-body-text ", 1000)
+	rig.mention("C03", "1729.0001", "<@U0BOT> Smana/ai-native-ref a title\n"+body)
+	posts := rig.posts()
+	if len(posts) != 1 {
+		t.Fatalf("%d posts", len(posts))
+	}
+	p := posts[0]
+	if p.meta != nil || !strings.Contains(p.text, "too long to file from Slack") || strings.Contains(p.text, "secret-body-text") || strings.Contains(p.text, "a title") {
+		t.Fatalf("%+v", p)
+	}
+	if rig.metrics.count("events", "too_large") != 1 || rig.metrics.count("events", "drafted") != 0 {
+		t.Fatal("outcome")
+	}
+}

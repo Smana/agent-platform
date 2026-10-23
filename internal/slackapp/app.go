@@ -23,6 +23,8 @@ import (
 const (
 	draftEventType = "factory_draft"
 	handleTimeout  = 30 * time.Second
+	// maxMetadata bounds the draft's metadata JSON, well under Slack's message-metadata cap.
+	maxMetadata    = 8 << 10
 	maxWebhookBody = 64 << 10
 	seenCap        = 4096
 	maxShown       = 300
@@ -260,6 +262,14 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 		slackText(d.Repo), slackText(d.Title), slackText(d.Body))
 	meta := &Metadata{EventType: draftEventType, EventPayload: DraftPayload{Repo: d.Repo, Title: d.Title, Body: d.Body,
 		SHA256: draftHash(d.Repo, d.Title, d.Body)}}
+	if mj, err := json.Marshal(meta); err != nil || len(mj) > maxMetadata {
+		// Slack would refuse the metadata: say so, with none of the draft's text.
+		if _, err := a.Slack.Post(ctx, ev.Channel, thread, "Draft not posted: it is too long to file from Slack; file it from the web UI.", nil); err != nil {
+			a.log().Warn("slack post failed", "channel", ev.Channel, "err", err)
+			return "error"
+		}
+		return "too_large"
+	}
 	if _, err := a.Slack.Post(ctx, ev.Channel, thread, text, meta); err != nil {
 		a.log().Warn("slack post failed", "channel", ev.Channel, "err", err)
 		return "error"
@@ -341,8 +351,9 @@ func (a *App) Webhooks() http.Handler {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody+1))
 		keys, kerr := a.WebhookKeys()
 		if kerr != nil {
-			// Our own key problem, not a bad signature: 503 so the broker retries and does not count
-			// it toward disabling the subscriber.
+			// Our own key problem, not a bad signature: a 503 so it is told apart in the metrics. It is
+			// not a hold: the broker retries a non-2xx after 10s, 1m and 5m, then counts a failure, and
+			// three given-up deliveries disable the subscriber until its generation is bumped.
 			a.log().Error("webhook keys unreadable")
 			a.count(ctx, "webhooks", "no_key")
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)

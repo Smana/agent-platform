@@ -155,3 +155,80 @@ func TestStartSlackAppNeedsAConfigFlag(t *testing.T) {
 		t.Fatal("no --config and no env must fail")
 	}
 }
+
+// Every file the App reads is checked at start: a missing or empty one, a webhook key that does
+// not parse and a bad issuer are refused, naming the field and never the content.
+func TestStartSlackAppRefusesAnUnusableInput(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(t *testing.T, dir string) // dir holds the files; the config is dir/config.yaml
+		want   string
+	}{
+		"signing secret missing": {func(t *testing.T, d string) { rm(t, d, "sig") }, "signingSecretFile"},
+		"signing secret empty":   {func(t *testing.T, d string) { put(t, d, "sig", " \n") }, "signingSecretFile"},
+		"bot token empty":        {func(t *testing.T, d string) { put(t, d, "tok", "") }, "botTokenFile"},
+		"webhook key missing":    {func(t *testing.T, d string) { rm(t, d, "key") }, "webhookKeyFile"},
+		"webhook key unparsable": {func(t *testing.T, d string) { put(t, d, "key", "SUPERSECRETNOTBASE64!!\n") }, "webhookKeyFile"},
+		"webhook key too short":  {func(t *testing.T, d string) { put(t, d, "key", base64.StdEncoding.EncodeToString([]byte("short"))) }, "webhookKeyFile"},
+		"client id empty":        {func(t *testing.T, d string) { put(t, d, "cid", "") }, "clientIDFile"},
+		"client secret missing":  {func(t *testing.T, d string) { rm(t, d, "csec") }, "clientSecretFile"},
+		"project id empty":       {func(t *testing.T, d string) { put(t, d, "pid", "") }, "projectIDFile"},
+		"bot user id empty":      {func(t *testing.T, d string) { put(t, d, "uid", "") }, "botUserIDFile"},
+		"issuer http":            {func(t *testing.T, d string) { sub(t, d, "https://issuer.example", "http://issuer.example") }, "issuerURL"},
+		"issuer relative":        {func(t *testing.T, d string) { sub(t, d, "https://issuer.example", "issuer.example") }, "issuerURL"},
+		"issuer no scheme host":  {func(t *testing.T, d string) { sub(t, d, "https://issuer.example", "https://") }, "issuerURL"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := slackFiles(t, slackChannels)
+			tc.mutate(t, filepath.Dir(cfg))
+			_, err := startSlackApp(t.Context(), slackLog(), []string{"--config", cfg}, os.Getenv, fakeCluster)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "SUPERSECRET") {
+				t.Fatalf("want a refusal naming %s: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// An http issuer is for a test on loopback only.
+func TestStartSlackAppAllowsALoopbackHTTPIssuer(t *testing.T) {
+	cfg := slackFiles(t, slackChannels)
+	sub(t, filepath.Dir(cfg), "https://issuer.example", "http://127.0.0.1:9")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	run, err := startSlackApp(ctx, slackLog(), []string{"--config", cfg}, os.Getenv, fakeCluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_ = run.Wait()
+}
+
+// The webhook handler runs up to 30s: the listener must not cut its answer off first.
+func TestSlackServerWritesOutlastTheWebhookHandler(t *testing.T) {
+	if wt := slackServer(http.NotFoundHandler(), slackLog()).WriteTimeout; wt <= 30*time.Second {
+		t.Fatalf("WriteTimeout %v", wt)
+	}
+}
+
+func rm(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func put(t *testing.T, dir, name, v string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(v), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sub(t *testing.T, dir, from, to string) {
+	t.Helper()
+	p := filepath.Join(dir, "config.yaml")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, dir, "config.yaml", strings.Replace(string(b), from, to, 1))
+}
