@@ -3,10 +3,15 @@
 package reconciler
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
 // scoperRig is a scoper-mode task with the review note, past its first run's start.
@@ -34,5 +39,190 @@ func TestTheScoperRunsFirstAtTheLightCaps(t *testing.T) {
 	}
 	if s.Loop != nil {
 		t.Fatal("the loop policy closes implementer runs only (part 2 R5)")
+	}
+}
+
+// scopeHandoff appends run n's handoff carrying sc to the rig's room.
+func scopeHandoff(g *rig, n int, sc envelope.Scope) {
+	g.log.evs = append(g.log.evs, envelope.Event{Seq: int64(len(g.log.evs) + 1), RunID: rid(n), Type: envelope.Handoff,
+		Actor: envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:" + rid(n), Role: "triager"},
+		Payload: envelope.Must(envelope.HandoffPayload{FromRole: "triager", ToRole: "implementer", Summary: "Scoped.",
+			Commit: strings.Repeat("c", 40), Scope: &sc})})
+}
+
+func readyScope() envelope.Scope {
+	return envelope.Scope{State: "ready", Task: "Fix the link to runbook 07 and change nothing else.",
+		Touches: []string{"docs/user-guide.md"}, Plan: []string{"Point the link at runbook 08."},
+		Assumptions: []string{"Runbook 08 replaces 07."},
+		Acceptance:  []envelope.Acceptance{{Check: "task docs (CI: validate)", Proves: "every relref resolves"}}}
+}
+
+func questionScope() envelope.Scope {
+	sc := readyScope()
+	sc.State, sc.Question = "question", "Which dashboard should the panel move to: agent-run or agent-factory?"
+	sc.Assumptions = []string{"agent-run, where the per-run cost panels are."}
+	return sc
+}
+
+// revoke and lose shape a claim as a person's revocation and a lost pod leave it.
+func (f *fakeRuns) revoke(id, why string) { r := f.runs[id]; r.Revoked = why; f.runs[id] = r }
+func (f *fakeRuns) lose(id string) {
+	r := f.runs[id]
+	r.Phase, r.Reason = "Failed", runs.ReasonPodLost
+	f.runs[id] = r
+}
+
+// scoperRigOf is scoperRig on a task shaped by edit before its triage.
+func scoperRigOf(t *testing.T, edit func(*v1alpha1.Task)) *rig {
+	t.Helper()
+	tk := issueTask("3buqdlot", 7, "# Fix the link")
+	edit(tk)
+	g := newRig(t, tk)
+	g.r.Cfg.Loops = map[string]config.Loop{"review": {Scope: config.ScopeScoper}}
+	g.r.Cfg.Tiers["light"] = config.Tier{Model: "agent-default", RunTokens: 300_000, TaskTokens: 600_000, RunMinutes: 20}
+	g.reconcile(t, "3buqdlot", 3)
+	return g
+}
+
+// endScoper ends the scoper run with phase and reason, then reconciles once.
+func endScoper(t *testing.T, g *rig, phase, reason string) *v1alpha1.Task {
+	t.Helper()
+	g.runs.set(rid(0), phase)
+	g.log.end(rid(0), phase, reason)
+	return g.reconcile(t, "3buqdlot", 1)
+}
+
+// SC9, offline proof 4: ready starts the implementer, whose first brief carries the scope.
+func TestAReadyScopeStartsTheImplementer(t *testing.T) {
+	g := scoperRig(t)
+	scopeHandoff(g, 0, readyScope())
+	tk := endScoper(t, g, "Succeeded", "agent_finished")
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != "ready" ||
+		tk.Status.Scope.Seq == 0 || tk.Status.NextTrigger != "initial" {
+		t.Fatalf("%s %+v %q", tk.Status.Phase, tk.Status.Scope, tk.Status.NextTrigger)
+	}
+	tk = g.reconcile(t, "3buqdlot", 1)
+	s := g.runs.specs[rid(1)]
+	if s.Role != "implementer" || tk.Status.Runs[1].Trigger != "initial" || s.Tier != "standard" {
+		t.Fatalf("the implementer %+v, trigger %q", s, tk.Status.Runs[1].Trigger)
+	}
+	if !slices.Contains(g.metrics.recorded, "scoper review ready") {
+		t.Fatalf("metrics %v", g.metrics.recorded)
+	}
+}
+
+// SC11, SO3 (a): no scope, the caps or a stuck run start the implementer unscoped.
+func TestAScoperWithoutAScopeFailsOpen(t *testing.T) {
+	for name, c := range map[string]struct{ phase, reason, state string }{
+		"finished without one": {"Succeeded", "agent_finished", "missing"},
+		"its run cap":          {"BudgetExhausted", "budget-run", "failed"},
+		"an agent error":       {"Failed", "agent_error", "failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := scoperRig(t)
+			tk := endScoper(t, g, c.phase, c.reason)
+			if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != c.state {
+				t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+			g.reconcile(t, "3buqdlot", 1)
+			if s := g.runs.specs[rid(1)]; s.Role != "implementer" || !strings.Contains(s.TaskText, "STEERING-") ||
+				strings.Contains(s.TaskText, "SCOPE-DATA-") {
+				t.Fatalf("an unscoped implementer with steering: %+v", s)
+			}
+		})
+	}
+}
+
+// SC11: a person's stop escalates as any run's; the run's loss to its infrastructure resumes it.
+func TestAStoppedScoperEscalatesAndALostOneResumes(t *testing.T) {
+	g := scoperRig(t)
+	g.runs.revoke(rid(0), "manual")
+	if tk := endScoper(t, g, "Failed", "manual"); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Scope != nil {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+	}
+	g = scoperRig(t)
+	g.runs.lose(rid(0))
+	g.log.end(rid(0), "Failed", "pod_lost")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(1)]; s.Role != "triager" || tk.Status.Scope != nil || !strings.Contains(s.TaskText, "interrupted by the platform") {
+		t.Fatalf("the resumed scoper %+v", s)
+	}
+}
+
+// SC8: question gives Escalated, needs_author, one comment quoting the question and the first
+// assumption for a public task, the label, and no Ended comment.
+func TestAQuestionBouncesToTheAuthor(t *testing.T) {
+	g := scoperRig(t)
+	before := len(g.f.Comments(7))
+	scopeHandoff(g, 0, questionScope())
+	tk := endScoper(t, g, "Succeeded", "agent_finished")
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Reason != "needs_author" || tk.Status.Scope.State != "question" {
+		t.Fatalf("%s %s %+v", tk.Status.Phase, tk.Status.Reason, tk.Status.Scope)
+	}
+	c := g.f.Comments(7)[before:]
+	if len(c) != 1 || !strings.Contains(c[0], "Which dashboard should the panel move to") ||
+		!strings.Contains(c[0], "Assumption: agent-run") || !strings.Contains(c[0], "/factory retry") ||
+		!strings.Contains(c[0], "factory/ready") || strings.Contains(c[0], "Tokens used") {
+		t.Fatalf("comments %q", c)
+	}
+	if !slices.Equal(g.f.Added(7), []string{"factory/needs-author"}) || !slices.Contains(g.metrics.recorded, "scoper review question") {
+		t.Fatalf("labels %v metrics %v", g.f.Added(7), g.metrics.recorded)
+	}
+}
+
+// C7: an internal task's question stays in the room behind a link.
+func TestAnInternalQuestionStaysInTheRoom(t *testing.T) {
+	g := scoperRigOf(t, func(tk *v1alpha1.Task) { tk.Spec.DataClass = "internal" })
+	before := len(g.f.Comments(7))
+	scopeHandoff(g, 0, questionScope())
+	endScoper(t, g, "Succeeded", "agent_finished")
+	c := g.f.Comments(7)[before:]
+	if len(c) != 1 || strings.Contains(c[0], "Which dashboard") || !strings.Contains(c[0], "/r/3buqdlot") {
+		t.Fatalf("comments %q", c)
+	}
+}
+
+// SC8: a task without an issue (a schedule) never bounces: its question becomes an assumption.
+func TestAScheduleNeverBounces(t *testing.T) {
+	g := scoperRigOf(t, func(tk *v1alpha1.Task) { tk.Spec.Issue, tk.Spec.Source.Kind = 0, "schedule" })
+	scopeHandoff(g, 0, questionScope())
+	if got := endScoper(t, g, "Succeeded", "agent_finished"); got.Status.Phase != v1alpha1.PhaseQueued || got.Status.Scope.State != "assumed" {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.Scope)
+	}
+}
+
+// R02: the scoper's handoff, whose commit is the base it read, is never a reported head.
+func TestAScopersCommitIsNoReportedHead(t *testing.T) {
+	g := scoperRig(t)
+	scopeHandoff(g, 0, readyScope())
+	tk := endScoper(t, g, "Succeeded", "agent_finished")
+	if impl := implementerRuns(tk); impl[rid(0)] {
+		t.Fatal("the scoper's run counts as an implementer's")
+	}
+}
+
+// A scope counts only on the scoper run's handoff to the implementer: one to any other role is
+// ignored, and the task proceeds unscoped.
+func TestAScopeOnAnotherRolesHandoffIsIgnored(t *testing.T) {
+	g := scoperRig(t)
+	scopeHandoff(g, 0, readyScope())
+	var p envelope.HandoffPayload
+	last := &g.log.evs[len(g.log.evs)-1]
+	_ = json.Unmarshal(last.Payload, &p)
+	p.ToRole = "reviewer"
+	last.Payload = envelope.Must(p)
+	if tk := endScoper(t, g, "Succeeded", "agent_finished"); tk.Status.Scope == nil || tk.Status.Scope.State != "missing" {
+		t.Fatalf("%+v", tk.Status.Scope)
+	}
+}
+
+// A resumed scoper pushed nothing: its notice does not send it to a branch.
+func TestAResumedScopersNoticeNamesNoBranch(t *testing.T) {
+	g := scoperRig(t)
+	g.runs.lose(rid(0))
+	g.log.end(rid(0), "Failed", "pod_lost")
+	g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(1)]; !strings.Contains(s.TaskText, "interrupted by the platform") || strings.Contains(s.TaskText, "pushed") {
+		t.Fatalf("%q", s.TaskText)
 	}
 }

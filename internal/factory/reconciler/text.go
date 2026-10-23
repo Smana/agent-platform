@@ -191,6 +191,11 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 // ResumeNotice opens the brief of a run that resumes one its sandbox lost (disruption design §4):
 // the agent did nothing wrong, so it carries on from the branch and the room instead of starting over.
 func ResumeNotice(t *v1alpha1.Task) string {
+	if scoperRun(t) { // a scoper is read-only: it pushed nothing to find
+		return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
+			"was reclaimed (spot reclaim or eviction), not stopped for anything it did. Nothing of it is saved: "+
+			"start the scoping again, using room_read first for what the room already holds.\n\n", t.Name)
+	}
 	return fmt.Sprintf("The previous run of agent factory task %s was interrupted by the platform: its sandbox "+
 		"was reclaimed (spot reclaim or eviction), not stopped for anything it did. What it pushed is on branch "+
 		"agent/%s, the last commit carrying \"Agent-Checkpoint: disruption\" if it left uncommitted changes. Call "+

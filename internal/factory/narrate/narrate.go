@@ -172,6 +172,7 @@ func reasons() map[string]string {
 		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet (the run claim was refused), so no run started",
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
+		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
 		"escalation_expired":        "it waited past the escalation time limit for a maintainer",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"deadline":                  "the run hit its wall-clock limit",
@@ -288,6 +289,31 @@ func ProposalReady(t *v1alpha1.Task, roomsURL string) Event {
 		"proposal in the room, %s/r/%s (tailnet only). If it is safe to publish, open a new issue with the text you "+
 		"approve and label it `factory/ready`; nothing else starts from this finding.",
 		t.Name, strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)}
+}
+
+// NeedsAuthor is the bounce (scoper design SC8, "The bounce, on the issue"): one comment naming the
+// issue's author and the maintainers. A public task's question and first assumption are an agent's
+// text, quoted as an inert code block (ruling TE); an internal task's stay in the room (C7).
+func NeedsAuthor(t *v1alpha1.Task, question, assumption string, maintainers []string, roomsURL string) Event {
+	var b strings.Builder
+	who := "the issue's author"
+	if a := t.Spec.IssueAuthor; a != "" {
+		who = "@" + a
+	}
+	fmt.Fprintf(&b, "Agent factory task `%s` needs an answer from %s before it writes any code.", t.Name, who)
+	if t.Spec.DataClass == "public" {
+		b.WriteString(" The scoper's question, and the assumption it would make otherwise:\n\n")
+		b.WriteString(summary(question+"\nAssumption: "+assumption, maxBody/2))
+	} else {
+		fmt.Fprintf(&b, " The scoper's question stays in [the room](%s/r/%s): the task's data class is not public.", roomsURL, t.Status.RoomRef)
+	}
+	b.WriteString("\n\n**To answer**, edit this issue's title or body: the factory reads the issue as it was labelled, " +
+		"never its comments. Then a maintainer re-applies `factory/ready`. **To proceed on the assumption**, a maintainer " +
+		"comments `/factory retry`. Without either, the task stops when its escalation expires.")
+	if len(maintainers) > 0 {
+		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task waits on its author.")
+	}
+	return Event{Key: fmt.Sprintf("needs-author-%d", len(t.Status.Runs)), Body: b.String()}
 }
 
 // Revising says a maintainer's review sent the task back for another run (Δ5), once per round.

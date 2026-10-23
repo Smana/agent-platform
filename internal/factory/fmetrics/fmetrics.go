@@ -111,6 +111,7 @@ type Set struct {
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
 	steeringReads   metric.Int64Counter
+	scoperRuns      metric.Int64Counter
 	loopRuns        metric.Int64Counter
 	roomsCapped     metric.Int64Counter
 	usageErrors     metric.Int64Counter
@@ -272,6 +273,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.steeringReads, err = meter.Int64Counter("agent_factory_steering_reads_total",
 		metric.WithDescription("Steering notes read at triage, by class and read: used, absent, invalid or unowned (scoper design SC4, SC12)."))
+	check(err)
+	s.scoperRuns, err = meter.Int64Counter("agent_factory_scoper_runs_total",
+		metric.WithDescription("Scoper runs as they end, by class and outcome: ready, question, assumed, missing or failed (scoper design SC11, SC12)."))
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
@@ -650,6 +654,12 @@ func (s *Set) LoopRun(ctx context.Context, class, end string) {
 func (s *Set) SteeringRead(ctx context.Context, class, read string) {
 	s.steeringReads.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("read", oneOf(read, []string{"used", "absent", "invalid", "unowned"})), s.repoOf(ctx)))
+}
+
+// ScoperRun counts a scoper run's outcome once it ends.
+func (s *Set) ScoperRun(ctx context.Context, class, outcome string) {
+	s.scoperRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed"})), s.repoOf(ctx)))
 }
 
 // RoomClosedAtCap counts a finished task's room closed at the cap instead of after its wait (#92).

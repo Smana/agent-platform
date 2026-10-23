@@ -112,6 +112,7 @@ func reasons() map[string]string {
 		"judge_impossible":          "the completion judge found the task cannot be done as asked",
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
+		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
 		"no_pr":                     "the agent opened no pull request",
 		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet, so no run started",
 	}
@@ -143,6 +144,8 @@ func nextStep(reason string) string {
 		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
+	case "needs_author":
+		return "the issue's author edits the issue to answer and a maintainer re-applies `factory/ready`, or a maintainer comments `/factory retry` to proceed on the scoper's assumption"
 	}
 	return ""
 }

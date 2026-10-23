@@ -93,6 +93,7 @@ type metrics interface {
 	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 	SteeringRead(ctx context.Context, class, read string)
+	ScoperRun(ctx context.Context, class, outcome string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
