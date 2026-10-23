@@ -51,6 +51,12 @@ const (
 	maxRefLen           = 256
 )
 
+// errReplayConflict is a Task of the key's name that is not this principal's for this key.
+var errReplayConflict = errors.New("api: the name belongs to another request")
+
+// errSecret is an issue that holds what looks like a secret.
+var errSecret = errors.New("api: the issue holds a secret")
+
 // errNoForge is a titled request on a repository with no GitHub connection (C24).
 var errNoForge = errors.New("api: no GitHub connection for the repository")
 
@@ -75,6 +81,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	out := func(code int, reason string) {
 		s.countIntake(ctx, reason)
 		refuse(w, code, reason)
+	}
+	fail := func(code int, reason string, err error) { // the cause is logged, never answered
+		if s.Log != nil {
+			s.Log.ErrorContext(ctx, "intake: "+reason, "principal", p.ID, "error", err)
+		}
+		out(code, reason)
 	}
 	if s.Stopped(ctx) {
 		out(http.StatusServiceUnavailable, "kill_switch")
@@ -105,16 +117,22 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		out(http.StatusConflict, "repository_not_owned")
 		return
 	}
-	maxUSD := config.MicroUSD(in.MaxCostUSD)
+	// The float is range-checked before it becomes micro-USD: 1e300 would overflow the conversion.
 	switch {
 	case len(s.Cfg.Meter.Prices) == 0: // C13: a ceiling in dollars needs priced runs; before the ceiling checks
 		out(http.StatusServiceUnavailable, "meter_unpriced")
 		return
-	case maxUSD <= 0:
+	case !(in.MaxCostUSD > 0):
 		out(http.StatusBadRequest, "max_cost_required")
 		return
-	case maxUSD > config.MicroUSD(sp.MaxCostUSD):
+	case in.MaxCostUSD > sp.MaxCostUSD:
 		out(http.StatusBadRequest, "max_cost_over_principal")
+		return
+	}
+	maxUSD := config.MicroUSD(in.MaxCostUSD)
+	switch {
+	case maxUSD <= 0:
+		out(http.StatusBadRequest, "max_cost_required")
 		return
 	case maxUSD > s.Cfg.MaxTaskMicroUSD():
 		out(http.StatusBadRequest, "max_cost_over_class")
@@ -132,15 +150,20 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	name := taskid.Name("api:" + sp.Name + ":" + key)
 	if t, found, err := s.existing(ctx, name); err != nil {
-		out(http.StatusServiceUnavailable, "tasks_unavailable")
+		fail(http.StatusServiceUnavailable, "tasks_unavailable", err)
 		return
 	} else if found {
+		if !replayOf(t, sp, key) {
+			out(http.StatusConflict, "idempotency_conflict")
+			return
+		}
+		s.countIntake(ctx, "duplicate")
 		reply(w, http.StatusOK, map[string]any{"task": t.Name, "room": t.Name, "issue": t.Spec.Issue, "duplicate": true})
 		return
 	}
 	switch n, err := s.openTasks(ctx, sp.Principal()); {
 	case err != nil:
-		out(http.StatusServiceUnavailable, "tasks_unavailable")
+		fail(http.StatusServiceUnavailable, "tasks_unavailable", err)
 		return
 	case n >= sp.OpenTaskCap(): // C21
 		out(http.StatusTooManyRequests, "principal_task_cap")
@@ -148,20 +171,31 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	switch over, err := s.principalSpent(ctx, sp, maxUSD); {
 	case err != nil:
-		out(http.StatusServiceUnavailable, "ledger_unavailable")
+		fail(http.StatusServiceUnavailable, "ledger_unavailable", err)
 		return
 	case over:
 		out(http.StatusTooManyRequests, reasonPrincipalOver)
 		return
 	}
 	code, body, err := s.admitTask(ctx, sp, login, name, key, title, text, in, maxUSD)
-	if err != nil {
-		out(http.StatusServiceUnavailable, "intake_failed")
+	switch {
+	case errors.Is(err, errReplayConflict):
+		out(http.StatusConflict, "idempotency_conflict")
+		return
+	case errors.Is(err, errSecret):
+		out(http.StatusBadRequest, "invalid_draft")
+		return
+	case err != nil:
+		fail(http.StatusServiceUnavailable, "intake_failed", err)
 		return
 	}
-	s.countIntake(ctx, "admitted")
-	if code == http.StatusCreated && s.Metrics != nil {
-		s.Metrics.MaxCost(ctx, maxUSD)
+	if code == http.StatusCreated {
+		s.countIntake(ctx, "admitted")
+		if s.Metrics != nil {
+			s.Metrics.MaxCost(ctx, maxUSD)
+		}
+	} else {
+		s.countIntake(ctx, "duplicate") // the AlreadyExists race: another request admitted it first
 	}
 	reply(w, code, body)
 }
@@ -178,7 +212,10 @@ func (s *Server) countIntake(ctx context.Context, outcome string) {
 func (s *Server) sponsorOf(sp *config.Sponsored, in TaskRequest) (string, string) {
 	login := sp.Sponsor
 	if in.OnBehalfOf != "" {
-		id, _ := strings.CutPrefix(in.OnBehalfOf, "slack:")
+		id, found := strings.CutPrefix(in.OnBehalfOf, "slack:")
+		if !found {
+			return "", "not_linked" // only slack:<team>/<user> links exist
+		}
 		var ok bool
 		if login, ok = sp.OnBehalfOf.Slack[id]; !ok {
 			return "", "not_linked"
@@ -204,6 +241,12 @@ func cleanRequest(in TaskRequest) (string, string, error) {
 		return "", "", errors.New("invalid_draft")
 	}
 	return d.Title, d.Body, nil
+}
+
+// replayOf is whether t is this principal's task for this key: a name collision under another key
+// or principal is a conflict, never a replay.
+func replayOf(t *factoryv1.Task, sp *config.Sponsored, key string) bool {
+	return t.Spec.Source.Key == "api:"+sp.Name+":"+key && t.Spec.Source.RequestedBy == sp.Principal()
 }
 
 func (s *Server) existing(ctx context.Context, name string) (*factoryv1.Task, bool, error) {
@@ -252,6 +295,14 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 			return 0, nil, errNoForge // before the Task: a Task that can never get its issue is not created
 		}
 	}
+	if filer != nil { // the issue is public: the broker's redactor holds it, failing closed without one
+		if s.Redact == nil {
+			return 0, nil, errors.New("api: no redactor")
+		}
+		if _, rules := s.Redact.String(title + "\n" + text); len(rules) > 0 {
+			return 0, nil, errSecret
+		}
+	}
 	snapshot := text
 	if title != "" {
 		snapshot = "# " + title + "\n\n" + text
@@ -272,6 +323,9 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 		if err != nil {
 			return 0, nil, err
 		}
+		if !replayOf(got, sp, key) {
+			return 0, nil, errReplayConflict
+		}
 		return http.StatusOK, map[string]any{"task": name, "room": name, "issue": got.Spec.Issue, "duplicate": true}, nil
 	} else if err != nil {
 		return 0, nil, err
@@ -282,14 +336,22 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 	}
 	footer := fmt.Sprintf("\n\n---\nFiled by the agent factory, sponsored by @%s through %s. Its room: %s/r/%s (tailnet only).",
 		login, sp.Principal(), strings.TrimSuffix(s.Cfg.RoomsURL, "/"), name)
-	iss, err := filer.CreateIssue(ctx, title, text+footer, nil) // no label (R10)
+	// Past the Task, a client that hangs up must not orphan the issue: filing and linking outlive ctx.
+	fctx := context.WithoutCancel(ctx)
+	iss, err := filer.CreateIssue(fctx, title, text+footer, nil) // no label (R10)
 	if err != nil {
 		return 0, nil, err // the Task exists; a replay finds it and files nothing, so the owner sees it without an issue
 	}
 	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"issue": iss.Number}})
-	if err := s.Rooms.Patch(ctx, &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
-		client.RawPatch(types.MergePatchType, patch)); err != nil {
-		return 0, nil, err
+	for attempt := 1; ; attempt++ {
+		err = s.Rooms.Patch(fctx, &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
+			client.RawPatch(types.MergePatchType, patch))
+		if err == nil {
+			break
+		}
+		if !apierrors.IsConflict(err) || attempt == 3 {
+			return 0, nil, err
+		}
 	}
 	body["issue"] = iss.Number
 	return http.StatusCreated, body, nil

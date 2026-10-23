@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -93,6 +94,13 @@ type Server struct {
 	// Forges files an api task's issue as the factory App on its repository (R10): nil files none;
 	// a nil filer for a repository refuses a titled request.
 	Forges func(repository string) IssueFiler
+	// Log records the causes the intake never answers; nil records none.
+	Log *slog.Logger
+	// Redact is the broker's secret redactor (*redact.Redactor), applied to an api task's issue
+	// before it is filed; nil refuses a titled request.
+	Redact interface {
+		String(s string) (string, []string)
+	}
 }
 
 // PersonResolver names the person a human principal is charged as (v2 per-person caps D1):

@@ -49,6 +49,7 @@ import (
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/version"
 )
@@ -230,7 +231,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		}
 		auth.Sponsored = &authn.Sponsored{V: humansV, Clients: clients, Exclude: clientIDs}
 	}
-	apiSrv := &api.Server{Auth: auth,
+	redactor, err := redact.New()
+	if err != nil {
+		return err
+	}
+	apiSrv := &api.Server{Auth: auth, Redact: redactor, Log: log,
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
 		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned,
 		Forges: func(repo string) api.IssueFiler {

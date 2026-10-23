@@ -9,18 +9,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/redact"
 )
 
 // F4, invariant 1: a sponsored token never starts a bare run, and reserves nothing on the way.
@@ -87,7 +92,7 @@ func newTaskServer(t *testing.T, p authn.Principal, spent int64, objs ...client.
 	objs = append(objs, ledgerCM(now.UTC().Format(LedgerDayLayout), map[string]int64{"system:slack-app": spent}))
 	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(objs...).Build()
 	s := mkServer(t, &store{}, c, false, false, "7f3cq2xz", 5_000_000)
-	s.Auth, s.Cfg = byToken{"t": p}, sponsoredCfg()
+	s.Auth, s.Cfg, s.Redact = byToken{"t": p}, sponsoredCfg(), testRedactor(t)
 	f := &fakeFiler{}
 	s.Forges = func(string) IssueFiler { return f }
 	return s, f
@@ -248,5 +253,111 @@ func TestTasksRouteOffByDefault(t *testing.T) {
 	s.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/tasks", strings.NewReader(draft)))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("%d", rec.Code)
+	}
+}
+
+var (
+	redactorOnce sync.Once
+	redactorVal  *redact.Redactor
+	redactorErr  error
+)
+
+func testRedactor(t *testing.T) *redact.Redactor {
+	t.Helper()
+	redactorOnce.Do(func() { redactorVal, redactorErr = redact.New() })
+	if redactorErr != nil {
+		t.Fatal(redactorErr)
+	}
+	return redactorVal
+}
+
+// refusals added by the fix round: each one's code, and nothing filed or created.
+func TestCreateTaskRefusals(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("aB3dE5gH7j", 3) + "aB3dE5"
+	for name, c := range map[string]struct {
+		p      authn.Principal
+		body   string
+		edit   func(*Server)
+		status int
+		reason string
+	}{
+		"kill switch":       {slack, draft, func(s *Server) { s.Stopped = func(context.Context) bool { return true } }, 503, "kill_switch"},
+		"unauthenticated":   {authn.Principal{}, draft, func(s *Server) { s.Auth = byToken{} }, 401, "unauthenticated"},
+		"not owned":         {slack, draft, func(s *Server) { s.Owned = func(string) bool { return false } }, 409, "repository_not_owned"},
+		"bad ref":           {slack, strings.Replace(draft, `"ref":"slack`, `"ref":"`+strings.Repeat("x", 300)+`slack`, 1), nil, 400, "bad_ref"},
+		"bad text":          {slack, `{"repository":"Smana/cloud-native-ref","text":"  ","dataClass":"public","maxCostUSD":2}`, nil, 400, "bad_text"},
+		"unprefixed link":   {slack, strings.Replace(draft, "slack:T01ABC", "T01ABC", 1), nil, 403, "not_linked"},
+		"huge ceiling":      {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":1e300`, 1), nil, 400, "max_cost_over_principal"},
+		"negative ceiling":  {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":-3`, 1), nil, 400, "max_cost_required"},
+		"a secret in issue": {slack, strings.Replace(draft, `x\u200b`, secret, 1), nil, 400, "invalid_draft"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, f := newTaskServer(t, c.p, 0)
+			if c.edit != nil {
+				c.edit(s)
+			}
+			rec := postTask(s, c.body, "k")
+			if rec.Code != c.status || !strings.Contains(rec.Body.String(), c.reason) {
+				t.Fatalf("%d %s, want %d %s", rec.Code, rec.Body, c.status, c.reason)
+			}
+			if len(f.got) != 0 || len(tasks(t, s)) != 0 {
+				t.Fatal("a refusal filed or created something")
+			}
+		})
+	}
+}
+
+// A replay under another principal sees nothing of the first's task, and a task of the key's name
+// that is not this principal's is a conflict, never a replay.
+func TestCreateTaskReplayScope(t *testing.T) {
+	s, f := newTaskServer(t, slack, 0)
+	if rec := postTask(s, draft, "k"); rec.Code != 201 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	// another principal, same key: its own name, so its own task and its own issue.
+	s.Cfg.API.Sponsored = append(s.Cfg.API.Sponsored, config.Sponsored{Name: "other", Sponsor: "Smana",
+		Repositories: []string{"Smana/cloud-native-ref"}, DailyUSD: 10, MaxCostUSD: 5})
+	s.Auth = byToken{"t": authn.Principal{Kind: envelope.ActorSystem, ID: "system:other", Sponsored: true}}
+	rec := postTask(s, strings.Replace(draft, `"onBehalfOf":"slack:T01ABC/U02DEF",`, "", 1), "k")
+	if rec.Code != 201 || strings.Contains(rec.Body.String(), "duplicate") || len(tasks(t, s)) != 2 || len(f.got) != 2 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	// a Task squatting on the name without the key's identity.
+	s.Auth = byToken{"t": slack}
+	ts := tasks(t, s)
+	for i := range ts {
+		if ts[i].Spec.Source.RequestedBy == "system:slack-app" {
+			ts[i].Spec.Source.Key = "api:slack-app:elsewhere"
+			if err := s.Rooms.Update(t.Context(), &ts[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rec := postTask(s, draft, "k"); rec.Code != 409 || !strings.Contains(rec.Body.String(), "idempotency_conflict") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// The first Patch conflicts: the retry links the issue, so the Task is not orphaned.
+func TestCreateTaskPatchRetries(t *testing.T) {
+	fails := 1
+	c := fake.NewClientBuilder().WithScheme(scheme()).
+		WithObjects(ledgerCM(now.UTC().Format(LedgerDayLayout), nil)).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, p client.Patch, o ...client.PatchOption) error {
+			if fails > 0 {
+				fails--
+				return apierrors.NewConflict(schema.GroupResource{Group: "factory", Resource: "tasks"}, obj.GetName(), errors.New("stale"))
+			}
+			return cl.Patch(ctx, obj, p, o...)
+		}}).Build()
+	s := mkServer(t, &store{}, c, false, false, "7f3cq2xz", 5_000_000)
+	f := &fakeFiler{}
+	s.Auth, s.Cfg, s.Redact = byToken{"t": slack}, sponsoredCfg(), testRedactor(t)
+	s.Forges = func(string) IssueFiler { return f }
+	if rec := postTask(s, draft, "k"); rec.Code != 201 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if ts := tasks(t, s); len(ts) != 1 || ts[0].Spec.Issue != 42 || fails != 0 {
+		t.Fatalf("%+v", ts)
 	}
 }
