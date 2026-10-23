@@ -537,6 +537,31 @@ func RevertStalled(t *v1alpha1.Task, number int) Event {
 		"in time, so its auto-merge is off: a maintainer merges or closes it.", number, t.Name)}
 }
 
+// MonitorVerdict is the post-merge monitor's reading of pull request n (MC7), with the signals it
+// read. control gives the copy on the control issue its own key (M2).
+func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, control bool) Event {
+	key := fmt.Sprintf("monitor-%d verdict=%s", n, verdict)
+	if control {
+		key = fmt.Sprintf("monitor-%d control verdict=%s", n, verdict)
+	}
+	body := fmt.Sprintf("Agent factory monitor of #%d (`%s`): **%s**. %s", n, t.Spec.PredictedClass, verdict, strings.Join(why, " · "))
+	if verdict == "regression" {
+		body += "\n\nThe class is demoted at its next decision (breaker.maxFollowUps); nothing is reverted (MC7)."
+	}
+	return Event{Key: key, Body: body}
+}
+
+// FollowUpFound says pull request later changed lines pull request m introduced, within the
+// monitor's window: it is counted as a follow-up fix (MC8). control: the control issue's copy.
+func FollowUpFound(t *v1alpha1.Task, m, later int, control bool) Event {
+	key := fmt.Sprintf("follow-up-%d", later)
+	if control {
+		key += " control"
+	}
+	return Event{Key: key, Body: fmt.Sprintf("#%d changed lines #%d introduced within the monitor's window (`%s`): counted as a follow-up fix (MC8).",
+		later, m, t.Spec.PredictedClass)}
+}
+
 func headlines() map[string]string {
 	return map[string]string{
 		v1alpha1.PhaseDone: "is done", v1alpha1.PhaseNoOp: "made no change", v1alpha1.PhaseEscalated: "needs a maintainer",

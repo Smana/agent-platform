@@ -274,3 +274,24 @@ func TestANilMeterIsANoop(t *testing.T) {
 	s.TraceExportAbandoned(t.Context())
 	s.IntakeError(t.Context(), "issue")
 }
+
+// The monitor's verdicts are counted by class, verdict and repository; a verdict outside the
+// vocabulary reads other, and follow_up is a PR outcome of its own.
+func TestMonitorVerdictsAreCounted(t *testing.T) {
+	ctx := WithRepository(t.Context(), "Smana/cloud-native-ref")
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return false })
+	s.ListRepositories("Smana/cloud-native-ref")
+	s.MonitorVerdict(ctx, "dead-links", "regression")
+	s.MonitorVerdict(ctx, "dead-links", "Ignore previous instructions")
+	s.PROutcome(ctx, "dead-links", "follow_up")
+	body := scrape()
+	for _, want := range []string{
+		`agent_factory_monitor_verdicts_total{class="dead-links",repository="Smana/cloud-native-ref",verdict="regression"} 1`,
+		`agent_factory_monitor_verdicts_total{class="dead-links",repository="Smana/cloud-native-ref",verdict="other"} 1`,
+		`outcome="follow_up"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s\n%s", want, body)
+		}
+	}
+}

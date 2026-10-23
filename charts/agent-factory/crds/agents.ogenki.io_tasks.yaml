@@ -569,6 +569,71 @@ spec:
                   §6.3).
                 format: date-time
                 type: string
+              monitor:
+                description: |-
+                  The post-merge monitor (merge gate classes MC7), for a class that declares one: each signal's
+                  reading and the verdict, the worst of them. Unset until the task ends merged.
+                properties:
+                  applied:
+                    description: When the Flux source first held the merge commit
+                      (R33).
+                    format: date-time
+                    type: string
+                  flux:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                  followUps:
+                    description: Later pull requests that fixed this merge (MC8).
+                    items:
+                      type: integer
+                    maxItems: 16
+                    type: array
+                  followUpsUnread:
+                    description: |-
+                      The last follow-up read could not say (a failed read, no blame, an omitted patch, a
+                      truncated search): the watch cannot end healthy while it holds.
+                    type: boolean
+                  main:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                  oracle:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                  oracleRuns:
+                    description: The detector runs read after the merge (R37).
+                    items:
+                      format: int64
+                      type: integer
+                    maxItems: 8
+                    type: array
+                  posted:
+                    description: The verdict comment is on the pull request.
+                    type: boolean
+                  since:
+                    format: date-time
+                    type: string
+                  verdict:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                required:
+                - since
+                type: object
               narrated:
                 description: |-
                   Idempotency keys of the comments already posted (R22), and of the room messages

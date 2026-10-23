@@ -38,7 +38,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		if !forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
 			// R41: a human merge records when, so it counts in the class's breaker window.
-			now := metav1.NewTime(r.Now())
+			now := r.mergedAt(pr)
 			t.Status.PullRequest.MergedAt = &now
 			class := t.Spec.PredictedClass
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
@@ -577,7 +577,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		if forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			r.label(ctx, pr, AutoMergedLabel(class))
 		}
-		now := metav1.NewTime(r.Now())
+		now := r.mergedAt(pr)
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
 		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
 		if !ref.AutoMerged {
@@ -593,6 +593,16 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		r.to(t, v1alpha1.PhaseAwaitingCI, "head_moved")
 	}
 	return nil
+}
+
+// mergedAt is when the pull request merged, as GitHub says (L6): every window of the merge, the
+// breaker's and the monitor's, counts from it. The factory's own clock stands in only when the
+// read carries none.
+func (r *Reconciler) mergedAt(pr forge.PR) metav1.Time {
+	if !pr.MergedAt.IsZero() {
+		return metav1.NewTime(pr.MergedAt)
+	}
+	return metav1.NewTime(r.Now())
 }
 
 // MainState is §6.4's watch of main's CI on the merge commit: FAILURE if a watched check that ran
@@ -758,8 +768,14 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	for i := range l.Items {
 		o := &l.Items[i]
 		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
-			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
-				Auto: ref.ArmedAt != nil})
+			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
+				Auto: ref.ArmedAt != nil}
+			// The running process's own monitor outcomes: the GitHub ledger is read once per process,
+			// so without them the breaker under-demotes until a restart.
+			if mo := o.Status.Monitor; mo != nil {
+				mg.FollowUp, mg.Regression = len(mo.FollowUps) > 0, mo.Verdict == "regression"
+			}
+			tasks = append(tasks, mg)
 		}
 	}
 	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)

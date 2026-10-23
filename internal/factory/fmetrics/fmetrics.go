@@ -39,7 +39,9 @@ const other = "other"
 // The closed vocabularies of the labels callers could otherwise fill with anything. The others
 // (tier, template, source, class, classifier, principal) come from the Task CRD's enums or the
 // factory's config.
-func outcomes() []string { return []string{"auto_merged", "human_merged", "closed", "reverted"} }
+func outcomes() []string {
+	return []string{"auto_merged", "human_merged", "closed", "reverted", "follow_up"}
+}
 func interventions() []string {
 	return []string{"stop", "retry", "request_changes", "steer", "takeover", "approve", "split"}
 }
@@ -105,6 +107,7 @@ var (
 type Set struct {
 	timeToPR        metric.Float64Histogram
 	prOutcomes      metric.Int64Counter
+	monitorVerdicts metric.Int64Counter
 	taskTokens      metric.Int64Histogram
 	budgetCap       metric.Float64Gauge
 	budgetRemaining metric.Float64Gauge
@@ -260,7 +263,10 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 		metric.WithDescription("From intake to the PR opening (§7, SC-1)."), metric.WithExplicitBucketBoundaries(timeToPRBuckets...))
 	check(err)
 	s.prOutcomes, err = meter.Int64Counter("agent_factory_pr_outcomes_total",
-		metric.WithDescription("PR outcomes by class: auto_merged, human_merged, closed, reverted (§7, SC-11)."))
+		metric.WithDescription("PR outcomes by class: auto_merged, human_merged, closed, reverted, follow_up (§7, SC-11)."))
+	check(err)
+	s.monitorVerdicts, err = meter.Int64Counter("agent_factory_monitor_verdicts_total",
+		metric.WithDescription("Post-merge monitor verdicts (merge gate classes MC7), by class and verdict."))
 	check(err)
 	s.taskTokens, err = meter.Int64Histogram("agent_factory_task_tokens",
 		metric.WithDescription("Tokens per finished task (§7)."), metric.WithExplicitBucketBoundaries(taskTokensBuckets...))
@@ -491,10 +497,16 @@ func (s *Set) PROpened(ctx context.Context) {
 	s.prsOpened.Add(ctx, 1, metric.WithAttributes(s.repoOf(ctx), principalOf(ctx)))
 }
 
-// PROutcome counts a task PR's outcome: auto_merged, human_merged, closed or reverted.
+// PROutcome counts a task PR's outcome: auto_merged, human_merged, closed, reverted or follow_up.
 func (s *Set) PROutcome(ctx context.Context, class, outcome string) {
 	s.prOutcomes.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("outcome", oneOf(outcome, outcomes())), s.repoOf(ctx), principalOf(ctx)))
+}
+
+// MonitorVerdict counts a merge's final monitor verdict (MC7): healthy, regression or inconclusive.
+func (s *Set) MonitorVerdict(ctx context.Context, class, verdict string) {
+	s.monitorVerdicts.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("verdict", oneOf(verdict, []string{"healthy", "regression", "inconclusive"})), s.repoOf(ctx)))
 }
 
 // HumanWait adds the time a task waited in AwaitingHuman or Escalated, as it leaves the phase, to

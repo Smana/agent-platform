@@ -324,6 +324,10 @@ type TaskStatus struct {
 	RoomRef string `json:"roomRef,omitempty"`
 	// +optional
 	PullRequest *PullRequestRef `json:"pullRequest,omitempty"`
+	// The post-merge monitor (merge gate classes MC7), for a class that declares one: each signal's
+	// reading and the verdict, the worst of them. Unset until the task ends merged.
+	// +optional
+	Monitor *MonitorStatus `json:"monitor,omitempty"`
 	// +optional
 	Usage Usage `json:"usage,omitempty"`
 	// The task's usage has settled (R49): the meter's late readings have had their window, and
@@ -611,6 +615,42 @@ type RunProvenance struct {
 // IsZero reports whether no fact is known yet.
 func (p RunProvenance) IsZero() bool {
 	return p.FactoryVersion == "" && p.CompositionRevision == "" && p.HarnessImage == "" && len(p.ServedModels) == 0
+}
+
+// MonitorStatus is one merge's watch. A signal is "" while open, then healthy, regression or
+// inconclusive; Verdict is set at the first regression, or when every signal is final.
+type MonitorStatus struct {
+	Since metav1.Time `json:"since"`
+	// +kubebuilder:validation:Enum="";healthy;regression;inconclusive
+	// +optional
+	Main string `json:"main,omitempty"`
+	// +kubebuilder:validation:Enum="";healthy;regression;inconclusive
+	// +optional
+	Oracle string `json:"oracle,omitempty"`
+	// +kubebuilder:validation:Enum="";healthy;regression;inconclusive
+	// +optional
+	Flux string `json:"flux,omitempty"`
+	// +kubebuilder:validation:Enum="";healthy;regression;inconclusive
+	// +optional
+	Verdict string `json:"verdict,omitempty"`
+	// Later pull requests that fixed this merge (MC8).
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	FollowUps []int `json:"followUps,omitempty"`
+	// The last follow-up read could not say (a failed read, no blame, an omitted patch, a
+	// truncated search): the watch cannot end healthy while it holds.
+	// +optional
+	FollowUpsUnread bool `json:"followUpsUnread,omitempty"`
+	// The detector runs read after the merge (R37).
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	OracleRuns []int64 `json:"oracleRuns,omitempty"`
+	// When the Flux source first held the merge commit (R33).
+	// +optional
+	Applied *metav1.Time `json:"applied,omitempty"`
+	// The verdict comment is on the pull request.
+	// +optional
+	Posted bool `json:"posted,omitempty"`
 }
 
 // PullRequestRef is the task's pull request and what happened to it.
