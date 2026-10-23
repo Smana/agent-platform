@@ -1277,6 +1277,11 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 		default:
 			bad("loops.%s.scope %q is off, steering or scoper", name, m)
 		}
+		if m := row.Scope; m == ScopeScoper && c.Runs.Group != runwatch.DefaultKind.Group {
+			// The scoper is read-only because cloud-native-ref maps the triager role to an octo-sts
+			// token with contents: read; this runtime gives every role the same token.
+			bad("loops.%s: scope: scoper needs cloud-native-ref's AgentRun (runs.group %s): this runtime gives every role one token, so a scoper would not be read-only", name, runwatch.DefaultKind.Group)
+		}
 		if row.On() && c.Runs.Group != runwatch.DefaultKind.Group {
 			bad("loops.%s: the loop policy needs cloud-native-ref's AgentRun (runs.group %s): this runtime's has no spec.loop", name, runwatch.DefaultKind.Group)
 		}

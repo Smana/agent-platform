@@ -3,8 +3,10 @@
 package reconciler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -130,5 +132,20 @@ func TestAMarkupHeavyScopeFitsTheFirstBrief(t *testing.T) {
 	tk := steered(issueTask("3buqdlot", 7, strings.Repeat("s", 14336)))
 	if b := firstBrief(tk, "n0nce234", &Scoped{Scope: sc, Seq: 9}); len(b) > firstCap || !strings.Contains(b, "SCOPE-DATA-") {
 		t.Fatalf("%d bytes (cap %d)", len(b), firstCap)
+	}
+}
+
+// A ready scope whose handoff is gone from the room starts an unscoped brief: that is logged, so it is seen.
+func TestAMissingScopeEventIsLogged(t *testing.T) {
+	g := scoperRig(t)
+	var logs bytes.Buffer
+	g.r.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	tk.Status.Scope = &v1alpha1.ScopeStatus{State: "ready", Seq: 999}
+	if sc, err := g.r.taskScope(t.Context(), tk); err != nil || sc != nil {
+		t.Fatalf("%+v %v", sc, err)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "seq=999") || !strings.Contains(out, "task.id=3buqdlot") {
+		t.Fatalf("%s", out)
 	}
 }

@@ -143,8 +143,12 @@ func (r *Reconciler) taskScope(ctx context.Context, t *v1alpha1.Task) (*Scoped, 
 	evs, _, err := r.Rooms.EventsSince(ctx, t.Status.RoomRef, st.Seq-1, func(e envelope.Event) bool {
 		return e.Seq == st.Seq && e.Type == envelope.Handoff
 	})
-	if err != nil || len(evs) == 0 {
+	if err != nil {
 		return nil, err
+	}
+	if len(evs) == 0 {
+		r.log().Warn("scope handoff not in the room: the brief goes unscoped", "task.id", t.Name, "seq", st.Seq, "state", st.State)
+		return nil, nil
 	}
 	var p envelope.HandoffPayload
 	// Checked again: the room is the broker's, but this text reaches a prompt.

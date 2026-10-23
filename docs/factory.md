@@ -739,13 +739,15 @@ Under `scope: scoper`, a read-only `triager` run with a scoping brief goes first
 tier's run caps, and hands the implementer a bounded task through `room_handoff`'s `scope`: the
 change, the files, the paths to leave alone, a plan, its assumptions and its acceptance checks.
 Every implementer brief carries it after the steering note. A scoper that leaves none starts the
-implementer unscoped; a person's stop or an exhausted budget escalates as any run's. A question no
+implementer unscoped; a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
+(`run_unschedulable`), no budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
 default answers bounces the task to the issue's author (`needs_author`); a task without an issue
 takes the scoper's first assumption instead.
 
-- **Read-only at the token level.** The triager run's GitHub token is minted by the host's octo-sts
-  trust policy, which grants `contents: read` only: the run cannot push or open anything, whatever
-  its brief says.
+- **Read-only at the token level, on cloud-native-ref's AgentRun.** There the triager role maps to
+  the host's octo-sts trust policy, which grants `contents: read` only: the run cannot push or open
+  anything, whatever its brief says. The portable `agents.ogenki.io` AgentRun gives every role the
+  same token, so `scope: scoper` is refused when `runs.group` names it (as the loop policy is).
 - **The scope has one source.** The factory takes it only from the triager's handoff to the
   implementer, on the current scoper run, and validates it again (the broker stored it redacted).
   A scope on any other handoff is ignored, and the task proceeds unscoped (`missing`). It reaches
