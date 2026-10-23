@@ -206,7 +206,7 @@ every maintainer.
 | `pod_lost`, `Disrupted`, `PodLost`, `PodFailed` | The sandbox failed or was lost and was not resumed. A sandbox lost to its node is resumed by itself, up to `resume.maxPerTask` times |
 | `resumes_exhausted`, `resume_budget` | The sandbox was lost again, and no resume or no budget is left |
 | `run_unschedulable` | The cluster did not admit the run within `caps.maxPendingMinutes` |
-| `loop_unsupported` | The class has a `loops` row, but the cluster refused the run claim's `spec.loop` (its AgentRun schema predates the loop policy). No run started and none is retried: roll out crossplane-configuration with `spec.loop` first ([operations](operations.md)) |
+| `loop_unsupported` | The class has a `loops` row or `checks: true`, but the cluster refused the run claim's `spec.loop` (its AgentRun schema predates the loop policy or `loop.checks`). No run started and none is retried: roll out crossplane-configuration with `spec.loop` (and `loop.checks`) first ([operations](operations.md)) |
 | `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
