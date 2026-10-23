@@ -272,9 +272,13 @@ def http(method: str, path: str, body: dict | None = None, timeout: int = 30) ->
         return json.loads(resp.read() or b"{}")
 
 
-def wait_ready(deadline_s: int = 120) -> None:
+def wait_ready(deadline_s: int = 120, server=None) -> None:
+    """Waits for agent-server's /ready. With its process, fails at once when it has exited (the
+    start-up hook refuses to start it when a security patch cannot apply), not after the deadline."""
     end = time.monotonic() + deadline_s
     while time.monotonic() < end:
+        if server is not None and server.poll() is not None:
+            raise RuntimeError("agent-server exited at start-up with code %s (see its log above)" % server.returncode)
         try:
             urllib.request.urlopen(AGENT_SERVER + "/ready", timeout=2)
             return
@@ -1351,7 +1355,7 @@ def main() -> int:
     server = subprocess.Popen(SERVER_CMD, cwd="/", env=server_env({**env, **trace_env}))
     cid, steps, code, end, signalled, read = None, None, None, None, False, False
     try:
-        wait_ready()
+        wait_ready(server=server)
         # A resumed suspendable run finds its clone and its conversation on its PVC. The same start
         # request reattaches the stored conversation and starts nothing. agent-run sends it nothing
         # either: it waits on a call's approval, a new message would reject that call, and a bare

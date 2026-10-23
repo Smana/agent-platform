@@ -283,12 +283,14 @@ def _install() -> None:
     else:
         patch_cache_breakpoints(LLM)
         patch_model_retry(LLM, openai)
+    # Fail closed: unlike the patches above, which keep the run available, this one is a security
+    # control, so an agent-server that cannot apply it must not start.
     try:
         from openhands.sdk.conversation.impl import local_conversation
     except ImportError as exc:
-        print("agent-harness: #187 plugin patch NOT applied: %s" % exc, file=sys.stderr, flush=True)
-    else:
-        patch_ambient_plugins(local_conversation)
+        raise SystemExit("agent-harness: #187 plugin patch NOT applied: %s" % exc)
+    if not patch_ambient_plugins(local_conversation):
+        raise SystemExit("agent-harness: #187 plugin patch NOT applied: refusing to start agent-server")
 
 
 if __name__ == "sitecustomize":
