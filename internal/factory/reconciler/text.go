@@ -95,7 +95,11 @@ func firstBrief(t *v1alpha1.Task, nonce string, sc *Scoped) string {
 		fmt.Fprintf(&b, "Source: %s %s.\n", t.Spec.Source.Kind, t.Spec.Source.Ref)
 	}
 	fmt.Fprintf(&b, "%s\n", brief.ProgressInstruction)
-	return fit(b.String(), steeringBlock(t, nonce)+scopeBlock(sc, nonce), snapshotBlock(t, fence), t)
+	extra := steeringBlock(t, nonce) + scopeBlock(sc, nonce)
+	if t.Spec.Parent != nil { // a part's scope first: the judge reads the part's checks before the whole issue's (loop_policy.acceptance)
+		extra = scopeBlock(sc, nonce) + steeringBlock(t, nonce)
+	}
+	return fit(b.String(), extra, snapshotBlock(t, fence), t)
 }
 
 // fit is a first brief: head, then extra (the steering note, the scope), then the snapshot, which

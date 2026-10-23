@@ -25,7 +25,7 @@ func partScoped(tk *v1alpha1.Task) *Scoped {
 	return &Scoped{Scope: envelopeScope(tk.Spec.Scope), Part: tk.Spec.Parent}
 }
 
-// Offline proof 7: a part's first brief carries the steering note, its scope and the parent's
+// Offline proof 7: a part's first brief carries its scope, the steering note and the parent's
 // snapshot, says "part 1 of 2 of #7", and asks to close #501 only.
 func TestAPartsFirstBrief(t *testing.T) {
 	tk := partTask(parentText)
@@ -40,7 +40,7 @@ func TestAPartsFirstBrief(t *testing.T) {
 		t.Error("a part must never close its parent")
 	}
 	st, sp, sn := strings.Index(b, "STEERING-"), strings.Index(b, "SCOPE-DATA-"), strings.Index(b, "TASK-DATA-")
-	if st > sp || sp > sn {
+	if sp > st || st > sn {
 		t.Fatalf("order steering %d scope %d snapshot %d", st, sp, sn)
 	}
 	golden := filepath.Join("..", "..", "..", "images", "agent-harness", "tests", "testdata", "split_child_brief.txt")
