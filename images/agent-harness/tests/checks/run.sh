@@ -35,7 +35,6 @@ for p in ${profiles//,/ }; do
 done
 
 name="checks-$(echo "$repo" | tr '/A-Z' '-a-z')"
-out="$(mktemp -d)"
 cleanup() {
   docker rm -f "$name-proxy" >/dev/null 2>&1 || true
   docker network rm "$name" >/dev/null 2>&1 || true
@@ -44,6 +43,7 @@ cleanup() {
 }
 trap cleanup EXIT
 cleanup
+out="$(mktemp -d)" # after the pre-clean, which removes a previous $out
 docker network create --internal "$name" >/dev/null
 docker volume create "$name" >/dev/null
 chmod 0777 "$out"
