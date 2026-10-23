@@ -111,6 +111,10 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 		env = append(env, corev1.EnvVar{Name: "AGENT_CHECKS", Value: "1"},
 			corev1.EnvVar{Name: "AGENT_RUN_SECONDS", Value: strconv.FormatInt(deadline, 10)})
 	}
+	// v3 feature 5: the search tool, which the harness offers an implementer only.
+	if s.Loop.Search {
+		env = append(env, corev1.EnvVar{Name: "AGENT_SEARCH", Value: "1"})
+	}
 	harness := corev1.Container{
 		Name: "harness", Image: c.Images.Harness, Env: env,
 		StartupProbe:    &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: localGet("/ready")}}, PeriodSeconds: 5, FailureThreshold: 60, TimeoutSeconds: 5},

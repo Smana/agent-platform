@@ -136,6 +136,10 @@ spec:
                       Checks runs the repository's checks in the sandbox (v3 feature 3): the harness gets
                       AGENT_CHECKS=1 and the pod's deadline as AGENT_RUN_SECONDS. A public run only.
                     type: boolean
+                  search:
+                    description: 'Search offers an implementer the search tool (v3
+                      feature 5): the harness gets AGENT_SEARCH=1.'
+                    type: boolean
                 type: object
               model:
                 default: agent-default
@@ -245,7 +249,8 @@ spec:
             - message: loop is immutable and cannot be added or removed after creation
               rule: has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks)
                 == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks
-                == oldSelf.loop.checks)))
+                == oldSelf.loop.checks) && has(self.loop.search) == has(oldSelf.loop.search)
+                && (!has(self.loop.search) || self.loop.search == oldSelf.loop.search)))
           status:
             description: AgentRunStatus is what runwatch and the factory read (C3),
               as the composition writes it.
