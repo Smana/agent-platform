@@ -935,6 +935,30 @@ func (g *GitHub) FenceFile(ctx context.Context) ([]byte, bool, error) {
 	return []byte(text), true, nil
 }
 
+// DefaultBranchFile is path on the default branch, its text and git blob sha; found is false on
+// GitHub's 404. Any other failure is an error: triage retries rather than read "no note" (SC4).
+func (g *GitHub) DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error) {
+	fc, _, resp, err := g.rest.Repositories.GetContents(ctx, g.owner, g.name, path, nil)
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		g.mark(nil)
+		return "", "", false, nil
+	}
+	g.mark(err)
+	if err != nil {
+		return "", "", false, wrap("read "+path, err)
+	}
+	if fc == nil {
+		return "", "", false, fmt.Errorf("forge: %s is not a file", path)
+	}
+	if text, err = fc.GetContent(); err != nil {
+		return "", "", false, wrap("decode "+path, err)
+	}
+	if text == "" && fc.GetSize() > 0 {
+		return "", "", false, fmt.Errorf("forge: %s is %d bytes and not readable through the contents API", path, fc.GetSize())
+	}
+	return text, fc.GetSHA(), true, nil
+}
+
 func wrap(what string, err error) error {
 	if err == nil {
 		return nil

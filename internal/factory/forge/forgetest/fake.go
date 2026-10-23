@@ -6,6 +6,8 @@ package forgetest
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -58,6 +60,7 @@ type Fake struct {
 	reverts      []string
 	refused      map[string]error
 	labelErr     error
+	files        map[string]string // default-branch files by path; "!" fails the read
 	calls        []string
 	nextID       int64
 }
@@ -659,4 +662,28 @@ func (f *Fake) OpenPullRequests(context.Context) ([]forge.PRSummary, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.open), nil
+}
+
+// SetFile sets path's text on the default branch; "!" makes its read fail.
+func (f *Fake) SetFile(path, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string]string{}
+	}
+	f.files[path] = text
+}
+
+// DefaultBranchFile is path's text on the default branch, with a sha derived from it.
+func (f *Fake) DefaultBranchFile(_ context.Context, path string) (string, string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	text, ok := f.files[path]
+	switch {
+	case !ok:
+		return "", "", false, nil
+	case text == "!":
+		return "", "", false, errors.New("forgetest: read failed")
+	}
+	return text, fmt.Sprintf("%x", sha256.Sum256([]byte(text)))[:40], true, nil
 }

@@ -120,6 +120,7 @@ type fakeGitHub struct {
 	perms     []map[string]string
 	// fence is .github/agent-factory.yaml on the default branch: "" is absent, "!" a 500.
 	fence string
+	steer map[string]string // default-branch steering notes by path; "!" fails the read
 }
 
 func (g *fakeGitHub) setWantPerms(p map[string]string) {
@@ -468,6 +469,19 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
 			default:
 				_ = json.NewEncoder(w).Encode(map[string]any{"name": "agent-factory.yaml", "path": p, "type": "file",
+					"encoding": "base64", "size": len(body), "content": base64.StdEncoding.EncodeToString([]byte(body))})
+			}
+		case strings.HasPrefix(p, ".github/agent-factory/steering/") && ref == "":
+			g.mu.Lock()
+			body, ok := g.steer[p]
+			g.mu.Unlock()
+			switch {
+			case !ok:
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			case body == "!":
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
 					"encoding": "base64", "size": len(body), "content": base64.StdEncoding.EncodeToString([]byte(body))})
 			}
 		case p == "docs/big.png":
@@ -1310,6 +1324,29 @@ func TestFenceFileReadsTheDefaultBranch(t *testing.T) {
 	r.gh.fence = "!"
 	r.gh.mu.Unlock()
 	if _, _, err := r.g.FenceFile(t.Context()); err == nil {
+		t.Fatal("a failed read is an error")
+	}
+}
+
+// Scoper design SC3: a steering note on the default branch, with its blob sha; absent is an
+// answer, a failure is not.
+func TestDefaultBranchFileReadsASteeringNote(t *testing.T) {
+	r := newRig(t)
+	const p = ".github/agent-factory/steering/docs.md"
+	if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); found || err != nil {
+		t.Fatalf("absent: %v %v", found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.steer = map[string]string{p: "## Verify\n- x\n"}
+	r.gh.mu.Unlock()
+	text, sha, found, err := r.g.DefaultBranchFile(t.Context(), p)
+	if !found || err != nil || text != "## Verify\n- x\n" || sha != "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f" {
+		t.Fatalf("present: %q %q %v %v", text, sha, found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.steer[p] = "!"
+	r.gh.mu.Unlock()
+	if _, _, _, err := r.g.DefaultBranchFile(t.Context(), p); err == nil {
 		t.Fatal("a failed read is an error")
 	}
 }
