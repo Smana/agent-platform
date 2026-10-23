@@ -8,7 +8,8 @@ import (
 )
 
 // Scoper design SC2, offline proof 1: the switch parses, defaults to off, a row is whole, and
-// scope never switches the loop on (loop part 2 R2). A bare YAML off is off, not false.
+// scope never switches the loop on (loop part 2 R2). The test writes the bare form {scope: off},
+// which YAML 1.1 reads as false: it must still mean off.
 func TestScopeFor(t *testing.T) {
 	cfg, err := Parse([]byte(good + `loops:
   default: {scope: steering}
@@ -34,6 +35,23 @@ func TestScopeFor(t *testing.T) {
 	}
 	if got := none.ScopeFor("docs"); got != ScopeOff {
 		t.Errorf("no loops: %s, want off (D4)", got)
+	}
+}
+
+// YAML 1.1 reads bare false and no as the boolean false: both are off. yes is true, which is refused.
+func TestYAML11BooleansInScope(t *testing.T) {
+	for _, v := range []string{"false", "no", "off"} {
+		cfg, err := Parse([]byte(good + "loops: {docs: {scope: " + v + "}}\n"))
+		if err != nil {
+			t.Fatalf("scope: %s: %v", v, err)
+		}
+		if got := cfg.ScopeFor("docs"); got != ScopeOff {
+			t.Errorf("scope: %s = %q, want off", v, got)
+		}
+	}
+	_, err := Parse([]byte(good + "loops: {docs: {scope: yes}}\n"))
+	if err == nil || !strings.Contains(err.Error(), "scope is off, steering or scoper") {
+		t.Fatalf("scope: yes: err = %v", err)
 	}
 }
 
