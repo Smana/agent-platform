@@ -64,9 +64,6 @@ func ParseChildOf(label string) (int, bool) {
 	return n, true
 }
 
-// +kubebuilder:validation:XValidation:rule="has(self.parent) == has(oldSelf.parent) && (!has(self.parent) || self.parent == oldSelf.parent)",message="spec.parent is fixed at creation"
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
-
 // TerminalPhase is a task that has ended: nothing moves it again.
 func TerminalPhase(p string) bool {
 	switch p {

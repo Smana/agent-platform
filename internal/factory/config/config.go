@@ -1234,6 +1234,9 @@ type SplitPolicy struct {
 	ChildTier string `json:"childTier,omitempty"`
 }
 
+// MaxFamilyUSD bounds familyUSD so its conversion to micro-dollars stays in range.
+const MaxFamilyUSD = 1000
+
 // DefaultChildTier is a child's tier when the row names none (SP5).
 const DefaultChildTier = "standard"
 
@@ -1357,8 +1360,8 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 				bad("loops.%s.split.childTier %q is light, standard or frontier", name, s.ChildTier)
 			case len(c.Meter.Prices) == 0:
 				bad("loops.%s.split needs meter.prices: a family's cap is in USD", name)
-			case math.IsNaN(s.FamilyUSD) || math.IsInf(s.FamilyUSD, 0) || s.FamilyUSD < 0:
-				bad("loops.%s.split.familyUSD must be a positive number", name)
+			case math.IsNaN(s.FamilyUSD) || s.FamilyUSD < 0 || s.FamilyUSD > MaxFamilyUSD:
+				bad("loops.%s.split.familyUSD must be 0 (the default) or positive and at most %d", name, MaxFamilyUSD)
 			case s.FamilyUSD != 0 && s.FamilyUSD < c.Tiers[tier].TaskUSD:
 				bad("loops.%s.split.familyUSD %.2f is below the %s tier's taskUSD %.2f: no part would fit", name, s.FamilyUSD, tier, c.Tiers[tier].TaskUSD)
 			}

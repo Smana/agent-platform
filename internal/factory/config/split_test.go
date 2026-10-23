@@ -63,6 +63,9 @@ func TestSplitsAreRefused(t *testing.T) {
 		"no maxChildren":        {priced, "{docs: {scope: scoper, split: {}}}", "loops.docs.split.maxChildren must be 2..5"},
 		"an unknown child tier": {priced, "{docs: {scope: scoper, split: {maxChildren: 3, childTier: huge}}}", `childTier "huge" is light, standard or frontier`},
 		"below the child tier":  {priced, "{docs: {scope: scoper, split: {maxChildren: 3, familyUSD: 5}}}", "familyUSD 5.00 is below the standard tier's taskUSD 5.10"},
+		"familyUSD NaN":         {priced, "{docs: {scope: scoper, split: {maxChildren: 3, familyUSD: .nan}}}", "unsupported value: NaN"},
+		"familyUSD negative":    {priced, "{docs: {scope: scoper, split: {maxChildren: 3, familyUSD: -4}}}", "familyUSD must be 0 (the default) or positive and at most 1000"},
+		"familyUSD huge":        {priced, "{docs: {scope: scoper, split: {maxChildren: 3, familyUSD: 1e300}}}", "familyUSD must be 0 (the default) or positive and at most 1000"},
 		"no prices":             {good, "{docs: {scope: scoper, split: {maxChildren: 3}}}", "loops.docs.split needs meter.prices"},
 	} {
 		t.Run(name, func(t *testing.T) {
