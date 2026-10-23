@@ -83,11 +83,11 @@ func (r Reader) Source(ctx context.Context, ns, name string) (Source, error) {
 }
 
 // NotReadySince lists, as kind/namespace/name sorted, the Kustomizations and HelmReleases that the
-// GitRepository ns/name delivers and whose Ready condition turned False after since (L7). A
+// GitRepository ns/name delivers and whose Ready condition turned False in (since, until] (L7); a later flap is never the merge's. A
 // Kustomization is delivered by it when its spec.sourceRef names it (a missing namespace is the
 // Kustomization's own); a HelmRelease when kustomize-controller's labels name one of those. What an
 // AI child on another source (OCIRepository/ai-native-ref) applies is never blamed on a host merge.
-func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.Time) ([]string, error) {
+func (r Reader) NotReadySince(ctx context.Context, ns, name string, since, until time.Time) ([]string, error) {
 	ks := &unstructured.UnstructuredList{}
 	ks.SetGroupVersionKind(kustomizationList)
 	if err := r.C.List(ctx, ks); err != nil {
@@ -107,7 +107,7 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 			continue
 		}
 		delivered[[2]string{k.GetNamespace(), k.GetName()}] = true
-		bad, err := notReadySince(k, since)
+		bad, err := notReadySince(k, since, until)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +126,7 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 		if !delivered[[2]string{l[ownerNamespace], l[ownerName]}] {
 			continue
 		}
-		bad, err := notReadySince(h, since)
+		bad, err := notReadySince(h, since, until)
 		if err != nil {
 			return nil, err
 		}
@@ -138,13 +138,13 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 	return out, nil
 }
 
-// notReadySince: the object's Ready condition is False and turned so after since. A False one whose
+// notReadySince: the object's Ready condition is False and turned so in (since, until]. A False one whose
 // time is missing or unparsable is an error: it cannot be told apart from a fresh failure.
 //
 // Only Ready=False counts: an object that has not yet picked up the merge still reads its old
 // Ready=True, and a stuck Unknown is never blamed, so an empty list alone is not "healthy" — the
 // caller also checks the Source's revision and settle time.
-func notReadySince(u *unstructured.Unstructured, since time.Time) (bool, error) {
+func notReadySince(u *unstructured.Unstructured, since, until time.Time) (bool, error) {
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conds {
 		m, ok := c.(map[string]any)
@@ -156,7 +156,7 @@ func notReadySince(u *unstructured.Unstructured, since time.Time) (bool, error) 
 		if err != nil {
 			return false, fmt.Errorf("fluxwatch: %s %s/%s is not Ready with lastTransitionTime %q: %w", u.GetKind(), u.GetNamespace(), u.GetName(), ts, err)
 		}
-		return t.After(since), nil
+		return t.After(since) && !t.After(until), nil
 	}
 	return false, nil
 }

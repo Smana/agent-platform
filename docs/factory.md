@@ -608,10 +608,8 @@ merge:
   breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}   # maxFollowUps 0, the default, counts none
 ```
 
-`oracleRuns` and `flux` are read by the signals that follow this change; this one reads main's CI
-and the follow-ups. Until then a class that declares either ends every watch `inconclusive`: the
-signal stays open to the end of the window and an open signal counts `inconclusive`. Do not
-declare them before those signals exist. `merge.breaker.maxFollowUps` must be between 0 and `window`.
+`flux` needs the chart's `monitor.flux.enabled` (a read-only ClusterRole, off by default); without
+it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
 
 **The signals.**
 
@@ -619,6 +617,20 @@ declare them before those signals exist. `merge.breaker.maxFollowUps` must be be
 |---|---|---|---|
 | Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
+
+The detector signal reads each scheduled run after the merge, oldest first: one that reports gone a
+target this merge wrote (same file, and the snapshot it wrote or the original URL) is a `regression`;
+a run that failed, or whose findings are refused, is `inconclusive`; `oracleRuns` clean runs are
+`healthy`. Matching the original URL can also count an older occurrence of that URL in the same
+file. A read that fails leaves it open, `inconclusive` after 72 h.
+
+The Flux signal is `healthy` only when the source holds the merge commit, `within` has passed
+since the source applied it, and no Kustomization or HelmRelease of that source turned not Ready in
+that window (from the application to `within` later: a later flap is never blamed). Seen at a
+descendant of the merge, the window starts at the merge's own time. A reader error leaves it open
+(`inconclusive` at the window's end). Known limits: a suspended source makes it `inconclusive` at
+any pass, and attribution is per source, not per merge, so overlapping windows, or a later
+commit's failure inside the window, count against every open merge of that source.
 
 A follow-up read that fails or cannot say makes the verdict `inconclusive`, never `healthy`
 (`followUpsUnread`): no blame for a file, an omitted patch, a truncated search or merged list

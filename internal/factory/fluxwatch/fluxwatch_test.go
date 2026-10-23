@@ -73,7 +73,7 @@ func TestNotReadySince(t *testing.T) {
 		ownedBy(obj(hrV2, "HelmRelease", "apps", "x", "Unknown", at.Add(time.Minute)), "apps"),
 		ownedBy(obj(hrV2, "HelmRelease", "agent-system", "agent-factory", "False", at.Add(5*time.Minute)), "agent-factory"),
 	)
-	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at)
+	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at, at.Add(24*time.Hour))
 	if err != nil || !slices.Equal(got, []string{"HelmRelease/tooling/grafana"}) {
 		t.Fatalf("%v %v", got, err)
 	}
@@ -103,7 +103,7 @@ func TestNotReadySinceEdges(t *testing.T) {
 		ownedBy(obj(hrV2, "HelmRelease", "tooling", "equal", "False", at), "tooling"),
 		ownedBy(obj(hrV2, "HelmRelease", "tooling", "before", "False", at.Add(-time.Minute)), "tooling"),
 	)
-	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at)
+	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at, at.Add(24*time.Hour))
 	if err != nil || !slices.Equal(got, []string{"Kustomization/flux-system/tooling"}) {
 		t.Fatalf("%v %v", got, err)
 	}
@@ -118,7 +118,7 @@ func TestNotReadySinceUnreadableTime(t *testing.T) {
 			conds["lastTransitionTime"] = ts
 		}
 		_ = unstructured.SetNestedSlice(u.Object, []any{conds}, "status", "conditions")
-		if got, err := (Reader{C: fluxClient(u)}).NotReadySince(t.Context(), "flux-system", "flux-system", at); err == nil {
+		if got, err := (Reader{C: fluxClient(u)}).NotReadySince(t.Context(), "flux-system", "flux-system", at, at.Add(24*time.Hour)); err == nil {
 			t.Errorf("%s: %v, want an error", name, got)
 		}
 	}
@@ -159,5 +159,19 @@ func TestSourceFailsClosed(t *testing.T) {
 	}
 	if _, err := (Reader{C: fluxClient(gitRepo(func(*unstructured.Unstructured) {}))}).Source(t.Context(), "flux-system", "flux-system"); err != nil {
 		t.Errorf("a well-formed source: %v", err)
+	}
+}
+
+// The blame window is closed above: a transition after until is a later flap, never the merge's.
+func TestNotReadyUntil(t *testing.T) {
+	c := fluxClient(
+		ownedBy(obj(hrV2, "HelmRelease", "tooling", "inside", "False", at.Add(10*time.Minute)), "tooling"),
+		ownedBy(obj(hrV2, "HelmRelease", "tooling", "edge", "False", at.Add(15*time.Minute)), "tooling"),
+		ownedBy(obj(hrV2, "HelmRelease", "tooling", "after", "False", at.Add(16*time.Minute)), "tooling"),
+		sourced(obj(ksV1, "Kustomization", "flux-system", "tooling", "True", at), "GitRepository", "flux-system"),
+	)
+	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at, at.Add(15*time.Minute))
+	if err != nil || !slices.Equal(got, []string{"HelmRelease/tooling/edge", "HelmRelease/tooling/inside"}) {
+		t.Fatalf("%v %v", got, err)
 	}
 }

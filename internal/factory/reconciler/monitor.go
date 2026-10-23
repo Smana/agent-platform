@@ -310,6 +310,7 @@ func (r *Reconciler) oracleOpen(m *v1alpha1.MonitorStatus) string {
 }
 
 // wroteGone: a run reports gone a target the task wrote, by its file and its archive or its URL.
+// Matching the URL can count another, older occurrence of the same dead URL in that file.
 func wroteGone(wrote []v1alpha1.Finding, run []intake.LinkFinding) bool {
 	return slices.ContainsFunc(run, func(f intake.LinkFinding) bool {
 		return intake.Gone(f.Status) && slices.ContainsFunc(wrote, func(w v1alpha1.Finding) bool {
@@ -321,7 +322,12 @@ func wroteGone(wrote []v1alpha1.Finding, run []intake.LinkFinding) bool {
 // fluxSignal is Flux on the factory's cluster (R33, R34). An empty not-ready list is no proof of
 // health: an object that has not picked up the merge still reads Ready. So healthy needs the
 // source to hold the merge commit, `within` to have passed since it fetched it, and nothing turned
-// not Ready since. Any reader error leaves the signal open, so the window's end reads inconclusive.
+// not Ready between the merge's application and `within` later (a later flap is never blamed).
+// Any reader error leaves the signal open, so the window's end reads inconclusive.
+//
+// Known limits, by design (the spec's): a suspended source makes the signal inconclusive at any
+// pass, even after a clean start; attribution is per source, so overlapping windows, or a later
+// commit's failure inside the window, count against every open merge of that source.
 func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.FluxWatch) (string, []string) {
 	if r.Flux == nil {
 		return "inconclusive", nil
@@ -349,10 +355,17 @@ func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.
 		case !held || src.At.IsZero():
 			return "", nil
 		}
-		at := metav1.NewTime(src.At) // the first time only: a later fetch is a later commit's
+		// The first time only: a later fetch is a later commit's. A source seen at the merge commit
+		// applied it at src.At; one seen at a descendant fetched the merge at some earlier time we
+		// cannot read, so Applied is the merge's own time (GitHub's mergedAt, m.Since), a safe lower
+		// bound: a failure from before the merge has an older transition and is not blamed.
+		at := metav1.NewTime(src.At)
+		if src.Revision != ref.MergeCommitSHA {
+			at = m.Since
+		}
 		m.Applied = &at
 	}
-	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), m.Applied.Time)
+	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), m.Applied.Time, m.Applied.Add(f.Within.Duration))
 	if err != nil {
 		r.log().Warn("Flux readiness read failed", "task.id", t.Name, "err", err)
 		return "", nil

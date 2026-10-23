@@ -146,7 +146,7 @@ type Reconciler struct {
 	// the Flux signal reads inconclusive.
 	Flux interface {
 		Source(ctx context.Context, ns, name string) (fluxwatch.Source, error)
-		NotReadySince(ctx context.Context, ns, name string, since time.Time) ([]string, error)
+		NotReadySince(ctx context.Context, ns, name string, since, until time.Time) ([]string, error)
 	}
 	// Clients is v2 D8: a repository's two connections, the factory App's and the merger's, each
 	// bound to that repository. Set, every reconcile binds its task's repository's pair, and a
