@@ -99,10 +99,12 @@ type Finding struct {
 	// The link target, an https URL.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https://`
 	URL string `json:"url"`
 	// The Wayback Machine's closest snapshot of URL, an https://web.archive.org/web/ URL; empty
 	// when it has none.
 	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^https://web\.archive\.org/web/`
 	// +optional
 	Archive string `json:"archive,omitempty"`
 }

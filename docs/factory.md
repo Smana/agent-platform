@@ -168,8 +168,8 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `patch_too_large` | It changes more files or lines than its class allows |
 | `holdout_red` | A holdout check its class requires failed, was cancelled, neutral or skipped, or was not posted by GitHub Actions; also when the pull request has more than 100 checks, since some are unread |
 | `holdout_pending` | A holdout check its class requires has not passed yet |
-| `oracle_finding_open` | A finding of the task is still a link target in the head, its file is unchanged, or the task has no findings |
-| `oracle_unrequested` | The head moves a link target no finding asked to move, or moves one off its host and the snapshot given |
+| `oracle_finding_open` | A finding of the task is still a link target in the head, was not one on the base, or the task has no findings |
+| `oracle_unrequested` | The head moves a link target no finding asked to move, or moves one anywhere but the exact snapshot its finding gave |
 | `no_approving_verdict` | The template has a reviewer and its verdict is not approve |
 | `head_unreported` | The room never reported the current head as a commit of the task's run |
 | `verdict_stale` | The approval was for an older head. Next step: review the current head, or the factory asks for a new review |
@@ -437,7 +437,7 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 5 | The class is `live` or `shadow` | `class_mismatch` |
 | 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
 | 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
-| 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and no other target moved but to its host or the snapshot given) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
+| 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and every finding was a link target on the base and none is on the head, and no target moved but to the exact snapshot its finding gave) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
 | 9 | The class's breaker has not tripped | `class_paused` |
 | 10 | Under `merge.autoMergesPerDay` today, and under the class's `maxPerDay` | `auto_merge_cap` |
 | 11 | The class is `live` | `shadow_would_arm`: the decision is posted, nothing is merged |

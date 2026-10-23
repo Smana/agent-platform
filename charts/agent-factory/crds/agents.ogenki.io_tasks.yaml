@@ -117,6 +117,7 @@ spec:
                         The Wayback Machine's closest snapshot of URL, an https://web.archive.org/web/ URL; empty
                         when it has none.
                       maxLength: 2048
+                      pattern: ^https://web\.archive\.org/web/
                       type: string
                     file:
                       description: The Markdown file on main that holds the link.
@@ -127,6 +128,7 @@ spec:
                       description: The link target, an https URL.
                       maxLength: 2048
                       minLength: 1
+                      pattern: ^https://
                       type: string
                   required:
                   - file

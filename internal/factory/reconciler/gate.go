@@ -4,10 +4,8 @@ package reconciler
 
 import (
 	"maps"
-	"net/url"
 	"regexp"
 	"slices"
-	"strings"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 
@@ -160,10 +158,12 @@ func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
-// oracle (MC5, MC6): the head no longer holds any of the task's findings — each finding's file
-// changed, and its URL is no longer a link target there — and every target it moved is a
-// finding's, moved to the same host or to the snapshot the finding gave. diffShape links-only
-// (Validate) has already held the rest of the text and the targets' count.
+// oracle (MC5, MC6): every finding was a link target in its file on the base and is none on the
+// head, and every target the head moved is a finding's, moved to exactly the snapshot that
+// finding gave: no same-host move, no other snapshot. A finding with no snapshot has no move.
+// diffShape links-only (Validate) has already held the rest of the text and the targets' count.
+// Only the head's files are walked here: a deleted file is refused by that shape's count check
+// (loop 2 of mdlinks.LinksOnly walks the base's paths too), so that check is not redundant.
 func oracle(_ config.Class, in ArmInputs) (string, bool) {
 	fs := in.Task.Spec.Findings
 	if len(fs) == 0 {
@@ -171,7 +171,8 @@ func oracle(_ config.Class, in ArmInputs) (string, bool) {
 	}
 	for _, f := range fs {
 		h, ok := in.Files.Head[f.File]
-		if _, ts := mdlinks.Targets(h); !ok || slices.Contains(ts, f.URL) {
+		_, tb := mdlinks.Targets(in.Files.Base[f.File])
+		if _, ts := mdlinks.Targets(h); !ok || !slices.Contains(tb, f.URL) || slices.Contains(ts, f.URL) {
 			return "oracle_finding_open", false
 		}
 	}
@@ -186,20 +187,12 @@ func oracle(_ config.Class, in ArmInputs) (string, bool) {
 				continue
 			}
 			j := slices.IndexFunc(fs, func(f v1alpha1.Finding) bool { return f.File == p && f.URL == tb[i] })
-			if j < 0 || (th[i] != fs[j].Archive && !sameHost(tb[i], th[i])) {
+			if j < 0 || fs[j].Archive == "" || th[i] != fs[j].Archive {
 				return "oracle_unrequested", false
 			}
 		}
 	}
 	return "", false
-}
-
-// sameHost: both are https URLs on one host.
-func sameHost(a, b string) bool {
-	ua, ea := url.Parse(a)
-	ub, eb := url.Parse(b)
-	return ea == nil && eb == nil && ua.Scheme == "https" && ub.Scheme == "https" && ua.Host != "" &&
-		strings.EqualFold(ua.Host, ub.Host)
 }
 
 // onDiff are the conditions that read the diff, which hold until it is read.
