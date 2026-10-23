@@ -194,3 +194,16 @@ func TestFakeFollowUpReadFailures(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestFakeIsAncestor(t *testing.T) {
+	f := NewFake()
+	f.SetAncestors("c3", "c1", "c2")
+	for _, tc := range []struct {
+		anc, sha string
+		want     bool
+	}{{"c1", "c3", true}, {"c3", "c3", true}, {"c3", "c1", false}, {"x", "c3", false}} {
+		if got, err := f.IsAncestor(t.Context(), tc.anc, tc.sha); err != nil || got != tc.want {
+			t.Errorf("%s,%s: %v %v", tc.anc, tc.sha, got, err)
+		}
+	}
+}

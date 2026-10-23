@@ -411,6 +411,9 @@ type PRSummary struct {
 type Merger interface {
 	PullRequestChecks(ctx context.Context, number int) (Checks, error)
 	CommitChecks(ctx context.Context, sha string) ([]Check, error)
+	// IsAncestor reports whether ancestor is sha or one of its ancestors: the monitor asks it
+	// whether a later main commit carries a merge.
+	IsAncestor(ctx context.Context, ancestor, sha string) (bool, error)
 	// RerunCheck re-runs the Actions job a check run is. It needs actions: write, beyond what
 	// the merger App held until merge.checkReruns was turned on.
 	RerunCheck(ctx context.Context, id int64) error

@@ -23,5 +23,12 @@ zitadelReaderSecret: agent-factory-zitadel-reader
 # config.api.sponsored[].clientIDFile and config.api.projectIDFile. Optional: without it no
 # sponsored client id reads, and every sponsored token is refused.
 sponsoredSecret: agent-factory-sponsored
+# The post-merge monitor (merge gate classes MC7, R34). `flux.enabled` renders the read-only
+# ClusterRole that lets a class's `monitor.flux` read Flux's objects: get on gitrepositories, list
+# on kustomizations and helmreleases, no watch. Off by default; enable it with the first
+# monitored class that declares `monitor.flux`.
+monitor:
+  flux:
+    enabled: false
 # The factory config, rendered verbatim: README.md#config, docs/factory.md#the-config-file.
 config: {}

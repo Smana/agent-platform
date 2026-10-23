@@ -645,9 +645,19 @@ type MonitorStatus struct {
 	// +kubebuilder:validation:MaxItems=8
 	// +optional
 	OracleRuns []int64 `json:"oracleRuns,omitempty"`
-	// When the Flux source first held the merge commit (R33).
+	// The Flux source's fetch time the first pass that saw it hold the merge commit (R33): an upper
+	// bound on when the merge was applied. The blame window and the settle time end `within` later.
 	// +optional
 	Applied *metav1.Time `json:"applied,omitempty"`
+	// Where the Flux blame window starts: the source's fetch time when the first observed revision
+	// is the merge commit, else the merge's own time (the merge was fetched somewhere before Applied).
+	// +optional
+	BlameFrom *metav1.Time `json:"blameFrom,omitempty"`
+	// The Flux objects found not Ready in the window, kind/namespace/name, the first five.
+	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:items:MaxLength=320
+	// +optional
+	FluxBlamed []string `json:"fluxBlamed,omitempty"`
 	// The verdict comment is on the pull request.
 	// +optional
 	Posted bool `json:"posted,omitempty"`

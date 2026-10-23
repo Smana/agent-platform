@@ -17,6 +17,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/intake"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 )
 
@@ -28,6 +29,9 @@ const monitorEvery = 10 * time.Minute
 // starts that much before the merge, and the watch ends that much after its window, so a pull
 // request merged at the very end of the window is still found before the verdict is final.
 const searchLag = 5 * time.Minute
+
+// maxFluxBlamed bounds status.monitor.fluxBlamed (the CRD's maxItems).
+const maxFluxBlamed = 5
 
 // maxFollowUps bounds status.monitor.followUps (the CRD's maxItems).
 const maxFollowUps = 16
@@ -135,7 +139,12 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
-	// Task 8 adds the readings of m.Oracle (cl.Monitor.OracleRuns > 0) and m.Flux (cl.Monitor.Flux != nil).
+	if cl.Monitor.OracleRuns > 0 && m.Oracle == "" {
+		m.Oracle = r.oracleSignal(ctx, t, cl)
+	}
+	if cl.Monitor.Flux != nil && m.Flux == "" {
+		m.Flux = r.fluxSignal(ctx, t, *cl.Monitor.Flux)
+	}
 	r.followUps(ctx, t, cl)
 	ended := r.Now().Sub(m.Since.Time) >= cl.Monitor.FollowUpWindow.Duration+searchLag
 	signals := []*string{&m.Main}
@@ -196,6 +205,9 @@ func monitorWhy(m *v1alpha1.MonitorStatus) []string {
 	}
 	if m.Flux != "" {
 		out = append(out, "Flux: "+m.Flux)
+		if len(m.FluxBlamed) > 0 {
+			out = append(out, fmt.Sprintf("not Ready since the merge: %v", m.FluxBlamed))
+		}
 	}
 	if len(m.FollowUps) > 0 {
 		out = append(out, fmt.Sprintf("follow-up fixes: %v, counted by the breaker, not in this verdict", m.FollowUps))
@@ -240,6 +252,141 @@ func (r *Reconciler) mainSignal(ctx context.Context, t *v1alpha1.Task) (string, 
 		return "inconclusive", nil
 	}
 	return "", nil
+}
+
+// oracleWait is how long after the merge the detector's runs are waited for: a nightly detector
+// that has not run twice by then did not say.
+const oracleWait = 72 * time.Hour
+
+// oracleSignal reads the detector's scheduled runs after the merge, oldest first (R37), each once:
+// a run that reports a target the merge wrote as gone is a regression; a run that did not succeed
+// or whose findings are refused is inconclusive; OracleRuns clean runs are healthy. Any read that
+// fails leaves the signal open, so the next pass reads again; open after oracleWait is inconclusive.
+func (r *Reconciler) oracleSignal(ctx context.Context, t *v1alpha1.Task, cl config.Class) string {
+	m, rc := t.Status.Monitor, r.repo(t)
+	if cl.Oracle == nil { // config refuses oracleRuns without an oracle; never read a workflow of nothing
+		return "inconclusive"
+	}
+	runs, err := r.merger(ctx).WorkflowRuns(ctx, cl.Oracle.Workflow)
+	if err != nil {
+		r.log().Warn("detector runs read failed", "task.id", t.Name, "err", err)
+		return r.oracleOpen(m)
+	}
+	var fresh []forge.WorkflowRun
+	for _, run := range runs {
+		if intake.DetectorRun(run, rc) && run.Created.After(m.Since.Time) && !slices.Contains(m.OracleRuns, run.ID) {
+			fresh = append(fresh, run)
+		}
+	}
+	slices.SortFunc(fresh, func(a, b forge.WorkflowRun) int { return a.Created.Compare(b.Created) })
+	for _, run := range fresh {
+		if run.Conclusion != "success" {
+			return "inconclusive"
+		}
+		raw, err := r.merger(ctx).RunArtifact(ctx, run.ID, "findings", "findings.json")
+		if err != nil {
+			r.log().Warn("detector findings read failed", "task.id", t.Name, "run", run.ID, "err", err)
+			return r.oracleOpen(m)
+		}
+		found, err := intake.ParseFindings(raw)
+		if err != nil {
+			r.log().Warn("detector findings refused", "task.id", t.Name, "run", run.ID, "err", err)
+			return "inconclusive"
+		}
+		if wroteGone(t.Spec.Findings, found) {
+			return "regression"
+		}
+		if m.OracleRuns = append(m.OracleRuns, run.ID); len(m.OracleRuns) >= cl.Monitor.OracleRuns {
+			return "healthy"
+		}
+	}
+	return r.oracleOpen(m)
+}
+
+// oracleOpen leaves the signal open until oracleWait has passed since the merge.
+func (r *Reconciler) oracleOpen(m *v1alpha1.MonitorStatus) string {
+	if r.Now().Sub(m.Since.Time) >= oracleWait {
+		return "inconclusive"
+	}
+	return ""
+}
+
+// wroteGone: a run reports gone a target the task wrote, by its file and its archive or its URL.
+// Matching the URL can count another, older occurrence of the same dead URL in that file.
+func wroteGone(wrote []v1alpha1.Finding, run []intake.LinkFinding) bool {
+	return slices.ContainsFunc(run, func(f intake.LinkFinding) bool {
+		return intake.Gone(f.Status) && slices.ContainsFunc(wrote, func(w v1alpha1.Finding) bool {
+			return w.File == f.File && (f.URL == w.URL || (w.Archive != "" && f.URL == w.Archive))
+		})
+	})
+}
+
+// fluxSignal is Flux on the factory's cluster (R33, R34). An empty not-ready list is no proof of
+// health: an object that has not picked up the merge still reads Ready. So healthy needs the
+// source to hold the merge commit, `within` to have passed since it fetched it, and nothing turned
+// not Ready between the merge and `within` after the source first showed it (a later flap is never blamed).
+// Any reader error leaves the signal open, so the window's end reads inconclusive.
+//
+// Known limits, by design (the spec's): a suspended source makes the signal inconclusive at any
+// pass, even after a clean start; attribution is per source, so overlapping windows, or a later
+// commit's failure inside the window, count against every open merge of that source.
+func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.FluxWatch) string {
+	if r.Flux == nil {
+		return "inconclusive"
+	}
+	ref, m := t.Status.PullRequest, t.Status.Monitor
+	src, err := r.Flux.Source(ctx, f.Namespace(), f.Name())
+	if err != nil {
+		r.log().Warn("Flux source read failed", "task.id", t.Name, "err", err)
+		return ""
+	}
+	if src.Suspended {
+		return "inconclusive"
+	}
+	if m.Applied == nil {
+		held := src.Revision == ref.MergeCommitSHA
+		if !held {
+			if held, err = r.merger(ctx).IsAncestor(ctx, ref.MergeCommitSHA, src.Revision); err != nil {
+				r.log().Warn("Flux revision ancestry read failed", "task.id", t.Name, "err", err)
+				return ""
+			}
+		}
+		switch {
+		case !held && r.Now().Sub(m.Since.Time) >= f.Within.Duration:
+			return "inconclusive" // the source never delivered the merge in time
+		case !held || src.At.IsZero():
+			return ""
+		}
+		// The first time only: a later fetch is a later commit's. src.At is when the source fetched
+		// what it first showed us, an upper bound on when the merge was applied: the blame window
+		// and the settle time end `within` after it. Blame starts at src.At when the source shows
+		// the merge commit itself, else at the merge's own time (mergedAt, m.Since): the merge was
+		// fetched somewhere before src.At, and a failure from before the merge has an older
+		// transition, so it is not blamed.
+		at, from := metav1.NewTime(src.At), metav1.NewTime(src.At)
+		if src.Revision != ref.MergeCommitSHA {
+			from = m.Since
+		}
+		m.Applied, m.BlameFrom = &at, &from
+	}
+	from := m.Applied.Time
+	if m.BlameFrom != nil {
+		from = m.BlameFrom.Time
+	}
+	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), from, m.Applied.Add(f.Within.Duration))
+	if err != nil {
+		r.log().Warn("Flux readiness read failed", "task.id", t.Name, "err", err)
+		return ""
+	}
+	if len(bad) > 0 {
+		r.log().Warn("Flux objects turned not Ready after the merge", "task.id", t.Name, "objects", bad)
+		m.FluxBlamed = bad[:min(len(bad), maxFluxBlamed)]
+		return "regression"
+	}
+	if r.Now().Sub(m.Applied.Time) >= f.Within.Duration {
+		return "healthy"
+	}
+	return ""
 }
 
 func (c *monitorCache) lastPass(task string) (time.Time, bool) {

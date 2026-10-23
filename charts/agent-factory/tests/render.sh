@@ -83,6 +83,19 @@ n=$(yq '[.rules[] | select(.resources[] == "configmaps")] | length' - <<<"$role"
 yq -e '.rules[] | select(.resources[] == "configmaps") | ((has("resourceNames") | not) and ((.verbs | sort | join(",")) == "create,delete,get,list,update,watch"))' - <<<"$role" >/dev/null \
   || { echo "FAIL: the configmaps rule: no resourceNames, verbs = stop object's watch + R50 ledgers" >&2; fail=1; }
 ynone 'select(.kind == "Role" or .kind == "ClusterRole") | .rules[] | select(.resources[] == "secrets")' "the factory never reads Secrets through the API"
+# The Flux reader (MC7, R34) renders only when enabled: no ClusterRole by default, then exactly
+# get on gitrepositories and list on kustomizations and helmreleases, no watch.
+ynone 'select(.kind == "ClusterRole" or .kind == "ClusterRoleBinding")' "no cluster-scoped RBAC unless monitor.flux.enabled"
+flux=$(helm template agent-factory . --namespace agent-system --set image.tag="$digest" --set config.repository=Smana/cloud-native-ref --set monitor.flux.enabled=true)
+cr=$(yq 'select(.kind == "ClusterRole")' - <<<"$flux")
+[ "$(yq '.rules | length' - <<<"$cr")" = 3 ] || { echo "FAIL: the Flux ClusterRole has exactly three rules" >&2; fail=1; }
+for rule in "source.toolkit.fluxcd.io gitrepositories get" "kustomize.toolkit.fluxcd.io kustomizations list" "helm.toolkit.fluxcd.io helmreleases list"; do
+  set -- $rule
+  yq -e ".rules[] | select(.apiGroups[0] == \"$1\" and (.resources | join(\",\")) == \"$2\" and (.verbs | sort | join(\",\")) == \"$3\")" - <<<"$cr" >/dev/null \
+    || { echo "FAIL: Flux ClusterRole rule $2 wants exactly verbs $3" >&2; fail=1; }
+done
+yq -e 'select(.kind == "ClusterRoleBinding") | (.roleRef.name == "agent-factory-flux-reader" and .subjects[0].name == "agent-factory" and .subjects[0].namespace == "agent-system")' - <<<"$flux" >/dev/null \
+  || { echo "FAIL: the Flux ClusterRoleBinding binds the factory's ServiceAccount" >&2; fail=1; }
 # defaultMode renders as 0400 or 0440 (yq keeps the octal spelling); only the group-readable one is allowed.
 ynone 'select(.kind == "Deployment") | .spec.template.spec.volumes[].secret.defaultMode | select(. == "0400" or . == "400")' "a 0400 Secret is root-only: the factory runs as 65532"
 for bad in "" "v0.0.0" "latest"; do

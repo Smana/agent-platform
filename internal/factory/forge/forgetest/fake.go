@@ -40,6 +40,7 @@ type Fake struct {
 	agentPulls   []forge.AgentPull
 	checks       map[int]forge.Checks
 	commitChecks map[string][]forge.Check
+	ancestors    map[string][]string
 	commits      map[int][]forge.Commit
 	commitsCut   map[int]bool
 	activity     map[string][]forge.Push
@@ -83,7 +84,7 @@ func NewFake() *Fake {
 	return &Fake{labeled: map[string][]forge.Item{}, events: map[int][]forge.LabelEvent{}, issues: map[int]forge.Issue{},
 		prs: map[int]forge.PR{}, branches: map[string]int{}, comments: map[int][]forge.Comment{}, added: map[int][]string{},
 		removed: map[int][]string{}, cut: map[int]bool{}, closed: map[int]bool{},
-		checks: map[int]forge.Checks{}, commitChecks: map[string][]forge.Check{}, commits: map[int][]forge.Commit{}, commitsCut: map[int]bool{},
+		checks: map[int]forge.Checks{}, commitChecks: map[string][]forge.Check{}, ancestors: map[string][]string{}, commits: map[int][]forge.Commit{}, commitsCut: map[int]bool{},
 		activity: map[string][]forge.Push{}, activityErr: map[string]error{}}
 }
 
@@ -660,6 +661,20 @@ func (f *Fake) CommitChecks(_ context.Context, sha string) ([]forge.Check, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.commitChecks[sha]), nil
+}
+
+// SetAncestors sets the commits each sha descends from (or is), as IsAncestor answers.
+func (f *Fake) SetAncestors(sha string, ancestors ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ancestors[sha] = ancestors
+}
+
+// IsAncestor implements the Merger's IsAncestor: true when ancestor is sha or one SetAncestors gave.
+func (f *Fake) IsAncestor(_ context.Context, ancestor, sha string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return ancestor == sha || slices.Contains(f.ancestors[sha], ancestor), nil
 }
 
 // RerunCheck implements the Merger's RerunCheck, recording the check run id.

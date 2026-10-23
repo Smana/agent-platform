@@ -35,6 +35,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/fence"
+	"github.com/Smana/agent-platform/internal/factory/fluxwatch"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/intake"
@@ -188,6 +189,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			Clients: conns.class},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink, Costs: costs}
+	if cfg.AnyFlux() {
+		// Uncached: the reader serves a few reads per monitor pass, and a cache would start an
+		// informer per Flux kind (and need watch, which the ClusterRole does not grant).
+		rec.Flux = fluxwatch.Reader{C: mgr.GetAPIReader()}
+	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
 	}
