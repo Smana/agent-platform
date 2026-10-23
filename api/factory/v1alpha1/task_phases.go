@@ -2,6 +2,11 @@
 
 package v1alpha1
 
+import (
+	"strconv"
+	"strings"
+)
+
 // Task phases, the §4 state diagram.
 const (
 	PhaseReceived      = "Received"
@@ -21,6 +26,8 @@ const (
 	PhaseEscalated     = "Escalated"
 	PhaseClosed        = "Closed"
 	PhaseStopped       = "Stopped"
+	// a parent waiting on its children: neither active nor terminal (splitter design SL12)
+	PhaseSplit = "Split"
 )
 
 // AnnotationStop asks the factory to stop one task (§6.1): "true" set by hand, "label" set by
@@ -32,6 +39,33 @@ const AnnotationRevert = "agents.ogenki.io/revert"
 
 // LabelIssue carries the number of the issue a task narrates on.
 const LabelIssue = "agents.ogenki.io/issue"
+
+// LabelParent carries a child task's parent's name (splitter design SL14): a family's cost is a
+// selector sum, and the parent finds its children by it.
+const LabelParent = "agents.ogenki.io/parent"
+
+// childOfPrefix is the GitHub label a child's issue carries, with its parent issue's number (SL8).
+const childOfPrefix = "factory/child-of:#"
+
+// ChildOfLabel is the GitHub label on a child's issue naming its parent's (SL8): the ledger a
+// rebuild reads, as a follow-up's factory/follow-up-of is.
+func ChildOfLabel(parentIssue int) string { return childOfPrefix + strconv.Itoa(parentIssue) }
+
+// ParseChildOf is the parent issue a child-of label names, in its canonical form only.
+func ParseChildOf(label string) (int, bool) {
+	s, ok := strings.CutPrefix(label, childOfPrefix)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 || strconv.Itoa(n) != s {
+		return 0, false
+	}
+	return n, true
+}
+
+// +kubebuilder:validation:XValidation:rule="has(self.parent) == has(oldSelf.parent) && (!has(self.parent) || self.parent == oldSelf.parent)",message="spec.parent is fixed at creation"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
 
 // TerminalPhase is a task that has ended: nothing moves it again.
 func TerminalPhase(p string) bool {

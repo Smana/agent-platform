@@ -14,6 +14,7 @@ func TestNamesArePinned(t *testing.T) {
 	for key, want := range map[string]string{
 		IssueKey("Smana/cloud-native-ref", 2112, 1):                           "3buqdlot",
 		IssueKey("Smana/cloud-native-ref", 2112, 2):                           "5assac2n",
+		SplitKey("3buqdlot", 1):                                               "c7uac3kk",
 		RunloreKey("KubePodCrashLooping", "apps/xplane-image-gallery"):        "654i4tdu",
 		ScheduleKey("link-rot", time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC)): "z3rxclhf",
 	} {

@@ -38,6 +38,9 @@ func IssueKey(repo string, number, gen int) string {
 	return fmt.Sprintf("github:issue:%s#%d:gen%d", repo, number, gen)
 }
 
+// SplitKey keys a split's part k (splitter design SL7): one Task per part of a parent, whatever replays.
+func SplitKey(parent string, k int) string { return fmt.Sprintf("split:%s/%d", parent, k) }
+
 // RunloreKey dedups "while a task for it is open" (§1): the caller checks openness.
 func RunloreKey(alert, resourceRef string) string {
 	return fmt.Sprintf("runlore:%s:%s", alert, resourceRef)

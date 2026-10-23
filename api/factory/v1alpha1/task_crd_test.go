@@ -31,6 +31,10 @@ func TestTaskCRDCarriesTheDesignRules(t *testing.T) {
 		"- AwaitingHuman",
 		"- Verifying",
 		"- Stopped",
+		"- Split",
+		"spec.parent is fixed at creation",
+		"spec.scope never changes once set",
+		"a part's index is at most its count",
 		"- resume",
 		"resumes:",
 		"maxLength: 65536",
@@ -161,6 +165,19 @@ func TestTaskCRDKeepsTheTraceIds(t *testing.T) {
 		p := tr.Properties[field]
 		if p.Pattern != want || len(p.XValidations) != 1 || !strings.HasPrefix(p.XValidations[0].Rule, "self != '0000") {
 			t.Errorf("status.trace.%s = %+v", field, p)
+		}
+	}
+}
+
+// Splitter design SL8: the child-of label round-trips, and nothing else parses as one.
+func TestChildOfLabel(t *testing.T) {
+	if l := ChildOfLabel(2112); l != "factory/child-of:#2112" {
+		t.Fatal(l)
+	}
+	for l, want := range map[string]int{"factory/child-of:#2112": 2112, "factory/child-of:#0": 0, "factory/child-of:#07": 0,
+		"factory/child-of:2112": 0, "class:docs": 0, "factory/child-of:#12x": 0} {
+		if n, ok := ParseChildOf(l); n != want || ok != (want > 0) {
+			t.Errorf("%q: %d %v", l, n, ok)
 		}
 	}
 }
