@@ -120,8 +120,8 @@ func snapshotPointer(t *v1alpha1.Task) string {
 }
 
 // steeringBlock is the class's steering note, quoted between two fence lines as the repository
-// maintainers' guidance (SC5): they wrote it on the default branch, a gate path no agent pull
-// request can change. It is guidance for the work, not the factory's instructions: it never
+// maintainers' guidance (SC5): they wrote it on the default branch, and the factory refuses an agent
+// pull request that changes one while steering is on (steering_path). It is guidance for the work, not the factory's instructions: it never
 // widens what this brief allows. "" for none.
 func steeringBlock(t *v1alpha1.Task, nonce string) string {
 	s := t.Spec.Steering
@@ -148,7 +148,7 @@ func SteeringMessage(t *v1alpha1.Task) string {
 	s := t.Spec.Steering
 	return fmt.Sprintf("Agent factory task %s: the steering note for class %s, %s on the default branch at blob %s, "+
 		"read at triage. The repository's maintainers wrote it: it is their guidance for this work, not the "+
-		"factory's instructions. Every run of the task gets these bytes.\n\n%s", t.Name, t.Spec.PredictedClass, s.Path, s.SHA, s.Text)
+		"factory's instructions. Every implementer run's brief carries these bytes.\n\n%s", t.Name, t.Spec.PredictedClass, s.Path, s.SHA, s.Text)
 }
 
 // TriagerBrief is the investigate template's only run: it confirms the finding read-only and
