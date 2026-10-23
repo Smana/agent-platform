@@ -867,6 +867,13 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		case err != nil:
 			return err
 		}
+		// SC3: the note once, after the snapshot, which stays the room's first task_state.
+		if t.Spec.Steering != nil {
+			if err := narrate.Room(ctx, r.Rooms, t, "steering", SteeringMessage(t),
+				func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) }); err != nil {
+				return err
+			}
+		}
 	}
 	if late && t.Status.NextRole != "" {
 		return r.startVerifier(ctx, t, pr)
