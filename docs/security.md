@@ -228,7 +228,7 @@ The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is 
 - **A check mark files only when** the reacting user is linked in the factory's `onBehalfOf.slack`, the message is the bot's own draft (its user is the bot's, and its metadata hash matches), and the channel is configured. A second check mark on the same draft is a duplicate and files nothing.
 - **Secrets stay in the App.** The bot token and the client-credentials secret are mounted files, read at use. Neither reaches the broker or a run: the broker gets a ZITADEL access token, never Slack's, and a run never sees either.
 - **The App's token** is a client-credentials grant with the project-audience scope, the same scope `roomctl` uses. The factory proves the principal itself from that token and the `on_behalf_of` it names.
-- **A key problem is not a bad signature.** A webhook key the App cannot read answers `503 no_key`, so the broker holds the room and retries instead of dropping events.
+- **A key problem is not a bad signature.** A webhook key the App cannot read answers `503 no_key`, counted apart from `bad_signature`. It is not a hold: the broker retries after 10s, 1m and 5m, then counts a failure, and three given-up deliveries disable the subscriber until its `generation` is bumped, so events are lost meanwhile ([recovery](slack.md#state)).
 - **Redelivery.** Slack events and broker webhooks are deduplicated in memory (one replica). Two concurrent redeliveries of one id can both pass the check before either finishes; the worst case is one duplicate thread line.
 
 ## Supply chain
