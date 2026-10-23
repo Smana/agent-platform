@@ -183,6 +183,15 @@ spec:
                 maxLength: 140
                 pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
                 type: string
+              scopeMode:
+                description: |-
+                  The class's scope mode (scoper design SC2), fixed at triage so a config change never moves a
+                  task already triaged. Empty: triaged before the scoper existed, which reads as off.
+                enum:
+                - "off"
+                - steering
+                - scoper
+                type: string
               source:
                 description: Source is where the task came from and how far its text
                   is trusted.
@@ -223,6 +232,26 @@ spec:
                 - ref
                 - requestedBy
                 - trust
+                type: object
+              steering:
+                description: The class's steering note, read on the default branch
+                  at triage (SC3); unset for none.
+                properties:
+                  path:
+                    maxLength: 256
+                    type: string
+                  sha:
+                    description: The note's git blob sha on the default branch.
+                    maxLength: 40
+                    pattern: ^[0-9a-f]{40}$
+                    type: string
+                  text:
+                    maxLength: 2048
+                    type: string
+                required:
+                - path
+                - sha
+                - text
                 type: object
               template:
                 enum:

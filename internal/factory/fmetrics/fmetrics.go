@@ -110,6 +110,7 @@ type Set struct {
 	githubUp        metric.Int64Gauge
 	traceAbandoned  metric.Int64Counter
 	resumes         metric.Int64Counter
+	steeringReads   metric.Int64Counter
 	loopRuns        metric.Int64Counter
 	roomsCapped     metric.Int64Counter
 	usageErrors     metric.Int64Counter
@@ -268,6 +269,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.traceAbandoned, err = meter.Int64Counter("agent_factory_trace_export_abandoned_total",
 		metric.WithDescription("Task spans given up after the collector refused them for a day (ruling ST2)."))
+	check(err)
+	s.steeringReads, err = meter.Int64Counter("agent_factory_steering_reads_total",
+		metric.WithDescription("Steering notes read at triage, by class and read: used, absent or invalid (scoper design SC4, SC12)."))
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
@@ -640,6 +644,12 @@ func (s *Set) Resumed(ctx context.Context, reason string) {
 func (s *Set) LoopRun(ctx context.Context, class, end string) {
 	s.loopRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("end", oneOf(end, []string{"judge_impossible", "stalled", "not_met", "finished"})), s.repoOf(ctx)))
+}
+
+// SteeringRead counts a task's steering note read at triage, in a scope mode other than off.
+func (s *Set) SteeringRead(ctx context.Context, class, read string) {
+	s.steeringReads.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("read", oneOf(read, []string{"used", "absent", "invalid"})), s.repoOf(ctx)))
 }
 
 // RoomClosedAtCap counts a finished task's room closed at the cap instead of after its wait (#92).

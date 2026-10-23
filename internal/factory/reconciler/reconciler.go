@@ -70,6 +70,7 @@ type TaskForge interface {
 	BranchActivity(ctx context.Context, branch string) ([]forge.Push, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
+	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -91,6 +92,7 @@ type metrics interface {
 	Resumed(ctx context.Context, reason string)
 	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
+	SteeringRead(ctx context.Context, class, read string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -666,6 +668,9 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	t.Spec.Loop = nil
 	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
 		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
+	}
+	if err := r.scopeAtTriage(ctx, t); err != nil {
+		return err // a note that cannot be read is retried, never read as none (SC4)
 	}
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
