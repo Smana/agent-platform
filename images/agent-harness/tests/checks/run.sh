@@ -35,7 +35,6 @@ for p in ${profiles//,/ }; do
 done
 
 name="checks-$(echo "$repo" | tr '/A-Z' '-a-z')"
-out="$(mktemp -d)"
 cleanup() {
   docker rm -f "$name-proxy" >/dev/null 2>&1 || true
   docker network rm "$name" >/dev/null 2>&1 || true
@@ -44,6 +43,7 @@ cleanup() {
 }
 trap cleanup EXIT
 cleanup
+out="$(mktemp -d)" # after the pre-clean, which removes a previous $out
 docker network create --internal "$name" >/dev/null
 docker volume create "$name" >/dev/null
 chmod 0777 "$out"
@@ -82,11 +82,14 @@ done
 # /workspace as the composition gives it: writable by uid 10001, the root filesystem read-only.
 docker run --rm --user 0 -v "$name:/workspace" --entrypoint chown "$image" 10001:10001 /workspace
 
+# The proxy by address: under runsc the sandbox does not reach Docker's embedded DNS on this network.
+proxy_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$name\").IPAddress}}" "$name-proxy")
+[ -n "$proxy_ip" ] || { echo "FAIL ${repo}: no address for the proxy on $name"; exit 1; }
 rc=0
 docker run --rm --runtime=runsc --network "$name" --read-only --cpus 2 --memory 4g \
   --tmpfs /tmp:size=2g,mode=1777 --tmpfs /home/openhands:size=2g,uid=10001,gid=10001 \
   -v "$name:/workspace" -v "$out:/out" -v "$token:/run/agent/github/token:ro" \
-  -e HOME=/home/openhands -e HTTPS_PROXY="http://$name-proxy:3128" -e GIT_TOKEN_FILE=/run/agent/github/token \
+  -e HOME=/home/openhands -e HTTPS_PROXY="http://$proxy_ip:3128" -e GIT_TOKEN_FILE=/run/agent/github/token \
   -e MISE_LOG_LEVEL=debug -e REPO="$repo" \
   --entrypoint bash "$image" -c '
     set -u
