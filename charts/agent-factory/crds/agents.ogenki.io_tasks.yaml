@@ -192,6 +192,12 @@ spec:
                 - steering
                 - scoper
                 type: string
+              search:
+                description: |-
+                  Search offers its implementer runs the search tool (v3 feature 5, ST9), read from
+                  loops.<class>.search at triage so a config change never moves a task already triaged; every
+                  implementer claim of the task carries spec.loop.search.
+                type: boolean
               source:
                 description: Source is where the task came from and how far its text
                   is trusted.

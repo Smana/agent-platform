@@ -458,3 +458,16 @@ func TestBuildWritesLoopChecksOnlyWhenOn(t *testing.T) {
 		t.Fatalf("egress %v", p)
 	}
 }
+
+// v3 feature 5: spec.loop.search is written only when on, beside the loop's keys, and asks for
+// Strict validation like them.
+func TestBuildWritesLoopSearchOnlyWhenOn(t *testing.T) {
+	if _, found, _ := unstructured.NestedMap(Build(spec()).Object, "spec", "loop"); found {
+		t.Fatal("spec.loop written for a run without search")
+	}
+	s := spec()
+	s.Search = true
+	if loop, _, _ := unstructured.NestedMap(Build(s).Object, "spec", "loop"); !reflect.DeepEqual(loop, map[string]any{"search": true}) {
+		t.Fatalf("spec.loop %v, want {search: true}", loop)
+	}
+}

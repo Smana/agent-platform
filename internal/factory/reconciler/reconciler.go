@@ -676,6 +676,7 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
 		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
 	}
+	t.Spec.Search = r.Cfg.SearchFor(d.PredictedClass)
 	if err := r.scopeAtTriage(ctx, t); err != nil {
 		return err // a note that cannot be read is retried, never read as none (SC4)
 	}
