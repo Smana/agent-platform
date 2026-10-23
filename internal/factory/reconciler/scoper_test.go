@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -224,5 +225,39 @@ func TestAResumedScopersNoticeNamesNoBranch(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 2)
 	if s := g.runs.specs[rid(1)]; !strings.Contains(s.TaskText, "interrupted by the platform") || strings.Contains(s.TaskText, "pushed") {
 		t.Fatalf("%q", s.TaskText)
+	}
+}
+
+// SC11: a stuck scoper's claim is deleted and the implementer starts unscoped.
+func TestAStuckScoperFailsOpen(t *testing.T) {
+	g := scoperRig(t)
+	g.runs.set(rid(0), "Running")
+	g.reconcile(t, "3buqdlot", 1) // the stuck clock starts at the first Running sight
+	g.r.Now = func() time.Time { return now.Add(StuckAfter + time.Minute) }
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != "failed" || len(g.runs.runs) != 0 {
+		t.Fatalf("%s %+v %v", tk.Status.Phase, tk.Status.Scope, g.runs.runs)
+	}
+}
+
+// SC11: a scoper whose claim vanished (not a person's delete) fails open.
+func TestAVanishedScoperFailsOpen(t *testing.T) {
+	g := scoperRig(t)
+	delete(g.runs.runs, rid(0))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseQueued || tk.Status.Scope == nil || tk.Status.Scope.State != "failed" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+	}
+}
+
+// S14: capacity and budget ends are not the scoper's failure: they escalate as any run's.
+func TestCapacityAndBudgetEndsEscalateTheScoper(t *testing.T) {
+	for _, reason := range []string{"run_unschedulable", "resume_budget"} {
+		t.Run(reason, func(t *testing.T) {
+			g := scoperRig(t)
+			if tk := endScoper(t, g, "Failed", reason); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Scope != nil {
+				t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
+			}
+		})
 	}
 }

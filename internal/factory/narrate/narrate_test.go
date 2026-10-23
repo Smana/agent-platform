@@ -466,3 +466,13 @@ func TestResuming(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// The room link has one slash before /r/ whatever roomsURL ends with, as ProposalReady's does.
+func TestNeedsAuthorTrimsTheRoomsURL(t *testing.T) {
+	tk := task()
+	tk.Spec.DataClass = "internal"
+	tk.Status.RoomRef = "3kq7x2ma"
+	if b := NeedsAuthor(tk, "Which?", "A.", nil, "https://rooms.example/").Body; !strings.Contains(b, "(https://rooms.example/r/3kq7x2ma)") {
+		t.Fatalf("%s", b)
+	}
+}

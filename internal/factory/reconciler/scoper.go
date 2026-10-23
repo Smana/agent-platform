@@ -49,8 +49,11 @@ const (
 )
 
 // escalatesScoper are the scoper ends that escalate as any run's (scoper plan S14): a person
-// stopped it, or the task, its payer or the fleet has no budget left. Every other end fails open.
-var escalatesScoper = []string{"manual", "revoked", "deleted", "budget-task", "budget-principal", "budget-fleet", "budget-person"}
+// stopped it, or the task, its payer or the fleet has no budget left, or the cluster had no
+// capacity (run_unschedulable) or the task no budget (resume_budget) for it: capacity and budget
+// ends, not the scoper's failure. Every other end fails open.
+var escalatesScoper = []string{"manual", "revoked", "deleted", "budget-task", "budget-principal", "budget-fleet", "budget-person",
+	"run_unschedulable", "resume_budget"}
 
 // scoped ends the scoper run (SC8, SC11): the implementer is queued with the scope, or without it
 // when the run left none; a question bounces the task to its issue's author.

@@ -305,7 +305,7 @@ func NeedsAuthor(t *v1alpha1.Task, question, assumption string, maintainers []st
 		b.WriteString(" The scoper's question, and the assumption it would make otherwise:\n\n")
 		b.WriteString(summary(question+"\nAssumption: "+assumption, maxBody/2))
 	} else {
-		fmt.Fprintf(&b, " The scoper's question stays in [the room](%s/r/%s): the task's data class is not public.", roomsURL, t.Status.RoomRef)
+		fmt.Fprintf(&b, " The scoper's question stays in [the room](%s/r/%s): the task's data class is not public.", strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
 	}
 	b.WriteString("\n\n**To answer**, edit this issue's title or body: the factory reads the issue as it was labelled, " +
 		"never its comments. Then a maintainer re-applies `factory/ready`. **To proceed on the assumption**, a maintainer " +
