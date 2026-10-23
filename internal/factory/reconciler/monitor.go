@@ -30,6 +30,9 @@ const monitorEvery = 10 * time.Minute
 // request merged at the very end of the window is still found before the verdict is final.
 const searchLag = 5 * time.Minute
 
+// maxFluxBlamed bounds status.monitor.fluxBlamed (the CRD's maxItems).
+const maxFluxBlamed = 5
+
 // maxFollowUps bounds status.monitor.followUps (the CRD's maxItems).
 const maxFollowUps = 16
 
@@ -136,12 +139,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
-	var blamed []string // the Flux objects this pass found not Ready, for the comment
 	if cl.Monitor.OracleRuns > 0 && m.Oracle == "" {
 		m.Oracle = r.oracleSignal(ctx, t, cl)
 	}
 	if cl.Monitor.Flux != nil && m.Flux == "" {
-		m.Flux, blamed = r.fluxSignal(ctx, t, *cl.Monitor.Flux)
+		m.Flux = r.fluxSignal(ctx, t, *cl.Monitor.Flux)
 	}
 	r.followUps(ctx, t, cl)
 	ended := r.Now().Sub(m.Since.Time) >= cl.Monitor.FollowUpWindow.Duration+searchLag
@@ -178,11 +180,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			record(ctx, func(ctx context.Context) { r.Metrics.MonitorVerdict(ctx, class, verdict) })
 		}
 		demotes := r.repo(t).Merge.Breaker.MaxFollowUps > 0
-		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, blamed), false, demotes))
+		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), false, demotes))
 		if m.Verdict == "regression" {
 			// M2: its own key, or narrateOn drops it as the PR's comment already queued.
 			if n := r.controlIssue(t); n > 0 {
-				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, blamed), true, demotes))
+				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), true, demotes))
 			}
 		}
 		m.Posted = m.Verdict != "regression" || ended // a regression is posted at once and watched on for follow-ups
@@ -195,16 +197,16 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
-// monitorWhy lists the signals the verdict read (blamed: the Flux objects it found not Ready), for the comment.
-func monitorWhy(m *v1alpha1.MonitorStatus, blamed []string) []string {
+// monitorWhy lists the signals the verdict read, for the comment.
+func monitorWhy(m *v1alpha1.MonitorStatus) []string {
 	out := []string{"main CI: " + cmpOpen(m.Main), fmt.Sprintf("follow_ups=%d", len(m.FollowUps))}
 	if m.Oracle != "" {
 		out = append(out, "detector: "+m.Oracle)
 	}
 	if m.Flux != "" {
 		out = append(out, "Flux: "+m.Flux)
-		if len(blamed) > 0 {
-			out = append(out, fmt.Sprintf("not Ready since the merge: %v", blamed))
+		if len(m.FluxBlamed) > 0 {
+			out = append(out, fmt.Sprintf("not Ready since the merge: %v", m.FluxBlamed))
 		}
 	}
 	if len(m.FollowUps) > 0 {
@@ -322,62 +324,69 @@ func wroteGone(wrote []v1alpha1.Finding, run []intake.LinkFinding) bool {
 // fluxSignal is Flux on the factory's cluster (R33, R34). An empty not-ready list is no proof of
 // health: an object that has not picked up the merge still reads Ready. So healthy needs the
 // source to hold the merge commit, `within` to have passed since it fetched it, and nothing turned
-// not Ready between the merge's application and `within` later (a later flap is never blamed).
+// not Ready between the merge and `within` after the source first showed it (a later flap is never blamed).
 // Any reader error leaves the signal open, so the window's end reads inconclusive.
 //
 // Known limits, by design (the spec's): a suspended source makes the signal inconclusive at any
 // pass, even after a clean start; attribution is per source, so overlapping windows, or a later
 // commit's failure inside the window, count against every open merge of that source.
-func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.FluxWatch) (string, []string) {
+func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.FluxWatch) string {
 	if r.Flux == nil {
-		return "inconclusive", nil
+		return "inconclusive"
 	}
 	ref, m := t.Status.PullRequest, t.Status.Monitor
 	src, err := r.Flux.Source(ctx, f.Namespace(), f.Name())
 	if err != nil {
 		r.log().Warn("Flux source read failed", "task.id", t.Name, "err", err)
-		return "", nil
+		return ""
 	}
 	if src.Suspended {
-		return "inconclusive", nil
+		return "inconclusive"
 	}
 	if m.Applied == nil {
 		held := src.Revision == ref.MergeCommitSHA
 		if !held {
 			if held, err = r.merger(ctx).IsAncestor(ctx, ref.MergeCommitSHA, src.Revision); err != nil {
 				r.log().Warn("Flux revision ancestry read failed", "task.id", t.Name, "err", err)
-				return "", nil
+				return ""
 			}
 		}
 		switch {
 		case !held && r.Now().Sub(m.Since.Time) >= f.Within.Duration:
-			return "inconclusive", nil // the source never delivered the merge in time
+			return "inconclusive" // the source never delivered the merge in time
 		case !held || src.At.IsZero():
-			return "", nil
+			return ""
 		}
-		// The first time only: a later fetch is a later commit's. A source seen at the merge commit
-		// applied it at src.At; one seen at a descendant fetched the merge at some earlier time we
-		// cannot read, so Applied is the merge's own time (GitHub's mergedAt, m.Since), a safe lower
-		// bound: a failure from before the merge has an older transition and is not blamed.
-		at := metav1.NewTime(src.At)
+		// The first time only: a later fetch is a later commit's. src.At is when the source fetched
+		// what it first showed us, an upper bound on when the merge was applied: the blame window
+		// and the settle time end `within` after it. Blame starts at src.At when the source shows
+		// the merge commit itself, else at the merge's own time (mergedAt, m.Since): the merge was
+		// fetched somewhere before src.At, and a failure from before the merge has an older
+		// transition, so it is not blamed.
+		at, from := metav1.NewTime(src.At), metav1.NewTime(src.At)
 		if src.Revision != ref.MergeCommitSHA {
-			at = m.Since
+			from = m.Since
 		}
-		m.Applied = &at
+		m.Applied, m.BlameFrom = &at, &from
 	}
-	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), m.Applied.Time, m.Applied.Add(f.Within.Duration))
+	from := m.Applied.Time
+	if m.BlameFrom != nil {
+		from = m.BlameFrom.Time
+	}
+	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), from, m.Applied.Add(f.Within.Duration))
 	if err != nil {
 		r.log().Warn("Flux readiness read failed", "task.id", t.Name, "err", err)
-		return "", nil
+		return ""
 	}
 	if len(bad) > 0 {
 		r.log().Warn("Flux objects turned not Ready after the merge", "task.id", t.Name, "objects", bad)
-		return "regression", bad
+		m.FluxBlamed = bad[:min(len(bad), maxFluxBlamed)]
+		return "regression"
 	}
 	if r.Now().Sub(m.Applied.Time) >= f.Within.Duration {
-		return "healthy", nil
+		return "healthy"
 	}
-	return "", nil
+	return ""
 }
 
 func (c *monitorCache) lastPass(task string) (time.Time, bool) {

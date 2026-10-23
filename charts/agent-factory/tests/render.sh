@@ -84,12 +84,12 @@ yq -e '.rules[] | select(.resources[] == "configmaps") | ((has("resourceNames") 
   || { echo "FAIL: the configmaps rule: no resourceNames, verbs = stop object's watch + R50 ledgers" >&2; fail=1; }
 ynone 'select(.kind == "Role" or .kind == "ClusterRole") | .rules[] | select(.resources[] == "secrets")' "the factory never reads Secrets through the API"
 # The Flux reader (MC7, R34) renders only when enabled: no ClusterRole by default, then exactly
-# get on gitrepositories and get+list on kustomizations and helmreleases, no watch.
+# get on gitrepositories and list on kustomizations and helmreleases, no watch.
 ynone 'select(.kind == "ClusterRole" or .kind == "ClusterRoleBinding")' "no cluster-scoped RBAC unless monitor.flux.enabled"
 flux=$(helm template agent-factory . --namespace agent-system --set image.tag="$digest" --set config.repository=Smana/cloud-native-ref --set monitor.flux.enabled=true)
 cr=$(yq 'select(.kind == "ClusterRole")' - <<<"$flux")
 [ "$(yq '.rules | length' - <<<"$cr")" = 3 ] || { echo "FAIL: the Flux ClusterRole has exactly three rules" >&2; fail=1; }
-for rule in "source.toolkit.fluxcd.io gitrepositories get" "kustomize.toolkit.fluxcd.io kustomizations get,list" "helm.toolkit.fluxcd.io helmreleases get,list"; do
+for rule in "source.toolkit.fluxcd.io gitrepositories get" "kustomize.toolkit.fluxcd.io kustomizations list" "helm.toolkit.fluxcd.io helmreleases list"; do
   set -- $rule
   yq -e ".rules[] | select(.apiGroups[0] == \"$1\" and (.resources | join(\",\")) == \"$2\" and (.verbs | sort | join(\",\")) == \"$3\")" - <<<"$cr" >/dev/null \
     || { echo "FAIL: Flux ClusterRole rule $2 wants exactly verbs $3" >&2; fail=1; }

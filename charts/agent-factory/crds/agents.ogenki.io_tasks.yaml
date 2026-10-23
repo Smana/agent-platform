@@ -575,8 +575,15 @@ spec:
                   reading and the verdict, the worst of them. Unset until the task ends merged.
                 properties:
                   applied:
-                    description: When the Flux source first held the merge commit
-                      (R33).
+                    description: |-
+                      The Flux source's fetch time the first pass that saw it hold the merge commit (R33): an upper
+                      bound on when the merge was applied. The blame window and the settle time end `within` later.
+                    format: date-time
+                    type: string
+                  blameFrom:
+                    description: |-
+                      Where the Flux blame window starts: the source's fetch time when the first observed revision
+                      is the merge commit, else the merge's own time (the merge was fetched somewhere before Applied).
                     format: date-time
                     type: string
                   flux:
@@ -586,6 +593,14 @@ spec:
                     - regression
                     - inconclusive
                     type: string
+                  fluxBlamed:
+                    description: The Flux objects found not Ready in the window, kind/namespace/name,
+                      the first five.
+                    items:
+                      maxLength: 320
+                      type: string
+                    maxItems: 5
+                    type: array
                   followUps:
                     description: Later pull requests that fixed this merge (MC8).
                     items:

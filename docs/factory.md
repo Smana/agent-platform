@@ -601,14 +601,16 @@ classes:
   dead-links:
     monitor:
       oracleRuns: 2          # scheduled detector runs that must not report the merged targets; needs an oracle
-      flux: {source: flux-system/ai-native-ref, within: 15m}   # a GitRepository, and how long after it holds the merge
+      flux: {source: flux-system/flux-system, within: 15m}   # a Flux GitRepository (an OCIRepository is not read), and how long after it first shows the merge
       followUpWindow: 72h    # how long later merges are read for a fix of this one; the verdict is final after it
 merge:
   awaitingCIFor: 6h          # bound AwaitingCI on a wait verdict; 0, the default, is no bound
   breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}   # maxFollowUps 0, the default, counts none
 ```
 
-`flux` needs the chart's `monitor.flux.enabled` (off by default). It renders the ClusterRole and
+`flux.source` must name a Flux **GitRepository** (`namespace/name`, the one that delivers the
+repository to the factory's cluster); an OCIRepository is not read, so the signal would end
+`inconclusive` (config validation checks only the format). `flux` needs the chart's `monitor.flux.enabled` (off by default). It renders the ClusterRole and
 ClusterRoleBinding `agent-factory-flux-reader`: `get` on `gitrepositories`, `get` and `list` on
 `kustomizations` and `helmreleases`, no `watch`, nothing else of the cluster. The reads are uncached.
 Without it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
@@ -622,19 +624,23 @@ Without it every read is refused and the signal ends `inconclusive`. `merge.brea
 | Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready between the application and `within` later | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
 
-The detector signal reads each scheduled run after the merge, oldest first: one that reports gone a
-target this merge wrote (same file, and the snapshot it wrote or the original URL) is a `regression`;
-a run that failed, or whose findings are refused, is `inconclusive`; `oracleRuns` clean runs are
+The detector signal reads each scheduled run after the merge (or a maintainer's `workflow_dispatch`),
+oldest first: one that reports gone a target this merge wrote (same file, and the snapshot it wrote
+or the original URL) is a `regression`; a run that did not succeed (failed, cancelled, skipped, timed
+out), or whose findings are refused, is `inconclusive`; `oracleRuns` clean runs are
 `healthy`. Matching the original URL can also count an older occurrence of that URL in the same
 file. A read that fails leaves it open, `inconclusive` after 72 h.
 
 The Flux signal is `healthy` only when the source holds the merge commit, `within` has passed
-since the source applied it, and no Kustomization or HelmRelease of that source turned not Ready in
-that window (from the application to `within` later: a later flap is never blamed). Seen at a
-descendant of the merge, the window starts at the merge's own time. A reader error leaves it open
-(`inconclusive` at the window's end). Known limits: a suspended source makes it `inconclusive` at
-any pass, and attribution is per source, not per merge, so overlapping windows, or a later
-commit's failure inside the window, count against every open merge of that source.
+since the source first showed it to the monitor (`status.monitor.applied`, its fetch time, an upper
+bound on when the merge was applied), and no Kustomization or HelmRelease of that source turned not
+Ready in that window: from `status.monitor.blameFrom` (the fetch time when the source showed the
+merge commit itself, else the merge's own time) to `applied + within`. A later flap is never
+blamed. The objects found not Ready are kept (the first five, `fluxBlamed`) and named in the
+verdict comment. A reader error leaves the signal open (`inconclusive` at the window's end). Known
+limits: a suspended source makes it `inconclusive` at any pass, and attribution is per source, not
+per merge, so overlapping windows, or a later commit's failure inside the window, count against
+every open merge of that source.
 
 A follow-up read that fails or cannot say makes the verdict `inconclusive`, never `healthy`
 (`followUpsUnread`): no blame for a file, an omitted patch, a truncated search or merged list

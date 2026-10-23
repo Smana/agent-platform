@@ -63,7 +63,7 @@ subjects:
 {{- if .Values.monitor.flux.enabled }}
 ---
 # The post-merge monitor's Flux signal (merge gate classes MC7, R34): read-only, uncached, three
-# kinds, no watch. The GitRepository is read by name; the other two are listed. Nothing else of
+# kinds, no watch. The GitRepository is read by name; the other two are only listed. Nothing else of
 # the cluster.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -73,10 +73,10 @@ metadata:
 rules:
   - apiGroups: [kustomize.toolkit.fluxcd.io]
     resources: [kustomizations]
-    verbs: [get, list]
+    verbs: [list]
   - apiGroups: [helm.toolkit.fluxcd.io]
     resources: [helmreleases]
-    verbs: [get, list]
+    verbs: [list]
   - apiGroups: [source.toolkit.fluxcd.io]
     resources: [gitrepositories]
     verbs: [get]

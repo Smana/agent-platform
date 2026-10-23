@@ -72,12 +72,17 @@ func TestFluxSignal(t *testing.T) {
 		"an unreadable object":           {&fakeFlux{src: applied, err: errors.New("lastTransitionTime")}, ""},
 		// I1: the blame window closes at Applied+within; a pass after it must not blame a later flap.
 		"a flap after within, read late": {&fakeFlux{src: applied, flaps: map[string]time.Time{hr: now.Add(-5 * time.Minute)}}, "healthy"},
-		// IsAncestor true: the source moved on past the merge.
-		"a descendant, all Ready": {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-5 * time.Minute)}}, "healthy"},
-		// I2: Applied is the merge's own time (Since = now-2h) when the revision is a descendant: an
-		// object that went False after the merge and before the first observed fetch is caught.
-		"a descendant, a flap before the fetch": {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-5 * time.Minute)},
+		// IsAncestor true: the source moved on past the merge. Healthy only `within` after its fetch.
+		"a descendant, all Ready":   {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-50 * time.Minute)}}, "healthy"},
+		"a descendant, not settled": {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-5 * time.Minute)}}, ""},
+		// I2: blame starts at the merge's own time (Since = now-2h) when the revision is a descendant:
+		// an object that went False after the merge and before the first observed fetch is caught.
+		"a descendant, a flap before the fetch": {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-50 * time.Minute)},
 			flaps: map[string]time.Time{hr: now.Add(-100 * time.Minute)}}, "regression"},
+		// The window ends `within` after the first observed fetch, not after the merge: a flap past
+		// merge+within (now-80m) and before fetch+within (now-10m) is the merge's.
+		"a descendant, a flap past merge+within": {&fakeFlux{src: fluxwatch.Source{Revision: "later", At: now.Add(-50 * time.Minute)},
+			flaps: map[string]time.Time{hr: now.Add(-30 * time.Minute)}}, "regression"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := fluxRig(t, c.f)
@@ -85,6 +90,9 @@ func TestFluxSignal(t *testing.T) {
 			tk := g.reconcile(t, "3buqdlot", 1)
 			if tk.Status.Monitor.Flux != c.want {
 				t.Fatalf("%+v", tk.Status.Monitor)
+			}
+			if c.want == "regression" && (len(tk.Status.Monitor.FluxBlamed) != 1 || tk.Status.Monitor.FluxBlamed[0] != hr) {
+				t.Fatalf("the objects blamed are in the status: %+v", tk.Status.Monitor)
 			}
 			if c.want == "" && tk.Status.Monitor.Verdict != "" {
 				t.Fatalf("an open signal posts no verdict: %+v", tk.Status.Monitor)
@@ -176,5 +184,23 @@ func TestOracleReadErrorEndsInconclusive(t *testing.T) {
 	g.r.Now = func() time.Time { return now.Add(170 * time.Hour) }
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Monitor.Oracle != "inconclusive" || tk.Status.Monitor.Verdict != "inconclusive" {
 		t.Fatalf("%+v", tk.Status.Monitor)
+	}
+}
+
+// The blamed objects are kept to five, and the comment names them even when main's CI regressed on
+// the same pass.
+func TestFluxBlamedBoundedAndNarrated(t *testing.T) {
+	flaps := map[string]time.Time{}
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		flaps["HelmRelease/tooling/"+n] = now.Add(-45 * time.Minute)
+	}
+	g := fluxRig(t, &fakeFlux{src: fluxwatch.Source{Revision: mSHA, At: now.Add(-50 * time.Minute)}, flaps: flaps})
+	g.f.SetCommitChecks(mSHA, forge.Check{Name: "Pre-commit checks", State: "FAILURE"})
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if m := tk.Status.Monitor; m.Verdict != "regression" || len(m.FluxBlamed) != 5 {
+		t.Fatalf("%+v", m)
+	}
+	if !contains(g.f.Comments(12), "HelmRelease/tooling/a") {
+		t.Fatalf("the verdict comment names the objects: %q", g.f.Comments(12))
 	}
 }
