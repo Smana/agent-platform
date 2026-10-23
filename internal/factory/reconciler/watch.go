@@ -61,8 +61,13 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 		text, refs := withQueued(text, q, r.Nonce())
 		return r.implementerSpec(t, text), refs, trigger, nil
 	}
+	// The scope is read only for a brief that carries it: a resumed replay quotes its lost run's.
+	sc, err := r.taskScope(ctx, t)
+	if err != nil {
+		return runs.Spec{}, nil, "", err
+	}
 	if t.Status.PullRequest == nil {
-		return r.implementerSpec(t, resumed(t, trigger)+FirstBrief(t, r.Nonce())), nil, trigger, nil
+		return r.implementerSpec(t, resumed(t, trigger)+firstBrief(t, r.Nonce(), sc)), nil, trigger, nil
 	}
 	// The finished run's handoff and verdict are after its start; brief.Build reads only those.
 	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, briefSince(t), briefEvent)
@@ -73,7 +78,7 @@ func (r *Reconciler) nextImplementer(ctx context.Context, t *v1alpha1.Task) (run
 	if err != nil {
 		return runs.Spec{}, nil, "", err
 	}
-	text, refs := ReviseBrief(t, evs, q, r.Nonce())
+	text, refs := reviseBrief(t, evs, q, r.Nonce(), sc)
 	return r.implementerSpec(t, resumed(t, trigger)+text), refs, trigger, nil
 }
 
@@ -336,6 +341,10 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		return r.expireEscalation(ctx, t)
 	}
 	markHandled(t, c.ID)
+	if t.Status.Reason == ReasonNeedsAuthor && t.Status.Scope != nil {
+		r.leaveBounce(ctx, t, "retry")
+		t.Status.Scope.State = "assumed" // SC8 (b): no second scoper run
+	}
 	after := t.Status.Reason
 	t.Status.Retries++
 	t.Status.RetriedBy = v1alpha1.Person(c.Author) // D2: the retrier pays for the runs the retry causes
@@ -368,6 +377,7 @@ func (r *Reconciler) expireEscalation(ctx context.Context, t *v1alpha1.Task) err
 			return nil
 		}
 	}
+	r.leaveBounce(ctx, t, "expired")
 	return r.end(ctx, t, v1alpha1.PhaseStopped, "escalation_expired")
 }
 

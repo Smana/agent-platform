@@ -410,7 +410,11 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	if !found {
-		return r.end(ctx, t, v1alpha1.PhaseEscalated, r.lostReason(ctx, t))
+		why := r.lostReason(ctx, t)
+		if scoperRun(t) && why == "run_lost" { // SC11: a scoper whose claim vanished fails open
+			return r.scopeEnd(ctx, t, "failed", 0)
+		}
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, why)
 	}
 	if err := r.boundPending(ctx, t, run); err != nil {
 		return err
@@ -424,6 +428,9 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 		if s, err := r.stuck(ctx, t, run); err != nil || s {
 			if err != nil {
 				return err
+			}
+			if scoperRun(t) { // SC11: a stuck scoper fails open
+				return r.scopeEnd(ctx, t, "failed", 0)
 			}
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "stuck")
 		}
@@ -465,6 +472,9 @@ func (r *Reconciler) implementing(ctx context.Context, t *v1alpha1.Task) error {
 			end = "finished"
 		}
 		record(ctx, func(ctx context.Context) { r.Metrics.LoopRun(ctx, t.Spec.PredictedClass, end) })
+	}
+	if scoperRun(t) {
+		return r.scoped(ctx, t, run.Phase, reason)
 	}
 	// R38: the triager's output reaches a public implementer only through a human. Its summary
 	// stays in the room (internal); the issue gets the room link and the next step, nothing else.

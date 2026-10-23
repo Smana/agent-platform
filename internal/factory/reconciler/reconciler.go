@@ -93,6 +93,8 @@ type metrics interface {
 	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 	SteeringRead(ctx context.Context, class, read string)
+	ScoperRun(ctx context.Context, class, outcome string)
+	ScopeBounce(ctx context.Context, class, exit string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -468,6 +470,11 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 	if why != "kill_switch" {
 		record(ctx, func(ctx context.Context) { r.Metrics.Intervention(ctx, "stop") })
 	}
+	exit := ""
+	if why == "superseded" {
+		exit = "relabel" // SC8 (a): the author edited, a maintainer re-labelled
+	}
+	r.leaveBounce(ctx, t, exit)
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
 
@@ -893,6 +900,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		s := r.implementerSpec(t, text)
 		s.Role = "triager"
 		return r.startRun(ctx, t, s, nextTrigger(t))
+	}
+	if scoperDue(t) {
+		return r.startScoper(ctx, t)
 	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)
 	if err != nil {

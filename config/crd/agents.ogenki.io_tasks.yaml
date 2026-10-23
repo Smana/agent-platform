@@ -665,6 +665,27 @@ spec:
                   type: object
                 maxItems: 256
                 type: array
+              scope:
+                description: |-
+                  The scoper's outcome (scoper design SC12), set once when its run ends and kept when the task
+                  later stops: ready, question, assumed, missing or failed, and the seq of the handoff that
+                  carries the scope (0 for none). Unset: no scoper ran, or it has not ended.
+                properties:
+                  seq:
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  state:
+                    enum:
+                    - ready
+                    - question
+                    - assumed
+                    - missing
+                    - failed
+                    type: string
+                required:
+                - state
+                type: object
               trace:
                 description: 'The task''s root span (R46): minted at acceptance, exported
                   once when the task ends.'

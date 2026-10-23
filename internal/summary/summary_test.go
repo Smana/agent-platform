@@ -436,3 +436,19 @@ func TestSteerNeedsARunningRun(t *testing.T) {
 		})
 	}
 }
+
+// Scoper design SC8: a bounced task shows the room's owner an answer need naming the issue's author.
+func TestABouncedTaskNeedsAnAnswer(t *testing.T) {
+	f := &envelope.TaskFacts{Phase: "Escalated", Reason: "needs_author",
+		Issue: &envelope.IssueFact{Number: 7, URL: "https://github.com/Smana/cloud-native-ref/issues/7", Author: "octocat"}}
+	n, ok := summary.Answer(f, owner())
+	if !ok || n.Kind != "answer" || n.ID != "7" || !strings.Contains(n.What, "@octocat") || n.URL != f.Issue.URL {
+		t.Fatalf("%+v %v", n, ok)
+	}
+	if _, ok := summary.Answer(&envelope.TaskFacts{Phase: "Escalated", Reason: "stuck", Issue: f.Issue}, owner()); ok {
+		t.Fatal("only needs_author asks for an answer")
+	}
+	if _, ok := summary.Answer(f, driverWeb()); ok {
+		t.Fatal("only the room's owner is asked to answer")
+	}
+}

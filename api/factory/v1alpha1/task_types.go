@@ -280,6 +280,11 @@ type TaskStatus struct {
 	// +kubebuilder:validation:Enum=initial;review;human;ci;retry;resume
 	// +optional
 	NextTrigger string `json:"nextTrigger,omitempty"`
+	// The scoper's outcome (scoper design SC12), set once when its run ends and kept when the task
+	// later stops: ready, question, assumed, missing or failed, and the seq of the handoff that
+	// carries the scope (0 for none). Unset: no scoper ran, or it has not ended.
+	// +optional
+	Scope *ScopeStatus `json:"scope,omitempty"`
 	// The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
 	// there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
 	// +kubebuilder:validation:Enum=reviewer;tester
@@ -300,6 +305,15 @@ type TaskStatus struct {
 	// The task's root span (R46): minted at acceptance, exported once when the task ends.
 	// +optional
 	Trace *TraceRef `json:"trace,omitempty"`
+}
+
+// ScopeStatus is the scoper's outcome on its task.
+type ScopeStatus struct {
+	// +kubebuilder:validation:Enum=ready;question;assumed;missing;failed
+	State string `json:"state"`
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // FactsLedger is which facts a room seq carries, and whether the broker has them.

@@ -73,6 +73,22 @@ func Merge(f *envelope.TaskFacts, sub policy.Subject) (Need, bool) {
 	return Need{Kind: "merge", ID: fmt.Sprint(f.PR.Number), What: MergeHow(repoOf(f), f.PR.Number), URL: f.PR.URL}, true
 }
 
+// Answer is the need of a task the scoper bounced (scoper design SC8): its issue's author answers
+// by editing the issue. A public issue's author cannot reach the rooms, so the need is the room
+// owner's, as a merge is, and names the author.
+func Answer(f *envelope.TaskFacts, sub policy.Subject) (Need, bool) {
+	if f == nil || f.Phase != "Escalated" || f.Reason != "needs_author" || f.Issue == nil || f.Issue.Number <= 0 ||
+		!policy.Allowed(sub, policy.Close) {
+		return Need{}, false
+	}
+	who := "the issue's author"
+	if f.Issue.Author != "" {
+		who = "@" + f.Issue.Author
+	}
+	return Need{Kind: "answer", ID: fmt.Sprint(f.Issue.Number), URL: f.Issue.URL,
+		What: fmt.Sprintf("%s answers the scoper's question by editing issue #%d, then a maintainer re-applies `factory/ready`; or a maintainer comments `/factory retry` to proceed on its assumption", who, f.Issue.Number)}, true
+}
+
 // reasons is the prose of the wait reasons a task shows, repeated from the factory's narration
 // (internal/factory/narrate) like stopLabel: this package stays free of the factory's imports.
 func reasons() map[string]string {
@@ -112,6 +128,7 @@ func reasons() map[string]string {
 		"judge_impossible":          "the completion judge found the task cannot be done as asked",
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
+		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
 		"no_pr":                     "the agent opened no pull request",
 		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet, so no run started",
 	}
@@ -143,6 +160,8 @@ func nextStep(reason string) string {
 		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
+	case "needs_author":
+		return "the issue's author edits the issue to answer and a maintainer re-applies `factory/ready`, or a maintainer comments `/factory retry` to proceed on the scoper's assumption"
 	}
 	return ""
 }

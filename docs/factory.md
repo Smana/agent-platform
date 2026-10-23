@@ -51,6 +51,7 @@ The factory also writes labels of its own:
 | `factory/class:<class>` | The task's pull request, once found | The class triage predicted |
 | `factory/stale` | A pull request it closed | No maintainer activity for 14 days |
 | `factory/orphaned` | An open `agent/<id>` pull request whose task no longer exists (a cluster rebuild) | Human-only from now on; re-label the issue `factory/ready` to start again. Nothing is ever adopted from it |
+| `factory/needs-author` | The issue of a bounced task | Removed when the task leaves `Escalated` |
 | `factory/proposed` | An issue the RunLore intake opened | A finding under investigation |
 
 ## A task's life
@@ -92,6 +93,7 @@ stateDiagram-v2
   AwaitingHuman --> Closed: closed, or stale
   Queued --> Escalated: task budget spent
   Implementing --> Escalated: run failed, stuck, lost
+  Implementing --> Escalated: the scoper's question (needs_author)
   Reviewing --> Escalated: rounds spent, no verdict
   AwaitingCI --> Escalated: CI red after fixes, secret found
   Escalated --> Queued: /factory retry
@@ -210,6 +212,7 @@ every maintainer.
 | `run_lost`, `deleted` | The run disappeared, or its claim was deleted |
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
+| `needs_author` | The scoper asked the issue's author one question: the issue gets it (a public task's, quoted) and the label `factory/needs-author`. The author edits the issue and a maintainer re-applies `factory/ready` (a new task, scoped again), or a maintainer comments `/factory retry` (the task proceeds on the scoper's first assumption), or it expires |
 | `budget-principal` | The factory's daily budget in dollars is spent |
 | `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
 | `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
@@ -610,6 +613,7 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `status.nextTrigger`, `status.nextRole` | Why the next run exists; the verifier it is for |
 | `status.handled` | GitHub review and comment ids already acted on |
 | `status.configHash` | The config that triaged the task |
+| `status.scope` | `state` (`ready`, `question`, `assumed`, `missing`, `failed`) and `seq` (the scope's handoff): the scoper's outcome, kept when the task stops |
 | `status.lastActivity` | The running run's last room event, for stuck detection |
 | `status.trace` | The task's root span ids |
 
@@ -648,7 +652,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
 | `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 | `sandbox` | `suspend: {enabled}`: a run `POST /v1/runs` starts in an attended room gets `spec.suspendable: true`, which lets the room broker suspend it while its approval waits on an idle room (the broker's `suspend` config). Fixed on the claim at create | `enabled` false |
-| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering): never part of the loop, so `{scope: steering}` alone switches no loop on. Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
+| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`, `scoper`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering) or [scoper](#the-scoper): never part of the loop, so `{scope: steering}` alone switches no loop on. Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
 
 Each `repositories` entry:
 
@@ -728,6 +732,33 @@ away) a path under `.github/agent-factory/steering/` as `steering_path`, handed 
 every class `off` there is no extra read. The repository should also make that directory a
 policy-bot gate path. A first brief that cannot hold the note and a 14 KiB snapshot
 points at the snapshot in the room instead.
+
+### The scoper
+
+Under `scope: scoper`, a read-only `triager` run with a scoping brief goes first, at the light
+tier's run caps, and hands the implementer a bounded task through `room_handoff`'s `scope`: the
+change, the files, the paths to leave alone, a plan, its assumptions and its acceptance checks.
+Every implementer brief carries it after the steering note. A scoper that leaves none starts the
+implementer unscoped; a person's stop, an exhausted budget (task, payer, fleet or person), an unschedulable run
+(`run_unschedulable`), no budget to resume it (`resume_budget`) or a deleted claim escalate as any run's. A question no
+default answers bounces the task to the issue's author (`needs_author`); a task without an issue
+takes the scoper's first assumption instead.
+
+- **Read-only at the token level, on cloud-native-ref's AgentRun.** There the triager role maps to
+  the host's octo-sts trust policy, which grants `contents: read` only: the run cannot push or open
+  anything, whatever its brief says. The portable `agents.ogenki.io` AgentRun gives every role the
+  same token, so `scope: scoper` is refused when `runs.group` names it (as the loop policy is).
+- **The scope has one source.** The factory takes it only from the triager's handoff to the
+  implementer, on the current scoper run, and validates it again (the broker stored it redacted).
+  A scope on any other handoff is ignored, and the task proceeds unscoped (`missing`). It reaches
+  implementer briefs fenced, as the scoper's claim, never as the factory's instructions.
+- **The bounce posts one question.** The question and the scoper's first assumption go in one
+  comment to the author (quoted for a public task, left in the room otherwise), with the label
+  `factory/needs-author`. Only a maintainer ends the wait: a re-applied `factory/ready` (a new
+  task, scoped again), or `/factory retry` from a maintainer with write access (the task proceeds
+  on the assumption, state `assumed`, with no second scoper run). Otherwise it stops at
+  `caps.escalatedHours` (`escalation_expired`). The author's own comments end nothing, and the
+  room's owner sees the wait as an `answer` need.
 
 ### The factory's API
 

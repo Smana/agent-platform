@@ -1204,7 +1204,7 @@ func (c *Config) SteeringOn() bool {
 
 // scopeModes are the modes this release honours: a mode it cannot run must fail the start, never
 // run as another (scoper plan S1).
-func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering} }
+func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering, ScopeScoper} }
 
 // The loop policy's defaults (loops design, "The policy, in the factory config") and the
 // harness's bounds (loop policy harness R16), which the XRD repeats.
@@ -1274,10 +1274,13 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 		}
 		switch m := row.Scope; {
 		case m == "" || slices.Contains(scopeModes(), m):
-		case m == ScopeScoper:
-			bad("loops.%s.scope %q needs the scoper's release", name, m)
 		default:
 			bad("loops.%s.scope %q is off, steering or scoper", name, m)
+		}
+		if m := row.Scope; m == ScopeScoper && c.Runs.Group != runwatch.DefaultKind.Group {
+			// The scoper is read-only because cloud-native-ref maps the triager role to an octo-sts
+			// token with contents: read; this runtime gives every role the same token.
+			bad("loops.%s: scope: scoper needs cloud-native-ref's AgentRun (runs.group %s): this runtime gives every role one token, so a scoper would not be read-only", name, runwatch.DefaultKind.Group)
 		}
 		if row.On() && c.Runs.Group != runwatch.DefaultKind.Group {
 			bad("loops.%s: the loop policy needs cloud-native-ref's AgentRun (runs.group %s): this runtime's has no spec.loop", name, runwatch.DefaultKind.Group)

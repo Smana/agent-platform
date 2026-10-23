@@ -325,6 +325,14 @@ func (m *fakeMetrics) SteeringRead(_ context.Context, class, read string) {
 	m.add("steering " + class + " " + read)
 }
 
+func (m *fakeMetrics) ScoperRun(_ context.Context, class, outcome string) {
+	m.add("scoper " + class + " " + outcome)
+}
+
+func (m *fakeMetrics) ScopeBounce(_ context.Context, class, exit string) {
+	m.add("bounce " + class + " " + exit)
+}
+
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
 	m.add("room_closed_at_cap " + reason)
