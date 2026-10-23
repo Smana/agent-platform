@@ -208,9 +208,9 @@ Rulings marked **(owner)** depart from the design's text and are listed again un
 | `cmd/factory-slack-app/main.go`, `internal/app/slackapp.go`, `images/factory-slack-app/Dockerfile` | create | The binary and the image |
 | `.github/workflows/ci.yaml`, `release.yaml` | modify | The image in both matrices |
 | `docs/slack.md`, `docs/security.md`, `AGENTS.md` | create, modify | Operating the App |
-| **PR D** cloud-native-ref `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`, `scripts/provision/secret-store.sh`, `scripts/ci/tests/test-zitadel-machine-users.sh`, both `platform-public` gateways, `docs/` | modify, create | The machine user, the secrets, the listener |
+| **PR D** cloud-native-ref `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`, `scripts/ci/tests/test-zitadel-machine-users.sh`, the host design §2 H5 row (amended: no listener, no seed) | modify, create | The machine user, the secrets, the listener |
 | **PR E** ai-native-ref `scripts/ci/gen-webhook-egress.py`, `scripts/ci/tests/test-room-broker-webhook-egress.sh`, `infrastructure/base/room-broker/network-policy-webhooks.yaml`, `kustomization.yaml` | create, modify | The generated egress and its gate |
-| **PR F** ai-native-ref pins, broker and factory config, `tooling/base/factory-slack-app/*`, the broker's CNP, `HOST_REF`, `HOST-CONTRACT.md`, site pages | modify, create | Release, everything off, docs |
+| **PR F** ai-native-ref pins, broker and factory config, `tooling/{base,gcp-0}/agent-factory/slack-app/*` (unwired), runbook 18, the broker's CNP, `HOST_REF`, `HOST-CONTRACT.md`, site pages | modify, create | Release, everything off, docs |
 
 ---
 
