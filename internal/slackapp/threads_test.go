@@ -3,7 +3,11 @@
 package slackapp
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +89,42 @@ func TestThreadMapRetriesConflicts(t *testing.T) {
 		if (err != nil) != tc.wantErr || *n != tc.attempts {
 			t.Fatalf("failures=%d: err=%v attempts=%d", tc.failures, err, *n)
 		}
+	}
+}
+
+// The ConfigMap is bounded: when the encoded map passes MaxBytes the oldest entries go until it
+// fits, the newest stays, and the log carries a count, never a room id.
+func TestThreadMapStaysBounded(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	c := fake.NewClientBuilder().WithScheme(threadScheme()).Build()
+	var logs bytes.Buffer
+	th := ConfigMapThreads{C: c, Namespace: "agents", Now: func() time.Time { return now }, MaxBytes: 1500,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	ctx := context.Background()
+	for i := range 40 {
+		at := now.Add(-time.Duration(40-i) * time.Hour)
+		if err := th.Put(ctx, fmt.Sprintf("room%04d", i), Thread{Channel: "C03", TS: "1.0", At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var cm corev1.ConfigMap
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "agents", Name: "factory-slack-threads"}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	size := 0
+	for k, v := range cm.Data {
+		size += len(k) + len(v)
+	}
+	if size > 1500 || len(cm.Data) == 0 || len(cm.Data) >= 40 {
+		t.Fatalf("size %d, %d entries", size, len(cm.Data))
+	}
+	if _, ok := cm.Data["room0039"]; !ok {
+		t.Fatal("the newest entry was dropped")
+	}
+	if _, ok := cm.Data["room0000"]; ok {
+		t.Fatal("the oldest entry survived")
+	}
+	if !strings.Contains(logs.String(), "dropped=") || strings.Contains(logs.String(), "room00") {
+		t.Fatalf("log: %s", logs.String())
 	}
 }

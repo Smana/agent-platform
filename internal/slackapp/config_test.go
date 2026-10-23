@@ -10,6 +10,11 @@ import (
 )
 
 const goodConfig = `
+teamID: T01ABC
+botUserIDFile: /s/uid
+botTokenFile: /s/tok
+signingSecretFile: /s/sig
+webhookKeyFile: /s/key
 brokerURL: https://room-broker.agents.svc.cluster.local
 roomsURL: https://rooms.example
 namespace: agents
@@ -45,6 +50,12 @@ func TestConfig(t *testing.T) {
 		"bad repo":    strings.Replace(goodConfig, "Smana/ai-native-ref", "not-a-repo", 1),
 		"no repos":    strings.Replace(goodConfig, "[Smana/ai-native-ref]", "[]", 1),
 		"unknown key": goodConfig + "surprise: 1\n",
+		"no team":     strings.Replace(goodConfig, "teamID: T01ABC\n", "", 1),
+		"bad team":    strings.Replace(goodConfig, "T01ABC", "nope", 1),
+		"no secret":   strings.Replace(goodConfig, "signingSecretFile: /s/sig\n", "", 1),
+		"no token":    strings.Replace(goodConfig, "botTokenFile: /s/tok\n", "", 1),
+		"no key":      strings.Replace(goodConfig, "webhookKeyFile: /s/key\n", "", 1),
+		"no bot id":   strings.Replace(goodConfig, "botUserIDFile: /s/uid\n", "", 1),
 	} {
 		if _, err := loadConfigText(t, text); err == nil {
 			t.Errorf("%s: accepted", name)

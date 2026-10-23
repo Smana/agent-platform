@@ -193,14 +193,19 @@ type post struct {
 }
 
 type fakeSlack struct {
-	mu    sync.Mutex
-	posts []post
-	msgs  map[string]Message
+	mu        sync.Mutex
+	posts     []post
+	msgs      map[string]Message
+	failPosts int // the next n Posts fail
 }
 
 func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta *Metadata) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failPosts > 0 {
+		f.failPosts--
+		return "", errors.New("slack down")
+	}
 	ts := fmt.Sprintf("1729.%04d", 1000+len(f.posts))
 	f.posts = append(f.posts, post{ts: ts, channel: channel, thread: threadTS, text: text, meta: meta})
 	f.msgs[ts] = Message{TS: ts, ThreadTS: threadTS, User: "U0BOT", Text: text, Metadata: meta}
@@ -227,6 +232,7 @@ type stubBroker struct {
 	deny     map[string]string
 	keys     map[string]bool
 	draftErr error
+	room     string // run_create's room, "aaaaaaaa" when empty
 }
 
 func (b *stubBroker) refuse(onBehalfOf, text string) {
@@ -256,7 +262,11 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	b.accepted = append(b.accepted, c)
 	dup := b.keys[c.Key]
 	b.keys[c.Key] = true
-	return RunResult{Room: "aaaaaaaa", Issue: 42, Duplicate: dup}, nil
+	room := b.room
+	if room == "" {
+		room = "aaaaaaaa"
+	}
+	return RunResult{Room: room, Issue: 42, Duplicate: dup}, nil
 }
 
 func (b *stubBroker) created() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.accepted) }
@@ -277,14 +287,21 @@ func (b *stubBroker) all() []any {
 }
 
 type fakeThreads struct {
-	mu sync.Mutex
-	m  map[string]Thread
+	mu      sync.Mutex
+	m       map[string]Thread
+	putFail int // the next n Puts fail
+	puts    int
 }
 
 func (f *fakeThreads) Put(_ context.Context, room string, t Thread) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.puts++
+	if f.putFail > 0 {
+		f.putFail--
+		return errors.New("conflict")
+	}
 	f.m[room] = t
-	f.mu.Unlock()
 	return nil
 }
 
@@ -345,13 +362,17 @@ func newAppRig(t *testing.T, ch Channel) *appRig {
 	r.app = &App{Slack: r.slack, Broker: r.broker, Threads: r.threads,
 		Verifier:    Verifier{Secret: func() string { return rigSecret }, Now: func() time.Time { return r.now }},
 		WebhookKeys: func() ([][]byte, error) { return [][]byte{r.key}, nil },
-		BotUserID:   "U0BOT", RoomsURL: "https://rooms.example", Channels: map[string]Channel{"C03": ch},
+		TeamID:      "T01ABC", BotUserID: "U0BOT", RoomsURL: "https://rooms.example", Channels: map[string]Channel{"C03": ch},
 		Async: func(f func()) { f() }, Now: func() time.Time { return r.now }, Metrics: r.metrics}
 	return r
 }
 
 func (r *appRig) eventBody(id, event string) string {
-	return `{"type":"event_callback","team_id":"T01ABC","event_id":"` + id + `","event":` + event + `}`
+	return r.eventBodyTeam("T01ABC", id, event)
+}
+
+func (r *appRig) eventBodyTeam(team, id, event string) string {
+	return `{"type":"event_callback","team_id":"` + team + `","event_id":"` + id + `","event":` + event + `}`
 }
 
 func (r *appRig) postEvents(body string, signed bool) *httptest.ResponseRecorder {
@@ -434,3 +455,134 @@ func (r *appRig) webhookStatus(body, mode string) int {
 }
 
 func (r *appRig) webhookReplay() int { return r.postWebhook(r.lastWH.body, r.lastWH.h) }
+
+func (r *appRig) eventTeam(team, event string) {
+	r.t.Helper()
+	r.seq++
+	if st := r.postEvents(r.eventBodyTeam(team, "Ev"+strconv.Itoa(r.seq), event), true).Code; st != 200 {
+		r.t.Fatalf("events: %d", st)
+	}
+}
+
+const draftText = "<@U0BOT> Smana/ai-native-ref docs(agents): the link is dead\n## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz"
+
+// M1: a thread-map failure after run_create must not leave the room unfollowed forever: the next
+// ✅ is a duplicate and puts the thread again.
+func TestDuplicateReactionPutsTheThread(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", draftText)
+	draft := rig.lastPost()
+	rig.threads.putFail = 1
+	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
+	if _, ok := rig.threads.get("aaaaaaaa"); ok {
+		t.Fatal("the failed Put left an entry")
+	}
+	rig.react("C03", draft.ts, "U07GHI", "white_check_mark")
+	if th, ok := rig.threads.get("aaaaaaaa"); !ok || th.TS != "1729.0001" {
+		t.Fatalf("a duplicate did not restore the thread: %+v", th)
+	}
+}
+
+// M2: an unreadable key file is the App's fault, not a bad signature: 503, counted no_key.
+func TestWebhookKeyProblemIs503(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.app.WebhookKeys = func() ([][]byte, error) { return nil, errors.New("no such file") }
+	if st := rig.webhookStatus(`{"type":"room.run_started","room":"aaaaaaaa"}`, "signed"); st != 503 {
+		t.Fatalf("%d", st)
+	}
+	if rig.metrics.count("webhooks", "no_key") != 1 || rig.metrics.count("webhooks", "bad_signature") != 0 {
+		t.Fatal("outcome")
+	}
+}
+
+// M4: one workspace. An event from another team (a Slack Connect peer) does nothing.
+func TestOtherWorkspaceIsDropped(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", draftText)
+	draft := rig.lastPost()
+	n := len(rig.posts())
+	rig.eventTeam("T09OTHER", `{"type":"app_mention","channel":"C03","user":"U02DEF","ts":"1729.0002","text":`+jsonString(draftText)+`}`)
+	rig.eventTeam("T09OTHER", `{"type":"reaction_added","user":"U02DEF","reaction":"white_check_mark","item":{"type":"message","channel":"C03","ts":"`+draft.ts+`"}}`)
+	if len(rig.posts()) != n || len(rig.broker.all()) != 1 { // the one IssueDraft of the first mention
+		t.Fatalf("a foreign workspace's event was handled: %d posts, %d calls", len(rig.posts()), len(rig.broker.all()))
+	}
+}
+
+// M5: a mention from a malformed user id, or any event with bot_id, is ignored.
+func TestMentionSenderChecks(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.event(`{"type":"app_mention","channel":"C03","user":"u<!channel>","ts":"1729.0001","text":` + jsonString(draftText) + `}`)
+	rig.event(`{"type":"app_mention","channel":"C03","user":"U02DEF","bot_id":"B01","ts":"1729.0002","text":` + jsonString(draftText) + `}`)
+	rig.event(`{"type":"reaction_added","user":"U02DEF","bot_id":"B01","reaction":"white_check_mark","item":{"type":"message","channel":"C03","ts":"1729.0001"}}`)
+	if len(rig.posts()) != 0 || len(rig.broker.all()) != 0 {
+		t.Fatal("handled")
+	}
+}
+
+// M6: the thread never shows the package's internal error prefix.
+func TestRefusalHidesInternalPrefix(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.mention("C03", "1729.0001", "<@U0BOT> nonsense")
+	if p := rig.lastPost(); !strings.HasPrefix(p.text, "Draft refused: ") || strings.Contains(p.text, "slackapp:") {
+		t.Fatalf("%q", p.text)
+	}
+}
+
+// M7: a task was filed under a room id that cannot be followed: say so, with no free text.
+func TestUnfollowableRoomIsSaid(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.broker.room = "../evil <!channel>"
+	rig.mention("C03", "1729.0001", draftText)
+	rig.react("C03", rig.lastPost().ts, "U02DEF", "white_check_mark")
+	p := rig.lastPost().text
+	if !strings.Contains(p, "filed") || !strings.Contains(p, "cannot be followed") || strings.Contains(p, "evil") || strings.Contains(p, "channel>") {
+		t.Fatalf("%q", p)
+	}
+	if len(rig.threads.m) != 0 {
+		t.Fatal("an invalid room was mapped")
+	}
+}
+
+// M8: nothing Slack would act on survives into the draft post, in the title or the body.
+func TestDraftPostIsInert(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	evil := "<!channel> <@U123> <https://x|y>"
+	rig.mention("C03", "1729.0001", "<@U0BOT> Smana/ai-native-ref t "+evil+"\nbody "+evil+"\n```\n<!here>\n```")
+	p := rig.lastPost()
+	for _, bad := range []string{"<!channel>", "<@U123>", "<https://x|y>", "<!here>"} {
+		if strings.Contains(p.text, bad) {
+			t.Fatalf("%s survived: %q", bad, p.text)
+		}
+	}
+	if strings.Count(p.text, "```") != 2 {
+		t.Fatalf("a fence in the body closed the block early: %q", p.text)
+	}
+	if p.meta == nil || !strings.Contains(p.meta.EventPayload.Title, "<!channel>") {
+		t.Fatal("the metadata must keep the draft as the broker returned it")
+	}
+}
+
+// M8: a Slack failure is a 502, the id is forgotten, and the redelivery posts.
+func TestWebhookRedeliveryAfterSlackFailure(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.threads.put("aaaaaaaa", Thread{Channel: "C03", TS: "1729.0001"})
+	rig.slack.failPosts = 1
+	body := `{"type":"room.run_started","room":"aaaaaaaa"}`
+	if st := rig.webhookStatus(body, "signed"); st != 502 {
+		t.Fatalf("%d", st)
+	}
+	if st := rig.webhookReplay(); st != 200 || len(rig.posts()) != 1 {
+		t.Fatalf("redelivery: %d, %d posts", st, len(rig.posts()))
+	}
+}
+
+// M8: a delivery whose timestamp is outside the tolerance is refused by the App.
+func TestWebhookStaleTimestamp(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.threads.put("aaaaaaaa", Thread{Channel: "C03", TS: "1729.0001"})
+	body := `{"type":"room.run_started","room":"aaaaaaaa"}`
+	h := webhook.Sign([][]byte{rig.key}, "evt_stale", rig.now.Add(-10*time.Minute), []byte(body))
+	if st := rig.postWebhook(body, h); st != 401 || len(rig.posts()) != 0 {
+		t.Fatalf("%d", st)
+	}
+}

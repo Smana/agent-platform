@@ -18,6 +18,7 @@ const minMaxCost = 0.01
 
 // Config is the App's config file, loaded strictly as the broker's config is.
 type Config struct {
+	TeamID            string             `json:"teamID"`
 	BotUserIDFile     string             `json:"botUserIDFile"`
 	BotTokenFile      string             `json:"botTokenFile"`
 	SigningSecretFile string             `json:"signingSecretFile"`
@@ -67,7 +68,8 @@ func LoadConfig(path string) (Config, error) {
 
 func (c Config) validate() error {
 	var errs []error
-	for name, v := range map[string]string{"namespace": c.Namespace, "brokerURL": c.BrokerURL, "roomsURL": c.RoomsURL} {
+	for name, v := range map[string]string{"botUserIDFile": c.BotUserIDFile, "botTokenFile": c.BotTokenFile,
+		"signingSecretFile": c.SigningSecretFile, "webhookKeyFile": c.WebhookKeyFile, "namespace": c.Namespace, "brokerURL": c.BrokerURL, "roomsURL": c.RoomsURL} {
 		if v == "" {
 			errs = append(errs, fmt.Errorf("%s is required", name))
 		}
@@ -76,6 +78,9 @@ func (c Config) validate() error {
 		if u, err := url.Parse(v); v != "" && (err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Hostname() == "") {
 			errs = append(errs, fmt.Errorf("%s %q must be an http(s) URL", name, v))
 		}
+	}
+	if !teamRE.MatchString(c.TeamID) {
+		errs = append(errs, fmt.Errorf("teamID %q is not a Slack workspace id", c.TeamID))
 	}
 	if len(c.Channels) == 0 {
 		errs = append(errs, errors.New("channels: at least one channel is required"))

@@ -57,6 +57,7 @@ type App struct {
 	Threads     Threads
 	Verifier    Verifier
 	WebhookKeys func() ([][]byte, error)
+	TeamID      string
 	BotUserID   string
 	RoomsURL    string
 	Channels    map[string]Channel
@@ -136,6 +137,7 @@ func slackText(s string) string {
 
 // shown is a refusal as the thread shows it: inert and short.
 func shown(s string) string {
+	s = strings.TrimPrefix(s, "slackapp: ") // the package's internal prefix is not for people
 	if r := []rune(s); len(r) > maxShown {
 		s = string(r[:maxShown]) + "…"
 	}
@@ -154,6 +156,7 @@ type slackEvent struct {
 	Type     string `json:"type"`
 	Channel  string `json:"channel"`
 	User     string `json:"user"`
+	BotID    string `json:"bot_id"`
 	Text     string `json:"text"`
 	TS       string `json:"ts"`
 	ThreadTS string `json:"thread_ts"`
@@ -208,7 +211,9 @@ func (a *App) Events() http.Handler {
 // handle runs one event and names its outcome for the counter.
 func (a *App) handle(ctx context.Context, env slackEnvelope) string {
 	var ev slackEvent
-	if json.Unmarshal(env.Event, &ev) != nil || !teamRE.MatchString(env.TeamID) {
+	// One workspace: a Slack Connect peer's events carry its own team_id. A bot's event (bot_id)
+	// is never a person's mention or check mark.
+	if json.Unmarshal(env.Event, &ev) != nil || !teamRE.MatchString(env.TeamID) || env.TeamID != a.TeamID || ev.BotID != "" {
 		return "ignored"
 	}
 	switch {
@@ -226,7 +231,7 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 	if thread == "" {
 		thread = ev.TS
 	}
-	if !ok || ev.User == a.BotUserID || !tsRE.MatchString(thread) {
+	if !ok || ev.User == a.BotUserID || !userRE.MatchString(ev.User) || !tsRE.MatchString(thread) {
 		return "ignored"
 	}
 	refuse := func(why string) string {
@@ -311,15 +316,17 @@ func (a *App) reaction(ctx context.Context, team string, ev slackEvent) string {
 	}
 	if !roomRE.MatchString(res.Room) {
 		a.log().Warn("run_create answered an unusable room id")
+		say(fmt.Sprintf("The task is filed (#%d, for <@%s>), but its room cannot be followed here.", res.Issue, ev.User))
 		return "error"
 	}
 	url := strings.TrimSuffix(a.RoomsURL, "/") + "/r/" + res.Room
+	// Put on a duplicate too (idempotent): a Put that failed the first time is retried by the next ✅.
+	if err := a.Threads.Put(ctx, res.Room, Thread{Channel: ev.Item.Channel, TS: thread, At: a.Now()}); err != nil {
+		a.log().Warn("thread map put failed", "room", res.Room, "err", err)
+	}
 	if res.Duplicate {
 		say("Already filed: " + url)
 		return "duplicate"
-	}
-	if err := a.Threads.Put(ctx, res.Room, Thread{Channel: ev.Item.Channel, TS: thread, At: a.Now()}); err != nil {
-		a.log().Warn("thread map put failed", "room", res.Room, "err", err)
 	}
 	say(fmt.Sprintf("Filed #%d for <@%s>; the factory starts it. Room: %s", res.Issue, ev.User, url))
 	return "filed"
@@ -333,7 +340,15 @@ func (a *App) Webhooks() http.Handler {
 		ctx := r.Context()
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody+1))
 		keys, kerr := a.WebhookKeys()
-		if err != nil || len(body) > maxWebhookBody || kerr != nil {
+		if kerr != nil {
+			// Our own key problem, not a bad signature: 503 so the broker retries and does not count
+			// it toward disabling the subscriber.
+			a.log().Error("webhook keys unreadable")
+			a.count(ctx, "webhooks", "no_key")
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err != nil || len(body) > maxWebhookBody {
 			a.count(ctx, "webhooks", "bad_signature")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -344,6 +359,8 @@ func (a *App) Webhooks() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Known race (M3): two concurrent redeliveries of one id can both pass add before either
+		// finishes; the worst case is one duplicate thread line, and a failure forgets the id.
 		if !a.deliveries.add(id) {
 			a.count(ctx, "webhooks", "duplicate")
 			w.WriteHeader(http.StatusOK)

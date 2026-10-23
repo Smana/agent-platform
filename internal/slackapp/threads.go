@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"sort"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +41,8 @@ type ConfigMapThreads struct {
 	C         client.Client
 	Namespace string
 	Now       func() time.Time
+	MaxBytes  int          // the encoded map's cap; defaults to 900 KiB (a ConfigMap holds 1 MiB)
+	Logger    *slog.Logger // optional
 }
 
 func newThreadCM(ns string) *corev1.ConfigMap {
@@ -65,6 +69,7 @@ func (m ConfigMapThreads) Put(ctx context.Context, room string, t Thread) error 
 			cm.Data = map[string]string{}
 		}
 		cm.Data[room] = string(raw)
+		m.bound(cm, room)
 		if create {
 			err = m.C.Create(ctx, cm)
 		} else {
@@ -88,6 +93,46 @@ func (m ConfigMapThreads) prune(cm *corev1.ConfigMap) {
 		if json.Unmarshal([]byte(v), &t) != nil || m.Now().Sub(t.At) > threadTTL {
 			delete(cm.Data, room)
 		}
+	}
+}
+
+// bound keeps the encoded map under MaxBytes (a ConfigMap holds 1 MiB) by dropping the oldest
+// entries, never the one just put. It logs how many, never which.
+func (m ConfigMapThreads) bound(cm *corev1.ConfigMap, keep string) {
+	limit := m.MaxBytes
+	if limit <= 0 {
+		limit = 900 << 10
+	}
+	size := 0
+	type entry struct {
+		room string
+		at   time.Time
+	}
+	entries := make([]entry, 0, len(cm.Data))
+	for room, v := range cm.Data {
+		size += len(room) + len(v)
+		var t Thread
+		_ = json.Unmarshal([]byte(v), &t)
+		entries = append(entries, entry{room, t.At})
+	}
+	if size <= limit {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
+	dropped := 0
+	for _, e := range entries {
+		if size <= limit {
+			break
+		}
+		if e.room == keep {
+			continue
+		}
+		size -= len(e.room) + len(cm.Data[e.room])
+		delete(cm.Data, e.room)
+		dropped++
+	}
+	if m.Logger != nil {
+		m.Logger.Warn("thread map over its cap, oldest entries dropped", "dropped", dropped)
 	}
 }
 
