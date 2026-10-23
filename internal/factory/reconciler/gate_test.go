@@ -131,3 +131,22 @@ func TestEveryConditionOnTheDiffMakesTheClassReadIt(t *testing.T) {
 		}
 	}
 }
+
+// allowedFiles matches whole paths: an alternation that passes the ^…$ shape check anchors each
+// branch on one side only, and must not allow docs/a.md.sh.
+func TestAllowedFilesAnchorsTheWholePattern(t *testing.T) {
+	in := gateInputs()
+	cl := declaredClass()
+	cl.AllowedFiles = []string{`^docs/.+\.md|website/.+\.md$`}
+	in.Cfg.Classes["dead-links"] = cl
+	in.Stats[0].Path = "docs/a.md.sh"
+	if d := DecideArm(in); d.Reason != "file_not_allowed" {
+		t.Fatalf("a branch anchored on one side allowed %s: %+v", in.Stats[0].Path, d)
+	}
+	for _, p := range []string{"docs/a.md", "website/b.md"} {
+		in.Stats[0].Path = p
+		if d := DecideArm(in); d.Verdict != "arm" {
+			t.Fatalf("%s is allowed: %+v", p, d)
+		}
+	}
+}

@@ -45,18 +45,32 @@ func changedPaths(in ArmInputs) []string {
 	return out
 }
 
-// matchesAny: path matches one of pats. A pattern that does not compile matches nothing, so an
-// allow list fails closed and a protect list is caught by Validate before it ever runs.
-func matchesAny(pats []string, path string) bool {
-	return slices.ContainsFunc(pats, func(p string) bool {
-		re, err := regexp.Compile(p)
-		return err == nil && re.MatchString(path)
-	})
+// compile builds a class's patterns once per decision. A pattern that does not compile is
+// dropped, so an allow list fails closed and a protect list is caught by Validate before it runs.
+// anchored wraps each as ^(?:p)$, so an alternation cannot leave one branch unanchored.
+func compile(pats []string, anchored bool) []*regexp.Regexp {
+	var out []*regexp.Regexp
+	for _, p := range pats {
+		if anchored {
+			p = "^(?:" + p + ")$"
+		}
+		if re, err := regexp.Compile(p); err == nil {
+			out = append(out, re)
+		}
+	}
+	return out
 }
 
+func matchesAny(res []*regexp.Regexp, path string) bool {
+	return slices.ContainsFunc(res, func(re *regexp.Regexp) bool { return re.MatchString(path) })
+}
+
+// allowedFiles matches whole paths: policy-bot's match is unanchored, so the gate anchors the
+// whole pattern itself.
 func allowedFiles(cl config.Class, in ArmInputs) (string, bool) {
+	res := compile(cl.AllowedFiles, true)
 	for _, p := range changedPaths(in) {
-		if !matchesAny(cl.AllowedFiles, p) {
+		if !matchesAny(res, p) {
 			return "file_not_allowed", false
 		}
 	}
@@ -64,7 +78,8 @@ func allowedFiles(cl config.Class, in ArmInputs) (string, bool) {
 }
 
 func protectedFiles(cl config.Class, in ArmInputs) (string, bool) {
-	if slices.ContainsFunc(changedPaths(in), func(p string) bool { return matchesAny(cl.ProtectedFiles, p) }) {
+	res := compile(cl.ProtectedFiles, false)
+	if slices.ContainsFunc(changedPaths(in), func(p string) bool { return matchesAny(res, p) }) {
 		return "file_protected", false
 	}
 	return "", false
