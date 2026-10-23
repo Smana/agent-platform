@@ -320,7 +320,10 @@ type Principal struct {
 	Groups      []string
 	ClientID    string    // humans: the rooms client, the ID token's azp or roomctl's client_id (ruling P18)
 	Expiry      time.Time // a connection lives min(exp, 1 h)
-	AccessToken string    // humans only; forwarded to the factory (C4), never logged
+	AccessToken string    // humans and sponsored principals; forwarded to the factory (C4), never logged
+	// Sponsored marks a sponsored principal's token (factory interfaces F4): a service account's,
+	// which may start api tasks and read its own tasks' rooms, and nothing a human may do.
+	Sponsored bool
 }
 
 // String is the principal's id, so %v and %+v never print AccessToken.

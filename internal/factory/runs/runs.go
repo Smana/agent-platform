@@ -54,6 +54,10 @@ const (
 	// The person the run is charged to beside the fleet (v2 per-person caps D2): the meter
 	// settles its tokens to both keys. CREATE only; absent, the run's principal pays alone.
 	AnnChargedTo = "agents.ogenki.io/charged-to"
+	// The run's own USD cap in micro-USD (F4, C-1): an api task's run is held to a third of its
+	// ceiling, which AgentRun's spec.budget (maxTokens only) cannot carry. The meter reads it
+	// beside its tier's cap and takes the lower. CREATE only; absent, the tier's cap alone applies.
+	AnnMaxMicroUSD = "agents.ogenki.io/max-micro-usd"
 	// The factory build that created the claim (R10): version.Version, CREATE only, so a replay
 	// that finds the claim reads back the build that made it, not its own.
 	AnnFactoryVersion = "agents.ogenki.io/factory-version"
@@ -87,7 +91,7 @@ func Scheme(s *runtime.Scheme) {
 type Spec struct {
 	RunID, TaskID, Role, Repository, BaseRef, Branch, TaskText, TaskURL, Principal, DataClass, Model, RoomRef, Queue, Traceparent, Tier string
 	SourceURL, Head, RequestHash, ChargedTo                                                                                             string
-	MaxTokens, MaxMinutes, StartSeq                                                                                                     int64
+	MaxTokens, MaxMinutes, StartSeq, MaxMicroUSD                                                                                        int64
 	EgressProfiles                                                                                                                      []string
 	// Suspendable is spec.suspendable (v2 suspend), written only when true: it is immutable.
 	Suspendable bool
@@ -225,6 +229,9 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.ChargedTo != "" {
 		ann[AnnChargedTo] = s.ChargedTo
 	}
+	if s.MaxMicroUSD > 0 {
+		ann[AnnMaxMicroUSD] = strconv.FormatInt(s.MaxMicroUSD, 10)
+	}
 	u.SetAnnotations(ann)
 	return u
 }
@@ -240,7 +247,7 @@ type Run struct {
 	// CompositionRevision Crossplane bound it to, and the harness image the composition read
 	// from its pod. Empty until known.
 	FactoryVersion, CompositionRevision, HarnessImage string
-	Tokens, MaxTokens, StartSeq                       int64
+	Tokens, MaxTokens, StartSeq, MaxMicroUSD          int64
 	Created, Finished                                 time.Time
 	// Deleting: the claim carries a deletion timestamp. Its finalizers can keep it listed, in
 	// whatever phase it had, long after the run itself was stopped (#55).
@@ -268,6 +275,15 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		r.StartSeq = v
 	}
 	r.MaxTokens, _, _ = unstructured.NestedInt64(u.Object, "spec", "budget", "maxTokens")
+	// Absent is 0; present but unreadable or not positive is -1, so the meter can tell a run
+	// that never had a cap from one whose cap was damaged: both are revoked when sponsored.
+	if raw, ok := u.GetAnnotations()[AnnMaxMicroUSD]; ok {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			r.MaxMicroUSD = v
+		} else {
+			r.MaxMicroUSD = -1
+		}
+	}
 	// The annotation is the run's monotonic high-water mark (R12); status is the fallback.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnUsage], 10, 64); err == nil {
 		r.Tokens = v
@@ -382,7 +398,7 @@ func (c Client) Annotate(ctx context.Context, id string, kv map[string]string) e
 	if err := validID("annotate", id); err != nil {
 		return err
 	}
-	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo, AnnFactoryVersion} {
+	for _, k := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo, AnnFactoryVersion, AnnMaxMicroUSD} {
 		if _, ok := kv[k]; ok {
 			return fmt.Errorf("annotate run %s: %s is set at CREATE only", id, k)
 		}

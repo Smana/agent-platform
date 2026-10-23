@@ -535,7 +535,73 @@ room's reader, on any replica, from the log.
 
 Another person's task id, or a malformed one, is `-32602 no such task`. A room read that fails for
 a while is `-32603`: poll again. There is no `tasks/list` or `tasks/cancel` (`-32601`), and no task
-is `input_required`: that state is for a later `run_create`.
+is `input_required`: that state belongs to [`run_create`](#sponsored-principals-on-mcp).
+
+### Sponsored principals on `/mcp`
+
+A sponsored principal (a ZITADEL machine user declared in the broker's `human.mcp.sponsored` and the
+factory's `api.sponsored`, [factory](factory.md#sponsored-principals)) reaches `/mcp` with its own
+client-credentials token, whose audience must hold the project (`human.projectIDFile`). Nothing
+else serves it: every other route refuses it, and it never reaches `/v1/runs`. It sees four tools:
+`run_create`, `issue_draft`, `room_summary` and `room_tail`; `room_queue`, `room_fork` and
+`rooms_list` are unknown tools to it. It reads a room only as one of its `watcher` members, which
+the factory adds when it creates its task's room, with no GitHub check.
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `run_create` | `repo`, `text`, `dataClass` (`public`), `max_cost` (USD, above 0), all required; `title?` (files the issue, with the `issue_draft` rules), `on_behalf_of?` (`slack:<team>/<user>`), `ref?`, `idempotency_key?` (at most 128 characters; default a hash of the arguments, so a retried call makes one task) | `{task, room, issue, duplicate, url}`: the factory's answer and the room's page |
+
+Unknown fields are refused: class, tier, template, auto-merge and egress are never the caller's.
+The text passes the broker's redactor, then [`POST /v1/tasks`](#post-v1tasks) with the caller's
+own token, which the factory verifies again. A factory refusal comes back as a tool error,
+`rejected: <reason>`.
+
+**`run_create` as a task.** With `2025-11-25`, `run_create` lists `execution.taskSupport: optional`.
+A `tools/call` with `task: {ttl?}` creates the factory task and returns an MCP task whose id is
+`run.` plus a base64url JSON `{v, by, room, created, ttl}`: stateless like `tail.`, bound to its
+creator. `ttl` defaults to 24 h, at most 72 h. `tasks/get` maps the room's coarse state:
+
+| Room state | Task status |
+|---|---|
+| `queued`, `running` | `working` |
+| `waiting_for_human` | `input_required`, `statusMessage` naming the room page; `tasks/result` returns the summary and never asks the caller anything: approvals stay on the web page |
+| `done` | `completed` |
+| `failed` | `failed` |
+| `stopped` | `cancelled` |
+
+Triage makes the room, so a task whose room does not exist yet is `working` for a 2-minute grace
+from its creation, then `failed` (`no such room`). A slow triage can flip a `failed` task back to
+`working` once the room appears: poll `tasks/get` until `completed` or `cancelled`, and treat
+`failed` as provisional until the grace is well past.
+
+## `:8082` — the factory's task intake
+
+### `POST /v1/tasks`
+
+It serves on the factory's `api.listen`, only while `api.sponsored` is non-empty
+(otherwise `404`). It takes sponsored tokens only: a human or a system caller gets
+`403 sponsored_only`. (`POST /v1/runs` refuses a sponsored caller the other way round, with
+`403 sponsored_only_tasks`: a sponsored principal starts tasks, never runs.) The broker's
+`run_create` calls it with the caller's own token. Model and
+limits: [sponsored principals](factory.md#sponsored-principals).
+
+| | |
+|---|---|
+| Auth | `Authorization: Bearer`: a token from `api.humanIssuer` whose client is a sponsored principal's `clientIDFile` and whose audience holds `api.projectIDFile` |
+| `Idempotency-Key` | Required, at most 255 bytes. The Task's name derives from `api:<name>:<key>`: a replay answers `200 {duplicate: true}` and creates nothing, two requests under one key make one task. A name another request owns is `409 idempotency_conflict` |
+| Body | `repository`, `text` (at most 16 KiB), `dataClass` (`public`), `maxCostUSD` (at least 0.01), all required; `title?` (files the issue; `<area>: <what is wrong>` and the three template sections), `onBehalfOf?`, `ref?` (at most 256 characters, a git ref: letters, digits, `.`, `_`, `/`, `-`, no leading `-`, no `..`, no whitespace; the same pattern as `run_create`'s, since it is written into the agent's brief). At most 64 KiB; unknown fields refused |
+| `201` | `{task, room, issue?}`: the room is named as the task |
+| `200` | `{task, room, issue, duplicate: true}` |
+| `400` | `bad_json`, `idempotency_key_required`, `bad_data_class`, `bad_ref`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class`, `invalid_draft`, `bad_text` |
+| `401`, `403` | `unauthenticated`; `not_permitted`, `sponsored_only`, `repository_not_allowed`, `not_linked`, `not_a_maintainer` |
+| `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
+| `503` | `kill_switch`, `meter_unpriced`, `tasks_unavailable`, `ledger_unavailable`, `intake_failed` |
+
+`agent_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
+principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
+`bad_*`, `max_cost_*`, `repository_*`, `invalid_draft`, the caps and the `503`s); any other value is
+`other`. The `unauthenticated`, `not_permitted` and `sponsored_only` refusals come before the
+principal is known and are **not counted**.
 
 ## `:8090` — room tools
 

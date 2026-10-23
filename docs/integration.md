@@ -117,6 +117,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build; the group names are literals |
 | `human.access` | `{readerFile, ttl}`: room visibility follows GitHub ([room access](security.md#identities)). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms |
 | `human.mcp` | `{enabled}`: serve [`POST /mcp`](api.md#post-mcp), the MCP server `roomctl mcp` relays. Off by default. On, it needs `human.roomctlClientIDFile`, since `/mcp` takes roomctl's tokens only, or the broker refuses to start |
+| `human.mcp.sponsored[]` | `{name, clientIDFile}`: the service accounts that may call `run_create` ([sponsored principals](factory.md#sponsored-principals)); each is also declared in the factory's `api.sponsored`, which decides everything else. Needs `human.mcp.enabled` and `factoryURL`. The name is a DNS label, not reserved (`factory`, `runlore`, `scheduler`, `room-broker`, `policy`) and unique |
 | `factoryURL` | The factory's run API, plaintext on the factory Service's `api` port: `http://agent-factory.agent-system.svc:8082`. It moves with the factory chart's port and its `api.listen`. Unset: `start_run` returns a manifest for the owner to apply |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}`. Re-read when they change |
 | `runs` | `{group, namespace, namePrefix}`: where AgentRuns live. Defaults `cloud.ogenki.io`, `agents`, `xplane-run-` (cloud-native-ref's XR); the factory's config takes the same block. Read once at start. At least one `runIssuers[].subPattern` must match `system:serviceaccount:<namespace>:<namePrefix><id>` and capture the id, or the broker refuses to start |
@@ -192,6 +193,49 @@ annotation `agents.ogenki.io/revoked`, and `metadata.uid`. The run's CNP already
 | Verdicts and handoffs | `message{kind: review_verdict}` and `handoff` in the log; the verdict comment is the broker's, the factory never posts it again |
 | Who drives | `Room.status.driver` and `driverEpoch`: the factory never advances a room while a `human:` holds the token |
 | Run requests | `POST {factoryURL}/v1/runs` on the factory's `:8082` (plaintext) with `{role, repository, baseRef, task, dataClass, roomRef, egressProfiles?}`, the human's own access token as `Authorization: Bearer` (never an asserted `sub`), and `Idempotency-Key: <roomId>:<originClient>:<originSeq>`, the act's own key. The broker requests the run, then records it, so a client retrying a failed record sends the same key and gets the same run; a request without a key is refused before the call (`internal/runrequest`). How the factory answers a key, a replay and a refusal: [the factory's API](factory.md#the-factorys-api) |
+
+### A sponsored client's sequence
+
+A machine that starts factory work, such as a CI job or the Slack App, is a sponsored principal.
+It needs a ZITADEL machine user with a client-credentials client, whose token carries the project
+audience. No in-cluster path to the broker's `/mcp` exists yet: it needs a network rule for
+in-cluster clients, which ai-native-ref adds with `human.mcp.sponsored`, and until then nothing
+reaches `/mcp` from inside the cluster. The factory's `:8082` is reachable from the tailnet, so a
+sponsored token is accepted there by `POST /v1/tasks` (and refused on `/v1/runs`, below).
+
+```mermaid
+sequenceDiagram
+  participant C as sponsored client
+  participant Z as ZITADEL
+  participant B as broker /mcp
+  participant F as factory :8082
+  C->>Z: client credentials (project audience)
+  Z-->>C: access token
+  C->>B: initialize, tools/list (four tools)
+  C->>B: tools/call run_create {repo, text, dataClass, max_cost, task}
+  B->>F: POST /v1/tasks, the same token, Idempotency-Key
+  F-->>B: 201 {task, room}
+  B-->>C: MCP task run.<id>, working
+  loop every pollInterval
+    C->>B: tasks/get
+    B-->>C: working, input_required, completed, failed or cancelled
+  end
+  C->>B: tasks/result, or room_summary / room_tail
+```
+
+1. Get a token with the client-credentials grant, `scope` including the project audience scope. Its
+   `client_id` must be the principal's `clientIDFile`; the sponsor, the day and the ceiling come from
+   the factory's config, never from the token. A name maps to the **same** client-id file in the
+   broker's `human.mcp.sponsored[]` and the factory's `api.sponsored[]`: if they differ, one client
+   reads another's rooms.
+2. `initialize` on `/mcp`, then `tools/call` `run_create` with `task: {ttl?}`. Send an
+   `idempotency_key` (the same key makes the same task).
+3. Poll `tasks/get` until `completed`. `input_required` names the room page: a human answers there,
+   never through the client. Read the room with `room_summary` and `room_tail`: a sponsored
+   principal reads the rooms of its own tasks only, as a `watcher`.
+
+[`run_create`](api.md#sponsored-principals-on-mcp) and the factory's
+[`POST /v1/tasks`](api.md#post-v1tasks) give the arguments and the refusals.
 
 ### Starting a run in a room without the factory
 

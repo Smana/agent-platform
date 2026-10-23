@@ -33,7 +33,7 @@ import (
 // a config change never moves a task already triaged.
 func (r *Reconciler) splitAtTriage(t *v1alpha1.Task, cl v1alpha1.Classification) {
 	t.Spec.Split = nil
-	if t.Spec.Issue == 0 || t.Spec.ScopeMode != string(config.ScopeScoper) || cl.Tier != "frontier" {
+	if t.Spec.Issue == 0 || t.Spec.MaxMicroUSD > 0 || t.Spec.ScopeMode != string(config.ScopeScoper) || cl.Tier != "frontier" {
 		return
 	}
 	if p := r.Cfg.SplitFor(t.Spec.Repository, t.Spec.PredictedClass); p != nil {

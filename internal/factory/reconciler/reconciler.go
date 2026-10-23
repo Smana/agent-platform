@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
@@ -686,7 +688,8 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	// A RunLore task's issue is written by the intake just after its creation (FA-8): wait for
 	// it, so the first narration has a place to land. Past two minutes the intake is gone and
 	// the task proceeds without one.
-	if t.Spec.Source.Kind == "runlore" && t.Spec.Issue == 0 && r.Now().Sub(t.CreationTimestamp.Time) < 2*time.Minute {
+	waitsForIssue := t.Spec.Source.Kind == "runlore" || (t.Spec.Source.Kind == "api" && strings.HasPrefix(t.Spec.Text, "# "))
+	if waitsForIssue && t.Spec.Issue == 0 && r.Now().Sub(t.CreationTimestamp.Time) < 2*time.Minute {
 		return nil
 	}
 	reason, err := r.admit(ctx, t)
@@ -707,7 +710,8 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	t.Spec.Template, t.Spec.PredictedClass, t.Spec.DataClass, t.Spec.Budget = d.Template, d.PredictedClass, d.DataClass, d.Budget
+	t.Spec.Template, t.Spec.PredictedClass, t.Spec.DataClass = d.Template, d.PredictedClass, d.DataClass
+	t.Spec.Budget = triage.Ceiling(d.Budget, t.Spec.MaxMicroUSD) // F4: a task without a ceiling keeps its class budget, byte for byte
 	t.Spec.Loop = nil
 	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
 		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
@@ -731,9 +735,17 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 // triaged gives the task its room (R2). A room of that name the factory did not make escalates:
 // its runs would inherit another owner's data class (C3).
 func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
-	err := rooms.Ensure(ctx, r.Client, r.Namespace, t.Name, t.Spec.DataClass, t.Spec.Repository)
+	var members []roomv1.Member
+	if p := t.Sponsored(); p != "" { // R8, R13: the principal reads its own task's room, as a watcher
+		members = append(members, roomv1.Member{Principal: p, Role: "watcher"})
+	}
+	err := rooms.Ensure(ctx, r.Client, r.Namespace, t.Name, t.Spec.DataClass, t.Spec.Repository, members...)
 	if errors.Is(err, rooms.ErrForeignRoom) {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "foreign_room")
+	}
+	if apierrors.IsInvalid(err) && len(members) > 0 {
+		// an old Rooms CRD refuses a system: member: retrying cannot help, an operator must act
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, "rooms_crd_outdated")
 	}
 	if err != nil {
 		return err
@@ -865,7 +877,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !runFits(t) {
 		limit := taskLimit(t)
-		if r.Cfg.Budgets.EnforceTask {
+		if r.Cfg.Budgets.EnforceTask || t.Sponsored() != "" { // F4: an api task's ceiling is never a shadow
 			record(ctx, func(ctx context.Context) { r.Metrics.RunRevoked(ctx, "budget-task", limit) })
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
 		}
@@ -876,7 +888,12 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			"used_micro_usd", t.Status.Usage.CostMicroUSD, "cap_micro_usd", t.Spec.Budget.TaskMicroUSD)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
-	if limit := r.Cfg.Budgets.DailyMicroUSD(runs.PrincipalFactory); limit > 0 {
+	// M-8: an api task's principal that left the config would run in shadow: refuse it first.
+	if p := t.Sponsored(); p != "" && r.Cfg.SponsoredBy(p) == nil {
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, "principal_unknown")
+	}
+	limit, sponsored := r.Cfg.Budgets.DailyMicroUSD(runs.PrincipalFactory), r.sponsored(t)
+	if limit > 0 {
 		over, err := r.reserveFactoryDay(ctx, t, limit)
 		switch {
 		case errors.Is(err, api.ErrPersonOverBudget): // D4/D5: the person's day, not the fleet's: refused, not queued
@@ -888,7 +905,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		case errors.Is(err, api.ErrMeterBlind): // an enforced cap the meter cannot feed holds (#54)
 			t.Status.Reason = "waiting_meter_blind"
 			return nil
-		case err != nil && r.Cfg.Budgets.EnforcePrincipal:
+		case err != nil && (r.Cfg.Budgets.EnforcePrincipal || sponsored):
 			return err
 		case err != nil: // a shadow cap counts; it never holds a run
 			r.log().Warn("daily cap unreserved (shadow)", "task.id", t.Name, "err", err)

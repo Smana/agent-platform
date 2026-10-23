@@ -196,6 +196,8 @@ func reasons() map[string]string {
 		"budget-run":                "the run spent its token budget",
 		"budget-principal":          "the factory's daily budget in dollars is spent",
 		"budget-person":             "the daily budget in dollars of the person its next run is charged to is spent",
+		"principal_unknown":         "the API principal that requested it is no longer in the factory's configuration",
+		"rooms_crd_outdated":        "the cluster's Rooms CRD is older than the factory and refuses a system: member; an operator must refresh the CRD",
 		"budget-fleet":              "the agent fleet's daily token budget is spent",
 		"budget-task":               "the task's token budget has no room left for another full run",
 		"run_lost":                  "the run disappeared",
@@ -542,7 +544,11 @@ func hints() map[string]string {
 func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agent factory task `%s` %s", t.Name, headlines()[phase])
-	if why := Reason(reason); why != "" {
+	why := Reason(reason)
+	if p := t.Payer(); reason == "budget-person" && strings.HasPrefix(p, "system:") {
+		why = strings.Replace(why, "the person", "the principal", 1) // a sponsored principal pays, not a person
+	}
+	if why != "" {
 		fmt.Fprintf(&b, ": %s", why)
 	}
 	if p := t.Payer(); reason == "budget-person" && p != "" {

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -90,6 +91,16 @@ type Server struct {
 	// People is D1's identity link, read only while budgets.perPerson is on: the person a human
 	// token is charged as. nil charges every human as their own principal.
 	People PersonResolver
+	// Forges files an api task's issue as the factory App on its repository (R10): nil files none;
+	// a nil filer for a repository refuses a titled request.
+	Forges func(repository string) IssueFiler
+	// Log records the causes the intake never answers; nil records none.
+	Log *slog.Logger
+	// Redact is the broker's secret redactor (*redact.Redactor), applied to an api task's issue
+	// before it is filed; nil refuses a titled request.
+	Redact interface {
+		String(s string) (string, []string)
+	}
 }
 
 // PersonResolver names the person a human principal is charged as (v2 per-person caps D1):
@@ -156,10 +167,14 @@ type Reservation struct {
 // NeedLeaderElection is false: every replica serves intake.
 func (s *Server) NeedLeaderElection() bool { return false }
 
-// Handler is the API's mux: today only POST /v1/runs, admission in §4's order.
+// Handler is the API's mux: POST /v1/runs, admission in §4's order, and POST /v1/tasks while a
+// sponsored principal is declared.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/runs", s.createRun)
+	if len(s.Cfg.API.Sponsored) > 0 { // F4, D4: off until a principal is declared
+		mux.HandleFunc("POST /v1/tasks", s.createTask)
+	}
 	return mux
 }
 
@@ -210,6 +225,10 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		refuse(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	if p.Sponsored { // F4: a machine starts work only as a Task, never as a bare run
+		refuse(w, http.StatusForbidden, "sponsored_only_tasks")
 		return
 	}
 	if s.Stopped(r.Context()) { // §6.1: the stop object pauses intake, this API included

@@ -258,7 +258,7 @@ func TestAnnotateRefusesTheCreateOnlyKeys(t *testing.T) {
 	if err := c.Create(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo} {
+	for _, key := range []string{AnnTaskURL, AnnTraceparent, AnnStartSeq, AnnHead, AnnRequestHash, AnnChargedTo, AnnMaxMicroUSD} {
 		if err := c.Annotate(t.Context(), s.RunID, map[string]string{key: "https://github.com/Smana/cloud-native-ref/issues/1"}); err == nil {
 			t.Errorf("%s was patched", key)
 		}
@@ -485,5 +485,35 @@ func TestBuildJoinsChecksSearchAndTheLoop(t *testing.T) {
 	want := map[string]any{"stallSteps": int64(40), "continuations": int64(2), "checks": true, "search": true}
 	if loop, _, _ := unstructured.NestedMap(Build(s).Object, "spec", "loop"); !reflect.DeepEqual(loop, want) {
 		t.Fatalf("loop+checks+search: spec.loop %v, want %v", loop, want)
+	}
+}
+
+// F4, C-1: an api task's run carries its own USD cap from CREATE, so the meter holds the run to it
+// (AgentRun's spec.budget has maxTokens only); a run of any other task carries none.
+func TestMaxMicroUSDRoundTrips(t *testing.T) {
+	s := spec()
+	s.MaxMicroUSD = 666_666
+	u := Build(s)
+	if r, ok := FromUnstructured(u); !ok || r.MaxMicroUSD != 666_666 || u.GetAnnotations()[AnnMaxMicroUSD] != "666666" {
+		t.Fatalf("%+v %v", r, u.GetAnnotations())
+	}
+	if r, _ := FromUnstructured(Build(spec())); r.MaxMicroUSD != 0 || Build(spec()).GetAnnotations()[AnnMaxMicroUSD] != "" {
+		t.Fatal("no cap, no annotation")
+	}
+}
+
+// N-1: a cap annotation that is present but unreadable or not positive reads back as -1, never as
+// an absent cap (0): the meter revokes the first and the second alike.
+func TestAnUnreadableMaxMicroUSDIsNotAnAbsentOne(t *testing.T) {
+	for v, want := range map[string]int64{"666666": 666_666, "": 0, "abc": -1, "0": -1, "-5": -1} {
+		u := Build(spec())
+		if v != "" {
+			ann := u.GetAnnotations()
+			ann[AnnMaxMicroUSD] = v
+			u.SetAnnotations(ann)
+		}
+		if r, _ := FromUnstructured(u); r.MaxMicroUSD != want {
+			t.Errorf("%q: %d, want %d", v, r.MaxMicroUSD, want)
+		}
 	}
 }

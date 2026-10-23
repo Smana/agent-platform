@@ -435,6 +435,86 @@ flowchart LR
 The person's day is in USD, like the fleet's ([Daily budgets](#daily-budgets)). Turning it on: set
 `enabled` and watch `budget-principal-shadow{principal}` for a week, then set `enforcePrincipal`.
 
+## Sponsored principals
+
+Off by default: with no `api.sponsored`, `POST /v1/tasks` is `404` and the broker lists no
+`run_create`. A machine starts factory work only as a **sponsored principal**: a ZITADEL machine
+user that the config binds to a maintainer, with a day in dollars and a ceiling on every request.
+Its request becomes a `Task` of `spec.source.kind: api`, which triage, the gate and narration then
+treat as any other. Source: `internal/factory/api/tasks.go`.
+
+```mermaid
+flowchart LR
+  C["sponsored client<br/>client credentials"] -->|"run_create"| B["broker /mcp"]
+  B -->|"POST /v1/tasks<br/>same token, Idempotency-Key"| F["factory :8082"]
+  F -->|"Task source.kind api<br/>sponsor, maxMicroUSD"| T[("Task + room")]
+  T --> R["triage: task at the ceiling,<br/>each run at a third"]
+  R --> L[("ledger: system:name's day")]
+```
+
+`api.sponsored` is a list; each entry holds:
+
+| Key | Holds |
+|---|---|
+| `name` | A DNS label. The principal is `system:<name>`, the ledger key and `requestedBy`. Never `factory`, `runlore`, `scheduler`, `room-broker` or `policy`, nor a name in `api.systemPrincipals`; unique |
+| `clientIDFile` | The file holding the principal's ZITADEL client id, read at each use (the host's sync rewrites it when ids change). It must name a **machine (client-credentials) client**: every subject of that client becomes `system:<name>`, so a client with human subjects would admit them all as the principal. Unique across entries, and never the web UI's or `roomctl`'s client |
+| `sponsor` | A GitHub login, the maintainer accountable for the principal. It must be in `maintainers` of every repository in `repositories` |
+| `repositories` | The listed repositories the principal may use, spelled as listed; at least one |
+| `dailyUSD` | The principal's day, in (0, `budgets.factoryDailyUSD`] |
+| `maxCostUSD` | The largest `max_cost` one request may ask for, in (0, `dailyUSD`] |
+| `maxOpenTasks` | How many of its tasks may be open at once. Default 3. A **soft cap**: it is counted before the Task is created, so a burst of N concurrent distinct requests can open up to cap+N-1 tasks |
+| `onBehalfOf.slack` | `{"<team id>/<user id>": <maintainer login>}`: a request naming `slack:<team>/<user>` is sponsored by that maintainer instead. An unknown user is `not_linked`, a login outside `maintainers` is `not_a_maintainer` |
+
+`api.projectIDFile` is required whenever `api.sponsored` is set: it names the file holding the
+ZITADEL project id, and the client's token must carry it in its audience, or the token is refused.
+`api.sponsored` also needs `meter.prices`: a ceiling in dollars is meaningless on unpriced runs, and
+without prices the intake answers `503 meter_unpriced`. The chart mounts both files from
+`sponsoredSecret` ([chart](../charts/agent-factory/README.md)). Config load checks every row above
+and admission checks the sponsor again.
+
+**The request.** `max_cost` is mandatory, in USD: at least $0.01, at most the principal's
+`maxCostUSD` and at most the largest `taskUSD` among the tiers. It is stored as `spec.maxMicroUSD`,
+which the CRD makes immutable. Class, tier, template, auto-merge and egress are never the caller's:
+unknown fields are refused, and `dataClass` is `public` only. The sponsor and `onBehalfOf` come from
+the config and the link map, never from the caller. [The endpoint](api.md#post-v1tasks)
+lists the refusals.
+
+**The ceiling's split.** Triage caps the task at `min(tier taskUSD, max_cost)` and each run at a
+third of `max_cost` (`min(tier runUSD, max_cost / 3)`), the meter holding each run to its own cap.
+Tokens follow at the reference rate ($1.70 per million), so a run that cannot be priced keeps a
+ceiling too.
+
+**An api task is never split.** The scoper offers no split to a task with a ceiling: its children
+would each carry their own and escape it.
+
+**A titled task waits for its issue.** The factory detects a titled api task by its text starting with
+`# `, and waits up to 2 minutes for the issue the intake files just after creating the Task. An
+untitled text that itself starts with `# ` is mistaken for one and waits the same 2 minutes before
+it proceeds. Known; nothing is lost but the wait.
+
+**Who pays.** An api task's runs are charged to `system:<name>` beside the fleet, whether
+`budgets.perPerson` is on or off, and the principal's day is `dailyUSD`. A maintainer's
+`/factory retry` moves the payer to the retrier, as for any task: they pay as the retrier, with
+their own day. With per-person caps off (`budgets.perPerson`), a retried api task's runs are
+charged to the fleet only: nobody's day applies, but the task's ceiling still holds.
+
+**What bounds the day.** The intake checks the principal's day (spent plus reserved, plus the
+request's whole `max_cost`) and answers `429 principal_budget_exhausted`, but that check is
+**advisory**: nothing is reserved at intake. The hard limit is the run-time reservation under
+`system:<name>`, which is enforced whatever `budgets.enforcePrincipal` says, together with each
+run's ceiling/3 cap held by the meter. A later run refused for the day escalates the Task
+(`budget-person`), possibly with a pull request already open.
+
+**If a principal leaves the config.** Its live runs are no longer held to its day (the day comes
+from the declaration), and a task that needs a new run escalates `principal_unknown`. Remove a
+principal only once its tasks have ended.
+
+**The issue.** With a `title`, the factory files the issue itself with the factory App (no label: the
+Task exists already), the body ending with a footer naming the sponsor and the principal;
+`spec.issueAuthor` is the sponsor. Without a `title` the Task has no issue, as a schedule's has
+none. Text from a machine goes through the hidden-character strip, the draft rules (with a title)
+and the redactor, and the Task's `spec.text` is `untrusted`.
+
 ## The merge gate
 
 Once a task is ready, the gate reads the pull request in `AwaitingCI` and checks, in order;
@@ -591,10 +671,13 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 
 | Field | Meaning |
 |---|---|
-| `spec.source.kind` | `issue`, `runlore` or `schedule` |
-| `spec.source.ref` | `owner/name#n`, `<alert>/<resource>`, or the schedule's name |
+| `spec.source.kind` | `issue`, `runlore`, `schedule` or `api` |
+| `spec.source.ref` | `owner/name#n`, `<alert>/<resource>`, the schedule's name, or an `api` task's `ref` (default `api:<name>`) |
 | `spec.source.key` | The idempotency key the name derives from |
-| `spec.source.requestedBy` | `github:<login>`, `system:runlore` or `system:scheduler` |
+| `spec.source.requestedBy` | `github:<login>`, `system:runlore`, `system:scheduler`, or `system:<name>` for a sponsored principal |
+| `spec.source.sponsor` | `api` tasks only: `github:<login>`, the maintainer accountable for the request (immutable) |
+| `spec.source.onBehalfOf` | `api` tasks only: `slack:<team>/<user>` when a link chose the sponsor |
+| `spec.maxMicroUSD` | `api` tasks only: the request's `max_cost` ceiling in micro-USD, immutable; 0 for every other task. See [sponsored principals](#sponsored-principals) |
 | `spec.source.trust` | `untrusted` text is fenced as data for the agent; `trusted` (schedules) is not |
 | `spec.source.contentSHA256` | sha256 of the text as labelled |
 | `spec.repository` | `owner/name` |
@@ -666,7 +749,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `resume` | `maxPerTask` (1–5) | 2 |
 | `meter` | `url`, `query`, `logsURL`, `throttleQuery`, `prices` | Required but `prices` |
 | `tracing` | `otlpEndpoint`, `host:port` | Empty: tracing off |
-| `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
+| `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m); `projectIDFile` and `sponsored`, see [sponsored principals](#sponsored-principals) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
 | `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 | `sandbox` | `suspend: {enabled}`: a run `POST /v1/runs` starts in an attended room gets `spec.suspendable: true`, which lets the room broker suspend it while its approval waits on an idle room (the broker's `suspend` config). Fixed on the claim at create | `enabled` false |
 | `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`, `scoper`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering) or [scoper](#the-scoper): never part of the loop, so `{scope: steering}` alone switches no loop on; `split` (`{maxChildren 2–5, familyUSD, childTier}`; `familyUSD` defaults to four of the child tier's `taskUSD`, `childTier` to `standard`) is refused without `scope: scoper` on the same row, on `docs-links`, `revert` or an oracle class, and without `meter.prices`; it lets the scoper of a task C7 itself rated `frontier` propose [a split](#splits). `search: true` offers the class's implementer runs the [search tool](../images/agent-harness/README.md) (`spec.loop.search`, which the harness reads as `AGENT_SEARCH=1`); like `scope`, it never switches the loop on, and a row is read whole, so a class row without `search` is off whatever `default` says. The room-bridge classes a bare `search` as the plain built-in only on a run given it, assuming MCP tools reach it prefixed (`server_tool`): an unprefixed MCP tool named `search` would also class plain (and the SDK refuses the duplicate tool name at start). Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
@@ -787,6 +870,8 @@ ignored`, counted) and the task runs on its scope. Otherwise the factory comment
 issue, labels it `factory/split-proposed` and waits `Escalated`, `split_proposed`. No part exists
 before a maintainer's `/factory split`.
 
+A task with a `spec.maxMicroUSD` (an api task) is never offered a split: see [sponsored principals](#sponsored-principals).
+
 - **The approver pays.** `/factory split` needs `write` on the repository, is read before
   `/factory retry`, and charges the approver for every part: their day is checked first (spent and
   enforced, the command waits and they are told once). A part re-labelled later is paid by whoever
@@ -836,6 +921,10 @@ system's run request. Source: `internal/factory/api/server.go`.
 | `401`, `403` | `unauthenticated`; `not_permitted`, `repository_not_allowed`, `admin_only`, `task_branch`, `repository_permission` (no `write` on the repository, or it could not be verified) |
 | `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget`, `person_budget_exhausted` (the caller's own day, [per-person caps](#per-person-caps)) |
 | `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed`, `identity_unavailable` (per-person caps on, and the caller's GitHub link could not be read) |
+
+**`POST /v1/tasks`**, on `api.listen`, registered only while `api.sponsored` is non-empty (otherwise
+`404`): a sponsored principal's task. [Sponsored principals](#sponsored-principals) is the model;
+the broker's `run_create` is its client ([API](api.md#post-v1tasks)).
 
 **`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore
 finding. Source: `internal/factory/intake/runlore.go`.

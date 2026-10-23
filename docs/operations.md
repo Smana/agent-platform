@@ -194,6 +194,7 @@ the harnesses still hold.
 | Run provenance (R10) | Release the factory and the room broker in the same change, broker first. The factory's task facts carry `run.provenance`, and an old broker decodes `POST /v1/rooms/{id}/task` strictly, so it answers **400** to that field. Nothing is lost: the factory retries the same facts with the same `clientSeq` once the broker rolls. Until then, unfinished tasks lose their poll requeue and fall to error backoff (up to about 16 minutes), and finished tasks' room close and settle requeues stall, the close cap included. Keep the window to minutes by shipping both together |
 | Factory v0.16.0 (daily caps in USD) | Set `budgets.factoryDailyUSD`, `humanDailyUSD` and `perPerson.dailyUSD`; move alerts and dashboards to the `_usd` gauges in the same change as the pin. **Breaking:** the gauges `agent_factory_budget_{remaining,cap}_tokens` are replaced by `agent_factory_budget_{remaining,cap}_usd`. The ledger is now `agent-factory-ledger-usd-<YYYYMMDD>` (the token ledgers are no longer read or written, and are pruned after 35 days). The `Reservation` JSON `maxTokens` is now `maxMicroUSD`. The token day keys (`factoryDaily`, `humanDaily`, `perPerson.dailyTokens`) are accepted, ignored and warned about for one release, **not converted**: a non-default value silently falls back to $42.50 / $8.50. **Rollback:** v0.15.x refuses the USD keys and `meter.prices` `source`/`checkedAt` once a host sets them, so rolling back below v0.16.0 needs the token keys back and no `source`/`checkedAt`; the token ledger then misses the day's USD-settled spend |
 | Loop policy (`loops` rows) | Roll out in this order, and add a `loops` row only at the end: (1) the room broker (an old broker refuses the bridge's `harness_end` with 400, and the bridge then halves the batch inside the 3 s final read); (2) the factory and its CRD (an older factory refuses a `loops` key at parse); (3) crossplane-configuration with `spec.loop` plus the room-bridge pin. A host XRD without `spec.loop` would prune it while the Task still records the policy, so the factory creates loop-carrying claims under Strict field validation: the API server then refuses the claim, the run is not started and the error shows in the factory log, instead of a silent loop-off run. A refused loop claim (Invalid or BadRequest) escalates the task as `loop_unsupported` with no retry, and the run is never started. A class's `checks: true` claims are created Strict the same way: the host XRD needs `spec.loop.checks`, and a repository's `checks.egress` profiles need the XRD's egress enum, before any class switches checks on. A class's `search: true` claims are created Strict too: the host XRD needs `spec.loop.search` (crossplane-configuration v0.9.20) before any class switches search on |
+| Sponsored principals and `POST /v1/tasks` (factory interfaces part 2) | **Both CRDs change**: the Task enum and its CEL rules (`source.kind: api`, `sponsor`, `maxMicroUSD`), and the Room member pattern and CEL (`system:` members); the Task CRD arrives through `CreateReplace`, the Room CRD through ai-native-ref's vendored copy. `api.projectIDFile` is required with `api.sponsored`. The host writes `project-id` and `<name>-client-id` into `agent-factory-sponsored` (the chart always mounts it, optional). ai-native-ref adds the broker's mounts, `human.mcp.sponsored` and the network rule for in-cluster clients. **Never roll back below this version once api tasks exist**: an older factory's spec write drops `sponsor` and `maxMicroUSD`, and the CEL refuses it. Three new metric series are registered |
 | CRD | Vendored with every pin. `task check` fails when the committed CRD differs from what the Go types generate |
 
 ## The factory
@@ -325,6 +326,44 @@ the key its next run is charged to: `system:factory` with per-person caps off.
 
 `principal` takes a ledger key's shape (`system:<name>`, `github:<login>`, `human:<sub>`), else
 `other`. `run`, `task` and `room` appear only on the per-live-run series.
+
+### Sponsored principals
+
+Off until `api.sponsored` is written. The series:
+
+| Series | What it answers |
+|---|---|
+| `agent_factory_api_intake_total{principal, outcome}` | `POST /v1/tasks` requests by outcome: `admitted`, `duplicate`, or a refusal's code ([API](api.md#post-v1tasks)); `other` for anything else |
+| `agent_factory_max_cost_usd_total{principal}` | The `max_cost` the intake admitted: what principals asked to be allowed, not what they spent (`agent_factory_charged_usd_total{principal="system:<name>"}`) |
+| `agent_factory_principal_sponsor_info{principal, sponsor}` | 1 per declared principal, naming the maintainer accountable for it |
+
+**Declaring a principal**, in order:
+
+1. In the host, create a ZITADEL machine user and its client-credentials client (the host's
+   `zitadel-oidc-clients.sh`), whose tokens carry the project audience. The id and the project id go
+   to the `agent-factory-sponsored` Secret (`<name>-client-id`, `project-id`), which the chart mounts
+   optional, and to the broker's own mounts for `human.mcp.sponsored[].clientIDFile`.
+2. The factory's config: `api.sponsored[]` with its `sponsor`, `repositories`, `dailyUSD`,
+   `maxCostUSD`, plus `api.projectIDFile`. `meter.prices` must be set, or the load fails.
+3. The broker's config: `human.mcp.sponsored[]` with the same `name`, and `factoryURL`. Restart it:
+   it reads its config once at start.
+4. The host's Rooms CRD must carry the widened member pattern (`system:` members) **before** a
+   sponsored task runs: the factory adds the principal as a `watcher`, and the older CRD rejects it
+   (the Task then escalates `rooms_crd_outdated`). The CRD reaches the cluster through
+   ai-native-ref's vendored `infrastructure/base/room-broker/crd-rooms.yaml`, refreshed at each pin;
+   it does not come from cloud-native-ref.
+5. A name maps to the **same** client-id file in the broker's `human.mcp.sponsored[].clientIDFile`
+   and the factory's `api.sponsored[].clientIDFile`. If they differ, one client reads another's
+   rooms.
+
+A sponsored principal's day is enforced whatever `budgets.enforcePrincipal` says: do not wait for a
+shadow week. The intake's check is advisory; the run-time reservation and each run's ceiling/3 cap
+are the limits. Removing a principal from the config un-holds its live runs from its day, and a task
+that needs another run escalates `principal_unknown`. A refused later run escalates `budget-person`,
+possibly with a pull request open. A maintainer's `/factory retry` is paid by the retrier.
+
+A `run.` task that stays `failed` with `no such room` was never triaged (the grace is two minutes:
+see [the API](api.md#sponsored-principals-on-mcp)); check `agent_factory_api_intake_total` and the Task.
 
 ### Finished rooms close
 

@@ -28,9 +28,12 @@ func (r Run) Kind() string {
 	return KindRoom
 }
 
-// TaskPayer is the key the task's next run is charged to beside the fleet while per-person caps
-// are on, else the fleet's own (SI1): the payer of what the task costs and yields.
+// TaskPayer is the key the task's next run is charged to beside the fleet: an api task's principal
+// always (F4, R7), the person while per-person caps are on, else the fleet's own (SI1).
 func TaskPayer(t *v1alpha1.Task, perPerson bool) string {
+	if p := t.Sponsored(); p != "" && t.Status.RetriedBy == "" {
+		return p
+	}
 	if perPerson {
 		if p := t.Payer(); p != "" {
 			return p

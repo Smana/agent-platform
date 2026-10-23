@@ -18,5 +18,10 @@ intakeSecret: agent-factory-intake
 # v2 D4: the ZITADEL reader ({"pat", "githubIdpId"}) that resolves an API caller to their GitHub
 # login, read at config.api.access.readerFile. Optional: without it every human run is refused.
 zitadelReaderSecret: agent-factory-zitadel-reader
+# Factory interfaces F4: the sponsored principals' ZITADEL client ids, one key `<name>-client-id`
+# each, and `project-id`, the project every sponsored token's audience must hold. Read at
+# config.api.sponsored[].clientIDFile and config.api.projectIDFile. Optional: without it no
+# sponsored client id reads, and every sponsored token is refused.
+sponsoredSecret: agent-factory-sponsored
 # The factory config, rendered verbatim: README.md#config, docs/factory.md#the-config-file.
 config: {}

@@ -100,6 +100,23 @@ The permission matrix, enforced by the broker (`internal/policy`, tested row by 
 - **The broker never creates `AgentRun`s**: its RBAC is `get`, `list`, `watch`, `delete` on
   `agentruns` in `agents`; CRUD on `rooms` in `agent-system`; leases; no cluster-admin.
 
+### A sponsored principal's bounds
+
+A sponsored principal ([factory](factory.md#sponsored-principals)) is a ZITADEL machine user the
+config binds to a maintainer. Every bound below is enforced server-side, and none comes from a token
+claim except the client that issued it.
+
+| Bound | What holds it |
+|---|---|
+| Identity | The token's `client_id` equals the principal's `clientIDFile`, read at each use, and its audience holds the project (empty or missing: refused). The client must be a machine client: every subject of it is `system:<name>`. Never the web UI's or `roomctl`'s client |
+| Sponsor | A maintainer of the repository, from the config (or the `onBehalfOf` link map), checked at load and again at each request; recorded as `spec.source.sponsor` |
+| Day | `dailyUSD`, held by the run-time reservation under `system:<name>`, enforced whatever `enforcePrincipal` says. The intake's check is advisory. A principal removed from the config is no longer held, and its tasks escalate `principal_unknown` |
+| Ceiling | `max_cost` is mandatory and at most `maxCostUSD`; the task is capped at it and each run at a third, by the meter |
+| Open tasks | `maxOpenTasks`, a soft cap (a burst of N can open cap+N-1) |
+| Repositories | Its `repositories` list, exact spelling, and only ones this factory owns |
+| Reads | `/mcp` only, four tools, and a room only as one of its `watcher` members |
+| Never | `/v1/runs`, `room_queue`, `room_fork`, `rooms_list`, approvals, class, tier or auto-merge. Its text is machine-sent, redacted and stored as untrusted |
+
 ## TLS on :8443
 
 The bridge-to-broker hop serves TLS **on both clouds**. gcp-0's Cilium has no WireGuard to

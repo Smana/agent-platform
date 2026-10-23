@@ -25,6 +25,8 @@ type Authenticator struct {
 	ClientIDs   func() []string   // rooms-proxy (the broker forwards it) and roomctl (the CLI)
 	Systems     *authn.Verifier   // the cluster's issuer; nil when no system caller is allowed
 	SystemAllow map[string]string // ServiceAccount sub → system:<component>; empty ships: none exists yet
+	// Sponsored is F4's third branch; nil while api.sponsored is empty.
+	Sponsored *authn.Sponsored
 }
 
 // Authenticate maps r to its caller's principal, from the bearer token alone.
@@ -53,6 +55,11 @@ func (a *Authenticator) Authenticate(r *http.Request) (authn.Principal, error) {
 			return authn.Principal{}, fmt.Errorf("%w: not in an agents group", authn.ErrForbidden)
 		}
 		return p, nil
+	}
+	if a.Sponsored != nil {
+		if p, err := a.Sponsored.Authenticate(r.Context(), raw); err == nil {
+			return p, nil
+		}
 	}
 	if a.Systems != nil {
 		if c, err := a.Systems.Verify(r.Context(), raw, AudienceSystem); err == nil {

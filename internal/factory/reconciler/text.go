@@ -87,6 +87,10 @@ func firstBrief(t *v1alpha1.Task, nonce string, sc *Scoped) string {
 			p.Issue, t.Spec.Source.ContentSHA256)
 		fmt.Fprintf(&b, "When you open the pull request, its body must contain \"Fixes #%d\", and no closing keyword for #%d: "+
 			"the parent closes when its last part merges.\n", t.Spec.Issue, p.Issue)
+	case t.Spec.Issue > 0 && t.Spec.Source.Kind == "api":
+		fmt.Fprintf(&b, "Source: GitHub issue #%d, requested through the API by %s for %s. Snapshot sha256 %s.\n",
+			t.Spec.Issue, t.Spec.Source.RequestedBy, t.Spec.Source.Sponsor, t.Spec.Source.ContentSHA256)
+		fmt.Fprintf(&b, "When you open the pull request, its body must contain \"Fixes #%d\".\n", t.Spec.Issue)
 	case t.Spec.Issue > 0:
 		fmt.Fprintf(&b, "Source: GitHub issue #%d, labelled for the factory by %s. Snapshot sha256 %s.\n",
 			t.Spec.Issue, strings.TrimPrefix(t.Spec.Source.RequestedBy, "github:"), t.Spec.Source.ContentSHA256)
@@ -300,6 +304,13 @@ func SnapshotMessage(t *v1alpha1.Task, nonce string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agent factory task %s: the original task, snapshotted when it was accepted (sha256 %s, %s).\n",
 		t.Name, t.Spec.Source.ContentSHA256, t.Spec.Source.Trust)
+	if p := t.Sponsored(); p != "" { // F4, R8: both identities, and the ceiling
+		fmt.Fprintf(&b, "Requested by %s, sponsored by %s", p, t.Spec.Source.Sponsor)
+		if o := t.Spec.Source.OnBehalfOf; o != "" {
+			fmt.Fprintf(&b, ", on behalf of %s", o)
+		}
+		fmt.Fprintf(&b, "; ceiling $%.2f.\n", float64(t.Spec.MaxMicroUSD)/1e6)
+	}
 	if t.Spec.Source.Trust == "untrusted" { // G2: marked as data inside the fence too
 		b.WriteString(untrustedNotice(fence))
 		fmt.Fprintf(&b, "\n%s\n%s\n%s\n%s\n", fence, untrustedHeader, t.Spec.Text, fence)

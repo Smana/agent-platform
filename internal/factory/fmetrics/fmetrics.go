@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -75,6 +76,15 @@ var principalRE = regexp.MustCompile(`^(system:[a-z0-9][a-z0-9-]{0,62}|github:[a
 func charges() []string     { return []string{runs.KindTask, runs.KindRoom} }
 func humanPhases() []string { return []string{v1alpha1.PhaseAwaitingHuman, v1alpha1.PhaseEscalated} }
 
+// apiOutcomes are POST /v1/tasks's outcomes (F4): admitted, or a refusal's code. Anything else is
+// recorded as other, so the label stays bounded.
+func apiOutcomes() []string {
+	return []string{"admitted", "kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
+		"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
+		"max_cost_over_class", "not_linked", "not_a_maintainer", "invalid_draft", "bad_text", "tasks_unavailable",
+		"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "duplicate", "idempotency_conflict"}
+}
+
 func oneOf(v string, set []string) string {
 	if slices.Contains(set, v) {
 		return v
@@ -131,6 +141,8 @@ type Set struct {
 	charged         metric.Float64Counter
 	prsOpened       metric.Int64Counter
 	humanWait       metric.Float64Counter
+	maxCost         metric.Float64Counter
+	apiIntake       metric.Int64Counter
 
 	spendMu sync.Mutex
 	spend   map[string]map[string]float64 // the meter's last live spend, run then model
@@ -139,6 +151,8 @@ type Set struct {
 	// repos is the config's repository list, the repository label's only values (v2 D10).
 	mu    sync.RWMutex
 	repos []string
+	// sponsors maps each sponsored principal to its sponsor (SI9), set from the config at start.
+	sponsors map[string]string
 	// perPerson: a task's payer is its person (budgets.perPerson.enabled), else the fleet.
 	perPerson bool
 }
@@ -181,6 +195,23 @@ func boundPrincipal(p string) string {
 
 func principalOf(ctx context.Context) attribute.KeyValue {
 	return attribute.String("principal", boundPrincipal(PrincipalOf(ctx)))
+}
+
+// Sponsors sets each sponsored principal's sponsor (SI9), from the config at start.
+func (s *Set) Sponsors(by map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sponsors = maps.Clone(by)
+}
+
+// MaxCost adds an admitted request's ceiling to its principal's total (SI9).
+func (s *Set) MaxCost(ctx context.Context, microUSD int64) {
+	s.maxCost.Add(ctx, float64(microUSD)/1e6, metric.WithAttributes(principalOf(ctx)))
+}
+
+// APIIntake counts one POST /v1/tasks by its principal and outcome.
+func (s *Set) APIIntake(ctx context.Context, outcome string) {
+	s.apiIntake.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", oneOf(outcome, apiOutcomes())), principalOf(ctx)))
 }
 
 // ListRepositories sets the values the repository label may take: the config's list, at most
@@ -342,6 +373,25 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.humanWait, err = meter.Float64Counter("agent_factory_human_wait_seconds_total",
 		metric.WithDescription("Seconds tasks waited for a human, by the task's payer, added when a task leaves AwaitingHuman or Escalated."))
+	check(err)
+	s.maxCost, err = meter.Float64Counter("agent_factory_max_cost_usd_total",
+		metric.WithDescription("USD of max_cost the intake api admitted, by sponsored principal (spend per identity SI9)."))
+	check(err)
+	s.apiIntake, err = meter.Int64Counter("agent_factory_api_intake_total",
+		metric.WithDescription("POST /v1/tasks requests, by sponsored principal and outcome (factory interfaces F4)."))
+	check(err)
+	sponsorInfo, err := meter.Int64ObservableGauge("agent_factory_principal_sponsor_info",
+		metric.WithDescription("1 for each sponsored principal, labelled with the maintainer accountable for it (SI9)."))
+	check(err)
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for p, sp := range s.sponsors {
+			o.ObserveInt64(sponsorInfo, 1, metric.WithAttributes(attribute.String("principal", boundPrincipal(p)),
+				attribute.String("sponsor", boundPrincipal(sp))))
+		}
+		return nil
+	}, sponsorInfo)
 	check(err)
 	check(s.registerSpend(meter))
 	check(s.registerCharges(meter))

@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
 const (
@@ -438,6 +439,8 @@ type Budgets struct {
 	// written for the previous one still loads: Parse names each in Config.Ignored and clears it.
 	IgnoredFactoryDaily *int64 `json:"factoryDaily,omitempty"`
 	IgnoredHumanDaily   *int64 `json:"humanDaily,omitempty"`
+	// sponsoredDays is each sponsored principal's day in micro-USD, set by Parse (R7).
+	sponsoredDays map[string]int64
 }
 
 // PerPerson charges each run to the person who caused it as well as to the fleet, in one ledger
@@ -454,10 +457,17 @@ type PerPerson struct {
 // PrincipalFactory is the fleet's ledger key: the factory's own principal.
 const PrincipalFactory = "system:factory"
 
+// Sponsored is whether key is a declared sponsored principal's: its day is a bound, never a
+// shadow (F4, R7).
+func (b Budgets) Sponsored(key string) bool { _, ok := b.sponsoredDays[key]; return ok }
+
 // DailyMicroUSD is the day of a ledger key, in the ledger's micro-USD: the fleet's for
 // PrincipalFactory, the person day for any other key while per-person caps are on, else
 // humanDailyUSD.
 func (b Budgets) DailyMicroUSD(principal string) int64 {
+	if d, ok := b.sponsoredDays[principal]; ok {
+		return d
+	}
 	switch {
 	case principal == PrincipalFactory:
 		return MicroUSD(b.FactoryDailyUSD)
@@ -544,6 +554,9 @@ type API struct {
 	HumanJWKS    string   `json:"humanJWKS"`
 	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
 	ClientIDFiles []string `json:"clientIDFiles"`
+	// ProjectIDFile holds the ZITADEL project id a sponsored token's aud must hold, as the broker's
+	// human.projectIDFile pins the human path; required while api.sponsored is non-empty.
+	ProjectIDFile string `json:"projectIDFile,omitempty"`
 	// Groups defaults to agents-admin and agents-member.
 	Groups Groups `json:"groups"`
 	// Empty today (R23): no system caller of POST /v1/runs exists.
@@ -557,12 +570,162 @@ type API struct {
 	// SystemRepositories is v2 D6: the repositories each system principal (a systemPrincipals
 	// value) may start runs on. A principal it does not list may start none.
 	SystemRepositories map[string][]string `json:"systemRepositories,omitempty"`
+	// Sponsored is factory interfaces F4: the service accounts that may start tasks through
+	// POST /v1/tasks, each bound to a maintainer. Empty ships: the route is a 404 (D4).
+	Sponsored []Sponsored `json:"sponsored,omitempty"`
 }
 
 // Access is api.access (v2 D4).
 type Access struct {
 	ReaderFile string   `json:"readerFile"`
 	TTL        Duration `json:"ttl"`
+}
+
+// Sponsored is one sponsored principal (F4, R1): a ZITADEL service account, recognised by its
+// client id, whose tasks are charged to system:<name> and bounded by a day, a per-request ceiling
+// in USD, and how many of its tasks may be open at once. Sponsor is the maintainer accountable
+// for it; a link names who may sponsor one request instead (R9).
+type Sponsored struct {
+	Name         string   `json:"name"`
+	ClientIDFile string   `json:"clientIDFile"`
+	Sponsor      string   `json:"sponsor"`
+	Repositories []string `json:"repositories"`
+	DailyUSD     float64  `json:"dailyUSD"`
+	MaxCostUSD   float64  `json:"maxCostUSD"`
+	// MaxOpenTasks bounds the principal's api tasks not yet ended: each one files an issue and
+	// takes a slot of caps.tasksPerDay, which humans share (C21). Omitted: 3.
+	MaxOpenTasks int        `json:"maxOpenTasks,omitempty"`
+	OnBehalfOf   OnBehalfOf `json:"onBehalfOf,omitzero"`
+}
+
+// DefaultSponsoredOpenTasks is maxOpenTasks when the config omits it.
+const DefaultSponsoredOpenTasks = 3
+
+// OnBehalfOf maps an external user to the maintainer login who sponsors their request (R9).
+type OnBehalfOf struct {
+	// Slack maps "<team id>/<user id>" to a maintainer's GitHub login.
+	Slack map[string]string `json:"slack,omitempty"`
+}
+
+// Principal is the ledger key and requestedBy of the principal's tasks.
+func (s Sponsored) Principal() string { return "system:" + s.Name }
+
+// OpenTaskCap is how many of the principal's tasks may be open at once; a hand-built config reads
+// the default too.
+func (s Sponsored) OpenTaskCap() int {
+	if s.MaxOpenTasks == 0 {
+		return DefaultSponsoredOpenTasks
+	}
+	return s.MaxOpenTasks
+}
+
+// SponsoredBy is principal's declaration, nil when the config declares none.
+func (c *Config) SponsoredBy(principal string) *Sponsored {
+	for i := range c.API.Sponsored {
+		if c.API.Sponsored[i].Principal() == principal {
+			return &c.API.Sponsored[i]
+		}
+	}
+	return nil
+}
+
+// MaxTaskMicroUSD is the largest task cap any tier holds: no request's max_cost may exceed what a
+// class could ever hold (R5); triage then applies the class's own.
+func (c *Config) MaxTaskMicroUSD() int64 {
+	var m int64
+	for _, t := range c.Tiers {
+		m = max(m, MicroUSD(t.TaskUSD))
+	}
+	return m
+}
+
+var (
+	// slackLinkRE is a Slack team and user id pair.
+	slackLinkRE = regexp.MustCompile(`^T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$`)
+	// githubLoginRE is a GitHub login the Task CRD's source.sponsor takes once lowercased: an
+	// EMU login (an underscore) or one past 39 characters would load here and fail admission.
+	githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+)
+
+func (c *Config) validateSponsored(bad func(string, ...any)) {
+	if len(c.API.Sponsored) > 0 && c.API.ProjectIDFile == "" {
+		bad("api.sponsored needs api.projectIDFile: a sponsored token's audience is pinned to the project")
+	}
+	if len(c.API.Sponsored) > 0 && len(c.Meter.Prices) == 0 {
+		// Without prices a tier is capped in tokens and usdCapped never holds: a ceiling in dollars
+		// would silently be a ceiling in nothing (C13).
+		bad("api.sponsored needs meter.prices: a ceiling in USD needs priced runs")
+	}
+	system := slices.Collect(maps.Values(c.API.SystemPrincipals))
+	finite := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+	seen, files := map[string]bool{}, map[string]string{}
+	for _, s := range c.API.Sponsored {
+		switch {
+		case !factoryRE.MatchString(s.Name):
+			bad("api.sponsored: %q is not a DNS label", s.Name)
+			continue
+		case sponsored.IsReserved(s.Name) || slices.Contains(system, s.Principal()):
+			bad("api.sponsored: %q is reserved", s.Name)
+			continue
+		case seen[s.Name]:
+			bad("api.sponsored: %q is declared twice", s.Name)
+			continue
+		}
+		seen[s.Name] = true
+		if s.ClientIDFile == "" {
+			bad("api.sponsored.%s: clientIDFile is required", s.Name)
+		} else if other, ok := files[s.ClientIDFile]; ok {
+			bad("api.sponsored.%s: clientIDFile %q is already used by %s", s.Name, s.ClientIDFile, other)
+		} else {
+			files[s.ClientIDFile] = s.Name
+		}
+		if !githubLoginRE.MatchString(s.Sponsor) {
+			bad("api.sponsored.%s: sponsor %q is not a GitHub login", s.Name, s.Sponsor)
+		}
+		if len(s.Repositories) == 0 {
+			bad("api.sponsored.%s: repositories is empty", s.Name)
+		}
+		for i, name := range s.Repositories {
+			if slices.Contains(s.Repositories[:i], name) {
+				bad("api.sponsored.%s: %q is listed twice", s.Name, name)
+				continue
+			}
+			// Exact: admission matches the request's repository against this list as written, and
+			// spec.repository becomes the run's octo-sts audience (C22).
+			r := c.listed(name)
+			if r == nil || r.Name != name {
+				bad("api.sponsored.%s: %q is not a listed repository, spelled as listed", s.Name, name)
+				continue
+			}
+			if !r.IsMaintainer(s.Sponsor) {
+				bad("api.sponsored.%s: sponsor %q is not a maintainer of %s", s.Name, s.Sponsor, r.Name)
+			}
+			for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
+				login := s.OnBehalfOf.Slack[id]
+				if !r.IsMaintainer(login) {
+					bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a maintainer of %s", s.Name, id, login, r.Name)
+				}
+			}
+		}
+		for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
+			login := s.OnBehalfOf.Slack[id]
+			if !slackLinkRE.MatchString(id) {
+				bad("api.sponsored.%s: onBehalfOf.slack %q is not <team>/<user>", s.Name, id)
+			}
+			if !githubLoginRE.MatchString(login) {
+				bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a GitHub login", s.Name, id, login)
+			}
+		}
+		if !finite(s.DailyUSD) || s.DailyUSD <= 0 || s.DailyUSD > c.Budgets.FactoryDailyUSD {
+			bad("api.sponsored.%s: dailyUSD must be above 0 and at most factoryDailyUSD", s.Name)
+		}
+		if !finite(s.MaxCostUSD) || s.MaxCostUSD <= 0 || s.MaxCostUSD > s.DailyUSD {
+			bad("api.sponsored.%s: maxCostUSD must be above 0 and at most dailyUSD", s.Name)
+		}
+		if s.MaxOpenTasks < 0 {
+			bad("api.sponsored.%s: maxOpenTasks must be 1 or more (omitted: %d)", s.Name, DefaultSponsoredOpenTasks)
+		}
+	}
 }
 
 // MaxAccessTTL is the longest a GitHub permission answer is trusted, and the default: the
@@ -700,6 +863,12 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	for _, s := range c.API.Sponsored {
+		if c.Budgets.sponsoredDays == nil {
+			c.Budgets.sponsoredDays = map[string]int64{}
+		}
+		c.Budgets.sponsoredDays[s.Principal()] = MicroUSD(s.DailyUSD)
 	}
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
@@ -999,6 +1168,7 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	c.validateSponsored(bad)
 	// §1's RunLore intake (FA-8): every replica serves it, like the API, so its block is as
 	// required as api's. OD-9: the bar is real and the cap is stated; 0 admits nothing.
 	if c.RunLore.Listen == "" {
