@@ -208,9 +208,9 @@ Rulings marked **(owner)** depart from the design's text and are listed again un
 | `cmd/factory-slack-app/main.go`, `internal/app/slackapp.go`, `images/factory-slack-app/Dockerfile` | create | The binary and the image |
 | `.github/workflows/ci.yaml`, `release.yaml` | modify | The image in both matrices |
 | `docs/slack.md`, `docs/security.md`, `AGENTS.md` | create, modify | Operating the App |
-| **PR D** cloud-native-ref `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`, `scripts/provision/secret-store.sh`, `scripts/ci/tests/test-zitadel-machine-users.sh`, both `platform-public` gateways, `docs/` | modify, create | The machine user, the secrets, the listener |
+| **PR D** cloud-native-ref `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`, `scripts/ci/tests/test-zitadel-machine-users.sh`, the host design §2 H5 row (amended: no listener, no seed) | modify, create | The machine user, the secrets, the listener |
 | **PR E** ai-native-ref `scripts/ci/gen-webhook-egress.py`, `scripts/ci/tests/test-room-broker-webhook-egress.sh`, `infrastructure/base/room-broker/network-policy-webhooks.yaml`, `kustomization.yaml` | create, modify | The generated egress and its gate |
-| **PR F** ai-native-ref pins, broker and factory config, `tooling/base/factory-slack-app/*`, the broker's CNP, `HOST_REF`, `HOST-CONTRACT.md`, site pages | modify, create | Release, everything off, docs |
+| **PR F** ai-native-ref pins, broker and factory config, `tooling/{base,gcp-0}/agent-factory/slack-app/*` (unwired), runbook 18, the broker's CNP, `HOST_REF`, `HOST-CONTRACT.md`, site pages | modify, create | Release, everything off, docs |
 
 ---
 
@@ -5246,10 +5246,56 @@ Body: F9, R22–R27, invariants 5–8, and live proof 5's offline half. No attri
 
 ---
 
-## PR D — cloud-native-ref: the Slack App's machine user, its secrets, its public listener
+## PR D — cloud-native-ref: the Slack App's machine user, its host contract row
 
-The host provides what H5 and H4 say are its own: the ZITADEL client, the OpenBao paths, the public
-Gateway listener. A host change goes first as a cloud-native-ref PR (ai-native-ref AGENTS.md).
+The host provides what H5 says is its own: the ZITADEL machine user and the OpenBao path its
+secret lands in. A host change goes first as a cloud-native-ref PR (ai-native-ref AGENTS.md).
+**The public listener is not in this PR** (ruling L3' below): it is a list entry in the shared
+`platform-public` Gateway of each cloud, so it cannot ship unwired, and a merged listener would make
+cert-manager's gateway-shim order a Let's Encrypt certificate on any running host. The switch-on
+(runbook 18, a gcp-0 session) adds it as its own host PR, from the block in Task 25.
+
+### Amendments (pre-flight 2026-10-23)
+
+Applied from `.superpowers/sdd/2026-10-23-factory-interfaces-part2-plan/preflight-prDEF.md`, every
+proposed ruling adopted except L3, replaced by L3'. Truth for interfaces: agent-platform `v0.20.0`
+(commit `3d0a29b`, PRs A–C). Targets: cloud-native-ref `origin/main` `7ab1ec93`; ai-native-ref
+`origin/main` after #110 (v3 pins, agent-platform v0.19.0, `HOST_REF` `7ab1ec93`).
+
+- **B1** Task 24 Step 3: the App lives in `tooling/base/agent-factory/slack-app/` (its own kustomization, not listed by `tooling/base/agent-factory/kustomization.yaml`) and its AU patch in `tooling/gcp-0/agent-factory/slack-app/`, both AI paths and gate paths; Task 25's runbook 18 wires the gcp-0 one.
+- **M1** Task 20 Steps 1 and 3: the key is `{client-id, client-secret, project-id}`; a changed client id or project id converges.
+- **M2** Task 24 Step 3 (the Slack ExternalSecret maps `bot-user-id`), Task 25 (runbook 14's row, runbook 18 says where Slack shows the `U…` id).
+- **M3** Task 20: the ZITADEL user is `factory-slack-app${APP_SUFFIX}`, the store key unsuffixed; a case with `APP_SUFFIX=-gcp-0`.
+- **M4** Task 20 Steps 3 and 4: the `MACHINE_USERS` loop is nounset-safe, the eight suites that lift `cmd_sync` stub `ensure_machine_user`, Step 4 runs every `test-zitadel-*` suite and `test-gcp-zitadel-project-id.sh`.
+- **M5** Task 21 is dropped; Task 24 Step 3 generates the webhook key in-cluster (ESO `Password` generator, one Secret `room-broker-webhook-slack-app` mounted by both pods); no bao-map entry, no seed.
+- **M6** Task 21's host docs step is dropped; Task 25 adds the `agents/factory-slack-app` row to ai-native-ref runbook 14.
+- **M7** Task 22: the host design §2 copy of the contract gains the H5 row in the same words as Task 24 Step 4 (H4 is unchanged here, L3').
+- **M8** Tasks 23 Step 4 and 24 Step 5: new suites are `git add`ed before `task check`, and their PASS lines are quoted.
+- **M9** Task 23 Step 3 (an overlay's subscribers render as `infrastructure/<cluster>/room-broker/network-policy-webhooks-patch.yaml`, listed by that overlay), Task 25's runbook 18 (gcp-0's config copy, the parity test widened).
+- **M10** Task 24 Step 2: every agent-platform site is listed by file and line and moves to v0.20.0; the check is a `git grep`.
+- **M11** Task 20 assertion 3, Task 24 Step 3: no Reloader (neither repository runs one); whole-Secret mounts; runbook 18 says a changed bot user id needs a `rollout restart`.
+- **M12** Task 24 Step 3: ExternalSecrets `agent-factory-sponsored` and `room-broker-sponsored` (unwired), the broker's optional whole-Secret mounts (wired, inert).
+- **M13** Task 24 Step 2: `RoomWebhookDisabled` carries `runbook_url` and `dashboard`, with a promtool suite.
+- **M14** Tasks 24 Step 2 and 25: every `webhooks` example uses the full `room.*` names and `secretFile`. The agent-platform `docs/slack.md` fix is already merged on the plan's branch (`5f545aa`).
+- **L1** Task 20 Step 2's expected failure.
+- **L2** Task 20: one bao-map entry, asserted in `test-bao-map.sh`.
+- **L3'** (replaces L3) Task 22 adds no listener; Task 24's HTTPRoute ships unwired; Task 25's runbook 18 carries the exact gateway patch for a host PR at switch-on; Task 24 Step 4's contract v3 leaves H4 alone.
+- **L4** Task 23 Steps 1 and 3: dotless and `.localdomain` hosts refused, `${var}` labels accepted, `import yaml` inside `main`.
+- **L5** Task 24 Steps 2 and 3: no "strict decoders" claim and no `test-agent-platform-manifests`; the host renders every unreferenced kustomization, so the unwired one is rendered and audited.
+- **L6** Task 24 Step 3: `remoteRef.key` is mount-relative (`factory-slack-principal`, `factory-slack-app`).
+- **L7** Task 24 Step 3: `factory-slack-threads` is `ssa: IfNotPresent` with no `data`; the App's config comes from a `configMapGenerator`.
+- **L8** Task 24 Step 3: `test-factory-interfaces-off.py` asserts the factory's tailnet route keeps one exact path.
+- **L9** Live step 1: a curl through `rooms.<domain>/mcp` with the App's token answers 403.
+- **L10** Task 25's runbook 18 and live step 2: `human.mcp.sponsored` needs `human.mcp.enabled`, which opens human `/mcp` on the tailnet too.
+- **L11** Task 25: the switch-on runbook is `docs/runbooks/agent-factory/18-factory-interfaces.md` (15–17 are taken).
+- **L12** Task 24 Step 2 starts by checking the v0.20.0 release is complete.
+
+**Rules for every task below.** Work in a git worktree branched from a freshly fetched
+`origin/main`; rebase onto a freshly fetched `origin/main` before every push. Commits are
+conventional, in English, with no trailers. In ai-native-ref, `task check` is the evidence, and a
+new file is `git add`ed before it runs (`run-tests.sh` discovers suites with `git ls-files`).
+**Nothing in PRs D to F touches a live cluster**: every `kubectl`, `bao` or ZITADEL call is stubbed
+in tests, and the live steps wait for the gcp-0 session. **Every switch stays off (D4).**
 
 - [ ] **Step 0: The worktree**
 
@@ -5262,35 +5308,49 @@ cd /home/smana/Sources/cloud-native-ref-factory-slack && mise trust mise.toml
 ### Task 20: The machine user `factory-slack-app`
 
 **Files:**
-- Modify: `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`
+- Modify: `scripts/provision/zitadel-oidc-clients.sh`, `scripts/lib/bao-map.sh`,
+  `scripts/ci/tests/test-bao-map.sh`, and the eight suites that lift `cmd_sync`:
+  `scripts/ci/tests/test-zitadel-oidc-clients-{convergence,mirror,openbao,project,redirects,restart,rooms}.sh`,
+  `scripts/ci/tests/test-gcp-zitadel-project-id.sh` (`git grep -l cmd_sync scripts/ci/tests` lists them)
 - Create: `scripts/ci/tests/test-zitadel-machine-users.sh`
 
 - [ ] **Step 1: Write the failing test**
 
 `scripts/ci/tests/test-zitadel-machine-users.sh` runs the script's `ensure_machine_user` against a
 stub `api` function, the way `test-zitadel-oidc-clients-rooms.sh` stubs the API. Read that suite
-first and reuse its harness. It asserts:
+first and reuse its harness (`load_function`, the sed-lifted functions). Stub every `kubectl` path
+(`force_sync_mirrored`, `restart_rotated_consumers`) and the store and OpenBao writers, so no case
+reaches a cluster. It asserts:
 
-1. With no user `factory-slack-app`, it calls `POST /management/v1/users/machine` with
+1. With no user `factory-slack-app` (and `APP_SUFFIX` empty), it calls
+   `POST /management/v1/users/machine` with
    `{"userName":"factory-slack-app","name":"factory-slack-app","accessTokenType":"ACCESS_TOKEN_TYPE_JWT"}`,
    then `PUT /management/v1/users/<id>/secret`. It writes the store key
-   `agents-factory-slack-principal` as `{"client-id": <clientId>, "client-secret": <clientSecret>}`
-   and prints no secret.
-2. When the user exists and the stored secret is accepted (stubbed probe), it writes nothing and
-   rotates nothing.
-3. When the stored secret is refused, it rotates once with `PUT …/secret` and restarts nothing.
-   The App reads its secret from a file, and PR F's Reloader annotation rolls it.
-4. A dry run (no `--apply`) calls no mutating endpoint.
-5. `bao_target_for agents-factory-slack-principal` prints `agents/factory-slack-principal`;
-   `agents-factory-slack-app` prints `agents/factory-slack-app`; `agents-webhook-slack-app` prints
-   `agents/webhook-slack-app`.
+   `agents-factory-slack-principal` as
+   `{"client-id": <clientId>, "client-secret": <clientSecret>, "project-id": <project id>}` (the
+   project id `cmd_sync` already hands `merge_secret` for `rooms-proxy`), and prints no secret.
+2. When the user exists, the stored secret is accepted (stubbed probe) and the stored `client-id`
+   and `project-id` match, it writes nothing and rotates nothing.
+3. When the stored secret is accepted but the stored `project-id` differs (gcp-0 mints a new
+   project on every build), it rewrites the key with the new `project-id` and the same secret, and
+   rotates nothing. The same for a changed `client-id`.
+4. When the stored secret is refused, it rotates once with `PUT …/secret`, rewrites the key, and
+   restarts nothing: the App re-reads its secret files at use (no Reloader runs in either
+   repository).
+5. With `APP_SUFFIX=-gcp-0`, the user searched and created is `factory-slack-app-gcp-0`, and the
+   store key is still `agents-factory-slack-principal`.
+6. A dry run (no `--apply`) calls no mutating endpoint.
 
-Line 2 is `# requires: bash jq`.
+In `scripts/ci/tests/test-bao-map.sh`, add one assertion: `bao_target_for agents-factory-slack-principal`
+prints `agents/factory-slack-principal`.
+
+Line 2 of the new suite is `# requires: bash jq`.
 
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `ulimit -v 4000000; timeout 120 bash scripts/ci/tests/test-zitadel-machine-users.sh`
-Expected: `ensure_machine_user: command not found`, exit 1.
+Expected: `could not extract ensure_machine_user() from …zitadel-oidc-clients.sh`, exit 1 (the
+harness's `load_function`).
 
 - [ ] **Step 3: The implementation**
 
@@ -5298,116 +5358,104 @@ In `zitadel-oidc-clients.sh`, add `MACHINE_USERS=("factory-slack-app|agents-fact
 beside the OIDC consumers, with a comment block that says why. A sponsored principal of the agent
 factory (factory interfaces F4) authenticates with client credentials. Its client id is not a
 secret, but the client secret is. gcp-0 mints a fresh directory each build, so the user and its
-secret are re-created and stored, never assumed.
+secret are re-created and stored, never assumed. The user name carries `${APP_SUFFIX}` like the
+consumers, so two clusters never share (and rotate) one user; the store key does not.
 
 Add `ensure_machine_user name key`:
 
-- search `POST /management/v1/users/_search` with a `userNameQuery`;
+- search `POST /management/v1/users/_search` with a `userNameQuery` for `${name}${APP_SUFFIX}`;
 - create the user if it is missing;
-- probe a stored secret with a client-credentials token request against `${IDP_URL}/oauth/v2/token`,
-  in the shape of `probe_client_secret`;
+- probe a stored secret with a client-credentials token request against `${IDP_URL}/oauth/v2/token`
+  (a new client-credentials variant: `probe_client_secret` probes the auth-code shape);
 - generate a secret with `PUT /management/v1/users/<id>/secret` when there is none or it is
   refused;
-- write the result with `store_write_and_mirror` (so `--mirror-openbao` copies it to OpenBao on
-  gcp-0).
+- write `{client-id, client-secret, project-id}` with `store_write_and_mirror` (so
+  `--mirror-openbao` copies it to OpenBao on gcp-0) when anything changed: a new secret, or a
+  stored `client-id` or `project-id` that differs (`stored_client_id`, `secret_carries`).
 
-Call it from `cmd_sync` after the OIDC consumers. Grant the user no project role: a sponsored
-principal is not a human and must never pass `Groups.Admitted`.
+Call it from `cmd_sync` after the OIDC consumers, nounset-safe:
+`for u in ${MACHINE_USERS[@]+"${MACHINE_USERS[@]}"}; do ensure_machine_user "${u%%|*}" "${u#*|}"; done`.
+Grant the user no project role: a sponsored principal is not a human, must never pass
+`Groups.Admitted`, and with no role it carries no `groups`, which keeps oauth2-proxy's
+`allowed-group` closed to it.
 
-In `bao-map.sh`, add three entries under `room-broker-zitadel-reader`:
+In each of the eight suites that lift `cmd_sync`, add the stub `ensure_machine_user() { :; }`
+beside its other stubs, so the new call is neither `command not found` nor an unbound array.
+
+In `bao-map.sh`, add one entry under `room-broker-zitadel-reader`:
 
 ```bash
         agents-factory-slack-principal) printf 'agents/factory-slack-principal' ;;
-        agents-factory-slack-app) printf 'agents/factory-slack-app' ;;
-        agents-webhook-slack-app) printf 'agents/webhook-slack-app' ;;
 ```
+
+No entry for the Slack secrets (humans write them with `bao kv put -mount=agents`, ai-native-ref
+runbook 14) or for the webhook key (generated in-cluster, Task 24).
 
 - [ ] **Step 4: Run, commit**
 
-Run: `ulimit -v 4000000; timeout 120 bash scripts/ci/tests/test-zitadel-machine-users.sh && timeout 120 bash scripts/ci/tests/test-zitadel-oidc-clients-rooms.sh`
-Expected: `PASS` twice.
+Run:
+```bash
+ulimit -v 4000000
+for t in scripts/ci/tests/test-zitadel-machine-users.sh scripts/ci/tests/test-zitadel-*.sh scripts/ci/tests/test-gcp-zitadel-project-id.sh scripts/ci/tests/test-bao-map.sh; do
+  timeout 120 bash "$t" || echo "FAIL $t"
+done
+```
+Expected: `PASS` from each suite, no `FAIL` line.
 
 ```bash
 git add scripts/
 git commit -m "feat(zitadel): the agent factory's Slack App as a machine user, its secret stored and mirrored"
 ```
 
-### Task 21: The webhook key and the human-written Slack secrets
+### Task 21: Dropped (M5, M6)
+
+Nothing to do. The webhook key is generated in-cluster by Task 24 (an ESO `Password` generator):
+both consumers share `agent-system`, a rebuild regenerates both sides at once, and no paid AWS
+entry is left unread. The Slack secrets are human-written into OpenBao and documented in
+ai-native-ref runbook 14 by Task 25; the host has no runbook that lists them.
+
+### Task 22: The host contract's copy; the PR
 
 **Files:**
-- Modify: `scripts/provision/secret-store.sh` (`GENERATABLE`), its seed test, `docs/` (the secrets runbook that lists `runlore-slack-app`; `git grep -l runlore-slack-app -- docs website` finds it)
+- Modify: `docs/superpowers/specs/2026-10-12-ai-platform-split-design.md` (§2, the H5 table)
+- **Not modified:** `infrastructure/aws-0/gapi/platform-public-gateway.yaml`,
+  `infrastructure/gcp-0/gapi-public/platform-public-gateway.yaml` (ruling L3').
 
-- [ ] **Step 1: The test, then the implementation**
+**Ruling L3'.** The public listener, its HTTPRoute and its certificate ship unwired: nothing a
+host cluster's Flux applies lists them. The listener cannot be: it is an entry of
+`spec.listeners` in the one `platform-public` Gateway per cloud, which Flux applies, and its
+`certificateRefs` makes cert-manager's gateway-shim order a certificate (DNS-01, Route53) the moment
+it lands. So this PR adds no listener, and Task 25's runbook 18 carries the exact patch, applied by
+a host PR in the gcp-0 switch-on session.
 
-In `scripts/ci/tests/test-secret-store-seed.sh`, add an assertion that `agents-webhook-slack-app`
-is generatable. It seeds a JSON `{"signing-key": "<base64 of 32 random bytes>"}` (one line: R16's
-format). Then add it to `GENERATABLE`, with a comment that the broker signs with it and the App
-verifies with it, and that a rebuild re-seeds it, so that neither side depends on someone
-remembering it. The seed generator for this key must emit base64 of 32 bytes. If `seed` only knows
-passwords, add a `case` for this key.
+- [ ] **Step 1: The contract's host copy**
 
-`agents-factory-slack-app` (`{"bot-token", "signing-secret"}`) comes from Slack's console. The docs
-gain one row in the secrets runbook, next to `runlore-slack-app`: who writes it, from where, and
-that it is optional until the App is switched on.
+Host AGENTS.md: "a change lands in both". In design §2's H5 table, the ZITADEL row becomes:
 
-- [ ] **Step 2: Run, commit**
-
-Run: `ulimit -v 4000000; timeout 300 bash scripts/ci/tests/test-secret-store-seed.sh && timeout 300 bash scripts/ci/tests/test-secret-store-lint.sh`
-Expected: `PASS` twice.
-
-```bash
-git add scripts/ docs/ website/
-git commit -m "feat(secrets): seed the room broker's Slack webhook key, document the Slack App's secrets"
+```markdown
+| ZITADEL | The rooms and `roomctl` OIDC clients, the `factory-slack-app` machine user (client credentials, no project role; its client id, secret and project id at `agents/factory-slack-principal`), and the link-only GitHub IdP, provisioned by the host's scripts |
 ```
 
-### Task 22: The public listener, both clouds; the PR
-
-**Files:**
-- Modify: `infrastructure/aws-0/gapi/platform-public-gateway.yaml`, `infrastructure/gcp-0/gapi-public/platform-public-gateway.yaml`
-
-- [ ] **Step 1: The listener**
-
-Add the listener to both files, after `policy-bot`:
-
-```yaml
-    # The agent factory's Slack App (factory interfaces F9): Slack posts its Events API callbacks
-    # here, and the App verifies each against its signing secret (±5 min) before reading it. Routes
-    # from agent-system only; its HTTPRoute matches POST /slack/events and nothing else.
-    - name: factory-slack
-      hostname: "factory-slack.${public_domain_name}"
-      port: 443
-      protocol: HTTPS
-      allowedRoutes:
-        namespaces:
-          from: Selector
-          selector:
-            matchExpressions:
-              - key: kubernetes.io/metadata.name
-                operator: In
-                values:
-                  - agent-system
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - name: factory-slack-public-tls
-```
-
-Update the inventory comment at the top of each file. An unattached listener serves only 404s, so
-it changes nothing until PR F's route attaches (D4).
+H4 is unchanged: the `factory-slack` listener joins it with the switch-on's host PR.
 
 - [ ] **Step 2: The whole check, push, PR**
 
-Run: `ulimit -v 4000000; timeout 1800 task check` (host repo). Expected: exit 0, the gateway schemas and the external-dns
-filter tests included.
+Run: `ulimit -v 4000000; timeout 1800 task check` (host repo). Expected: exit 0, the ZITADEL suites
+and `check-ai-boundary.py` included.
 
 ```bash
+git add docs/superpowers/specs/2026-10-12-ai-platform-split-design.md
+git commit -m "docs(contract): H5 names the agent factory's Slack App machine user"
 git fetch origin && git rebase origin/main && git push -u origin feat/factory-slack-host
 ```
 
-Title: `feat(agents): a machine user, secrets and a public listener for the agent factory's Slack App`.
-Body: what H4 and H5 gain (for HOST-CONTRACT version 3 in ai-native-ref), that nothing routes to
-the listener until ai-native-ref's PR, and the owner's manual steps (create the Slack App from
-agent-platform's `docs/slack.md` manifest, write `agents-factory-slack-app`). No attribution line.
+Title: `feat(agents): a ZITADEL machine user for the agent factory's Slack App`.
+Body: what H5 gains (for HOST-CONTRACT version 3 in ai-native-ref); that the machine user is
+created only by `zitadel-oidc-clients.sh sync --apply` in a session, never by a merge; that the
+public listener is deliberately not here (L3': a merged listener orders a certificate on any running
+host) and comes with the switch-on's host PR from ai-native-ref runbook 18; the owner's manual
+steps (create the Slack App from agent-platform's `docs/slack.md` manifest, `bao kv put -mount=agents factory-slack-app …`).
+No attribution line.
 
 ---
 
@@ -5430,7 +5478,8 @@ cd /home/smana/Sources/ai-native-ref-webhook-egress && mise trust mise.toml
 - [ ] **Step 1: Write the failing test**
 
 `scripts/ci/tests/test-gen-webhook-egress.py` (line 1 is the shebang, line 2 `# requires: python3`)
-imports the generator by path and checks `render(config)` on in-memory configs:
+imports the generator by path and checks `render(config)` and `overlay_patch(base, overlay)` on
+in-memory configs. It needs no PyYAML: the generator imports `yaml` inside `main` only.
 
 ```python
 #!/usr/bin/env python3
@@ -5459,6 +5508,7 @@ check("no subscriber, an egress-only policy that allows nothing", none["spec"]["
 cfg = {"webhooks": [
     {"name": "slack-app", "network": "cluster", "url": "http://factory-slack-app.agent-system.svc.cluster.local:8081/webhooks"},
     {"name": "ci-mirror", "network": "internet", "url": "https://hooks.example.io/factory"},
+    {"name": "own", "network": "internet", "url": "https://hooks.${public_domain_name}/factory"},
 ]}
 rules = gen.render(cfg)["spec"]["egress"]
 check("cluster: toEndpoints by namespace and name, its port",
@@ -5467,9 +5517,14 @@ check("cluster: toEndpoints by namespace and name, its port",
                    "toPorts": [{"ports": [{"port": "8081", "protocol": "TCP"}]}]})
 check("internet: toFQDNs matchName on 443",
       rules[1] == {"toFQDNs": [{"matchName": "hooks.example.io"}], "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]})
+check("internet: a Flux ${var} label is kept for Flux to substitute",
+      rules[2]["toFQDNs"] == [{"matchName": "hooks.${public_domain_name}"}])
 
 for bad in ({"network": "internet", "url": "https://10.0.0.1/x"},
             {"network": "internet", "url": "https://x.agent-system.svc.cluster.local/x"},
+            {"network": "internet", "url": "https://hooks/x"},
+            {"network": "internet", "url": "https://hooks.localdomain/x"},
+            {"network": "internet", "url": "http://hooks.example.io/x"},
             {"network": "cluster", "url": "http://hooks.example.io/x"},
             {"network": "mars", "url": "https://hooks.example.io/x"}):
     try:
@@ -5477,6 +5532,14 @@ for bad in ({"network": "internet", "url": "https://10.0.0.1/x"},
         failures.append(f"accepted {bad}")
     except gen.ConfigError:
         pass
+
+base = {"webhooks": []}
+check("an overlay with base's subscribers needs no patch", gen.overlay_patch(base, {"webhooks": []}) is None)
+check("an overlay without a webhooks key needs no patch", gen.overlay_patch(base, {}) is None)
+patch = gen.overlay_patch(base, cfg)
+check("an overlay's own subscribers patch base's policy by name, spec replaced",
+      patch["kind"] == "CiliumNetworkPolicy" and patch["metadata"]["name"] == "room-broker-webhooks"
+      and patch["spec"] == gen.render(cfg)["spec"])
 
 print("\n".join(failures) or "PASS")
 sys.exit(1 if failures else 0)
@@ -5490,9 +5553,10 @@ sys.exit(1 if failures else 0)
 # requires: python3
 #
 # Factory interfaces F6, R21: the broker's webhook egress is exactly what gen-webhook-egress.py
-# renders from the broker's config, and each cluster subscriber names a Service whose selector is
-# its app.kubernetes.io/name. A rule edited by hand, or a subscriber added without --write, fails
-# here with the diff. The real tree.
+# renders from the broker's config, base and each overlay, and each cluster subscriber names a
+# Service whose selector is its app.kubernetes.io/name. A rule edited by hand, a subscriber added
+# without --write, or an overlay patch its kustomization does not list fails here with the diff.
+# The real tree.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 python3 -c 'import yaml' 2>/dev/null || { echo "SKIP: pyyaml not installed"; exit 77; }
@@ -5506,22 +5570,32 @@ Expected: `FileNotFoundError` on the generator.
 
 - [ ] **Step 3: The implementation**
 
-`scripts/ci/gen-webhook-egress.py` has `render(config) -> dict` and `ConfigError`. The URL rules
-are the broker's (Task 12): the cluster pattern
-`^https?://([a-z0-9-]+)\.([a-z0-9-]+)\.svc\.cluster\.local:([0-9]{1,5})/`, and for internet,
-`https` with a DNS name that is not an IP and not a cluster or private suffix. The script also has
-`main(argv)`, in `gen-capabilities.py`'s shape:
+`scripts/ci/gen-webhook-egress.py` has `render(config) -> dict`, `overlay_patch(base, overlay) -> dict | None`
+and `ConfigError`, and imports `yaml` inside `main` only. The URL rules are the broker's
+(agent-platform `internal/config/config.go`, `validate` and `validateInternet`): the cluster
+pattern `^https?://([a-z0-9-]+)\.([a-z0-9-]+)\.svc\.cluster\.local:[0-9]{1,5}/`; for internet,
+`https`, a host that is not an IP, not `localhost`, contains a dot, and does not end in `.local`,
+`.internal`, `.svc`, `.cluster.local` or `.localdomain`. A `${var}` label is accepted as is: Flux
+substitutes the CNP as it does the config. The script also has `main(argv)`, in
+`gen-capabilities.py`'s shape:
 
-- read `infrastructure/base/room-broker/config.yaml`, and each `infrastructure/<cluster>/room-broker/config.yaml`
-  that overrides `webhooks`. The rendered policy is per base. An overlay that changes subscribers
-  gets its own rendered file next to it, and the gate checks each.
-- render a `CiliumNetworkPolicy` `room-broker-webhooks` in `agent-system`, selecting
-  `app.kubernetes.io/name: room-broker`, with egress only. With no subscriber, the egress list is
-  `[{}]`, which selects no peer.
+- read `infrastructure/base/room-broker/config.yaml` and render a `CiliumNetworkPolicy`
+  `room-broker-webhooks` in `agent-system`, selecting `app.kubernetes.io/name: room-broker`, with
+  egress only, into `infrastructure/base/room-broker/network-policy-webhooks.yaml`. With no
+  subscriber, the egress list is `[{}]`, which selects no peer.
+- for each `infrastructure/<cluster>/room-broker/config.yaml` (gcp-0's is a full copy, held to
+  base's by `test-room-broker-suspend.py`), `overlay_patch(base, overlay)`: `None` when the overlay
+  has no `webhooks` key or the same list as base; otherwise a patch of the same `apiVersion`,
+  `kind`, name and namespace whose `spec` is the overlay's rendering (a CRD takes a JSON merge
+  patch, so `spec.egress` is replaced whole). It lives at
+  `infrastructure/<cluster>/room-broker/network-policy-webhooks-patch.yaml`, and the overlay's
+  `kustomization.yaml` must list it under `patches` (`- path: network-policy-webhooks-patch.yaml`).
+  The gate fails on a patch file the overlay does not need, a needed one that is missing or
+  unlisted, or drift in either. Today no overlay needs one.
 - for each cluster subscriber, find a `Service` named `<svc>` in namespace `<ns>` among the
-  repository's manifests, with `selector: {app.kubernetes.io/name: <svc>}`, else fail. Until PR F
-  adds the App's Service there is no subscriber, so this holds vacuously.
-- without `--write`, compare to the committed file and print a unified diff on drift (exit 1).
+  repository's manifests, with `selector: {app.kubernetes.io/name: <svc>}`, else fail. Until a
+  subscriber is declared this holds vacuously.
+- without `--write`, compare to the committed files and print a unified diff on drift (exit 1).
 
 The DNS rule needed by `toFQDNs` already exists in `network-policy.yaml` (`matchPattern: "*"`).
 Cilium unions the two policies.
@@ -5529,14 +5603,18 @@ Cilium unions the two policies.
 Run `python3 -I scripts/ci/gen-webhook-egress.py --write .` once to commit the empty policy, and
 add `network-policy-webhooks.yaml` to `infrastructure/base/room-broker/kustomization.yaml`.
 
-- [ ] **Step 4: The whole check, commit, PR**
-
-Run: `ulimit -v 4000000; timeout 120 python3 -I scripts/ci/tests/test-gen-webhook-egress.py && timeout 1800 task check`
-Expected: `PASS`, then `task check` exit 0 with the two new suites passing, the host's
-`validate-manifests.sh` on the composite, and the doc-path, link and source checks.
+- [ ] **Step 4: Stage, the whole check, commit, PR**
 
 ```bash
 git add scripts/ci/gen-webhook-egress.py scripts/ci/tests/test-gen-webhook-egress.py scripts/ci/tests/test-room-broker-webhook-egress.sh infrastructure/base/room-broker/
+ulimit -v 4000000; timeout 120 python3 -I scripts/ci/tests/test-gen-webhook-egress.py && timeout 1800 task check
+```
+Expected: `PASS`, then `task check` exit 0. Quote the `PASS` lines of `test-gen-webhook-egress.py`
+and `test-room-broker-webhook-egress.sh` from its output (staged files are what `run-tests.sh`
+discovers), with the host's `validate-manifests.sh` on the composite, and the doc-path, link and
+source checks.
+
+```bash
 git commit -m "feat(room-broker): generate the webhook egress from the broker's config, and gate it"
 git fetch origin && git rebase origin/main && git push -u origin feat/webhook-egress-gate
 ```
@@ -5550,11 +5628,27 @@ No attribution line.
 
 ### Task 24: Pins, config, manifests not wired, the host contract
 
-**Files:**
-- Modify: the agent-platform pins (`flux/sources/ocirepo-agent-factory.yaml` and the room-broker image pin; `test-agent-factory-pins.py` names them), `infrastructure/base/room-broker/config.yaml`, `infrastructure/base/room-broker/network-policy.yaml`, `tooling/base/agent-factory/helm-values-configmap.yaml`, `tooling/base/agent-factory/network-policy.yaml`, `observability/base/agent-platform/vmrule-agent-factory.yaml`, `HOST_REF`, `HOST-CONTRACT.md`
-- Create: `tooling/base/factory-slack-app/{kustomization,deployment,service,serviceaccount,rbac,config,network-policy,httproute,externalsecret-principal,externalsecret-slack,externalsecret-webhook}.yaml`, the broker's `externalsecret-webhook-slack-app.yaml` (also unwired)
+**Files** (line numbers as on `origin/main` after #110; re-read them):
+- Modify, the agent-platform pins, every one to `v0.20.0` (M10):
+  - `flux/sources/ocirepo-agent-factory.yaml:13-14`: chart `tag: "0.20.0"  # agent-platform v0.20.0`, and its digest
+  - `tooling/base/agent-factory/helm-values-configmap.yaml:17` (comment), `:19` (agent-factory image `v0.20.0@sha256:…`), `:218` (comment: "v0.19.0 ignores one, a later release refuses it" becomes "v0.20.0 ignores one, a later release refuses it": v0.20.0 still accepts and ignores the token days, agent-platform `internal/factory/config/config.go:440-492`)
+  - `infrastructure/base/room-broker/app.yaml:13` (comment), `:15` (room-broker `v0.20.0@sha256:…`)
+  - `infrastructure/base/room-broker/retention-cronjob.yaml:35` (room-broker, the same digest)
+  - `infrastructure/base/room-broker/crd-rooms.yaml`: the whole file, replaced by v0.20.0's `crd-rooms.yaml` release asset, header line 2 naming v0.20.0 (C2: `Member.Principal` admits `system:`, needed before any sponsored member)
+  - `infrastructure/base/room-broker/sqlinstance.yaml:36`: `atlasSchema` `ref: v0.20.0` (PR B's `webhook_cursors` migration)
+  - `infrastructure/base/karpenter-nodepools-agents/headroom/deployment.yaml:81` (room-bridge), `:89` (agent-harness)
+  - `observability/base/agent-platform/vmrule-agent-factory.yaml:34` (comment, "pinned here at v0.20.0")
+  - `website/content/docs/platform/ai-platform/agents/harness-reference.md:96`, `routing.md:388` ("pinned here at v0.20.0"); `agents/harness.md:297` and `status.md:117` name the release that shipped a feature: read each, and leave it if it means "since"
+  - Leave: `docs/runbooks/agent-factory/15-dead-links.md:10`, `17-splitter.md:12` ("v0.19.0 or later")
+- Modify, config and policy: `infrastructure/base/room-broker/config.yaml` (comments only),
+  `infrastructure/base/room-broker/app.yaml` (two optional whole-Secret mounts),
+  `infrastructure/base/room-broker/network-policy.yaml` (the App's ingress),
+  `observability/base/agent-platform/vmrule-agent-factory.yaml` (the alert), `HOST_REF`, `HOST-CONTRACT.md`
+- Create: `tooling/base/agent-factory/slack-app/{kustomization,config,deployment,service,serviceaccount,rbac,configmap-threads,network-policy,httproute,vmservicescrape,externalsecret-principal,externalsecret-slack,externalsecret-sponsored,externalsecret-broker-sponsored,password-generator-webhook,externalsecret-webhook}.yaml`,
+  `tooling/gcp-0/agent-factory/slack-app/kustomization.yaml`,
+  `scripts/ci/tests/test-room-webhook-alerts.sh`, `scripts/ci/tests/test-factory-interfaces-off.py`
 
-**Depends on:** PRs A, B, C released (tag and digest); PR D merged; PR E merged.
+**Depends on:** agent-platform v0.20.0 released (PRs A–C); PR D merged; PR E merged.
 
 - [ ] **Step 1: The worktree**
 
@@ -5564,90 +5658,272 @@ git -C /home/smana/Sources/ai-native-ref worktree add /home/smana/Sources/ai-nat
 cd /home/smana/Sources/ai-native-ref-interfaces2 && mise trust mise.toml
 ```
 
-- [ ] **Step 2: Pins and the off config**
+- [ ] **Step 2: Pins, the off config, the alert**
 
-Move every agent-platform pin to the release that carries PRs A to C (tag and digest, as
-`test-agent-factory-pins.py` requires). In the broker's config, add only comments. They document
-`human.mcp.sponsored` and `webhooks`, with the design's example and "none declared (D4): a gcp-0
-session declares the Slack App". In the factory's values, a commented `api.sponsored` example does
-the same. `test-agent-factory-pins.py` parses both files under the pinned releases' strict
-decoders, so an unknown key fails here first.
+First check the release is complete (its publish was re-run once): stop if any is missing.
+
+```bash
+gh release view v0.20.0 -R Smana/agent-platform --json assets -q '.assets[].name' | grep -x crd-rooms.yaml
+for i in room-broker room-bridge agent-factory agent-harness factory-slack-app; do crane digest ghcr.io/smana/$i:v0.20.0; done
+crane digest ghcr.io/smana/charts/agent-factory:0.20.0
+```
+
+These read a registry and a release, never a cluster. Move every site in the file list to
+v0.20.0, images by digest (`tag: "v0.20.0@sha256:…"`), as `test-agent-factory-pins.py` requires for
+the chart and the factory image. The check that none is left:
+
+```bash
+git grep -n 'v\?0\.19\.0'
+```
+Expected: only runbooks 15:10 and 17:12, and any website line kept as "since v0.19.0" (name them in
+the commit body).
+
+In the broker's config, add only comments. They document `human.mcp.sponsored` (`name`,
+`clientIDFile`; it needs `human.mcp.enabled` and `factoryURL`) and `webhooks`, and say "none
+declared (D4): a gcp-0 session declares the Slack App, in gcp-0's copy (runbook 18)". The
+`webhooks` example is exactly:
+
+```yaml
+# webhooks:
+#   - name: slack-app
+#     network: cluster
+#     url: http://factory-slack-app.agent-system.svc.cluster.local:8081/webhooks
+#     events: [room.task_triaged, room.run_started, room.waiting_for_human, room.pr_opened,
+#              room.verdict_posted, room.merged, room.reverted, room.budget_reached, room.ended]
+#     secretFile: /etc/room-broker/webhooks/slack-app/signing-key
+#     repositories: [Smana/cloud-native-ref]
+```
+
+Use the full `room.*` names (the broker refuses a short one) and `secretFile`, never the design's
+`secretRef`. In the factory's values, a commented `api.sponsored` example (`name: slack-app`,
+`clientIDFile: /etc/agent-factory/sponsored/slack-app-client-id`, `sponsor`, `repositories`,
+`dailyUSD`, `maxCostUSD`, `onBehalfOf.slack`) does the same. Nothing here is parsed by a decoder:
+the comments are read by people, and the switch-on's own rollout is what proves the keys.
 
 Add the alert `RoomWebhookDisabled` to `vmrule-agent-factory.yaml`
-(`max by (subscriber) (rooms_webhook_disabled) == 1`, for 1 m, severity warning). Its runbook
-annotation points at the operations doc, and its promtool test sits beside the existing ones.
+(`max by (subscriber) (rooms_webhook_disabled) == 1`, for 1 m, severity warning), with both
+annotations `test-agent-alert-annotations.sh` requires:
+
+```yaml
+            runbook_url: "https://github.com/Smana/agent-platform/blob/main/docs/operations.md#webhooks"
+            dashboard: "https://grafana.${private_domain_name}/d/agent-factory"
+```
+
+Create `scripts/ci/tests/test-room-webhook-alerts.sh` (`# requires: promtool python3`) in
+`test-agent-factory-budget-alerts.sh`'s shape (annotations stripped from promtool's copy): the alert
+fires after 1 m of `rooms_webhook_disabled{subscriber="slack-app"} 1`, not at 0, and resolves when the
+series returns to 0.
 
 - [ ] **Step 3: The Slack App's manifests, not wired**
 
-Under `tooling/base/factory-slack-app/`, write a full kustomization. No `clusters/*` kustomization
-includes it (R30). It holds:
+Under `tooling/base/agent-factory/slack-app/` (an AI path and a gate path: host `ai-boundary.yaml`
+`^tooling/[^/]+/(agent-factory|…)/`, `.policy.yml`'s `^tooling/base/(agent-factory|policy-bot)/`),
+write a full kustomization. `tooling/base/agent-factory/kustomization.yaml` does not list it, and no
+`clusters/*` file names it (R30, L3'). The host's renderer builds every kustomization nobody
+references (`render-bundle.py`'s `top_most_overlays`), so `task check` renders and audits it
+anyway. It holds:
 
-- a `Deployment` `factory-slack-app` in `agent-system`: 1 replica (R26); the restricted security
-  context with `fsGroup: 65532`; requests 10m/32Mi and limits 200m/128Mi; liveness and readiness on
-  `:9090`; the config, principal, Slack and webhook-key Secrets mounted 0440; the Reloader
-  annotation for the three Secrets.
+- `kustomization.yaml`: the resources below, and a `configMapGenerator` `factory-slack-app-config`
+  (namespace `agent-system`) from `config.yaml`, so a config change rolls the pod (as the broker's).
+- `config.yaml`: the App's config (agent-platform `docs/slack.md`): every file under
+  `/etc/factory-slack-app/…` as mounted below, `brokerURL` the broker's in-cluster `/mcp` (read the
+  factory's `factoryURL` and the broker's listener for the scheme), `roomsURL`
+  `https://rooms.${private_domain_name}`, `issuerURL` `https://auth.${public_domain_name}`,
+  `namespace: agent-system`, and `teamID: ""`, `channels: {}` with a comment: the switch-on fills
+  both (an empty `teamID` drops every event).
+- a `Deployment` `factory-slack-app` in `agent-system`: 1 replica (R26); image
+  `ghcr.io/smana/factory-slack-app:v0.20.0@sha256:…`; `--config` on the generated ConfigMap; ports
+  8080, 8081, 9090; the restricted security context with `fsGroup: 65532`; requests 10m/32Mi and
+  limits 200m/128Mi; liveness `/healthz` and readiness `/readyz` on `:9090`. Whole-Secret mounts
+  (no `subPath`, `defaultMode: 0440`), no Reloader annotation: Secret `factory-slack-principal` at
+  `/etc/factory-slack-app/principal`, `factory-slack-app` at `/etc/factory-slack-app/slack`,
+  `room-broker-webhook-slack-app` at `/etc/factory-slack-app/webhook`. The App re-reads each file at
+  use except `botUserIDFile`.
 - a `Service` with the same name, selector `app.kubernetes.io/name: factory-slack-app`, ports
-  `8080` and `8081`.
+  `8080`, `8081` and `9090` (metrics), and a `VMServiceScrape` on `9090`, as
+  `tooling/base/agent-factory/vmservicescrape.yaml`.
 - a `ServiceAccount`, and a `Role`/`RoleBinding` granting `get` and `update` on the ConfigMap
-  `factory-slack-threads` only (R25). The ConfigMap is created empty here, so no `create` verb is
-  needed.
-- three `ExternalSecret`s on the `agents-secrets` store: `agents/factory-slack-principal`,
-  `agents/factory-slack-app`, `agents/webhook-slack-app`.
-- an `HTTPRoute` on `platform-public` (`sectionName: factory-slack`), hostname
-  `factory-slack.${public_domain_name}`, matching `POST /slack/events` exactly.
-- a `CiliumNetworkPolicy`, default deny. Ingress: from the entity `ingress` on 8080, from the
-  room-broker on 8081, and from the host and vmagent on 9090. Egress: DNS, `kube-apiserver` 443,
-  the room-broker on 8080, `toFQDNs slack.com` on 443, and ZITADEL (`auth.${public_domain_name}`
-  443; gcp-0's overlay follows ruling AU as the broker's does).
+  `factory-slack-threads` only (R25).
+- `configmap-threads.yaml`: `factory-slack-threads`, no `data`, annotated
+  `kustomize.toolkit.fluxcd.io/ssa: IfNotPresent`, so Flux creates it once and never contests the
+  App's writes; no `create` verb is needed.
+- `ExternalSecret`s on the `agents-secrets` store, `remoteRef.key` mount-relative as in
+  `tooling/base/agent-factory/externalsecret-oidc.yaml`:
+  - `factory-slack-principal` ← key `factory-slack-principal`: `client-id`, `client-secret`, `project-id`;
+  - `factory-slack-app` ← key `factory-slack-app`: `bot-token`, `signing-secret`, `bot-user-id`;
+  - `agent-factory-sponsored` (the chart's `sponsoredSecret`, already mounted optional 0440) ←
+    key `factory-slack-principal`: `slack-app-client-id` from `client-id`, `project-id` from `project-id`;
+  - `room-broker-sponsored` ← key `factory-slack-principal`: `slack-app-client-id` from `client-id`.
+- the webhook key, generated in-cluster: `password-generator-webhook.yaml`, a
+  `generators.external-secrets.io/v1alpha1` `Password` `room-broker-webhook-slack-app` in
+  `agent-system` (`length: 64`, `symbols: 0`, `secretKeys: [signing-key]`; 64 alphanumerics are
+  valid base64, 48 bytes, R16's format; precedent
+  `infrastructure/gcp-0/envoy-ai-gateway/password-generators.yaml`), and `externalsecret-webhook.yaml`
+  making Secret `room-broker-webhook-slack-app` from it with `refreshInterval: "0"` (generated once;
+  a rebuild regenerates both sides at once).
+- an `HTTPRoute` `factory-slack-app` in `agent-system`, `parentRefs` `platform-public` in
+  namespace `infrastructure`, `sectionName: factory-slack`, hostname
+  `factory-slack.${public_domain_name}`, matching `POST /slack/events` exactly, as
+  `tooling/base/policy-bot/httproute-hook.yaml`. The listener it names does not exist until the
+  switch-on (L3').
+- a `CiliumNetworkPolicy` `factory-slack-app`, default deny. Ingress: from the entity `ingress` on
+  8080, from the room-broker on 8081, and from the host and vmagent on 9090. Egress: DNS,
+  `kube-apiserver` 443, the room-broker on its `/mcp` port, `toFQDNs slack.com` on 443, and ZITADEL
+  (`auth.${public_domain_name}` 443).
 
-The broker's CNP gains an ingress from `factory-slack-app` on `8080`, also commented as dormant
-(R13). The factory's CNP needs nothing new, because the broker already reaches `8082`.
+`tooling/gcp-0/agent-factory/slack-app/kustomization.yaml` takes `../../../base/agent-factory/slack-app`
+and patches the ZITADEL egress to `toEntities: [all]` with a `test` on its index (ruling AU, as
+`tooling/gcp-0/agent-factory/kustomization.yaml`'s patch of the `agent-factory` CNP). This is the
+directory runbook 18 points a cluster Kustomization at.
 
-The suite `test-agent-platform-manifests` (or the constitution checker the host's
-`validate-manifests.sh` runs) must pass on the unwired directory. Add the directory to the list of
-kustomizations it builds, if it builds a list.
+In the broker: `infrastructure/base/room-broker/app.yaml` gains two whole-Secret mounts, both
+`optional: true`, `defaultMode: 0440`, as `roomctl`'s: `room-broker-sponsored` at
+`/etc/room-broker/sponsored` and `room-broker-webhook-slack-app` at `/etc/room-broker/webhooks/slack-app`.
+Inert until the Secrets exist. Its CNP (`network-policy.yaml`) gains an ingress from
+`factory-slack-app` on `8080`, commented as dormant (R13). The factory's CNP needs nothing new: the
+broker already reaches `8082`, and the tailnet route matches only `POST /v1/runs`, which refuses a
+sponsored token (`403 sponsored_only`).
+
+`scripts/ci/tests/test-factory-interfaces-off.py` (`# requires: python3`, SKIP 77 without PyYAML)
+asserts, on the real tree:
+
+1. No file under `clusters/` names `tooling/base/agent-factory/slack-app` or
+   `tooling/gcp-0/agent-factory/slack-app`, and no `kustomization.yaml` lists `slack-app` (R30, L3').
+2. Base's and every overlay's broker `config.yaml` declares no `webhooks` and no
+   `human.mcp.sponsored`; the factory's values declare no `api.sponsored` (D4).
+3. `tooling/base/agent-factory/httproute.yaml` has one rule, one match, `Exact` `/v1/runs`, `POST` (L8).
+4. The slack-app `HTTPRoute` has one rule, one match, `Exact` `/slack/events`, `POST`.
 
 - [ ] **Step 4: The host contract**
 
-Bump `HOST_REF` to PR D's merge commit. In `HOST-CONTRACT.md`, go to **contract version 3**: H4
-gains "a `factory-slack` listener for `agent-system`", and H5's ZITADEL row gains "the
-`factory-slack-app` machine user". Add a "Changes from 2" line.
+Bump `HOST_REF` to PR D's merge commit (or a later host `main`). In `HOST-CONTRACT.md`, go to
+**contract version 3**: H5's ZITADEL row becomes, word for word, the row Task 22 wrote in the
+host's design §2. H4 is unchanged: the `factory-slack` listener arrives with the switch-on (version
+4, runbook 18). Add a "Changes from 2" line.
 
-- [ ] **Step 5: The whole check, commit**
-
-Run: `ulimit -v 4000000; timeout 1800 task check`
-Expected: exit 0, including the pins suite, the webhook egress gate (still empty), the manifests on
-the composite, links and doc paths.
+- [ ] **Step 5: Stage, the whole check, commit**
 
 ```bash
-git add <every path above, by name>
-git commit -m "feat(agent-platform): pin sponsored principals, webhooks and the Slack App, every switch off"
+git add flux/ infrastructure/ observability/ tooling/ website/ scripts/ci/tests/test-room-webhook-alerts.sh scripts/ci/tests/test-factory-interfaces-off.py HOST_REF HOST-CONTRACT.md
+git status --short   # nothing left unstaged
+ulimit -v 4000000; timeout 1800 task check
+```
+Expected: exit 0. Quote the `PASS` lines of `test-room-webhook-alerts.sh`,
+`test-factory-interfaces-off.py`, `test-agent-factory-pins.py`, `test-agent-alert-annotations.sh`
+and `test-room-broker-webhook-egress.sh` (still empty), with the manifests on the composite (the
+unwired slack-app rendered and audited), `check-ai-boundary.py`, links and doc paths.
+
+```bash
+git commit -m "feat(agent-platform): pin v0.20.0, sponsored principals, webhooks and the Slack App, every switch off"
 ```
 
 ### Task 25: The docs, the PR
 
-- [ ] **Step 1: The site**
+**Files:**
+- Create: `docs/runbooks/agent-factory/18-factory-interfaces.md`
+- Modify: `docs/runbooks/agent-factory/README.md` (index row), `docs/runbooks/agent-factory/14-gcp-0-session.md`
+  (the secrets table), the site's `agents/factory.md` and `agents/user-guide.md`,
+  `docs/superpowers/specs/2026-10-21-factory-interfaces-design.md` ("Left to the builder")
+
+- [ ] **Step 1: The site and the design**
 
 - The factory page: the intake kinds now include `api`; the sponsor, ceiling and day.
 - The user guide: "From Slack": mention, draft, ✅ by a linked maintainer, what the thread shows,
   and that approvals happen on the room page.
-- The operations runbook for the next gcp-0 session's switch-on: declare the principal in both
-  configs, link the owner's Slack id, declare the webhook, include `tooling/base/factory-slack-app`
-  in `clusters/gcp-0-agent-platform`, and `gen-webhook-egress.py --write`.
 - `docs/superpowers/specs/2026-10-21-factory-interfaces-design.md`: under "Left to the builder",
-  one line per point settled here, linking this plan's rulings (R2, R9, R15, R16, R22).
+  one line per point settled here, linking this plan's rulings (R2, R9, R15, R16, R22). Do not copy
+  the spec's own `webhooks` example (l.114-126, `secretRef`, short names) anywhere.
+- Runbook 14's secrets table, beside the `merger-app` row (l.153-157): a row for
+  `agents/factory-slack-app`: written by the owner from the Slack App's console (bot token,
+  signing secret, the bot's `U…` user id), optional until the App is switched on, read by
+  ExternalSecret `factory-slack-app`; command
+  `bao kv put -mount=agents factory-slack-app bot-token=- signing-secret=- bot-user-id=<U…>`.
 
-- [ ] **Step 2: The check, push, PR**
+- [ ] **Step 2: Runbook 18, the switch-on**
 
-Run: `ulimit -v 4000000; timeout 1800 task check`. Expected: exit 0.
+`docs/runbooks/agent-factory/18-factory-interfaces.md`, linked from the README index, in the shape
+of runbooks 15 and 17 (prerequisites checklist, steps, off again). Its steps, in order:
+
+1. **Prerequisites.** agent-platform v0.20.0 or later pinned; the host sync run
+   (`zitadel-oidc-clients.sh sync --apply --mirror-openbao`, `agents/factory-slack-principal`
+   present); the Slack App created from agent-platform `docs/slack.md`'s manifest and installed;
+   the team id, the served channel ids, the owner's Slack user id and the bot's `U…` id noted (Slack:
+   the App's page, "App Home", or `auth.test` with the bot token returns `user_id`); runbook 14's
+   `bao kv put -mount=agents factory-slack-app …` done.
+2. **The host listener, a cloud-native-ref PR** (L3'). Add this block to
+   `infrastructure/gcp-0/gapi-public/platform-public-gateway.yaml` after `policy-bot` (and to
+   `infrastructure/aws-0/gapi/platform-public-gateway.yaml` only if aws-0 ever runs the App), extend
+   the inventory comment at the top, and add "a `factory-slack` listener for `agent-system`" to H4 in
+   the host design §2. Merging it orders a Let's Encrypt certificate (DNS-01, Route53): merge it in
+   the session.
+
+   ```yaml
+       # The agent factory's Slack App (factory interfaces F9): Slack posts its Events API callbacks
+       # here, and the App verifies each against its signing secret (±5 min) before reading it. Routes
+       # from agent-system only; its HTTPRoute matches POST /slack/events and nothing else.
+       - name: factory-slack
+         hostname: "factory-slack.${public_domain_name}"
+         port: 443
+         protocol: HTTPS
+         allowedRoutes:
+           namespaces:
+             from: Selector
+             selector:
+               matchExpressions:
+                 - key: kubernetes.io/metadata.name
+                   operator: In
+                   values:
+                     - agent-system
+         tls:
+           mode: Terminate
+           certificateRefs:
+             - name: factory-slack-public-tls
+   ```
+3. **The ai-native-ref switch-on PR.** `HOST_REF` to that host PR's merge; `HOST-CONTRACT.md`
+   version 4 (H4 gains the listener). In **gcp-0's broker config copy**
+   (`infrastructure/gcp-0/room-broker/config.yaml`): `human.mcp.enabled: true` (required by
+   `human.mcp.sponsored`; it also opens human `/mcp` on the tailnet, L10), `human.mcp.sponsored:
+   [{name: slack-app, clientIDFile: /etc/room-broker/sponsored/slack-app-client-id}]`, and the
+   `webhooks` entry of Task 24's comment (full `room.*` names, `secretFile`). Widen
+   `test-room-broker-suspend.py`'s parity so gcp-0's copy may differ from base in `suspend`,
+   `webhooks` and `human.mcp` alone. In the factory's gcp-0 values: `api.sponsored` with the owner
+   as `sponsor` and the owner's Slack id linked (`onBehalfOf.slack: {"T…/U…": <login>}`). In the
+   App's config (a gcp-0 `configMapGenerator` `behavior: replace` in
+   `tooling/gcp-0/agent-factory/slack-app/`): `teamID` and `channels`. Run
+   `python3 -I scripts/ci/gen-webhook-egress.py --write .`, which writes
+   `infrastructure/gcp-0/room-broker/network-policy-webhooks-patch.yaml`; list it under the gcp-0
+   overlay's `patches`. Add `clusters/gcp-0-agent-platform/tooling-factory-slack-app.yaml`, a Flux
+   Kustomization with `path: ./tooling/gcp-0/agent-factory/slack-app`,
+   `sourceRef: {kind: OCIRepository, name: ai-native-ref}` and only H2 host `dependsOn`, listed by
+   that cluster's `kustomization.yaml`; drop clause 1 of `test-factory-interfaces-off.py` for gcp-0
+   and clause 2 for gcp-0's copies. `task check` green, merge.
+4. **Checks.** The broker and factory roll out; `agent_factory_principal_sponsor_info` reads 1;
+   external-dns publishes `factory-slack.<domain>` once the HTTPRoute attaches; Slack's request-URL
+   challenge passes.
+5. **A changed bot user id** needs `kubectl -n agent-system rollout restart deploy/factory-slack-app`:
+   it is the one file the App reads only at start.
+6. **Off again.** Revert the ai-native-ref switch-on PR (the declarations, the Kustomization, the
+   patch, the parity widening), regenerate, and confirm `/v1/tasks` is a 404 and the emitter is
+   idle. The listener stays (it serves 404s); removing it is a host PR.
+
+- [ ] **Step 3: Stage, the check, push, PR**
 
 ```bash
+git add docs/ website/
+ulimit -v 4000000; timeout 1800 task check
+```
+Expected: exit 0, the link and doc-path checks covering runbook 18 (its host paths resolve against
+`.host/`).
+
+```bash
+git commit -m "docs(agent-factory): sponsored principals, Slack intake and the switch-on runbook 18"
 git fetch origin && git rebase origin/main && git push -u origin feat/interfaces-part2-pins
 ```
 
 Title: `feat(agent-platform): sponsored principals, webhooks and Slack intake, released and off`.
-Body: the releases; that nothing is declared (D4); the host contract going to version 3; the live
-proofs that wait for the next gcp-0 session. No attribution line.
+Body: agent-platform v0.20.0 and every site it moved; that nothing is declared and nothing is wired
+(D4, R30, L3'); the host contract going to version 3; runbook 18 and the live proofs that wait for
+the next gcp-0 session. No attribution line.
 
 ---
 
@@ -5661,51 +5937,60 @@ Each is run by the task named, on a laptop, before its PR opens:
 | 2 | With `max_cost`, a `Task` with `source.kind: api` records `requestedBy`, `sponsor`, `onBehalfOf` and `maxMicroUSD`; triage caps it there; its runs are charged to the principal with per-person caps off; its principal reads its room and no other (live proof 3, second half, up to the meter) | Tasks 2, 4, 5, 7 |
 | 3 | The CRD's new CEL rules install and bite on a real API server | Task 2 (envtest) |
 | 4 | A webhook with an old timestamp, a wrong signature, a forged `webhook-id` or a changed body is rejected; an internet subscriber with a private address or a cluster name is refused at load, and one resolving to a private address is refused at dial (live proof 2, but the last clause) | Tasks 10, 12 |
-| 5 | A cluster subscriber missing from the generated egress fails the gate (live proof 2, last clause) | Task 23 |
-| 6 | Three failed deliveries disable a subscriber, and a disabled one receives nothing | Task 13 |
+| 5 | A cluster subscriber missing from the generated egress, base or overlay, fails the gate; the generator refuses what the broker refuses (live proof 2, last clause) | Task 23 |
+| 6 | Three failed deliveries disable a subscriber, and a disabled one receives nothing; `RoomWebhookDisabled` fires on it | Tasks 13, 24 |
 | 7 | A ✅ from an unlinked user files nothing; from a linked maintainer, one task for two ✅; the thread receives state lines and never room text (live proof 5, but Slack itself) | Task 17 |
 | 8 | A Slack request with a bad signature or a stale timestamp is `401` before it is parsed | Task 15 |
 | 9 | Hidden characters in a draft are stripped, and its text reaches the Task as `untrusted` (live proof 4, for the api path) | Task 4 |
 | 10 | Nothing in Slack or in the sponsored tool list approves, steers or stops | Tasks 7, 17 |
+| 11 | The machine user converges a changed client id, project id or refused secret, per cluster, and a dry run mutates nothing | Task 20 |
+| 12 | Nothing is declared or wired: no cluster lists the App, no config declares a principal or a subscriber, and the factory's tailnet route keeps one exact path | Task 24 |
 
 ## Live proofs: the next gcp-0 session
 
-After PR F is applied, with every switch still off, in this order. Turn everything back off at the
-end.
+After PR F is applied, with every switch still off, in this order, following runbook 18. Turn
+everything back off at the end.
 
-1. **The token.** Run the host sync; then
+1. **The token.** Run the host sync (`zitadel-oidc-clients.sh sync --apply --mirror-openbao`); then
    `curl -s -d grant_type=client_credentials -d scope='openid urn:zitadel:iam:org:project:id:<project>:aud' -u <id>:<secret> https://auth.<domain>/oauth/v2/token`.
    Decode the access token: it must carry `client_id` equal to the stored client id and an `aud`
    holding the project id (R2's assumption). If `client_id` is missing, stop. R2's fallback
-   (`userIDFile`, matched on `sub`) is a one-task change to Tasks 3 and 7.
-2. **Declare the principal**, in the broker (`human.mcp.sponsored`) and the factory
-   (`api.sponsored` with the owner as `sponsor` and the owner's Slack id linked, `dailyUSD: 5`,
-   `maxCostUSD: 2`). The rollout succeeds and `agent_factory_principal_sponsor_info` reads 1.
+   (`userIDFile`, matched on `sub`) is a one-task change to Tasks 3 and 7. Then
+   `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer <token>" https://rooms.<domain>/mcp`
+   from the tailnet answers `403` (no project role, so no `groups` for oauth2-proxy's
+   `allowed-group`; L9, O-E).
+2. **Declare the principal** (runbook 18 step 3), in the broker (`human.mcp.enabled` and
+   `human.mcp.sponsored`, in gcp-0's copy; human `/mcp` is then open on the tailnet too, L10) and
+   the factory (`api.sponsored` with the owner as `sponsor` and the owner's Slack id linked,
+   `dailyUSD: 5`, `maxCostUSD: 2`). The rollout succeeds and `agent_factory_principal_sponsor_info`
+   reads 1.
 3. **Live proof 3.** With the token from step 1, call `/mcp` from a pod in `agent-system` (an
    ephemeral debug pod with the App's labels, so the CNP admits it). `run_create` without
    `max_cost` is refused. With `max_cost: 0.5` on a small `docs` issue text, a Task appears with
    `source.kind: api` and both identities. Its room lists `system:slack-app` as a member. The run is
    charged to `system:slack-app` in the day ledger. The task ends `Escalated budget-task` or `Done`
    at or under $0.50 (`status.usage.costMicroUSD`).
-4. **Declare the webhook** for the App, run `gen-webhook-egress.py --write`, and include
-   `tooling/base/factory-slack-app` in the gcp-0 cluster kustomization. Then live proof 2: replay a
-   captured delivery (old timestamp, flipped signature byte, edited `webhook-id`) at the App's
-   `:8081`; each answers `401`. Add a cluster subscriber to the config without regenerating: the
-   gate fails in CI.
-5. **Live proof 5.** Create the Slack App from `docs/slack.md`'s manifest and point its request URL
-   at `https://factory-slack.<domain>/slack/events` (Slack's verification challenge passes). In a
+4. **Declare the webhook** in gcp-0's broker config copy, run `gen-webhook-egress.py --write` (the
+   gcp-0 patch), and the cluster Kustomization on `tooling/gcp-0/agent-factory/slack-app` (runbook
+   18 step 3; the host listener PR, step 2, merged first). Then live proof 2: replay a captured
+   delivery (old timestamp, flipped signature byte, edited `webhook-id`) at the App's `:8081`; each
+   answers `401`. Add a cluster subscriber to the config without regenerating: the gate fails in CI.
+5. **Live proof 5.** Point the Slack App's request URL at
+   `https://factory-slack.<domain>/slack/events` (Slack's verification challenge passes). In a
    served channel, post `@factory` with a draft. A ✅ from a second, unlinked Slack user gets
    `Not filed: not_linked`. A ✅ from the owner files the issue (factory-authored, no label, the
    footer naming the sponsor). A Task with `source.kind: api` names the App and the owner, and the
    thread receives `Triaged`, `A run started`, `Pull request #… opened` and `Ended`. When the run
    asks an approval, the thread shows the room link and the approval is given on the room page.
+   Also check the ledger's two items: `conversations.replies(ts=<reply>, limit=1)` returns the reply,
+   not the parent, and bot messages carry `user=<bot U-id>`; the manifest's bot scopes suffice.
 6. **Live proof 4 on the api path**: a draft carrying a zero-width character and an
    instruction-shaped line arrives stripped, fenced as untrusted, and the run treats it as data.
 7. **Read the series**: `agent_factory_max_cost_usd_total`, `agent_factory_api_intake_total`,
    `rooms_webhook_deliveries_total`, `factory_slack_requests_total`; the `agent-identity`
    dashboard's Sponsored row shows the principal (G5).
-8. **Everything off again**: remove the declarations and the App from the cluster kustomization,
-   regenerate the empty egress, and confirm that `/v1/tasks` is a 404 and the emitter is idle.
+8. **Everything off again** (runbook 18 step 6): revert the switch-on PR, regenerate the empty
+   egress, and confirm that `/v1/tasks` is a 404 and the emitter is idle.
 
 ## Owner decisions the design leaves open
 
@@ -5715,9 +6000,11 @@ end.
 | O-B | How a Slack user is linked | A map in the factory's config, Slack id → maintainer login (R9) | A Slack identity provider in ZITADEL (G2), a host change |
 | O-C | The recorded sponsor's shape | `github:<login>` (R8) | `human:<sub>`, as the design's table writes it; ZITADEL subs change on every gcp-0 build |
 | O-D | Who files a Slack draft | The factory App, with no label, the sponsor recorded as author (R10) | The ✅ maintainer's own GitHub identity, which would need a user token the App holds (refused here: a long-lived personal credential in the cluster) |
-| O-E | Where sponsored principals reach `/mcp` | In-cluster only in v3 (R13, G1) | Through oauth2-proxy on the tailnet, for CI outside the cluster |
+| O-E | Where sponsored principals reach `/mcp` | In-cluster only in v3 (R13, G1); live step 1 proves the tailnet refuses the App's token | Through oauth2-proxy on the tailnet, for CI outside the cluster |
 | O-F | How Slack reaches the App | The Events API on a new public listener (R28) | Socket Mode: no public route, but no per-request signature and one more long-lived token |
 | O-G | Part 1's R12, a closed room without a task | Unchanged (`stopped`); the emitter could refine it (G4) | `done` after a verdict or a hand-off, as the design's table reads |
+| O-H | When the public listener lands | With the switch-on, as a host PR in the gcp-0 session (L3'): a merged listener orders a certificate on any running host | In PR D, merged in a window the owner picks, one unused certificate meanwhile |
+| O-I | Where the webhook key comes from | An in-cluster ESO `Password` generator, one Secret both pods mount, regenerated with the cluster (M5; departs from R29's `agents/webhook-<name>` in OpenBao). R16's two-key rotation becomes a manual Secret edit | Seeded by the host's `secret-store.sh` and copied to `agents/webhook-slack-app` by hand at each build |
 
 ## Self-review
 

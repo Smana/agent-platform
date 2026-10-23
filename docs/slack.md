@@ -71,13 +71,14 @@ webhooks:
   - name: slack-app
     network: cluster
     url: http://<svc>.<ns>.svc.cluster.local:8081/webhooks
-    events: [triaged, run_started, waiting_for_human, pr_opened, verdict_posted, merged, reverted, budget_reached, ended]
+    events: [room.task_triaged, room.run_started, room.waiting_for_human, room.pr_opened, room.verdict_posted,
+             room.merged, room.reverted, room.budget_reached, room.ended]
     repositories: [Smana/ai-native-ref]
     secretFile: /etc/webhook/key   # the key file the App mounts as webhookKeyFile
 ```
 
 - `network: cluster`; the port `:8081` is mandatory and the path is exactly `/webhooks`.
-- `events` are the nine above (the short names of `room.<name>`). The App ignores `task_received` and `run_ended`.
+- `events` are the nine above, by their full names: the broker refuses a short one. The App ignores `room.task_received` and `room.run_ended`.
 - `repositories` is required.
 - `secretFile` is the same key as the App's `webhookKeyFile`: one or two base64 lines, each at least 32 bytes decoded.
 
