@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ type ScheduleForge interface {
 // probe is a merger-side read, so checks:read never joins the factory App's scope.
 type ScheduleMerger interface {
 	PullRequestChecks(ctx context.Context, number int) (forge.Checks, error)
+	DeadLinksMerger
 }
 
 // Scheduler is a leader-only manager.Runnable that turns config's schedules into Tasks (§1):
@@ -135,8 +137,9 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 		}
 		key := taskid.ScheduleKey(e.Name, slot)
 		text := e.Text
+		var findings []v1alpha1.Finding
 		if e.Probe != "" {
-			found, detail, err := s.probe(ctx, rc, e.Probe, e.ProbeAuthor)
+			found, detail, fs, err := s.probe(ctx, rc, e)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", e.Name, err))
 				continue
@@ -144,7 +147,7 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 			if !found {
 				continue // "if it finds nothing, no task is created" (§1)
 			}
-			text += "\n\n" + detail
+			text, findings = text+"\n\n"+detail, fs
 		}
 		dataClass := e.DataClass
 		if dataClass == "" {
@@ -156,7 +159,7 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 			Spec: v1alpha1.TaskSpec{
 				Source: v1alpha1.Source{Kind: "schedule", Ref: e.Name, Key: key, RequestedBy: "system:scheduler",
 					Trust: "trusted", ContentSHA256: hex.EncodeToString(sum[:])},
-				Repository: rc.Name, Text: text, DataClass: dataClass, PredictedClass: e.Class,
+				Repository: rc.Name, Text: text, DataClass: dataClass, PredictedClass: e.Class, Findings: findings,
 			},
 		}
 		if err := s.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -166,21 +169,77 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 	return errs
 }
 
-// probe: renovate-red lists open Renovate PRs whose checks have been red for more than 24 h —
-// bumps the factory can land itself when Renovate's own branch went stale.
-func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, name, author string) (bool, string, error) {
-	if name != "renovate-red" {
-		return false, "", fmt.Errorf("intake: unknown probe %q", name)
+// probe runs the schedule's probe: whether it found work, the text it adds, and the findings an
+// oracle class's task carries.
+func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, e config.Schedule) (bool, string, []v1alpha1.Finding, error) {
+	switch e.Probe {
+	case "renovate-red":
+		found, detail, err := s.renovateRed(ctx, rc, e.ProbeAuthor)
+		return found, detail, nil, err
+	case "dead-links":
+		return s.deadLinksProbe(ctx, rc, e)
 	}
+	return false, "", nil, fmt.Errorf("intake: unknown probe %q", e.Probe)
+}
+
+// conns is the repository's two connections: Clients' (v2 D8), or Forge and Merger.
+func (s *Scheduler) conns(rc *config.Repository) (ScheduleForge, ScheduleMerger, error) {
+	if s.Clients == nil {
+		return s.Forge, s.Merger, nil
+	}
+	gh, merger, ok := s.Clients(rc.Name)
+	if !ok {
+		return nil, nil, fmt.Errorf("intake: no GitHub connection for %s (v2 D8)", rc.Name)
+	}
+	return gh, merger, nil
+}
+
+// deadLinksProbe (MC5, MC6): nothing while the class is off (MC14) or while a task of this
+// schedule is still open (loops L9); else the findings both newest detector runs agree on. A run
+// the probe does not trust (errFindingsRefused) starts nothing: it is logged and counted, not a
+// failed tick.
+func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e config.Schedule) (bool, string, []v1alpha1.Finding, error) {
+	cl := rc.Classes[e.Class]
+	if (!cl.Live && !cl.Shadow) || cl.Oracle == nil {
+		return false, "", nil, nil
+	}
+	var l v1alpha1.TaskList
+	if err := s.Client.List(ctx, &l, client.InNamespace(s.Namespace)); err != nil {
+		return false, "", nil, err
+	}
+	if slices.ContainsFunc(l.Items, func(t v1alpha1.Task) bool {
+		return t.Spec.Source.Kind == "schedule" && t.Spec.Source.Ref == e.Name && !v1alpha1.TerminalPhase(t.Status.Phase)
+	}) {
+		return false, "", nil, nil
+	}
+	_, merger, err := s.conns(rc)
+	if err != nil {
+		return false, "", nil, err
+	}
+	fs, err := deadLinks(ctx, merger, rc, cl)
+	if errors.Is(err, errFindingsRefused) {
+		s.log().Warn("dead-links findings refused", "schedule", e.Name, "err", err)
+		if s.Errors != nil {
+			s.Errors.IntakeError(ctx, "dead-links")
+		}
+		return false, "", nil, nil
+	}
+	if err != nil || len(fs) == 0 {
+		return false, "", nil, err
+	}
+	text, spec := deadLinksTask(fs)
+	return true, text, spec, nil
+}
+
+// renovateRed lists open Renovate PRs whose checks have been red for more than 24 h — bumps the
+// factory can land itself when Renovate's own branch went stale.
+func (s *Scheduler) renovateRed(ctx context.Context, rc *config.Repository, author string) (bool, string, error) {
 	if !rc.NeedsMerger() {
 		return false, "", nil // no merger key is required, and reading checks needs it: nothing to find
 	}
-	gh, merger := s.Forge, s.Merger
-	if s.Clients != nil {
-		var ok bool
-		if gh, merger, ok = s.Clients(rc.Name); !ok {
-			return false, "", fmt.Errorf("intake: no GitHub connection for %s (v2 D8)", rc.Name)
-		}
+	gh, merger, err := s.conns(rc)
+	if err != nil {
+		return false, "", err
 	}
 	prs, err := gh.OpenPullRequests(ctx)
 	if err != nil {

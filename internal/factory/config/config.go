@@ -1048,8 +1048,14 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 		if e.Text == "" || len(e.Text) > c.Caps.MaxTextBytes {
 			bad("schedule %s: text must be 1..%d bytes", e.Name, c.Caps.MaxTextBytes)
 		}
-		if e.Probe != "" && e.Probe != "renovate-red" {
-			bad("schedule %s: probe %q is not renovate-red", e.Name, e.Probe)
+		switch e.Probe {
+		case "", "renovate-red":
+		case "dead-links":
+			if o := r.Classes[e.Class].Oracle; o == nil || o.Probe != "dead-links" {
+				bad("schedule %s: probe dead-links needs class %q to declare oracle.probe dead-links", e.Name, e.Class)
+			}
+		default:
+			bad("schedule %s: probe %q is not renovate-red or dead-links", e.Name, e.Probe)
 		}
 		if e.Probe != "" && e.ProbeAuthor == "" {
 			bad("schedule %s: probeAuthor is required with a probe", e.Name)

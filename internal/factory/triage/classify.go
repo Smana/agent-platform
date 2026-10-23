@@ -78,6 +78,12 @@ func (c Classify) Triage(ctx context.Context, t *v1alpha1.Task) (Decision, error
 	if t.Spec.Source.Kind == "runlore" {
 		dataClass = "internal" // the investigate template forces it (§2)
 	}
+	if c.Cfg.RepositoryFor(t.Spec.Repository).Classes[class].Oracle != nil {
+		// MC6: the findings are the task and the oracle its verifier: one implementer at tier light,
+		// no classifier call, so no control group either (OD-14 measures the classifier).
+		return Decision{Template: "solo", PredictedClass: class, DataClass: dataClass, Budget: BudgetFor(c.Cfg, "light"),
+			Classification: v1alpha1.Classification{Tier: "light", Classifier: "static"}}, nil
+	}
 	res, err := c.C.Classify(ctx, C7Request{Text: t.Spec.Text, Ref: t.Name, DataClass: dataClass})
 	if err != nil || (res.Tier != "light" && res.Tier != "standard" && res.Tier != "frontier") {
 		res = C7Response{Tier: "standard", Classifier: "static", Fallback: "static"} // never blocks (C7)

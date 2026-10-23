@@ -177,3 +177,17 @@ func TestClassifyReadsTheIssueOnItsRepository(t *testing.T) {
 		t.Fatalf("an unknown repository reads no label: %q %v", d.PredictedClass, err)
 	}
 }
+
+// MC6: an oracle class's task runs solo on light, without a classifier call or the control group.
+func TestAnOracleClassRunsSoloOnLight(t *testing.T) {
+	cfg := testCfg()
+	cfg.Triage.ControlPercent = 100
+	cfg.Classes["dead-links"] = config.Class{Shadow: true, Oracle: &config.Oracle{Probe: "dead-links", Workflow: "dead-links.yaml", MaxFindings: 10}}
+	c7 := &fakeC7{resp: C7Response{Tier: "frontier", Classifier: "semantic-router"}}
+	d, err := Classify{Cfg: cfg, C: c7, Forge: forgetest.NewFake()}.Triage(context.Background(),
+		&v1alpha1.Task{Spec: v1alpha1.TaskSpec{Source: v1alpha1.Source{Kind: "schedule"}, PredictedClass: "dead-links", Text: "x", DataClass: "public"}})
+	if err != nil || d.Template != "solo" || d.Budget.Tier != "light" || d.PredictedClass != "dead-links" || d.Classification.Control ||
+		c7.got.Text != "" {
+		t.Fatalf("%+v %v (classifier asked: %+v)", d, err, c7.got)
+	}
+}
