@@ -11,6 +11,8 @@ package forge
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,6 +44,10 @@ var (
 // ErrNotAFile is DefaultBranchFile at a path that is never a readable file: a directory, a file
 // over the contents API's 1 MB, a symlink or a submodule. It does not heal by retrying.
 var ErrNotAFile = errors.New("forge: the path is not a readable file")
+
+// ErrMergedTruncated is MergedSince filling its window of 100: pull requests past it are unread,
+// so the caller narrows since and reads again.
+var ErrMergedTruncated = errors.New("forge: a window of 100 merged pull requests, the rest unread")
 
 // Item is an open issue or pull request carrying a label.
 type Item struct {
@@ -274,6 +280,64 @@ type LabelledPull struct {
 	MergedAt time.Time
 }
 
+// MergedPull is one merged pull request, as the merge monitor's follow-up scan reads it: who
+// authored it, from which branch, the commit it became on the default branch, when, and its
+// labels.
+type MergedPull struct {
+	Number         int
+	Author         string // REST-shaped: a bot's with "[bot]"
+	HeadRef        string
+	MergeCommitSHA string
+	Title          string
+	MergedAt       time.Time
+	Labels         []string
+}
+
+// FilePatch is one file a pull request changed: its path, its previous path on a rename, GitHub's
+// status for it and its unified patch ("" for a binary, a rename alone or a patch GitHub omits).
+type FilePatch struct {
+	Path     string
+	Previous string
+	Status   string
+	Patch    string
+}
+
+// BlameRange is a run of lines, Start to End inclusive, last changed by Commit.
+type BlameRange struct {
+	Start, End int
+	Commit     string
+}
+
+// BaseLines are the base-side line numbers a unified patch removes or rewrites: the lines of the
+// file as it was that the pull request changed (merge gate R35). A pure addition changes none.
+// The result is sorted and deduplicated, nil when there is none.
+func BaseLines(patch string) []int {
+	var out []int
+	base := 0
+	for line := range strings.SplitSeq(patch, "\n") {
+		if rest, ok := strings.CutPrefix(line, "@@ -"); ok {
+			start, _, _ := strings.Cut(strings.Fields(rest + " ")[0], ",")
+			base, _ = strconv.Atoi(start)
+			continue
+		}
+		if base == 0 || line == "" {
+			continue
+		}
+		switch line[0] {
+		case ' ':
+			base++
+		case '-':
+			out = append(out, base)
+			base++
+		}
+	}
+	if out == nil {
+		return nil
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // PRSummary is one open pull request: enough to find the live ones without reading each in full.
 type PRSummary struct {
 	Number  int
@@ -314,6 +378,12 @@ type Merger interface {
 	WorkflowRuns(ctx context.Context, workflow string) ([]WorkflowRun, error)
 	RunArtifact(ctx context.Context, runID int64, name, file string) ([]byte, error)
 	FileAt(ctx context.Context, path, ref string) (string, error)
+	// MergedSince, PullFiles and BlameAtParent are the monitor's follow-up reads: the pull
+	// requests merged since a time, one pull request's patches, and who last changed a file's
+	// lines before a merge. All three fail closed: an incomplete answer is an error.
+	MergedSince(ctx context.Context, since time.Time) ([]MergedPull, error)
+	PullFiles(ctx context.Context, number int) ([]FilePatch, error)
+	BlameAtParent(ctx context.Context, mergeSHA, path string) ([]BlameRange, error)
 }
 
 var _ Merger = (*GitHub)(nil)

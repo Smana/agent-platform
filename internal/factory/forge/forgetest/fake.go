@@ -63,6 +63,10 @@ type Fake struct {
 	labelErrFor  map[string]error
 	files        map[string]string // default-branch files by path; "!" fails the read
 	calls        []string
+	merged       []forge.MergedPull
+	pullFiles    map[int][]forge.FilePatch
+	blame        map[string][]forge.BlameRange
+	blameCalls   int
 	subErr       error
 	createErr    error
 	closeErr     error
@@ -775,4 +779,61 @@ func (f *Fake) DefaultBranchFile(_ context.Context, path string) (string, string
 		return "", "", false, forge.ErrNotAFile
 	}
 	return text, fmt.Sprintf("%x", sha256.Sum256([]byte(text)))[:40], true, nil
+}
+
+// SetMerged sets what MergedSince returns, as given: it does not filter by time.
+func (f *Fake) SetMerged(ps ...forge.MergedPull) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.merged = ps
+}
+
+// MergedSince implements the Merger's MergedSince.
+func (f *Fake) MergedSince(context.Context, time.Time) ([]forge.MergedPull, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.merged), nil
+}
+
+// SetPullFiles sets the files of pull request n.
+func (f *Fake) SetPullFiles(n int, fs ...forge.FilePatch) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pullFiles == nil {
+		f.pullFiles = map[int][]forge.FilePatch{}
+	}
+	f.pullFiles[n] = fs
+}
+
+// PullFiles implements the Merger's PullFiles.
+func (f *Fake) PullFiles(_ context.Context, n int) ([]forge.FilePatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.pullFiles[n]), nil
+}
+
+// SetBlame sets the blame ranges of path at the parent of mergeSHA.
+func (f *Fake) SetBlame(mergeSHA, path string, rs ...forge.BlameRange) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blame == nil {
+		f.blame = map[string][]forge.BlameRange{}
+	}
+	f.blame[mergeSHA+"\x00"+path] = rs
+}
+
+// BlameAtParent implements the Merger's BlameAtParent and counts the call; a file never set has
+// no range.
+func (f *Fake) BlameAtParent(_ context.Context, mergeSHA, path string) ([]forge.BlameRange, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blameCalls++
+	return slices.Clone(f.blame[mergeSHA+"\x00"+path]), nil
+}
+
+// BlameCalls is how many times BlameAtParent was called.
+func (f *Fake) BlameCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.blameCalls
 }

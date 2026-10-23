@@ -131,3 +131,27 @@ func TestFakeIssuesNeverCollideAndCanFail(t *testing.T) {
 		t.Errorf("close: %v", err)
 	}
 }
+
+// The follow-up reads return what was set, and BlameAtParent counts its calls.
+func TestFakeFollowUpReads(t *testing.T) {
+	ctx := t.Context()
+	f := NewFake()
+	f.SetMerged(forge.MergedPull{Number: 5, MergeCommitSHA: "m5"})
+	f.SetPullFiles(5, forge.FilePatch{Path: "a.yaml", Patch: "@@ -1 +1 @@"})
+	f.SetBlame("m5", "a.yaml", forge.BlameRange{Start: 1, End: 3, Commit: "c"})
+	if ps, err := f.MergedSince(ctx, time.Time{}); err != nil || len(ps) != 1 || ps[0].Number != 5 {
+		t.Errorf("merged %+v %v", ps, err)
+	}
+	if fs, err := f.PullFiles(ctx, 5); err != nil || len(fs) != 1 || fs[0].Path != "a.yaml" {
+		t.Errorf("files %+v %v", fs, err)
+	}
+	if rs, err := f.BlameAtParent(ctx, "m5", "a.yaml"); err != nil || len(rs) != 1 || rs[0].Commit != "c" {
+		t.Errorf("blame %+v %v", rs, err)
+	}
+	if rs, _ := f.BlameAtParent(ctx, "m5", "other.yaml"); len(rs) != 0 {
+		t.Errorf("an unset file has no range: %+v", rs)
+	}
+	if f.BlameCalls() != 2 {
+		t.Errorf("calls %d", f.BlameCalls())
+	}
+}

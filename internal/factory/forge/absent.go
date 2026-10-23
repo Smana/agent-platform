@@ -5,6 +5,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrNoMerger is what every call on Absent answers: the merger App's key is not mounted.
@@ -59,5 +60,16 @@ func (Absent) AddLabels(context.Context, int, ...string) error { return ErrNoMer
 
 // PullsWithLabel implements the Merger's PullsWithLabel and fails closed.
 func (Absent) PullsWithLabel(context.Context, string) ([]LabelledPull, error) {
+	return nil, ErrNoMerger
+}
+
+// MergedSince implements the Merger's MergedSince and fails closed.
+func (Absent) MergedSince(context.Context, time.Time) ([]MergedPull, error) { return nil, ErrNoMerger }
+
+// PullFiles implements the Merger's PullFiles and fails closed.
+func (Absent) PullFiles(context.Context, int) ([]FilePatch, error) { return nil, ErrNoMerger }
+
+// BlameAtParent implements the Merger's BlameAtParent and fails closed.
+func (Absent) BlameAtParent(context.Context, string, string) ([]BlameRange, error) {
 	return nil, ErrNoMerger
 }

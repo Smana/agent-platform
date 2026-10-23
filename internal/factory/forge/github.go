@@ -452,6 +452,133 @@ func (g *GitHub) PullsWithLabel(ctx context.Context, label string) ([]LabelledPu
 	return out, nil
 }
 
+// mergedWindow is MergedSince's one page: a result of this size may be the first of more.
+const mergedWindow = 100
+
+// MergedSince lists the pull requests merged at or after since, the newest window of 100. A full
+// window returns ErrMergedTruncated: the caller narrows since and reads again.
+func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull, error) {
+	var q struct {
+		Search struct {
+			Nodes []struct {
+				PullRequest struct {
+					Number      int
+					Author      *actor
+					HeadRefName string
+					Title       string
+					MergedAt    *githubv4.DateTime
+					MergeCommit *struct{ Oid string }
+					Labels      struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 20)"`
+				} `graphql:"... on PullRequest"`
+			}
+		} `graphql:"search(type: ISSUE, first: 100, query: $q)"`
+	}
+	search := fmt.Sprintf("repo:%s/%s is:pr is:merged merged:>=%s", g.owner, g.name, since.UTC().Format(time.RFC3339))
+	err := g.v4.Query(ctx, &q, map[string]any{"q": githubv4.String(search)})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("search merged pull requests", err)
+	}
+	out := make([]MergedPull, 0, len(q.Search.Nodes))
+	for _, n := range q.Search.Nodes {
+		p := n.PullRequest
+		mp := MergedPull{Number: p.Number, Author: p.Author.login(), HeadRef: p.HeadRefName, Title: p.Title}
+		if p.MergedAt != nil {
+			mp.MergedAt = p.MergedAt.Time
+		}
+		if p.MergeCommit != nil {
+			mp.MergeCommitSHA = p.MergeCommit.Oid
+		}
+		for _, l := range p.Labels.Nodes {
+			mp.Labels = append(mp.Labels, l.Name)
+		}
+		out = append(out, mp)
+	}
+	if len(q.Search.Nodes) >= mergedWindow {
+		return nil, ErrMergedTruncated
+	}
+	return out, nil
+}
+
+// maxFilePages and filesCap bound PullFiles: GitHub lists a pull request's first 3,000 files.
+const (
+	maxFilePages = 30
+	filesCap     = 3000
+)
+
+// PullFiles lists the files a pull request changed, with their patches. GitHub lists 3,000 at
+// most, so a list that reaches it may be missing files and is an error.
+func (g *GitHub) PullFiles(ctx context.Context, number int) ([]FilePatch, error) {
+	var out []FilePatch
+	opt := &github.ListOptions{PerPage: 100}
+	for range maxFilePages {
+		fs, resp, err := g.rest.PullRequests.ListFiles(ctx, g.owner, g.name, number, opt)
+		g.mark(err)
+		if err != nil {
+			return nil, wrap("list pull request files", err)
+		}
+		for _, f := range fs {
+			out = append(out, FilePatch{Path: f.GetFilename(), Previous: f.GetPreviousFilename(), Status: f.GetStatus(), Patch: f.GetPatch()})
+		}
+		if len(out) >= filesCap {
+			break
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opt.Page = resp.NextPage
+	}
+	return nil, fmt.Errorf("forge: pull request #%d lists %d files, GitHub's cap: files past it are unread", number, filesCap)
+}
+
+// BlameAtParent is who last changed each line of path as the first parent of mergeSHA had it:
+// the file as the merged pull request found it. A file the parent does not have has no range, not
+// an error; a commit without a parent, or any other failure, is an error.
+func (g *GitHub) BlameAtParent(ctx context.Context, mergeSHA, path string) ([]BlameRange, error) {
+	var q struct {
+		Repository struct {
+			Object struct {
+				Commit struct {
+					Parents struct {
+						Nodes []struct {
+							Blame *struct {
+								Ranges []struct {
+									StartingLine int
+									EndingLine   int
+									Commit       struct{ Oid string }
+								}
+							} `graphql:"blame(path: $path)"`
+						}
+					} `graphql:"parents(first: 1)"`
+				} `graphql:"... on Commit"`
+			} `graphql:"object(oid: $sha)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+	vars := map[string]any{"owner": githubv4.String(g.owner), "name": githubv4.String(g.name),
+		"sha": githubv4.GitObjectID(mergeSHA), "path": githubv4.String(path)}
+	err := g.v4.Query(ctx, &q, vars)
+	g.mark(err)
+	if err != nil {
+		// A GraphQL error naming a missing path is a file the parent lacks; an HTTP failure is not.
+		if msg := err.Error(); !strings.Contains(msg, "non-200") && strings.Contains(strings.ToLower(msg), "no such path") {
+			return nil, nil
+		}
+		return nil, wrap("blame at the parent", err)
+	}
+	ps := q.Repository.Object.Commit.Parents.Nodes
+	if len(ps) == 0 {
+		return nil, fmt.Errorf("forge: %s has no first parent to blame at", mergeSHA)
+	}
+	if ps[0].Blame == nil {
+		return nil, nil
+	}
+	out := make([]BlameRange, 0, len(ps[0].Blame.Ranges))
+	for _, r := range ps[0].Blame.Ranges {
+		out = append(out, BlameRange{Start: r.StartingLine, End: r.EndingLine, Commit: r.Commit.Oid})
+	}
+	return out, nil
+}
+
 // actor is GraphQL's Actor interface. A bot's login has no "[bot]" there; REST has it.
 type actor struct {
 	Typename string `graphql:"__typename"`
