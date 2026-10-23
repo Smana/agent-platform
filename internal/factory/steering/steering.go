@@ -8,7 +8,9 @@ package steering
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -19,11 +21,19 @@ const (
 	verify     = "## Verify"
 )
 
-// Path is class's note in the repository it describes.
-func Path(class string) string { return ".github/agent-factory/steering/" + class + ".md" }
+var className = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// Path is class's note in the repository it describes, "" for a class that is not a name
+// ([a-z0-9-]+): a "/" or ".." must never reach another file. Callers read "" as no note.
+func Path(class string) string {
+	if !className.MatchString(class) {
+		return ""
+	}
+	return ".github/agent-factory/steering/" + class + ".md"
+}
 
 // Validate is SC4's format, the same in ai-native-ref's suite: UTF-8, at most 2048 bytes, an
-// optional "# " title on line 1, at most three "## " modules, one of them "## Verify" with at
+// no control or invisible characters, an optional "# " title on line 1, at most three "## " modules, one of them "## Verify" with at
 // least one "- " or "* " item. Before the first module only the title and blank lines may stand.
 // A "## " line counts wherever it stands, inside a code fence too: a fence never hides a module.
 func Validate(text string) error {
@@ -32,6 +42,13 @@ func Validate(text string) error {
 	}
 	if len(text) > MaxBytes {
 		return fmt.Errorf("steering: %d bytes, at most %d", len(text), MaxBytes)
+	}
+	// The note lands in an agent's brief: refuse what hides text. A CR is refused, not normalized,
+	// so the bytes the blob sha names are the bytes used.
+	for _, c := range text {
+		if (unicode.IsControl(c) && c != '\n' && c != '\t') || unicode.Is(unicode.Cf, c) {
+			return fmt.Errorf("steering: control or invisible character U+%04X", c)
+		}
 	}
 	modules, items, in, hasVerify := 0, 0, "", false
 	for i, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {

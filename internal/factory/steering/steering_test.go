@@ -47,3 +47,39 @@ func TestANoteOutsideSC4IsRefused(t *testing.T) {
 		})
 	}
 }
+
+// The class names a file: anything but lowercase letters, digits and hyphens reads none.
+func TestPathRefusesAClassThatIsNotAName(t *testing.T) {
+	if got, want := Path("docs-links"), ".github/agent-factory/steering/docs-links.md"; got != want {
+		t.Fatalf("Path = %q, want %q", got, want)
+	}
+	for _, class := range []string{"", "..", "../x", "a/b", "Docs", "docs.md", "a b", "docs\n", "d\u00f6cs"} {
+		if got := Path(class); got != "" {
+			t.Errorf("Path(%q) = %q, want none", class, got)
+		}
+	}
+}
+
+// A note reaches an agent's brief: no control characters but newline and tab, no Unicode format
+// runes (zero-width, bidi), and no carriage return, which CRLF input would bring and which can
+// hide text on a terminal. Refused, not normalized: the bytes the sha names are the bytes used.
+func TestAnInvisibleCharacterIsRefused(t *testing.T) {
+	for name, text := range map[string]string{
+		"a NUL":           "## Verify\n- x\x00\n",
+		"an escape":       "## Verify\n- \x1b[2Jx\n",
+		"a CR":            "## Verify\n- x\r\n",
+		"a bare CR":       "## Verify\n- x\r- y\n",
+		"a zero-width":    "## Verify\n- a\u200bb\n",
+		"a bidi override": "## Verify\n- a\u202eb\n",
+		"a BOM":           "\ufeff## Verify\n- x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := Validate(text); err == nil || !strings.Contains(err.Error(), "character") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+	if err := Validate("## Verify\n- a\tb\n"); err != nil {
+		t.Fatalf("a tab: %v", err)
+	}
+}

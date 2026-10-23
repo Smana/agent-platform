@@ -476,6 +476,13 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			body, ok := g.steer[p]
 			g.mu.Unlock()
 			switch {
+			case body == "big":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"encoding": "none", "size": 2 << 20, "content": ""})
+			case body == "dir":
+				_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "x.md", "path": p + "/x.md", "type": "file"}})
+			case body == "denied":
+				http.Error(w, `{"message":"Forbidden"}`, http.StatusForbidden)
 			case !ok:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			case body == "!":
@@ -1348,5 +1355,21 @@ func TestDefaultBranchFileReadsASteeringNote(t *testing.T) {
 	r.gh.mu.Unlock()
 	if _, _, _, err := r.g.DefaultBranchFile(t.Context(), p); err == nil {
 		t.Fatal("a failed read is an error")
+	}
+}
+
+// Every read that is not a clean 200 or a 404 is an error: never "no note" (SC4).
+func TestDefaultBranchFileFailsClosed(t *testing.T) {
+	const p = ".github/agent-factory/steering/docs.md"
+	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a 403": "denied", "a 500": "!"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.gh.mu.Lock()
+			r.gh.steer = map[string]string{p: body}
+			r.gh.mu.Unlock()
+			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); err == nil || found {
+				t.Fatalf("found %v err %v, want an error", found, err)
+			}
+		})
 	}
 }
