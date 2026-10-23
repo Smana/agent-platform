@@ -84,6 +84,8 @@ ENTRYPOINT ["tini", "--", "/usr/local/bin/agent-run"]
 # `task harness:test` runs every suite against the SDK in the image.
 FROM harness AS test
 COPY --chown=10001:10001 tests /opt/agent/tests
+# The lock test compares the two requirement files, which the published image does not carry.
+COPY --chown=10001:10001 requirements.txt checks-requirements.txt /opt/agent/
 RUN cd /opt/agent && /agent-server/.venv/bin/python -m unittest discover -s tests -v
 
 # The default target, and what CI publishes.
