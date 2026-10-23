@@ -18,6 +18,7 @@ func TestAwaitingCIIsBounded(t *testing.T) {
 	}{
 		"no bound, a week waiting": {0, 7 * 24 * time.Hour, v1alpha1.PhaseAwaitingCI, "holdout_pending"},
 		"inside the bound":         {24 * time.Hour, 23 * time.Hour, v1alpha1.PhaseAwaitingCI, "holdout_pending"},
+		"exactly at the bound":     {24 * time.Hour, 24 * time.Hour, v1alpha1.PhaseAwaitingHuman, "ci_wait_expired"},
 		"past the bound":           {24 * time.Hour, 25 * time.Hour, v1alpha1.PhaseAwaitingHuman, "ci_wait_expired"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -44,7 +45,43 @@ func TestAPendingRequiredCheckIsBounded(t *testing.T) {
 	checks.Runs = checks.Runs[1:] // one required check missing
 	g.f.SetChecks(12, checks)
 	g.setPhaseSince(t, "3buqdlot", now.Add(-2*time.Hour))
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Reason != "ci_wait_expired" {
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "ci_wait_expired" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// The hand-off is once: a later pass finds the task in AwaitingHuman and posts nothing more, and
+// the comment says how long the wait was, on the reconciler's clock.
+func TestTheExpiredWaitIsHandedOffOnce(t *testing.T) {
+	g := declaredRig(t)
+	g.r.Cfg.Merge.AwaitingCIFor.Duration = time.Hour
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.setPhaseSince(t, "3buqdlot", now.Add(-90*time.Minute))
+	g.reconcile(t, "3buqdlot", 1)
+	first := g.f.Comments(12)
+	if !contains(first, "waited 1h30m0s for checks that had not reported as completed") {
+		t.Fatalf("the comment says how long it waited: %q", first)
+	}
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "ci_wait_expired" || len(g.f.Comments(12)) != len(first) {
+		t.Fatalf("%s %s, %d comments then %d", tk.Status.Phase, tk.Status.Reason, len(first), len(g.f.Comments(12)))
+	}
+}
+
+// A task with no PhaseSince (a legacy object) has no clock to bound: it keeps waiting.
+func TestNoPhaseSinceIsNotBounded(t *testing.T) {
+	g := declaredRig(t)
+	g.r.Cfg.Merge.AwaitingCIFor.Duration = time.Hour
+	g.f.SetChecks(12, green("SUCCESS"))
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), keyFor("3buqdlot"), &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.PhaseSince = nil
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseAwaitingCI || got.Status.Reason != "holdout_pending" {
+		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
 	}
 }

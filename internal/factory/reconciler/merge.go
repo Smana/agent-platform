@@ -137,7 +137,8 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			// #182: a check that never reports (a typo in a holdout, a workflow not set up) must not
 			// hold the task silently. Nothing merged: the hand-off says what is missing.
 			t.Status.PullRequest.HeadSHA = pr.HeadSHA
-			ev := narrate.ChecksNeverReported(t, unreported(in, gateOf(r.repo(t), t.Spec.PredictedClass))) // before to: it restarts PhaseSince
+			waited := r.Now().Sub(t.Status.PhaseSince.Time) // before to: it restarts PhaseSince
+			ev := narrate.ChecksNeverReported(t, waited, unreported(in, gateOf(r.repo(t), t.Spec.PredictedClass)))
 			r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_wait_expired")
 			narrateOn(t, pr.Number, ev)
 			return nil

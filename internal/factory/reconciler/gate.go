@@ -158,7 +158,8 @@ func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
-// unreported are the checks a wait verdict still waits on: the required checks not yet SUCCESS,
+// unreported are the checks not reported as completed, which a wait verdict still waits on (a
+// PENDING one counts: it has not finished): the required checks not yet SUCCESS,
 // then the class's holdouts with no run of the name that succeeded, in config order, each once.
 func unreported(in ArmInputs, cl config.Class) []string {
 	var out []string

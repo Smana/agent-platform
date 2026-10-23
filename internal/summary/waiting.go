@@ -166,7 +166,9 @@ func nextStep(reason string) string {
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
 	case "holdout_pending":
-		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
+		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting until merge.awaitingCIFor, if set (agent-platform #182)"
+	case "ci_wait_expired":
+		return "a maintainer takes it from here: check the workflow of the checks named in the pull request comment, then merge it or re-run them"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
 	case "split_proposed":

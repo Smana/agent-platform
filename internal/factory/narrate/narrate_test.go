@@ -498,3 +498,12 @@ func TestEndedNamesASponsoredPayerAsAPrincipal(t *testing.T) {
 		}
 	}
 }
+
+// #182: the hand-off says how long the task waited, as the caller measured it, and what is missing.
+func TestChecksNeverReportedSaysWhatAndHowLong(t *testing.T) {
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"}, Status: v1alpha1.TaskStatus{PullRequest: &v1alpha1.PullRequestRef{HeadSHA: "abc"}}}
+	e := ChecksNeverReported(tk, 90*time.Minute, []string{"External links", "Unit"})
+	if e.Key != "ci-wait-expired-abc" || !strings.Contains(e.Body, "waited 1h30m0s for checks that had not reported as completed: External links, Unit.") {
+		t.Fatalf("%+v", e)
+	}
+}

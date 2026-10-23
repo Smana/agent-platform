@@ -194,6 +194,27 @@ func TestLoadReadsTheFile(t *testing.T) {
 	}
 }
 
+// awaitingCIFor off, written as 0 or left out, loads as no bound (#182).
+func TestAwaitingCIForZeroOrOmittedIsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"omitted": good,
+		"zero":    strings.Replace(good, "revertWindow: 168h", "revertWindow: 168h\n  awaitingCIFor: 0s", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "zero" && raw == good {
+				t.Fatal("the edit did not apply")
+			}
+			c, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d := c.Repos()[0].Merge.AwaitingCIFor.Duration; d != 0 {
+				t.Fatalf("awaitingCIFor = %v", d)
+			}
+		})
+	}
+}
+
 // The template names are exactly the Task CRD's enum: a config can name no template a Task refuses.
 func TestTemplatesAreTheTaskCRDEnum(t *testing.T) {
 	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")

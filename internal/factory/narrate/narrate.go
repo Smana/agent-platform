@@ -471,17 +471,15 @@ func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 }
 
 // ChecksNeverReported says the wait in AwaitingCI outlasted merge.awaitingCIFor (#182), naming
-// the checks that never reported. Nothing was merged.
-func ChecksNeverReported(t *v1alpha1.Task, missing []string) Event {
+// the checks that have not reported as completed; waited is the caller's measure, on its own
+// clock. Nothing was merged.
+func ChecksNeverReported(t *v1alpha1.Task, waited time.Duration, missing []string) Event {
 	var head string
-	var waited time.Duration
 	if pr := t.Status.PullRequest; pr != nil {
 		head = pr.HeadSHA
 	}
-	if t.Status.PhaseSince != nil {
-		waited = time.Since(t.Status.PhaseSince.Time).Round(time.Minute)
-	}
-	return Event{Key: "ci-wait-expired-" + head, Body: fmt.Sprintf("Agent factory task `%s` waited %s for checks that never reported: %s. "+
+	waited = waited.Round(time.Minute)
+	return Event{Key: "ci-wait-expired-" + head, Body: fmt.Sprintf("Agent factory task `%s` waited %s for checks that had not reported as completed: %s. "+
 		"Nothing was merged; a maintainer decides.", t.Name, waited, strings.Join(missing, ", "))}
 }
 
