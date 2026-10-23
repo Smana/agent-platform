@@ -65,6 +65,9 @@ type Tool struct {
 	InputSchema json.RawMessage
 	Action      policy.Action
 	Roles       []string
+	// RoleSchemas replaces InputSchema in tools/list for the roles it names: a property one role
+	// alone may pass is shown to that role alone.
+	RoleSchemas map[string]json.RawMessage
 	Call        func(ctx context.Context, c Caller, args json.RawMessage) (any, error)
 }
 
@@ -228,7 +231,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tools := []map[string]any{}
 		for _, t := range s.Tools {
 			if slices.Contains(t.Roles, run.Role) {
-				tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": t.InputSchema})
+				schema := t.InputSchema
+				if rs, ok := t.RoleSchemas[run.Role]; ok {
+					schema = rs
+				}
+				tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": schema})
 			}
 		}
 		mcpwire.Write(w, req.ID, map[string]any{"tools": tools}, nil)
