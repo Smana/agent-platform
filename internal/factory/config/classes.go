@@ -46,7 +46,28 @@ type Class struct {
 	// for every merge, the detector's next runs for an oracle class, Flux on the factory's cluster,
 	// and follow-up fixes for FollowUpWindow. Absent: no monitor, as before.
 	Monitor *Monitor `json:"monitor,omitempty"`
+	// Author is how the class's pull requests are authored (MC1's author row): absent, the agents
+	// App through a task's runs; Adopt, another author's pull requests the factory adopts (MC10).
+	Author *Author `json:"author,omitempty"`
+	// ReleaseAgeCheck names the commit status that holds the release age (MC11), posted by an
+	// adopted login: Renovate's renovate/stability-days.
+	ReleaseAgeCheck string `json:"releaseAgeCheck,omitempty"`
 }
+
+// Author is a class's author mode.
+type Author struct {
+	Adopt *Adopt `json:"adopt,omitempty"`
+}
+
+// Adopt names the logins whose pull requests are adopted and the head branches they come from
+// (gh-aw's allowed-branches); every commit and every push of the branch must be theirs.
+type Adopt struct {
+	Logins   []string `json:"logins"`
+	Branches []string `json:"branches"`
+}
+
+// Adopted reports whether the class's pull requests are another author's, adopted (MC10).
+func (c Class) Adopted() bool { return c.Author != nil && c.Author.Adopt != nil }
 
 // Monitor is a class's post-merge watch (MC7).
 type Monitor struct {
@@ -90,7 +111,7 @@ const MaxFindings = 16
 var workflowRE = regexp.MustCompile(`^[A-Za-z0-9._-]+\.ya?ml$`)
 
 // DiffShapes are the shapes diffShape names.
-func DiffShapes() []string { return []string{"links-only"} }
+func DiffShapes() []string { return []string{"links-only", "semver-patch", "semver-minor"} }
 
 // BuiltInShape is the diff shape the gate holds a class to when its config names none: R52's
 // promise of the two entry classes (MC1: their conditions become built-in defaults at parity).
@@ -162,6 +183,30 @@ func validateClass(name string, cl Class, bad func(string, ...any)) {
 	}
 	if b := BuiltInShape(name); b != "" && cl.DiffShape != "" && cl.DiffShape != b {
 		bad("class %s: diffShape is %s, built in (R52)", name, b)
+	}
+	semver := cl.DiffShape == "semver-patch" || cl.DiffShape == "semver-minor"
+	switch {
+	case semver && !cl.Adopted():
+		bad("class %s: diffShape %s needs author.adopt (MC10)", name, cl.DiffShape)
+	case cl.Adopted() && !semver:
+		bad("class %s: author.adopt needs diffShape semver-patch or semver-minor", name)
+	case semver && !cl.ModifyOnly:
+		bad("class %s: a semver shape needs modifyOnly: true", name)
+	case cl.DiffShape == "semver-minor" && cl.Live:
+		bad("class %s: semver-minor is shadow only (M2)", name)
+	case cl.ReleaseAgeCheck != "" && !cl.Adopted():
+		bad("class %s: releaseAgeCheck needs author.adopt", name)
+	}
+	if cl.Adopted() {
+		a := cl.Author.Adopt
+		if len(a.Logins) == 0 || len(a.Branches) == 0 {
+			bad("class %s: author.adopt needs logins and branches", name)
+		}
+		for _, b := range a.Branches {
+			if _, err := regexp.Compile(b); err != nil || !strings.HasPrefix(b, "^") {
+				bad("class %s: author.adopt.branches %q must start with ^", name, b)
+			}
+		}
 	}
 	if o := cl.Oracle; o != nil {
 		switch {

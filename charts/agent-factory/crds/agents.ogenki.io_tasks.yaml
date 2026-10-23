@@ -317,11 +317,14 @@ spec:
                     maxLength: 512
                     type: string
                   kind:
+                    description: 'adopt: another author''s pull request the factory
+                      decides (merge gate MC10).'
                     enum:
                     - issue
                     - runlore
                     - schedule
                     - api
+                    - adopt
                     type: string
                   onBehalfOf:
                     description: 'The external user a link made the sponsor (R9):
@@ -330,12 +333,13 @@ spec:
                     pattern: ^slack:T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$
                     type: string
                   ref:
-                    description: Smana/cloud-native-ref#2112, runlore:<alert>/<resource>,
+                    description: Smana/cloud-native-ref#2112 (owner/name#<n>), runlore:<alert>/<resource>,
                       or the schedule name.
                     maxLength: 512
                     type: string
                   requestedBy:
-                    description: github:<login>, system:runlore or system:scheduler.
+                    description: github:<login> (an adopted pull request's author
+                      too), system:runlore or system:scheduler.
                     maxLength: 128
                     type: string
                   sponsor:
