@@ -143,6 +143,12 @@ class SearchThroughAgentServerTest(unittest.TestCase):
         self.assertEqual({b["model"] for _, b in child}, {"agent-default"})
         self.assertEqual(sorted(t["function"]["name"] for t in child[0][1]["tools"]),
                          ["finish", "glob", "grep", "list_directory", "read_file", "think"])
+        # The child's grep ran for real (ripgrep, the guard's absolute path) and found a.py. The SDK's grep
+        # lists files, not lines, so a.py:1 is not in it.
+        cls_repo = os.path.realpath(self.repo)
+        grep_result = json.dumps([m for m in child[1][1]["messages"] if m.get("role") == "tool"])
+        self.assertIn("Found 1 file(s) containing pattern", grep_result)
+        self.assertIn(cls_repo + "/a.py", grep_result)
         last = [b for who, _, b in Gateway.bodies if who == "parent"][-1]
         self.assertRegex(json.dumps(last["messages"]), r"search [1-6]/6 \\u00b7 complete", "the parent received the answer and went on")
 
