@@ -31,6 +31,11 @@ is working on now.
    hold on the room keeping the task waiting: say what releases it (`what`).
 4. To add guidance for the next run: `roomctl post <room> --queue '<text>'`, only with the user's words.
 
+A task of a class under `scope: scoper` may come back with the label `factory/needs-author` and one
+comment: the scoper's question. Answer it by editing the issue's title or body (the factory never
+reads comments), then re-apply `factory/ready`. To proceed on the assumption the comment names,
+comment `/factory retry` instead.
+
 ## Anything waiting on me?
 
 `roomctl rooms --needs-me`, then `roomctl status` on each.

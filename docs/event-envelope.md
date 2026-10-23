@@ -111,7 +111,7 @@ The payload shape of every `type`.
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, or its run has ended, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker |
-| `handoff` | `{fromRole, toRole, summary, commit, branch}` | `room_handoff` |
+| `handoff` | `{fromRole, toRole, summary, commit, branch, scope?}` (`scope`: the scoper's bounded task, from a triager run) | `room_handoff` |
 | `state_changed` | `{kind, …}`, one of the kinds below | Broker or bridge |
 
 ### `state_changed` kinds
