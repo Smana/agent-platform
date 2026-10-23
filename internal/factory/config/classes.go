@@ -122,6 +122,10 @@ func BuiltInShape(name string) string {
 	return ""
 }
 
+// branchPrefixRE is an adopted branch pattern: ^ and a literal prefix, no other metacharacter, so
+// an alternation or a wildcard cannot widen it to every branch.
+var branchPrefixRE = regexp.MustCompile(`^\^[A-Za-z0-9._/-]+$`)
+
 // ReadsDiff reports whether deciding the class reads the pull request's diff: a built-in shape
 // or any declared condition on its files.
 func (c Class) ReadsDiff(name string) bool {
@@ -202,9 +206,15 @@ func validateClass(name string, cl Class, bad func(string, ...any)) {
 		if len(a.Logins) == 0 || len(a.Branches) == 0 {
 			bad("class %s: author.adopt needs logins and branches", name)
 		}
+		for _, l := range a.Logins {
+			// A User account can never be a Bot: only the suffix says the login is an App's.
+			if !strings.HasSuffix(l, "[bot]") {
+				bad("class %s: author.adopt.logins %q must end in [bot]", name, l)
+			}
+		}
 		for _, b := range a.Branches {
-			if _, err := regexp.Compile(b); err != nil || !strings.HasPrefix(b, "^") {
-				bad("class %s: author.adopt.branches %q must start with ^", name, b)
+			if !branchPrefixRE.MatchString(b) {
+				bad("class %s: author.adopt.branches %q must be ^ and a literal prefix", name, b)
 			}
 		}
 	}

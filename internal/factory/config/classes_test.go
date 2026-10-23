@@ -166,13 +166,16 @@ func TestBadAdoptionFails(t *testing.T) {
 	base := "docs-links: {}\n  revert: {}\n  "
 	for name, c := range map[string]struct{ classes, err string }{
 		"semver without adopt":      {base + "x: {diffShape: semver-patch, modifyOnly: true}", "class x: diffShape semver-patch needs author.adopt (MC10)"},
-		"adopt without semver":      {base + "x: {author: {adopt: {logins: [a], branches: ['^r/']}}}", "class x: author.adopt needs diffShape semver-patch or semver-minor"},
+		"adopt without semver":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}}", "class x: author.adopt needs diffShape semver-patch or semver-minor"},
 		"no logins":                 {base + "x: {author: {adopt: {logins: [], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true}", "class x: author.adopt needs logins and branches"},
-		"an unanchored branch":      {base + "x: {author: {adopt: {logins: [a], branches: ['renovate/']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "renovate/" must start with ^`},
-		"semver without modifyOnly": {base + "x: {author: {adopt: {logins: [a], branches: ['^r/']}}, diffShape: semver-patch}", "class x: a semver shape needs modifyOnly: true"},
-		"a minor class live":        {base + "x: {live: true, author: {adopt: {logins: [a], branches: ['^r/']}}, diffShape: semver-minor, modifyOnly: true}", "class x: semver-minor is shadow only (M2)"},
+		"an unanchored branch":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['renovate/']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "renovate/" must be ^ and a literal prefix`},
+		"semver without modifyOnly": {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-patch}", "class x: a semver shape needs modifyOnly: true"},
+		"a minor class live":        {base + "x: {live: true, author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-minor, modifyOnly: true}", "class x: semver-minor is shadow only (M2)"},
+		"a login with no [bot]":     {base + "x: {author: {adopt: {logins: ['renovate'], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.logins "renovate" must end in [bot]`},
+		"a branch alternation":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^renovate/|.*']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "^renovate/|.*" must be ^ and a literal prefix`},
+		"a branch wildcard":         {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^renovate/.*']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "^renovate/.*" must be ^ and a literal prefix`},
 		"release age, agents":       {base + "x: {releaseAgeCheck: renovate/stability-days}", "class x: releaseAgeCheck needs author.adopt"},
-		"adopt with an oracle":      {base + "x: {author: {adopt: {logins: [a], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true, holdoutChecks: [h], oracle: {probe: dead-links, workflow: d.yaml, maxFindings: 1}}", "class x: an oracle reads link targets: diffShape must be links-only"},
+		"adopt with an oracle":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true, holdoutChecks: [h], oracle: {probe: dead-links, workflow: d.yaml, maxFindings: 1}}", "class x: an oracle reads link targets: diffShape must be links-only"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Parse([]byte(withClasses(t, c.classes))); err == nil || !strings.Contains(err.Error(), c.err) {
