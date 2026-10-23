@@ -680,6 +680,7 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if err := r.scopeAtTriage(ctx, t); err != nil {
 		return err // a note that cannot be read is retried, never read as none (SC4)
 	}
+	r.splitAtTriage(t, d.Classification)
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
 		return err

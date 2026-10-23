@@ -179,6 +179,9 @@ func ScoperBrief(t *v1alpha1.Task, nonce string) string {
 	head := fmt.Sprintf("You are the scoper for agent factory task %s in %s: a read-only run before any code is written. "+
 		"Read the task below and the repository with your read-only tools; change nothing and open nothing.\n%s",
 		t.Name, t.Spec.Repository, scoperHow)
+	if s := t.Spec.Split; s != nil {
+		head += splitHow(s.MaxChildren)
+	}
 	return fit(head, steeringBlock(t, nonce), snapshotBlock(t, fence), t)
 }
 
@@ -195,6 +198,17 @@ const scoperHow = "Turn the task into a bounded task: the change, why, and that 
 	"End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
 	"read (git rev-parse HEAD), and scope {state, task, touches, leave, plan, assumptions, acceptance, question}: state " +
 	"ready, or question with the question. Then finish.\n"
+
+// splitHow is the scoper's second answer (splitter design SL1, "The split"), told only to a scoper
+// whose task was offered one.
+func splitHow(n int32) string {
+	return fmt.Sprintf("This task may be split. If it holds 2 to %d changes that can each be verified and merged "+
+		"alone, in order, hand off split {why, children} beside scope: why says what separates the parts; children lists "+
+		"each change as a scope in state ready, in the order they merge, each written as if the ones before it had merged; "+
+		"scope stays the whole task, in state ready. A part is worth its own pull request only when its acceptance checks "+
+		"pass without the parts after it. Otherwise do not split: one change across several files is one task, and a task "+
+		"you ask a question about is never split. A maintainer approves a split before any part starts.\n", n)
+}
 
 // ResumeNotice opens the brief of a run that resumes one its sandbox lost (disruption design §4):
 // the agent did nothing wrong, so it carries on from the branch and the room instead of starting over.
