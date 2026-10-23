@@ -194,6 +194,27 @@ func TestLoadReadsTheFile(t *testing.T) {
 	}
 }
 
+// awaitingCIFor off, written as 0 or left out, loads as no bound (#182).
+func TestAwaitingCIForZeroOrOmittedIsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"omitted": good,
+		"zero":    strings.Replace(good, "revertWindow: 168h", "revertWindow: 168h\n  awaitingCIFor: 0s", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "zero" && raw == good {
+				t.Fatal("the edit did not apply")
+			}
+			c, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d := c.Repos()[0].Merge.AwaitingCIFor.Duration; d != 0 {
+				t.Fatalf("awaitingCIFor = %v", d)
+			}
+		})
+	}
+}
+
 // The template names are exactly the Task CRD's enum: a config can name no template a Task refuses.
 func TestTemplatesAreTheTaskCRDEnum(t *testing.T) {
 	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
@@ -362,6 +383,9 @@ func TestBadConfigsFail(t *testing.T) {
 		"negative check reruns":      {"checkReruns: 1", "checkReruns: -1", "merge.checkReruns must be 0 or more"},
 		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
 		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
+		"follow-ups over the window": {"breaker: {window: 10, maxReverts: 1}", "breaker: {window: 10, maxReverts: 1, maxFollowUps: 11}", "merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)"},
+		"follow-ups negative":        {"breaker: {window: 10, maxReverts: 1}", "breaker: {window: 10, maxReverts: 1, maxFollowUps: -1}", "merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)"},
+		"await ci bound negative":    {"revertWindow: 168h", "revertWindow: 168h\n  awaitingCIFor: -1m", "merge.awaitingCIFor must be 0 (no bound) or positive"},
 		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.
 		"breaker never trips":       {"maxReverts: 1}", "maxReverts: 0}", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
 		"breaker window 0":          {"breaker: {window: 10", "breaker: {window: 0", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
@@ -594,5 +618,19 @@ func TestRunsKind(t *testing.T) {
 	}
 	if _, err := Parse([]byte(good + "runs:\n  group: nodot\n")); err == nil {
 		t.Fatal("want an error for a group without a dot")
+	}
+}
+
+// MC8: maxFollowUps parses; absent it counts none.
+func TestMaxFollowUpsParses(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(good, "breaker: {window: 10, maxReverts: 1}", "breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RepositoryFor("Smana/cloud-native-ref").Merge.Breaker.MaxFollowUps; got != 1 {
+		t.Fatalf("maxFollowUps = %d", got)
+	}
+	if c, err = Parse([]byte(good)); err != nil || c.RepositoryFor("Smana/cloud-native-ref").Merge.Breaker.MaxFollowUps != 0 {
+		t.Fatalf("absent: %v", err)
 	}
 }

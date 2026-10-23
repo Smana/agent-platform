@@ -158,6 +158,30 @@ func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
+// unreported are the checks not reported as completed, which a wait verdict still waits on (a
+// PENDING one counts: it has not finished): the required checks not yet SUCCESS,
+// then the class's holdouts with no run of the name that succeeded, in config order, each once.
+func unreported(in ArmInputs, cl config.Class) []string {
+	var out []string
+	add := func(n string) {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	for _, n := range in.Cfg.RepositoryFor(in.Task.Spec.Repository).Merge.RequiredChecks {
+		if i := slices.IndexFunc(in.Checks.Runs, func(c forge.Check) bool { return c.Name == n }); i < 0 || in.Checks.Runs[i].State != "SUCCESS" {
+			add(n)
+		}
+	}
+	for _, n := range cl.HoldoutChecks {
+		ok := slices.ContainsFunc(in.Checks.Runs, func(c forge.Check) bool { return c.Name == n && c.State == "SUCCESS" && c.Conclusion == "SUCCESS" })
+		if !ok {
+			add(n)
+		}
+	}
+	return out
+}
+
 // oracle (MC5, MC6): every finding was a link target in its file on the base and is none on the
 // head, and every target the head moved is a finding's, moved to exactly the snapshot that
 // finding gave: no same-host move, no other snapshot. A finding with no snapshot has no move.

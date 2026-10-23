@@ -38,7 +38,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		if !forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
 			// R41: a human merge records when, so it counts in the class's breaker window.
-			now := metav1.NewTime(r.Now())
+			now := r.mergedAt(pr)
 			t.Status.PullRequest.MergedAt = &now
 			class := t.Spec.PredictedClass
 			record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "human_merged") })
@@ -68,6 +68,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	paused, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass)
+	if errors.Is(err, errLedgerTruncated) {
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "ledger_truncated")
+		narrateLater(t, narrate.WaitingForHuman(t, "ledger_truncated"))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -133,6 +138,16 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	switch d.Verdict {
 	case "wait":
+		if b := r.repo(t).Merge.AwaitingCIFor.Duration; b > 0 && t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= b {
+			// #182: a check that never reports (a typo in a holdout, a workflow not set up) must not
+			// hold the task silently. Nothing merged: the hand-off says what is missing.
+			t.Status.PullRequest.HeadSHA = pr.HeadSHA
+			waited := r.Now().Sub(t.Status.PhaseSince.Time) // before to: it restarts PhaseSince
+			ev := narrate.ChecksNeverReported(t, waited, unreported(in, gateOf(r.repo(t), t.Spec.PredictedClass)))
+			r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_wait_expired")
+			narrateOn(t, pr.Number, ev)
+			return nil
+		}
 		t.Status.Reason = d.Reason
 		return nil
 	case "ci_red":
@@ -562,7 +577,7 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		if forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			r.label(ctx, pr, AutoMergedLabel(class))
 		}
-		now := metav1.NewTime(r.Now())
+		now := r.mergedAt(pr)
 		ref.MergedBy, ref.MergeCommitSHA, ref.MergedAt = pr.MergedBy, pr.MergeCommitSHA, &now
 		ref.AutoMerged = forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) // AutoMerged: merged by the merger App (R52)
 		if !ref.AutoMerged {
@@ -578,6 +593,16 @@ func (r *Reconciler) autoMerging(ctx context.Context, t *v1alpha1.Task) error {
 		r.to(t, v1alpha1.PhaseAwaitingCI, "head_moved")
 	}
 	return nil
+}
+
+// mergedAt is when the pull request merged, as GitHub says (L6): every window of the merge, the
+// breaker's and the monitor's, counts from it. The factory's own clock stands in only when the
+// read carries none.
+func (r *Reconciler) mergedAt(pr forge.PR) metav1.Time {
+	if !pr.MergedAt.IsZero() {
+		return metav1.NewTime(pr.MergedAt)
+	}
+	return metav1.NewTime(r.Now())
 }
 
 // MainState is §6.4's watch of main's CI on the merge commit: FAILURE if a watched check that ran
@@ -659,7 +684,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
 	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
-	if n := r.Cfg.ControlFor().Issue; n > 0 { // R41: where the kill switch lives
+	if n := r.controlIssue(t); n > 0 { // R41: where the kill switch lives
 		b := r.repo(t).Merge.Breaker
 		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
 	}
@@ -743,31 +768,43 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	for i := range l.Items {
 		o := &l.Items[i]
 		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
-			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted})
+			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
+				Auto: ref.ArmedAt != nil}
+			// The running process's own monitor outcomes: the GitHub ledger is read once per process,
+			// so without them the breaker under-demotes until a restart.
+			if mo := o.Status.Monitor; mo != nil {
+				mg.FollowUp, mg.Regression = len(mo.FollowUps) > 0, mo.Verdict == "regression"
+			}
+			tasks = append(tasks, mg)
 		}
 	}
 	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)
 	return demoted, nil
 }
 
-// Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, and how
-// many they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
+// Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, or (when
+// b.MaxFollowUps is set) that many merges with a follow-up or a regression, and how many reverts
+// they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
 // and Validate keep it off the production path, so a test rig that builds config.Merge by hand
 // must set a breaker.
 func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 	newestFirst(merges)
-	reverts := 0
+	reverts, followUps := 0, 0
 	for _, m := range merges[:min(len(merges), b.Window)] {
 		if m.Reverted {
 			reverts++
 		}
+		if m.FollowUp || m.Regression {
+			followUps++
+		}
 	}
-	return reverts >= b.MaxReverts, reverts
+	return reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps), reverts
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
-// merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's labelled
-// merges of today, of every class, count too (v2 D1), once per pull request.
+// merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's merges of
+// today the merger made (AutoMergedLabel), of every class, count too (v2 D1), once per pull
+// request; a maintainer's or Renovate's (factory/merged alone) do not (M1).
 func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int, error) {
 	return r.armedTodayOf(ctx, rc, "")
 }
@@ -795,7 +832,8 @@ func (r *Reconciler) armedTodayOf(ctx context.Context, rc *config.Repository, cl
 			continue
 		}
 		for _, m := range ms {
-			if sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
+			// Only the merger's merges fill the day: a maintainer's or Renovate's (factory/merged) do not (M1).
+			if m.Auto && sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
 				n++
 				seen[m.Number] = true
 			}

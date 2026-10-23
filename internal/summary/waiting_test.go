@@ -57,6 +57,12 @@ func TestEveryWaitingPhaseHasAReasonAndANextStep(t *testing.T) {
 	if s := taskView(envelope.TaskFacts{Phase: "AwaitingCI", Reason: "holdout_pending"}, watcher()); !strings.Contains(s.Status.Next, "holdout checks report") {
 		t.Errorf("holdout_pending has its own next step: %q", s.Status.Next)
 	}
+	if s := taskView(envelope.TaskFacts{Phase: "AwaitingCI", Reason: "holdout_pending"}, watcher()); !strings.Contains(s.Status.Next, "until merge.awaitingCIFor, if set") {
+		t.Errorf("holdout_pending says the bound may end the wait: %q", s.Status.Next)
+	}
+	if s := taskView(envelope.TaskFacts{Phase: "AwaitingHuman", Reason: "ci_wait_expired"}, watcher()); !strings.Contains(s.Status.Next, "a maintainer takes it from here") {
+		t.Errorf("ci_wait_expired hands the task to a human: %q", s.Status.Next)
+	}
 	if s := taskView(envelope.TaskFacts{Phase: "Implementing"}, watcher()); s.Status.Reason != "" || s.Status.Next != "" {
 		t.Errorf("a running task is not waiting: %+v", s.Status)
 	}

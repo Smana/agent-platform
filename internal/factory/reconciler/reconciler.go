@@ -85,6 +85,7 @@ type metrics interface {
 	TimeToPR(ctx context.Context, d time.Duration, source, tier, template string)
 	PROpened(ctx context.Context)
 	PROutcome(ctx context.Context, class, outcome string)
+	MonitorVerdict(ctx context.Context, class, verdict string)
 	HumanWait(ctx context.Context, phase string, d time.Duration)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)
@@ -165,6 +166,7 @@ type Reconciler struct {
 
 	oldBroker sync.Once // the broker serves no task route: said once per process
 	ledger    mergeLedger
+	mon       monitorCache
 }
 
 // SetupWithManager watches Tasks and the AgentRuns that carry a task label.
@@ -195,10 +197,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	ended := v1alpha1.TerminalPhase(t.Status.Phase)
-	// A requested revert and an open revert PR are the two exceptions to leaving a terminal
-	// task alone (§6.4): the factory owes the revert its watch, and a maintainer's factory/revert
-	// its action, even after the task itself has ended.
-	revertWait := r.revertable(&t) || r.revertPending(&t)
+	// A requested revert, an open revert PR and a merge under watch are the three exceptions to
+	// leaving a terminal task alone (§6.4, MC7): the factory owes the revert its watch, a
+	// maintainer's factory/revert its action, and a monitored merge its verdict, even after the
+	// task itself has ended.
+	watchWait := r.revertable(&t) || r.revertPending(&t) || r.monitorDue(&t)
 	var closeDue bool
 	var closeWait time.Duration
 	if ended {
@@ -207,7 +210,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, rerr
 		}
 	}
-	if ended && !revertWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) && !closeDue {
+	if ended && !watchWait && len(t.Status.Outbox) == 0 && !r.spanDue(&t) && !r.settling(&t) && !r.factsDue(&t) && !closeDue {
 		return ctrl.Result{RequeueAfter: closeWait}, nil // closeWait: the revert window still open (#56)
 	}
 	before := t.Status.DeepCopy()
@@ -216,13 +219,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	fx := &effects{}
 	switch {
-	case !ended, revertWait:
+	case !ended, watchWait:
 		err = r.step(context.WithValue(ctx, effectsKey{}, fx), &t)
 	case r.settling(&t):
 		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
 	}
+	if err == nil && ended && watchWait && r.settling(&t) {
+		// A task kept alive by a watch still settles its usage: the switch above took the watch.
+		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
+	}
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
+			r.mon.forget(t.Name) // the pass was not recorded: its retry must not wait out the throttle
 			return ctrl.Result{}, errors.Join(err, uerr)
 		}
 		for _, f := range fx.after {
@@ -273,7 +281,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
 		}
 		if err == nil && r.settling(&t) {
-			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
+			wait := r.settleLeft(&t) // for the settle, at its window, unless a merge under watch is due sooner
+			if r.monitorDue(&t) {
+				wait = min(wait, monitorEvery)
+			}
+			return ctrl.Result{RequeueAfter: wait}, nil
+		}
+		if err == nil && r.monitorDue(&t) && (closeLeft <= 0 || closeLeft > monitorEvery) {
+			return ctrl.Result{RequeueAfter: monitorEvery}, nil // a merge under watch is read on its own clock
 		}
 		return ctrl.Result{RequeueAfter: closeLeft}, err // closeLeft: the revert window or a driving person (#56)
 	}
@@ -324,7 +339,10 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 	case v1alpha1.PhaseReverted:
 		return r.revertWatch(ctx, t) // reached only while revertPending
 	case v1alpha1.PhaseDone:
-		return r.revert(ctx, t, "revert_requested") // reached only when revertable
+		if r.revertable(t) {
+			return r.revert(ctx, t, "revert_requested")
+		}
+		return r.monitor(ctx, t) // reached only when monitorDue
 	}
 	return nil
 }

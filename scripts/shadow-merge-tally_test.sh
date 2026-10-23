@@ -36,4 +36,43 @@ want='#1 merged_unchanged
 merged_unchanged=2 changed=1 reverted=1 auto_merged=1'
 if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
 if scripts/shadow-merge-tally.sh 2>/dev/null; then echo "--class is required"; exit 1; fi
+
+# Offline proof 7: the bound on fixtures. 0 bad in 28 fails 10%, 0 in 29 passes; 1 in 46 passes;
+# immature (merged under followUpWindow ago) and inconclusive merges are left out of the bound. A
+# stub gh serves scripts/testdata/tally/, so nothing reaches GitHub.
+bound() { python3 -I scripts/clopper-pearson.py "$1" "$2" | awk '{print ($1 < 0.10) ? "pass" : "fail"}'; }
+expect() { [ "$1" = "$2" ] || { echo "FAIL: $3: got $1, want $2" >&2; exit 1; }; }
+expect "$(bound 0 28)" fail "0 in 28 is not under 10%"
+expect "$(bound 0 29)" pass "0 in 29 is under 10%"
+expect "$(bound 1 46)" pass "1 in 46 is under 10%"
+expect "$(bound 1 45)" fail "1 in 45 is not"
+expect "$(bound 2 61)" pass "2 in 61 is under 10%"
+export GH_LOG="$tmp/gh.log"
+tally() { GH=scripts/testdata/tally/gh-stub.sh NOW=2026-10-23T00:00:00Z scripts/shadow-merge-tally.sh \
+  --class dead-links --outcomes --since 2026-08-01 --window 168h; }
+out="$(tally)"
+expect "$(grep -c '^#' <<<"$out")" 31 "31 merges listed"
+expect "$(grep -o 'mature=[0-9]*' <<<"$out")" mature=30 "an immature merge left out"
+expect "$(grep -o ' conclusive=[0-9]*' <<<"$out")" " conclusive=29" "the bound's merges: mature and conclusive"
+expect "$(grep -o ' inconclusive=[0-9]*' <<<"$out")" " inconclusive=1" "an inconclusive merge counted apart"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out")" bad=0 "no bad outcome"
+expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=yes "0 bad in 29 conclusive mature merges: widen"
+out="$(TALLY_FIXTURE=regression tally)"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'regression=[0-9]*' <<<"$out")" "bad=1 regression=1" "a regression label is a bad outcome"
+expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=no "1 bad in 29: no widening"
+# A follow-up is a later PR carrying factory/follow-up-of:#<n>, which is not one of the class's merges.
+out="$(TALLY_FIXTURE=followup tally)"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'follow_up=[0-9]*' <<<"$out")" "bad=1 follow_up=1" "a follow-up label on a later PR is a bad outcome"
+expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=no "a follow-up blocks widening"
+grep -qF 'label:"factory/follow-up-of:#100"' "$GH_LOG" || { echo "FAIL: the follow-up search quotes the label (L11)" >&2; exit 1; }
+# A posted regression verdict counts as bad even when its label write failed.
+out="$(TALLY_FIXTURE=regcomment tally)"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'regression=[0-9]*' <<<"$out")" "bad=1 regression=1" "a regression comment without its label is bad"
+# --window is whole hours: anything else is refused, not miscomputed.
+for w in 7d 72h30m 168; do
+  if GH=scripts/testdata/tally/gh-stub.sh scripts/shadow-merge-tally.sh --class dead-links --outcomes --since 2026-08-01 --window "$w" >/dev/null 2>&1; then
+    echo "FAIL: --window $w is refused" >&2; exit 1
+  fi
+done
+grep -qF 'label:"factory/merged:dead-links"' "$GH_LOG" || { echo "FAIL: the search quotes the label (L11)" >&2; exit 1; }
 echo ok

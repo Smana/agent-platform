@@ -67,6 +67,23 @@ func TestMaxPerDayCountsTheClassOnly(t *testing.T) {
 	}
 }
 
+// M1: the daily caps count the factory's own merges only. A maintainer's merge of the class
+// today, labelled factory/merged by the monitor, fills no day; the merger's does.
+func TestTheDailyCapCountsAutoMergesOnly(t *testing.T) {
+	g := declaredRig(t)
+	g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "Smana", MergedAt: now.Add(-time.Hour),
+		Labels: []string{MergedLabel("dead-links")}})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAutoMerging {
+		t.Fatalf("a maintainer's merge is not the factory's: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g = declaredRig(t)
+	g.f.SetPR(forge.PR{Number: 9, State: "MERGED", MergedBy: "ogenki-agent-merger[bot]", MergedAt: now.Add(-time.Hour),
+		Labels: []string{MergedLabel("dead-links"), AutoMergedLabel("dead-links")}})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Reason != "auto_merge_cap" {
+		t.Fatalf("the merger's merge today fills its day: %s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
 // A pending holdout waits in AwaitingCI, like CI itself.
 func TestAPendingHoldoutWaits(t *testing.T) {
 	g := declaredRig(t)

@@ -213,10 +213,22 @@ func (r *Repository) IsMaintainer(login string) bool {
 	return slices.ContainsFunc(r.Maintainers, func(m string) bool { return strings.EqualFold(m, login) })
 }
 
-// NeedsMerger reports whether a class of the repository is live or in shadow.
+// NeedsMerger reports whether a class of the repository is live, in shadow or monitored: a
+// monitor reads main's checks and writes labels through the merger App.
 func (r *Repository) NeedsMerger() bool {
 	for _, cl := range r.Classes {
-		if cl.Live || cl.Shadow {
+		if cl.Live || cl.Shadow || cl.Monitor != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// AnyMonitored reports whether a class of the repository declares a monitor, whose outcome
+// labels the merger writes in shadow too (merge gate R30).
+func (r *Repository) AnyMonitored() bool {
+	for _, cl := range r.Classes {
+		if cl.Monitor != nil {
 			return true
 		}
 	}
@@ -292,6 +304,12 @@ func (c *Config) NeedsMerger() bool {
 	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.NeedsMerger() })
 }
 
+// AnyMonitored reports whether a class of any repository declares a monitor, so the merger App
+// labels its merges' outcomes (merge gate R30, MC13) before any class is live.
+func (c *Config) AnyMonitored() bool {
+	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.AnyMonitored() })
+}
+
 // AnyLive reports whether a class of any repository is live, so the merger App merges and labels (v2 D1).
 func (c *Config) AnyLive() bool {
 	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.AnyLive() })
@@ -343,7 +361,10 @@ type Merge struct {
 	CheckReruns  int32    `json:"checkReruns"`
 	VerifyFor    Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
 	RevertWindow Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
-	Breaker      Breaker  `json:"breaker"`
+	// AwaitingCIFor bounds a pull request's stay in AwaitingCI on a wait verdict (#182): past it,
+	// a human is told which checks never reported. 0 is no bound, the behaviour before it.
+	AwaitingCIFor Duration `json:"awaitingCIFor,omitempty"`
+	Breaker       Breaker  `json:"breaker"`
 }
 
 // Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
@@ -351,6 +372,9 @@ type Merge struct {
 type Breaker struct {
 	Window     int `json:"window"`
 	MaxReverts int `json:"maxReverts"`
+	// MaxFollowUps: follow-up fixes and monitor regressions in the last Window merges that demote
+	// a class (MC8); 0 counts none.
+	MaxFollowUps int `json:"maxFollowUps,omitempty"`
 }
 
 // Tier is a model and its budgets. RunUSD and TaskUSD cap a run and a task in USD, priced by
@@ -1303,8 +1327,14 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	if r.Merge.RevertWindow.Duration <= 0 {
 		bad("merge.revertWindow must be positive")
 	}
+	if r.Merge.AwaitingCIFor.Duration < 0 {
+		bad("merge.awaitingCIFor must be 0 (no bound) or positive")
+	}
 	if b := r.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
 		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
+	}
+	if b := r.Merge.Breaker; b.MaxFollowUps < 0 || b.MaxFollowUps > b.Window {
+		bad("merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)")
 	}
 }
 

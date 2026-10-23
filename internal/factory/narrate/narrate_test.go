@@ -498,3 +498,26 @@ func TestEndedNamesASponsoredPayerAsAPrincipal(t *testing.T) {
 		}
 	}
 }
+
+// #182: the hand-off says how long the task waited, as the caller measured it, and what is missing.
+func TestChecksNeverReportedSaysWhatAndHowLong(t *testing.T) {
+	tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"}, Status: v1alpha1.TaskStatus{PullRequest: &v1alpha1.PullRequestRef{HeadSHA: "abc"}}}
+	e := ChecksNeverReported(tk, 90*time.Minute, []string{"External links", "Unit"})
+	if e.Key != "ci-wait-expired-abc" || !strings.Contains(e.Body, "waited 1h30m0s for checks that had not reported as completed: External links, Unit.") {
+		t.Fatalf("%+v", e)
+	}
+}
+
+// A regression is demoted only when the breaker counts follow-ups and regressions
+// (breaker.maxFollowUps > 0); at 0 it is recorded and counts toward nothing, and the text says so.
+func TestAMonitorRegressionSaysWhatItCosts(t *testing.T) {
+	tk := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{PredictedClass: "dead-links"}}
+	on := MonitorVerdict(tk, 12, "regression", []string{"main CI: regression"}, false, true).Body
+	off := MonitorVerdict(tk, 12, "regression", []string{"main CI: regression"}, false, false).Body
+	if !strings.Contains(on, "demoted at its next decision") || strings.Contains(off, "demoted") || !strings.Contains(off, "not counted") {
+		t.Fatalf("on %q off %q", on, off)
+	}
+	if got := Reason("class_paused"); !strings.Contains(got, "follow-up") || !strings.Contains(got, "revert") {
+		t.Fatalf("class_paused names every cause: %q", got)
+	}
+}

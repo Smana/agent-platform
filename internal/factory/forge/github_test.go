@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -80,6 +81,17 @@ const agentPullsJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
 const labelledJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
  {"number":41,"state":"MERGED","mergedAt":"2026-10-15T09:00:00Z"},
  {"number":40,"state":"OPEN","mergedAt":null}]}}}}`
+
+// The follow-up reads: merged pull requests found by search, a bot author without its suffix.
+const mergedJSON = `{"data":{"search":{"nodes":[
+ {"number":51,"author":{"__typename":"Bot","login":"renovate"},"headRefName":"renovate/x","title":"chore(deps): bump x",
+  "mergedAt":"2026-10-17T08:00:00Z","commits":{"totalCount":3},
+  "mergeCommit":{"oid":"m51","parents":{"nodes":[{"associatedPullRequests":{"nodes":[{"number":51}]}}]}},"labels":{"nodes":[{"name":"factory/merged:deps-patch"},{"name":"dependencies"}]}},
+ {"number":52,"author":{"__typename":"User","login":"Smana"},"headRefName":"fix/y","title":"fix: y",
+  "mergedAt":"2026-10-18T08:00:00Z","commits":{"totalCount":1},"mergeCommit":null,"labels":{"nodes":[]}}]}}}`
+
+const blameJSON = `{"data":{"repository":{"object":{"parents":{"nodes":[{"blame":{"ranges":[
+ {"startingLine":1,"endingLine":9,"commit":{"oid":"aaa"}},{"startingLine":10,"endingLine":12,"commit":{"oid":"bbb"}}]}}]}}}}}`
 
 const eventsJSON = `[
  {"event":"labeled","label":{"name":"factory/ready"},"actor":{"login":"someone"},"created_at":"2026-09-27T09:00:00Z"},
@@ -214,6 +226,41 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			return
 		case strings.Contains(string(b), "disablePullRequestAutoMerge"):
 			_, _ = io.WriteString(w, `{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`)
+			return
+		}
+		switch {
+		case strings.Contains(string(b), "search(type: ISSUE"):
+			var in struct{ Variables map[string]any }
+			_ = json.Unmarshal(b, &in)
+			q, _ := in.Variables["q"].(string)
+			if strings.Contains(q, "merged:>=2020-01-01") { // a window of 100: the search may hold more
+				var ns []string
+				for i := range 100 {
+					ns = append(ns, fmt.Sprintf(`{"number":%d,"headRefName":"x","title":"t","mergedAt":"2026-10-16T10:00:00Z"}`, i+1))
+				}
+				_, _ = io.WriteString(w, `{"data":{"search":{"nodes":[`+strings.Join(ns, ",")+`]}}}`)
+				return
+			}
+			if strings.Contains(q, "merged:>=2021-01-01") { // a pull request with more labels than were read
+				_, _ = io.WriteString(w, `{"data":{"search":{"nodes":[{"number":9,"headRefName":"x","title":"t",`+
+					`"labels":{"nodes":[{"name":"a"}],"pageInfo":{"hasNextPage":true}}}]}}}`)
+				return
+			}
+			_, _ = io.WriteString(w, mergedJSON)
+			return
+		case strings.Contains(string(b), "blame(path:"):
+			var in struct{ Variables map[string]any }
+			_ = json.Unmarshal(b, &in)
+			switch in.Variables["path"] {
+			case "gone.yaml": // blame null
+				_, _ = io.WriteString(w, `{"data":{"repository":{"object":{"parents":{"nodes":[{"blame":null}]}}}}}`)
+			case "boom.yaml":
+				_, _ = io.WriteString(w, `{"errors":[{"message":"Something went wrong"}]}`)
+			case "missing.yaml":
+				_, _ = io.WriteString(w, `{"errors":[{"type":"NOT_FOUND","message":"No such path in tree: missing.yaml"}]}`)
+			default:
+				_, _ = io.WriteString(w, blameJSON)
+			}
 			return
 		}
 		if strings.Contains(string(b), "pullRequests(labels: $labels") {
@@ -482,6 +529,27 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			cs = append(cs, fmt.Sprintf(`{"sha":"c%03d","author":{"login":"ogenki-agents[bot]"},"commit":{"message":"fix %d\n\nAgent-Run: 7f3cq2xz"}}`, i, i))
 		}
 		_, _ = io.WriteString(w, "["+strings.Join(cs, ",")+"]")
+	}))
+	// A pull request's files, 100 a page: #20 has two, #21 has GitHub's 3,000 and more unlisted.
+	mux.HandleFunc("GET /repos/Smana/demo/pulls/{n}/files", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("n") == "20" {
+			_, _ = io.WriteString(w, `[{"filename":"a.yaml","status":"modified","changes":2,"patch":"@@ -1 +1 @@\n-a\n+b"},`+
+				`{"filename":"new.yaml","previous_filename":"old.yaml","status":"renamed"},`+
+				`{"filename":"big.yaml","status":"modified","changes":9000},{"filename":"img.png","status":"modified"},`+
+				`{"filename":"empty.yaml","status":"added"}]`)
+			return
+		}
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		page = max(page, 1)
+		if page*per < 3000 {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/Smana/demo/pulls/21/files?per_page=%d&page=%d>; rel="next"`, g.srv.URL, per, page+1))
+		}
+		var fs []string
+		for i := (page-1)*per + 1; i <= min(page*per, 3000); i++ {
+			fs = append(fs, fmt.Sprintf(`{"filename":"f%04d.yaml","status":"modified"}`, i))
+		}
+		_, _ = io.WriteString(w, "["+strings.Join(fs, ",")+"]")
 	}))
 	mux.HandleFunc("POST /repos/Smana/demo/issues/7/labels", g.authed(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `[]`)
@@ -1496,5 +1564,114 @@ func TestIssueCallsFailLoudly(t *testing.T) {
 	}
 	if err := r.g.CloseIssue(ctx, 8); err == nil {
 		t.Error("a 404 on close was swallowed")
+	}
+}
+
+func TestMergedSinceSearchesMergedPullRequestsSince(t *testing.T) {
+	r := newRig(t)
+	since := time.Date(2026, 10, 16, 10, 0, 0, 0, time.UTC)
+	ps, err := r.g.MergedSince(t.Context(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := r.gh.graphqlBodies()
+	var in struct{ Variables map[string]any }
+	if err := json.Unmarshal([]byte(b[len(b)-1]), &in); err != nil || in.Variables["q"] != "repo:Smana/demo is:pr is:merged merged:>=2026-10-16T10:00:00Z" {
+		t.Fatalf("the search sent: %v %s", err, b[len(b)-1])
+	}
+	want := []MergedPull{
+		{Number: 51, Author: "renovate[bot]", HeadRef: "renovate/x", MergeCommitSHA: "m51", Title: "chore(deps): bump x", Commits: 3, ParentPulls: []int{51},
+			MergedAt: time.Date(2026, 10, 17, 8, 0, 0, 0, time.UTC), Labels: []string{"factory/merged:deps-patch", "dependencies"}},
+		{Number: 52, Author: "Smana", HeadRef: "fix/y", Title: "fix: y", Commits: 1, MergedAt: time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)},
+	}
+	if len(ps) != 2 || !reflect.DeepEqual(ps, want) {
+		t.Fatalf("%+v", ps)
+	}
+}
+
+// A hundred results may be the first hundred of more: the caller narrows since, it is never
+// handed a window that looks whole.
+func TestMergedSinceAtTheWindowIsTruncated(t *testing.T) {
+	r := newRig(t)
+	_, err := r.g.MergedSince(t.Context(), time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrMergedTruncated) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestPullFilesMapsThePatchAndTheRename(t *testing.T) {
+	r := newRig(t)
+	fs, err := r.g.PullFiles(t.Context(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []FilePatch{{Path: "a.yaml", Status: "modified", Patch: "@@ -1 +1 @@\n-a\n+b"},
+		{Path: "new.yaml", Previous: "old.yaml", Status: "renamed"},
+		{Path: "big.yaml", Status: "modified", PatchMissing: true}, {Path: "img.png", Status: "modified", PatchMissing: true},
+		{Path: "empty.yaml", Status: "added"}}
+	if !reflect.DeepEqual(fs, want) {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+// GitHub lists 3,000 files at most: a list that reaches it may be missing some, so it is an error.
+func TestPullFilesAtGitHubsCapIsAnError(t *testing.T) {
+	r := newRig(t)
+	if fs, err := r.g.PullFiles(t.Context(), 21); err == nil || fs != nil {
+		t.Fatalf("%d files, %v", len(fs), err)
+	}
+}
+
+func TestBlameAtParentMapsTheRanges(t *testing.T) {
+	r := newRig(t)
+	rs, err := r.g.BlameAtParent(t.Context(), "m51", "a.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rs, []BlameRange{{Start: 1, End: 9, Commit: "aaa"}, {Start: 10, End: 12, Commit: "bbb"}}) {
+		t.Fatalf("%+v", rs)
+	}
+	b := r.gh.graphqlBodies()
+	if last := b[len(b)-1]; !strings.Contains(last, "parents(first: 1)") || !strings.Contains(last, "blame(path:") {
+		t.Fatalf("the query: %s", last)
+	}
+}
+
+// A file the parent does not have, and a null blame, are ErrNoBlame: "nothing blamed" is never
+// told apart from "no overlap" by an empty answer. Any other failure is a plain error.
+func TestBlameAtParentOfAMissingFileIsErrNoBlameAndOtherFailuresAreErrors(t *testing.T) {
+	r := newRig(t)
+	for _, p := range []string{"gone.yaml", "missing.yaml"} {
+		if rs, err := r.g.BlameAtParent(t.Context(), "m51", p); !errors.Is(err, ErrNoBlame) || rs != nil {
+			t.Fatalf("%s: %+v %v", p, rs, err)
+		}
+	}
+	if rs, err := r.g.BlameAtParent(t.Context(), "m51", "boom.yaml"); err == nil || errors.Is(err, ErrNoBlame) || rs != nil {
+		t.Fatalf("%+v %v", rs, err)
+	}
+}
+
+// More labels than the 20 read: a label may be unseen, so the read is truncated.
+func TestMergedSinceWithUnreadLabelsIsTruncated(t *testing.T) {
+	r := newRig(t)
+	if ps, err := r.g.MergedSince(t.Context(), time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)); !errors.Is(err, ErrMergedTruncated) || ps != nil {
+		t.Fatalf("%+v %v", ps, err)
+	}
+}
+
+func TestMultiCommitRebase(t *testing.T) {
+	for name, c := range map[string]struct {
+		p    MergedPull
+		want bool
+	}{
+		"squash of three":          {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{4}}, false},
+		"rebase of three":          {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{5}}, true},
+		"rebase of one":            {MergedPull{Number: 5, Commits: 1, ParentPulls: []int{5}}, false},
+		"parent unassociated":      {MergedPull{Number: 5, Commits: 3}, true}, // GitHub may lag: unread, not a squash
+		"one commit, unassociated": {MergedPull{Number: 5, Commits: 1}, false},
+	} {
+		if got := c.p.MultiCommitRebase(); got != c.want {
+			t.Errorf("%s: %v", name, got)
+		}
 	}
 }

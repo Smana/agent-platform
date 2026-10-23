@@ -246,8 +246,10 @@ func reasons() map[string]string {
 		"oracle_finding_open":       "a link its task was opened to fix is still a link target in the head, or the file holding it was not changed",
 		"oracle_unrequested":        "it moves a link target the task's findings did not ask to move, or moves one anywhere but the exact snapshot its finding gave",
 		"holdout_pending":           "a holdout check its class requires has not passed yet",
+		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"foreign_trailer":           "its head commit comes from another task's run",
-		"class_paused":              "auto-merge of this class is paused after a revert",
+		"class_paused":              "auto-merge of this class is paused after a revert, a follow-up fix or a regression in its recent merges",
+		"ledger_truncated":          "the merge ledger read is incomplete (a full page of 100 labelled pull requests), so the factory does not arm",
 		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
 		"not_owned":                 "this repository's .github/agent-factory.yaml does not name this factory",
@@ -469,6 +471,19 @@ func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
 }
 
+// ChecksNeverReported says the wait in AwaitingCI outlasted merge.awaitingCIFor (#182), naming
+// the checks that have not reported as completed; waited is the caller's measure, on its own
+// clock. Nothing was merged.
+func ChecksNeverReported(t *v1alpha1.Task, waited time.Duration, missing []string) Event {
+	var head string
+	if pr := t.Status.PullRequest; pr != nil {
+		head = pr.HeadSHA
+	}
+	waited = waited.Round(time.Minute)
+	return Event{Key: "ci-wait-expired-" + head, Body: fmt.Sprintf("Agent factory task `%s` waited %s for checks that had not reported as completed: %s. "+
+		"Nothing was merged; a maintainer decides.", t.Name, waited, strings.Join(missing, ", "))}
+}
+
 // BackToGate says a transient hand-off returned to the merge gate (N1), and why. n is the task's
 // count of returns, so each one is posted once.
 func BackToGate(t *v1alpha1.Task, reason string, n int32) Event {
@@ -520,6 +535,35 @@ func ClassDemoted(t *v1alpha1.Task, window, maxReverts int) Event {
 func RevertStalled(t *v1alpha1.Task, number int) Event {
 	return Event{Key: "revert-end-stalled", Body: fmt.Sprintf("The revert #%d of agent factory task `%s` did not go green "+
 		"in time, so its auto-merge is off: a maintainer merges or closes it.", number, t.Name)}
+}
+
+// MonitorVerdict is the post-merge monitor's reading of pull request n (MC7), with the signals it
+// read. control gives the copy on the control issue its own key (M2).
+func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, control, demotes bool) Event {
+	key := fmt.Sprintf("monitor-%d verdict=%s", n, verdict)
+	if control {
+		key = fmt.Sprintf("monitor-%d control verdict=%s", n, verdict)
+	}
+	body := fmt.Sprintf("Agent factory monitor of #%d (`%s`): **%s**. %s", n, t.Spec.PredictedClass, verdict, strings.Join(why, " · "))
+	if verdict == "regression" {
+		if demotes {
+			body += "\n\nThe class is demoted at its next decision (breaker.maxFollowUps); nothing is reverted (MC7)."
+		} else {
+			body += "\n\nbreaker.maxFollowUps is 0: this regression is recorded but not counted toward the breaker; nothing is reverted (MC7)."
+		}
+	}
+	return Event{Key: key, Body: body}
+}
+
+// FollowUpFound says pull request later changed lines pull request m introduced, within the
+// monitor's window: it is counted as a follow-up fix (MC8). control: the control issue's copy.
+func FollowUpFound(t *v1alpha1.Task, m, later int, control bool) Event {
+	key := fmt.Sprintf("follow-up-%d", later)
+	if control {
+		key += " control"
+	}
+	return Event{Key: key, Body: fmt.Sprintf("#%d changed lines #%d introduced within the monitor's window (`%s`): counted as a follow-up fix (MC8).",
+		later, m, t.Spec.PredictedClass)}
 }
 
 func headlines() map[string]string {

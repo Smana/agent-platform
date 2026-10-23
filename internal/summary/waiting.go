@@ -101,6 +101,7 @@ func reasons() map[string]string {
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
 		"holdout_pending":           "a holdout check has not passed yet",
+		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"merge_gate_off":            "no merge class is live, so the factory does not gate this pull request",
 		"policy_pending":            "the policy needs a maintainer's approval",
 		"policy_absent":             "policy-bot has not evaluated the pull request",
@@ -113,6 +114,7 @@ func reasons() map[string]string {
 		"closes_parent":             "it would close the parent issue, which only the last part may",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
+		"ledger_truncated":          "the merge ledger read is incomplete (a full page of 100 labelled pull requests), so the factory does not arm",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"ci_red":                    "CI stayed red after the fix runs",
 		"ci_cancelled":              "a required check was cancelled and re-running it did not settle it",
@@ -165,7 +167,9 @@ func nextStep(reason string) string {
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
 	case "holdout_pending":
-		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
+		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting until merge.awaitingCIFor, if set (agent-platform #182)"
+	case "ci_wait_expired":
+		return "a maintainer takes it from here: check the workflow of the checks named in the pull request comment, then merge it or re-run them"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
 	case "split_proposed":
