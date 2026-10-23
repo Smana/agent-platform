@@ -48,7 +48,7 @@ MAX_REPORT_BYTES, MAX_CASES, MAX_OUTPUT, KILL_GRACE_S = 10 * 1024 * 1024, 20000,
 # Exit codes, the harness's ends (TF5) and the job's conclusion (TF7).
 OK, NOT_OK, UNDECLARED, OUTSIDE, COULD_NOT_RUN = 0, 1, 2, 3, 4
 # hold fails closed: a missing, id-less or file-less contract is each its own result, never UNDECLARED.
-NO_CONTRACT, NO_IDS, NO_FILES = 5, 6, 7
+NO_CONTRACT, NO_IDS, NO_FILES, NOT_ON_BASE, DECLARATION_LOST = 5, 6, 7, 8, 9
 # The runner's shell, resolved from the caller's PATH: a step's PATH is the toolchain's.
 BASH = shutil.which("bash") or "/bin/bash"
 TRAILER_RUN, TRAILER_FILE, TRAILER_ID = "Agent-Contract", "Agent-Contract-File", "Agent-Contract-Id"
@@ -185,6 +185,7 @@ def run(where: str, decl: dict, files: list[str], env: dict, label: str, say) ->
     done = threading.Event()
     kept = collections.deque()  # (bytes) chunks, trimmed to MAX_OUTPUT
     size = [0]
+    lock = threading.Lock()
 
     def beat():  # the SDK's terminal pauses after 30 s without output
         while not done.wait(HEARTBEAT_S):
@@ -193,10 +194,11 @@ def run(where: str, decl: dict, files: list[str], env: dict, label: str, say) ->
     def drain():
         try:
             while chunk := proc.stdout.read1(65536):
-                kept.append(chunk)
-                size[0] += len(chunk)
-                while size[0] > MAX_OUTPUT and len(kept) > 1:
-                    size[0] -= len(kept.popleft())
+                with lock:
+                    kept.append(chunk)
+                    size[0] += len(chunk)
+                    while size[0] > MAX_OUTPUT and len(kept) > 1:
+                        size[0] -= len(kept.popleft())
         except (OSError, ValueError):
             pass
     threading.Thread(target=beat, daemon=True).start()
@@ -217,14 +219,13 @@ def run(where: str, decl: dict, files: list[str], env: dict, label: str, say) ->
         proc.wait(timeout=KILL_GRACE_S)
     except subprocess.TimeoutExpired:
         pass
+    # A descendant that left the group (setsid) may hold the pipe: the reader is a daemon, left blocked
+    # in read1 holding the buffer's lock, so the stream is never closed from here. What it kept so far stands.
     reader.join(KILL_GRACE_S)
-    try:
-        proc.stdout.close()
-    except OSError:
-        pass
     ids = None if timed_out else junit(report)
     shutil.rmtree(os.path.dirname(report), ignore_errors=True)
-    out = b"".join(kept)[-MAX_OUTPUT:].decode(errors="replace")
+    with lock:
+        out = b"".join(kept)[-MAX_OUTPUT:].decode(errors="replace")
     return {"ran": ids is not None, "timeout": timed_out, "ids": ids or {}, "seconds": round(time.monotonic() - start, 1),
             "exit": proc.returncode, "tail": out.splitlines()[-30:]}
 
@@ -319,8 +320,8 @@ def ci(repo: str, base: str, head: str, env: dict, say) -> tuple[int, dict]:
         return NOT_OK, {**res, "result": "red", "why": ["the runner's own files changed: %s" % ", ".join(p["runner"])]}
     note = ["deleted test files (no verdict on them): %s" % ", ".join(p["gone"])] if p["gone"] else []
     if not p["selected"]:
-        if p["gone"]:  # deleting tests proves nothing and is not "no test changed": neutral, with the note
-            return OK, {**res, "result": "neutral", "why": ["no test added or changed"] + note}
+        if p["gone"]:  # green, reporting none (TF7), with the deletions named
+            return OK, {**res, "result": "green", "why": ["no test added or changed"] + note}
         return OK, {**res, "result": "green", "why": ["no changed test file"]}
     b = at_base(repo, decl, base, p["selected"], env, say)
     with tree(repo, base, head, p["files"], p["gone"]) as where:
@@ -370,12 +371,15 @@ def hold(repo: str, env: dict, say, base: str | None = None, contract: str | Non
     contract file nor a runner file differs from the contract commit. Fails closed. The harness passes the
     base and the contract commit it recorded; without them, the local origin/HEAD and the trailer search."""
     base, bsource = base_of(repo, base)
+    def ancestor(a: str, b: str) -> bool:
+        return subprocess.run(git_cmd(repo, "merge-base", "--is-ancestor", a, b), env=agent_checks.git_env()).returncode == 0
     if contract:
         contract = resolve(repo, contract)
-        ancestor = subprocess.run(git_cmd(repo, "merge-base", "--is-ancestor", contract, "HEAD"),
-                                  env=agent_checks.git_env()).returncode == 0
-        c = contract_at(repo, contract) if ancestor else None
         source = "arguments"
+        if contract == base or not ancestor(base, contract):  # the base strictly under the contract commit
+            return NOT_ON_BASE, {"base": base, "base_source": bsource, "source": source, "commit": contract,
+                                 "result": "contract_not_on_base"}
+        c = contract_at(repo, contract) if ancestor(contract, "HEAD") else None
     else:
         c = contract_of(repo, base)
         source = "origin/HEAD and the trailer search"
@@ -385,13 +389,18 @@ def hold(repo: str, env: dict, say, base: str | None = None, contract: str | Non
     res.update(c)
     if not c["ids"]:
         return NO_IDS, {**res, "result": "contract_no_ids"}
-    decl = declaration(repo, base)
+    try:
+        decl = declaration(repo, base)
+    except Undeclared as exc:  # a contract exists: never exit 2, which reads "off"
+        return DECLARATION_LOST, {**res, "result": "contract_declaration_lost", "why": str(exc)}
     selected = sorted(p for p in c["files"] if any(fnmatch.fnmatchcase(p, g) for g in decl["select"]))
     if not selected:
         return NO_FILES, {**res, "result": "contract_no_files"}
     head = git(repo, "rev-parse", "HEAD").strip()
     res["head"] = head
-    watched = sorted(set(c["files"]) | set(decl["runner"]))
+    touched = [x for x in git(repo, "diff-tree", "--root", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames",
+                              c["commit"]).split("\0") if x and under(x, decl["paths"])]
+    watched = sorted(set(c["files"]) | set(touched) | set(decl["runner"]))
     modified = [x for x in git(repo, "diff", "--name-only", "-z", c["commit"], head, "--", *watched).split("\0") if x]
     if modified:  # the contract is the tests as the tester wrote them, under the runner as the base has it
         return NOT_OK, {**res, "result": "contract_modified", "modified": modified, "failing": []}

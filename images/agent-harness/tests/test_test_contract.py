@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -246,6 +247,27 @@ class PytestTest(Fixture, unittest.TestCase):
         self.assertEqual((code, res["result"]), (tc.NO_FILES, "contract_no_files"))
         self.assertNotIn(code, (tc.OK, tc.UNDECLARED))
 
+    def test_hold_refuses_a_base_that_is_not_an_ancestor_of_the_contract(self):
+        c = self.commit({SUB: SUB_TEST}, "test: contract", CONTRACT)
+        other = self.commit({"README": "x"})
+        for base in (c, other):
+            code, res = tc.hold(self.repo, dict(os.environ), lambda m: None, base=base, contract=c)
+            self.assertEqual((code, res["result"]), (tc.NOT_ON_BASE, "contract_not_on_base"))
+
+    def test_a_declaration_lost_after_a_contract_is_found_is_not_exit_2(self):
+        self.commit({SUB: SUB_TEST}, "test: contract", CONTRACT)
+        with mock.patch.object(tc, "declaration", side_effect=tc.Undeclared("gone")):
+            code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"]), (tc.DECLARATION_LOST, "contract_declaration_lost"))
+        self.assertNotIn(code, (tc.OK, tc.UNDECLARED))
+
+    def test_hold_watches_every_test_file_the_contract_commit_touched(self):
+        extra = "tests/test_extra.py"
+        self.commit({SUB: SUB_TEST, extra: "def test_extra():\n    assert True\n"}, "test: contract", CONTRACT)
+        self.commit({**SUB_IMPL, extra: "def test_extra():\n    assert False\n"})
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"], res["modified"]), (tc.NOT_OK, "contract_modified", [extra]))
+
     def test_red_takes_the_base_from_the_harness(self):
         self.commit({SUB: SUB_TEST})
         code, res = tc.red(self.repo, self.rev("HEAD"), dict(os.environ), lambda m: None, base=self.base)
@@ -271,12 +293,12 @@ class ShellTest(Fixture, unittest.TestCase):
         self.assertEqual(self.red()[1]["result"], "contract_not_red")
         self.assertTrue(any("does not pass at the head (skip)" in w for w in self.ci()[1]["why"]))
 
-    def test_a_pr_that_only_deletes_tests_is_neutral_with_a_note(self):
+    def test_a_pr_that_only_deletes_tests_is_green_reporting_the_deletions(self):
         self.commit({"bin/other": "#!/usr/bin/env bash\necho x\n"})
         sh(self.repo, "git", "rm", "-q", "t/test-greet.sh")
         sh(self.repo, "git", "commit", "-qm", "drop")
         code, res = self.ci()
-        self.assertEqual((code, res["result"]), (tc.OK, "neutral"), res)
+        self.assertEqual((code, res["result"]), (tc.OK, "green"), res)
         self.assertIn("t/test-greet.sh", " ".join(res["why"]))
         self.assertNotEqual(res["why"], ["no changed test file"])
 
@@ -291,6 +313,14 @@ class ShellTest(Fixture, unittest.TestCase):
         with self.assertRaises(tc.BadRef):
             tc.ci(self.repo, "--output=/tmp/x", "HEAD", dict(os.environ), lambda m: None)
         self.assertEqual(tc.main(["--repo", self.repo, "ci", "--base", "nope", "--head", "HEAD"]), tc.COULD_NOT_RUN)
+
+    def test_a_descendant_that_escaped_the_group_cannot_hang_the_run(self):
+        decl = {"run": "setsid sleep 30 & echo hi", "minutes": 1}
+        start = time.monotonic()
+        r = tc.run(self.repo, decl, [], dict(os.environ), "t", lambda m: None)
+        self.assertLess(time.monotonic() - start, 15)
+        self.assertEqual(r["tail"], ["hi"])
+        subprocess.run(["pkill", "-f", "sleep 3[0]"])
 
     def test_a_timeout_is_could_not_run_and_bounded(self):
         decl = {"run": "sleep 60 & sleep 60", "minutes": 0.03}
