@@ -5,6 +5,7 @@ Each case builds an origin whose main declares the tests, clones it, and calls t
 """
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -315,12 +316,20 @@ class ShellTest(Fixture, unittest.TestCase):
         self.assertEqual(tc.main(["--repo", self.repo, "ci", "--base", "nope", "--head", "HEAD"]), tc.COULD_NOT_RUN)
 
     def test_a_descendant_that_escaped_the_group_cannot_hang_the_run(self):
-        decl = {"run": "setsid sleep 30 & echo hi", "minutes": 1}
+        pidfile = os.path.join(self.tmp, "straggler.pid")
+        decl = {"run": 'setsid sleep 30 & echo $! > "$PIDFILE"; echo hi', "minutes": 1}
+
+        def reap():  # exactly the straggler this test started
+            try:
+                with open(pidfile) as f:
+                    os.kill(int(f.read()), signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
+        self.addCleanup(reap)
         start = time.monotonic()
-        r = tc.run(self.repo, decl, [], dict(os.environ), "t", lambda m: None)
+        r = tc.run(self.repo, decl, [], {**os.environ, "PIDFILE": pidfile}, "t", lambda m: None)
         self.assertLess(time.monotonic() - start, 15)
         self.assertEqual(r["tail"], ["hi"])
-        subprocess.run(["pkill", "-f", "sleep 3[0]"])
 
     def test_a_timeout_is_could_not_run_and_bounded(self):
         decl = {"run": "sleep 60 & sleep 60", "minutes": 0.03}
