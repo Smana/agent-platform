@@ -223,6 +223,17 @@ func (r *Repository) NeedsMerger() bool {
 	return false
 }
 
+// AnyMonitored reports whether a class of the repository declares a monitor, whose outcome
+// labels the merger writes in shadow too (merge gate R30).
+func (r *Repository) AnyMonitored() bool {
+	for _, cl := range r.Classes {
+		if cl.Monitor != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // AnyLive reports whether a class of the repository is live.
 func (r *Repository) AnyLive() bool {
 	for _, cl := range r.Classes {
@@ -292,6 +303,12 @@ func (c *Config) NeedsMerger() bool {
 	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.NeedsMerger() })
 }
 
+// AnyMonitored reports whether a class of any repository declares a monitor, so the merger App
+// labels its merges' outcomes (merge gate R30, MC13) before any class is live.
+func (c *Config) AnyMonitored() bool {
+	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.AnyMonitored() })
+}
+
 // AnyLive reports whether a class of any repository is live, so the merger App merges and labels (v2 D1).
 func (c *Config) AnyLive() bool {
 	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.AnyLive() })
@@ -354,6 +371,9 @@ type Merge struct {
 type Breaker struct {
 	Window     int `json:"window"`
 	MaxReverts int `json:"maxReverts"`
+	// MaxFollowUps: follow-up fixes and monitor regressions in the last Window merges that demote
+	// a class (MC8); 0 counts none.
+	MaxFollowUps int `json:"maxFollowUps,omitempty"`
 }
 
 // Tier is a model and its budgets. RunUSD and TaskUSD cap a run and a task in USD, priced by
@@ -1311,6 +1331,9 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	}
 	if b := r.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
 		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")
+	}
+	if b := r.Merge.Breaker; b.MaxFollowUps < 0 || b.MaxFollowUps > b.Window {
+		bad("merge.breaker needs 0 ≤ maxFollowUps ≤ window (MC8)")
 	}
 }
 

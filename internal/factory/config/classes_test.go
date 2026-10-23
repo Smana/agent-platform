@@ -5,6 +5,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 const classesLine = "classes: {docs-links: {shadow: true}, revert: {shadow: true}, docs: {}, tests: {}, dashboards: {}}"
@@ -82,5 +83,51 @@ func TestAnOracleClassWithItsConditionsIsValid(t *testing.T) {
 	c := "docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], modifyOnly: true, allowedFiles: ['^docs/.+$'], maxModifiedLines: 20, oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}"
 	if _, err := Parse([]byte(withClasses(t, c))); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// MC7, MC8: a class declares its monitor; the breaker counts follow-ups when maxFollowUps > 0.
+func TestMonitorParses(t *testing.T) {
+	c, err := Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  "+deadLinks[:len(deadLinks)-1]+
+		", oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}, modifyOnly: true,"+
+		" monitor: {oracleRuns: 2, followUpWindow: 168h, flux: {source: flux-system/flux-system, within: 1h}}}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := c.RepositoryFor("Smana/cloud-native-ref").Classes["dead-links"].Monitor
+	if m == nil || m.OracleRuns != 2 || m.FollowUpWindow.Duration != 168*time.Hour || m.Flux.Namespace() != "flux-system" ||
+		m.Flux.Name() != "flux-system" || m.Flux.Within.Duration != time.Hour {
+		t.Fatalf("%+v", m)
+	}
+}
+
+func TestBadMonitorFails(t *testing.T) {
+	for name, c := range map[string]struct{ classes, err string }{
+		"no window":              {"docs-links: {}\n  revert: {}\n  x: {monitor: {}}", "class x: monitor.followUpWindow must be 1h..720h"},
+		"oracle runs, no oracle": {"docs-links: {}\n  revert: {}\n  x: {monitor: {oracleRuns: 2, followUpWindow: 168h}}", "class x: monitor.oracleRuns needs an oracle"},
+		"too many runs":          {"docs-links: {}\n  revert: {}\n  x: {monitor: {oracleRuns: 9, followUpWindow: 168h}}", "class x: monitor.oracleRuns must be 0..5"},
+		"a bad source":           {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, flux: {source: flux-system, within: 1h}}}", `class x: monitor.flux.source "flux-system" is not namespace/name`},
+		"no within":              {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, flux: {source: a/b}}}", "class x: monitor.flux.within must be 5m..6h"},
+		"an unknown key":         {"docs-links: {}\n  revert: {}\n  x: {monitor: {followUps: 1}}", `unknown field "followUps"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(withClasses(t, c.classes))); err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Fatalf("got %v, want %q", err, c.err)
+			}
+		})
+	}
+}
+
+// B1: a monitored class needs the merger's label permission even while no class is live.
+func TestAnyMonitored(t *testing.T) {
+	c, err := Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h}}")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AnyMonitored() || c.AnyLive() {
+		t.Fatalf("monitored %v, live %v", c.AnyMonitored(), c.AnyLive())
+	}
+	if c, err = Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}"))); err != nil || c.AnyMonitored() {
+		t.Fatalf("no monitor declared: %v %v", c.AnyMonitored(), err)
 	}
 }

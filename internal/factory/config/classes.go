@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; a shadow
@@ -41,7 +42,39 @@ type Class struct {
 	// Oracle makes the class oracle-backed (MC4–MC6): its tasks are a detector's findings, and its
 	// gate holds only when the head no longer holds them and changes nothing else.
 	Oracle *Oracle `json:"oracle,omitempty"`
+	// Monitor watches each merge of the class after it lands (merge gate classes MC7): main's CI
+	// for every merge, the detector's next runs for an oracle class, Flux on the factory's cluster,
+	// and follow-up fixes for FollowUpWindow. Absent: no monitor, as before.
+	Monitor *Monitor `json:"monitor,omitempty"`
 }
+
+// Monitor is a class's post-merge watch (MC7).
+type Monitor struct {
+	// OracleRuns is how many scheduled detector runs after the merge must report none of the
+	// targets the pull request wrote; 0 reads none. Needs an oracle.
+	OracleRuns int `json:"oracleRuns,omitempty"`
+	// Flux watches the factory's cluster once its source holds the merge commit.
+	Flux *FluxWatch `json:"flux,omitempty"`
+	// FollowUpWindow is how long later merges are read for a fix of this one (MC8), and when the
+	// monitor's verdict is final.
+	FollowUpWindow Duration `json:"followUpWindow"`
+}
+
+// FluxWatch names the GitRepository that delivers the repository to the factory's cluster, and
+// how long after it reaches the merge commit a Kustomization or HelmRelease turning not Ready is
+// blamed on the merge.
+type FluxWatch struct {
+	Source string   `json:"source"` // namespace/name
+	Within Duration `json:"within"`
+}
+
+// Namespace splits Source.
+func (f FluxWatch) Namespace() string { ns, _, _ := strings.Cut(f.Source, "/"); return ns }
+
+// Name splits Source.
+func (f FluxWatch) Name() string { _, n, _ := strings.Cut(f.Source, "/"); return n }
+
+var sourceRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
 
 // Oracle is an oracle-backed class's detector: the probe that turns its findings into a task,
 // the workflow on main whose runs report them, and the most findings one task holds.
@@ -79,6 +112,25 @@ func (c Class) ReadsDiff(name string) bool {
 func validateClass(name string, cl Class, bad func(string, ...any)) {
 	if cl.Live && cl.Shadow {
 		bad("class %s: live and shadow never together (R32)", name)
+	}
+	if m := cl.Monitor; m != nil {
+		if w := m.FollowUpWindow.Duration; w < time.Hour || w > 720*time.Hour {
+			bad("class %s: monitor.followUpWindow must be 1h..720h", name)
+		}
+		switch {
+		case m.OracleRuns < 0 || m.OracleRuns > 5:
+			bad("class %s: monitor.oracleRuns must be 0..5", name)
+		case m.OracleRuns > 0 && cl.Oracle == nil:
+			bad("class %s: monitor.oracleRuns needs an oracle", name)
+		}
+		if f := m.Flux; f != nil {
+			if !sourceRE.MatchString(f.Source) {
+				bad("class %s: monitor.flux.source %q is not namespace/name", name, f.Source)
+			}
+			if f.Within.Duration < 5*time.Minute || f.Within.Duration > 6*time.Hour {
+				bad("class %s: monitor.flux.within must be 5m..6h", name)
+			}
+		}
 	}
 	for _, p := range cl.AllowedFiles {
 		// The match is unanchored, as policy-bot's is, so an allow list must say where a path
