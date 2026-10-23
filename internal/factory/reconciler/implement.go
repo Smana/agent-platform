@@ -214,10 +214,10 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
 		if !apierrors.IsAlreadyExists(err) {
-			// The cluster refused a claim carrying spec.loop (Strict validation: the host's XRD lacks it).
+			// The cluster refused a claim carrying spec.loop, checks included (Strict validation: the host's XRD lacks it).
 			// Retrying cannot help; hand the task to a maintainer instead of backing off forever.
 			if (s.Loop != nil || s.Checks) && (apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
-				r.log().Warn("loop claim refused by the cluster", "task.id", t.Name, "err", err)
+				r.log().Warn("loop or repository checks claim refused by the cluster", "task.id", t.Name, "err", err)
 				return r.end(ctx, t, v1alpha1.PhaseEscalated, "loop_unsupported")
 			}
 			return err
