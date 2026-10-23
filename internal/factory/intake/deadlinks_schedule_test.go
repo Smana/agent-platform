@@ -29,7 +29,7 @@ func deadLinksScheduler(t *testing.T, cl config.Class, objs ...v1alpha1.Task) *S
 	}
 	now := time.Date(2026, 10, 22, 5, 0, 0, 0, time.UTC)
 	f := forgetest.NewFake()
-	art := []byte(`[{"file":"docs/a.md","line":1,"url":"https://example.com/gone","status":"404"}]`)
+	art := []byte(`[{"file":"docs/a.md","line":1,"url":"https://example.com/gone","status":"404","archive":"https://web.archive.org/web/1/https://example.com/gone"}]`)
 	f.SetRuns([]forge.WorkflowRun{{ID: 2, Event: "schedule", Branch: "main", Conclusion: "success"},
 		{ID: 1, Event: "schedule", Branch: "main", Conclusion: "success"}}, map[int64][]byte{1: art, 2: art})
 	f.SetMainFiles(map[string]string{"docs/a.md": "[a](https://example.com/gone)"})

@@ -197,6 +197,10 @@ func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRu
 			drops[why]++
 			continue
 		}
+		if k.Archive == "" { // the oracle allows no move without a snapshot: unfixable, so not a task
+			drops["no_archive"]++
+			continue
+		}
 		if len(out) == cl.Oracle.MaxFindings {
 			drops["over_cap"]++
 			continue
@@ -249,7 +253,6 @@ func deadLinksTask(fs []LinkFinding) (string, []v1alpha1.Finding) {
 		spec = append(spec, v1alpha1.Finding{File: f.File, URL: f.URL, Archive: f.Archive})
 	}
 	b.WriteString("\nChange only these link targets, in these files: each to the snapshot given, exactly as written. " +
-		"Leave link text, prose and code blocks alone, and add or delete no file. A target with no snapshot stays " +
-		"as it is: it is not yours to move.")
+		"Leave link text, prose and code blocks alone, and add or delete no file.")
 	return b.String(), spec
 }

@@ -137,7 +137,7 @@ func TestAnUntrustworthyRunFindsNothing(t *testing.T) {
 
 // The same finding repeated is one; a run of another workflow's actor or a pull request is ignored.
 func TestDeadLinksDedupes(t *testing.T) {
-	f := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404"}
+	f := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404", Archive: "https://web.archive.org/web/1/" + goneURL}
 	m := &linksMerger{
 		runs:      []forge.WorkflowRun{{ID: 2, Event: "schedule", Branch: "main", Conclusion: "success"}, {ID: 1, Event: "schedule", Branch: "main", Conclusion: "success"}},
 		artifacts: map[int64][]LinkFinding{2: {f, f, f}, 1: {f}},
@@ -165,7 +165,7 @@ func TestDeadLinksTruncatesAtTheCap(t *testing.T) {
 	body := ""
 	for _, n := range []string{"c", "a", "b"} {
 		u := "https://example.com/" + n
-		fs = append(fs, LinkFinding{File: "docs/a.md", Line: 1, URL: u, Status: "404"})
+		fs = append(fs, LinkFinding{File: "docs/a.md", Line: 1, URL: u, Status: "404", Archive: "https://web.archive.org/web/1/" + u})
 		body += "[" + n + "](" + u + ") "
 	}
 	cl := linksClass()
@@ -178,7 +178,9 @@ func TestDeadLinksTruncatesAtTheCap(t *testing.T) {
 
 // MC5: both runs must say gone; a 429 in either run, or a 429 then a 404 in one, decides it.
 func TestAFindingIsGoneInBothRuns(t *testing.T) {
-	at := func(s string) LinkFinding { return LinkFinding{File: "docs/a.md", Line: 1, URL: goneURL, Status: s} }
+	at := func(s string) LinkFinding {
+		return LinkFinding{File: "docs/a.md", Line: 1, URL: goneURL, Status: s, Archive: "https://web.archive.org/web/1/" + goneURL}
+	}
 	for name, c := range map[string]struct {
 		newest, prev []LinkFinding
 		want         int
@@ -200,7 +202,7 @@ func TestAFindingIsGoneInBothRuns(t *testing.T) {
 
 // A malformed finding refuses the run wherever it sorts: past the cap too.
 func TestAMalformedFindingPastTheCapStillRefusesTheRun(t *testing.T) {
-	good := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404"}
+	good := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404", Archive: "https://web.archive.org/web/1/" + goneURL}
 	bad := LinkFinding{File: "docs/z.md", Line: 1, URL: "https://example.com/zzz b", Status: "404"}
 	m := runPair([]LinkFinding{good, bad}, []LinkFinding{good, bad}, "[a]("+goneURL+")")
 	cl := linksClass()
@@ -208,5 +210,22 @@ func TestAMalformedFindingPastTheCapStillRefusesTheRun(t *testing.T) {
 	got, err := deadLinks(t.Context(), m, &config.Repository{Name: "r"}, cl)
 	if len(got) != 0 || !errors.Is(err, errFindingsRefused) {
 		t.Fatalf("a malformed finding after the cap refuses the run: %+v %v", got, err)
+	}
+}
+
+// A finding with no snapshot can never pass the oracle: the probe drops it, and a run whose
+// findings all lack one is the no-findings outcome.
+func TestAFindingWithNoSnapshotIsDropped(t *testing.T) {
+	with := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404", Archive: "https://web.archive.org/web/1/" + goneURL}
+	without := LinkFinding{File: "docs/a.md", Line: 4, URL: "https://example.com/two", Status: "404"}
+	file := "[a](" + goneURL + ") [b](https://example.com/two)"
+	cl := linksClass()
+	got, err := deadLinks(t.Context(), runPair([]LinkFinding{with, without}, []LinkFinding{with, without}, file), &config.Repository{Name: "r"}, cl)
+	if err != nil || len(got) != 1 || got[0].URL != goneURL {
+		t.Fatalf("only the finding with a snapshot stays: %+v %v", got, err)
+	}
+	got, err = deadLinks(t.Context(), runPair([]LinkFinding{without}, []LinkFinding{without}, file), &config.Repository{Name: "r"}, cl)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("none left is no finding: %+v %v", got, err)
 	}
 }
