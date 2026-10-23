@@ -128,7 +128,7 @@ func TestAnUntrustworthyRunFindsNothing(t *testing.T) {
 			}
 			rc := &config.Repository{Name: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}}
 			got, err := deadLinks(t.Context(), m, rc, c)
-			if len(got) != 0 || !errors.Is(err, errFindingsRefused) {
+			if len(got) != 0 || !errors.Is(err, ErrFindingsRefused) {
 				t.Fatalf("a refused run finds nothing, and says why: %+v %v", got, err)
 			}
 		})
@@ -208,7 +208,7 @@ func TestAMalformedFindingPastTheCapStillRefusesTheRun(t *testing.T) {
 	cl := linksClass()
 	cl.Oracle.MaxFindings = 1
 	got, err := deadLinks(t.Context(), m, &config.Repository{Name: "r"}, cl)
-	if len(got) != 0 || !errors.Is(err, errFindingsRefused) {
+	if len(got) != 0 || !errors.Is(err, ErrFindingsRefused) {
 		t.Fatalf("a malformed finding after the cap refuses the run: %+v %v", got, err)
 	}
 }

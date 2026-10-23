@@ -31,9 +31,9 @@ type LinkFinding struct {
 	Archive string `json:"archive,omitempty"`
 }
 
-// errFindingsRefused marks a run whose findings the probe does not trust: the schedule logs and
+// ErrFindingsRefused marks a run whose findings the probe does not trust: the schedule logs and
 // counts it, and starts no task.
-var errFindingsRefused = errors.New("intake: dead-links findings refused")
+var ErrFindingsRefused = errors.New("intake: dead-links findings refused")
 
 // maxFindingsBytes bounds findings.json: 1,000 findings of 1 KiB each.
 const maxFindingsBytes = 1 << 20
@@ -61,7 +61,8 @@ func ParseFindings(raw []byte) ([]LinkFinding, error) {
 	return fs, nil
 }
 
-func gone(status string) bool { return status == "404" || status == "410" || status == "nxdomain" }
+// Gone reports whether a finding's status means the link is dead: 404, 410 or nxdomain.
+func Gone(status string) bool { return status == "404" || status == "410" || status == "nxdomain" }
 
 func findingKey(f LinkFinding) string { return f.File + "\x00" + f.URL }
 
@@ -72,14 +73,14 @@ func findingKey(f LinkFinding) string { return f.File + "\x00" + f.URL }
 func Agreed(newest, previous []LinkFinding) []LinkFinding {
 	prev := make(map[string]bool, len(previous))
 	for _, p := range previous {
-		if gone(p.Status) {
+		if Gone(p.Status) {
 			prev[findingKey(p)] = true
 		}
 	}
 	seen := map[string]bool{}
 	var out []LinkFinding
 	for _, f := range newest {
-		if k := findingKey(f); gone(f.Status) && prev[k] && !seen[k] {
+		if k := findingKey(f); Gone(f.Status) && prev[k] && !seen[k] {
 			seen[k] = true
 			out = append(out, f)
 		}
@@ -93,7 +94,7 @@ var archiveRE = regexp.MustCompile(`^https://web\.archive\.org/web/[0-9]{1,14}/h
 // keepable decides one agreed finding. keep is false for what is simply no finding of this class:
 // not a gone status, not a clean relative path the class allows and does not protect, not an
 // https target (R52 cannot retarget http). A finding whose URL or archive breaks the Task CRD's
-// shape is an error: the run is not trusted (errFindingsRefused).
+// shape is an error: the run is not trusted (ErrFindingsRefused).
 func keepable(f LinkFinding, cl config.Class) (_ LinkFinding, drop string, err error) {
 	if path.Clean(f.File) != f.File || strings.HasPrefix(f.File, "/") || strings.HasPrefix(f.File, "..") ||
 		len(f.File) > 512 || !matches(cl.AllowedFiles, f.File) || matches(cl.ProtectedFiles, f.File) {
@@ -101,16 +102,16 @@ func keepable(f LinkFinding, cl config.Class) (_ LinkFinding, drop string, err e
 	}
 	u, perr := url.Parse(f.URL)
 	if perr != nil || u.Scheme != "http" && u.Scheme != "https" {
-		return f, "", fmt.Errorf("%w: %q is no URL", errFindingsRefused, f.URL)
+		return f, "", fmt.Errorf("%w: %q is no URL", ErrFindingsRefused, f.URL)
 	}
 	if u.Scheme == "http" {
 		return f, "http", nil
 	}
 	if u.Host == "" || u.User != nil || len(f.URL) > 2048 || strings.ContainsAny(f.URL, " \t\r\n<>()") {
-		return f, "", fmt.Errorf("%w: %q is not a link target the task may hold", errFindingsRefused, f.URL)
+		return f, "", fmt.Errorf("%w: %q is not a link target the task may hold", ErrFindingsRefused, f.URL)
 	}
 	if f.Archive != "" && (!archiveRE.MatchString(f.Archive) || !strings.HasSuffix(f.Archive, "/"+f.URL) || len(f.Archive) > 2048) {
-		return f, "", fmt.Errorf("%w: %q is no Wayback snapshot of %q", errFindingsRefused, f.Archive, f.URL)
+		return f, "", fmt.Errorf("%w: %q is no Wayback snapshot of %q", ErrFindingsRefused, f.Archive, f.URL)
 	}
 	return f, "", nil
 }
@@ -140,7 +141,7 @@ func detectorRuns(ctx context.Context, m DeadLinksMerger, rc *config.Repository,
 	}
 	var two []forge.WorkflowRun
 	for _, r := range runs { // newest first
-		if !detectorRun(r, rc) {
+		if !DetectorRun(r, rc) {
 			continue
 		}
 		if two = append(two, r); len(two) == 2 {
@@ -165,7 +166,7 @@ func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl
 
 // evaluateRuns keeps what both runs report as gone, the class may fix, and is still a link target
 // at its file on main: the first oracle.maxFindings in file-then-URL order. Malformed or
-// out-of-shape findings refuse the run (errFindingsRefused). It logs one line with what it dropped.
+// out-of-shape findings refuse the run (ErrFindingsRefused). It logs one line with what it dropped.
 func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRun, cl config.Class, log *slog.Logger) ([]LinkFinding, error) {
 	var sets [2][]LinkFinding
 	for i, r := range two {
@@ -174,14 +175,14 @@ func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRu
 			return nil, err
 		}
 		if sets[i], err = ParseFindings(raw); err != nil {
-			return nil, fmt.Errorf("%w: run %d: %w", errFindingsRefused, r.ID, err)
+			return nil, fmt.Errorf("%w: run %d: %w", ErrFindingsRefused, r.ID, err)
 		}
 	}
 	var out []LinkFinding
 	files := map[string][]string{}
 	drops := map[string]int{}
 	for _, f := range sets[0] {
-		if !gone(f.Status) {
+		if !Gone(f.Status) {
 			drops["status"]++
 		}
 	}
@@ -224,9 +225,10 @@ func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRu
 	return out, nil
 }
 
-// detectorRun: a run on main that a schedule started, or a maintainer by hand. A pull request's
-// run reads the pull request's tree, and anyone else's dispatch is not the detector's verdict.
-func detectorRun(r forge.WorkflowRun, rc *config.Repository) bool {
+// DetectorRun reports whether r is a run on main that a schedule started, or a maintainer by
+// hand. A pull request's run reads the pull request's tree, and anyone else's dispatch is not the
+// detector's verdict.
+func DetectorRun(r forge.WorkflowRun, rc *config.Repository) bool {
 	switch {
 	case r.Branch != "main":
 		return false

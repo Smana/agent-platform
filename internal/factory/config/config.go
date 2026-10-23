@@ -304,6 +304,19 @@ func (c *Config) NeedsMerger() bool {
 	return slices.ContainsFunc(c.Repos(), func(r Repository) bool { return r.NeedsMerger() })
 }
 
+// AnyFlux reports whether a class of any repository declares monitor.flux, so the factory reads
+// Flux's objects on its cluster (MC7). None: no reader is built and nothing is read.
+func (c *Config) AnyFlux() bool {
+	for _, r := range c.Repos() {
+		for _, cl := range r.Classes {
+			if cl.Monitor != nil && cl.Monitor.Flux != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // AnyMonitored reports whether a class of any repository declares a monitor, so the merger App
 // labels its merges' outcomes (merge gate R30, MC13) before any class is live.
 func (c *Config) AnyMonitored() bool {

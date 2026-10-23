@@ -131,3 +131,14 @@ func TestAnyMonitored(t *testing.T) {
 		t.Fatalf("no monitor declared: %v %v", c.AnyMonitored(), err)
 	}
 }
+
+// The Flux reader is built only when a class declares monitor.flux.
+func TestAnyFlux(t *testing.T) {
+	c, err := Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h, flux: {source: flux-system/flux-system, within: 1h}}}")))
+	if err != nil || !c.AnyFlux() {
+		t.Fatalf("flux declared: %v %v", c.AnyFlux(), err)
+	}
+	if c, err = Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h}}"))); err != nil || c.AnyFlux() {
+		t.Fatalf("monitor without flux: %v %v", c.AnyFlux(), err)
+	}
+}

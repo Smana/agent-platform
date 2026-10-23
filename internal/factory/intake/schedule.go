@@ -230,7 +230,7 @@ func (s *Scheduler) conns(rc *config.Repository) (ScheduleForge, ScheduleMerger,
 
 // deadLinksProbe (MC5, MC6): nothing while the class is off (MC14) or while a task of this
 // schedule is still open (loops L9); else the findings both newest detector runs agree on. A run
-// the probe does not trust (errFindingsRefused) starts nothing: it is logged and counted, not a
+// the probe does not trust (ErrFindingsRefused) starts nothing: it is logged and counted, not a
 // failed tick.
 func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e config.Schedule) (bool, string, []v1alpha1.Finding, error) {
 	cl := rc.Classes[e.Class]
@@ -272,10 +272,10 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 		}
 		s.pending[key] = pair
 		s.seenMu.Unlock()
-	case err == nil || errors.Is(err, errFindingsRefused):
+	case err == nil || errors.Is(err, ErrFindingsRefused):
 		s.remember(key, pair)
 	}
-	if errors.Is(err, errFindingsRefused) {
+	if errors.Is(err, ErrFindingsRefused) {
 		s.log().Warn("dead-links findings refused", "schedule", e.Name, "err", err)
 		if s.Errors != nil {
 			s.Errors.IntakeError(fmetrics.WithRepository(ctx, rc.Name), "dead-links")

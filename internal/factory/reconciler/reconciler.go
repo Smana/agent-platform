@@ -28,6 +28,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fluxwatch"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/killswitch"
@@ -141,6 +142,12 @@ type Reconciler struct {
 	Cfg       *config.Config
 	Forge     TaskForge
 	Merger    forge.Merger // the merger App: checks, merges and reverts (R16)
+	// Flux reads Flux's objects on the factory's cluster for the post-merge monitor (MC7). nil:
+	// the Flux signal reads inconclusive.
+	Flux interface {
+		Source(ctx context.Context, ns, name string) (fluxwatch.Source, error)
+		NotReadySince(ctx context.Context, ns, name string, since time.Time) ([]string, error)
+	}
 	// Clients is v2 D8: a repository's two connections, the factory App's and the merger's, each
 	// bound to that repository. Set, every reconcile binds its task's repository's pair, and a
 	// task on a repository it does not know is refused before any call; nil, Forge and Merger

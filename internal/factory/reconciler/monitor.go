@@ -17,6 +17,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/intake"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 )
 
@@ -135,7 +136,13 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 	}
-	// Task 8 adds the readings of m.Oracle (cl.Monitor.OracleRuns > 0) and m.Flux (cl.Monitor.Flux != nil).
+	var blamed []string // the Flux objects this pass found not Ready, for the comment
+	if cl.Monitor.OracleRuns > 0 && m.Oracle == "" {
+		m.Oracle = r.oracleSignal(ctx, t, cl)
+	}
+	if cl.Monitor.Flux != nil && m.Flux == "" {
+		m.Flux, blamed = r.fluxSignal(ctx, t, *cl.Monitor.Flux)
+	}
 	r.followUps(ctx, t, cl)
 	ended := r.Now().Sub(m.Since.Time) >= cl.Monitor.FollowUpWindow.Duration+searchLag
 	signals := []*string{&m.Main}
@@ -171,11 +178,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			record(ctx, func(ctx context.Context) { r.Metrics.MonitorVerdict(ctx, class, verdict) })
 		}
 		demotes := r.repo(t).Merge.Breaker.MaxFollowUps > 0
-		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), false, demotes))
+		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, blamed), false, demotes))
 		if m.Verdict == "regression" {
 			// M2: its own key, or narrateOn drops it as the PR's comment already queued.
 			if n := r.controlIssue(t); n > 0 {
-				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), true, demotes))
+				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, blamed), true, demotes))
 			}
 		}
 		m.Posted = m.Verdict != "regression" || ended // a regression is posted at once and watched on for follow-ups
@@ -188,14 +195,17 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	return nil
 }
 
-// monitorWhy lists the signals the verdict read, for the comment.
-func monitorWhy(m *v1alpha1.MonitorStatus) []string {
+// monitorWhy lists the signals the verdict read (blamed: the Flux objects it found not Ready), for the comment.
+func monitorWhy(m *v1alpha1.MonitorStatus, blamed []string) []string {
 	out := []string{"main CI: " + cmpOpen(m.Main), fmt.Sprintf("follow_ups=%d", len(m.FollowUps))}
 	if m.Oracle != "" {
 		out = append(out, "detector: "+m.Oracle)
 	}
 	if m.Flux != "" {
 		out = append(out, "Flux: "+m.Flux)
+		if len(blamed) > 0 {
+			out = append(out, fmt.Sprintf("not Ready since the merge: %v", blamed))
+		}
 	}
 	if len(m.FollowUps) > 0 {
 		out = append(out, fmt.Sprintf("follow-up fixes: %v, counted by the breaker, not in this verdict", m.FollowUps))
@@ -238,6 +248,121 @@ func (r *Reconciler) mainSignal(ctx context.Context, t *v1alpha1.Task) (string, 
 	}
 	if age >= 2*verifyFor {
 		return "inconclusive", nil
+	}
+	return "", nil
+}
+
+// oracleWait is how long after the merge the detector's runs are waited for: a nightly detector
+// that has not run twice by then did not say.
+const oracleWait = 72 * time.Hour
+
+// oracleSignal reads the detector's scheduled runs after the merge, oldest first (R37), each once:
+// a run that reports a target the merge wrote as gone is a regression; a run that did not succeed
+// or whose findings are refused is inconclusive; OracleRuns clean runs are healthy. Any read that
+// fails leaves the signal open, so the next pass reads again; open after oracleWait is inconclusive.
+func (r *Reconciler) oracleSignal(ctx context.Context, t *v1alpha1.Task, cl config.Class) string {
+	m, rc := t.Status.Monitor, r.repo(t)
+	if cl.Oracle == nil { // config refuses oracleRuns without an oracle; never read a workflow of nothing
+		return "inconclusive"
+	}
+	runs, err := r.merger(ctx).WorkflowRuns(ctx, cl.Oracle.Workflow)
+	if err != nil {
+		r.log().Warn("detector runs read failed", "task.id", t.Name, "err", err)
+		return r.oracleOpen(m)
+	}
+	var fresh []forge.WorkflowRun
+	for _, run := range runs {
+		if intake.DetectorRun(run, rc) && run.Created.After(m.Since.Time) && !slices.Contains(m.OracleRuns, run.ID) {
+			fresh = append(fresh, run)
+		}
+	}
+	slices.SortFunc(fresh, func(a, b forge.WorkflowRun) int { return a.Created.Compare(b.Created) })
+	for _, run := range fresh {
+		if run.Conclusion != "success" {
+			return "inconclusive"
+		}
+		raw, err := r.merger(ctx).RunArtifact(ctx, run.ID, "findings", "findings.json")
+		if err != nil {
+			r.log().Warn("detector findings read failed", "task.id", t.Name, "run", run.ID, "err", err)
+			return r.oracleOpen(m)
+		}
+		found, err := intake.ParseFindings(raw)
+		if err != nil {
+			r.log().Warn("detector findings refused", "task.id", t.Name, "run", run.ID, "err", err)
+			return "inconclusive"
+		}
+		if wroteGone(t.Spec.Findings, found) {
+			return "regression"
+		}
+		if m.OracleRuns = append(m.OracleRuns, run.ID); len(m.OracleRuns) >= cl.Monitor.OracleRuns {
+			return "healthy"
+		}
+	}
+	return r.oracleOpen(m)
+}
+
+// oracleOpen leaves the signal open until oracleWait has passed since the merge.
+func (r *Reconciler) oracleOpen(m *v1alpha1.MonitorStatus) string {
+	if r.Now().Sub(m.Since.Time) >= oracleWait {
+		return "inconclusive"
+	}
+	return ""
+}
+
+// wroteGone: a run reports gone a target the task wrote, by its file and its archive or its URL.
+func wroteGone(wrote []v1alpha1.Finding, run []intake.LinkFinding) bool {
+	return slices.ContainsFunc(run, func(f intake.LinkFinding) bool {
+		return intake.Gone(f.Status) && slices.ContainsFunc(wrote, func(w v1alpha1.Finding) bool {
+			return w.File == f.File && (f.URL == w.URL || (w.Archive != "" && f.URL == w.Archive))
+		})
+	})
+}
+
+// fluxSignal is Flux on the factory's cluster (R33, R34). An empty not-ready list is no proof of
+// health: an object that has not picked up the merge still reads Ready. So healthy needs the
+// source to hold the merge commit, `within` to have passed since it fetched it, and nothing turned
+// not Ready since. Any reader error leaves the signal open, so the window's end reads inconclusive.
+func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.FluxWatch) (string, []string) {
+	if r.Flux == nil {
+		return "inconclusive", nil
+	}
+	ref, m := t.Status.PullRequest, t.Status.Monitor
+	src, err := r.Flux.Source(ctx, f.Namespace(), f.Name())
+	if err != nil {
+		r.log().Warn("Flux source read failed", "task.id", t.Name, "err", err)
+		return "", nil
+	}
+	if src.Suspended {
+		return "inconclusive", nil
+	}
+	if m.Applied == nil {
+		held := src.Revision == ref.MergeCommitSHA
+		if !held {
+			if held, err = r.merger(ctx).IsAncestor(ctx, ref.MergeCommitSHA, src.Revision); err != nil {
+				r.log().Warn("Flux revision ancestry read failed", "task.id", t.Name, "err", err)
+				return "", nil
+			}
+		}
+		switch {
+		case !held && r.Now().Sub(m.Since.Time) >= f.Within.Duration:
+			return "inconclusive", nil // the source never delivered the merge in time
+		case !held || src.At.IsZero():
+			return "", nil
+		}
+		at := metav1.NewTime(src.At) // the first time only: a later fetch is a later commit's
+		m.Applied = &at
+	}
+	bad, err := r.Flux.NotReadySince(ctx, f.Namespace(), f.Name(), m.Applied.Time)
+	if err != nil {
+		r.log().Warn("Flux readiness read failed", "task.id", t.Name, "err", err)
+		return "", nil
+	}
+	if len(bad) > 0 {
+		r.log().Warn("Flux objects turned not Ready after the merge", "task.id", t.Name, "objects", bad)
+		return "regression", bad
+	}
+	if r.Now().Sub(m.Applied.Time) >= f.Within.Duration {
+		return "healthy", nil
 	}
 	return "", nil
 }

@@ -60,3 +60,33 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: agent-factory}
 subjects:
   - {kind: ServiceAccount, name: agent-factory, namespace: {{ .Release.Namespace }}}
+{{- if .Values.monitor.flux.enabled }}
+---
+# The post-merge monitor's Flux signal (merge gate classes MC7, R34): read-only, uncached, three
+# kinds, no watch. The GitRepository is read by name; the other two are listed. Nothing else of
+# the cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-factory-flux-reader
+  labels: {{- include "agent-factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [kustomize.toolkit.fluxcd.io]
+    resources: [kustomizations]
+    verbs: [get, list]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [gitrepositories]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-factory-flux-reader
+  labels: {{- include "agent-factory.labels" . | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: agent-factory-flux-reader}
+subjects:
+  - {kind: ServiceAccount, name: agent-factory, namespace: {{ .Release.Namespace }}}
+{{- end }}
