@@ -166,7 +166,7 @@ func newEmitterRig(t *testing.T, url string, events []string) *emitterRig {
 		fail: map[string]int{}, off: map[string]bool{}, reg: map[string]bool{}, dis: map[string]int{},
 		calls: map[string]int{}, outcomes: map[string]int{}, note: make(chan [2]any, 100), ups: make(chan struct{}, 10), slp: make(chan time.Duration)}
 	r.em = &Emitter{Events: r, Rooms: r.roomRepo, State: r, Metrics: r, Now: time.Now, Sleep: r.sleep,
-		SweepEvery: 10 * time.Millisecond, MinBackoff: 5 * time.Millisecond}
+		FactoryPrincipal: "system:factory", SweepEvery: 10 * time.Millisecond, MinBackoff: 5 * time.Millisecond}
 	r.addSubscriber("slack-app", url, events)
 	return r
 }
@@ -457,7 +457,8 @@ func factsPR(p string, n int) envelope.TaskFacts {
 }
 
 func seal(seq int64) envelope.Event {
-	return envelope.Event{Seq: seq, Type: envelope.StateChanged, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+	return envelope.Event{Seq: seq, Type: envelope.StateChanged, Origin: envelope.OriginBroker,
+		Actor:   envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
 		Payload: envelope.StatePayload("room_phase", map[string]any{"phase": "Closed", "reason": "done"})}
 }
 
@@ -621,5 +622,63 @@ func TestEmitterNoKeyOnTheLastAttempt(t *testing.T) {
 	rig.waitCursor(t, "aaaaaaaa", 1)
 	if rig.outcome("slack-app", "no_key") != 4 || rig.outcome("slack-app", "failed") != 0 || hits.Load() != 0 {
 		t.Fatalf("no_key %d, failed %d, hits %d", rig.outcome("slack-app", "no_key"), rig.outcome("slack-app", "failed"), hits.Load())
+	}
+}
+
+// by is ev written by someone else: the log's trust rests on who wrote an entry.
+func by(ev envelope.Event, kind envelope.ActorKind, id string, origin envelope.Origin) envelope.Event {
+	ev.Actor = envelope.Actor{Kind: kind, ID: id}
+	ev.Origin = origin
+	return ev
+}
+
+// I-a: a task entry names a repository only from the factory, and the seal ends a room only from
+// the broker; any other writer of the room is ignored.
+func TestEmitterTrustsOnlyTheFactoryAndTheBroker(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.withRepo("pppppppp", "")
+	rig.withRepo("qqqqqqqq", "")
+	rig.start()
+	// Another system principal, then a human, write a task fact naming the subscriber's repository.
+	rig.log("pppppppp", by(fact(1, factsPR("AwaitingCI", 3)), envelope.ActorSystem, "system:other", envelope.OriginClient))
+	rig.log("pppppppp", by(fact(2, factsPhase("Done")), envelope.ActorHuman, "human:mallory", envelope.OriginClient))
+	rig.log("pppppppp", seal(3))
+	rig.waitCursor(t, "pppppppp", 3)
+	if hits.Load() != 0 || rig.outcome("slack-app", "unresolved") != 1 {
+		t.Fatalf("%d deliveries, %d unresolved: an untrusted task fact named the repository", hits.Load(), rig.outcome("slack-app", "unresolved"))
+	}
+	// A human's forged seal does not end the room: it is held, not given up.
+	rig.log("qqqqqqqq", fact(1, factsPhase("Done")))
+	rig.log("qqqqqqqq", by(seal(2), envelope.ActorHuman, "human:mallory", envelope.OriginClient))
+	waitFor(t, "sweeps over the room", func() bool { return rig.asked("qqqqqqqq") >= 3 })
+	if rig.cursor("qqqqqqqq") != 0 || rig.outcome("slack-app", "unresolved") != 1 {
+		t.Fatal("a seal from a human ended the room")
+	}
+}
+
+// I-b: the repository compares without case; a log and a Room that really disagree hold the room,
+// counted once as a mismatch.
+func TestEmitterRepositoryAgreement(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.withRepo("rrrrrrrr", "SMANA/AI-native-ref") // the Room's spelling differs from the log's and the subscriber's
+	rig.withRepo("ssssssss", "Smana/other")
+	rig.start()
+	f := factsPhase("Done")
+	f.PR = &envelope.PRFact{Number: 4, URL: "https://github.com/smana/AI-NATIVE-REF/pull/4"}
+	rig.log("rrrrrrrr", fact(1, f))
+	rig.waitCursor(t, "rrrrrrrr", 1)
+	if hits.Load() != 1 {
+		t.Fatalf("a case-only difference is the same repository: %d deliveries", hits.Load())
+	}
+	rig.log("ssssssss", fact(1, factsPR("Done", 5)))
+	waitFor(t, "the mismatch to be counted", func() bool { return rig.outcome("slack-app", "mismatch") == 1 })
+	if rig.cursor("ssssssss") != 0 || hits.Load() != 1 {
+		t.Fatal("a room whose log and Room disagree was delivered or moved on")
 	}
 }

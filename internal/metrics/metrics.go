@@ -322,9 +322,10 @@ func (s *Set) WatchJWKS(lastRefresh map[string]func() time.Time) error {
 	return nil
 }
 
-// WebhookDelivery counts one delivery attempt: delivered, retried, failed, no_key or unresolved. subscriber
-// is a configured name, so the label stays bounded. unresolved is a closed room whose repository
-// nothing names: its events moved past, undelivered.
+// WebhookDelivery counts one delivery attempt: delivered, retried, failed, no_key, unresolved or
+// mismatch. subscriber is a configured name, so the label stays bounded. unresolved is a closed
+// room whose repository nothing names: its events moved past, undelivered. mismatch is a room
+// whose log and Room name different repositories: held, counted once.
 func (s *Set) WebhookDelivery(ctx context.Context, subscriber, outcome string) {
 	s.webhookDeliveries.Add(ctx, 1, metric.WithAttributes(attribute.String("subscriber", subscriber),
 		attribute.String("outcome", outcome)))

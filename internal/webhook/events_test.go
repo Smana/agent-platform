@@ -12,7 +12,7 @@ import (
 
 // fact is a task_state entry in the log's real shape: the facts flat beside kind (B2).
 func fact(seq int64, f envelope.TaskFacts) envelope.Event {
-	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, Type: envelope.StateChanged,
+	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, Type: envelope.StateChanged, Origin: envelope.OriginClient,
 		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}, Payload: envelope.TaskStatePayload(f)}
 }
 

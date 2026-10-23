@@ -29,6 +29,7 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/config"
+	fconfig "github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/fanout"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/humanapi"
@@ -211,7 +212,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	if len(cfg.Webhooks) > 0 { // R30: no subscriber, no emitter
 		if err := mgr.Add(&webhook.Emitter{Subs: webhookSubscribers(cfg.Webhooks), Events: st,
-			Rooms: roomRepository(mgr.GetClient(), ns), State: st, Metrics: m, Logger: log, Now: time.Now}); err != nil {
+			Rooms: roomRepository(mgr.GetClient(), ns), State: st, Metrics: m, Logger: log, Now: time.Now, FactoryPrincipal: fconfig.PrincipalFactory}); err != nil {
 			return fmt.Errorf("room-broker: webhook emitter: %w", err)
 		}
 	}

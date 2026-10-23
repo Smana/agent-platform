@@ -10,14 +10,15 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/agent-platform/internal/summary"
 )
 
 const (
@@ -86,19 +87,22 @@ type Emitter struct {
 	// MinBackoff is the first wait before retrying a failed registration or reconnect; it
 	// doubles to 30 s. 0 means 1 s.
 	MinBackoff time.Duration
+	// FactoryPrincipal is the system principal whose task facts name a room's repository.
+	FactoryPrincipal string
 	// LaggingLimit is how many rooms one catch-up asks for; 0 means 1,000.
 	LaggingLimit int
 
-	mu       sync.Mutex
-	subs     []*subState
-	running  map[workerKey]bool
-	again    map[workerKey]bool // a notification came while the worker ran
-	dirty    map[workerKey]bool // to retry on the next sweep
-	catchup  map[string]bool    // subscribers whose Lagging must still run (or run again)
-	rooms    map[string]*roomInfo
-	trackers map[workerKey]*list.Element
-	lru      *list.List // of *trackerEntry, most recent first
-	wg       sync.WaitGroup
+	mu         sync.Mutex
+	subs       []*subState
+	running    map[workerKey]bool
+	again      map[workerKey]bool // a notification came while the worker ran
+	dirty      map[workerKey]bool // to retry on the next sweep
+	mismatched map[workerKey]bool
+	catchup    map[string]bool // subscribers whose Lagging must still run (or run again)
+	rooms      map[string]*roomInfo
+	trackers   map[workerKey]*list.Element
+	lru        *list.List // of *trackerEntry, most recent first
+	wg         sync.WaitGroup
 }
 
 type subState struct {
@@ -112,18 +116,30 @@ type subState struct {
 // far the log was read for it, and whether the log is sealed. Shared by every subscriber.
 type roomInfo struct {
 	mu      sync.Mutex
-	repo    string
+	logRepo string // from the factory's task facts
+	cr      string // the Room's spec.repository, once seen
 	scanned int64
 	sealed  bool
 }
 
-// repoURL is the owner/name of a GitHub issue or pull request URL.
-var repoURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/[0-9]+`)
+// resolved is what resolve knows of a room.
+type resolved struct {
+	repo     string
+	sealed   bool
+	scanned  int64
+	mismatch bool // the log and the Room name different repositories
+}
+
+// brokerActor is who the broker seals a room's log as (store.sealTx).
+const brokerActor = "system:room-broker"
 
 // fromLog is the repository a task entry's issue or pull request URL names, and whether ev is
-// the seal CloseRoom appends.
-func fromLog(ev envelope.Event) (repo string, sealed bool) {
-	if ev.Type != envelope.StateChanged {
+// the seal CloseRoom appends. A task entry counts only from the factory (a system actor of that
+// principal, written through the system API), the seal only from the broker itself: any other
+// writer of the room could otherwise name a repository or end the room. The event does not
+// carry its origin client, so the factory's ":task" stream cannot be checked beyond that.
+func (e *Emitter) fromLog(ev envelope.Event) (repo string, sealed bool) {
+	if ev.Type != envelope.StateChanged || ev.Actor.Kind != envelope.ActorSystem {
 		return "", false
 	}
 	var k struct {
@@ -133,35 +149,16 @@ func fromLog(ev envelope.Event) (repo string, sealed bool) {
 	if json.Unmarshal(ev.Payload, &k) != nil {
 		return "", false
 	}
-	switch k.Kind {
-	case "room_phase":
-		return "", k.Phase == "Closed"
-	case "task":
+	switch {
+	case k.Kind == "room_phase":
+		return "", k.Phase == "Closed" && ev.Origin == envelope.OriginBroker && ev.Actor.ID == brokerActor
+	case k.Kind == "task" && e.FactoryPrincipal != "" && ev.Origin == envelope.OriginClient && ev.Actor.ID == e.FactoryPrincipal:
 		var f envelope.TaskFacts
-		if json.Unmarshal(ev.Payload, &f) != nil {
-			return "", false
-		}
-		for _, u := range []string{urlOf(f.PR), urlOf(f.Issue)} {
-			if m := repoURL.FindStringSubmatch(u); m != nil {
-				return m[1], false
-			}
+		if json.Unmarshal(ev.Payload, &f) == nil {
+			return summary.Repo(&f), false
 		}
 	}
 	return "", false
-}
-
-func urlOf(v any) string {
-	switch f := v.(type) {
-	case *envelope.PRFact:
-		if f != nil {
-			return f.URL
-		}
-	case *envelope.IssueFact:
-		if f != nil {
-			return f.URL
-		}
-	}
-	return ""
 }
 
 type workerKey struct{ sub, room string }
@@ -193,6 +190,7 @@ func (e *Emitter) Start(ctx context.Context) error {
 	}
 	e.running, e.again, e.dirty = map[workerKey]bool{}, map[workerKey]bool{}, map[workerKey]bool{}
 	e.catchup, e.rooms = map[string]bool{}, map[string]*roomInfo{}
+	e.mismatched = map[workerKey]bool{}
 	e.trackers, e.lru = map[workerKey]*list.Element{}, list.New()
 	for _, s := range e.Subs {
 		st := &subState{Subscriber: s, sem: make(chan struct{}, maxWorkers)}
@@ -389,7 +387,20 @@ func (e *Emitter) kick(ctx context.Context, s *subState, room string) {
 // work delivers room's pending events to s. held is true when it must be retried later without
 // a new notification: the repository is unknown (M5) or a store call failed.
 func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool) {
-	repo, sealed, scanned, err := e.resolve(ctx, room)
+	res, err := e.resolve(ctx, room)
+	repo, sealed, scanned := res.repo, res.sealed, res.scanned
+	if err == nil && res.mismatch {
+		key := workerKey{s.Name, room}
+		e.mu.Lock()
+		first := !e.mismatched[key]
+		e.mismatched[key] = true
+		e.mu.Unlock()
+		if first { // once per subscriber and room, not once per sweep
+			e.Logger.Warn("webhook: the room's log and its Room name different repositories; held", "subscriber", s.Name, "room", room)
+			e.Metrics.WebhookDelivery(ctx, s.Name, "mismatch")
+		}
+		return true
+	}
 	if err != nil {
 		e.Logger.Warn("webhook: resolve repository", "subscriber", s.Name, "room", room, "error", err)
 		return true
@@ -414,7 +425,7 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 		return false
 	}
 	var tr *Tracker
-	if slices.Contains(s.Repositories, repo) {
+	if slices.ContainsFunc(s.Repositories, func(r string) bool { return strings.EqualFold(r, repo) }) {
 		if tr, err = e.tracker(ctx, workerKey{s.Name, room}, repo, cur); err != nil {
 			e.Logger.Warn("webhook: warm tracker", "subscriber", s.Name, "room", room, "error", err)
 			return true
@@ -453,11 +464,11 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 	}
 }
 
-// resolve is a room's repository: from its own log first (the URL of its issue or pull request),
-// so a closed room whose Room is gone still resolves; the Room only when the log has none. It
-// reads the log once, then only what was appended since. sealed is whether the log holds the
-// seal; scanned the last seq read.
-func (e *Emitter) resolve(ctx context.Context, room string) (repo string, sealed bool, scanned int64, err error) {
+// resolve is a room's repository: from its own log first (the URL of its issue or pull request in
+// the factory's task facts), so a closed room whose Room is gone still resolves, and the Room's
+// spec.repository when the log has none. When both exist and differ (case aside) the room is a
+// mismatch and nothing is delivered. It reads the log once, then only what was appended since.
+func (e *Emitter) resolve(ctx context.Context, room string) (resolved, error) {
 	e.mu.Lock()
 	info := e.rooms[room]
 	if info == nil {
@@ -473,17 +484,17 @@ func (e *Emitter) resolve(ctx context.Context, room string) (repo string, sealed
 	e.mu.Unlock()
 	info.mu.Lock()
 	defer info.mu.Unlock()
-	for info.repo == "" {
+	for info.logRepo == "" {
 		evs, err := e.Events.Range(ctx, room, info.scanned, pageSize)
 		if err != nil {
-			return "", false, 0, err
+			return resolved{}, err
 		}
 		for _, ev := range evs {
 			info.scanned = ev.Seq
-			r, seal := fromLog(ev)
+			r, seal := e.fromLog(ev)
 			info.sealed = info.sealed || seal
 			if r != "" {
-				info.repo = r
+				info.logRepo = r
 				break
 			}
 		}
@@ -491,14 +502,23 @@ func (e *Emitter) resolve(ctx context.Context, room string) (repo string, sealed
 			break
 		}
 	}
-	if info.repo == "" {
+	if info.cr == "" {
 		r, err := e.Rooms(ctx, room)
 		if err != nil {
-			return "", false, 0, err
+			return resolved{}, err
 		}
-		info.repo = r
+		info.cr = r // "" when the Room is gone or not in the cache yet: asked again next time
 	}
-	return info.repo, info.sealed, info.scanned, nil
+	res := resolved{sealed: info.sealed, scanned: info.scanned}
+	switch {
+	case info.logRepo != "" && info.cr != "" && !strings.EqualFold(info.logRepo, info.cr):
+		res.mismatch = true
+	case info.logRepo != "":
+		res.repo = info.logRepo
+	default:
+		res.repo = info.cr
+	}
+	return res, nil
 }
 
 // tracker is (s, room)'s Tracker (M1), warmed by replaying the room up to cur when missing.
