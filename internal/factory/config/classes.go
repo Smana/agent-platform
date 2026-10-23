@@ -5,6 +5,7 @@ package config
 import (
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Class is one merge class (§5.2): live classes auto-merge once policy-bot agrees; a shadow
@@ -59,6 +60,13 @@ func (c Class) ReadsDiff(name string) bool {
 func validateClass(name string, cl Class, bad func(string, ...any)) {
 	if cl.Live && cl.Shadow {
 		bad("class %s: live and shadow never together (R32)", name)
+	}
+	for _, p := range cl.AllowedFiles {
+		// The match is unanchored, as policy-bot's is, so an allow list must say where a path
+		// begins and ends: "docs/.+" would allow "evil/docs/x".
+		if !strings.HasPrefix(p, "^") || !strings.HasSuffix(p, "$") {
+			bad("class %s: allowedFiles %q must start with ^ and end with $", name, p)
+		}
 	}
 	for _, f := range []struct {
 		key  string

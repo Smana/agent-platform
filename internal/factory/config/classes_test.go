@@ -42,15 +42,17 @@ func TestDeclaredConditionsParse(t *testing.T) {
 // Offline proof 3: an unknown condition fails the strict decoder; a bad value fails Validate.
 func TestBadConditionsFail(t *testing.T) {
 	for name, c := range map[string]struct{ classes, err string }{
-		"gh-aw's spelling":   {"docs-links: {live: true, max-patch-size: 3}\n  revert: {}", `unknown field "max-patch-size"`},
-		"an unknown key":     {"docs-links: {live: true, maxPatchSize: 3}\n  revert: {}", `unknown field "maxPatchSize"`},
-		"a bad pattern":      {"docs-links: {}\n  revert: {}\n  x: {allowedFiles: ['(']}", `class x: allowedFiles "(" is not a regular expression`},
-		"an empty pattern":   {"docs-links: {}\n  revert: {}\n  x: {protectedFiles: ['']}", `class x: protectedFiles "" is not a regular expression`},
-		"a negative cap":     {"docs-links: {}\n  revert: {}\n  x: {maxModifiedLines: -1}", "class x: maxModifiedLines must be 0 (no cap) or more"},
-		"an unknown shape":   {"docs-links: {}\n  revert: {}\n  x: {diffShape: semver-patch}", `class x: diffShape "semver-patch" is not one of [links-only]`},
-		"a holdout twice":    {"docs-links: {}\n  revert: {}\n  x: {holdoutChecks: [a, a]}", `class x: holdoutChecks names "a" empty or twice`},
-		"live and shadow":    {"docs-links: {live: true, shadow: true}\n  revert: {}", "class docs-links: live and shadow never together (R32)"},
-		"a negative per day": {"docs-links: {}\n  revert: {}\n  x: {maxPerDay: -2}", "class x: maxPerDay must be 0 (no cap) or more"},
+		"gh-aw's spelling":    {"docs-links: {live: true, max-patch-size: 3}\n  revert: {}", `unknown field "max-patch-size"`},
+		"an unknown key":      {"docs-links: {live: true, maxPatchSize: 3}\n  revert: {}", `unknown field "maxPatchSize"`},
+		"an unanchored allow": {"docs-links: {}\n  revert: {}\n  x: {allowedFiles: ['^docs/.+']}", `class x: allowedFiles "^docs/.+" must start with ^ and end with $`},
+		"an unanchored start": {"docs-links: {}\n  revert: {}\n  x: {allowedFiles: ['docs/.+$']}", `class x: allowedFiles "docs/.+$" must start with ^ and end with $`},
+		"a bad pattern":       {"docs-links: {}\n  revert: {}\n  x: {allowedFiles: ['(']}", `class x: allowedFiles "(" is not a regular expression`},
+		"an empty pattern":    {"docs-links: {}\n  revert: {}\n  x: {protectedFiles: ['']}", `class x: protectedFiles "" is not a regular expression`},
+		"a negative cap":      {"docs-links: {}\n  revert: {}\n  x: {maxModifiedLines: -1}", "class x: maxModifiedLines must be 0 (no cap) or more"},
+		"an unknown shape":    {"docs-links: {}\n  revert: {}\n  x: {diffShape: semver-patch}", `class x: diffShape "semver-patch" is not one of [links-only]`},
+		"a holdout twice":     {"docs-links: {}\n  revert: {}\n  x: {holdoutChecks: [a, a]}", `class x: holdoutChecks names "a" empty or twice`},
+		"live and shadow":     {"docs-links: {live: true, shadow: true}\n  revert: {}", "class docs-links: live and shadow never together (R32)"},
+		"a negative per day":  {"docs-links: {}\n  revert: {}\n  x: {maxPerDay: -2}", "class x: maxPerDay must be 0 (no cap) or more"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(withClasses(t, c.classes)))
