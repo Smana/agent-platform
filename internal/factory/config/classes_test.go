@@ -30,6 +30,10 @@ func TestDeclaredConditionsParse(t *testing.T) {
 	if !cl.ModifyOnly || cl.MaxModifiedLines != 20 || cl.DiffShape != "links-only" || cl.HoldoutChecks[0] != "External links 🔗" || cl.Live || cl.Shadow {
 		t.Fatalf("%+v", cl)
 	}
+	if len(cl.AllowedFiles) != 1 || cl.AllowedFiles[0] != `^(docs|website/content)/.+\.md$` || len(cl.ProtectedFiles) != 1 || cl.ProtectedFiles[0] != `^docs/(superpowers|specs)/` ||
+		cl.MaxPatchFiles != 3 || cl.MaxPerDay != 1 {
+		t.Fatalf("allowed, protected, maxPatchFiles or maxPerDay decoded into the wrong field: %+v", cl)
+	}
 	if !cl.ReadsDiff("dead-links") || !(Class{}).ReadsDiff("docs-links") || (Class{Shadow: true}).ReadsDiff("docs") {
 		t.Fatal("ReadsDiff: a declared file condition or a built-in shape reads the diff, nothing else does")
 	}
