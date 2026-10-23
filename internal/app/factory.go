@@ -155,6 +155,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	m.ListRepositories(conns.names()...)
 	m.ChargePeople(cfg.Budgets.PerPerson.Enabled)
+	sponsors := map[string]string{}
+	for _, sp := range cfg.API.Sponsored {
+		sponsors[sp.Principal()] = factoryv1.Person(sp.Sponsor)
+	}
+	m.Sponsors(sponsors)
 	// v2 D7: a repository is acted on only while its default branch names this factory.
 	fenced := &fence.Fence{Name: cfg.Factory, Repositories: conns.names(), Read: conns.fenceFile,
 		Every: fenceEvery, Stale: fenceStale, Now: time.Now, OnState: m.RepositoryOwned, Log: log}
