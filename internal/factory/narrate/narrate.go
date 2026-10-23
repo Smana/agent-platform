@@ -229,6 +229,8 @@ func reasons() map[string]string {
 		"file_added_or_deleted":     "it changes a file in a way other than editing its content (an add, delete, rename, copy or mode change), which its class does not allow",
 		"patch_too_large":           "it changes more files or lines than its class allows",
 		"holdout_red":               "a holdout check its class requires did not succeed (failed, cancelled, neutral, skipped, or not posted by GitHub Actions), or its checks could not all be read",
+		"oracle_finding_open":       "a link its task was opened to fix is still a link target in the head, or the file holding it was not changed",
+		"oracle_unrequested":        "it moves a link target the task's findings did not ask to move, or moves one anywhere but the exact snapshot its finding gave",
 		"holdout_pending":           "a holdout check its class requires has not passed yet",
 		"foreign_trailer":           "its head commit comes from another task's run",
 		"class_paused":              "auto-merge of this class is paused after a revert",

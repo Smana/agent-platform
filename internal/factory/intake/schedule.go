@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -19,6 +21,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -54,6 +57,7 @@ type ScheduleForge interface {
 // probe is a merger-side read, so checks:read never joins the factory App's scope.
 type ScheduleMerger interface {
 	PullRequestChecks(ctx context.Context, number int) (forge.Checks, error)
+	DeadLinksMerger
 }
 
 // Scheduler is a leader-only manager.Runnable that turns config's schedules into Tasks (§1):
@@ -76,7 +80,16 @@ type Scheduler struct {
 	Now     func() time.Time
 	Errors  errorCounter
 	Log     *slog.Logger
+
+	seenMu sync.Mutex
+	seen   map[string]weighedRuns // schedule -> the detector run pair last evaluated, outcome final
+	// pending is a pair whose findings await their Task; settle saves it once the Task exists.
+	pending map[string]weighedRuns
 }
+
+// weighedRuns is the two detector runs weighed, each as (run ID, run attempt): a maintainer's re-run
+// keeps the ID, bumps the attempt and uploads a new artifact.
+type weighedRuns [4]int64
 
 // NeedLeaderElection is true: two schedulers would race every slot.
 func (s *Scheduler) NeedLeaderElection() bool { return true }
@@ -135,8 +148,9 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 		}
 		key := taskid.ScheduleKey(e.Name, slot)
 		text := e.Text
+		var findings []v1alpha1.Finding
 		if e.Probe != "" {
-			found, detail, err := s.probe(ctx, rc, e.Probe, e.ProbeAuthor)
+			found, detail, fs, err := s.probe(ctx, rc, e)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", e.Name, err))
 				continue
@@ -144,7 +158,7 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 			if !found {
 				continue // "if it finds nothing, no task is created" (§1)
 			}
-			text += "\n\n" + detail
+			text, findings = text+"\n\n"+detail, fs
 		}
 		dataClass := e.DataClass
 		if dataClass == "" {
@@ -156,31 +170,151 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 			Spec: v1alpha1.TaskSpec{
 				Source: v1alpha1.Source{Kind: "schedule", Ref: e.Name, Key: key, RequestedBy: "system:scheduler",
 					Trust: "trusted", ContentSHA256: hex.EncodeToString(sum[:])},
-				Repository: rc.Name, Text: text, DataClass: dataClass, PredictedClass: e.Class,
+				Repository: rc.Name, Text: text, DataClass: dataClass, PredictedClass: e.Class, Findings: findings,
 			},
 		}
 		if err := s.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
 			errs = append(errs, err) // AlreadyExists is the dedup (S2)
+		} else if len(findings) > 0 {
+			s.settle(rc.Name + "/" + e.Name)
 		}
 	}
 	return errs
 }
 
-// probe: renovate-red lists open Renovate PRs whose checks have been red for more than 24 h —
-// bumps the factory can land itself when Renovate's own branch went stale.
-func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, name, author string) (bool, string, error) {
-	if name != "renovate-red" {
-		return false, "", fmt.Errorf("intake: unknown probe %q", name)
+// remember saves a run pair as weighed.
+func (s *Scheduler) remember(key string, pair weighedRuns) {
+	s.seenMu.Lock()
+	defer s.seenMu.Unlock()
+	if s.seen == nil {
+		s.seen = map[string]weighedRuns{}
 	}
+	s.seen[key] = pair
+}
+
+// settle saves the pair whose findings became a Task (created, or already there).
+func (s *Scheduler) settle(key string) {
+	s.seenMu.Lock()
+	pair, ok := s.pending[key]
+	delete(s.pending, key)
+	s.seenMu.Unlock()
+	if ok {
+		s.remember(key, pair)
+	}
+}
+
+// probe runs the schedule's probe: whether it found work, the text it adds, and the findings an
+// oracle class's task carries.
+func (s *Scheduler) probe(ctx context.Context, rc *config.Repository, e config.Schedule) (bool, string, []v1alpha1.Finding, error) {
+	switch e.Probe {
+	case "renovate-red":
+		found, detail, err := s.renovateRed(ctx, rc, e.ProbeAuthor)
+		return found, detail, nil, err
+	case "dead-links":
+		return s.deadLinksProbe(ctx, rc, e)
+	}
+	return false, "", nil, fmt.Errorf("intake: unknown probe %q", e.Probe)
+}
+
+// conns is the repository's two connections: Clients' (v2 D8), or Forge and Merger.
+func (s *Scheduler) conns(rc *config.Repository) (ScheduleForge, ScheduleMerger, error) {
+	if s.Clients == nil {
+		return s.Forge, s.Merger, nil
+	}
+	gh, merger, ok := s.Clients(rc.Name)
+	if !ok {
+		return nil, nil, fmt.Errorf("intake: no GitHub connection for %s (v2 D8)", rc.Name)
+	}
+	return gh, merger, nil
+}
+
+// deadLinksProbe (MC5, MC6): nothing while the class is off (MC14) or while a task of this
+// schedule is still open (loops L9); else the findings both newest detector runs agree on. A run
+// the probe does not trust (errFindingsRefused) starts nothing: it is logged and counted, not a
+// failed tick.
+func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e config.Schedule) (bool, string, []v1alpha1.Finding, error) {
+	cl := rc.Classes[e.Class]
+	if (!cl.Live && !cl.Shadow) || cl.Oracle == nil {
+		return false, "", nil, nil
+	}
+	var l v1alpha1.TaskList
+	if err := s.Client.List(ctx, &l, client.InNamespace(s.Namespace)); err != nil {
+		return false, "", nil, err
+	}
+	if slices.ContainsFunc(l.Items, func(t v1alpha1.Task) bool {
+		return t.Spec.Source.Kind == "schedule" && t.Spec.Source.Ref == e.Name && !v1alpha1.TerminalPhase(t.Status.Phase)
+	}) {
+		return false, "", nil, nil
+	}
+	_, merger, err := s.conns(rc)
+	if err != nil {
+		return false, "", nil, err
+	}
+	two, err := detectorRuns(ctx, merger, rc, cl)
+	if err != nil || two == nil {
+		return false, "", nil, err
+	}
+	// The leader is the only evaluator: a run pair already weighed is not read again each minute.
+	pair, key := weighedRuns{two[0].ID, int64(two[0].RunAttempt), two[1].ID, int64(two[1].RunAttempt)}, rc.Name+"/"+e.Name
+	s.seenMu.Lock()
+	same := s.seen[key] == pair
+	s.seenMu.Unlock()
+	if same {
+		return false, "", nil, nil
+	}
+	fs, err := evaluateRuns(ctx, merger, two, cl, s.log().With("schedule", e.Name))
+	// Final outcomes are saved now (refused, or nothing found); findings wait for their Task.
+	switch {
+	case err == nil && len(fs) > 0:
+		s.seenMu.Lock()
+		if s.pending == nil {
+			s.pending = map[string]weighedRuns{}
+		}
+		s.pending[key] = pair
+		s.seenMu.Unlock()
+	case err == nil || errors.Is(err, errFindingsRefused):
+		s.remember(key, pair)
+	}
+	if errors.Is(err, errFindingsRefused) {
+		s.log().Warn("dead-links findings refused", "schedule", e.Name, "err", err)
+		if s.Errors != nil {
+			s.Errors.IntakeError(fmetrics.WithRepository(ctx, rc.Name), "dead-links")
+		}
+		return false, "", nil, nil
+	}
+	if err != nil || len(fs) == 0 {
+		return false, "", nil, err
+	}
+	// The stored text is e.Text, a blank line and this detail: all of it within caps.maxTextBytes. A
+	// budget of nothing is "nothing fits", never "no bound".
+	budget := 0
+	if limit := s.Cfg.Caps.MaxTextBytes; limit > 0 {
+		if budget = limit - len(e.Text) - 2; budget <= 0 {
+			s.remember(key, pair)
+			s.log().Info("dead-links text cap leaves no room", "schedule", e.Name)
+			return false, "", nil, nil
+		}
+	}
+	text, spec, left := deadLinksTask(fs, budget)
+	if left > 0 {
+		s.log().Info("dead-links text cap", "schedule", e.Name, "left_out", left)
+	}
+	if len(spec) == 0 {
+		s.remember(key, pair) // not even one finding fits: nothing to start, and nothing to weigh again
+		return false, "", nil, nil
+	}
+	return true, text, spec, nil
+}
+
+// renovateRed lists open Renovate PRs whose checks have been red for more than 24 h — bumps the
+// factory can land itself when Renovate's own branch went stale.
+func (s *Scheduler) renovateRed(ctx context.Context, rc *config.Repository, author string) (bool, string, error) {
 	if !rc.NeedsMerger() {
 		return false, "", nil // no merger key is required, and reading checks needs it: nothing to find
 	}
-	gh, merger := s.Forge, s.Merger
-	if s.Clients != nil {
-		var ok bool
-		if gh, merger, ok = s.Clients(rc.Name); !ok {
-			return false, "", fmt.Errorf("intake: no GitHub connection for %s (v2 D8)", rc.Name)
-		}
+	gh, merger, err := s.conns(rc)
+	if err != nil {
+		return false, "", err
 	}
 	prs, err := gh.OpenPullRequests(ctx)
 	if err != nil {

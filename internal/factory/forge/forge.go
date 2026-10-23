@@ -239,6 +239,18 @@ func (c Checks) StatusOf(context string) (state, creator string) {
 	return "", ""
 }
 
+// WorkflowRun is one completed run of a workflow, as the dead-links probe reads it: what
+// triggered it, on which branch, by whom, and how it ended.
+type WorkflowRun struct {
+	ID         int64
+	RunAttempt int    // 1, then one more per re-run of the same run ID
+	Event      string // schedule | workflow_dispatch | pull_request | push | …
+	Branch     string // the run's head branch
+	Actor      string // the login that triggered it
+	Conclusion string // success | failure | cancelled | …
+	Created    time.Time
+}
+
 // Revert is the pull request RevertPR opened.
 type Revert struct {
 	Number int
@@ -289,6 +301,11 @@ type Merger interface {
 	// permission for a pull request's labels.
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	PullsWithLabel(ctx context.Context, label string) ([]LabelledPull, error)
+	// WorkflowRuns, RunArtifact and FileAt are the dead-links probe's reads (merge gate MC5):
+	// the detector's runs on main, their findings, and a finding's file there.
+	WorkflowRuns(ctx context.Context, workflow string) ([]WorkflowRun, error)
+	RunArtifact(ctx context.Context, runID int64, name, file string) ([]byte, error)
+	FileAt(ctx context.Context, path, ref string) (string, error)
 }
 
 var _ Merger = (*GitHub)(nil)

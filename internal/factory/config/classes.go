@@ -35,7 +35,23 @@ type Class struct {
 	HoldoutChecks []string `json:"holdoutChecks,omitempty"`
 	// MaxPerDay caps this class's merges a day, under merge.autoMergesPerDay; 0 is no cap of its own.
 	MaxPerDay int `json:"maxPerDay,omitempty"`
+	// Oracle makes the class oracle-backed (MC4–MC6): its tasks are a detector's findings, and its
+	// gate holds only when the head no longer holds them and changes nothing else.
+	Oracle *Oracle `json:"oracle,omitempty"`
 }
+
+// Oracle is an oracle-backed class's detector: the probe that turns its findings into a task,
+// the workflow on main whose runs report them, and the most findings one task holds.
+type Oracle struct {
+	Probe       string `json:"probe"`
+	Workflow    string `json:"workflow"`
+	MaxFindings int    `json:"maxFindings"`
+}
+
+// MaxFindings bounds oracle.maxFindings: the Task CRD's spec.findings holds at most 16.
+const MaxFindings = 16
+
+var workflowRE = regexp.MustCompile(`^[A-Za-z0-9._-]+\.ya?ml$`)
 
 // DiffShapes are the shapes diffShape names.
 func DiffShapes() []string { return []string{"links-only"} }
@@ -53,7 +69,7 @@ func BuiltInShape(name string) string {
 // or any declared condition on its files.
 func (c Class) ReadsDiff(name string) bool {
 	return BuiltInShape(name) != "" || len(c.AllowedFiles) > 0 || len(c.ProtectedFiles) > 0 || c.ModifyOnly ||
-		c.MaxPatchFiles > 0 || c.MaxModifiedLines > 0 || c.DiffShape != ""
+		c.MaxPatchFiles > 0 || c.MaxModifiedLines > 0 || c.DiffShape != "" || c.Oracle != nil
 }
 
 // validateClass reports one class's problems.
@@ -91,6 +107,26 @@ func validateClass(name string, cl Class, bad func(string, ...any)) {
 	}
 	if b := BuiltInShape(name); b != "" && cl.DiffShape != "" && cl.DiffShape != b {
 		bad("class %s: diffShape is %s, built in (R52)", name, b)
+	}
+	if o := cl.Oracle; o != nil {
+		switch {
+		case o.Probe != "dead-links":
+			bad("class %s: oracle.probe %q is not dead-links", name, o.Probe)
+		case !workflowRE.MatchString(o.Workflow):
+			bad("class %s: oracle.workflow %q is not a workflow file name", name, o.Workflow)
+		case o.MaxFindings < 1 || o.MaxFindings > MaxFindings:
+			bad("class %s: oracle.maxFindings must be 1..%d", name, MaxFindings)
+		case len(cl.HoldoutChecks) == 0:
+			bad("class %s: an oracle needs holdoutChecks, or the head goes unproven (MC5)", name)
+		case cl.DiffShape != "links-only":
+			bad("class %s: an oracle reads link targets: diffShape must be links-only", name)
+		case !cl.ModifyOnly:
+			bad("class %s: an oracle needs modifyOnly: true, or an added or deleted empty file would pass", name)
+		case len(cl.AllowedFiles) == 0:
+			bad("class %s: an oracle needs allowedFiles, or the probe drops every finding", name)
+		case cl.MaxModifiedLines > 0 && cl.MaxModifiedLines < 2*o.MaxFindings:
+			bad("class %s: maxModifiedLines %d is under 2 x oracle.maxFindings (%d): one retarget changes two lines", name, cl.MaxModifiedLines, 2*o.MaxFindings)
+		}
 	}
 	seen := map[string]bool{}
 	for _, h := range cl.HoldoutChecks {

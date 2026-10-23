@@ -46,6 +46,7 @@ type GitHub struct {
 	v4          *githubv4.Client
 	tokens      *tokens
 	api         *url.URL
+	plain       *http.Client // o.HTTP, never carrying the token: artifact downloads off the API host
 	agent       string
 	owner, name string
 	now         func() time.Time
@@ -73,7 +74,7 @@ func Connect(ctx context.Context, o Options) (*GitHub, error) {
 	if !strings.HasSuffix(api.Path, "/") {
 		api.Path += "/"
 	}
-	g := &GitHub{api: api, agent: o.UserAgent, owner: owner, name: name, now: o.Now,
+	g := &GitHub{api: api, plain: o.HTTP, agent: o.UserAgent, owner: owner, name: name, now: o.Now,
 		tokens: &tokens{api: api, hc: o.HTTP, owner: owner, name: name, agent: o.UserAgent,
 			idFile: o.AppIDFile, keyFile: o.PrivateKeyFile, now: o.Now, perms: o.Permissions}}
 	hc := g.authed(o.HTTP)

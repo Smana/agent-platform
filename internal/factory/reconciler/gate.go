@@ -3,11 +3,15 @@
 package reconciler
 
 import (
+	"maps"
 	"regexp"
 	"slices"
 
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/mdlinks"
 )
 
 // Condition is one condition a class declares in its config (merge gate classes MC1): Declared
@@ -30,6 +34,7 @@ func Conditions() []Condition {
 		{"maxModifiedLines", func(cl config.Class) bool { return cl.MaxModifiedLines > 0 }, maxModifiedLines},
 		{"diffShape", func(cl config.Class) bool { return cl.DiffShape != "" }, diffShape},
 		{"holdoutChecks", func(cl config.Class) bool { return len(cl.HoldoutChecks) > 0 }, holdoutChecks},
+		{"oracle", func(cl config.Class) bool { return cl.Oracle != nil }, oracle},
 	}
 }
 
@@ -114,7 +119,7 @@ func maxModifiedLines(cl config.Class, in ArmInputs) (string, bool) {
 // yet passes it vacuously (LinksOnly of two empty trees).
 func diffShape(cl config.Class, in ArmInputs) (string, bool) {
 	if cl.DiffShape == "links-only" {
-		if ok, _ := LinksOnly(in.Files.Base, in.Files.Head); !ok {
+		if ok, _ := mdlinks.LinksOnly(in.Files.Base, in.Files.Head); !ok {
 			return "class_mismatch", false
 		}
 	}
@@ -153,8 +158,45 @@ func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
+// oracle (MC5, MC6): every finding was a link target in its file on the base and is none on the
+// head, and every target the head moved is a finding's, moved to exactly the snapshot that
+// finding gave: no same-host move, no other snapshot. A finding with no snapshot has no move.
+// diffShape links-only (Validate) has already held the rest of the text and the targets' count.
+// Only the head's files are walked here: a deleted file is refused by that shape's count check
+// (loop 2 of mdlinks.LinksOnly walks the base's paths too), so that check is not redundant.
+func oracle(_ config.Class, in ArmInputs) (string, bool) {
+	fs := in.Task.Spec.Findings
+	if len(fs) == 0 {
+		return "oracle_finding_open", false // a task of an oracle class is its findings: none is no proof
+	}
+	for _, f := range fs {
+		h, ok := in.Files.Head[f.File]
+		_, tb := mdlinks.Targets(in.Files.Base[f.File])
+		if _, ts := mdlinks.Targets(h); !ok || !slices.Contains(tb, f.URL) || slices.Contains(ts, f.URL) {
+			return "oracle_finding_open", false
+		}
+	}
+	for _, p := range slices.Sorted(maps.Keys(in.Files.Head)) {
+		_, tb := mdlinks.Targets(in.Files.Base[p])
+		_, th := mdlinks.Targets(in.Files.Head[p])
+		if len(tb) != len(th) {
+			return "oracle_unrequested", false
+		}
+		for i := range tb {
+			if tb[i] == th[i] {
+				continue
+			}
+			j := slices.IndexFunc(fs, func(f v1alpha1.Finding) bool { return f.File == p && f.URL == tb[i] })
+			if j < 0 || fs[j].Archive == "" || th[i] != fs[j].Archive {
+				return "oracle_unrequested", false
+			}
+		}
+	}
+	return "", false
+}
+
 // onDiff are the conditions that read the diff, which hold until it is read.
-var onDiff = []string{"allowedFiles", "protectedFiles", "modifyOnly", "maxPatchFiles", "maxModifiedLines"}
+var onDiff = []string{"allowedFiles", "protectedFiles", "modifyOnly", "maxPatchFiles", "maxModifiedLines", "oracle"}
 
 // declared checks the class's declared conditions in order: the first refusal, or "".
 func declared(cl config.Class, in ArmInputs) (string, bool) {
