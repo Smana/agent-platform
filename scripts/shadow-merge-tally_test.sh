@@ -60,5 +60,19 @@ expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=yes "0 bad in 29 conclusive m
 out="$(TALLY_FIXTURE=regression tally)"
 expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'regression=[0-9]*' <<<"$out")" "bad=1 regression=1" "a regression label is a bad outcome"
 expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=no "1 bad in 29: no widening"
+# A follow-up is a later PR carrying factory/follow-up-of:#<n>, which is not one of the class's merges.
+out="$(TALLY_FIXTURE=followup tally)"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'follow_up=[0-9]*' <<<"$out")" "bad=1 follow_up=1" "a follow-up label on a later PR is a bad outcome"
+expect "$(grep -o 'widen=[a-z]*' <<<"$out")" widen=no "a follow-up blocks widening"
+grep -qF 'label:"factory/follow-up-of:#100"' "$GH_LOG" || { echo "FAIL: the follow-up search quotes the label (L11)" >&2; exit 1; }
+# A posted regression verdict counts as bad even when its label write failed.
+out="$(TALLY_FIXTURE=regcomment tally)"
+expect "$(grep -o 'bad=[0-9]*' <<<"$out") $(grep -o 'regression=[0-9]*' <<<"$out")" "bad=1 regression=1" "a regression comment without its label is bad"
+# --window is whole hours: anything else is refused, not miscomputed.
+for w in 7d 72h30m 168; do
+  if GH=scripts/testdata/tally/gh-stub.sh scripts/shadow-merge-tally.sh --class dead-links --outcomes --since 2026-08-01 --window "$w" >/dev/null 2>&1; then
+    echo "FAIL: --window $w is refused" >&2; exit 1
+  fi
+done
 grep -qF 'label:"factory/merged:dead-links"' "$GH_LOG" || { echo "FAIL: the search quotes the label (L11)" >&2; exit 1; }
 echo ok

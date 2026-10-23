@@ -1,0 +1,552 @@
+[
+ {
+  "number": 100,
+  "mergedAt": "2026-09-01T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-01T10:00:00Z",
+    "body": "Agent factory monitor of #100: **healthy**. <!-- agent-factory scope=x event=monitor-100 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 101,
+  "mergedAt": "2026-09-02T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-02T10:00:00Z",
+    "body": "Agent factory monitor of #101: **healthy**. <!-- agent-factory scope=x event=monitor-101 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 102,
+  "mergedAt": "2026-09-03T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-03T10:00:00Z",
+    "body": "Agent factory monitor of #102: **healthy**. <!-- agent-factory scope=x event=monitor-102 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 103,
+  "mergedAt": "2026-09-04T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-04T10:00:00Z",
+    "body": "Agent factory monitor of #103: **healthy**. <!-- agent-factory scope=x event=monitor-103 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 104,
+  "mergedAt": "2026-09-05T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-05T10:00:00Z",
+    "body": "Agent factory monitor of #104: **healthy**. <!-- agent-factory scope=x event=monitor-104 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 105,
+  "mergedAt": "2026-09-06T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-06T10:00:00Z",
+    "body": "Agent factory monitor of #105: **healthy**. <!-- agent-factory scope=x event=monitor-105 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 106,
+  "mergedAt": "2026-09-07T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-07T10:00:00Z",
+    "body": "Agent factory monitor of #106: **healthy**. <!-- agent-factory scope=x event=monitor-106 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 107,
+  "mergedAt": "2026-09-08T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-08T10:00:00Z",
+    "body": "Agent factory monitor of #107: **healthy**. <!-- agent-factory scope=x event=monitor-107 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 108,
+  "mergedAt": "2026-09-09T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-09T10:00:00Z",
+    "body": "Agent factory monitor of #108: **healthy**. <!-- agent-factory scope=x event=monitor-108 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 109,
+  "mergedAt": "2026-09-10T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-10T10:00:00Z",
+    "body": "Agent factory monitor of #109: **healthy**. <!-- agent-factory scope=x event=monitor-109 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 110,
+  "mergedAt": "2026-09-11T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-11T10:00:00Z",
+    "body": "Agent factory monitor of #110: **healthy**. <!-- agent-factory scope=x event=monitor-110 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 111,
+  "mergedAt": "2026-09-12T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-12T10:00:00Z",
+    "body": "Agent factory monitor of #111: **healthy**. <!-- agent-factory scope=x event=monitor-111 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 112,
+  "mergedAt": "2026-09-13T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-13T10:00:00Z",
+    "body": "Agent factory monitor of #112: **healthy**. <!-- agent-factory scope=x event=monitor-112 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 113,
+  "mergedAt": "2026-09-14T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-14T10:00:00Z",
+    "body": "Agent factory monitor of #113: **healthy**. <!-- agent-factory scope=x event=monitor-113 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 114,
+  "mergedAt": "2026-09-15T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-15T10:00:00Z",
+    "body": "Agent factory monitor of #114: **healthy**. <!-- agent-factory scope=x event=monitor-114 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 115,
+  "mergedAt": "2026-09-16T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-16T10:00:00Z",
+    "body": "Agent factory monitor of #115: **healthy**. <!-- agent-factory scope=x event=monitor-115 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 116,
+  "mergedAt": "2026-09-17T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-17T10:00:00Z",
+    "body": "Agent factory monitor of #116: **healthy**. <!-- agent-factory scope=x event=monitor-116 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 117,
+  "mergedAt": "2026-09-18T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-18T10:00:00Z",
+    "body": "Agent factory monitor of #117: **healthy**. <!-- agent-factory scope=x event=monitor-117 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 118,
+  "mergedAt": "2026-09-19T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-19T10:00:00Z",
+    "body": "Agent factory monitor of #118: **healthy**. <!-- agent-factory scope=x event=monitor-118 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 119,
+  "mergedAt": "2026-09-20T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-20T10:00:00Z",
+    "body": "Agent factory monitor of #119: **healthy**. <!-- agent-factory scope=x event=monitor-119 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 120,
+  "mergedAt": "2026-09-21T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-21T10:00:00Z",
+    "body": "Agent factory monitor of #120: **healthy**. <!-- agent-factory scope=x event=monitor-120 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 121,
+  "mergedAt": "2026-09-22T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-22T10:00:00Z",
+    "body": "Agent factory monitor of #121: **healthy**. <!-- agent-factory scope=x event=monitor-121 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 122,
+  "mergedAt": "2026-09-23T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-23T10:00:00Z",
+    "body": "Agent factory monitor of #122: **healthy**. <!-- agent-factory scope=x event=monitor-122 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 123,
+  "mergedAt": "2026-09-24T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-24T10:00:00Z",
+    "body": "Agent factory monitor of #123: **healthy**. <!-- agent-factory scope=x event=monitor-123 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 124,
+  "mergedAt": "2026-09-25T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-25T10:00:00Z",
+    "body": "Agent factory monitor of #124: **healthy**. <!-- agent-factory scope=x event=monitor-124 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 125,
+  "mergedAt": "2026-09-26T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-26T10:00:00Z",
+    "body": "Agent factory monitor of #125: **healthy**. <!-- agent-factory scope=x event=monitor-125 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 126,
+  "mergedAt": "2026-09-27T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-27T10:00:00Z",
+    "body": "Agent factory monitor of #126: **healthy**. <!-- agent-factory scope=x event=monitor-126 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 127,
+  "mergedAt": "2026-09-28T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-28T10:00:00Z",
+    "body": "Agent factory monitor of #127: **healthy**. <!-- agent-factory scope=x event=monitor-127 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 128,
+  "mergedAt": "2026-09-01T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-09-01T10:00:00Z",
+    "body": "Agent factory monitor of #128: **healthy**. <!-- agent-factory scope=x event=monitor-128 verdict=healthy -->"
+   }
+  ]
+ },
+ {
+  "number": 200,
+  "mergedAt": "2026-10-10T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": [
+   {
+    "author": {
+     "login": "app/ogenki-agent-factory"
+    },
+    "createdAt": "2026-10-10T10:00:00Z",
+    "body": "Agent factory monitor of #200: **inconclusive**. <!-- agent-factory scope=x event=monitor-200 verdict=inconclusive -->"
+   }
+  ]
+ },
+ {
+  "number": 201,
+  "mergedAt": "2026-10-20T10:00:00Z",
+  "labels": [
+   {
+    "name": "factory/merged:dead-links"
+   }
+  ],
+  "comments": []
+ }
+]

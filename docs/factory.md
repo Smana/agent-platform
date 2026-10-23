@@ -187,7 +187,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `foreign_trailer` | The head commit's `Agent-Run` trailer names another task's run |
 | `human_commit_in_pr` | It holds a commit no run of the task pushed, so the factory neither fixes nor merges on top of it |
 | `closes_parent` | A part's pull request body closes its parent issue; the parent closes with its last part, so edit the body and merge it yourself |
-| `class_paused` | The class's breaker tripped after reverts |
+| `class_paused` | The class's breaker tripped: reverts, and with `maxFollowUps` set follow-up fixes and regressions, among its newest merges |
 | `ledger_truncated` | A merge-ledger read filled its page of 100 and its oldest pull request is still inside the breaker window or today, so the ledger may under-count; nothing arms. A maintainer decides |
 | `ci_wait_expired` | The pull request waited `merge.awaitingCIFor` in `AwaitingCI` and a required check never reported. The message names the checks. A maintainer decides |
 | `auto_merge_cap` | `merge.autoMergesPerDay` is reached |
@@ -609,7 +609,9 @@ merge:
 ```
 
 `oracleRuns` and `flux` are read by the signals that follow this change; this one reads main's CI
-and the follow-ups. `merge.breaker.maxFollowUps` must be between 0 and `window`.
+and the follow-ups. Until then a class that declares either ends every watch `inconclusive`: the
+signal stays open to the end of the window and an open signal counts `inconclusive`. Do not
+declare them before those signals exist. `merge.breaker.maxFollowUps` must be between 0 and `window`.
 
 **The signals.**
 
@@ -627,8 +629,9 @@ patch was written against. The factory reads a window's merges at most once per 
 still open when the window ends counts `inconclusive`. A `regression` is posted at once and the
 watch goes on to the end of the window to count follow-ups; any other verdict is posted when the
 window ends. The comment ends `<!-- agent-factory … event=monitor-<n> verdict=<v> -->` and lists
-what it read, with `follow_ups=N`. A regression is also posted on the control issue.
-`agent_factory_monitor_verdicts_total{class,verdict}` counts each verdict once.
+what it read, with `follow_ups=N`. A regression, and each follow-up found, are also posted on the
+control issue (under their own keys), when it lives on the task's repository.
+`agent_factory_monitor_verdicts_total{class,verdict,repository}` counts each verdict once.
 
 **The labels** the merger writes (it asks for `issues: write` while any class is `live` or has a
 `monitor`):
@@ -642,7 +645,10 @@ what it read, with `follow_ups=N`. A regression is also posted on the control is
 **What demotes.** The breaker counts, among a class's newest `window` merges, reverts, follow-ups
 and regressions: `maxReverts` of the first, or `maxFollowUps` of the others, send the class back
 to human review (`class_paused`). A ledger read that fills its page of 100 with its oldest pull
-request still inside the window or the day fails closed (`ledger_truncated`). Only auto-merges
+request still inside the window or the day fails closed (`ledger_truncated`). These reads (the
+regression and merged labels, a follow-up read per windowed merge, the truncation check) happen only
+for a repository with a class that declares `monitor` or with `maxFollowUps > 0`; without either the
+ledger reads what it always did. Only auto-merges
 count toward `merge.autoMergesPerDay` and the class's `maxPerDay`; a maintainer's or Renovate's merge
 is in the ledger for the breaker, not for the caps.
 
@@ -657,7 +663,7 @@ drop an entry when the pull request it describes leaves the longest window.
 ### Calibration
 
 Widen a class one step only when the evidence allows it. `scripts/shadow-merge-tally.sh --class
-<class> --outcomes --since <date> --window <followUpWindow>` lists the class's merged pull requests
+<class> --outcomes --since <date> --window <followUpWindow>` (whole hours, like `168h`) lists the class's merged pull requests
 and their outcomes (reverted, follow-up fix, regression), leaves out the immature (merged less than
 the window ago) and the inconclusive, and prints the Clopper-Pearson 95% upper bound on the rest:
 

@@ -13,11 +13,12 @@
 #
 # --outcomes reads what became of the merges of a class instead: the pull requests labelled
 # factory/merged:<class> or factory/auto-merged:<class> since a date, each one's revert, the merged
-# follow-up fixes labelled factory/follow-up-of:#<n>, its factory/monitor:regression label and its
-# newest monitor verdict. A merge is mature once --window has passed (the class's followUpWindow),
+# follow-up fixes (merged pull requests, of any author, labelled factory/follow-up-of:#<n>, one search
+# per merge), its factory/monitor:regression label and its newest monitor verdict; a posted
+# verdict=regression counts as bad even when its label is missing. A merge is mature once --window has passed (the class's followUpWindow),
 # conclusive when it holds a healthy or regression verdict, or a bad outcome of its own. The
 # Clopper-Pearson upper bound (95%) on the bad outcomes of the mature, conclusive merges is
-# compared with --budget: widen=yes only below it. NOW overrides the clock.
+# compared with --budget: widen=yes only below it. --window is whole hours (168h). NOW overrides the clock.
 set -euo pipefail
 
 class="" outcomes="" since="" window="168h" budget="0.10" repo="${GH_REPO:-Smana/cloud-native-ref}" limit=500
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$class" ] || { usage; exit 2; }
+[[ "$window" =~ ^[0-9]+h$ ]] || { echo "--window is whole hours, like 168h" >&2; exit 2; }
 [ -z "$outcomes" ] || [ -n "$since" ] || { echo "--outcomes needs --since <date>" >&2; exit 2; }
 gh="${GH:-gh}"
 
@@ -51,25 +53,30 @@ if [ -n "$outcomes" ]; then
       --search "label:\"$1:$class\" merged:>=$since"
   }
   prs=$(jq -s 'add | unique_by(.number)' <(merged_with factory/merged) <(merged_with factory/auto-merged))
+  # The follow-up label sits on the later fixing pull request, not on a merge of the class: one
+  # quoted search per merge (L11) says which merges were followed up.
+  followed="{}"
+  while read -r n; do
+    hit=$("$gh" pr list -R "$repo" --state merged --limit 1 --json number --search "label:\"factory/follow-up-of:#$n\"")
+    followed=$(jq -c --arg n "$n" --argjson hit "$hit" '. + {($n): ($hit | length > 0)}' <<<"$followed")
+  done < <(jq -r '.[].number' <<<"$prs")
   now="${NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
   jq -r --arg repo "$repo" --arg factory "$factory" --arg now "$now" --arg window "${window%h}" \
-    --argjson reverts "$(reverts_of)" '
+    --argjson reverts "$(reverts_of)" --argjson followed "$followed" '
     def login: ascii_downcase | sub("^app/"; "") | sub("\\[bot\\]$"; "");
     ([$reverts[] | select(.state != "CLOSED")
       | ((.body // "") | [scan("Reverts \($repo)#([0-9]+)") | .[0] | tonumber]),
         ([.labels[].name | select(startswith("factory/revert-of:#")) | ltrimstr("factory/revert-of:#") | tonumber])
       | .[]] | unique) as $reverted
-    | ([.[].labels[].name | select(startswith("factory/follow-up-of:#")) | ltrimstr("factory/follow-up-of:#") | tonumber]
-       | unique) as $followed
     | (($now | fromdateiso8601) - ($window | tonumber) * 3600) as $cutoff
     | [ .[] | . as $pr
         | ([.comments[] | select((.author.login | login) == $factory)
             | select(.body | test("event=monitor-[0-9]+ verdict=[a-z]+"))] | sort_by(.createdAt) | last) as $c
         | (if $c == null then "none" else ($c.body | capture("event=monitor-[0-9]+ verdict=(?<v>[a-z]+)").v) end) as $verdict
         | [ (select($reverted | index($pr.number)) | "reverted"),
-            (select($followed | index($pr.number)) | "follow_up"),
-            (select([$pr.labels[].name] | index("factory/monitor:regression")) | "regression") ] as $bad
+            (select($followed[$pr.number | tostring]) | "follow_up"),
+            (select(([$pr.labels[].name] | index("factory/monitor:regression")) or $verdict == "regression") | "regression") ] as $bad
         | { n: .number, mature: ((.mergedAt | fromdateiso8601) <= $cutoff), verdict: $verdict, bad: $bad,
             conclusive: ($verdict == "healthy" or $verdict == "regression" or ($bad | length) > 0) } ]
     | sort_by(.n)
@@ -80,7 +87,7 @@ if [ -n "$outcomes" ]; then
          + "bad=\([$k[] | select(.bad | length > 0)] | length) reverted=\([$k[] | select(.bad | index("reverted"))] | length) "
          + "follow_up=\([$k[] | select(.bad | index("follow_up"))] | length) regression=\([$k[] | select(.bad | index("regression"))] | length)")
   ' <<<"$prs" > "$tmp"
-  head -n -1 "$tmp"
+  sed '$d' "$tmp"
   totals=$(tail -1 "$tmp")
   nk=$(grep -o ' conclusive=[0-9]*' <<<"$totals" | cut -d= -f2) nb=$(grep -o ' bad=[0-9]*' <<<"$totals" | cut -d= -f2)
   bound=$(python3 -I "$(dirname "$0")/clopper-pearson.py" "$nb" "$nk")
