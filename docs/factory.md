@@ -161,7 +161,13 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
 | `not_agent_authored` | The pull request is not from `agentsLogin` |
-| `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or a `docs-links` or `revert` diff changed more than link targets |
+| `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or its `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
+| `file_not_allowed` | It changes a file outside its class's allowed files |
+| `file_protected` | It changes a file its class protects |
+| `file_added_or_deleted` | It adds, deletes, renames or copies a file, which its class does not allow |
+| `patch_too_large` | It changes more files or lines than its class allows |
+| `holdout_red` | A holdout check its class requires failed, was skipped or neutral, or was not posted by GitHub Actions |
+| `holdout_pending` | A holdout check its class requires has not passed yet |
 | `no_approving_verdict` | The template has a reviewer and its verdict is not approve |
 | `head_unreported` | The room never reported the current head as a commit of the task's run |
 | `verdict_stale` | The approval was for an older head. Next step: review the current head, or the factory asks for a new review |
@@ -425,11 +431,21 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 5 | The class is `live` or `shadow` | `class_mismatch` |
 | 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
 | 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
-| 8 | For `docs-links` and `revert`: the diff changes only link targets, each staying relative, on its https host, or moving to web.archive.org | `class_mismatch` |
+| 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), `holdoutChecks` (SUCCESS from GitHub Actions) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`; a pending holdout waits as `holdout_pending` |
 | 9 | The class's breaker has not tripped | `class_paused` |
-| 10 | Under `merge.autoMergesPerDay` today | `auto_merge_cap` |
+| 10 | Under `merge.autoMergesPerDay` today, and under the class's `maxPerDay` | `auto_merge_cap` |
 | 11 | The class is `live` | `shadow_would_arm`: the decision is posted, nothing is merged |
 | 12 | Every push to the branch was the agents App's | `human_commit_in_pr` |
+
+A condition on the diff (row 8's file conditions and shape) is decided on GitHub's own file list,
+read only when every other row would merge or post a shadow decision. Two rules are stricter than
+policy-bot's own matching. `allowedFiles` patterns must start with `^` and end with `$`
+(the config refuses others) and are matched against the whole path, as `^(?:pattern)$`;
+`protectedFiles` patterns are unanchored, so one matches anywhere in a path. A `holdoutChecks`
+entry passes only when every run of that name was posted by GitHub Actions with the raw conclusion
+`SUCCESS`: a skipped or neutral job (an `if:` or `paths:` filter) refuses as `holdout_red`, since
+it checked nothing. A holdout check that is not reported yet, or still running, holds the task as
+`holdout_pending`; one that never reports leaves the task waiting (issue #182).
 
 When every check holds on a live class, the merger App merges the decided head; GitHub refuses
 the merge if the head moved, and the new head is decided again. The task then watches
@@ -594,7 +610,7 @@ Each `repositories` entry:
 | `name` | `owner/name` | Required |
 | `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
 | `triggerLabel` | The start label, `factory/ready` | Required |
-| `classes` | `<name>: {live, shadow}`, never both; `docs-links` and `revert` required, `review` never declared | Required |
+| `classes` | `<name>: {live, shadow, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, maxPerDay}`; `live` and `shadow` never both; an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red`, and `probeAuthor` the login whose open PRs it reads. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
