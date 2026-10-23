@@ -70,7 +70,9 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 		"a raised ceiling": {func(tk *v1alpha1.Task) { tk.Spec.MaxMicroUSD = 9_000_000 }, "maxMicroUSD never changes"},
 		"a new sponsor":    {func(tk *v1alpha1.Task) { tk.Spec.Source.Sponsor = "github:alice" }, "source.sponsor never changes"},
 		"a new link":       {func(tk *v1alpha1.Task) { tk.Spec.Source.OnBehalfOf = "slack:T01ABC/U09XYZ" }, "source.onBehalfOf never changes"},
-		"another kind":     {func(tk *v1alpha1.Task) { tk.Spec.Source.Kind = "schedule" }, "a task's source kind never changes"},
+		"no sponsor":       {func(tk *v1alpha1.Task) { tk.Spec.Source.Sponsor = "" }, "source.sponsor never changes"},
+		"no link":          {func(tk *v1alpha1.Task) { tk.Spec.Source.OnBehalfOf = "" }, "source.onBehalfOf never changes"},
+		"no ceiling":       {func(tk *v1alpha1.Task) { tk.Spec.MaxMicroUSD = 0 }, "an api task carries maxMicroUSD"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tk := ok.DeepCopy()
@@ -86,6 +88,11 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 	if err := c.Update(ctx, ok); err != nil {
 		t.Fatalf("a new snapshot hash: %v", err)
 	}
+	// A status write on an api task goes through: the rules hold spec only.
+	ok.Status.RetriedBy = "github:alice"
+	if err := c.Status().Update(ctx, ok); err != nil {
+		t.Fatalf("a status update: %v", err)
+	}
 	plain := task("aaaaaaae", v1alpha1.Source{Kind: "issue", Ref: "r", Key: "k", RequestedBy: "github:x", Trust: "untrusted", ContentSHA256: sum}, 0)
 	plain.Spec.Issue = 0
 	if err := c.Create(ctx, plain); err != nil {
@@ -94,5 +101,24 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 	plain.Spec.Issue = 7 // the rules never bite a task without a ceiling or a sponsor
 	if err := c.Update(ctx, plain); err != nil {
 		t.Fatalf("a non-api task's update: %v", err)
+	}
+	for name, e := range map[string]struct {
+		edit func(*v1alpha1.Task)
+		want string
+	}{
+		"a sponsor added to a non-api task": {func(tk *v1alpha1.Task) { tk.Spec.Source.Sponsor = "github:smana" }, "only an api task has a sponsor"},
+		"another kind":                      {func(tk *v1alpha1.Task) { tk.Spec.Source.Kind = "runlore" }, "a task's source kind never changes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := plain.DeepCopy()
+			e.edit(tk)
+			err := c.Update(ctx, tk)
+			if err == nil || !strings.Contains(err.Error(), e.want) {
+				t.Fatalf("got %v, want %q", err, e.want)
+			}
+			if name == "another kind" && strings.Count(err.Error(), "never changes")+strings.Count(err.Error(), "only an api") != 1 {
+				t.Fatalf("more than the kind rule tripped: %v", err)
+			}
+		})
 	}
 }

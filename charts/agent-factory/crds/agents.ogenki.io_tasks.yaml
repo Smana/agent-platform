@@ -361,8 +361,8 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: an api task names its sponsor
-                  rule: self.kind != 'api' || (has(self.sponsor) && self.sponsor !=
-                    ”)
+                  rule: self.kind != 'api' || (has(self.sponsor) && size(self.sponsor)
+                    > 0)
                 - message: only an api task has a sponsor
                   rule: self.kind == 'api' || (!has(self.sponsor) && !has(self.onBehalfOf))
                 - message: a task's source kind never changes

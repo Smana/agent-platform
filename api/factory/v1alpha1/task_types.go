@@ -238,7 +238,7 @@ type TaskAcceptance struct {
 // Source is where the task came from and how far its text is trusted. No rule holds the whole
 // source: the splitter's inherit() rewrites contentSHA256 of a re-labelled part, so only the
 // fields F4 adds, and the kind, are held (C1).
-// +kubebuilder:validation:XValidation:rule="self.kind != 'api' || (has(self.sponsor) && self.sponsor != ”)",message="an api task names its sponsor"
+// +kubebuilder:validation:XValidation:rule="self.kind != 'api' || (has(self.sponsor) && size(self.sponsor) > 0)",message="an api task names its sponsor"
 // +kubebuilder:validation:XValidation:rule="self.kind == 'api' || (!has(self.sponsor) && !has(self.onBehalfOf))",message="only an api task has a sponsor"
 // +kubebuilder:validation:XValidation:rule="self.kind == oldSelf.kind",message="a task's source kind never changes"
 // +kubebuilder:validation:XValidation:rule="has(self.sponsor) == has(oldSelf.sponsor) && (!has(self.sponsor) || self.sponsor == oldSelf.sponsor)",message="source.sponsor never changes"
