@@ -381,6 +381,23 @@ The broker's `webhooks` list declares the subscribers of [room events](api.md#we
 
 The broker's egress for the internet subscribers is generated from this list in ai-native-ref.
 
+**Before enabling.**
+
+- The host mounts `secretFile`: one or two base64 keys of at least 32 bytes, one per line. A mount
+  with `subPath` is never refreshed, so use a directory mount. More than two lines, or a bad line, is
+  `no_key`: the room is held until the file is fixed.
+- The host sets `webhooks:` in the broker config. Without it there is no emitter.
+- A `generation` change, or any other change to `webhooks`, takes effect only at a broker restart.
+- A cluster subscriber needs an egress allow on the broker and its own ingress allow, as an internet
+  one needs its egress.
+- `repositories` is matched case-insensitively and is not format-validated: a typo silently sends
+  nothing.
+- Each event costs one cursor write per subscriber.
+- Only the leader emits.
+
+**Rolling back.** Once webhooks have run, an older retention image cannot delete the rooms that have
+cursors: the foreign key blocks it. Keep the retention image at or after the migration.
+
 **Rotating the key.** Deliveries are signed with every key in the file, so a subscriber that accepts
 either never sees a gap: (1) add the new key as a second line and let the file reach the pod; (2)
 configure the subscriber to accept the new key; (3) remove the old line from the file; (4) drop the old
@@ -401,16 +418,17 @@ Other things to know:
 - Catch-up after a listener drop may not finish while at least 1,000 rooms stay held.
 - A run ended by its budget followed by a budget escalation can send two `room.budget_reached`. A
   budget reason added on a rewrite of the same phase is not re-sent.
-- A sealed room with no repository anywhere is counted `unresolved`; its events are not delivered.
+- `unresolved` counts every sealed room that has no repository, whichever subscriber it is for; its events are not delivered.
 - The cursors are purged with their room.
+- A room with no repository yet is read again only when its log grows or the listener reconnects.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `rooms_webhook_deliveries_total` | counter | `subscriber`, `outcome` | Attempts: `delivered`, `retried`, `failed` (given up), `no_key` (the key file is unreadable), `unresolved`, `mismatch` (the log and the Room name different repositories) |
+| `rooms_webhook_deliveries_total` | counter | `subscriber`, `outcome` | Attempts: `delivered`, `retried`, `failed` (given up), `no_key` (the key file is unreadable: the room is held, counted once per sweep, and nothing is dropped or counted against the subscriber), `unresolved`, `mismatch` (the log and the Room name different repositories) |
 | `rooms_webhook_disabled` | gauge | `subscriber` | 1 while the subscriber is disabled |
 
 `RoomWebhookDisabled` fires on `max by (subscriber) (rooms_webhook_disabled) == 1`. The rule lives in
-ai-native-ref's `vmrule-agent-factory.yaml`.
+ai-native-ref's `vmrule-agent-factory.yaml`, which comes with ai-native-ref's PR F: until it merges, nothing alerts.
 
 ### Finished rooms close
 

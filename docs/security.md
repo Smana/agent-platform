@@ -201,7 +201,8 @@ clipped to fixed lists, and any other value is sent as `other`. A message is nev
 an event.
 
 A subscriber is `cluster` or `internet`, declared in the broker's config and never by a room. Cluster
-subscribers are reached by their service name through the broker's own egress rule. An internet
+subscribers are reached by their service name, which needs an egress allow on the broker's host
+policy and the subscriber's own ingress allow: neither is implied. An internet
 subscriber must be a public DNS name over `https`, and the dial guard checks every address after
 resolution, so a name that rebinds is refused at connect. The guard refuses loopback, private,
 link-local (the cloud metadata address included), CGNAT (the tailnet), unique-local, unspecified,

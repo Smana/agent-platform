@@ -628,13 +628,14 @@ pull request) without a new event. `repo` is on `task_received` and `task_triage
 `verdict_posted` is sent once GitHub accepted the comment, not when it was attempted.
 
 `reason`, `limit` and `state` are clipped to closed lists (`webhook.Reasons`, `webhook.Limits`,
-`webhook.States`); anything else is sent as `other`.
+`webhook.States`); anything else is sent as `other`. The factory's room escalations `foreign_room`,
+`room_log_unreadable` and `rooms_crd_outdated` are listed.
 
 | Field | Values |
 |---|---|
 | `limit` | `budget-run`, `budget-task`, `budget-principal`, `budget-fleet`, `budget-person`, `budget-family` |
 | `state` | `queued`, `running`, `waiting`, `done`, `failed`, `stopped` |
-| `reason` | The wait reasons of [the summary](#get-apiroomsidsummary), plus `approval`, `manual`, `revoked`, `deleted`, `principal_unknown`, `budget-run`, `budget-principal`, `budget-fleet`, `budget-person` |
+| `reason` | The wait reasons of [the summary](#get-apiroomsidsummary), plus `approval`, `manual`, `revoked`, `deleted`, `principal_unknown`, `budget-run`, `budget-principal`, `budget-fleet`, `budget-person`, `foreign_room`, `room_log_unreadable`, `rooms_crd_outdated` |
 
 Example body:
 
@@ -659,13 +660,19 @@ A subscriber must:
 
 1. verify the signature against the raw body, with a constant-time comparison;
 2. reject a timestamp more than 5 minutes from its clock, either way;
-3. deduplicate on `webhook-id`: delivery is at-least-once;
+3. deduplicate on `webhook-id`: a delivered event can arrive twice (a restart replays from the last cursor);
 4. answer `2xx` quickly, and fetch the room through the MCP server or the human API if it needs more
    than the ids.
 
-Events are not ordered across rooms, and a retry can arrive after a later event. A delivery that does
-not get a `2xx` is retried after 10 s, 1 min and 5 min, then given up. A subscriber's response body is
-never read beyond 64 KiB. No redirect is followed and no proxy is used.
+**At-least-once holds for delivered events only.** A delivery that does not get a `2xx` is retried after
+10 s, 1 min and 5 min, then given up: the event is dropped and the room's cursor moves on, even when
+the subscriber stays enabled (three given up in a row disable it). The exception is a signing key the
+broker cannot read: the room is held, nothing is dropped, and each sweep tries again until the key is
+fixed.
+
+Events are ordered within a room, except for the replays after a broker restart, and not across
+rooms. A subscriber's response body is never read beyond 64 KiB. No redirect is followed and no proxy
+is used.
 
 Where a subscriber starts: every room that exists when the subscriber is first declared starts at that
 room's last event, so history is not replayed; a room created later starts at its first event.
@@ -676,26 +683,48 @@ as its own events, so a subscriber of the fork sees the parent's phases again, u
 A room's repository (the `repo` field and the `repositories` filter) comes only from the factory's
 task facts, or else from the Room. If the two disagree, the room is held and counted `mismatch`.
 
-Verifying with Go:
+Verifying with Go, standard library only. `keys` are the base64-decoded bytes of the key file's lines:
 
 ```go
-keys, _ := webhook.ReadKeys("/etc/webhook/keys") // one or two base64 keys, one per line
-id, err := webhook.Verify(keys, r.Header, body, time.Now())
-if err != nil {
-	http.Error(w, "invalid", http.StatusUnauthorized)
-	return
+func verify(keys [][]byte, h http.Header, body []byte, now time.Time) (id string, ok bool) {
+	id, ts := h.Get("webhook-id"), h.Get("webhook-timestamp")
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if id == "" || err != nil {
+		return "", false
+	}
+	if d := now.Sub(time.Unix(sec, 0)); d > 5*time.Minute || d < -5*time.Minute {
+		return "", false
+	}
+	for _, k := range keys {
+		m := hmac.New(sha256.New, k)
+		fmt.Fprintf(m, "%s.%s.", id, ts)
+		m.Write(body)
+		want := m.Sum(nil)
+		for _, s := range strings.Fields(h.Get("webhook-signature")) {
+			v, found := strings.CutPrefix(s, "v1,")
+			if !found {
+				continue
+			}
+			if got, err := base64.StdEncoding.DecodeString(v); err == nil && hmac.Equal(got, want) {
+				return id, true // dedupe on id, then act
+			}
+		}
+	}
+	return "", false
 }
-// dedupe on id, then act
 ```
 
-Verifying with Python:
+Verifying with Python. `keys` are the base64-decoded bytes of the key file's lines:
 
 ```python
 import base64, hashlib, hmac, time
 
 def verify(keys, headers, body: bytes) -> bool:
     i, ts = headers["webhook-id"], headers["webhook-timestamp"]
-    if abs(time.time() - int(ts)) > 300:
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            return False
+    except ValueError:
         return False
     for key in keys:
         want = base64.b64encode(hmac.new(key, f"{i}.{ts}.".encode() + body, hashlib.sha256).digest()).decode()
@@ -703,6 +732,8 @@ def verify(keys, headers, body: bytes) -> bool:
             return True
     return False
 ```
+
+A key line prefixed with `whsec_` is the secret the Standard Webhooks libraries expect.
 
 ## `:8090` — room tools
 
