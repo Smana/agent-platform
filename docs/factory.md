@@ -186,6 +186,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `verdict_stale` | The approval was for an older head. Next step: review the current head, or the factory asks for a new review |
 | `foreign_trailer` | The head commit's `Agent-Run` trailer names another task's run |
 | `human_commit_in_pr` | It holds a commit no run of the task pushed, so the factory neither fixes nor merges on top of it |
+| `closes_parent` | A part's pull request body closes its parent issue; the parent closes with its last part, so edit the body and merge it yourself |
 | `class_paused` | The class's breaker tripped after reverts |
 | `auto_merge_cap` | `merge.autoMergesPerDay` is reached |
 | `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
@@ -805,12 +806,15 @@ before a maintainer's `/factory split`.
 - **The end.** The parent issue closes as completed and the task ends `Done`, `children_merged`, when
   the last part merges. A part's issue closed unmerged, or a part reverted, ends the parent `Closed`,
   `child_dropped`; every part still running is stopped, with the stop reason `family_dropped`, so it
-  cannot merge on a tree without the part before it. A part that escalates or stops, with its issue
+  cannot merge on a tree without the part before it (a part whose pull request already merged finishes its verify watch). A part that escalates or stops, with its issue
   open, keeps the parent waiting until a maintainer re-labels (`factory/ready` on the part's issue:
   the new task rejoins the family because the factory applied the issue's child-of label, which no
   one else's label does) or closes it. A revert
-  after the parent closed is commented on the parent's issue.
-- **Stopping.** `factory/stop` on the parent's issue stops the parent and every part not yet ended.
+  of a part is commented on the parent's issue once the parent closed, or while it waits on
+  `budget-family` (the comment says the parent no longer counts the part as landed); a failure to
+  write that comment never fails the revert. A part's pull request whose body closes the parent's
+  issue (`Fixes`, `Closes`, `Resolves`) is never armed: it waits for a human, `closes_parent`.
+- **Stopping.** `factory/stop` on the parent's issue, or the stop annotation on the parent, stops the parent and every part not yet ended.
   An approved parent never runs an implementer, and ignores `/factory retry`.
 - **Tier fit** is unscored for a part and for a parent whose split was approved; the parent's room
   summary reads `running` while it is in `Split`.
