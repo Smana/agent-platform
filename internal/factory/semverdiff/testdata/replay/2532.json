@@ -1,0 +1,10 @@
+{
+  "number": 2532,
+  "update": "patch",
+  "base": {
+    "flux/sources/gitrepo-victoria-metrics.yaml": "apiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: victoria-metrics-operator\n  namespace: observability\nspec:\n  interval: 5m0s\n  url: https://github.com/VictoriaMetrics/operator.git\n  ref:\n    tag: v0.75.0\n"
+  },
+  "head": {
+    "flux/sources/gitrepo-victoria-metrics.yaml": "apiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: victoria-metrics-operator\n  namespace: observability\nspec:\n  interval: 5m0s\n  url: https://github.com/VictoriaMetrics/operator.git\n  ref:\n    tag: v0.75.1\n"
+  }
+}
