@@ -7,6 +7,7 @@ import sys
 
 ALLOW = set(filter(None, os.environ["ALLOW"].split(",")))
 LOG = open(os.environ["LOG"], "a", buffering=1)
+os.chmod(os.environ["LOG"], 0o666)  # the suite on the host truncates it between phases
 
 
 async def pipe(r, w):
