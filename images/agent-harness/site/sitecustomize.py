@@ -15,6 +15,8 @@ answer client replies 202 itself (F29's gateway half); the harness does not depe
 cloud-native-ref#2283: each MCP request carries the traceparent of the span that sent it; see
 patch_traceparent.
 
+#187: a run conversation loads no repository or user plugin; see patch_ambient_plugins.
+
 Internal runs' Anthropic prompt caching reaches the gateway in the field it converts; see
 cache_breakpoints.
 """
@@ -229,6 +231,27 @@ def patch_cache_breakpoints(llm) -> bool:
     return True
 
 
+def patch_ambient_plugins(local_conversation) -> bool:
+    """Makes a conversation's ambient plugin discovery find nothing (#187).
+
+    A PATCH OF SDK 1.56 INTERNALS: LocalConversation._ensure_plugins_loaded calls the module-level
+    load_available_plugins(work_dir, include_user=True, include_project=True) with no request field,
+    setting or environment variable to turn it off. What it finds under the clone's .agents/plugins
+    and .openhands/plugins, or the user's home, runs in the run: hooks.json shell commands and
+    .mcp.json servers, outside the bridge, from a branch the agent or a contributor wrote. The harness
+    attaches no plugin itself, so the ambient set is replaced by an empty one. Skills and the
+    repository's AGENTS.md are separate paths and untouched.
+
+    tests/test_no_ambient_plugins.py fails if the SDK renames the symbol or stops calling it."""
+    if not callable(getattr(local_conversation, "load_available_plugins", None)):
+        print("agent-harness: #187 plugin patch NOT applied: %s has no load_available_plugins (an SDK "
+              "upgrade?); a repository's .agents/plugins will run in the conversation" % local_conversation.__name__,
+              file=sys.stderr, flush=True)
+        return False
+    local_conversation.load_available_plugins = lambda *args, **kwargs: {}
+    return True
+
+
 def _install() -> None:
     # agent-server's children, the agent's own commands, must not load this.
     rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and os.path.abspath(p) != HERE]
@@ -260,6 +283,12 @@ def _install() -> None:
     else:
         patch_cache_breakpoints(LLM)
         patch_model_retry(LLM, openai)
+    try:
+        from openhands.sdk.conversation.impl import local_conversation
+    except ImportError as exc:
+        print("agent-harness: #187 plugin patch NOT applied: %s" % exc, file=sys.stderr, flush=True)
+    else:
+        patch_ambient_plugins(local_conversation)
 
 
 if __name__ == "sitecustomize":
