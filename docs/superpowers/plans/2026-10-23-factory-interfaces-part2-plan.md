@@ -5762,6 +5762,6 @@ end.
 
 **Design points this plan could not settle offline:** whether ZITADEL's client-credentials JWT
 access token carries `client_id` for a machine user (live step 1, with a fallback planned), and
-whether Slack's `conversations.history` returns message `metadata` for a bot's own message with
+whether Slack's `conversations.replies` returns message `metadata` for a bot's own message with
 `include_all_metadata` under the scopes listed (live step 5; if it does not, R23 falls back to an
 HMAC-signed draft id in the message's block `block_id`).
