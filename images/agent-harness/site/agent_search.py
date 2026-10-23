@@ -85,36 +85,42 @@ class GuardedExecutor(ToolExecutor):
     regular file under READ_MAX_BYTES; and no call outlives CALL_TIMEOUT_S (its thread is left behind)."""
 
     def __init__(self, inner, observation, root: str, field: str, regular: bool = False, directory: bool = False,
-                 pattern: bool = False):
+                 pattern: bool = False, unavailable: str = ""):
         self.inner, self.observation, self.root = inner, observation, os.path.realpath(root)
         self.field, self.regular, self.directory, self.pattern = field, regular, directory, pattern
+        self.unavailable = unavailable
 
-    def refusal(self, action) -> str:
-        raw = getattr(action, self.field, None)
-        pattern = action.pattern if self.pattern else ""
-        if not raw and (pattern.startswith(("/", "~")) or ".." in pattern.split("/")):
-            return "Error: the pattern leaves the repository"
-        if not raw:
-            return ""
+    def check(self, action):
+        """(why, absolute path): the path the reader gets is the one checked here, never one the SDK resolves
+        against agent-server's cwd (/), and an empty path is the repository root."""
+        if self.unavailable:
+            return self.unavailable, None
+        if self.pattern:
+            pattern = action.pattern
+            if pattern.startswith(("/", "~")) or ".." in pattern.split("/"):
+                return "Error: the pattern leaves the repository", None
+        raw = getattr(action, self.field, None) or "."
         real = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(self.root, raw))
         if real != self.root and not real.startswith(self.root + os.sep):
-            return "Error: %s is outside the repository" % raw
+            return "Error: %s is outside the repository" % raw, None
         try:
             st = os.stat(real)
         except OSError:
-            return ""  # the reader says "not found" itself
+            return "Error: %s not found in the repository" % raw, None
         if self.regular and not stat.S_ISREG(st.st_mode):
-            return "Error: %s is not a regular file" % raw
+            return "Error: %s is not a regular file" % raw, None
         if self.regular and st.st_size > READ_MAX_BYTES:
-            return "Error: %s is too large to read (%d bytes, at most %d)" % (raw, st.st_size, READ_MAX_BYTES)
+            return "Error: %s is too large to read (%d bytes, at most %d)" % (raw, st.st_size, READ_MAX_BYTES), None
         if self.directory and not stat.S_ISDIR(st.st_mode):
-            return "Error: %s is not a directory" % raw
-        return ""
+            return "Error: %s is not a directory" % raw, None
+        return "", real
 
     def __call__(self, action, conversation=None):
-        why = self.refusal(action)
+        why, real = self.check(action)
         out = {}
         if not why:
+            action = action.model_copy(update={self.field: real})
+
             def run():
                 try:
                     out["obs"] = self.inner(action, conversation)
@@ -135,9 +141,15 @@ class GuardedExecutor(ToolExecutor):
 def guarded(base, field, **kw):
     """A copy of an SDK reader whose executor is guarded; its name, schema and description are the SDK's."""
     def create(cls, conv_state, **params):
-        return [t.model_copy(update={"executor": GuardedExecutor(t.executor, t.observation_type, str(conv_state.workspace.working_dir),
-                                                                 field, **kw)})
-                for t in super(guard, cls).create(conv_state, **params)]
+        out = []
+        for t in super(guard, cls).create(conv_state, **params):
+            # grep's last resort walks the tree and reads every path os.walk lists, symlinks and FIFOs
+            # included: with neither rg nor grep the tool refuses, and says so.
+            none = ("Error: search is unavailable: neither ripgrep nor grep is installed"
+                    if getattr(t.executor, "_search_backend", "") == "python" else "")
+            out.append(t.model_copy(update={"executor": GuardedExecutor(
+                t.executor, t.observation_type, str(conv_state.workspace.working_dir), field, unavailable=none, **kw)}))
+        return out
     guard = type("Guarded" + base.__name__, (base,), {"name": base.name, "create": classmethod(create), "__module__": __name__})
     return guard
 
@@ -152,7 +164,8 @@ for _key, _base, _field, _kw in READER_KEYS.values():
 class ReadOnlyConversation(LocalConversation):
     """The SDK's _ensure_plugins_loaded loads every plugin it finds under the repository, the user's home
     and the git root, and runs their hooks and MCP servers: a repository the agent can write would then run
-    commands in the child. The child has no plugins and no hooks."""
+    commands in the child. The child has no plugins and no hooks. (_register_file_based_agents still
+    registers .agents/agents/*.md as data only: the child has no task tool, so nothing can launch one.)"""
 
     def _ensure_plugins_loaded(self) -> None:
         self._plugins_loaded = True

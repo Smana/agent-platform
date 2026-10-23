@@ -271,11 +271,51 @@ class ReaderGuardTest(SearchTest):
     as an error observation, quickly: the watchdog only acts between steps."""
 
     def call(self, tool, **args):
-        Model.script = [reply(tool, args), finish()]
+        Model.script, Model.bodies = [reply(tool, args), finish()], []
+        self.ex._calls = 0  # many calls in one case: the cap is not what is tested here
+        if os.path.exists(self.ledger):
+            os.remove(self.ledger)
         t0 = time.monotonic()
         self.ask()
         self.assertLess(time.monotonic() - t0, 10)
         return json.dumps(Model.bodies[1][1]["messages"][-1])
+
+    def setUp(self):
+        super().setUp()
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir("/")  # agent-server's cwd: the SDK resolves a relative path against it
+
+    def sub(self):
+        os.makedirs(os.path.join(self.repo, "sub"))
+        with open(os.path.join(self.repo, "sub", "b.py"), "w") as f:
+            f.write("needle = 1\n")
+
+    def test_a_relative_path_is_the_repositorys_not_the_process_cwd(self):
+        self.sub()
+        self.assertIn("sub/b.py", self.call("grep", pattern="needle", path="sub"))
+        self.assertIn("sub/b.py", self.call("glob", pattern="*.py", path="sub"))
+        self.assertIn("a.py", self.call("grep", pattern="def target", path="."))
+        self.assertIn("a.py", self.call("glob", pattern="*.py", path="."))
+        self.assertIn("a.py", self.call("grep", pattern="def target"))
+
+    def test_a_path_that_is_not_in_the_repository_is_refused_not_resolved_elsewhere(self):
+        for tool, args in (("grep", {"pattern": "root"}), ("glob", {"pattern": "*"})):
+            self.assertIn("not found in the repository", self.call(tool, path="etc", **args))
+            self.assertIn("outside the repository", self.call(tool, path="../../../etc", **args))
+
+    def test_a_glob_pattern_that_leaves_the_repository_is_refused_whatever_the_path(self):
+        self.sub()
+        for path in (None, ".", "sub"):
+            for pattern in ("../*", "/etc/*", "~/*", "sub/../../*"):
+                args = {"pattern": pattern, **({"path": path} if path else {})}
+                self.assertIn("leaves the repository", self.call("glob", **args), args)
+
+    def test_grep_is_refused_when_only_the_python_fallback_exists(self):
+        os.symlink("/dev/zero", os.path.join(self.repo, "z"))
+        with mock.patch("openhands.tools.grep.impl._check_ripgrep_available", return_value=False), \
+                mock.patch("openhands.tools.grep.impl._check_grep_available", return_value=False):
+            self.assertIn("neither ripgrep nor grep", self.call("grep", pattern="x"))
 
     def test_dev_zero_symlink(self):
         os.symlink("/dev/zero", os.path.join(self.repo, "z"))
