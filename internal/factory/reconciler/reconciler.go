@@ -297,6 +297,8 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.triaged(ctx, t)
 	case v1alpha1.PhaseQueued:
 		return r.queued(ctx, t)
+	case v1alpha1.PhaseSplit:
+		return r.splitting(ctx, t)
 	case v1alpha1.PhaseImplementing:
 		return r.implementing(ctx, t)
 	case v1alpha1.PhaseReviewing:
@@ -477,6 +479,11 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 		exit = "relabel" // SC8 (a): the author edited, a maintainer re-labelled
 	}
 	r.leaveBounce(ctx, t, exit)
+	splitExit := SplitDeclined // a maintainer's stop declines the split
+	if why == "superseded" {
+		splitExit = SplitSuperseded // SL4 (c): the author edited, a maintainer re-labelled
+	}
+	r.leaveSplit(ctx, t, splitExit)
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
 

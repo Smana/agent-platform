@@ -333,6 +333,9 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 			return nil
 		}
 	}
+	if done, err := r.escalatedSplit(ctx, t, pr); done || err != nil {
+		return err
+	}
 	c, ok, err := r.command(ctx, t, pr, cmdRetry)
 	if err != nil {
 		return err
@@ -341,6 +344,7 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		return r.expireEscalation(ctx, t)
 	}
 	markHandled(t, c.ID)
+	r.leaveSplit(ctx, t, SplitDeclined) // SL4 (b): the task runs whole on its scope
 	if t.Status.Reason == ReasonNeedsAuthor && t.Status.Scope != nil {
 		r.leaveBounce(ctx, t, "retry")
 		t.Status.Scope.State = "assumed" // SC8 (b): no second scoper run
@@ -378,6 +382,7 @@ func (r *Reconciler) expireEscalation(ctx context.Context, t *v1alpha1.Task) err
 		}
 	}
 	r.leaveBounce(ctx, t, "expired")
+	r.leaveSplit(ctx, t, SplitExpired)
 	return r.end(ctx, t, v1alpha1.PhaseStopped, "escalation_expired")
 }
 

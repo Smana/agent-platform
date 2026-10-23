@@ -8,12 +8,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/triage"
 )
 
@@ -152,6 +154,16 @@ func splitHandoffOf(g *rig, n int, sc envelope.Scope, sp envelope.Split) {
 			Commit: strings.Repeat("c", 40), Scope: &sc, Split: &sp})})
 }
 
+// proposed is a split rig whose scoper handed off the whole task and a two-part split.
+func proposed(t *testing.T, objs ...client.Object) *rig {
+	t.Helper()
+	g := splitRigWith(t, "frontier", false, nil, objs...)
+	g.reconcile(t, "3buqdlot", 3) // Received → Triaged → Queued → the scoper's run
+	splitHandoffOf(g, 0, readyScope(), parts(2))
+	endScoper(t, g, "Succeeded", "agent_finished")
+	return g
+}
+
 // SL4, offline proof 4: a split handoff gives Escalated, split_proposed, one comment quoting the
 // plan, the label, and no child, no issue and no count yet.
 func TestASplitIsProposedAndWaits(t *testing.T) {
@@ -219,5 +231,80 @@ func TestASplitNotOfferedIsIgnored(t *testing.T) {
 				t.Fatal("the task runs on its scope")
 			}
 		})
+	}
+}
+
+// splitBy is a maintainer's /factory split, posted after the escalation.
+func splitBy(id int64, author string) forge.Comment {
+	return forge.Comment{ID: id, Author: author, Body: "/factory split", At: now.Add(30 * time.Minute)}
+}
+
+// SL4 (a), SL11, offline proof 4: a maintainer with write approves; the label goes, the approver is
+// recorded, and the parent waits in Split. A non-maintainer's command is ignored.
+func TestAMaintainerApprovesTheSplit(t *testing.T) {
+	g := proposed(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, splitBy(80, "octocat"))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Split.State != "proposed" {
+		t.Fatalf("a non-maintainer approved: %s %+v", tk.Status.Phase, tk.Status.Split)
+	}
+	g.f.SetComments(7, splitBy(80, "octocat"), splitBy(81, "Smana"))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseSplit || tk.Status.Split.State != "approved" || tk.Status.Split.ApprovedBy != "github:smana" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Split)
+	}
+	if !slices.Equal(g.f.Removed(7), []string{"factory/split-proposed"}) || !slices.Contains(g.metrics.recorded, "split review approved") ||
+		!slices.Contains(g.metrics.recorded, "intervention split") {
+		t.Fatalf("removed %v metrics %v", g.f.Removed(7), g.metrics.recorded)
+	}
+}
+
+// SL11, D4: an approver whose day is spent is told once; the split keeps waiting.
+func TestAnApproverPastTheirDayIsRefused(t *testing.T) {
+	g := proposed(t, spentLedger(map[string]int64{"github:smana": 5_000_000}))
+	g.r.Cfg.Budgets = personBudgets(true, true)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, splitBy(81, "Smana"))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Split.State != "proposed" || !slices.Contains(tk.Status.Handled, 81) ||
+		!strings.Contains(strings.Join(g.f.Comments(7), "\n"), "is spent") {
+		t.Fatalf("%s %+v %v %q", tk.Status.Phase, tk.Status.Split, tk.Status.Handled, g.f.Comments(7))
+	}
+}
+
+// SL4 (b): /factory retry declines the split; the whole task runs on its scope at its own tier,
+// with no second scoper run and no child.
+func TestARetryRunsTheTaskWhole(t *testing.T) {
+	g := proposed(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, retryBy(77, "Smana", -30*time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 2)
+	s := g.runs.specs[rid(1)]
+	if tk.Status.Split.State != "declined" || s.Role != "implementer" || s.Tier != "frontier" || !strings.Contains(s.TaskText, "SCOPE-DATA-") {
+		t.Fatalf("%+v %+v", tk.Status.Split, s)
+	}
+	if !slices.Equal(g.f.Removed(7), []string{"factory/split-proposed"}) || !slices.Contains(g.metrics.recorded, "split review declined") ||
+		len(g.f.Created()) != 0 {
+		t.Fatalf("removed %v metrics %v created %v", g.f.Removed(7), g.metrics.recorded, g.f.Created())
+	}
+}
+
+// SL4 (c), (d): a superseding re-label and the expiry each end the wait, counted, the label removed.
+func TestTheOtherSplitExitsAreCounted(t *testing.T) {
+	g := proposed(t)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), taskKey("3buqdlot"), &tk)
+	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "superseded"}
+	_ = g.c.Update(t.Context(), &tk)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseStopped || got.Status.Split.State != "superseded" ||
+		!slices.Contains(g.metrics.recorded, "split review superseded") || !slices.Equal(g.f.Removed(7), []string{"factory/split-proposed"}) {
+		t.Fatalf("%s %+v %v", got.Status.Phase, got.Status.Split, g.metrics.recorded)
+	}
+	g = proposed(t)
+	g.r.Cfg.Caps.EscalatedHours = new(168)
+	g.r.Now = func() time.Time { return now.Add(200 * time.Hour) }
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "escalation_expired" || got.Status.Split.State != "expired" ||
+		!slices.Contains(g.metrics.recorded, "split review expired") {
+		t.Fatalf("%s %+v %v", got.Status.Reason, got.Status.Split, g.metrics.recorded)
 	}
 }
