@@ -333,6 +333,13 @@ func (m *fakeMetrics) ScopeBounce(_ context.Context, class, exit string) {
 	m.add("bounce " + class + " " + exit)
 }
 
+func (m *fakeMetrics) Split(_ context.Context, class, outcome string) {
+	m.add("split " + class + " " + outcome)
+}
+func (m *fakeMetrics) SplitChild(_ context.Context, class, outcome string) {
+	m.add("split_child " + class + " " + outcome)
+}
+
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
 func (m *fakeMetrics) RoomClosedAtCap(_ context.Context, reason string) {
 	m.add("room_closed_at_cap " + reason)

@@ -95,6 +95,8 @@ type metrics interface {
 	SteeringRead(ctx context.Context, class, read string)
 	ScoperRun(ctx context.Context, class, outcome string)
 	ScopeBounce(ctx context.Context, class, exit string)
+	Split(ctx context.Context, class, outcome string)
+	SplitChild(ctx context.Context, class, outcome string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after

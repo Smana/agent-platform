@@ -40,7 +40,7 @@ const other = "other"
 // factory's config.
 func outcomes() []string { return []string{"auto_merged", "human_merged", "closed", "reverted"} }
 func interventions() []string {
-	return []string{"stop", "retry", "request_changes", "steer", "takeover", "approve"}
+	return []string{"stop", "retry", "request_changes", "steer", "takeover", "approve", "split"}
 }
 func revocations() []string {
 	return []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "manual",
@@ -112,6 +112,8 @@ type Set struct {
 	resumes         metric.Int64Counter
 	steeringReads   metric.Int64Counter
 	scoperRuns      metric.Int64Counter
+	splits          metric.Int64Counter
+	splitChildren   metric.Int64Counter
 	scopeBounces    metric.Int64Counter
 	loopRuns        metric.Int64Counter
 	roomsCapped     metric.Int64Counter
@@ -280,6 +282,12 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.scopeBounces, err = meter.Int64Counter("agent_factory_scope_bounces_total",
 		metric.WithDescription("Bounced tasks leaving their wait, by class and exit: relabel, retry or expired (scoper design SC8, SC12)."))
+	check(err)
+	s.splits, err = meter.Int64Counter("agent_factory_splits_total",
+		metric.WithDescription("Split handoffs by their outcome, counted once: approved, declined, superseded, expired or ignored (splitter design SL14)."))
+	check(err)
+	s.splitChildren, err = meter.Int64Counter("agent_factory_split_children_total",
+		metric.WithDescription("Parts of a split, counted once when their parent ends: landed, dropped or reverted (splitter design SL14)."))
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
@@ -664,6 +672,18 @@ func (s *Set) SteeringRead(ctx context.Context, class, read string) {
 func (s *Set) ScoperRun(ctx context.Context, class, outcome string) {
 	s.scoperRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("outcome", oneOf(outcome, []string{"ready", "question", "assumed", "missing", "failed"})), s.repoOf(ctx)))
+}
+
+// Split counts a split handoff's outcome once.
+func (s *Set) Split(ctx context.Context, class, outcome string) {
+	s.splits.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("outcome", oneOf(outcome, []string{"approved", "declined", "superseded", "expired", "ignored"})), s.repoOf(ctx)))
+}
+
+// SplitChild counts a part's outcome once, when its parent ends.
+func (s *Set) SplitChild(ctx context.Context, class, outcome string) {
+	s.splitChildren.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("outcome", oneOf(outcome, []string{"landed", "dropped", "reverted"})), s.repoOf(ctx)))
 }
 
 // ScopeBounce counts a bounced task's exit.

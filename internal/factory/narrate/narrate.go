@@ -173,6 +173,12 @@ func reasons() map[string]string {
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
+		"split_proposed":            "the scoper proposes to split the task into parts, and a maintainer decides",
+		"budget-family":             "the cap of the task and its parts has no room left for another part's run",
+		"children_merged":           "every part of the split merged",
+		"child_dropped":             "a part of the split was closed without merging, or its merge was reverted",
+		"parent_not_split":          "its parent task is no longer waiting on its parts",
+		"parent_missing":            "its parent task no longer exists",
 		"escalation_expired":        "it waited past the escalation time limit for a maintainer",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"deadline":                  "the run hit its wall-clock limit",
@@ -314,6 +320,38 @@ func NeedsAuthor(t *v1alpha1.Task, question, assumption string, maintainers []st
 		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task waits on its author.")
 	}
 	return Event{Key: fmt.Sprintf("needs-author-%d", len(t.Status.Runs)), Body: b.String()}
+}
+
+// SplitProposed is the split's one comment on the parent issue (splitter design SL4): the plan, and
+// how to approve it, run the task whole, or scope it again. A public task's why and each part's task
+// are an agent's text, quoted as inert code blocks within the outbox's bound (ruling TE); an
+// internal task's stay in the room (C7).
+func SplitProposed(t *v1alpha1.Task, why string, parts, maintainers []string, roomsURL string) Event {
+	room := fmt.Sprintf("%s/r/%s", strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
+	head := fmt.Sprintf("Agent factory task `%s` proposes to split this issue into %d parts, each its own sub-issue and "+
+		"pull request, opened one at a time: a part starts once the one before it has merged.", t.Name, len(parts))
+	var tail strings.Builder
+	s := t.Spec.Split
+	fmt.Fprintf(&tail, "\n\n**To approve**, a maintainer comments `/factory split`: the approver is charged for every part, "+
+		"each part runs at tier %s, and the parts together stay within %s. **To run it whole**, a maintainer comments "+
+		"`/factory retry`. **To scope it again**, edit this issue and re-apply `factory/ready`. Without any of these, the task "+
+		"stops when its escalation expires. The whole plan is in [the room](%s).", s.ChildTier, USD(s.FamilyMicroUSD), room)
+	if len(maintainers) > 0 {
+		tail.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this split waits on a maintainer.")
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	if t.Spec.DataClass != "public" {
+		b.WriteString(" Its parts stay in the room: the task's data class is not public.")
+	} else {
+		each := (maxBody - len(head) - tail.Len() - 32*(len(parts)+1)) / (len(parts) + 1)
+		b.WriteString("\n\nWhy:\n\n" + summary(why, each))
+		for i, p := range parts {
+			fmt.Fprintf(&b, "\n\nPart %d:\n\n%s", i+1, summary(p, each))
+		}
+	}
+	b.WriteString(tail.String())
+	return Event{Key: fmt.Sprintf("split-proposed-%d", len(t.Status.Runs)), Body: b.String()}
 }
 
 // Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
@@ -512,7 +550,7 @@ func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event 
 	if phase == v1alpha1.PhaseEscalated && len(maintainers) > 0 {
 		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task needs a maintainer.")
 	}
-	if h := hints()[phase]; h != "" {
+	if h := hints()[phase]; h != "" && reason != "budget-family" {
 		b.WriteString("\n\n" + h)
 	}
 	if v1alpha1.TerminalPhase(phase) {

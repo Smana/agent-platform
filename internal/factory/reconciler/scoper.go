@@ -61,15 +61,21 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	if slices.Contains(escalatesScoper, reason) {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, reason)
 	}
-	sc, seq, err := r.lastScope(ctx, t)
+	sc, split, seq, err := r.lastScope(ctx, t)
 	if err != nil {
 		return err
+	}
+	if split != nil && sc.State != envelope.ScopeReady {
+		r.ignoreSplit(ctx, t, seq) // a question bounces alone (splitter design SL2)
+		split = nil
 	}
 	switch {
 	case sc == nil && phase == "Succeeded":
 		return r.scopeEnd(ctx, t, "missing", 0)
 	case sc == nil:
 		return r.scopeEnd(ctx, t, "failed", 0)
+	case sc.State == envelope.ScopeReady && split != nil:
+		return r.splitHandoff(ctx, t, split, seq)
 	case sc.State == envelope.ScopeReady:
 		return r.scopeEnd(ctx, t, "ready", seq)
 	case t.Spec.Issue == 0: // a schedule has no author to ask
@@ -78,25 +84,25 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	return r.bounce(ctx, t, sc, seq)
 }
 
-// lastScope is the scoper run's scope: the last handoff of the current run that carries a valid
-// one, after the run's start seq, and that handoff's seq. The factory checks it again: the broker
-// stored it redacted.
-func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope.Scope, int64, error) {
+// lastScope is the scoper run's scope and split: the last handoff of the current run that carries
+// a valid scope, after the run's start seq, its split if any, and that handoff's seq. The factory
+// checks the scope again here and the split where it is used: the broker stored them redacted.
+func (r *Reconciler) lastScope(ctx context.Context, t *v1alpha1.Task) (*envelope.Scope, *envelope.Split, int64, error) {
 	cur := current(t)
 	evs, _, err := r.roomTail(ctx, t.Status.RoomRef, cur.StartSeq, func(e envelope.Event) bool {
 		return e.Type == envelope.Handoff && e.RunID == cur.ID
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	for i := len(evs) - 1; i >= 0; i-- {
 		var p envelope.HandoffPayload
 		// Only the handoff to the implementer carries a scope the factory uses.
 		if json.Unmarshal(evs[i].Payload, &p) == nil && p.ToRole == "implementer" && p.Scope != nil && p.Scope.Validate() == nil {
-			return p.Scope, evs[i].Seq, nil
+			return p.Scope, p.Split, evs[i].Seq, nil
 		}
 	}
-	return nil, 0, nil
+	return nil, nil, 0, nil
 }
 
 // scopeEnd records the scoper's outcome and queues the implementer's first run.
