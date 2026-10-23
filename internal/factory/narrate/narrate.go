@@ -169,7 +169,7 @@ func reasons() map[string]string {
 		"agent_error":               "the agent stopped on an error",
 		"agent_stuck":               "the agent reported that it was stuck",
 		"judge_impossible":          "the completion judge found the task cannot be done as asked",
-		"loop_unsupported":          "the cluster does not support the loop policy yet (the run claim was refused), so no run started",
+		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet (the run claim was refused), so no run started",
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"escalation_expired":        "it waited past the escalation time limit for a maintainer",

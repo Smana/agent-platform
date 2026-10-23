@@ -176,6 +176,26 @@ type Repository struct {
 	Classes      map[string]Class `json:"classes"`
 	Merge        Merge            `json:"merge"`
 	Schedules    []Schedule       `json:"schedules,omitempty"`
+	Checks       Checks           `json:"checks,omitzero"`
+}
+
+// EgressProfiles are the registry profiles a run may request on top of github: the AgentRun
+// XRD's enum, which the composition turns into FQDNs.
+var EgressProfiles = []string{"pypi", "npm", "golang", "crates"}
+
+// Checks is what a check-enabled run of the repository requests beyond github (v3 feature 3,
+// RC7): the platform names the egress, never the repository's own file.
+type Checks struct {
+	Egress []string `json:"egress,omitempty"`
+}
+
+// ChecksFor reports whether a run of class runs the repository's checks in its sandbox (RC8), and
+// the egress profiles it then requests. Absent or false, the run is today's.
+func (r *Repository) ChecksFor(class string) (bool, []string) {
+	if !r.Classes[class].Checks {
+		return false, nil
+	}
+	return true, slices.Clone(r.Checks.Egress)
 }
 
 // Control is the pinned issue whose factory/stop label is the global stop (§6.1). Issue 0: none,
@@ -1029,6 +1049,14 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	}
 	for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
 		validateClass(name, r.Classes[name], bad)
+	}
+	if len(r.Checks.Egress) > 4 {
+		bad("checks.egress: at most 4 profiles, as the claim takes")
+	}
+	for i, p := range r.Checks.Egress {
+		if !slices.Contains(EgressProfiles, p) || slices.Index(r.Checks.Egress, p) != i {
+			bad("checks.egress: %q is not one of %v, or is listed twice", p, EgressProfiles)
+		}
 	}
 	if _, ok := r.Classes["review"]; ok {
 		bad("review is the implicit class of everything else; do not declare it")

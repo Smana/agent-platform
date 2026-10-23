@@ -93,6 +93,10 @@ type Spec struct {
 	Suspendable bool
 	// Loop is spec.loop (loops design L2, L3), written only when set: it is immutable.
 	Loop *Loop
+	// Checks is spec.loop.checks (v3 feature 3), written only when true, so every other claim is
+	// today's byte for byte. It joins Loop's keys in the one spec.loop. The composition turns it
+	// into the harness's AGENT_CHECKS=1.
+	Checks bool
 }
 
 // Loop is the claim's spec.loop; JudgeModel "" writes no judgeModel, which the composition reads
@@ -162,10 +166,16 @@ func Build(s Spec) *unstructured.Unstructured {
 	if s.Suspendable {
 		spec["suspendable"] = true
 	}
-	if l := s.Loop; l != nil {
-		loop := map[string]any{"stallSteps": int64(l.StallSteps), "continuations": int64(l.Continuations)}
-		if l.JudgeModel != "" {
-			loop["judgeModel"] = l.JudgeModel
+	if l := s.Loop; l != nil || s.Checks {
+		loop := map[string]any{}
+		if l != nil {
+			loop["stallSteps"], loop["continuations"] = int64(l.StallSteps), int64(l.Continuations)
+			if l.JudgeModel != "" {
+				loop["judgeModel"] = l.JudgeModel
+			}
+		}
+		if s.Checks {
+			loop["checks"] = true
 		}
 		spec["loop"] = loop
 	}
@@ -290,7 +300,7 @@ func (c Client) Create(ctx context.Context, s Spec) error {
 	// A claim that carries spec.loop is created under Strict field validation: a host XRD without
 	// spec.loop would prune it and run loop-off while the Task records the policy; refuse instead.
 	var opts []client.CreateOption
-	if s.Loop != nil {
+	if s.Loop != nil || s.Checks {
 		opts = append(opts, client.FieldValidation("Strict"))
 	}
 	if err := c.C.Create(ctx, Build(s), opts...); err != nil {

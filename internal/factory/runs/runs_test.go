@@ -5,6 +5,7 @@ package runs
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -439,5 +440,21 @@ func TestCreateIsStrictOnlyForALoopClaim(t *testing.T) {
 				t.Fatalf("fieldValidation %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// v3 feature 3: spec.loop.checks is written only when on, so every other claim is today's.
+func TestBuildWritesLoopChecksOnlyWhenOn(t *testing.T) {
+	if _, found, _ := unstructured.NestedMap(Build(spec()).Object, "spec", "loop"); found {
+		t.Fatal("spec.loop written for a run without checks")
+	}
+	s := spec()
+	s.Checks, s.EgressProfiles = true, []string{"golang", "pypi"}
+	u := Build(s)
+	if on, _, _ := unstructured.NestedBool(u.Object, "spec", "loop", "checks"); !on {
+		t.Fatalf("spec.loop.checks not set: %v", u.Object["spec"])
+	}
+	if p, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "egress", "profiles"); !slices.Equal(p, []string{"golang", "pypi"}) {
+		t.Fatalf("egress %v", p)
 	}
 }

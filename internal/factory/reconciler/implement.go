@@ -133,10 +133,24 @@ func sourceURL(t *v1alpha1.Task) string {
 // implementerSpec: every run of a task writes agent/<taskId> (C3); baseRef main, because the
 // harness resumes origin/<branch> when an earlier run pushed it (SP1 R7).
 func (r *Reconciler) implementerSpec(t *v1alpha1.Task, text string) runs.Spec {
-	return runs.Spec{TaskID: t.Name, Role: "implementer", Repository: t.Spec.Repository, BaseRef: "main",
+	s := runs.Spec{TaskID: t.Name, Role: "implementer", Repository: t.Spec.Repository, BaseRef: "main",
 		Branch: "agent/" + t.Name, TaskText: text, Principal: runs.PrincipalFactory, DataClass: t.Spec.DataClass,
 		Model: t.Spec.Budget.Model, RoomRef: t.Status.RoomRef, SourceURL: sourceURL(t), Queue: runs.QueueFactory,
 		MaxTokens: t.Spec.Budget.RunTokens, MaxMinutes: t.Spec.Budget.RunMinutes, Traceparent: traceparent(t), Tier: t.Spec.Budget.Tier}
+	r.withChecks(&s, t)
+	return s
+}
+
+// withChecks switches the repository's checks on for a public implementer or reviewer run of a class
+// that has them (v3 feature 3, RC8): spec.loop.checks and the repository's checks.egress. Any other
+// run, an internal one included, is today's.
+func (r *Reconciler) withChecks(s *runs.Spec, t *v1alpha1.Task) {
+	on, egress := r.repo(t).ChecksFor(t.Spec.PredictedClass)
+	if !on || t.Spec.DataClass != "public" || (s.Role != "implementer" && s.Role != "reviewer") {
+		s.Checks, s.EgressProfiles = false, nil
+		return
+	}
+	s.Checks, s.EgressProfiles = true, egress
 }
 
 // reserveFactoryDay is §6.2's "SP3 at admission" for the factory's own principal (R34), admitted
@@ -200,10 +214,10 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 		// The deterministic id already has a claim: the run was created and its record lost
 		// (R48). Recorded, never re-created.
 		if !apierrors.IsAlreadyExists(err) {
-			// The cluster refused a claim carrying spec.loop (Strict validation: the host's XRD lacks it).
+			// The cluster refused a claim carrying spec.loop, checks included (Strict validation: the host's XRD lacks it).
 			// Retrying cannot help; hand the task to a maintainer instead of backing off forever.
-			if s.Loop != nil && (apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
-				r.log().Warn("loop claim refused by the cluster", "task.id", t.Name, "err", err)
+			if (s.Loop != nil || s.Checks) && (apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
+				r.log().Warn("loop or repository checks claim refused by the cluster", "task.id", t.Name, "err", err)
 				return r.end(ctx, t, v1alpha1.PhaseEscalated, "loop_unsupported")
 			}
 			return err

@@ -113,7 +113,7 @@ func reasons() map[string]string {
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"no_pr":                     "the agent opened no pull request",
-		"loop_unsupported":          "the cluster does not support the loop policy yet, so no run started",
+		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet, so no run started",
 	}
 }
 

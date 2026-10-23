@@ -18,6 +18,9 @@ import (
 type Class struct {
 	Live   bool `json:"live,omitempty"`
 	Shadow bool `json:"shadow,omitempty"`
+	// Checks switches the repository's checks on for the class's public implementer and reviewer
+	// runs (v3 feature 3, RC8): the claim's spec.loop.checks and the repository's checks.egress.
+	Checks bool `json:"checks,omitempty"`
 	// AllowedFiles: every changed path matches one of these regular expressions.
 	AllowedFiles []string `json:"allowedFiles,omitempty"`
 	// ProtectedFiles: no changed path matches one of these.
