@@ -380,6 +380,7 @@ func (r *Reconciler) fluxSignal(ctx context.Context, t *v1alpha1.Task, f config.
 	}
 	if len(bad) > 0 {
 		r.log().Warn("Flux objects turned not Ready after the merge", "task.id", t.Name, "objects", bad)
+		bad = slices.Sorted(slices.Values(bad)) // the same five on every pass, whatever the reader's order
 		m.FluxBlamed = bad[:min(len(bad), maxFluxBlamed)]
 		return "regression"
 	}
