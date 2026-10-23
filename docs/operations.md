@@ -326,6 +326,39 @@ the key its next run is charged to: `system:factory` with per-person caps off.
 `principal` takes a ledger key's shape (`system:<name>`, `github:<login>`, `human:<sub>`), else
 `other`. `run`, `task` and `room` appear only on the per-live-run series.
 
+### Sponsored principals
+
+Off until `api.sponsored` is written. The series:
+
+| Series | What it answers |
+|---|---|
+| `agent_factory_api_intake_total{principal, outcome}` | `POST /v1/tasks` requests by outcome: `admitted`, `duplicate`, or a refusal's code ([API](api.md#post-v1tasks)); `other` for anything else |
+| `agent_factory_max_cost_usd_total{principal}` | The `max_cost` the intake admitted: what principals asked to be allowed, not what they spent (`agent_factory_charged_usd_total{principal="system:<name>"}`) |
+| `agent_factory_principal_sponsor_info{principal, sponsor}` | 1 per declared principal, naming the maintainer accountable for it |
+
+**Declaring a principal**, in order:
+
+1. In the host, create a ZITADEL machine user and its client-credentials client (the host's
+   `zitadel-oidc-clients.sh`), whose tokens carry the project audience. The id and the project id go
+   to the `agent-factory-sponsored` Secret (`<name>-client-id`, `project-id`), which the chart mounts
+   optional, and to the broker's own mounts for `human.mcp.sponsored[].clientIDFile`.
+2. The factory's config: `api.sponsored[]` with its `sponsor`, `repositories`, `dailyUSD`,
+   `maxCostUSD`, plus `api.projectIDFile`. `meter.prices` must be set, or the load fails.
+3. The broker's config: `human.mcp.sponsored[]` with the same `name`, and `factoryURL`. Restart it:
+   it reads its config once at start.
+4. The host's Rooms CRD must carry the widened member pattern (`system:` members) **before** a
+   sponsored task runs: the factory adds the principal as a `watcher`, and the older CRD rejects it.
+   cloud-native-ref applies the CRD.
+
+A sponsored principal's day is enforced whatever `budgets.enforcePrincipal` says: do not wait for a
+shadow week. The intake's check is advisory; the run-time reservation and each run's ceiling/3 cap
+are the limits. Removing a principal from the config un-holds its live runs from its day, and a task
+that needs another run escalates `principal_unknown`. A refused later run escalates `budget-person`,
+possibly with a pull request open. A maintainer's `/factory retry` is paid by the retrier.
+
+A `run.` task that stays `failed` with `no such room` was never triaged (the grace is two minutes:
+see [the API](api.md#sponsored-principals-on-mcp)); check `agent_factory_api_intake_total` and the Task.
+
 ### Finished rooms close
 
 A finished task's room closes once its outbox, settle, facts and revert window are done, and while
