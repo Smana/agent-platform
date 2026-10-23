@@ -82,7 +82,9 @@ type Scheduler struct {
 	Log     *slog.Logger
 
 	seenMu sync.Mutex
-	seen   map[string][2]int64 // schedule -> the detector run pair last evaluated
+	seen   map[string][2]int64 // schedule -> the detector run pair last evaluated, outcome final
+	// pending is a pair whose findings await their Task; settle saves it once the Task exists.
+	pending map[string][2]int64
 }
 
 // NeedLeaderElection is true: two schedulers would race every slot.
@@ -169,9 +171,32 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 		}
 		if err := s.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
 			errs = append(errs, err) // AlreadyExists is the dedup (S2)
+		} else if len(findings) > 0 {
+			s.settle(rc.Name + "/" + e.Name)
 		}
 	}
 	return errs
+}
+
+// remember saves a run pair as weighed.
+func (s *Scheduler) remember(key string, pair [2]int64) {
+	s.seenMu.Lock()
+	defer s.seenMu.Unlock()
+	if s.seen == nil {
+		s.seen = map[string][2]int64{}
+	}
+	s.seen[key] = pair
+}
+
+// settle saves the pair whose findings became a Task (created, or already there).
+func (s *Scheduler) settle(key string) {
+	s.seenMu.Lock()
+	pair, ok := s.pending[key]
+	delete(s.pending, key)
+	s.seenMu.Unlock()
+	if ok {
+		s.remember(key, pair)
+	}
 }
 
 // probe runs the schedule's probe: whether it found work, the text it adds, and the findings an
@@ -234,13 +259,17 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 		return false, "", nil, nil
 	}
 	fs, err := evaluateRuns(ctx, merger, two, cl, s.log().With("schedule", e.Name))
-	if err == nil || errors.Is(err, errFindingsRefused) {
+	// Final outcomes are saved now (refused, or nothing found); findings wait for their Task.
+	switch {
+	case err == nil && len(fs) > 0:
 		s.seenMu.Lock()
-		if s.seen == nil {
-			s.seen = map[string][2]int64{}
+		if s.pending == nil {
+			s.pending = map[string][2]int64{}
 		}
-		s.seen[key] = pair
+		s.pending[key] = pair
 		s.seenMu.Unlock()
+	case err == nil || errors.Is(err, errFindingsRefused):
+		s.remember(key, pair)
 	}
 	if errors.Is(err, errFindingsRefused) {
 		s.log().Warn("dead-links findings refused", "schedule", e.Name, "err", err)

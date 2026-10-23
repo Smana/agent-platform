@@ -4,11 +4,13 @@ package intake
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
@@ -128,4 +130,33 @@ type countingMerger struct {
 func (c *countingMerger) RunArtifact(ctx context.Context, id int64, name, file string) ([]byte, error) {
 	c.artifacts++
 	return c.Fake.RunArtifact(ctx, id, name, file)
+}
+
+// flakyCreate fails its first Create, as an API server blip would.
+type flakyCreate struct {
+	client.Client
+	failed bool
+}
+
+func (c *flakyCreate) Create(ctx context.Context, o client.Object, opts ...client.CreateOption) error {
+	if !c.failed {
+		c.failed = true
+		return errors.New("transient")
+	}
+	return c.Client.Create(ctx, o, opts...)
+}
+
+// A run pair is remembered only once its outcome is final: a Task create that fails leaves the
+// pair unsaved, so the next tick retries and creates the Task.
+func TestAFailedCreateDoesNotSaveTheRunPair(t *testing.T) {
+	cl := linksClass()
+	cl.Shadow = true
+	sch := deadLinksScheduler(t, cl)
+	sch.Client = &flakyCreate{Client: sch.Client}
+	if err := sch.Tick(t.Context()); err == nil || len(scheduledTasks(t, sch)) != 0 {
+		t.Fatalf("the first create fails: %v", err)
+	}
+	if err := sch.Tick(t.Context()); err != nil || len(scheduledTasks(t, sch)) != 1 {
+		t.Fatalf("the next tick retries and creates the task: %v", err)
+	}
 }
