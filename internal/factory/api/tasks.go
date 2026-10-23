@@ -106,7 +106,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	case in.DataClass != "public": // R37: internal data is the admins', and a machine is none
 		out(http.StatusBadRequest, "bad_data_class")
 		return
-	case !sponsored.ValidRef(in.Ref): // the ref is written into the trusted brief: one pattern with the broker // the ref is written into the trusted brief: one pattern with the broker
+	case !sponsored.ValidRef(in.Ref): // the ref is written into the trusted brief: one pattern with the broker
 		out(http.StatusBadRequest, "bad_ref")
 		return
 	case !slices.Contains(sp.Repositories, in.Repository): // exact: the config is spelled as listed (C22)
