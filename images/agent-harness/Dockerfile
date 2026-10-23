@@ -39,7 +39,7 @@ RUN set -eux; \
     install -D -m 0755 /tmp/mise/bin/mise /opt/agent/bin/mise; \
     rm -rf /tmp/mise.tgz /tmp/mise; \
     apt-get update; \
-    apt-get install -y --no-install-recommends rsync; \
+    apt-get install -y --no-install-recommends rsync ripgrep; \
     rm -rf /var/lib/apt/lists/*; \
     rm -f /etc/sudoers.d/*; \
     if [ -f /etc/sudoers ]; then sed -i '/NOPASSWD/d' /etc/sudoers; fi; \
@@ -87,6 +87,8 @@ FROM harness AS test
 COPY --chown=10001:10001 tests /opt/agent/tests
 # The lock test compares the two requirement files, which the published image does not carry.
 COPY --chown=10001:10001 requirements.txt checks-requirements.txt /opt/agent/
+# search's grep and glob run only on ripgrep: a base image or a package change that drops it fails here.
+RUN rg --version
 USER root
 # pytest for test-contract's pytest fixture (v3 feature 4): the test stage only, never the shipped image.
 RUN /usr/local/bin/python -m pip install --no-cache-dir --root-user-action=ignore --require-hashes --only-binary=:all: \

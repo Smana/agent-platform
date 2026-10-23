@@ -311,11 +311,35 @@ class ReaderGuardTest(SearchTest):
                 args = {"pattern": pattern, **({"path": path} if path else {})}
                 self.assertIn("leaves the repository", self.call("glob", **args), args)
 
+    def test_grep_is_refused_on_system_grep_which_follows_symlinked_directories(self):
+        outside = os.path.join(self.d, "outside")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "secret"), "w") as f:
+            f.write("hunter2\n")
+        os.symlink(outside, os.path.join(self.repo, "link"))
+        with mock.patch("openhands.tools.grep.impl._check_ripgrep_available", return_value=False), \
+                mock.patch("openhands.tools.grep.impl._check_grep_available", return_value=True):
+            seen = self.call("grep", pattern="hunter2")
+        self.assertIn("only ripgrep is allowed", seen)
+        self.assertNotIn("secret", seen)
+
+    def test_glob_is_refused_without_ripgrep(self):
+        with mock.patch("openhands.tools.glob.impl._check_ripgrep_available", return_value=False):
+            self.assertIn("only ripgrep is allowed", self.call("glob", pattern="*.py"))
+
+    def test_with_ripgrep_a_symlinked_directory_is_not_followed(self):
+        outside = os.path.join(self.d, "outside")
+        os.makedirs(outside)
+        with open(os.path.join(outside, "secret"), "w") as f:
+            f.write("hunter2\n")
+        os.symlink(outside, os.path.join(self.repo, "link"))
+        self.assertNotIn("secret", self.call("grep", pattern="hunter2"))
+
     def test_grep_is_refused_when_only_the_python_fallback_exists(self):
         os.symlink("/dev/zero", os.path.join(self.repo, "z"))
         with mock.patch("openhands.tools.grep.impl._check_ripgrep_available", return_value=False), \
                 mock.patch("openhands.tools.grep.impl._check_grep_available", return_value=False):
-            self.assertIn("neither ripgrep nor grep", self.call("grep", pattern="x"))
+            self.assertIn("only ripgrep is allowed", self.call("grep", pattern="x"))
 
     def test_dev_zero_symlink(self):
         os.symlink("/dev/zero", os.path.join(self.repo, "z"))

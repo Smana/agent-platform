@@ -143,10 +143,13 @@ def guarded(base, field, **kw):
     def create(cls, conv_state, **params):
         out = []
         for t in super(guard, cls).create(conv_state, **params):
-            # grep's last resort walks the tree and reads every path os.walk lists, symlinks and FIFOs
-            # included: with neither rg nor grep the tool refuses, and says so.
-            none = ("Error: search is unavailable: neither ripgrep nor grep is installed"
-                    if getattr(t.executor, "_search_backend", "") == "python" else "")
+            # Only ripgrep: it does not follow symlinks and has no fallback. System grep -R follows a
+            # symlinked directory out of the repository and falls back to a Python walk on exit 2; that
+            # walk reads every path os.walk lists, FIFOs and /dev/zero symlinks included. glob without rg
+            # uses Python's glob. The image installs rg (Dockerfile); without it the tool says so.
+            ex = t.executor
+            ok = getattr(ex, "_search_backend", "ripgrep") == "ripgrep" and getattr(ex, "_ripgrep_available", True)
+            none = "" if ok else "Error: %s is unavailable: only ripgrep is allowed and it is not installed" % t.name
             out.append(t.model_copy(update={"executor": GuardedExecutor(
                 t.executor, t.observation_type, str(conv_state.workspace.working_dir), field, unavailable=none, **kw)}))
         return out
