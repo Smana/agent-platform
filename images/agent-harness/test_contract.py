@@ -20,6 +20,7 @@ file. The runner ran when its report exists and holds a testcase: an infrastruct
 red. The overlay is the base's tree with the changed test files at their new content.
 """
 import argparse
+import collections
 import contextlib
 import fnmatch
 import json
@@ -35,13 +36,19 @@ import xml.etree.ElementTree as ET
 
 import yaml
 
+import agent_checks  # beside this script: its git_env() and guards() harden every git call here
+
 DECLARATION = ".github/agent-checks.yaml"
 DEFAULT_BRANCH = "refs/remotes/origin/HEAD"
 DEFAULT_MINUTES, MAX_MINUTES = 5, 15
 HEARTBEAT_S = 15
 MAX_IDS = 50
+# Bounds on what a runner can hand back: the report's size and testcases, the output kept, the grace after a kill.
+MAX_REPORT_BYTES, MAX_CASES, MAX_OUTPUT, KILL_GRACE_S = 10 * 1024 * 1024, 20000, 64 * 1024, 5
 # Exit codes, the harness's ends (TF5) and the job's conclusion (TF7).
 OK, NOT_OK, UNDECLARED, OUTSIDE, COULD_NOT_RUN = 0, 1, 2, 3, 4
+# hold fails closed: a missing, id-less or file-less contract is each its own result, never UNDECLARED.
+NO_CONTRACT, NO_IDS, NO_FILES = 5, 6, 7
 # The runner's shell, resolved from the caller's PATH: a step's PATH is the toolchain's.
 BASH = shutil.which("bash") or "/bin/bash"
 TRAILER_RUN, TRAILER_FILE, TRAILER_ID = "Agent-Contract", "Agent-Contract-File", "Agent-Contract-Id"
@@ -51,11 +58,37 @@ class Undeclared(Exception):
     """The base declares no tests: exit 2."""
 
 
+class BadRef(Exception):
+    """A base, head or commit that is no commit of the repository."""
+
+
+def git_cmd(repo: str, *args: str) -> list[str]:
+    """git with the repository's own config and the agent's refs/replace neutralised (agent_checks'
+    guards), and every pathspec literal: a PR's file name is never a glob or a magic pathspec."""
+    return ["git", "--literal-pathspecs", "-C", repo, *agent_checks.guards(repo), *args]
+
+
 def git(repo: str, *args: str, check: bool = True) -> str:
-    out = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    out = subprocess.run(git_cmd(repo, *args), capture_output=True, text=True, env=agent_checks.git_env())
     if check and out.returncode:
         raise RuntimeError("git %s: %s" % (" ".join(args), out.stderr.strip()))
     return out.stdout
+
+
+def resolve(repo: str, ref: str) -> str:
+    """ref as a commit sha; refused when it is none, or an option."""
+    out = subprocess.run(git_cmd(repo, "rev-parse", "--verify", "--end-of-options", "%s^{commit}" % ref),
+                         capture_output=True, text=True, env=agent_checks.git_env())
+    if out.returncode or not out.stdout.strip():
+        raise BadRef("%r is no commit of the repository" % ref)
+    return out.stdout.strip()
+
+
+def base_of(repo: str, base: str | None) -> tuple[str, str]:
+    """(sha, source): the harness's base when given, else the local origin/HEAD."""
+    if base:
+        return resolve(repo, base), "arguments"
+    return resolve(repo, DEFAULT_BRANCH), "origin/HEAD"
 
 
 def validate(doc) -> dict:
@@ -72,7 +105,7 @@ def validate(doc) -> dict:
              "%s must be a non-empty list of relative paths" % key)
     need(isinstance(t.get("run"), str) and t["run"].strip(), "no run")
     m = t.get("timeoutMinutes", DEFAULT_MINUTES)
-    need(isinstance(m, int) and 1 <= m <= MAX_MINUTES, "timeoutMinutes must be 1 to %d" % MAX_MINUTES)
+    need(isinstance(m, int) and not isinstance(m, bool) and 1 <= m <= MAX_MINUTES, "timeoutMinutes must be 1 to %d" % MAX_MINUTES)
     return {"paths": t["paths"], "select": t["select"], "runner": t["runner"], "run": t["run"], "minutes": m,
             "tools": doc.get("tools", [])}
 
@@ -116,46 +149,83 @@ def tree(repo: str, sha: str, head: str | None = None, files=(), gone=()):
 
 
 def junit(path: str) -> dict[str, str] | None:
-    """{id: pass | fail | skip} from a JUnit XML report; None when there is none or it holds no testcase."""
+    """{id: pass | fail | skip} from a JUnit XML report; None when there is none, it is over MAX_REPORT_BYTES or
+    MAX_CASES testcases, or it holds no testcase."""
     try:
-        root = ET.parse(path).getroot()
+        if os.path.getsize(path) > MAX_REPORT_BYTES:
+            return None
+        ids: dict[str, str] = {}
+        seen = 0
+        for _, case in ET.iterparse(path):  # end events: a testcase's children are in
+            if case.tag != "testcase":
+                continue
+            seen += 1
+            if seen > MAX_CASES:
+                return None
+            cls, name = case.get("classname") or "", case.get("name") or ""
+            key = "%s::%s" % (cls, name) if cls and cls != name else name
+            kinds = {child.tag for child in case}
+            result = "fail" if kinds & {"failure", "error"} else "skip" if "skipped" in kinds else "pass"
+            if ids.get(key) != "fail":  # a duplicate id that fails once fails
+                ids[key] = result
+            case.clear()
     except (OSError, ET.ParseError):
         return None
-    ids: dict[str, str] = {}
-    for case in root.iter("testcase"):
-        cls, name = case.get("classname") or "", case.get("name") or ""
-        key = "%s::%s" % (cls, name) if cls and cls != name else name
-        kinds = {child.tag for child in case}
-        result = "fail" if kinds & {"failure", "error"} else "skip" if "skipped" in kinds else "pass"
-        if ids.get(key) != "fail":  # a duplicate id that fails once fails
-            ids[key] = result
     return ids or None
 
 
 def run(where: str, decl: dict, files: list[str], env: dict, label: str, say) -> dict:
-    """The declared runner on files in where: {ran, ids, seconds, exit, tail}."""
+    """The declared runner on files in where: {ran, timeout, ids, seconds, exit, tail}. A timeout is
+    not a run; the output kept is the last MAX_OUTPUT bytes."""
     report = os.path.join(tempfile.mkdtemp(prefix="test-contract-report-"), "report.xml")
     start = time.monotonic()
     proc = subprocess.Popen([BASH, "-c", decl["run"], "agent-tests", *files], cwd=where,
                             env={**env, "AGENT_TEST_REPORT": report}, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-                            start_new_session=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     done = threading.Event()
+    kept = collections.deque()  # (bytes) chunks, trimmed to MAX_OUTPUT
+    size = [0]
 
     def beat():  # the SDK's terminal pauses after 30 s without output
         while not done.wait(HEARTBEAT_S):
             say("%s running, %ds" % (label, time.monotonic() - start))
+
+    def drain():
+        try:
+            while chunk := proc.stdout.read1(65536):
+                kept.append(chunk)
+                size[0] += len(chunk)
+                while size[0] > MAX_OUTPUT and len(kept) > 1:
+                    size[0] -= len(kept.popleft())
+        except (OSError, ValueError):
+            pass
     threading.Thread(target=beat, daemon=True).start()
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    timed_out = False
     try:
-        out, _ = proc.communicate(timeout=decl["minutes"] * 60)
+        proc.wait(timeout=decl["minutes"] * 60)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
+        timed_out = True
     finally:
         done.set()
-    ids = junit(report)
+    try:  # the group, whatever the end: a straggler must not outlive the run or hold the pipe
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        pass
+    reader.join(KILL_GRACE_S)
+    try:
+        proc.stdout.close()
+    except OSError:
+        pass
+    ids = None if timed_out else junit(report)
     shutil.rmtree(os.path.dirname(report), ignore_errors=True)
-    return {"ran": ids is not None, "ids": ids or {}, "seconds": round(time.monotonic() - start, 1),
+    out = b"".join(kept)[-MAX_OUTPUT:].decode(errors="replace")
+    return {"ran": ids is not None, "timeout": timed_out, "ids": ids or {}, "seconds": round(time.monotonic() - start, 1),
             "exit": proc.returncode, "tail": out.splitlines()[-30:]}
 
 
@@ -176,9 +246,10 @@ def plan(repo: str, decl: dict, base: str, head: str) -> dict:
 def at_base(repo: str, decl: dict, base: str, selected: list[str], env: dict, say) -> dict:
     """The base's ids of the selected files that exist there: what a new id is new against."""
     existing = [p for p in selected
-                if subprocess.run(["git", "-C", repo, "cat-file", "-e", "%s:%s" % (base, p)], capture_output=True).returncode == 0]
+                if subprocess.run(git_cmd(repo, "cat-file", "-e", "%s:%s" % (base, p)), capture_output=True,
+                                  env=agent_checks.git_env()).returncode == 0]
     if not existing:
-        return {"ran": True, "ids": {}, "seconds": 0, "exit": 0, "tail": []}
+        return {"ran": True, "timeout": False, "ids": {}, "seconds": 0, "exit": 0, "tail": []}
     with tree(repo, base) as where:
         return run(where, decl, existing, env, "base", say)
 
@@ -204,12 +275,14 @@ def judge(base_r: dict, over: dict, head_r: dict | None) -> list[dict]:
             for i in sorted(names)]
 
 
-def red(repo: str, commit: str, env: dict, say) -> tuple[int, dict]:
-    """TF5: every changed path a test path, the runner ran, at the overlay one id fails and no new id passes."""
-    base = git(repo, "rev-parse", DEFAULT_BRANCH + "^{commit}").strip()
+def red(repo: str, commit: str, env: dict, say, base: str | None = None) -> tuple[int, dict]:
+    """TF5: every changed path a test path, the runner ran, at the overlay one id fails and no new id passes.
+    base is the harness's (the sha it read at startup); without it, the local origin/HEAD."""
+    base, source = base_of(repo, base)
+    commit = resolve(repo, commit)
     decl = declaration(repo, base)
     p = plan(repo, decl, base, commit)
-    res = {"base": base, "commit": commit, "files": p["files"], "selected": p["selected"]}
+    res = {"base": base, "base_source": source, "commit": commit, "files": p["files"], "selected": p["selected"]}
     if not p["changed"]:
         return NOT_OK, {**res, "result": "not_testable", "why": "the commit changes nothing"}
     if p["outside"] or p["gone"]:
@@ -224,7 +297,8 @@ def red(repo: str, commit: str, env: dict, say) -> tuple[int, dict]:
     rows = judge(b, o, None)
     res["rows"] = rows
     if not (b["ran"] and o["ran"]):
-        return COULD_NOT_RUN, {**res, "result": "contract_not_red", "why": "the runner could not run", "tail": o["tail"]}
+        why = "the runner could not run" + (" (timed out)" if b["timeout"] or o["timeout"] else "")
+        return COULD_NOT_RUN, {**res, "result": "contract_not_red", "why": why, "tail": o["tail"]}
     fails = [r["id"] for r in rows if r["overlay"] == "fail"]
     vacuous = [r["id"] for r in rows if r["new"] and r["overlay"] == "pass"]
     if vacuous:
@@ -237,12 +311,16 @@ def red(repo: str, commit: str, env: dict, say) -> tuple[int, dict]:
 def ci(repo: str, base: str, head: str, env: dict, say) -> tuple[int, dict]:
     """TF7: the runner ran both times, no new id passes at the overlay, every id passes at the head
     (a skip is no pass), one id fails at the overlay and passes at the head, no runner file changed."""
+    base, head = resolve(repo, base), resolve(repo, head)
     decl = declaration(repo, base)
     p = plan(repo, decl, base, head)
     res = {"base": base, "head": head, "selected": p["selected"], "runner": p["runner"]}
     if p["runner"]:
         return NOT_OK, {**res, "result": "red", "why": ["the runner's own files changed: %s" % ", ".join(p["runner"])]}
+    note = ["deleted test files (no verdict on them): %s" % ", ".join(p["gone"])] if p["gone"] else []
     if not p["selected"]:
+        if p["gone"]:  # deleting tests proves nothing and is not "no test changed": neutral, with the note
+            return OK, {**res, "result": "neutral", "why": ["no test added or changed"] + note}
         return OK, {**res, "result": "green", "why": ["no changed test file"]}
     b = at_base(repo, decl, base, p["selected"], env, say)
     with tree(repo, base, head, p["files"], p["gone"]) as where:
@@ -253,55 +331,91 @@ def ci(repo: str, base: str, head: str, env: dict, say) -> tuple[int, dict]:
     res["rows"] = rows
     why = []
     if not (b["ran"] and o["ran"] and h["ran"]):
-        why.append("the runner could not run (%s)" % ", ".join(n for n, x in (("base", b), ("overlay", o), ("head", h)) if not x["ran"]))
+        why.append("the runner could not run (%s)" % ", ".join(
+            n + (" timed out" if x["timeout"] else "") for n, x in (("base", b), ("overlay", o), ("head", h)) if not x["ran"]))
     else:
         why += ["new test passes on the base plus the tests: %s" % r["id"] for r in rows if r["new"] and r["overlay"] == "pass"]
         why += ["does not pass at the head (%s): %s" % (r["head"], r["id"]) for r in rows if r["head"] != "pass"]
         if not any(r["overlay"] == "fail" and r["head"] == "pass" for r in rows):
             why.append("no test fails on the base plus the tests and passes at the head")
-    return (NOT_OK if why else OK), {**res, "result": "red" if why else "green", "why": why or ["fail-to-pass holds"]}
+    return (NOT_OK if why else OK), {**res, "result": "red" if why else "green", "why": (why or ["fail-to-pass holds"]) + note}
+
+
+def contract_at(repo: str, sha: str) -> dict | None:
+    """The contract trailers of one commit; None when it signs none."""
+    msg = git(repo, "show", "-s", "--format=%B", sha)
+    trailers = subprocess.run(["git", "interpret-trailers", "--parse", "--no-divider"],
+                              input=msg, capture_output=True, text=True).stdout.splitlines()
+    values: dict[str, list[str]] = {}
+    for t in trailers:
+        key, _, value = t.partition(":")
+        values.setdefault(key, []).append(value.strip())
+    if values.get(TRAILER_RUN):
+        return {"commit": sha, "run": values[TRAILER_RUN][0], "files": values.get(TRAILER_FILE, []),
+                "ids": values.get(TRAILER_ID, [])}
+    return None
 
 
 def contract_of(repo: str, base: str) -> dict | None:
     """The contract commit on the branch: the first commit since base the tester's harness signed."""
     for sha in git(repo, "rev-list", "--reverse", "%s..HEAD" % base).split():
-        msg = git(repo, "show", "-s", "--format=%B", sha)
-        trailers = subprocess.run(["git", "-C", repo, "interpret-trailers", "--parse", "--no-divider"],
-                                  input=msg, capture_output=True, text=True).stdout.splitlines()
-        values = {}
-        for t in trailers:
-            key, _, value = t.partition(":")
-            values.setdefault(key, []).append(value.strip())
-        if values.get(TRAILER_RUN):
-            return {"commit": sha, "run": values[TRAILER_RUN][0], "files": values.get(TRAILER_FILE, []),
-                    "ids": values.get(TRAILER_ID, [])}
+        found = contract_at(repo, sha)
+        if found:
+            return found
     return None
 
 
-def hold(repo: str, env: dict, say) -> tuple[int, dict]:
-    """TF6: the contract's tests at HEAD, on a clean checkout: every contract id passes."""
-    base = git(repo, "rev-parse", DEFAULT_BRANCH + "^{commit}").strip()
-    c = contract_of(repo, base)
+def hold(repo: str, env: dict, say, base: str | None = None, contract: str | None = None) -> tuple[int, dict]:
+    """TF6: the contract's tests at HEAD, on a clean checkout: every contract id passes, and neither a
+    contract file nor a runner file differs from the contract commit. Fails closed. The harness passes the
+    base and the contract commit it recorded; without them, the local origin/HEAD and the trailer search."""
+    base, bsource = base_of(repo, base)
+    if contract:
+        contract = resolve(repo, contract)
+        ancestor = subprocess.run(git_cmd(repo, "merge-base", "--is-ancestor", contract, "HEAD"),
+                                  env=agent_checks.git_env()).returncode == 0
+        c = contract_at(repo, contract) if ancestor else None
+        source = "arguments"
+    else:
+        c = contract_of(repo, base)
+        source = "origin/HEAD and the trailer search"
+    res = {"base": base, "base_source": bsource, "source": source}
     if not c:
-        return UNDECLARED, {"result": "no_contract"}
+        return NO_CONTRACT, {**res, "result": "no_contract"}
+    res.update(c)
+    if not c["ids"]:
+        return NO_IDS, {**res, "result": "contract_no_ids"}
     decl = declaration(repo, base)
-    head = git(repo, "rev-parse", "HEAD").strip()
     selected = sorted(p for p in c["files"] if any(fnmatch.fnmatchcase(p, g) for g in decl["select"]))
+    if not selected:
+        return NO_FILES, {**res, "result": "contract_no_files"}
+    head = git(repo, "rev-parse", "HEAD").strip()
+    res["head"] = head
+    watched = sorted(set(c["files"]) | set(decl["runner"]))
+    modified = [x for x in git(repo, "diff", "--name-only", "-z", c["commit"], head, "--", *watched).split("\0") if x]
+    if modified:  # the contract is the tests as the tester wrote them, under the runner as the base has it
+        return NOT_OK, {**res, "result": "contract_modified", "modified": modified, "failing": []}
     with tree(repo, head) as where:
         h = run(where, decl, selected, env, "contract", say)
     if not h["ran"]:
-        return COULD_NOT_RUN, {**c, "head": head, "result": "could_not_run", "tail": h["tail"]}
+        return COULD_NOT_RUN, {**res, "result": "could_not_run", "tail": h["tail"]}
     failing = sorted(i for i in c["ids"] if result_of(i, h["ids"]) != "pass")
-    return (NOT_OK if failing else OK), {**c, "head": head, "result": "red" if failing else "green", "failing": failing}
+    return (NOT_OK if failing else OK), {**res, "result": "red" if failing else "green", "failing": failing}
+
+
+def esc(text) -> str:
+    """Text for a check run summary (markdown): no markup, table break or HTML from an id or a reason."""
+    text = " ".join(str(text).split()).replace("`", "'").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return "".join("\\" + ch if ch in "|*_[]\\" else ch for ch in text)
 
 
 def summary(res: dict) -> str:
     """The check run's summary: each id's results, the reasons."""
-    lines = ["### Test contract: %s" % res["result"], ""]
-    lines += ["- %s" % w for w in res.get("why", [])]
+    lines = ["### Test contract: %s" % esc(res["result"]), ""]
+    lines += ["- %s" % esc(w) for w in res.get("why", [])]
     if res.get("rows"):
         lines += ["", "| id | new | base | base + tests | head |", "|---|---|---|---|---|"]
-        lines += ["| `%s` | %s | %s | %s | %s |" % (r["id"], "yes" if r["new"] else "", r["base"], r["overlay"], r["head"] or "")
+        lines += ["| %s | %s | %s | %s | %s |" % (esc(r["id"]), "yes" if r["new"] else "", r["base"], r["overlay"], r["head"] or "")
                   for r in res["rows"]]
     return "\n".join(lines) + "\n"
 
@@ -311,7 +425,10 @@ def main(argv: list[str]) -> int:
     sub = ap.add_subparsers(dest="mode", required=True)
     r = sub.add_parser("red")
     r.add_argument("--commit", default="HEAD")
-    sub.add_parser("hold")
+    r.add_argument("--base", help="the base sha the harness recorded; default the local origin/HEAD")
+    h = sub.add_parser("hold")
+    h.add_argument("--base", help="the base sha the harness recorded; default the local origin/HEAD")
+    h.add_argument("--contract", help="the contract commit the harness recorded; default the trailer search")
     c = sub.add_parser("ci")
     c.add_argument("--base", required=True)
     c.add_argument("--head", required=True)
@@ -325,14 +442,17 @@ def main(argv: list[str]) -> int:
     env = dict(os.environ)
     try:
         if args.mode == "red":
-            code, res = red(args.repo, git(args.repo, "rev-parse", args.commit).strip(), env, say)
+            code, res = red(args.repo, args.commit, env, say, base=args.base)
         elif args.mode == "hold":
-            code, res = hold(args.repo, env, say)
+            code, res = hold(args.repo, env, say, base=args.base, contract=args.contract)
         else:
             code, res = ci(args.repo, args.base, args.head, env, say)
     except Undeclared as exc:
         say(str(exc))
         return UNDECLARED
+    except (BadRef, RuntimeError) as exc:
+        say(str(exc))
+        return COULD_NOT_RUN
     if args.json:
         with open(args.json, "w") as f:
             json.dump(res, f, indent=1)

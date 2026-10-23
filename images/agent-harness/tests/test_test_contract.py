@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 import yaml
@@ -113,13 +114,26 @@ class Fixture:
         return tc.ci(self.repo, self.base, self.rev("HEAD"), dict(os.environ), lambda m: None)
 
 
+CONTRACT = ["Agent-Contract: run-1", "Agent-Contract-File: tests/test_sub.py", "Agent-Contract-Id: tests.test_sub"]
 SUB = "tests/test_sub.py"
 SUB_TEST = "from src.calc import sub\n\ndef test_sub():\n    assert sub(3, 2) == 1\n"
 SUB_IMPL = {"src/calc.py": "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n"}
 
 
-@unittest.skipUnless(importlib.util.find_spec("pytest"), "pytest is not installed (the image's test stage has it)")
+def fixture_has_pytest() -> bool:
+    """pytest where the fixture's `python3 -m pytest` runs (the PATH's python3), not in this interpreter."""
+    return subprocess.run(["python3", "-c", "import pytest"], capture_output=True).returncode == 0
+
+
+# The image's test stage sets this: there a missing pytest is a failure, never a skip.
+REQUIRE_PYTEST = bool(os.environ.get("TEST_CONTRACT_REQUIRE_PYTEST"))
+
+
+@unittest.skipUnless(REQUIRE_PYTEST or fixture_has_pytest(), "python3 has no pytest (the image's test stage has it)")
 class PytestTest(Fixture, unittest.TestCase):
+    def test_the_fixture_interpreter_has_pytest(self):
+        self.assertTrue(fixture_has_pytest(), "python3 -c 'import pytest' fails: the image's test stage must install it")
+
     def test_a_new_test_red_at_the_overlay_and_green_at_the_head_is_a_contract_then_green(self):
         self.commit({SUB: SUB_TEST})
         code, res = self.red()
@@ -194,7 +208,49 @@ class PytestTest(Fixture, unittest.TestCase):
 
     def test_no_contract_commit_holds_nothing(self):
         self.commit(SUB_IMPL)
-        self.assertEqual(tc.hold(self.repo, dict(os.environ), lambda m: None)[0], tc.UNDECLARED)
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"]), (tc.NO_CONTRACT, "no_contract"))
+        self.assertNotIn(code, (tc.OK, tc.UNDECLARED))
+
+    def test_a_rewritten_contract_test_does_not_hold(self):
+        self.commit({SUB: SUB_TEST}, "test: contract", CONTRACT)
+        self.commit({**SUB_IMPL, SUB: "def test_sub():\n    assert True\n"})
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"], res["modified"]), (tc.NOT_OK, "contract_modified", [SUB]))
+
+    def test_a_changed_runner_file_does_not_hold(self):
+        self.commit({SUB: SUB_TEST}, "test: contract", CONTRACT)
+        self.commit({**SUB_IMPL, "tests/conftest.py": "import pytest\n"})
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"]), (tc.NOT_OK, "contract_modified"))
+
+    def test_hold_takes_the_base_and_the_contract_from_the_harness(self):
+        c = self.commit({SUB: SUB_TEST}, "test: contract", CONTRACT)
+        self.commit(SUB_IMPL)
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None, base=self.base, contract=c)
+        self.assertEqual((code, res["source"]), (tc.OK, "arguments"))
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["source"]), (tc.OK, "origin/HEAD and the trailer search"))
+        # a commit that carries no trailers is no contract, whatever a trailer search would find
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None, base=self.base, contract=self.rev("HEAD"))
+        self.assertEqual((code, res["result"]), (tc.NO_CONTRACT, "no_contract"))
+
+    def test_a_contract_without_ids_or_files_is_never_green(self):
+        self.commit({SUB: SUB_TEST}, "test: contract", ["Agent-Contract: run-1", "Agent-Contract-File: " + SUB])
+        self.commit(SUB_IMPL)
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"]), (tc.NO_IDS, "contract_no_ids"))
+        sh(self.repo, "git", "reset", "-q", "--hard", self.base)
+        self.commit({SUB: SUB_TEST}, "test: contract", ["Agent-Contract: run-1", "Agent-Contract-Id: tests.test_sub"])
+        code, res = tc.hold(self.repo, dict(os.environ), lambda m: None)
+        self.assertEqual((code, res["result"]), (tc.NO_FILES, "contract_no_files"))
+        self.assertNotIn(code, (tc.OK, tc.UNDECLARED))
+
+    def test_red_takes_the_base_from_the_harness(self):
+        self.commit({SUB: SUB_TEST})
+        code, res = tc.red(self.repo, self.rev("HEAD"), dict(os.environ), lambda m: None, base=self.base)
+        self.assertEqual((code, res["base_source"]), (tc.OK, "arguments"))
+        self.assertEqual(self.red()[1]["base_source"], "origin/HEAD")
 
 
 class ShellTest(Fixture, unittest.TestCase):
@@ -215,6 +271,57 @@ class ShellTest(Fixture, unittest.TestCase):
         self.assertEqual(self.red()[1]["result"], "contract_not_red")
         self.assertTrue(any("does not pass at the head (skip)" in w for w in self.ci()[1]["why"]))
 
+    def test_a_pr_that_only_deletes_tests_is_neutral_with_a_note(self):
+        self.commit({"bin/other": "#!/usr/bin/env bash\necho x\n"})
+        sh(self.repo, "git", "rm", "-q", "t/test-greet.sh")
+        sh(self.repo, "git", "commit", "-qm", "drop")
+        code, res = self.ci()
+        self.assertEqual((code, res["result"]), (tc.OK, "neutral"), res)
+        self.assertIn("t/test-greet.sh", " ".join(res["why"]))
+        self.assertNotEqual(res["why"], ["no changed test file"])
+
+    def test_a_deletion_beside_a_test_is_noted_in_the_verdict(self):
+        sh(self.repo, "git", "rm", "-q", "t/test-greet.sh")
+        self.commit({"t/test-name.sh": 'out="$(bash bin/greet ada)"; [ "$out" = "hello ada" ]\n'})
+        self.commit({"bin/greet": '#!/usr/bin/env bash\necho "hello${1:+ $1}"\n'})
+        code, res = self.ci()
+        self.assertTrue(any("deleted" in w and "t/test-greet.sh" in w for w in res["why"]), res)
+
+    def test_a_bad_ref_is_refused_not_resolved(self):
+        with self.assertRaises(tc.BadRef):
+            tc.ci(self.repo, "--output=/tmp/x", "HEAD", dict(os.environ), lambda m: None)
+        self.assertEqual(tc.main(["--repo", self.repo, "ci", "--base", "nope", "--head", "HEAD"]), tc.COULD_NOT_RUN)
+
+    def test_a_timeout_is_could_not_run_and_bounded(self):
+        decl = {"run": "sleep 60 & sleep 60", "minutes": 0.03}
+        start = time.monotonic()
+        r = tc.run(self.repo, decl, [], dict(os.environ), "t", lambda m: None)
+        self.assertLess(time.monotonic() - start, 20)
+        self.assertEqual((r["ran"], r["timeout"]), (False, True))
+
+    def test_the_buffered_output_is_capped(self):
+        decl = {"run": "head -c 6000000 /dev/zero | tr '\\0' 'x'", "minutes": 1}
+        r = tc.run(self.repo, decl, [], dict(os.environ), "t", lambda m: None)
+        self.assertLessEqual(sum(len(x) for x in r["tail"]), tc.MAX_OUTPUT)
+
+    def test_a_huge_or_crowded_report_is_no_report(self):
+        d = tempfile.mkdtemp()
+        big = os.path.join(d, "big.xml")
+        with open(big, "w") as f:
+            f.write("<testsuite>" + "<!--" + "x" * tc.MAX_REPORT_BYTES + "--><testcase name='a'/></testsuite>")
+        self.assertIsNone(tc.junit(big))
+        many = os.path.join(d, "many.xml")
+        with open(many, "w") as f:
+            f.write("<testsuite>" + "".join("<testcase name='%d'/>" % i for i in range(tc.MAX_CASES + 1)) + "</testsuite>")
+        self.assertIsNone(tc.junit(many))
+
+    def test_the_summary_escapes_ids_and_reasons(self):
+        out = tc.summary({"result": "red", "why": ["<img src=x> | `bad`\nline"],
+                          "rows": [{"id": "a|b`c<d>", "new": True, "base": "-", "overlay": "fail", "head": "pass"}]})
+        self.assertNotIn("<img", out)
+        self.assertNotIn("<d>", out)
+        self.assertEqual(len(out.strip().splitlines()), 7, out)
+
     def test_an_undeclared_repository_is_exit_2(self):
         self.commit({".github/agent-checks.yaml": "version: 1\n"})
         sh(self.repo, "git", "push", "-q", "origin", "HEAD:main")
@@ -229,7 +336,7 @@ class DeclarationTest(unittest.TestCase):
         doc = {"version": 1, "tests": dict(self.TESTS)}
         self.assertEqual(tc.validate(doc)["minutes"], tc.DEFAULT_MINUTES)
         for bad, why in (({"paths": []}, "paths"), ({"select": "t/*"}, "select"), ({"runner": ["/abs"]}, "runner"),
-                         ({"run": " "}, "no run"), ({"timeoutMinutes": 16}, "timeoutMinutes"), ({"selcet": []}, "unknown keys")):
+                         ({"run": " "}, "no run"), ({"timeoutMinutes": 16}, "timeoutMinutes"), ({"timeoutMinutes": True}, "timeoutMinutes"), ({"selcet": []}, "unknown keys")):
             with self.assertRaisesRegex(tc.Undeclared, why):
                 tc.validate({"version": 1, "tests": {**self.TESTS, **bad}})
 
