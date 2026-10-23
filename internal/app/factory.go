@@ -235,11 +235,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				return strings.TrimSpace(string(b))
 			}}
 	}
-	redactor, err := redact.New()
-	if err != nil {
-		return err
-	}
-	apiSrv := &api.Server{Auth: auth, Redact: redactor, Log: log,
+	apiSrv := &api.Server{Auth: auth, Log: log,
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
 		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned,
 		Forges: func(repo string) api.IssueFiler {
@@ -252,6 +248,13 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	runlore, ok := conns.get(cfg.RunLoreRepository())
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
+	}
+	if len(cfg.API.Sponsored) > 0 { // only the sponsored intake reads it, and it fails closed on a nil interface
+		redactor, err := redact.New()
+		if err != nil {
+			return err
+		}
+		apiSrv.Redact = redactor
 	}
 	var runnables []manager.Runnable
 	for _, rp := range cfg.Repos() {

@@ -26,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
+	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
 // IssueFiler files an issue as the factory App: RunLore's CreateIssue, whose answer is a
@@ -49,7 +50,6 @@ type TaskRequest struct {
 const (
 	reasonSponsoredOnly = "sponsored_only"
 	reasonPrincipalOver = "principal_budget_exhausted"
-	maxRefLen           = 256
 	minMaxCostUSD       = 0.01 // the smallest ceiling an api task may ask for (I-2)
 )
 
@@ -106,7 +106,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	case in.DataClass != "public": // R37: internal data is the admins', and a machine is none
 		out(http.StatusBadRequest, "bad_data_class")
 		return
-	case len(in.Ref) > maxRefLen:
+	case !sponsored.ValidRef(in.Ref): // the ref is written into the trusted brief: one pattern with the broker // the ref is written into the trusted brief: one pattern with the broker
 		out(http.StatusBadRequest, "bad_ref")
 		return
 	case !slices.Contains(sp.Repositories, in.Repository): // exact: the config is spelled as listed (C22)

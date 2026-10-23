@@ -87,6 +87,10 @@ func firstBrief(t *v1alpha1.Task, nonce string, sc *Scoped) string {
 			p.Issue, t.Spec.Source.ContentSHA256)
 		fmt.Fprintf(&b, "When you open the pull request, its body must contain \"Fixes #%d\", and no closing keyword for #%d: "+
 			"the parent closes when its last part merges.\n", t.Spec.Issue, p.Issue)
+	case t.Spec.Issue > 0 && t.Spec.Source.Kind == "api":
+		fmt.Fprintf(&b, "Source: GitHub issue #%d, requested through the API by %s for %s. Snapshot sha256 %s.\n",
+			t.Spec.Issue, t.Spec.Source.RequestedBy, t.Spec.Source.Sponsor, t.Spec.Source.ContentSHA256)
+		fmt.Fprintf(&b, "When you open the pull request, its body must contain \"Fixes #%d\".\n", t.Spec.Issue)
 	case t.Spec.Issue > 0:
 		fmt.Fprintf(&b, "Source: GitHub issue #%d, labelled for the factory by %s. Snapshot sha256 %s.\n",
 			t.Spec.Issue, strings.TrimPrefix(t.Spec.Source.RequestedBy, "github:"), t.Spec.Source.ContentSHA256)

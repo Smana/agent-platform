@@ -476,3 +476,25 @@ func TestNeedsAuthorTrimsTheRoomsURL(t *testing.T) {
 		t.Fatalf("%s", b)
 	}
 }
+
+// A sponsored principal that pays is "the principal", never "the person"; an unknown principal and
+// an outdated Rooms CRD say what to do.
+func TestEndedNamesASponsoredPayerAsAPrincipal(t *testing.T) {
+	tk := task()
+	tk.Spec.Source = v1alpha1.Source{Kind: "api", RequestedBy: "system:slack-app", Sponsor: "github:smana"}
+	b := Ended(tk, v1alpha1.PhaseEscalated, "budget-person").Body
+	if !strings.Contains(b, "the principal its next run is charged to") || strings.Contains(b, "the person") ||
+		!strings.Contains(b, "`system:slack-app`; it resets at 00:00 UTC") {
+		t.Fatal(b)
+	}
+	person := task()
+	person.Spec.Source = v1alpha1.Source{Kind: "issue", RequestedBy: "github:Smana"}
+	if b := Ended(person, v1alpha1.PhaseEscalated, "budget-person").Body; !strings.Contains(b, "the person its next run") {
+		t.Fatal(b)
+	}
+	for _, r := range []string{"principal_unknown", "rooms_crd_outdated"} {
+		if got := Reason(r); got == r || got == "" {
+			t.Errorf("%s has no narration", r)
+		}
+	}
+}

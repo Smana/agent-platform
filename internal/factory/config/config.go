@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
 const (
@@ -646,10 +647,6 @@ var (
 	githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 )
 
-// reservedPrincipals are ledger keys and actors that already mean something (SI1): the fleet,
-// the two system intakes, the broker and the policy engine.
-var reservedPrincipals = []string{"factory", "runlore", "scheduler", "room-broker", "policy"}
-
 func (c *Config) validateSponsored(bad func(string, ...any)) {
 	if len(c.API.Sponsored) > 0 && c.API.ProjectIDFile == "" {
 		bad("api.sponsored needs api.projectIDFile: a sponsored token's audience is pinned to the project")
@@ -667,7 +664,7 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 		case !factoryRE.MatchString(s.Name):
 			bad("api.sponsored: %q is not a DNS label", s.Name)
 			continue
-		case slices.Contains(reservedPrincipals, s.Name) || slices.Contains(system, s.Principal()):
+		case sponsored.IsReserved(s.Name) || slices.Contains(system, s.Principal()):
 			bad("api.sponsored: %q is reserved", s.Name)
 			continue
 		case seen[s.Name]:

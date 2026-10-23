@@ -28,6 +28,9 @@ func (r *Reconciler) scoperSpec(t *v1alpha1.Task, text string) runs.Spec {
 	s := r.implementerSpec(t, text)
 	light := r.Cfg.Tiers["light"]
 	s.Role, s.Tier, s.MaxTokens, s.MaxMinutes = "triager", "light", light.RunTokens, light.RunMinutes
+	if t.Spec.Source.Kind == "api" && t.Spec.Budget.RunTokens > 0 { // never above the ceiling-derived run (C4)
+		s.MaxTokens = min(s.MaxTokens, t.Spec.Budget.RunTokens)
+	}
 	return s
 }
 

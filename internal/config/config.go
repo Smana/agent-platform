@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
 // The :8443 key pair's defaults: cert-manager's Certificate room-broker-tls (GP-18).
@@ -69,10 +70,6 @@ type SponsoredConfig struct {
 	Name         string `json:"name"`
 	ClientIDFile string `json:"clientIDFile"`
 }
-
-// reservedSponsored are names another component answers to, as the factory's reservation (C22);
-// a systemPrincipals value is reserved too.
-var reservedSponsored = []string{"factory", "runlore", "scheduler", "room-broker", "policy"}
 
 // sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
 var sponsoredNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -267,7 +264,7 @@ func (h HumanConfig) validate(system []string) []error {
 		switch {
 		case !sponsoredNameRE.MatchString(sp.Name):
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is not a DNS label", sp.Name))
-		case slices.Contains(reservedSponsored, sp.Name) || slices.Contains(system, "system:"+sp.Name):
+		case sponsored.IsReserved(sp.Name) || slices.Contains(system, "system:"+sp.Name):
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is reserved", sp.Name))
 		case seen[sp.Name]:
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is declared twice", sp.Name))

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -741,6 +742,10 @@ func (r *Reconciler) triaged(ctx context.Context, t *v1alpha1.Task) error {
 	err := rooms.Ensure(ctx, r.Client, r.Namespace, t.Name, t.Spec.DataClass, t.Spec.Repository, members...)
 	if errors.Is(err, rooms.ErrForeignRoom) {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "foreign_room")
+	}
+	if apierrors.IsInvalid(err) && len(members) > 0 {
+		// an old Rooms CRD refuses a system: member: retrying cannot help, an operator must act
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, "rooms_crd_outdated")
 	}
 	if err != nil {
 		return err
