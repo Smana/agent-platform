@@ -116,13 +116,15 @@ type Set struct {
 	// error (factory interfaces F2). tool is one of the server's own names.
 	MCPCalls metric.Int64Counter
 
-	meter         metric.Meter
-	appended      metric.Int64Counter
-	appendSeconds metric.Float64Histogram
-	appendErrors  metric.Int64Counter
-	redactions    metric.Int64Counter
-	bridgeStalls  metric.Int64Counter
-	bridgeStubs   metric.Int64Counter
+	meter             metric.Meter
+	appended          metric.Int64Counter
+	appendSeconds     metric.Float64Histogram
+	appendErrors      metric.Int64Counter
+	redactions        metric.Int64Counter
+	bridgeStalls      metric.Int64Counter
+	bridgeStubs       metric.Int64Counter
+	webhookDeliveries metric.Int64Counter
+	webhookDisabled   metric.Int64Gauge
 
 	mu    sync.Mutex
 	rooms map[string]roomGauge
@@ -182,6 +184,12 @@ func New(meter metric.Meter) (*Set, error) {
 	check(err)
 	s.bridgeStubs, err = meter.Int64Counter("rooms_bridge_items_stubbed_total",
 		metric.WithDescription("Harness items kept as a stub in their slot, by reason."))
+	check(err)
+	s.webhookDeliveries, err = meter.Int64Counter("rooms_webhook_deliveries_total",
+		metric.WithDescription("Webhook delivery attempts, by subscriber and outcome."))
+	check(err)
+	s.webhookDisabled, err = meter.Int64Gauge("rooms_webhook_disabled",
+		metric.WithDescription("1 while a webhook subscriber is disabled."))
 	check(err)
 	check(s.registerRoomGauges())
 	if err := errors.Join(errs...); err != nil {
@@ -312,4 +320,22 @@ func (s *Set) WatchJWKS(lastRefresh map[string]func() time.Time) error {
 		return fmt.Errorf("metrics: rooms_authn_jwks_last_refresh_timestamp_seconds: %w", err)
 	}
 	return nil
+}
+
+// WebhookDelivery counts one delivery attempt: delivered, retried, failed, no_key, unresolved or
+// mismatch. subscriber is a configured name, so the label stays bounded. unresolved is a closed
+// room whose repository nothing names: its events moved past, undelivered. mismatch is a room
+// whose log and Room name different repositories: held, counted once.
+func (s *Set) WebhookDelivery(ctx context.Context, subscriber, outcome string) {
+	s.webhookDeliveries.Add(ctx, 1, metric.WithAttributes(attribute.String("subscriber", subscriber),
+		attribute.String("outcome", outcome)))
+}
+
+// WebhookDisabled sets the subscriber's disabled gauge (RoomWebhookDisabled reads it).
+func (s *Set) WebhookDisabled(ctx context.Context, subscriber string, disabled bool) {
+	var v int64
+	if disabled {
+		v = 1
+	}
+	s.webhookDisabled.Record(ctx, v, metric.WithAttributes(attribute.String("subscriber", subscriber)))
 }

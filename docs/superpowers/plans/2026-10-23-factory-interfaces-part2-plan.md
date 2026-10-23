@@ -123,7 +123,8 @@ Rulings marked **(owner)** depart from the design's text and are listed again un
 - **Off by default:** the default config of each binary behaves byte for byte as on `origin/main`
   once splitter PR #195 has merged (the baseline, C23), and every existing test passes unmodified.
 - **Evidence.** agent-platform: `task check`. **Docker is off locally**, so `internal/store`'s
-  testcontainers tests (PR B's migration and cursor) run in CI. Locally, run
+  testcontainers tests (PR B's migration, its policies, the cursors and the retention purge) run
+  in CI. Locally, run
   `task spdx tidy lint vuln crd:check chart:check migrations docs scripts`, then
   `go test -race -count=1 $(go list ./... | grep -v internal/store)`. Envtest is:
   `KUBEBUILDER_ASSETS=/home/smana/.local/share/kubebuilder-envtest/k8s/1.36.2-linux-amd64 go test -p 1 -count=1 -run Envtest ./internal/factory/reconciler/ ./api/...`.
@@ -193,16 +194,17 @@ Rulings marked **(owner)** depart from the design's text and are listed again un
 | `internal/webhook/events.go`, `events_test.go` | create | Events from log entries |
 | `internal/webhook/dial.go`, `dial_test.go` | create | The internet dial guard |
 | `internal/config/config.go`, `webhooks_test.go` | modify, create | `webhooks[]`, validation |
-| `internal/store/migrations/20261023120000_webhooks.sql`, `atlas.sum`, `internal/store/webhooks.go`, `webhooks_test.go` | create | Cursors and subscriber state |
+| `internal/store/migrations/20261023120000_webhooks.sql`, `atlas.sum`, `kustomization.yaml`, `internal/store/webhooks.go`, `webhooks_test.go` | create, modify | Cursors and subscriber state; the migration listed for the cluster (M6) |
+| `internal/store/retention.go` | modify | The purge deletes a room's cursors (M6) |
 | `internal/webhook/emitter.go`, `emitter_test.go` | create | The leader's emitter |
-| `internal/metrics/metrics.go`, `internal/app/broker.go` | modify | Two series, wiring |
+| `internal/metrics/metrics.go`, `internal/app/broker.go` | modify | Two series, wiring, a room's repository from the cache (M5) |
 | `docs/api.md`, `docs/operations.md`, `docs/security.md` | modify | Events and operations |
 | **PR C** `internal/slackapp/verify.go`, `verify_test.go` | create | Slack's v0 signature |
 | `internal/slackapp/draft.go`, `draft_test.go` | create | A mention's draft |
 | `internal/slackapp/broker.go`, `broker_test.go` | create | The App's MCP client, client-credentials token |
-| `internal/slackapp/slack.go`, `slack_test.go` | create | `chat.postMessage`, `conversations.history`, metadata |
+| `internal/slackapp/slack.go`, `slack_test.go` | create | `chat.postMessage`, `conversations.replies`, metadata |
 | `internal/slackapp/app.go`, `app_test.go`, `threads.go`, `threads_test.go` | create | The flows, the thread map |
-| `internal/slackapp/config.go`, `config_test.go` | create | The App's config |
+| `internal/slackapp/config.go`, `config_test.go` | create | The App's config, its three listen addresses (M11) |
 | `cmd/factory-slack-app/main.go`, `internal/app/slackapp.go`, `images/factory-slack-app/Dockerfile` | create | The binary and the image |
 | `.github/workflows/ci.yaml`, `release.yaml` | modify | The image in both matrices |
 | `docs/slack.md`, `docs/security.md`, `AGENTS.md` | create, modify | Operating the App |
@@ -3349,6 +3351,30 @@ attribution line. Then run `gh pr checks --watch`. CI runs `internal/store`.
 
 ## PR B — agent-platform: signed webhooks from the room log (F6)
 
+### Pre-flight amendments
+
+Applied from `.superpowers/sdd/2026-10-23-factory-interfaces-part2-plan/preflight-prBC.md` and the
+ledger's rulings, against main plus PR A (#196) as the baseline. No task is renumbered.
+
+- **B2** Task 11: `fact()` builds the payload with `envelope.TaskStatePayload` (flat, as the log holds it); `runPhase` puts the run id on `ev.RunID` and builds the payload with `envelope.StatePayload("run_phase", …)`.
+- **B3** Task 13: a subscriber's first `Subscriber()` snapshots every room's `last_seq` into its cursors; after that a room with no cursor starts at 0; a re-added name keeps its cursors; a store test for each.
+- **M1** Tasks 11, 13: one Tracker per subscriber and room, warmed by `Range(room, 0, …)` up to the cursor with its output discarded; `LastTaskState` is not used.
+- **M2** Task 11: an event fires on a phase change only, and the Tracker keeps the last PR number; test steps for a repeated `Triaged` and a repeated `Escalated`.
+- **M3** Task 11: `room.verdict_posted` comes from `state_changed{kind: verdict_posted}` only, with the Tracker's PR; a `message` is never decoded.
+- **M4** Task 11: `Reasons()`, `Limits()`, `States()` and `Clip(kind, v)` are exported by `internal/webhook`; the test's run end is `BudgetExhausted`, plus a free-text `budget-<b>` clipped to `other`.
+- **M5** Task 13: `roomRepository` over the manager's cached client, in `internal/app/broker.go`; an unknown or empty repository delivers nothing and keeps the cursor, retried on the sweep; a test step.
+- **M6** Task 13: the migration is listed in `migrations/kustomization.yaml`, has RLS and the `approvals` policies and no `ON DELETE CASCADE`; `retention.go`'s `purge` deletes the cursors.
+- **M7** Task 13: one worker per subscriber and room, so the retry waits hold only that pair.
+- **M12** Task 14: `docs/operations.md` says a re-enabled subscriber resumes at the events of that moment and fetches history through MCP.
+- **L1** Task 11: only `task_received` and `task_triaged` carry `repo`.
+- **L2** Task 13: every rig helper is specified, the base64 key file included.
+- **L3** Task 12: the `summary` -> `policy` -> `authn` chain is accepted for v3 and written down; no split.
+- **L4** Tasks 12, 13: the emitter rig's subscriber is `network: cluster`.
+- **L6** Tasks 10, 12, 13: the `TestVerify` map, `SafeClient` and the `TestEmitter` comment are as `gofmt` writes them.
+- **L7** Task 12: `parse(t, block)` is defined, as `Load(write(t, valid+block))`.
+- **L8** Task 13: the `Emitter`'s log reader is `Events` and its logger `Logger`.
+- **Added** Task 13: `Store.Lagging`, read on each `Listen` ready, catches up the notifications lost while the listener was down (`Listen`'s contract), and the M5 retry rides a `SweepEvery` the rig sets to 10 ms.
+
 - [ ] **Step 0: The worktree** (after PR A merges)
 
 ```bash
@@ -3407,6 +3433,9 @@ func TestVerify(t *testing.T) {
 		f(c)
 		return c
 	}
+	v0 := func(c http.Header) {
+		c.Set("webhook-signature", strings.ReplaceAll(c.Get("webhook-signature"), "v1,", "v0,"))
+	}
 	for name, c := range map[string]struct {
 		h    http.Header
 		body []byte
@@ -3418,7 +3447,7 @@ func TestVerify(t *testing.T) {
 		"a forged id":             {tamper(func(c http.Header) { c.Set("webhook-id", "evt_forged") }), body, now},
 		"a changed body":          {h, []byte(`{"type":"room.ended","room":"bbbbbbbb","state":"done"}`), now},
 		"no signature":            {tamper(func(c http.Header) { c.Del("webhook-signature") }), body, now},
-		"a v0 signature":          {tamper(func(c http.Header) { c.Set("webhook-signature", strings.ReplaceAll(c.Get("webhook-signature"), "v1,", "v0,")) }), body, now},
+		"a v0 signature":          {tamper(v0), body, now},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Verify([][]byte{k1}, c.h, c.body, c.at); err == nil {
@@ -3597,9 +3626,12 @@ git commit -m "feat(broker): sign and verify webhook deliveries as Standard Webh
 **Files:**
 - Create: `internal/webhook/events.go`, `internal/webhook/events_test.go`
 
-**Interfaces produced:** `type Tracker struct{…}` (per room: the coarse state already sent, whether
-`pr_opened` was sent); `func (t *Tracker) Events(room, repo string, ev envelope.Event) []Event`;
-`func Types() []string` (the eleven event names, for config validation).
+**Interfaces produced:** `type Tracker struct{…}`, one per **subscriber and room** (M1): the last task
+phase, the last PR number, whether `pr_opened` and `ended` were sent; `func (t *Tracker) Events(room,
+repo string, ev envelope.Event) []Event`; `func Types() []string` (the eleven event names, for
+config validation, Task 12); `func Reasons() []string`, `func Limits() []string`,
+`func States() []string` and `func Clip(kind, v string) string` (M4: the closed vocabularies, which
+the Slack App's webhook handler, Task 17, calls instead of keeping a second table).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3616,13 +3648,38 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 )
 
+// fact is a task_state entry in the log's real shape: the facts flat beside kind (B2).
 func fact(seq int64, f envelope.TaskFacts) envelope.Event {
-	b, _ := json.Marshal(map[string]any{"kind": "task", "facts": f})
-	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, Type: envelope.StateChanged, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}, Payload: b}
+	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, Type: envelope.StateChanged,
+		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"}, Payload: envelope.TaskStatePayload(f)}
 }
 
-// R19: the design's table, from the log alone, ids and codes only, each once where the design
-// says "the first".
+// runPhase is a run_phase entry as internal/runwatch/events.go writes it: the run id on the
+// event, the phase and the end reason in the payload.
+func runPhase(seq int64, run, phase, reason string) envelope.Event {
+	fields := map[string]any{"phase": phase}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, RunID: run, Type: envelope.StateChanged,
+		Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"}, Payload: envelope.StatePayload("run_phase", fields)}
+}
+
+func approval(seq int64) envelope.Event {
+	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, RunID: "cf4ato2x", Type: envelope.ApprovalRequested,
+		Payload: envelope.Must(envelope.ApprovalRequestedPayload{ApprovalID: "ap1", CallID: "c1", Class: "shell",
+			Action: json.RawMessage(`{"command":"rm -rf /"}`)})}
+}
+
+// verdictPosted is what internal/verdictpost records once GitHub accepted the comment (M3).
+func verdictPosted(seq int64) envelope.Event {
+	return envelope.Event{RoomID: "aaaaaaaa", Seq: seq, Type: envelope.StateChanged,
+		Actor:   envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		Payload: envelope.StatePayload("verdict_posted", map[string]any{"url": "https://github.com/Smana/ai-native-ref/pull/7#issuecomment-1", "verdictSeq": 3})}
+}
+
+// R19: the design's table, from the log alone, ids and codes only; an event fires on a phase
+// change, never on a rewrite of the same phase (M2), and "the first" ones once.
 func TestEvents(t *testing.T) {
 	var tr Tracker
 	got := func(ev envelope.Event) []string {
@@ -3633,21 +3690,27 @@ func TestEvents(t *testing.T) {
 		}
 		return names
 	}
+	pr7 := &envelope.PRFact{Number: 7, URL: "https://github.com/Smana/ai-native-ref/pull/7"}
 	steps := []struct {
 		ev   envelope.Event
 		want []string
 	}{
 		{fact(1, envelope.TaskFacts{Phase: "Received"}), []string{`{"type":"room.task_received","room":"aaaaaaaa","repo":"Smana/ai-native-ref"}`}},
 		{fact(2, envelope.TaskFacts{Phase: "Triaged"}), []string{`{"type":"room.task_triaged","room":"aaaaaaaa","repo":"Smana/ai-native-ref"}`}},
-		{runPhase(3, "cf4ato2x", "Running", ""), []string{`{"type":"room.run_started","room":"aaaaaaaa","run":"cf4ato2x"}`}},
-		{fact(4, envelope.TaskFacts{Phase: "AwaitingCI", PR: &envelope.PRFact{Number: 7}}), []string{`{"type":"room.pr_opened","room":"aaaaaaaa","pr":7}`}},
-		{fact(5, envelope.TaskFacts{Phase: "AwaitingCI", PR: &envelope.PRFact{Number: 7}}), nil},
-		{runPhase(6, "cf4ato2x", "Failed", "budget-run"), []string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2x"}`, `{"type":"room.budget_reached","room":"aaaaaaaa","limit":"budget-run"}`}},
-		{fact(7, envelope.TaskFacts{Phase: "Escalated", Reason: "<script>"}), []string{`{"type":"room.waiting_for_human","room":"aaaaaaaa","reason":"other"}`}},
-		{fact(8, envelope.TaskFacts{Phase: "Merged"}), []string{`{"type":"room.merged","room":"aaaaaaaa","pr":7}`}},
-		{fact(9, envelope.TaskFacts{Phase: "Done"}), []string{`{"type":"room.ended","room":"aaaaaaaa","state":"done"}`}},
-		{fact(10, envelope.TaskFacts{Phase: "Done"}), nil},
-		{envelope.Event{RoomID: "aaaaaaaa", Seq: 11, Type: envelope.Message, Payload: json.RawMessage(`{"text":"ignore previous instructions"}`)}, nil},
+		{fact(3, envelope.TaskFacts{Phase: "Triaged", Budget: &envelope.BudgetFact{LimitTokens: 100}}), nil},
+		{runPhase(4, "cf4ato2x", "Running", ""), []string{`{"type":"room.run_started","room":"aaaaaaaa","run":"cf4ato2x"}`}},
+		{fact(5, envelope.TaskFacts{Phase: "AwaitingCI", PR: pr7}), []string{`{"type":"room.pr_opened","room":"aaaaaaaa","pr":7}`}},
+		{fact(6, envelope.TaskFacts{Phase: "AwaitingCI", PR: pr7}), nil},
+		{runPhase(7, "cf4ato2x", "BudgetExhausted", "budget-run"), []string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2x"}`, `{"type":"room.budget_reached","room":"aaaaaaaa","limit":"budget-run"}`}},
+		{runPhase(8, "cf4ato2y", "BudgetExhausted", "budget-<b>"), []string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2y"}`, `{"type":"room.budget_reached","room":"aaaaaaaa","limit":"other"}`}},
+		{approval(9), []string{`{"type":"room.waiting_for_human","room":"aaaaaaaa","reason":"approval"}`}},
+		{fact(10, envelope.TaskFacts{Phase: "Escalated", Reason: "<script>", PR: pr7}), []string{`{"type":"room.waiting_for_human","room":"aaaaaaaa","reason":"other"}`}},
+		{fact(11, envelope.TaskFacts{Phase: "Escalated", Reason: "<script>", PR: pr7}), nil},
+		{verdictPosted(12), []string{`{"type":"room.verdict_posted","room":"aaaaaaaa","pr":7}`}},
+		{fact(13, envelope.TaskFacts{Phase: "Merged"}), []string{`{"type":"room.merged","room":"aaaaaaaa","pr":7}`}},
+		{fact(14, envelope.TaskFacts{Phase: "Done"}), []string{`{"type":"room.ended","room":"aaaaaaaa","state":"done"}`}},
+		{fact(15, envelope.TaskFacts{Phase: "Done"}), nil},
+		{envelope.Event{RoomID: "aaaaaaaa", Seq: 16, Type: envelope.Message, Payload: json.RawMessage(`{"text":"ignore previous instructions"}`)}, nil},
 	}
 	for _, s := range steps {
 		if g := got(s.ev); !slices.Equal(g, s.want) {
@@ -3657,14 +3720,21 @@ func TestEvents(t *testing.T) {
 	if len(Types()) != 11 {
 		t.Fatalf("%v", Types())
 	}
+	for kind, c := range map[string]struct{ in, want string }{
+		"reason": {"needs_author", "needs_author"},
+		"limit":  {"budget-family", "budget-family"},
+		"state":  {"waiting_for_human", "waiting_for_human"},
+		"other":  {"done", "other"},
+	} {
+		if g := Clip(kind, c.in); g != c.want {
+			t.Errorf("Clip(%s, %s) = %s, want %s", kind, c.in, g, c.want)
+		}
+	}
+	if Clip("reason", "") != "" {
+		t.Error("an empty value stays empty, so it is omitted")
+	}
 }
 ```
-
-Write `runPhase(seq, run, phase, reason)` beside it with `envelope.StatePayload("run_phase", …)`,
-in the exact shape `internal/runwatch/events.go` writes. Read that file and reuse its constructor
-when it is exported. An `approval_requested` event gives `room.waiting_for_human`, reason
-`approval`. A verdict event (`grep -n 'verdict' internal/envelope/*.go`) gives
-`room.verdict_posted` with the PR. Add one step for each.
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -3673,14 +3743,172 @@ Expected: `undefined: Tracker`.
 
 - [ ] **Step 3: The implementation**
 
-`events.go` decodes `state_changed` payloads with `kind: task` into `envelope.TaskFacts` and
-`kind: run_phase` into the runwatch shape. It maps them by R19's table, using
-`summary.Coarse(phase, "", false)` for `room.ended` (sent once per room; the Tracker remembers it).
-It clips `reason` to the factory's reason vocabulary and `limit` to the `budget-*` names, else
-`other`. Every other event type yields nothing. The Tracker is per-room state in memory. The
-emitter (Task 13) rebuilds it for a room by replaying that room's task facts from seq 0 the first
-time it sees the room after a start. That is one indexed read (`LastTaskState` already exists),
-done once per room per leader.
+`internal/webhook/events.go`. It decodes `state_changed` payloads by `kind` only: `task` straight
+into `envelope.TaskFacts` (the payload is flat, as `summary.foldState` reads it), `run_phase` into
+`{phase, reason}` with the run id taken from `ev.RunID`, and `verdict_posted` (the broker's record
+that GitHub accepted the verdict comment, M3) with no field read. It never decodes a `message`.
+Only `room.task_received` and `room.task_triaged` carry `repo` (L1).
+
+```go
+// SPDX-License-Identifier: Apache-2.0
+
+package webhook
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+
+	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/summary"
+)
+
+// types are R19's eleven events, in the design's order.
+var types = []string{"room.task_received", "room.task_triaged", "room.run_started", "room.run_ended",
+	"room.waiting_for_human", "room.pr_opened", "room.verdict_posted", "room.merged", "room.reverted",
+	"room.budget_reached", "room.ended"}
+
+// Types lists the events a subscriber may ask for.
+func Types() []string { return slices.Clone(types) }
+
+// limits are the budget limits a run or a task can reach: the meter's, the person's and the
+// family's. A revoked run's reason is annotation text, so a "budget-" prefix alone proves nothing.
+var limits = []string{"budget-run", "budget-task", "budget-principal", "budget-fleet", "budget-person", "budget-family"}
+
+// Limits lists the values an event's limit may hold.
+func Limits() []string { return slices.Clone(limits) }
+
+// States lists the values an event's state may hold: the six coarse states.
+func States() []string {
+	return []string{summary.StateQueued, summary.StateRunning, summary.StateWaiting, summary.StateDone,
+		summary.StateFailed, summary.StateStopped}
+}
+
+// Reasons lists the values an event's reason may hold: the wait reasons the summary has prose
+// for, the run ends that escalate a task, and the broker's approval. internal/factory is not
+// imported: the summary repeats the factory's reasons for the same reason.
+func Reasons() []string {
+	out := summary.Reasons()
+	out = append(out, "approval", "manual", "revoked", "deleted", "principal_unknown",
+		"budget-run", "budget-principal", "budget-fleet", "budget-person")
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// Clip is v when kind's vocabulary ("reason", "limit" or "state") holds it, "" for "", else
+// "other": no value outside a closed list leaves the broker or reaches a Slack thread.
+func Clip(kind, v string) string {
+	var list []string
+	switch kind {
+	case "reason":
+		list = Reasons()
+	case "limit":
+		list = limits
+	case "state":
+		list = States()
+	}
+	if v == "" || slices.Contains(list, v) {
+		return v
+	}
+	return "other"
+}
+
+// Tracker turns one room's log into one subscriber's events (R19). It is per subscriber and
+// room (M1): what it has sent is that subscriber's, so two subscribers at different cursors never
+// share it. The emitter warms it by replaying the room up to the subscriber's cursor.
+type Tracker struct {
+	phase  string // the last task phase seen: an event fires on a change only (M2)
+	pr     int    // the last pull request number seen, for merged, reverted and verdict_posted
+	prSent bool
+	ended  bool
+}
+
+// Events is what ev means to a subscriber of room, whose repository is repo: none, one or a few
+// events, each carrying ids, states and codes only. A message is never decoded (M3).
+func (t *Tracker) Events(room, repo string, ev envelope.Event) []Event {
+	if ev.Type == envelope.ApprovalRequested {
+		return []Event{{Type: "room.waiting_for_human", Room: room, Reason: "approval"}}
+	}
+	if ev.Type != envelope.StateChanged {
+		return nil
+	}
+	var k struct {
+		Kind   string `json:"kind"`
+		Phase  string `json:"phase"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(ev.Payload, &k) != nil {
+		return nil
+	}
+	switch k.Kind {
+	case "task":
+		var f envelope.TaskFacts
+		if json.Unmarshal(ev.Payload, &f) != nil {
+			return nil
+		}
+		return t.task(room, repo, f)
+	case "run_phase":
+		return runEvents(room, ev.RunID, k.Phase, k.Reason)
+	case "verdict_posted":
+		return []Event{{Type: "room.verdict_posted", Room: room, PR: t.pr}}
+	}
+	return nil
+}
+
+// task is a task_state entry's events: the first pull request, then the phase's own event on a
+// change of phase, the budget its reason names, and the first coarse end.
+func (t *Tracker) task(room, repo string, f envelope.TaskFacts) []Event {
+	var out []Event
+	if f.PR != nil && f.PR.Number > 0 {
+		t.pr = f.PR.Number
+		if !t.prSent {
+			t.prSent = true
+			out = append(out, Event{Type: "room.pr_opened", Room: room, PR: t.pr})
+		}
+	}
+	if f.Phase == t.phase {
+		return out // the factory rewrites a phase's facts (budget, run, PR): no new event
+	}
+	t.phase = f.Phase
+	switch f.Phase {
+	case "Received":
+		out = append(out, Event{Type: "room.task_received", Room: room, Repo: repo})
+	case "Triaged":
+		out = append(out, Event{Type: "room.task_triaged", Room: room, Repo: repo})
+	case "AwaitingHuman", "Escalated":
+		out = append(out, Event{Type: "room.waiting_for_human", Room: room, Reason: Clip("reason", f.Reason)})
+	case "Merged":
+		out = append(out, Event{Type: "room.merged", Room: room, PR: t.pr})
+	case "Reverted":
+		out = append(out, Event{Type: "room.reverted", Room: room, PR: t.pr})
+	}
+	if strings.HasPrefix(f.Reason, "budget-") {
+		out = append(out, Event{Type: "room.budget_reached", Room: room, Limit: Clip("limit", f.Reason)})
+	}
+	s := summary.Coarse(f.Phase, "", false)
+	if !t.ended && (s == summary.StateDone || s == summary.StateFailed || s == summary.StateStopped) {
+		t.ended = true
+		out = append(out, Event{Type: "room.ended", Room: room, State: s})
+	}
+	return out
+}
+
+// runEvents is a run_phase entry's events: its start, or its end and the budget it reached.
+// The terminal phases repeat runwatch.Terminal's: this package stays free of the k8s imports.
+func runEvents(room, run, phase, reason string) []Event {
+	switch phase {
+	case "Running":
+		return []Event{{Type: "room.run_started", Room: room, Run: run}}
+	case "Succeeded", "Failed", "BudgetExhausted", "Revoked":
+		out := []Event{{Type: "room.run_ended", Room: room, Run: run}}
+		if strings.HasPrefix(reason, "budget-") {
+			out = append(out, Event{Type: "room.budget_reached", Room: room, Limit: Clip("limit", reason)})
+		}
+		return out
+	}
+	return nil
+}
+```
 
 - [ ] **Step 4: Run, commit**
 
@@ -3748,8 +3976,17 @@ func TestWebhooksConfig(t *testing.T) {
 }
 ```
 
-`parse(t, block)` appends `block` to the package's valid fixture (read `config_test.go`) and calls
-`Load` on a temp file.
+No `parse` helper exists in `internal/config`'s tests (L7). Add it to `webhooks_test.go`, on
+`config_test.go`'s `valid` fixture and `write` helper (`valid` ends in a newline, so the block
+appends as a top-level key):
+
+```go
+// parse loads the package's valid fixture with block appended.
+func parse(t *testing.T, block string) (Config, error) {
+	t.Helper()
+	return Load(write(t, valid+block))
+}
+```
 
 `internal/webhook/dial_test.go`: `Guard` refuses `127.0.0.1`, `10.1.2.3`, `172.16.0.1`,
 `192.168.1.1`, `169.254.169.254`, `100.64.0.1`, `::1`, `fc00::1`, `fe80::1` and `0.0.0.0`. It
@@ -3787,9 +4024,14 @@ label; `network` is one of the two; for `cluster`, the URL matches
 parses the same pattern); for `internet`, the scheme is `https`, `net.ParseIP(host) == nil` (else
 "a DNS name, never an address"), and the host is not `localhost` and does not end in `.local`,
 `.internal`, `.svc`, `.cluster.local` or `.localdomain` (else "not a cluster or private name");
-`events` is a non-empty subset of `webhook.Types()` (import `internal/webhook`, which imports only
-`envelope` and `summary`, so there is no import cycle); `secretFile` and `repositories` must be
-present.
+`events` is a non-empty subset of `webhook.Types()` (import `internal/webhook`: it imports
+`envelope`, `summary` and `httpx`, none of which imports `config`, so there is no cycle);
+`secretFile` and `repositories` must be present. `webhook` never imports `config`: Task 13 maps
+`config.WebhookConfig` to `webhook.Subscriber` in `internal/app/broker.go`.
+
+`webhook` pulls `summary` -> `policy` -> `authn` into `config` and, in PR C, into the Slack App's
+binary (L3). That is accepted for v3; split `Tracker` and the vocabularies into `webhook/events`
+only if the binary's size or its dependency list comes to matter.
 
 `internal/webhook/dial.go`:
 
@@ -3799,7 +4041,6 @@ present.
 package webhook
 
 import (
-	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -3832,14 +4073,26 @@ func SafeClient(timeout time.Duration) *http.Client {
 		}
 		return Guard(ap.Addr())
 	}}
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return d.DialContext(ctx, network, addr) },
-		ForceAttemptHTTP2: true, TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout, Proxy: nil}
-	return &http.Client{Timeout: timeout, Transport: tr,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	tr := &http.Transport{
+		DialContext:           d.DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		Proxy:                 nil, // a proxy would dial on our behalf, past Guard
+	}
+	// Not httpx.New: its transport dials without Guard, and this dialer is the guard (L9). Lint
+	// bans only http.DefaultClient and the http.Get family, so a client built here passes.
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 ```
 
 A cluster subscriber's client is `httpx.New(10*time.Second, nil)` with the same `CheckRedirect`.
+The emitter's test rig (Task 13) delivers to an `httptest` server on `127.0.0.1`, so its subscriber
+is `network: cluster`: `SafeClient` refuses that address by design (L4).
 
 - [ ] **Step 4: Run, commit**
 
@@ -3855,16 +4108,21 @@ git commit -m "feat(broker): webhook subscribers in the config, each with its ne
 
 **Files:**
 - Create: `internal/store/migrations/20261023120000_webhooks.sql`, `internal/store/webhooks.go`, `internal/store/webhooks_test.go`, `internal/webhook/emitter.go`, `internal/webhook/emitter_test.go`
-- Modify: `internal/store/migrations/atlas.sum` (`task migrations`), `internal/metrics/metrics.go`, `internal/app/broker.go`
+- Modify: `internal/store/migrations/kustomization.yaml` (list the new file, M6), `internal/store/migrations/atlas.sum` (`task migrations`), `internal/store/retention.go` (purge the cursors, M6), `internal/metrics/metrics.go`, `internal/app/broker.go` (the emitter, the subscriber mapping and `roomRepository`, M5)
 
 - [ ] **Step 1: The migration and the store's methods**
+
+`internal/store/migrations/20261023120000_webhooks.sql` follows `20261005120000_approvals.sql`'s
+conventions (M6): row-level security on both tables, an `ALL` policy for `rooms_broker`, and for
+`rooms_retention` a `SELECT (room_id)` and a `DELETE` limited to expired rooms. No
+`ON DELETE CASCADE`: no table here has one, and `purge` deletes children explicitly.
 
 ```sql
 -- Webhook delivery state (factory interfaces F6, R17, R18): where each subscriber stands in each
 -- room, and whether it is disabled. Written by the broker's leader only; no event content.
 CREATE TABLE webhook_cursors (
   subscriber text   NOT NULL CHECK (subscriber ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
-  room_id    text   NOT NULL REFERENCES rooms (room_id) ON DELETE CASCADE,
+  room_id    text   NOT NULL REFERENCES rooms (room_id),
   seq        bigint NOT NULL CHECK (seq >= 0),
   PRIMARY KEY (subscriber, room_id)
 );
@@ -3877,28 +4135,83 @@ CREATE TABLE webhook_subscribers (
 );
 
 GRANT SELECT, INSERT, UPDATE ON webhook_cursors, webhook_subscribers TO rooms_broker;
+-- Retention reads the room id of an expired room's cursors and deletes them before the room.
 GRANT DELETE ON webhook_cursors TO rooms_retention;
+GRANT SELECT (room_id) ON webhook_cursors TO rooms_retention;
+ALTER TABLE webhook_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_subscribers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY broker_webhook_cursors          ON webhook_cursors     FOR ALL    TO rooms_broker    USING (true) WITH CHECK (true);
+CREATE POLICY broker_webhook_subscribers      ON webhook_subscribers FOR ALL    TO rooms_broker    USING (true) WITH CHECK (true);
+CREATE POLICY retention_read_webhook_cursors  ON webhook_cursors     FOR SELECT TO rooms_retention
+  USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
+CREATE POLICY retention_purge_webhook_cursors ON webhook_cursors     FOR DELETE TO rooms_retention
+  USING (room_id IN (SELECT room_id FROM rooms WHERE sealed AND closed_at < now() - retention));
 ```
 
-Read `20261005120000_approvals.sql` first and follow its grants. If retention purges rooms with a
-`DELETE`, the `ON DELETE CASCADE` must be allowed by its row-level security, or the retention role
-needs that `DELETE` grant (shown above). `task migrations` lints the file and rewrites `atlas.sum`.
+`internal/store/migrations/kustomization.yaml`: add `- ./20261023120000_webhooks.sql` after
+`- ./20261008120000_task_facts_index.sql`, before `- atlas.sum`. CI globs `migrations/*.sql`, so
+only this list gets the tables to the cluster. Then `task migrations` lints the file and rewrites
+`atlas.sum`.
 
-`internal/store/webhooks.go`:
-`Cursor(ctx, sub, room) (int64, bool, error)`, `SetCursor(ctx, sub, room, seq)` (an upsert that
-never moves back: `ON CONFLICT … DO UPDATE SET seq = GREATEST(webhook_cursors.seq, EXCLUDED.seq)`),
-`Subscriber(ctx, sub, generation) (failures int, disabled bool, err)` (a new generation resets
-`failures` and `disabled_at`), `Failed(ctx, sub) (failures int, err)`, `Succeeded(ctx, sub)`,
-`Disable(ctx, sub)`.
+`internal/store/retention.go`, in `purge`, beside the `queue` and `approvals` deletes and before
+the `events` delete; the doc comment of `PurgeExpired` becomes "Every table referencing rooms
+(queue, approvals, webhook_cursors) is deleted before the room's row.":
 
-`internal/store/webhooks_test.go`, on the package's testcontainers rig: the cursor never goes
-back; a new generation re-enables; a room purged by retention drops its cursors. **Docker is off
-locally:** run `go vet ./internal/store/` here, and CI runs the tests.
+```go
+	if _, err := tx.Exec(ctx, `DELETE FROM webhook_cursors WHERE room_id = $1
+		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+		return 0, err
+	}
+```
+
+`internal/store/webhooks.go`, every method on `*Store`:
+
+- `Subscriber(ctx, sub string, generation int) (failures int, disabled bool, err error)`, in one
+  transaction (B3). On the name's **first** insert only, every existing room gets a cursor at its
+  `last_seq`, so no history is replayed (R18); a re-added name keeps its row and its cursors:
+
+  ```sql
+  WITH added AS (
+    INSERT INTO webhook_subscribers (subscriber, generation) VALUES ($1, $2)
+    ON CONFLICT (subscriber) DO NOTHING RETURNING subscriber
+  )
+  INSERT INTO webhook_cursors (subscriber, room_id, seq)
+  SELECT added.subscriber, rooms.room_id, rooms.last_seq FROM added, rooms
+  ```
+
+  then `UPDATE webhook_subscribers SET generation = $2, failures = 0, disabled_at = NULL WHERE
+  subscriber = $1 AND generation <> $2` (a new generation re-enables, R17), then
+  `SELECT failures, disabled_at IS NOT NULL FROM webhook_subscribers WHERE subscriber = $1`.
+- `Cursor(ctx, sub, room string) (int64, error)`: the cursor, **0 when there is none**. A room
+  created after the subscriber has no row, so it starts at its first event.
+- `SetCursor(ctx, sub, room string, seq int64) error`: an upsert that never moves back,
+  `ON CONFLICT (subscriber, room_id) DO UPDATE SET seq = GREATEST(webhook_cursors.seq, EXCLUDED.seq)`.
+- `Lagging(ctx, sub string, limit int) ([]string, error)`: the rooms whose `last_seq` is past the
+  subscriber's cursor (0 when none), newest activity first. The emitter calls it on each `ready`
+  of `Listen`, since notifications sent while the listener was down are gone (`Listen`'s doc):
+
+  ```sql
+  SELECT rooms.room_id FROM rooms
+  LEFT JOIN webhook_cursors c ON c.subscriber = $1 AND c.room_id = rooms.room_id
+  WHERE rooms.last_seq > COALESCE(c.seq, 0) ORDER BY rooms.last_event_at DESC LIMIT $2
+  ```
+- `Failed(ctx, sub string) (failures int, err error)` (`failures = failures + 1 … RETURNING`),
+  `Succeeded(ctx, sub string) error` (`failures = 0`), `Disable(ctx, sub string) error`
+  (`disabled_at = now()`).
+
+`internal/store/webhooks_test.go`, on the package's testcontainers rig: a subscriber's first
+`Subscriber` puts every existing room's cursor at its `last_seq`; a second call, and a call with a
+new generation, add no cursor and keep the old ones; a room created afterwards reads `Cursor` 0; the
+cursor never goes back; a new generation resets `failures` and re-enables; `Lagging` lists a room
+past its cursor and not one at it; a room purged by `PurgeExpired` drops its cursors (and
+`PurgeExpired` does not fail on the foreign key). **Docker is off locally:** run
+`go vet ./internal/store/` here; CI runs the tests, and is the only check of the migration.
 
 - [ ] **Step 2: Write the emitter's failing test**
 
-`internal/webhook/emitter_test.go` fakes the store (`Range`, `Room`, the cursor methods), the Room
-reader (repository by room), the clock and the HTTP client:
+`internal/webhook/emitter_test.go` fakes the log (`Range`, `Listen`), the state store (the six
+methods above and `Lagging`), the room's repository, the sleep and the metrics recorder. It uses
+Task 11's `fact`:
 
 ```go
 // SPDX-License-Identifier: Apache-2.0
@@ -3906,6 +4219,7 @@ reader (repository by room), the clock and the HTTP client:
 package webhook
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -3913,44 +4227,59 @@ import (
 	"time"
 )
 
-// R17, R18: an event goes to each subscriber of its repository and type, signed; a failure is
-// retried three times, then given up; three given-up deliveries in a row disable the subscriber;
-// a cursor moves past each event once it is delivered or given up; a new subscriber starts at
-// the room's last seq.
+// R17, R18, M5, B3: an event goes to each subscriber of its repository and type, signed; a room
+// that existed before the subscriber starts at its last seq, a later one at its first event; a
+// room whose repository is not known yet holds its cursor until it is; a failure is retried three
+// times, then given up; three given-up deliveries in a row disable the subscriber, whose cursor
+// still advances.
 func TestEmitter(t *testing.T) {
 	var hits atomic.Int32
 	var fail atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if _, err := Verify([][]byte{k1}, r.Header, readAll(r), time.Now()); err != nil {
+		body, _ := io.ReadAll(r.Body)
+		if _, err := Verify([][]byte{k1}, r.Header, body, time.Now()); err != nil {
 			t.Error("unsigned delivery")
 		}
 		if fail.Load() {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
-	rig := newEmitterRig(t, srv.URL, "Smana/ai-native-ref", []string{"room.ended", "room.pr_opened"})
-	rig.log("aaaaaaaa", fact(1, factsPhase("Received")))                // before the subscriber existed
-	rig.emitter.Start(rig.ctx)
+	rig := newEmitterRig(t, srv.URL+"/webhooks", []string{"room.ended", "room.pr_opened"})
+	rig.log("aaaaaaaa", fact(1, factsPhase("Received"))) // before the subscriber existed
+	rig.start()
 	rig.log("aaaaaaaa", fact(2, factsPR("AwaitingCI", 7)))
 	rig.waitCursor(t, "aaaaaaaa", 2)
 	if hits.Load() != 1 {
 		t.Fatalf("one pr_opened, no replay of seq 1: %d", hits.Load())
 	}
-	rig.log("bbbbbbbb", fact(1, factsPR("AwaitingCI", 9)), withRepo("Smana/other"))
+	rig.withRepo("bbbbbbbb", "Smana/other")
+	rig.log("bbbbbbbb", fact(1, factsPR("AwaitingCI", 9)))
 	rig.waitCursor(t, "bbbbbbbb", 1)
 	if hits.Load() != 1 {
 		t.Fatal("another repository's event was delivered")
 	}
+	rig.withRepo("gggggggg", "") // its Room is not in the cache yet
+	rig.log("gggggggg", fact(1, factsPhase("Done")))
+	time.Sleep(50 * time.Millisecond) // five sweeps of the rig's 10 ms
+	if rig.cursor("gggggggg") != 0 || hits.Load() != 1 {
+		t.Fatal("an event of a room with no known repository was given up or delivered")
+	}
+	rig.withRepo("gggggggg", "Smana/ai-native-ref")
+	rig.waitCursor(t, "gggggggg", 1)
+	if hits.Load() != 2 {
+		t.Fatalf("the room's event once its repository is known: %d", hits.Load())
+	}
 	fail.Store(true)
+	base := hits.Load()
 	for i, room := range []string{"cccccccc", "dddddddd", "eeeeeeee"} {
 		rig.log(room, fact(1, factsPhase("Done")))
-		rig.stepRetries(t) // the fake clock walks 10 s, 1 min, 5 min
+		rig.stepRetries(t) // the fake sleep is asked 10 s, 1 min, 5 min
 		rig.waitCursor(t, room, 1)
-		if want := int32(2 + 4*(i+1) - 1); hits.Load() != want {
+		if want := base + int32(4*(i+1)); hits.Load() != want {
 			t.Fatalf("after %s: %d attempts, want %d (one try, three retries)", room, hits.Load(), want)
 		}
 	}
@@ -3966,42 +4295,197 @@ func TestEmitter(t *testing.T) {
 }
 ```
 
-Write `newEmitterRig` and its helpers in the test file. The fake clock drives the retry waits, so
-the test takes milliseconds. `readAll`, `factsPhase` and `factsPR` are small helpers.
+Write `newEmitterRig` and its helpers in the test file (L2), each with the imports it needs:
+
+- `newEmitterRig(t, url string, events []string) *emitterRig` writes
+  `base64.StdEncoding.EncodeToString(k1)` to a key file in `t.TempDir()` (`ReadKeys` wants a base64
+  key of at least 32 bytes), and declares one subscriber `{Name: "slack-app", Network: "cluster",
+  URL: url, SecretFile: <that file>, Events: events, Repositories: ["Smana/ai-native-ref"]}`:
+  `cluster`, because `SafeClient` refuses the `httptest` server's `127.0.0.1` (L4). It builds the
+  `Emitter` with the fakes, `Now: time.Now`, `Sleep: rig.sleep` and `SweepEvery: 10 * time.Millisecond`.
+- The fake log keeps `map[room][]envelope.Event` under a mutex. `Range` returns the events after
+  the seq, at most the limit. `Listen` calls `ready`, then calls `fn(room, seq)` for each value
+  `rig.log` sends on its channel, until ctx ends.
+- The fake state store keeps cursors, failures and the disabled flag. Its first `Subscriber` call
+  for a name sets that name's cursor in every room the log holds to the room's last seq (B3, as
+  the SQL does); `Cursor` is 0 when unset; `SetCursor` never moves back; `Lagging` lists the rooms
+  past their cursor.
+- `rig.withRepo(room, repo)` sets what the fake `RoomRepo` answers for room; any other room
+  answers `"Smana/ai-native-ref"`. `""` is a Room not in the cache.
+- `rig.log(room, ev)` sets `ev.RoomID = room`, appends, and notifies `(room, ev.Seq)`.
+- `rig.start()` runs `Emitter.Start` in a goroutine on a context cancelled at `t.Cleanup`, and
+  returns once the fake `Listen` called `ready`.
+- `rig.sleep(ctx, d)` sends `d` on an unbuffered channel and returns nil (ctx's error if it ends
+  first). `rig.stepRetries(t)` receives three durations within 5 s and fails unless they are
+  10 s, 1 min and 5 min, in that order.
+- `rig.waitCursor(t, room, seq)` polls the fake cursor every 5 ms for up to 5 s;
+  `rig.cursor(room)` reads it once.
+- `rig.disabled(name)` is the fake store's flag; `rig.gauge(name)` is the last value the fake
+  recorder's `WebhookDisabled` was given (1 for true, 0 for false).
+- `factsPhase(p)` is `envelope.TaskFacts{Phase: p}`; `factsPR(p, n)` adds
+  `PR: &envelope.PRFact{Number: n, URL: "https://github.com/Smana/ai-native-ref/pull/" + strconv.Itoa(n)}`.
 
 - [ ] **Step 3: Run it and watch it fail**
 
 Run: `ulimit -v 4000000; timeout 300 go test -race -count=1 -run TestEmitter ./internal/webhook/`
-Expected: `undefined: newEmitterRig` / `Emitter`.
+Expected: `undefined: Emitter`.
 
 - [ ] **Step 4: The implementation**
 
-`internal/webhook/emitter.go`. `type Emitter struct{Subs []Subscriber; Log LogReader; Rooms RoomRepo; State StateStore; Now func() time.Time; Sleep func(ctx, d) error; Metrics Recorder; Log *slog.Logger}`,
-with `NeedLeaderElection() bool { return true }` and `Start(ctx)`:
+`internal/webhook/emitter.go`. Its dependencies, each satisfied by `*store.Store`, `*metrics.Set`
+or `internal/app`'s `roomRepository`; the log reader is named `Events` and the logger `Logger`
+(L8):
 
-1. Read each subscriber's state (`Subscriber(name, generation)`), and set the disabled gauge.
-2. `Store.Listen` (reconnect with a backoff, as the fan-out hub does). Each notification
-   enqueues `room` on a buffered channel of 1,024; on overflow, the room is marked dirty in a set
-   and swept every 10 s. `fn` never blocks (the store's rule).
-3. Per room, one worker at a time (a `map[string]bool` under a mutex). For each enabled subscriber
-   whose `repositories` hold the room's repository: with no cursor, set it to the room's
-   `last_seq` (R18) and move on. Otherwise `Range(room, cursor, 100)`, run each event through the
-   room's Tracker (warmed once per room, Task 11), and for each resulting event in the
-   subscriber's `events`, deliver it. Then `SetCursor(seq)`.
-4. A delivery: `json.Marshal(Event)`, `Sign(keys, ID(name, room, seq, type), now, body)`, then a
-   POST with `Content-Type: application/json`, through `SafeClient(10s)` for `internet` or the
-   cluster client. 2xx is success. Otherwise retry after 10 s, 1 min and 5 min. Success calls
-   `Succeeded`. Exhaustion calls `Failed`, and at 3, `Disable`, gauge 1, log
-   `webhook subscriber disabled` (name only).
-5. Keys are re-read from `secretFile` before each delivery: a rotation needs no restart. An
-   unreadable key file counts `outcome="no_key"`, and that delivery fails.
+```go
+// Subscriber is one webhooks[] entry as the emitter needs it; internal/app maps the config's,
+// since this package never imports config.
+type Subscriber struct {
+	Name, Network, URL, SecretFile string
+	Events, Repositories           []string
+	Generation                     int
+}
 
-`internal/metrics/metrics.go`: `rooms_webhook_deliveries_total{subscriber, outcome}`, where
-`outcome` is one of `delivered`, `retried`, `failed`, `no_key` and `subscriber` is bounded to the
-configured names; and `rooms_webhook_disabled{subscriber}` (a gauge).
+// LogReader is the room log as the emitter reads it.
+type LogReader interface {
+	Range(ctx context.Context, roomID string, afterSeq int64, limit int) ([]envelope.Event, error)
+	Listen(ctx context.Context, ready func(), fn func(roomID string, seq int64)) error
+}
 
-`internal/app/broker.go`: when `len(cfg.Webhooks) > 0`, add the emitter to the manager (leader
-only). With none configured, nothing starts (R30).
+// StateStore is where each subscriber stands (R18) and whether it is disabled (R17).
+type StateStore interface {
+	Subscriber(ctx context.Context, sub string, generation int) (failures int, disabled bool, err error)
+	Cursor(ctx context.Context, sub, room string) (int64, error)
+	SetCursor(ctx context.Context, sub, room string, seq int64) error
+	Lagging(ctx context.Context, sub string, limit int) ([]string, error)
+	Failed(ctx context.Context, sub string) (int, error)
+	Succeeded(ctx context.Context, sub string) error
+	Disable(ctx context.Context, sub string) error
+}
+
+// RoomRepo is a room's repository: "" when the Room is not known (yet) or names none (M5).
+type RoomRepo func(ctx context.Context, room string) (string, error)
+
+// Recorder counts deliveries and holds the disabled gauge.
+type Recorder interface {
+	WebhookDelivery(ctx context.Context, subscriber, outcome string)
+	WebhookDisabled(ctx context.Context, subscriber string, disabled bool)
+}
+
+// Emitter posts each subscriber the events of its repositories' rooms, from the log (F6).
+type Emitter struct {
+	Subs    []Subscriber
+	Events  LogReader
+	Rooms   RoomRepo
+	State   StateStore
+	Metrics Recorder
+	Logger  *slog.Logger
+	Now     func() time.Time
+	// Sleep waits between retries; nil waits on a timer or ctx. A test steps it.
+	Sleep func(ctx context.Context, d time.Duration) error
+	// SweepEvery is how often the dirty rooms are retried; 0 means 10 s.
+	SweepEvery time.Duration
+}
+```
+
+With `NeedLeaderElection() bool { return true }` and `Start(ctx) error`:
+
+1. For each subscriber, `State.Subscriber(name, generation)` (this registers it, B3), and set the
+   gauge with `Metrics.WebhookDisabled`. Build the clients once: `SafeClient(10 * time.Second)` for
+   `internet`, `httpx.New(10*time.Second, nil)` with `CheckRedirect` returning
+   `http.ErrUseLastResponse` for `cluster`.
+2. `Events.Listen`, reconnecting with a backoff from 1 s doubling to 30 s, as the fan-out hub does.
+   Each `ready` (the first connect and every reconnect) marks dirty every room
+   `State.Lagging(name, 1000)` returns for each subscriber. Each notification enqueues its room on a
+   buffered channel of 1,024 without blocking (`fn` must not block, the store's rule); on overflow
+   the room is marked dirty instead. Every `SweepEvery`, each dirty room is enqueued again.
+3. **One worker per subscriber and room** (M7: a dead subscriber's retry waits never hold another
+   subscriber back), tracked in a `map[workerKey]bool` under a mutex, `workerKey{sub, room}`; a
+   notification for a key whose worker runs marks the room dirty. A worker for (s, room):
+   - `repo, err := Rooms(room)`. On an error or `""` (M5), it stops without moving the cursor and
+     the room stays dirty: the Room may appear, and its events are then still wanted.
+   - If `repo` is not in `s.Repositories`: page through `Range(room, cursor, 100)` and
+     `SetCursor` to the last seq seen, delivering nothing.
+   - If s is disabled: the same, but each event still goes through the Tracker (below) with its
+     output discarded, so a re-enabled subscriber's Tracker is current. A disabled subscriber's
+     cursor advances (R17, M12).
+   - Otherwise, its Tracker (M1) is the one in a map keyed `workerKey`, capped at 10,000 entries
+     with the least recently used dropped; a missing one is warmed by `Range(room, 0, 100)` pages up
+     to the cursor, feeding each event to `Tracker.Events` and discarding the output. Then
+     `Range(room, cursor, 100)`, each event through `Tracker.Events(room, repo, ev)`, each resulting
+     event whose type is in `s.Events` delivered, then `SetCursor(ev.Seq)` once the event is
+     delivered or given up. It loops until `Range` returns fewer than 100.
+4. A delivery: `body, _ := json.Marshal(e)`; the keys from `ReadKeys(s.SecretFile)`, re-read before
+   each delivery so that a rotation needs no restart (an unreadable file counts `outcome="no_key"`
+   and that attempt fails); `Sign(keys, ID(s.Name, room, ev.Seq, e.Type), Now(), body)`; a `POST`
+   to `s.URL` with `Content-Type: application/json`. A 2xx is success, counted `delivered`, and
+   calls `Succeeded`. Otherwise it is counted `retried` and retried after `Sleep` 10 s, 1 min and
+   5 min. Exhaustion counts `failed` and calls `Failed`; at 3, `Disable`, the gauge to 1, and the
+   log line `webhook subscriber disabled` with the name only.
+
+`internal/metrics/metrics.go`, in `New`, as the other series: `s.webhookDeliveries, err =
+meter.Int64Counter("rooms_webhook_deliveries_total", metric.WithDescription("Webhook delivery
+attempts, by subscriber and outcome."))` and `s.webhookDisabled, err =
+meter.Int64Gauge("rooms_webhook_disabled", metric.WithDescription("1 while a webhook subscriber is
+disabled."))`, with:
+
+```go
+// WebhookDelivery counts one delivery attempt: delivered, retried, failed or no_key. subscriber
+// is a configured name, so the label stays bounded.
+func (s *Set) WebhookDelivery(ctx context.Context, subscriber, outcome string) {
+	s.webhookDeliveries.Add(ctx, 1, metric.WithAttributes(attribute.String("subscriber", subscriber),
+		attribute.String("outcome", outcome)))
+}
+
+// WebhookDisabled sets the subscriber's disabled gauge (RoomWebhookDisabled reads it).
+func (s *Set) WebhookDisabled(ctx context.Context, subscriber string, disabled bool) {
+	var v int64
+	if disabled {
+		v = 1
+	}
+	s.webhookDisabled.Record(ctx, v, metric.WithAttributes(attribute.String("subscriber", subscriber)))
+}
+```
+
+`internal/app/broker.go`, after `addVerdictPoster` (with `webhook` and
+`apierrors "k8s.io/apimachinery/pkg/api/errors"` imported). With no subscriber, nothing starts
+(R30):
+
+```go
+	if len(cfg.Webhooks) > 0 { // R30: no subscriber, no emitter
+		if err := mgr.Add(&webhook.Emitter{Subs: webhookSubscribers(cfg.Webhooks), Events: st,
+			Rooms: roomRepository(mgr.GetClient(), ns), State: st, Metrics: m, Logger: log, Now: time.Now}); err != nil {
+			return fmt.Errorf("room-broker: webhook emitter: %w", err)
+		}
+	}
+```
+
+```go
+// webhookSubscribers maps the config's subscribers to the emitter's.
+func webhookSubscribers(cfg []config.WebhookConfig) []webhook.Subscriber {
+	out := make([]webhook.Subscriber, 0, len(cfg))
+	for _, w := range cfg {
+		out = append(out, webhook.Subscriber{Name: w.Name, Network: w.Network, URL: w.URL, SecretFile: w.SecretFile,
+			Events: w.Events, Repositories: w.Repositories, Generation: w.Generation})
+	}
+	return out
+}
+
+// roomRepository reads a Room's repository from the manager's cache (M5): the database has no
+// repository column. A Room not found yet is "", which holds the room's events back.
+func roomRepository(rooms client.Reader, ns string) webhook.RoomRepo {
+	return func(ctx context.Context, room string) (string, error) {
+		var r v1alpha1.Room
+		err := rooms.Get(ctx, client.ObjectKey{Namespace: ns, Name: room}, &r)
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return r.Spec.Repository, nil
+	}
+}
+```
 
 - [ ] **Step 5: Run, commit**
 
@@ -4017,19 +4501,29 @@ git commit -m "feat(broker): the webhook emitter, signed id-only events from the
 
 - [ ] **Step 1: The docs**
 
-- `docs/api.md`, a section "Webhooks": the eleven events and their payloads (R19's table), the
+- `docs/api.md`, a section "Webhooks": the eleven events and their payloads (R19's table as
+  Task 11 built it: an event on a phase change only, `repo` on `task_received` and `task_triaged`
+  only, `verdict_posted` once GitHub accepted the comment), the closed lists `reason`, `limit` and
+  `state` are clipped to (`webhook.Reasons`, `Limits`, `States`; anything else is `other`), the
   headers, the signature string (`id.timestamp.body`), what a subscriber must do (verify, ±5 min,
-  dedupe on `webhook-id`, fetch if needed), at-least-once and no ordering. Add a Go snippet calling
-  `webhook.Verify`, and a ten-line Python receiver using `hmac.compare_digest`.
+  dedupe on `webhook-id`, fetch if needed), at-least-once and no ordering. Where a subscriber
+  starts (B3): every room that exists when it is first declared, at that room's last event; a room
+  created later, at its first event. Add a Go snippet calling `webhook.Verify`, and a ten-line
+  Python receiver using `hmac.compare_digest`.
 - `docs/operations.md`: the `webhooks` config, R16's rotation steps, R17's re-enable
   (bump `generation`), the two series, and the alert expression
   `max by (subscriber) (rooms_webhook_disabled) == 1` for `RoomWebhookDisabled`. The rule itself
-  lives in ai-native-ref's `vmrule-agent-factory.yaml` (PR F).
+  lives in ai-native-ref's `vmrule-agent-factory.yaml` (PR F). What a disabled subscriber misses
+  (M12): its cursor keeps advancing while it is disabled, so re-enabling it resumes at the events
+  of that moment, and the events of the outage are not replayed; a subscriber that needs that
+  history fetches the room through the MCP server or the human API. A room whose Room is not in the
+  broker's cache yet holds its events until it is (M5). The cursors are purged with their room.
 - `docs/security.md`: no room text in a payload; the network split; the dial guard; no redirects.
 
 - [ ] **Step 2: The whole check, push, PR**
 
-The commands are the same as Task 9's Step 3. CI runs `internal/store`'s migration tests.
+The commands are the same as Task 9's Step 3. CI runs `internal/store`'s migration and cursor
+tests, the only check of the migration, its policies and the retention purge (M6).
 
 ```bash
 git fetch origin && git rebase origin/main && git push -u origin feat/room-webhooks
@@ -4043,6 +4537,20 @@ ai-native-ref (PR E). No attribution line. Then run `gh pr checks --watch`.
 
 ## PR C — agent-platform: the factory's Slack App (F9)
 
+### Pre-flight amendments
+
+Applied from the same pre-flight scan and the ledger's rulings. No task is renumbered.
+
+- **B1** Task 17: the ref is `slack/<team>/<channel>/<thread_ts>` (`sponsored.ValidRef` accepts it; `slack:` would be `bad_ref`), and `TestReactionFlow` asserts `ValidRef`; `on_behalf_of` keeps `slack:T…/U…`.
+- **M4** Task 17: the webhook handler clips with `webhook.Clip` and checks the type against `webhook.Types()`; no second vocabulary.
+- **M8** Task 16: `run_create`'s arguments are spelled out (`text` is the body, `dataClass: public`) and `broker_test.go` asserts the map; a channel's `maxCostUSD` is at least 0.01.
+- **M9** Task 17: `Message` reads `conversations.replies(ts=item.ts, limit=1, inclusive, include_all_metadata)`; the thread ts comes from the fetched message; a draft is the App's when `User == BotUserID`.
+- **M10** Task 17: `TestReactionFlow` uses `||`, and the fake broker keeps refused calls apart (`refusedCalls()`; `runCreates()` returns accepted ones).
+- **M11** Tasks 17, 18: `Config` gains `EventsAddr`, `WebhooksAddr`, `OpsAddr` (defaults `:8080`, `:8081`, `:9090`); Task 18's test binds `127.0.0.1:0` through `startSlackApp`, which returns the bound addresses.
+- **L5** Task 17: `Metadata`, `DraftPayload`, `Message`, `Thread` have fields, and `BrokerAPI` lets the fake stand in for `Broker`.
+- **L6** Task 15: the `TestSlackSignature` map is aligned as `gofmt` writes it.
+- **L9** Task 16: `Tokens` caches the token and `Invalidate()`s it on a 401; the token fetch goes through `httpx.New` via `oauth2.HTTPClient`.
+
 - [ ] **Step 0: The worktree** (after PRs A and B merge)
 
 ```bash
@@ -4052,9 +4560,10 @@ cd /home/smana/Sources/agent-platform-factory-slack && mise trust mise.toml
 ```
 
 The App is `cmd/factory-slack-app`, image `ghcr.io/smana/factory-slack-app`, package
-`internal/slackapp`. It has two listeners: `:8080` serves `POST /slack/events` (the public route,
-R27, R28), and `:8081` serves `POST /webhooks` (cluster only, R24). Metrics and probes are on
-`:9090`.
+`internal/slackapp`. It has three listeners, each address in its config (M11): `eventsAddr`
+(default `:8080`) serves `POST /slack/events` (the public route, R27, R28), `webhooksAddr` (default
+`:8081`) serves `POST /webhooks` (cluster only, R24), and `opsAddr` (default `:9090`) serves
+metrics and the probes.
 
 ### Task 15: Slack's request signature
 
@@ -4104,12 +4613,12 @@ func TestSlackSignature(t *testing.T) {
 	}
 	old := strconv.FormatInt(now.Add(-6*time.Minute).Unix(), 10)
 	for name, r := range map[string]*http.Request{
-		"a wrong secret":     req(slackSign("other", ts, body), ts, body),
-		"a stale timestamp":  req(slackSign("s3cret", old, body), old, body),
-		"a changed body":     req(slackSign("s3cret", ts, body), ts, body+" "),
-		"no signature":       req("", ts, body),
-		"an empty secret":    nil,
-		"over 1 MiB":         req(slackSign("s3cret", ts, strings.Repeat("a", 1<<20+1)), ts, strings.Repeat("a", 1<<20+1)),
+		"a wrong secret":    req(slackSign("other", ts, body), ts, body),
+		"a stale timestamp": req(slackSign("s3cret", old, body), old, body),
+		"a changed body":    req(slackSign("s3cret", ts, body), ts, body+" "),
+		"no signature":      req("", ts, body),
+		"an empty secret":   nil,
+		"over 1 MiB":        req(slackSign("s3cret", ts, strings.Repeat("a", 1<<20+1)), ts, strings.Repeat("a", 1<<20+1)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			vv := v
@@ -4215,11 +4724,15 @@ git commit -m "feat(slack): verify Slack's request signature before reading a re
 - Create: `internal/slackapp/draft.go`, `draft_test.go`, `internal/slackapp/broker.go`, `broker_test.go`
 
 **Interfaces produced:** `func ParseMention(text, botUserID string) (Draft, error)`, where
-`Draft{Repo, Title, Body string}`; `type Broker struct{URL string; Token oauth2.TokenSource; HC *http.Client}`;
-`func (b Broker) IssueDraft(ctx, Draft) (Draft, error)`;
-`func (b Broker) RunCreate(ctx, RunCreate) (RunResult, error)`, where
-`RunCreate{Draft; MaxCostUSD float64; OnBehalfOf, Ref, Key string}` and `RunResult{Room string; Issue int; Duplicate bool}`;
-`type Refused string` (a tool's refusal, shown in the thread as is).
+`Draft{Repo, Title, Body string}`; `type Tokens struct{Fetch func(context.Context) (*oauth2.Token, error); …}`
+with `Token(ctx) (string, error)` and `Invalidate()` (L9);
+`type Broker struct{URL string; Tokens *Tokens; HC *http.Client}`;
+`func (b Broker) IssueDraft(ctx context.Context, d Draft) (Draft, error)`;
+`func (b Broker) RunCreate(ctx context.Context, c RunCreate) (RunResult, error)`, where
+`RunCreate{Draft; MaxCostUSD float64; OnBehalfOf, Ref, Key string}` and
+`RunResult{Room string; Issue int; Duplicate bool}`;
+`type Refused string` (a tool's refusal, shown in the thread as is, with an `Error() string`
+method so it travels as an `error`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4248,11 +4761,29 @@ func TestParseMention(t *testing.T) {
 }
 ```
 
-`broker_test.go`. Against an `httptest` broker, `IssueDraft` sends `tools/call issue_draft` with a
-bearer from a static `oauth2.TokenSource`. A tool result with `isError` becomes `Refused(text)`.
-`RunCreate` sends `max_cost`, `on_behalf_of`, `ref` and `idempotency_key` exactly. An HTTP `401`
-refreshes the token once, then fails. The client never sends `tasks/*`, because the App follows
-the room through webhooks.
+`broker_test.go`, against an `httptest` broker that decodes each JSON-RPC request:
+
+- `IssueDraft` sends `tools/call` with `name: issue_draft` and `arguments` exactly
+  `{repo, title, body}`, the header `MCP-Protocol-Version: 2025-11-25` and
+  `Authorization: Bearer <token>`; it returns the result's `structuredContent` as a `Draft`. A result
+  with `isError: true` becomes `Refused(<content[0].text>)`.
+- `RunCreate` sends `name: run_create` with `arguments` equal (`maps.Equal` over the decoded
+  `map[string]any`) to M8's map, `run_create`'s schema exactly (it refuses an unknown field, and
+  requires `text` and `dataClass`):
+
+  ```go
+  want := map[string]any{"repo": "Smana/ai-native-ref", "title": "docs(agents): the link is dead",
+  	"text": "## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz", "dataClass": "public",
+  	"max_cost": 2.0, "on_behalf_of": "slack:T01ABC/U02DEF", "ref": "slack/T01ABC/C03/1729.0001",
+  	"idempotency_key": "T01ABC/C03/1729.0002"}
+  ```
+
+  It reads `{room, issue, duplicate}` from `structuredContent`.
+- A `401` drops the token and retries once with a new one; a second `401` fails. The fake `Fetch`
+  counts its calls and answers `t1`, then `t2`: the server refuses `Bearer t1`, accepts `t2`, and
+  `Fetch` ran twice. Against a server that refuses every token, the call fails and `Fetch` ran
+  twice, not three times.
+- The client never sends `tasks/*`: the App follows the room through webhooks.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -4269,9 +4800,61 @@ template; this parser only shapes it.
 
 `broker.go`: a minimal JSON-RPC client over `POST {URL}/mcp`, one message per request (part 1's
 R2: stateless, no `initialize` needed on this server). Each call sends
-`MCP-Protocol-Version: 2025-11-25`. The token comes from `clientcredentials.Config{ClientID,
-ClientSecret, TokenURL: issuer + "/oauth/v2/token", Scopes: ["openid", "urn:zitadel:iam:org:project:id:" + projectID + ":aud"]}.TokenSource(ctx)`,
-with the ids and the secret read from mounted files at start. The response cap is 256 KiB.
+`MCP-Protocol-Version: 2025-11-25` and a bearer from `Tokens`. The response cap is 256 KiB. A
+result is decoded as `{isError bool, content []{text string}, structuredContent json.RawMessage}`.
+`RunCreate`'s arguments are exactly (M8; `text` is the draft's body, `dataClass` is always
+`public`, and `max_cost` is at least 0.01, which Task 17's config enforces):
+
+```go
+	args := map[string]any{"repo": c.Repo, "title": c.Title, "text": c.Body, "dataClass": "public",
+		"max_cost": c.MaxCostUSD, "on_behalf_of": c.OnBehalfOf, "ref": c.Ref, "idempotency_key": c.Key}
+```
+
+The token cache (L9), since `clientcredentials`' own `TokenSource` reuses a token until it expires
+and cannot be told that the broker refused it:
+
+```go
+// Tokens caches the App's client-credentials token until it expires or the broker refuses it.
+type Tokens struct {
+	Fetch func(ctx context.Context) (*oauth2.Token, error)
+
+	mu  sync.Mutex
+	tok *oauth2.Token
+}
+
+// Token is the cached access token, fetched when there is none or it expired.
+func (s *Tokens) Token(ctx context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.tok.Valid() {
+		t, err := s.Fetch(ctx)
+		if err != nil {
+			return "", fmt.Errorf("slackapp: token: %w", err)
+		}
+		s.tok = t
+	}
+	return s.tok.AccessToken, nil
+}
+
+// Invalidate drops the cached token after a 401, so the retry fetches a new one.
+func (s *Tokens) Invalidate() {
+	s.mu.Lock()
+	s.tok = nil
+	s.mu.Unlock()
+}
+```
+
+Task 18 builds `Fetch` from `clientcredentials.Config{ClientID, ClientSecret, TokenURL: issuer +
+"/oauth/v2/token", Scopes: []string{"openid", "urn:zitadel:iam:org:project:id:" + projectID + ":aud"}}`,
+with the ids and the secret read from mounted files at start, and passes the audited egress client
+in the context so the token fetch goes through it:
+
+```go
+	hc := httpx.New(10*time.Second, nil)
+	tokens := &slackapp.Tokens{Fetch: func(ctx context.Context) (*oauth2.Token, error) {
+		return cc.Token(context.WithValue(ctx, oauth2.HTTPClient, hc))
+	}}
+```
 
 - [ ] **Step 4: Run, commit**
 
@@ -4288,17 +4871,103 @@ git commit -m "feat(slack): a mention's draft and the App's MCP client on its cl
 **Files:**
 - Create: `internal/slackapp/slack.go`, `slack_test.go`, `internal/slackapp/threads.go`, `threads_test.go`, `internal/slackapp/app.go`, `app_test.go`, `internal/slackapp/config.go`, `config_test.go`
 
-**Interfaces:** `type Config struct{BotUserIDFile, BotTokenFile, SigningSecretFile, WebhookKeyFile, BrokerURL, RoomsURL, IssuerURL, ClientIDFile, ClientSecretFile, ProjectIDFile, Namespace string; Channels map[string]Channel}`,
-`type Channel struct{Repositories []string; MaxCostUSD float64}`;
-`type Slack interface{Post(ctx, channel, threadTS, text string, meta *Metadata) (ts string, err error); Message(ctx, channel, ts string) (Message, error)}`;
-`type Threads interface{Put(ctx, room string, t Thread) error; Get(ctx, room string) (Thread, bool, error)}`;
-`type App struct{…}` with `Events http.Handler` (`:8080`) and `Webhooks http.Handler` (`:8081`).
+**Interfaces** (L5: every type the flows name, with its fields):
+
+```go
+// Config is the App's config file, loaded strictly as the broker's config is.
+type Config struct {
+	BotUserIDFile     string             `json:"botUserIDFile"`
+	BotTokenFile      string             `json:"botTokenFile"`
+	SigningSecretFile string             `json:"signingSecretFile"`
+	WebhookKeyFile    string             `json:"webhookKeyFile"`
+	BrokerURL         string             `json:"brokerURL"`
+	RoomsURL          string             `json:"roomsURL"`
+	IssuerURL         string             `json:"issuerURL"`
+	ClientIDFile      string             `json:"clientIDFile"`
+	ClientSecretFile  string             `json:"clientSecretFile"`
+	ProjectIDFile     string             `json:"projectIDFile"`
+	Namespace         string             `json:"namespace"`
+	Channels          map[string]Channel `json:"channels"`
+	// The three listeners (M11): Slack's events (public), the broker's webhooks (cluster only),
+	// and metrics with the probes. Defaults :8080, :8081 and :9090; a test passes 127.0.0.1:0.
+	EventsAddr   string `json:"eventsAddr,omitempty"`
+	WebhooksAddr string `json:"webhooksAddr,omitempty"`
+	OpsAddr      string `json:"opsAddr,omitempty"`
+}
+
+// Channel is a channel the App serves: the repositories a draft there may name, and the
+// max_cost a ✅ there sends.
+type Channel struct {
+	Repositories []string `json:"repositories"`
+	MaxCostUSD   float64  `json:"maxCostUSD"`
+}
+
+// Metadata is the draft the App attaches to its own message (R23); Slack keeps it off the
+// visible text.
+type Metadata struct {
+	EventType    string       `json:"event_type"`
+	EventPayload DraftPayload `json:"event_payload"`
+}
+
+// DraftPayload is the checked draft and its hash, sha256 hex of repo, title and body joined by NUL.
+type DraftPayload struct {
+	Repo   string `json:"repo"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	SHA256 string `json:"sha256"`
+}
+
+// Message is a Slack message as the ✅ flow reads it (M9). User is who posted it: the App's own
+// bot user for its drafts.
+type Message struct {
+	TS, ThreadTS, User, Text string
+	Metadata                 *Metadata
+}
+
+// Thread is where a room filed from Slack is followed (R25). At is when it was put, for the
+// 30-day prune.
+type Thread struct {
+	Channel string    `json:"channel"`
+	TS      string    `json:"ts"`
+	At      time.Time `json:"at"`
+}
+
+// Slack is the two Web API calls the App makes.
+type Slack interface {
+	Post(ctx context.Context, channel, threadTS, text string, meta *Metadata) (ts string, err error)
+	Message(ctx context.Context, channel, ts string) (Message, error)
+}
+
+// Threads is the thread map, the ConfigMap factory-slack-threads in production.
+type Threads interface {
+	Put(ctx context.Context, room string, t Thread) error
+	Get(ctx context.Context, room string) (Thread, bool, error)
+}
+
+// BrokerAPI is what the flows call on the broker; Broker (Task 16) has it, and the test fakes it.
+type BrokerAPI interface {
+	IssueDraft(ctx context.Context, d Draft) (Draft, error)
+	RunCreate(ctx context.Context, c RunCreate) (RunResult, error)
+}
+```
+
+`type App struct{Slack Slack; Broker BrokerAPI; Threads Threads; Verifier Verifier; WebhookKeys
+func() ([][]byte, error); BotUserID, RoomsURL string; Channels map[string]Channel; Async
+func(func()); Now func() time.Time; Metrics Recorder; Logger *slog.Logger}` with
+`func (a *App) Events() http.Handler` (the events listener) and `func (a *App) Webhooks()
+http.Handler` (the webhooks listener). `Async` runs an event's handling after the `200`: nil means
+`go f()`; the test rig passes `func(f func()) { f() }`, so each request returns once it is
+handled. `Recorder` has `Request(ctx, route, outcome string)` for
+`factory_slack_requests_total{route, outcome}`.
 
 - [ ] **Step 1: Write the failing tests**
 
-`app_test.go` wires a fake `Slack` (it records posts and serves messages with metadata and
-`bot_id`), a fake `Broker` (it records calls and answers refusals by input), fake `Threads`, and
-signs every request with Task 15's `slackSign`:
+`app_test.go` wires a fake `Slack` (it records posts; `Message` serves what was posted, with its
+metadata and `User` `U0BOT` for the App's posts, and a human's message `1729.0001` by `U02DEF` with
+no metadata), a fake `BrokerAPI` (it records calls, answers `refuse`d `on_behalf_of` values with
+`Refused`, and answers the others `RunResult{Room: "aaaaaaaa", Issue: 42}`, `Duplicate` from the
+second call with the same key), fake `Threads`, and signs every request with Task 15's
+`slackSign`. Its events carry `team_id: T01ABC`:
 
 ```go
 // SPDX-License-Identifier: Apache-2.0
@@ -4308,6 +4977,8 @@ package slackapp
 import (
 	"strings"
 	"testing"
+
+	"github.com/Smana/agent-platform/internal/sponsored"
 )
 
 // F9, R22–R24, invariants 6–8, live proof 5 offline: a mention drafts; a ✅ from a linked
@@ -4322,8 +4993,11 @@ func TestReactionFlow(t *testing.T) {
 	}
 	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
 	rig.react("C03", draft.ts, "U09XYZ", "white_check_mark")
-	if rig.broker.created() != 0 && !strings.Contains(rig.lastPost().text, "not_linked") {
+	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "not_linked") {
 		t.Fatal("an unlinked user's ✅ filed, or its refusal went unsaid")
+	}
+	if refused := rig.broker.refusedCalls(); len(refused) != 1 || refused[0].OnBehalfOf != "slack:T01ABC/U09XYZ" {
+		t.Fatalf("the unlinked user's call: %+v", refused)
 	}
 	rig.react("C03", draft.ts, "U02DEF", "+1")
 	rig.react("C03", "1729.0001", "U02DEF", "white_check_mark") // the human's own message, not a draft
@@ -4335,8 +5009,11 @@ func TestReactionFlow(t *testing.T) {
 	rig.react("C03", draft.ts, "U07GHI", "white_check_mark") // a second maintainer: the same key, one task
 	calls := rig.broker.runCreates()
 	if len(calls) != 2 || calls[0].Key != calls[1].Key || calls[0].OnBehalfOf != "slack:T01ABC/U02DEF" || calls[0].MaxCostUSD != 2 ||
-		calls[0].Title != "docs(agents): the link is dead" || calls[0].Ref != "slack:T01ABC/C03/1729.0001" {
+		calls[0].Title != "docs(agents): the link is dead" || calls[0].Ref != "slack/T01ABC/C03/1729.0001" {
 		t.Fatalf("%+v", calls)
+	}
+	if !sponsored.ValidRef(calls[0].Ref) { // B1: the fake must not hide a ref the broker refuses (bad_ref)
+		t.Fatalf("the broker refuses the ref %q", calls[0].Ref)
 	}
 	if th, ok := rig.threads.get("aaaaaaaa"); !ok || th.Channel != "C03" || th.TS != "1729.0001" {
 		t.Fatalf("the thread map: %+v", th)
@@ -4386,12 +5063,33 @@ func TestSlackNeverDecides(t *testing.T) {
 }
 ```
 
+The rig's helpers (L5): `newAppRig(t, ch)` serves channel `C03` with `ch`, bot user `U0BOT`,
+`RoomsURL: "https://rooms.example"`, webhook keys `[][]byte{k}` with a 32-byte `k`, and
+`Async: func(f func()) { f() }`. `mention(channel, ts, text)` and `react(channel, itemTS, user,
+reaction)` and `message(channel, threadTS, user, text)` post a signed `event_callback` (a fresh
+`event_id` each) to `Events()`. `webhook(body)` posts `body` to `Webhooks()` signed with
+`webhook.Sign` under a fresh `webhook-id`; `webhookStatus(body, "unsigned")` posts it with no
+signature headers and returns the status; `webhookReplay()` re-posts the last signed delivery,
+same headers, and returns the status. `lastPost()` and `posts()` return the fake Slack's
+`{ts, text, meta}` records; `threads.get`/`threads.put` read and seed the fake map. The fake
+broker's `refuse(onBehalfOf, text)`, `created()` (accepted `run_create` calls), `runCreates()`
+(the accepted ones only), `refusedCalls()` (the refused ones only, M10) and `all()` (every call of
+either tool).
+
+`slack_test.go`, against an `httptest` server standing for `https://slack.com/api/`: `Post` sends
+`chat.postMessage` with `channel`, `thread_ts`, `text`, `metadata`, `unfurl_links: false` and
+`unfurl_media: false`, and returns `ts`; `Message` sends `conversations.replies` with `channel`,
+`ts`, `limit=1`, `inclusive=true` and `include_all_metadata=true`, and returns the message of the
+answer whose `ts` equals the one asked, with its `thread_ts`, `user` and metadata; an answer with
+`ok: false` is an error.
+
 `threads_test.go`, on the controller-runtime fake client: `Put` and `Get` on the ConfigMap
 `factory-slack-threads`; an entry older than 30 days is pruned on the next `Put`; a conflict
 retries three times.
 
-`config_test.go`: a config with no channel is refused. So are a channel ceiling at or below 0 and a
-repository that is not `owner/name`.
+`config_test.go`: a config with no channel is refused. So are a channel `maxCostUSD` below 0.01
+(the factory refuses `max_cost` under one cent) and a repository that is not `owner/name`. A
+config without the three addresses gets `:8080`, `:8081` and `:9090`.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -4401,39 +5099,49 @@ Expected: `undefined: newAppRig` and the rest.
 - [ ] **Step 3: The implementation**
 
 `slack.go`: `chat.postMessage` (`channel`, `thread_ts`, `text`, `metadata`, `unfurl_links: false`,
-`unfurl_media: false`, and Slack's `mrkdwn` link syntax for the URL) and `conversations.history`
-(`channel`, `latest=ts`, `inclusive=true`, `limit=1`, `include_all_metadata=true`). Both go to
-`https://slack.com/api/` with the bot token as bearer through `httpx`, and a non-`ok` answer is an
-error. The scopes the App needs: `app_mentions:read`, `chat:write`, `reactions:read`,
-`channels:history`, `groups:history`.
+`unfurl_media: false`, and Slack's `mrkdwn` link syntax for the URL) and, for `Message`,
+`conversations.replies` (`channel`, `ts`, `limit=1`, `inclusive=true`,
+`include_all_metadata=true`; M9): the draft is a thread reply, which `conversations.history` never
+returns. Of the messages in the answer, it keeps the one whose `ts` is the one asked (Slack's
+handling of a reply's `ts` is confirmed at live proof 5). Both go to `https://slack.com/api/` with
+the bot token as bearer through `httpx`, and a non-`ok` answer is an error. The scopes the App
+needs: `app_mentions:read`, `chat:write`, `reactions:read`, `channels:history`, `groups:history`
+(the last two cover `conversations.replies`).
 
 `app.go`, `Events`:
 
 1. `Verifier.Body` (else `401`, counted `factory_slack_requests_total{route="events", outcome="bad_signature"}`).
 2. `url_verification`: echo `challenge` (it is signed too).
 3. An `event_callback` whose `event_id` is already in the LRU: `200`, nothing done (R26).
-4. Answer `200` at once, then handle the event in a goroutine with a 30 s context. Slack retries
+4. Answer `200` at once, then handle the event through `Async` with a 30 s context. Slack retries
    anything slower than 3 s.
    - `app_mention` in a served channel: `ParseMention`, then `Broker.IssueDraft`. A refusal is
      posted in the thread as `Draft refused: <refusal>`. On success, post
      `Draft for <repo>: *<title>*. A maintainer reacts :white_check_mark: to file it and start the work.`
-     followed by the body in a code block, and attach `metadata{event_type: factory_draft,
-     event_payload: {repo, title, body, sha256(repo\x00title\x00body)}}`. The thread is the
-     mention's `thread_ts`, else its `ts`.
+     followed by the body in a code block, and attach `Metadata{EventType: "factory_draft",
+     EventPayload: DraftPayload{repo, title, body, sha256(repo\x00title\x00body)}}`. The thread is
+     the mention's `thread_ts`, else its `ts`.
    - `reaction_added` with `reaction == "white_check_mark"` and `item.type == "message"` in a
-     served channel: `Slack.Message(channel, item.ts)`. Ignore it unless `bot_id` is this App's
-     and the metadata is `factory_draft` with a matching hash (R23). Otherwise call
+     served channel: `Slack.Message(channel, item.ts)`. Ignore it unless `User == BotUserID` (the
+     App's own bot user, read from `BotUserIDFile`; M9) and the metadata is `factory_draft` with a
+     matching hash (R23). The thread is the fetched message's `ThreadTS`, else its `TS`: a
+     `reaction_added` item carries no `thread_ts`. Otherwise call
      `RunCreate{Draft, MaxCostUSD: channel's, OnBehalfOf: "slack:" + team + "/" + user,
-     Ref: "slack:" + team + "/" + channel + "/" + thread_ts, Key: team + "/" + channel + "/" + item.ts}`.
-     A refusal is posted as `Not filed: <code>`. On success, `Threads.Put(room, {channel, thread_ts})`
-     and post `Filed #<issue> for <maintainer's Slack mention>; the factory starts it. Room: <url>`,
-     or `Already filed: <url>` when duplicate.
+     Ref: "slack/" + team + "/" + channel + "/" + threadTS, Key: team + "/" + channel + "/" + item.ts}`.
+     The ref (B1) is a label `sponsored.ValidRef` accepts, so it has no `:`; `on_behalf_of` keeps
+     `slack:`, which its own pattern allows. A refusal is posted as `Not filed: <code>`. On
+     success, `Threads.Put(room, Thread{Channel: channel, TS: threadTS, At: Now()})` and post
+     `Filed #<issue> for <@user>; the factory starts it. Room: <RoomsURL>/r/<room>`, or
+     `Already filed: <RoomsURL>/r/<room>` when duplicate.
    - Anything else: ignored. Plain thread messages are never read for commands (invariant 8).
 
-`app.go`, `Webhooks`: `webhook.Verify` with the keys from `WebhookKeyFile`, read at use (else
-`401`). Dedupe on `webhook-id`. Decode `webhook.Event`, then `Threads.Get(room)`, which is silent
-when the room was not filed from Slack. Post one template per type. Every value is checked against
-its closed vocabulary before it is formatted, else `other`:
+`app.go`, `Webhooks`: `webhook.Verify` with the keys from `WebhookKeys`, read at use (else
+`401`). Dedupe on `webhook-id`. Decode `webhook.Event`; a `type` outside `webhook.Types()` is
+ignored. Then `Threads.Get(room)`, which is silent when the room was not filed from Slack. Post one
+template per type. Each value is clipped with `webhook.Clip` before it is formatted (M4: one
+vocabulary, the broker's, never a second table here): `webhook.Clip("reason", e.Reason)`,
+`Clip("limit", e.Limit)`, `Clip("state", e.State)`; `pr` is an int, and the room id must be a C2 id
+(`^[a-z2-7]{8}$`), else the delivery is ignored:
 
 | Event | Thread line |
 |---|---|
@@ -4446,7 +5154,8 @@ its closed vocabulary before it is formatted, else `other`:
 | `room.budget_reached` | `A budget was reached (<limit>).` |
 | `room.ended` | `Ended, state: <state>. Room: <url>` |
 
-`config.go` loads YAML strictly, as the broker's config loader does.
+`config.go` loads YAML strictly with `sigs.k8s.io/yaml`'s `UnmarshalStrict`, as the broker's
+config loader does, applies the address defaults, then validates.
 
 - [ ] **Step 4: Run, commit**
 
@@ -4464,20 +5173,36 @@ git commit -m "feat(slack): draft on a mention, file on a maintainer's check mar
 - Create: `cmd/factory-slack-app/main.go`, `internal/app/slackapp.go`, `internal/app/slackapp_test.go`, `images/factory-slack-app/Dockerfile`
 - Modify: `.github/workflows/ci.yaml`, `.github/workflows/release.yaml` (add `factory-slack-app` to both `matrix.image` lists)
 
+**Interfaces produced:** `func RunSlackApp(ctx context.Context, log *slog.Logger, args []string,
+getenv func(string) string) error`, which is `startSlackApp` with the in-cluster client, then
+`Wait`; `func startSlackApp(ctx context.Context, log *slog.Logger, args []string, getenv
+func(string) string, newClient func() (client.Client, error)) (*slackRunning, error)`, which
+returns once the three listeners are bound; `type slackRunning struct{Events, Webhooks, Ops
+net.Addr; Wait func() error}`. No test binds a fixed port (M11): the app tests listen on
+`127.0.0.1:0` and read the bound address, as `broker_test.go` and `bridge_test.go` do; there is no
+free-port helper.
+
 - [ ] **Step 1: Write the failing test**
 
-`internal/app/slackapp_test.go`: `RunSlackApp(ctx, log, []string{"--config", path}, getenv)` with
-a valid config. Probes `/healthz` and `/readyz` on `:9090` must answer `200`. A config with no
-channel exits with `config:`. `/slack/events` on the events listener with no signature answers
-`401`. Use the existing app tests' free-port helper.
+`internal/app/slackapp_test.go` writes, in `t.TempDir()`, the files a valid config names (bot user
+id, bot token, signing secret, webhook key as one base64 line of 32 bytes, client id and secret,
+project id) and the config with `eventsAddr`, `webhooksAddr` and `opsAddr` all `127.0.0.1:0`. It
+calls `startSlackApp(ctx, log, []string{"--config", path}, getenv, func() (client.Client, error) {
+return fake.NewClientBuilder().Build(), nil })`. `GET /healthz` and `GET /readyz` on `Ops` answer
+`200`. `POST /slack/events` on `Events` with no signature answers `401`. Cancelling ctx makes
+`Wait` return nil. `RunSlackApp` with a config that has no channel returns an error containing
+`config:`.
 
 - [ ] **Step 2: The implementation**
 
 `cmd/factory-slack-app/main.go` is `cmd/room-broker/main.go` with `app.RunSlackApp`.
-`internal/app/slackapp.go` reads the config, builds the token source, the Slack client, the
-in-cluster client for the thread ConfigMap (scoped to its namespace) and the three listeners. Each
-listener uses `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `WriteTimeout` 10 s and
-`MaxHeaderBytes` 16 KiB. It drains on context end, in the factory API's shape.
+`internal/app/slackapp.go` reads the config (`slackapp.Config`, with its address defaults), builds
+the `Tokens` (Task 16's `Fetch` through `httpx.New`), the Slack client, the thread map's client from
+`newClient` (in production the in-cluster client, scoped to the config's namespace), the `App`, and
+the three listeners on `EventsAddr` (`Events()`, the exact route `POST /slack/events`),
+`WebhooksAddr` (`Webhooks()`, `POST /webhooks`) and `OpsAddr` (`/metrics`, `/healthz`,
+`/readyz`). Each listener uses `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `WriteTimeout` 10 s
+and `MaxHeaderBytes` 16 KiB. It drains on context end, in the factory API's shape.
 
 `images/factory-slack-app/Dockerfile` copies `images/room-broker/Dockerfile` with `room-broker`
 replaced by `factory-slack-app` everywhere. It keeps the same pinned base digests.
@@ -4498,10 +5223,14 @@ git commit -m "feat(slack): the factory-slack-app binary and image, released wit
 
 - `docs/slack.md`, new: the Slack App manifest (as JSON: bot scopes, the event subscriptions
   `app_mention` and `reaction_added`, the request URL `https://factory-slack.<domain>/slack/events`,
-  no interactivity, no slash command), the App's config, the flows, and what it never does.
+  no interactivity, no slash command), the App's config (its three addresses included), the
+  flows (the ref `slack/<team>/<channel>/<thread_ts>` and `on_behalf_of: slack:<team>/<user>`), and
+  what it never does.
 - `docs/security.md`: invariants 5–8, the public route, and that the bot token and the
   client-credentials secret never reach the broker or a run.
-- `AGENTS.md`: the new image in the components list.
+- `AGENTS.md`: one row in the components table, after the `cmd/room-bridge` row: Stage `Entry`,
+  Package `cmd/factory-slack-app`, `internal/slackapp`, Contract "the factory's Slack App:
+  intake from a thread, webhooks to the thread (docs/slack.md)".
 
 - [ ] **Step 2: The whole check, push, PR**
 
@@ -5033,6 +5762,6 @@ end.
 
 **Design points this plan could not settle offline:** whether ZITADEL's client-credentials JWT
 access token carries `client_id` for a machine user (live step 1, with a fallback planned), and
-whether Slack's `conversations.history` returns message `metadata` for a bot's own message with
+whether Slack's `conversations.replies` returns message `metadata` for a bot's own message with
 `include_all_metadata` under the scopes listed (live step 5; if it does not, R23 falls back to an
 HMAC-signed draft id in the message's block `block_id`).

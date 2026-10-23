@@ -58,6 +58,8 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 	if err := s.WatchJWKS(map[string]func() time.Time{"https://issuer": func() time.Time { return now }}); err != nil {
 		t.Fatal(err)
 	}
+	s.WebhookDelivery(ctx, "slack-app", "delivered")
+	s.WebhookDisabled(ctx, "slack-app", true)
 	s.BridgeStalled(ctx, "cursor_lost")
 	s.BridgeStubbed(ctx, "refused")
 
@@ -85,6 +87,8 @@ func TestExposedNamesAreTheOnesTheAlertsQuery(t *testing.T) {
 		`rooms_authn_jwks_last_refresh_timestamp_seconds{issuer="https://issuer"} 1.7e+09`,
 		`rooms_bridge_harness_stalls_total{reason="cursor_lost"} 1`,
 		`rooms_bridge_items_stubbed_total{reason="refused"} 1`,
+		`rooms_webhook_deliveries_total{outcome="delivered",subscriber="slack-app"} 1`,
+		`rooms_webhook_disabled{subscriber="slack-app"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %s", want)

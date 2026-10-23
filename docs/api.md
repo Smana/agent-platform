@@ -603,6 +603,138 @@ principal: `admitted`, `duplicate`, or the code of any refusal after that point 
 `other`. The `unauthenticated`, `not_permitted` and `sponsored_only` refusals come before the
 principal is known and are **not counted**.
 
+## Webhooks
+
+The broker sends signed, id-only events to the subscribers declared in its `webhooks` config (see
+[operations](operations.md#webhooks)). It is off until a subscriber is declared. A payload carries
+ids and closed codes only: never room text, a title, a branch or a message.
+
+| Event | Fires when | Fields beyond `type` and `room` |
+|---|---|---|
+| `room.task_received` | The task enters `Received` | `repo` |
+| `room.task_triaged` | The task enters `Triaged` | `repo` |
+| `room.run_started` | A run enters `Running` | `run` |
+| `room.run_ended` | A run ends: `Succeeded`, `Failed`, `BudgetExhausted` or `Revoked` | `run` |
+| `room.waiting_for_human` | The task enters `AwaitingHuman` or `Escalated`, or an approval is requested | `reason` |
+| `room.pr_opened` | The first pull request of the task is known | `pr` |
+| `room.verdict_posted` | GitHub accepted the verdict comment | `pr` |
+| `room.merged` | The task enters `Merged` | `pr` |
+| `room.reverted` | The task enters `Reverted` | `pr` |
+| `room.budget_reached` | A task phase or a run end names a budget reason | `limit` |
+| `room.ended` | The task's first coarse end: `done`, `failed` or `stopped` | `state` |
+
+A task event fires on a change of phase only: the factory rewrites a phase's facts (budget, run,
+pull request) without a new event. `repo` is on `task_received` and `task_triaged` only.
+`verdict_posted` is sent once GitHub accepted the comment, not when it was attempted.
+
+`reason`, `limit` and `state` are clipped to closed lists (`webhook.Reasons`, `webhook.Limits`,
+`webhook.States`); anything else is sent as `other`. The factory's room escalations `foreign_room`,
+`room_log_unreadable` and `rooms_crd_outdated` are listed.
+
+| Field | Values |
+|---|---|
+| `limit` | `budget-run`, `budget-task`, `budget-principal`, `budget-fleet`, `budget-person`, `budget-family` |
+| `state` | `queued`, `running`, `waiting`, `done`, `failed`, `stopped` |
+| `reason` | The wait reasons of [the summary](#get-apiroomsidsummary), plus `approval`, `manual`, `revoked`, `deleted`, `principal_unknown`, `budget-run`, `budget-principal`, `budget-fleet`, `budget-person`, `foreign_room`, `room_log_unreadable`, `rooms_crd_outdated` |
+
+Example body:
+
+```json
+{"type":"room.pr_opened","room":"room-7f3a","pr":42}
+```
+
+### Delivery
+
+A `POST` of `application/json` with three headers, as [Standard Webhooks](https://www.standardwebhooks.com/) defines them:
+
+| Header | Value |
+|---|---|
+| `webhook-id` | `evt_…`: the same for every retry of one event, distinct per subscriber |
+| `webhook-timestamp` | Unix seconds |
+| `webhook-signature` | `v1,<base64>` per key, space-separated: two while a key is rotated |
+
+The signed string is `webhook-id.webhook-timestamp.body`, HMAC-SHA256 under the subscriber's key,
+over the raw body bytes.
+
+A subscriber must:
+
+1. verify the signature against the raw body, with a constant-time comparison;
+2. reject a timestamp more than 5 minutes from its clock, either way;
+3. deduplicate on `webhook-id`: a delivered event can arrive twice (a restart replays from the last cursor);
+4. answer `2xx` quickly, and fetch the room through the MCP server or the human API if it needs more
+   than the ids.
+
+**At-least-once holds for delivered events only.** A delivery that does not get a `2xx` is retried after
+10 s, 1 min and 5 min, then given up: the event is dropped and the room's cursor moves on, even when
+the subscriber stays enabled (three given up in a row disable it). The exception is a signing key the
+broker cannot read: the room is held, nothing is dropped, and each sweep tries again until the key is
+fixed.
+
+Events are ordered within a room, except for the replays after a broker restart, and not across
+rooms. A subscriber's response body is never read beyond 64 KiB. No redirect is followed and no proxy
+is used.
+
+Where a subscriber starts: every room that exists when the subscriber is first declared starts at that
+room's last event, so history is not replayed; a room created later starts at its first event.
+
+A room's events are read from its log. A room forked from another replays the parent's copied history
+as its own events, so a subscriber of the fork sees the parent's phases again, under the fork's room id.
+
+A room's repository (the `repo` field and the `repositories` filter) comes only from the factory's
+task facts, or else from the Room. If the two disagree, the room is held and counted `mismatch`.
+
+Verifying with Go, standard library only. `keys` are the base64-decoded bytes of the key file's lines:
+
+```go
+func verify(keys [][]byte, h http.Header, body []byte, now time.Time) (id string, ok bool) {
+	id, ts := h.Get("webhook-id"), h.Get("webhook-timestamp")
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if id == "" || err != nil {
+		return "", false
+	}
+	if d := now.Sub(time.Unix(sec, 0)); d > 5*time.Minute || d < -5*time.Minute {
+		return "", false
+	}
+	for _, k := range keys {
+		m := hmac.New(sha256.New, k)
+		fmt.Fprintf(m, "%s.%s.", id, ts)
+		m.Write(body)
+		want := m.Sum(nil)
+		for _, s := range strings.Fields(h.Get("webhook-signature")) {
+			v, found := strings.CutPrefix(s, "v1,")
+			if !found {
+				continue
+			}
+			if got, err := base64.StdEncoding.DecodeString(v); err == nil && hmac.Equal(got, want) {
+				return id, true // dedupe on id, then act
+			}
+		}
+	}
+	return "", false
+}
+```
+
+Verifying with Python. `keys` are the base64-decoded bytes of the key file's lines:
+
+```python
+import base64, hashlib, hmac, time
+
+def verify(keys, headers, body: bytes) -> bool:
+    i, ts = headers["webhook-id"], headers["webhook-timestamp"]
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            return False
+    except ValueError:
+        return False
+    for key in keys:
+        want = base64.b64encode(hmac.new(key, f"{i}.{ts}.".encode() + body, hashlib.sha256).digest()).decode()
+        if any(hmac.compare_digest(s[3:], want) for s in headers["webhook-signature"].split() if s.startswith("v1,")):
+            return True
+    return False
+```
+
+A key line prefixed with `whsec_` is the secret the Standard Webhooks libraries expect.
+
 ## `:8090` — room tools
 
 An MCP server on `POST /mcp`, reached only through an `agent-router` `MCPRoute`, which authenticates

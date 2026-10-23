@@ -211,3 +211,27 @@ func TestUnfinished(t *testing.T) {
 		})
 	}
 }
+
+// An older schema (the webhooks migration absent) still purges: retention touches
+// webhook_cursors only when the table exists.
+func TestPurgeWithoutWebhookTables(t *testing.T) {
+	ctx := t.Context()
+	s, _, retention, super := open(t)
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "expiredx", Driver: "system:factory", Retention: 90 * 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	appendN(t, s, "expiredx", 2)
+	if err := s.CloseRoom(ctx, "expiredx", "done"); err != nil {
+		t.Fatal(err)
+	}
+	forge(t, super, `UPDATE rooms SET closed_at = now() - interval '91 days' WHERE room_id = 'expiredx'`)
+	exec(t, super, `DROP TABLE webhook_cursors, webhook_subscribers`)
+	r, err := Open(ctx, retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if rooms, _, err := r.PurgeExpired(ctx); err != nil || rooms != 1 {
+		t.Fatalf("purged %d rooms without the webhook tables: %v", rooms, err)
+	}
+}

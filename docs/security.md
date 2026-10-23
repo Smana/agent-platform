@@ -194,6 +194,25 @@ These policies live in cloud-native-ref. Default deny everywhere; one allow per 
 On gcp-0 the identity-provider rule is `toEntities: [all]` without ports: a port-scoped rule to the
 cluster's own gateway hairpins through the socket load balancer and is dropped.
 
+## Webhooks
+
+An event carries ids and closed codes only, never room text: `reason`, `limit` and `state` are
+clipped to fixed lists, and any other value is sent as `other`. A message is never decoded to build
+an event.
+
+A subscriber is `cluster` or `internet`, declared in the broker's config and never by a room. Cluster
+subscribers are reached by their service name, which needs an egress allow on the broker's host
+policy and the subscriber's own ingress allow: neither is implied. An internet
+subscriber must be a public DNS name over `https`, and the dial guard checks every address after
+resolution, so a name that rebinds is refused at connect. The guard refuses loopback, private,
+link-local (the cloud metadata address included), CGNAT (the tailnet), unique-local, unspecified,
+multicast and reserved addresses, and the NAT64 and 6to4 forms that embed an IPv4 address. No proxy
+is used, which would dial on the broker's behalf past the guard, and redirects are not followed,
+since the address they name was never declared.
+
+Each delivery is signed with HMAC-SHA256 under a key of at least 32 bytes that lives in a mounted
+secret, never in the config. The key file is re-read at each delivery.
+
 ## Supply chain
 
 | Control | How |

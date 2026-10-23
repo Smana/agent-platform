@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/sponsored"
+	"github.com/Smana/agent-platform/internal/webhook"
 )
 
 // The :8443 key pair's defaults: cert-manager's Certificate room-broker-tls (GP-18).
@@ -128,6 +130,82 @@ type Config struct {
 	Suspend          SuspendConfig     `json:"suspend,omitzero"`
 	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
 	Runs runwatch.Kind `json:"runs,omitzero"`
+	// Webhooks are the subscribers to room events (factory interfaces F6).
+	Webhooks []WebhookConfig `json:"webhooks,omitempty"`
+}
+
+// WebhookConfig is one subscriber (factory interfaces F6, O7): declared here because subscribers
+// are few, this file is a gate path, and ai-native-ref generates the broker's egress from it.
+type WebhookConfig struct {
+	Name         string   `json:"name"`
+	Network      string   `json:"network"` // cluster | internet
+	URL          string   `json:"url"`
+	Events       []string `json:"events"`
+	SecretFile   string   `json:"secretFile"`
+	Repositories []string `json:"repositories"`
+	// Generation re-enables a subscriber the emitter disabled: changing it is the reviewed act (R17).
+	Generation int `json:"generation,omitempty"`
+}
+
+var (
+	dnsLabel   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	clusterURL = regexp.MustCompile(`^https?://([a-z0-9-]+)\.([a-z0-9-]+)\.svc\.cluster\.local:[0-9]{1,5}/`)
+	// privateSuffixes are names that only resolve inside a cluster or a private network.
+	privateSuffixes = []string{".local", ".internal", ".svc", ".cluster.local", ".localdomain"}
+)
+
+func (w WebhookConfig) validate(i int, seen map[string]bool) []error {
+	at := fmt.Sprintf("webhooks[%d] %s", i, w.Name)
+	var errs []error
+	if !dnsLabel.MatchString(w.Name) {
+		errs = append(errs, fmt.Errorf("%s: name must be a DNS label", at))
+	} else if seen[w.Name] {
+		errs = append(errs, fmt.Errorf("%s: duplicate name", at))
+	}
+	seen[w.Name] = true
+	switch w.Network {
+	case "cluster":
+		if !clusterURL.MatchString(w.URL) {
+			errs = append(errs, fmt.Errorf("%s: a cluster subscriber's url is http(s)://<svc>.<ns>.svc.cluster.local:<port>/…", at))
+		}
+	case "internet":
+		errs = append(errs, w.validateInternet(at)...)
+	default:
+		errs = append(errs, fmt.Errorf("%s: network is cluster or internet", at))
+	}
+	if len(w.Events) == 0 {
+		errs = append(errs, fmt.Errorf("%s: events is empty", at))
+	}
+	for _, e := range w.Events {
+		if !slices.Contains(webhook.Types(), e) {
+			errs = append(errs, fmt.Errorf("%s: unknown event %q", at, e))
+		}
+	}
+	if w.SecretFile == "" {
+		errs = append(errs, fmt.Errorf("%s: secretFile is required", at))
+	}
+	if len(w.Repositories) == 0 {
+		errs = append(errs, fmt.Errorf("%s: repositories is empty", at))
+	}
+	return errs
+}
+
+func (w WebhookConfig) validateInternet(at string) []error {
+	u, err := url.Parse(w.URL)
+	if err != nil || u.Host == "" {
+		return []error{fmt.Errorf("%s: url does not parse", at)}
+	}
+	if u.Scheme != "https" {
+		return []error{fmt.Errorf("%s: an internet subscriber is https", at)}
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if net.ParseIP(host) != nil {
+		return []error{fmt.Errorf("%s: an internet subscriber's host is a DNS name, never an address", at)}
+	}
+	if host == "localhost" || !strings.Contains(host, ".") || slices.ContainsFunc(privateSuffixes, func(s string) bool { return strings.HasSuffix(host, s) }) {
+		return []error{fmt.Errorf("%s: an internet subscriber's host is not a cluster or private name", at)}
+	}
+	return nil
 }
 
 // SuspendConfig is the broker's suspend trigger (v2 warm-sandboxes design §6): a suspendable
@@ -211,6 +289,10 @@ func (c *Config) Validate() error {
 	}
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
+	}
+	seen := map[string]bool{}
+	for i, w := range c.Webhooks {
+		errs = append(errs, w.validate(i, seen)...)
 	}
 	return errors.Join(errs...)
 }
