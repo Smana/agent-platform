@@ -7,18 +7,30 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"syscall"
 	"time"
 )
 
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+// refused are the reserved ranges beyond what netip classifies, and the IPv6 forms that embed an
+// IPv4 (NAT64, 6to4), refused outright rather than unwrapped.
+var refused = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"), // CGNAT, the tailnet
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"), // reserved, with the broadcast address
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2002::/16"),
+}
 
 // Guard refuses an address an internet subscriber may never resolve to (R20): loopback, private,
 // link-local (cloud metadata included), CGNAT (the tailnet), unique-local and unspecified.
 func Guard(a netip.Addr) error {
 	a = a.Unmap()
 	if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsUnspecified() ||
-		a.IsMulticast() || cgnat.Contains(a) {
+		a.IsMulticast() || slices.ContainsFunc(refused, func(p netip.Prefix) bool { return p.Contains(a) }) {
 		return errors.New("webhook: refused address")
 	}
 	return nil
