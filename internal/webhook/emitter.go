@@ -7,10 +7,10 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -25,6 +25,10 @@ const (
 	queueSize    = 1024
 	laggingLimit = 1000
 	maxTrackers  = 10000
+	// maxWorkers bounds the concurrent workers of one subscriber.
+	maxWorkers = 8
+	// maxRooms bounds the repository cache.
+	maxRooms = 10000
 	// disableAfter is how many given-up deliveries in a row disable a subscriber (R17).
 	disableAfter = 3
 )
@@ -79,12 +83,19 @@ type Emitter struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 	// SweepEvery is how often the dirty rooms are retried; 0 means 10 s.
 	SweepEvery time.Duration
+	// MinBackoff is the first wait before retrying a failed registration or reconnect; it
+	// doubles to 30 s. 0 means 1 s.
+	MinBackoff time.Duration
+	// LaggingLimit is how many rooms one catch-up asks for; 0 means 1,000.
+	LaggingLimit int
 
 	mu       sync.Mutex
 	subs     []*subState
 	running  map[workerKey]bool
 	again    map[workerKey]bool // a notification came while the worker ran
 	dirty    map[workerKey]bool // to retry on the next sweep
+	catchup  map[string]bool    // subscribers whose Lagging must still run (or run again)
+	rooms    map[string]*roomInfo
 	trackers map[workerKey]*list.Element
 	lru      *list.List // of *trackerEntry, most recent first
 	wg       sync.WaitGroup
@@ -92,8 +103,65 @@ type Emitter struct {
 
 type subState struct {
 	Subscriber
+	sem      chan struct{}
 	client   *http.Client
 	disabled atomic.Bool
+}
+
+// roomInfo is what the log (and, failing that, the Room) says of one room: its repository, how
+// far the log was read for it, and whether the log is sealed. Shared by every subscriber.
+type roomInfo struct {
+	mu      sync.Mutex
+	repo    string
+	scanned int64
+	sealed  bool
+}
+
+// repoURL is the owner/name of a GitHub issue or pull request URL.
+var repoURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/[0-9]+`)
+
+// fromLog is the repository a task entry's issue or pull request URL names, and whether ev is
+// the seal CloseRoom appends.
+func fromLog(ev envelope.Event) (repo string, sealed bool) {
+	if ev.Type != envelope.StateChanged {
+		return "", false
+	}
+	var k struct {
+		Kind  string `json:"kind"`
+		Phase string `json:"phase"`
+	}
+	if json.Unmarshal(ev.Payload, &k) != nil {
+		return "", false
+	}
+	switch k.Kind {
+	case "room_phase":
+		return "", k.Phase == "Closed"
+	case "task":
+		var f envelope.TaskFacts
+		if json.Unmarshal(ev.Payload, &f) != nil {
+			return "", false
+		}
+		for _, u := range []string{urlOf(f.PR), urlOf(f.Issue)} {
+			if m := repoURL.FindStringSubmatch(u); m != nil {
+				return m[1], false
+			}
+		}
+	}
+	return "", false
+}
+
+func urlOf(v any) string {
+	switch f := v.(type) {
+	case *envelope.PRFact:
+		if f != nil {
+			return f.URL
+		}
+	case *envelope.IssueFact:
+		if f != nil {
+			return f.URL
+		}
+	}
+	return ""
 }
 
 type workerKey struct{ sub, room string }
@@ -117,13 +185,20 @@ func (e *Emitter) Start(ctx context.Context) error {
 	if e.SweepEvery <= 0 {
 		e.SweepEvery = 10 * time.Second
 	}
+	if e.MinBackoff <= 0 {
+		e.MinBackoff = time.Second
+	}
+	if e.LaggingLimit <= 0 {
+		e.LaggingLimit = laggingLimit
+	}
 	e.running, e.again, e.dirty = map[workerKey]bool{}, map[workerKey]bool{}, map[workerKey]bool{}
+	e.catchup, e.rooms = map[string]bool{}, map[string]*roomInfo{}
 	e.trackers, e.lru = map[workerKey]*list.Element{}, list.New()
 	for _, s := range e.Subs {
-		st := &subState{Subscriber: s}
-		_, disabled, err := e.State.Subscriber(ctx, s.Name, s.Generation)
+		st := &subState{Subscriber: s, sem: make(chan struct{}, maxWorkers)}
+		disabled, err := e.register(ctx, s)
 		if err != nil {
-			return fmt.Errorf("webhook: register %s: %w", s.Name, err)
+			return nil // ctx ended
 		}
 		st.disabled.Store(disabled)
 		e.Metrics.WebhookDisabled(ctx, s.Name, disabled)
@@ -144,14 +219,36 @@ func (e *Emitter) Start(ctx context.Context) error {
 	return nil
 }
 
+// register records the subscriber in the store, retrying with a backoff until it works or ctx
+// ends: a database blip at startup must not stop the manager.
+func (e *Emitter) register(ctx context.Context, s Subscriber) (disabled bool, err error) {
+	backoff := e.MinBackoff
+	for {
+		_, disabled, err = e.State.Subscriber(ctx, s.Name, s.Generation)
+		if err == nil {
+			return disabled, nil
+		}
+		e.Logger.Warn("webhook: register subscriber", "subscriber", s.Name, "error", err, "retryIn", backoff)
+		if err := wait(ctx, backoff); err != nil {
+			return false, err
+		}
+		backoff = min(2*backoff, 30*time.Second)
+	}
+}
+
 // listen holds the LISTEN session, reconnecting with a backoff, and on each ready (the first
 // connect and every reconnect) marks the rooms past each cursor dirty: notifications sent while
 // the listener was down are gone.
 func (e *Emitter) listen(ctx context.Context, queue chan<- string) {
-	backoff := time.Second
+	backoff := e.MinBackoff
 	for ctx.Err() == nil {
 		err := e.Events.Listen(ctx, func() {
-			backoff = time.Second
+			backoff = e.MinBackoff
+			e.mu.Lock()
+			for _, s := range e.subs {
+				e.catchup[s.Name] = true
+			}
+			e.mu.Unlock()
 			e.catchUp(ctx)
 		}, func(room string, _ int64) {
 			select {
@@ -171,9 +268,18 @@ func (e *Emitter) listen(ctx context.Context, queue chan<- string) {
 	}
 }
 
+// catchUp marks dirty the rooms past each pending subscriber's cursor. A subscriber stays
+// pending until Lagging succeeded and returned fewer rooms than the limit, so a failed call or a
+// truncated list is retried by the sweep.
 func (e *Emitter) catchUp(ctx context.Context) {
 	for _, s := range e.subs {
-		rooms, err := e.State.Lagging(ctx, s.Name, laggingLimit)
+		e.mu.Lock()
+		pending := e.catchup[s.Name]
+		e.mu.Unlock()
+		if !pending {
+			continue
+		}
+		rooms, err := e.State.Lagging(ctx, s.Name, e.LaggingLimit)
 		if err != nil {
 			e.Logger.Warn("webhook: lagging rooms", "error", err)
 			continue
@@ -182,6 +288,7 @@ func (e *Emitter) catchUp(ctx context.Context) {
 		for _, room := range rooms {
 			e.dirty[workerKey{s.Name, room}] = true
 		}
+		e.catchup[s.Name] = len(rooms) >= e.LaggingLimit
 		e.mu.Unlock()
 	}
 }
@@ -218,6 +325,7 @@ func (e *Emitter) sweep(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
+		e.catchUp(ctx)
 		e.mu.Lock()
 		keys := make([]workerKey, 0, len(e.dirty))
 		for k := range e.dirty {
@@ -251,7 +359,17 @@ func (e *Emitter) kick(ctx context.Context, s *subState, room string) {
 	go func() {
 		defer e.wg.Done()
 		for {
+			select {
+			case s.sem <- struct{}{}:
+			case <-ctx.Done():
+				e.mu.Lock()
+				delete(e.running, key)
+				delete(e.again, key)
+				e.mu.Unlock()
+				return
+			}
 			held := e.work(ctx, s, room)
+			<-s.sem
 			e.mu.Lock()
 			if held {
 				e.dirty[key] = true
@@ -271,14 +389,29 @@ func (e *Emitter) kick(ctx context.Context, s *subState, room string) {
 // work delivers room's pending events to s. held is true when it must be retried later without
 // a new notification: the repository is unknown (M5) or a store call failed.
 func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool) {
-	repo, err := e.Rooms(ctx, room)
-	if err != nil || repo == "" {
-		return true // the Room may appear, and its events are then still wanted
+	repo, sealed, scanned, err := e.resolve(ctx, room)
+	if err != nil {
+		e.Logger.Warn("webhook: resolve repository", "subscriber", s.Name, "room", room, "error", err)
+		return true
 	}
 	cur, err := e.State.WebhookCursor(ctx, s.Name, room)
 	if err != nil {
 		e.Logger.Warn("webhook: read cursor", "subscriber", s.Name, "room", room, "error", err)
 		return true
+	}
+	if repo == "" {
+		if !sealed {
+			return true // the Room may appear, and its events are then still wanted (M5)
+		}
+		// A closed room whose repository nothing names: its events cannot be matched to a
+		// subscriber. Moving on keeps it from staying dirty forever.
+		if scanned > cur {
+			if err := e.State.SetWebhookCursor(ctx, s.Name, room, scanned); err != nil {
+				return true
+			}
+			e.Metrics.WebhookDelivery(ctx, s.Name, "unresolved")
+		}
+		return false
 	}
 	var tr *Tracker
 	if slices.Contains(s.Repositories, repo) {
@@ -318,6 +451,54 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 			return false
 		}
 	}
+}
+
+// resolve is a room's repository: from its own log first (the URL of its issue or pull request),
+// so a closed room whose Room is gone still resolves; the Room only when the log has none. It
+// reads the log once, then only what was appended since. sealed is whether the log holds the
+// seal; scanned the last seq read.
+func (e *Emitter) resolve(ctx context.Context, room string) (repo string, sealed bool, scanned int64, err error) {
+	e.mu.Lock()
+	info := e.rooms[room]
+	if info == nil {
+		if len(e.rooms) >= maxRooms {
+			for k := range e.rooms {
+				delete(e.rooms, k)
+				break
+			}
+		}
+		info = &roomInfo{}
+		e.rooms[room] = info
+	}
+	e.mu.Unlock()
+	info.mu.Lock()
+	defer info.mu.Unlock()
+	for info.repo == "" {
+		evs, err := e.Events.Range(ctx, room, info.scanned, pageSize)
+		if err != nil {
+			return "", false, 0, err
+		}
+		for _, ev := range evs {
+			info.scanned = ev.Seq
+			r, seal := fromLog(ev)
+			info.sealed = info.sealed || seal
+			if r != "" {
+				info.repo = r
+				break
+			}
+		}
+		if len(evs) < pageSize {
+			break
+		}
+	}
+	if info.repo == "" {
+		r, err := e.Rooms(ctx, room)
+		if err != nil {
+			return "", false, 0, err
+		}
+		info.repo = r
+	}
+	return info.repo, info.sealed, info.scanned, nil
 }
 
 // tracker is (s, room)'s Tracker (M1), warmed by replaying the room up to cur when missing.
@@ -379,6 +560,9 @@ func (e *Emitter) deliver(ctx context.Context, s *subState, room string, seq int
 		if ctx.Err() != nil {
 			return false
 		}
+		if s.disabled.Load() {
+			return true // disabled while retrying: stop, the cursor moves on
+		}
 		outcome := e.post(ctx, s, id, body)
 		if outcome == "delivered" {
 			e.Metrics.WebhookDelivery(ctx, s.Name, outcome)
@@ -388,6 +572,10 @@ func (e *Emitter) deliver(ctx context.Context, s *subState, room string, seq int
 			return true
 		}
 		if attempt == len(retryWaits) {
+			if outcome != "no_key" { // an unreadable key file is the cause, whichever attempt it was
+				outcome = "failed"
+			}
+			e.Metrics.WebhookDelivery(ctx, s.Name, outcome)
 			break
 		}
 		if outcome != "no_key" {
@@ -398,7 +586,6 @@ func (e *Emitter) deliver(ctx context.Context, s *subState, room string, seq int
 			return false
 		}
 	}
-	e.Metrics.WebhookDelivery(ctx, s.Name, "failed")
 	n, err := e.State.Failed(ctx, s.Name)
 	if err != nil {
 		e.Logger.Warn("webhook: record failure", "subscriber", s.Name, "error", err)

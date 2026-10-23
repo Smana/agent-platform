@@ -5,6 +5,7 @@ package webhook
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,14 +51,14 @@ func TestEmitter(t *testing.T) {
 		t.Fatalf("one pr_opened, no replay of seq 1: %d", hits.Load())
 	}
 	rig.withRepo("bbbbbbbb", "Smana/other")
-	rig.log("bbbbbbbb", fact(1, factsPR("AwaitingCI", 9)))
+	rig.log("bbbbbbbb", fact(1, factsPhase("Done"))) // no URL in the log: the Room says Smana/other
 	rig.waitCursor(t, "bbbbbbbb", 1)
 	if hits.Load() != 1 {
 		t.Fatal("another repository's event was delivered")
 	}
 	rig.withRepo("gggggggg", "") // its Room is not in the cache yet
 	rig.log("gggggggg", fact(1, factsPhase("Done")))
-	time.Sleep(50 * time.Millisecond) // five sweeps of the rig's 10 ms
+	waitFor(t, "five sweeps to ask for the room's repository", func() bool { return rig.asked("gggggggg") >= 5 })
 	if rig.cursor("gggggggg") != 0 || hits.Load() != 1 {
 		t.Fatal("an event of a room with no known repository was given up or delivered")
 	}
@@ -133,31 +134,39 @@ func TestEmitterSubscribersAreIndependent(t *testing.T) {
 
 // emitterRig fakes everything the emitter reads and writes.
 type emitterRig struct {
-	t    *testing.T
-	em   *Emitter
-	ctx  context.Context
-	mu   sync.Mutex
-	logs map[string][]envelope.Event
-	repo map[string]string
-	cur  map[[2]string]int64
-	fail map[string]int
-	off  map[string]bool
-	reg  map[string]bool
-	dis  map[string]int // the last WebhookDisabled value per subscriber
-	note chan [2]any
-	ups  chan struct{} // one value per ready
-	slp  chan time.Duration
+	t      *testing.T
+	em     *Emitter
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	logs   map[string][]envelope.Event
+	repo   map[string]string
+	cur    map[[2]string]int64
+	fail   map[string]int
+	off    map[string]bool
+	reg    map[string]bool
+	dis    map[string]int // the last WebhookDisabled value per subscriber
+	note   chan [2]any
+	ups    chan struct{} // one value per ready
+	slp    chan time.Duration
+
+	calls    map[string]int // how often roomRepo was asked about each room
+	outcomes map[string]int // "subscriber/outcome" -> count
+	subErrs  int            // the next Subscriber calls that fail
+	lagErrs  int            // the next Lagging calls that fail
+	lagCalls int
+	done     chan struct{} // closed when Start returned
 }
 
 func newEmitterRig(t *testing.T, url string, events []string) *emitterRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	r := &emitterRig{t: t, ctx: ctx, logs: map[string][]envelope.Event{}, repo: map[string]string{}, cur: map[[2]string]int64{},
+	r := &emitterRig{t: t, ctx: ctx, cancel: cancel, logs: map[string][]envelope.Event{}, repo: map[string]string{}, cur: map[[2]string]int64{},
 		fail: map[string]int{}, off: map[string]bool{}, reg: map[string]bool{}, dis: map[string]int{},
-		note: make(chan [2]any, 100), ups: make(chan struct{}, 10), slp: make(chan time.Duration)}
+		calls: map[string]int{}, outcomes: map[string]int{}, note: make(chan [2]any, 100), ups: make(chan struct{}, 10), slp: make(chan time.Duration)}
 	r.em = &Emitter{Events: r, Rooms: r.roomRepo, State: r, Metrics: r, Now: time.Now, Sleep: r.sleep,
-		SweepEvery: 10 * time.Millisecond}
+		SweepEvery: 10 * time.Millisecond, MinBackoff: 5 * time.Millisecond}
 	r.addSubscriber("slack-app", url, events)
 	return r
 }
@@ -176,7 +185,16 @@ func (r *emitterRig) addSubscriber(name, url string, events []string) {
 
 func (r *emitterRig) start() {
 	r.t.Helper()
-	go func() { _ = r.em.Start(r.ctx) }()
+	r.done = make(chan struct{})
+	go func() { defer close(r.done); _ = r.em.Start(r.ctx) }()
+	r.t.Cleanup(func() {
+		r.cancel()
+		select {
+		case <-r.done:
+		case <-time.After(5 * time.Second):
+			r.t.Error("Start did not return after its context ended")
+		}
+	})
 	select {
 	case <-r.ups:
 	case <-time.After(5 * time.Second):
@@ -204,6 +222,7 @@ func (r *emitterRig) withRepo(room, repo string) {
 func (r *emitterRig) roomRepo(_ context.Context, room string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.calls[room]++
 	if repo, ok := r.repo[room]; ok {
 		return repo, nil
 	}
@@ -265,6 +284,10 @@ func (r *emitterRig) last(room string) int64 {
 func (r *emitterRig) Subscriber(_ context.Context, sub string, _ int) (int, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.subErrs > 0 {
+		r.subErrs--
+		return 0, false, errors.New("database blip")
+	}
 	if !r.reg[sub] {
 		r.reg[sub] = true
 		for room := range r.logs {
@@ -296,13 +319,19 @@ func (r *emitterRig) SetWebhookCursor(_ context.Context, sub, room string, seq i
 func (r *emitterRig) Lagging(_ context.Context, sub string, limit int) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lagCalls++
+	if r.lagErrs > 0 {
+		r.lagErrs--
+		return nil, errors.New("database blip")
+	}
 	var out []string
 	for room := range r.logs {
-		if r.last(room) > r.cur[[2]string{sub, room}] && len(out) < limit {
+		if r.last(room) > r.cur[[2]string{sub, room}] {
 			out = append(out, room)
 		}
 	}
-	return out, nil
+	slices.Sort(out)
+	return out[:min(len(out), limit)], nil
 }
 
 func (r *emitterRig) Failed(_ context.Context, sub string) (int, error) {
@@ -326,7 +355,34 @@ func (r *emitterRig) Disable(_ context.Context, sub string) error {
 	return nil
 }
 
-func (r *emitterRig) WebhookDelivery(context.Context, string, string) {}
+func (r *emitterRig) WebhookDelivery(_ context.Context, sub, outcome string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outcomes[sub+"/"+outcome]++
+}
+
+func (r *emitterRig) outcome(sub, outcome string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.outcomes[sub+"/"+outcome]
+}
+
+func (r *emitterRig) asked(room string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls[room]
+}
+
+// waitFor polls cond every 5 ms for up to 5 s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if cond() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
 
 func (r *emitterRig) WebhookDisabled(_ context.Context, sub string, disabled bool) {
 	r.mu.Lock()
@@ -398,4 +454,172 @@ func factsPR(p string, n int) envelope.TaskFacts {
 	f := factsPhase(p)
 	f.PR = &envelope.PRFact{Number: n, URL: "https://github.com/Smana/ai-native-ref/pull/" + strconv.Itoa(n)}
 	return f
+}
+
+func seal(seq int64) envelope.Event {
+	return envelope.Event{Seq: seq, Type: envelope.StateChanged, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		Payload: envelope.StatePayload("room_phase", map[string]any{"phase": "Closed", "reason": "done"})}
+}
+
+func counting(hits *atomic.Int32) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+}
+
+// C1: the normal close deletes the Room right after the seal, but the log still names the
+// repository (its pull request's URL), so the room's last events are delivered.
+func TestEmitterDeliversAClosedRoomsEnd(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.withRepo("hhhhhhhh", "") // the Room is gone
+	rig.start()
+	rig.log("hhhhhhhh", fact(1, factsPR("AwaitingCI", 3)))
+	rig.log("hhhhhhhh", fact(2, factsPhase("Done")))
+	rig.log("hhhhhhhh", seal(3))
+	rig.waitCursor(t, "hhhhhhhh", 3)
+	if hits.Load() != 1 {
+		t.Fatalf("room.ended of a deleted Room: %d deliveries", hits.Load())
+	}
+}
+
+// C1: a sealed room whose repository nothing names moves on and is counted, instead of staying
+// dirty forever; an unsealed one is held.
+func TestEmitterSealedRoomWithoutRepository(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.withRepo("iiiiiiii", "")
+	rig.withRepo("jjjjjjjj", "")
+	rig.start()
+	rig.log("jjjjjjjj", fact(1, factsPhase("Done"))) // open: held
+	rig.log("iiiiiiii", fact(1, factsPhase("Done")))
+	rig.log("iiiiiiii", seal(2))
+	rig.waitCursor(t, "iiiiiiii", 2)
+	if hits.Load() != 0 || rig.outcome("slack-app", "unresolved") != 1 {
+		t.Fatalf("%d deliveries, %d unresolved", hits.Load(), rig.outcome("slack-app", "unresolved"))
+	}
+	waitFor(t, "sweeps over the open room", func() bool { return rig.asked("jjjjjjjj") >= 3 })
+	if rig.cursor("jjjjjjjj") != 0 || rig.outcome("slack-app", "unresolved") != 1 {
+		t.Fatal("an open room with no known repository is held, not given up")
+	}
+}
+
+// I1: a Lagging that failed on ready is retried by the sweep, and a list cut at the limit is
+// asked for again until it is short.
+func TestEmitterCatchUpRetries(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.em.LaggingLimit = 2
+	rig.log("aaaaaaaa", fact(1, factsPhase("Received")))
+	rig.lagErrs = 3
+	rig.start()
+	for _, room := range []string{"kkkkkkkk", "llllllll", "mmmmmmmm"} {
+		rig.silent(room, fact(1, factsPhase("Done"))) // appended while the listener was down
+	}
+	for _, room := range []string{"kkkkkkkk", "llllllll", "mmmmmmmm"} {
+		rig.waitCursor(t, room, 1)
+	}
+	if hits.Load() != 3 {
+		t.Fatalf("three rooms, one delivery each: %d", hits.Load())
+	}
+	waitFor(t, "the catch-up to finish", func() bool {
+		rig.em.mu.Lock()
+		defer rig.em.mu.Unlock()
+		return !rig.em.catchup["slack-app"]
+	})
+}
+
+// I2: a database error while registering is retried, not fatal.
+func TestEmitterRegistersThroughABlip(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.subErrs = 3
+	rig.start()
+	rig.log("aaaaaaaa", fact(1, factsPhase("Done")))
+	rig.waitCursor(t, "aaaaaaaa", 1)
+	if hits.Load() != 1 {
+		t.Fatalf("%d deliveries", hits.Load())
+	}
+}
+
+// M-a: a subscriber has at most eight workers at once.
+func TestEmitterBoundsWorkers(t *testing.T) {
+	var cur, peak atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := cur.Add(1)
+		for {
+			if p := peak.Load(); n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		<-release
+		cur.Add(-1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	defer close(release)
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.start()
+	rooms := make([]string, 20)
+	for i := range rooms {
+		rooms[i] = "room" + strconv.Itoa(1000+i)
+		rig.log(rooms[i], fact(1, factsPhase("Done")))
+	}
+	waitFor(t, "eight deliveries in flight", func() bool { return peak.Load() == 8 })
+	time.Sleep(100 * time.Millisecond) // a ninth, if the bound were missing, would be in by now
+	if peak.Load() != 8 {
+		t.Fatalf("peak concurrency %d, want 8", peak.Load())
+	}
+}
+
+// M-b: once the subscriber is disabled, a delivery waiting out its retries stops retrying.
+func TestEmitterRetriesStopWhenDisabled(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.start()
+	rig.log("aaaaaaaa", fact(1, factsPhase("Done")))
+	waitFor(t, "the first attempt", func() bool { return hits.Load() == 1 })
+	rig.em.subs[0].disabled.Store(true) // the worker waits on the fake sleep, which nobody has released
+	select {
+	case <-rig.slp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no retry wait")
+	}
+	rig.waitCursor(t, "aaaaaaaa", 1)
+	if hits.Load() != 1 {
+		t.Fatalf("%d attempts after the subscriber was disabled, want 1", hits.Load())
+	}
+}
+
+// M-c: an unreadable key file is counted no_key on every attempt, the last included.
+func TestEmitterNoKeyOnTheLastAttempt(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	if err := os.Remove(rig.em.Subs[0].SecretFile); err != nil {
+		t.Fatal(err)
+	}
+	rig.start()
+	rig.log("aaaaaaaa", fact(1, factsPhase("Done")))
+	rig.stepRetries(t)
+	rig.waitCursor(t, "aaaaaaaa", 1)
+	if rig.outcome("slack-app", "no_key") != 4 || rig.outcome("slack-app", "failed") != 0 || hits.Load() != 0 {
+		t.Fatalf("no_key %d, failed %d, hits %d", rig.outcome("slack-app", "no_key"), rig.outcome("slack-app", "failed"), hits.Load())
+	}
 }
