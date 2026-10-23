@@ -579,6 +579,13 @@ var (
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
 func roles() []string { return []string{"implementer", "reviewer", "tester", "triager"} }
 
+// Investigates reports whether template is R38's investigate path: its team starts with the
+// triager, which only proposes. A missing template is no team, so it is not one.
+func (c *Config) Investigates(template string) bool {
+	roles := c.Templates[template].Roles
+	return len(roles) > 0 && roles[0] == "triager"
+}
+
 // modelRE is a model name as meter.prices keys it: a C5 logical name or the model a gateway
 // backend pins (glm-5.3, claude-opus-5-5).
 var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)

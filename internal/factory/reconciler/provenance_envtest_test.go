@@ -63,3 +63,43 @@ func TestEnvtestRunProvenance(t *testing.T) {
 		t.Fatalf("a ninth served model: %v", err)
 	}
 }
+
+// The API server bounds the scope fields: an unknown mode and a malformed blob sha are refused.
+func TestEnvtestScopeFieldsAreBounded(t *testing.T) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS unset: run `task test`, which sets it")
+	}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crd")},
+		ErrorIfCRDPathMissing: true}
+	restCfg, err := env.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = env.Stop() }()
+	c, err := client.New(restCfg, client.Options{Scheme: scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-system"}}); err != nil {
+		t.Fatal(err)
+	}
+	st := &v1alpha1.Steering{Path: ".github/agent-factory/steering/review.md", SHA: strings.Repeat("5", 40), Text: "## Verify\n- x\n"}
+	for name, mut := range map[string]func(*v1alpha1.Task){
+		"a bogus mode": func(tk *v1alpha1.Task) { tk.Spec.ScopeMode = "bogus" },
+		"a bad sha": func(tk *v1alpha1.Task) {
+			tk.Spec.ScopeMode, tk.Spec.Steering = "steering", &v1alpha1.Steering{Path: st.Path, SHA: "XYZ", Text: st.Text}
+		},
+	} {
+		tk := issueTask("3buqdlot", 7, "x")
+		mut(tk)
+		if err := c.Create(ctx, tk); err == nil {
+			t.Errorf("%s: the API server accepted it", name)
+		}
+	}
+	ok := issueTask("4buqdlot", 8, "x")
+	ok.Spec.ScopeMode, ok.Spec.Steering = "steering", st
+	if err := c.Create(ctx, ok); err != nil {
+		t.Fatalf("a valid scope: %v", err)
+	}
+}

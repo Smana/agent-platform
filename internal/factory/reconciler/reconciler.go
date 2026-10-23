@@ -875,7 +875,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// run ever starts from an internal-origin task. A missing template is no team, so it is not a
 	// triager one either: the config's validation cannot guard a name removed after a task was
 	// triaged.
-	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
+	if r.Cfg.Investigates(t.Spec.Template) {
 		text, ok, err := r.resumeBrief(ctx, t)
 		if err != nil {
 			return err

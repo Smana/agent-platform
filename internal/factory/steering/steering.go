@@ -34,7 +34,8 @@ func Path(class string) string {
 
 // Validate is SC4's format, the same in ai-native-ref's suite: UTF-8, at most 2048 bytes, no
 // control (but newline and tab) or Unicode format character, an optional "# " title on line 1, at
-// most three "## " modules, one of them "## Verify" with at least one "- " or "* " item. Before the first module only the title and blank lines may stand.
+// most three "## " modules, one of them "## Verify" with at least one "- " or "* " item. Before
+// the first module only the title and blank lines may stand.
 // A "## " line counts wherever it stands, inside a code fence too: a fence never hides a module.
 func Validate(text string) error {
 	if !utf8.ValidString(text) {
@@ -51,7 +52,7 @@ func Validate(text string) error {
 		}
 	}
 	modules, items, in, hasVerify := 0, 0, "", false
-	for i, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+	for i, line := range strings.Split(text, "\n") {
 		switch {
 		case strings.HasPrefix(line, "## "):
 			modules++

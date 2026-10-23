@@ -3,6 +3,8 @@
 package reconciler
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -90,14 +92,20 @@ func TestTheModeIsFixedAtTriage(t *testing.T) {
 	}
 }
 
-// The fence (v2 D7) comes first: a repository this factory does not own is not read for a note, so
-// nothing it keeps reaches a brief.
+// The fence (v2 D7) comes first: a repository this factory does not own (or whose fence cache went
+// stale) is not read for a note, so nothing it keeps reaches a brief. It is warned and counted
+// "unowned", and the task proceeds unsteered without a retry.
 func TestAnUnownedRepositoryIsNotRead(t *testing.T) {
 	g := scopeRig(t, config.ScopeSteering)
+	var logs bytes.Buffer
+	g.r.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	g.r.Owned = func(string) bool { return false }
 	g.f.SetFile(".github/agent-factory/steering/review.md", reviewNote)
 	tk := g.reconcile(t, "3buqdlot", 1)
-	if tk.Spec.Steering != nil || slices.ContainsFunc(g.metrics.recorded, func(m string) bool { return strings.HasPrefix(m, "steering") }) {
-		t.Fatalf("steering %+v metrics %v", tk.Spec.Steering, g.metrics.recorded)
+	if tk.Spec.Steering != nil || tk.Status.Phase != "Triaged" || !slices.Contains(g.metrics.recorded, "steering review unowned") {
+		t.Fatalf("steering %+v phase %s metrics %v", tk.Spec.Steering, tk.Status.Phase, g.metrics.recorded)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "review") || !strings.Contains(out, tk.Spec.Repository) {
+		t.Fatalf("log %q", out)
 	}
 }

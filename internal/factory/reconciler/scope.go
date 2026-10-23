@@ -13,16 +13,24 @@ import (
 // scopeAtTriage fixes the task's scope mode and steering note (scoper design SC2, SC3): the
 // class's mode, off for an investigate task, and in any other mode the class's note on the
 // default branch of a repository this factory owns (v2 D7: a fence it is not named in is not
-// read). An absent note is no steering; an invalid one is not used, counted and logged, and the
+// read, and says so). An absent note is no steering; an invalid one is not used, counted and logged, and the
 // task proceeds (SC4). A read error is returned: the triage is retried.
 func (r *Reconciler) scopeAtTriage(ctx context.Context, t *v1alpha1.Task) error {
 	mode := r.Cfg.ScopeFor(t.Spec.PredictedClass)
-	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
+	if r.Cfg.Investigates(t.Spec.Template) {
 		mode = config.ScopeOff // R38's investigate path is never scoped
 	}
 	t.Spec.ScopeMode, t.Spec.Steering = string(mode), nil
 	path := steering.Path(t.Spec.PredictedClass)
-	if mode == config.ScopeOff || path == "" || r.Owned == nil || !r.Owned(t.Spec.Repository) {
+	if mode == config.ScopeOff || path == "" {
+		return nil
+	}
+	class := t.Spec.PredictedClass
+	if r.Owned == nil || !r.Owned(t.Spec.Repository) {
+		// Not fenced to this factory, or its fence cache went stale (an outage): no read and no
+		// retry, the task proceeds unsteered, visibly.
+		r.log().Warn("steering note not read: repository not owned", "task.id", t.Name, "repository", t.Spec.Repository, "class", class)
+		record(ctx, func(ctx context.Context) { r.Metrics.SteeringRead(ctx, class, "unowned") })
 		return nil
 	}
 	text, sha, found, err := r.gh(ctx).DefaultBranchFile(ctx, path)
@@ -39,7 +47,6 @@ func (r *Reconciler) scopeAtTriage(ctx context.Context, t *v1alpha1.Task) error 
 	default:
 		t.Spec.Steering = &v1alpha1.Steering{Path: path, SHA: sha, Text: text}
 	}
-	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.SteeringRead(ctx, class, read) })
 	return nil
 }
