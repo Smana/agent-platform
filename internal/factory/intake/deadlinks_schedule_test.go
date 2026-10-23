@@ -5,6 +5,8 @@ package intake
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +147,43 @@ func TestARerunOfTheSameRunIsEvaluatedAgain(t *testing.T) {
 	_ = sch.Tick(t.Context())
 	if f.artifacts != 2 {
 		t.Fatalf("a re-run is weighed again: %d reads", f.artifacts)
+	}
+}
+
+// The stored text is the schedule's text, a blank line and the findings: all of it within
+// caps.maxTextBytes, or admission refuses the Task every night.
+func TestTheStoredTextStaysWithinTheTextCap(t *testing.T) {
+	cl := linksClass()
+	cl.Shadow = true
+	cl.Oracle.MaxFindings = 16
+	sch := deadLinksScheduler(t, cl)
+	sch.Cfg.Caps.MaxTextBytes = 2000
+	sch.Cfg.Schedules[0].Text = strings.Repeat("x", 900)
+	var fs []string
+	body := ""
+	for i := range 16 {
+		u := fmt.Sprintf("https://example.com/gone%02d", i)
+		fs = append(fs, fmt.Sprintf(`{"file":"docs/a.md","line":%d,"url":%q,"status":"404","archive":"https://web.archive.org/web/1/%s"}`, i+1, u, u))
+		body += "[l](" + u + ") "
+	}
+	art := []byte("[" + strings.Join(fs, ",") + "]")
+	f := sch.Forge.(*forgetest.Fake)
+	f.SetRuns([]forge.WorkflowRun{{ID: 2, Event: "schedule", Branch: "main", Conclusion: "success"},
+		{ID: 1, Event: "schedule", Branch: "main", Conclusion: "success"}}, map[int64][]byte{1: art, 2: art})
+	f.SetMainFiles(map[string]string{"docs/a.md": body})
+	if err := sch.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ts := scheduledTasks(t, sch)
+	if len(ts) != 1 || len(ts[0].Spec.Text) > 2000 || len(ts[0].Spec.Findings) == 0 || len(ts[0].Spec.Findings) == 16 {
+		t.Fatalf("one task, some findings, text within the cap: %d tasks", len(ts))
+	}
+	// A schedule text that leaves no room starts no task, and the pair is not retried every tick.
+	sch = deadLinksScheduler(t, cl)
+	sch.Cfg.Caps.MaxTextBytes = 2000
+	sch.Cfg.Schedules[0].Text = strings.Repeat("x", 1999)
+	if err := sch.Tick(t.Context()); err != nil || len(scheduledTasks(t, sch)) != 0 {
+		t.Fatalf("no room, no task: %v", err)
 	}
 }
 

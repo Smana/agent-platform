@@ -285,7 +285,17 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 	if err != nil || len(fs) == 0 {
 		return false, "", nil, err
 	}
-	text, spec, left := deadLinksTask(fs, s.Cfg.Caps.MaxTextBytes)
+	// The stored text is e.Text, a blank line and this detail: all of it within caps.maxTextBytes. A
+	// budget of nothing is "nothing fits", never "no bound".
+	budget := 0
+	if limit := s.Cfg.Caps.MaxTextBytes; limit > 0 {
+		if budget = limit - len(e.Text) - 2; budget <= 0 {
+			s.remember(key, pair)
+			s.log().Info("dead-links text cap leaves no room", "schedule", e.Name)
+			return false, "", nil, nil
+		}
+	}
+	text, spec, left := deadLinksTask(fs, budget)
 	if left > 0 {
 		s.log().Info("dead-links text cap", "schedule", e.Name, "left_out", left)
 	}
