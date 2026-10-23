@@ -43,20 +43,26 @@ func TestSponsoredConfig(t *testing.T) {
 		t.Fatal("only a declared principal is sponsored")
 	}
 	for name, c := range map[string]struct{ from, to, want string }{
-		"a reserved name":                {"name: slack-app", "name: runlore", `"runlore" is reserved`},
-		"the broker's name":              {"name: slack-app", "name: room-broker", `"room-broker" is reserved`},
-		"not a DNS label":                {"name: slack-app", "name: Slack_App", "is not a DNS label"},
-		"no client id file":              {"      clientIDFile: /etc/agent-factory-sponsored/slack-app-client-id\n", "", "clientIDFile is required"},
-		"a sponsor not a maintainer":     {"sponsor: Smana", "sponsor: mallory", `sponsor "mallory" is not a maintainer of Smana/cloud-native-ref`},
-		"a sponsor not a login":          {"sponsor: Smana", "sponsor: Smana_corp", `sponsor "Smana_corp" is not a GitHub login`},
-		"an unlisted repository":         {"repositories: [Smana/cloud-native-ref]", "repositories: [Smana/other]", `"Smana/other" is not a listed repository`},
-		"a repository spelled otherwise": {"repositories: [Smana/cloud-native-ref]", "repositories: [smana/cloud-native-ref]", `"smana/cloud-native-ref" is not a listed repository`},
-		"no day":                         {"dailyUSD: 10", "dailyUSD: 0", "dailyUSD must be above 0 and at most factoryDailyUSD"},
-		"a day above the fleet's":        {"dailyUSD: 10", "dailyUSD: 1000", "dailyUSD must be above 0 and at most factoryDailyUSD"},
-		"a ceiling above the day":        {"maxCostUSD: 5", "maxCostUSD: 11", "maxCostUSD must be above 0 and at most dailyUSD"},
-		"a negative task cap":            {"maxCostUSD: 5\n", "maxCostUSD: 5\n      maxOpenTasks: -1\n", "maxOpenTasks must be 1 or more"},
-		"a link to a non-maintainer":     {`"T01ABC/U02DEF": smana`, `"T01ABC/U02DEF": mallory`, `links "T01ABC/U02DEF" to "mallory", not a maintainer`},
-		"a malformed Slack id":           {`"T01ABC/U02DEF"`, `"alice"`, `"alice" is not <team>/<user>`},
+		"a reserved name":                 {"name: slack-app", "name: runlore", `"runlore" is reserved`},
+		"the broker's name":               {"name: slack-app", "name: room-broker", `"room-broker" is reserved`},
+		"not a DNS label":                 {"name: slack-app", "name: Slack_App", "is not a DNS label"},
+		"no client id file":               {"      clientIDFile: /etc/agent-factory-sponsored/slack-app-client-id\n", "", "clientIDFile is required"},
+		"a sponsor not a maintainer":      {"sponsor: Smana", "sponsor: mallory", `sponsor "mallory" is not a maintainer of Smana/cloud-native-ref`},
+		"a sponsor not a login":           {"sponsor: Smana", "sponsor: Smana_corp", `sponsor "Smana_corp" is not a GitHub login`},
+		"an unlisted repository":          {"repositories: [Smana/cloud-native-ref]", "repositories: [Smana/other]", `"Smana/other" is not a listed repository`},
+		"a repository spelled otherwise":  {"repositories: [Smana/cloud-native-ref]", "repositories: [smana/cloud-native-ref]", `"smana/cloud-native-ref" is not a listed repository`},
+		"no day":                          {"dailyUSD: 10", "dailyUSD: 0", "dailyUSD must be above 0 and at most factoryDailyUSD"},
+		"a day above the fleet's":         {"dailyUSD: 10", "dailyUSD: 1000", "dailyUSD must be above 0 and at most factoryDailyUSD"},
+		"a ceiling above the day":         {"maxCostUSD: 5", "maxCostUSD: 11", "maxCostUSD must be above 0 and at most dailyUSD"},
+		"a negative task cap":             {"maxCostUSD: 5\n", "maxCostUSD: 5\n      maxOpenTasks: -1\n", "maxOpenTasks must be 1 or more"},
+		"a link to a non-maintainer":      {`"T01ABC/U02DEF": smana`, `"T01ABC/U02DEF": mallory`, `links "T01ABC/U02DEF" to "mallory", not a maintainer`},
+		"an unknown key":                  {"dailyUSD: 10", "dailyUSD: 10\n      dayUSD: 3", `unknown field "dayUSD"`},
+		"no repositories":                 {"repositories: [Smana/cloud-native-ref]", "repositories: []", "repositories is empty"},
+		"a link login not a GitHub login": {`"T01ABC/U02DEF": smana`, `"T01ABC/U02DEF": smana_corp`, `"smana_corp", not a GitHub login`},
+		"a NaN day":                       {"dailyUSD: 10", "dailyUSD: .nan", "unsupported value: NaN"},
+		"an infinite ceiling":             {"maxCostUSD: 5", "maxCostUSD: .inf", "unsupported value: +Inf"},
+		"a repository twice":              {"repositories: [Smana/cloud-native-ref]", "repositories: [Smana/cloud-native-ref, Smana/cloud-native-ref]", `"Smana/cloud-native-ref" is listed twice`},
+		"a malformed Slack id":            {`"T01ABC/U02DEF"`, `"alice"`, `"alice" is not <team>/<user>`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := withSponsored(strings.Replace(slackApp, c.from, c.to, 1))
@@ -68,6 +74,14 @@ func TestSponsoredConfig(t *testing.T) {
 	twice := withSponsored(slackApp + strings.Replace(slackApp, "  sponsored:\n", "", 1))
 	if _, err := Parse([]byte(twice)); err == nil || !strings.Contains(err.Error(), "declared twice") {
 		t.Fatalf("a name twice: %v", err)
+	}
+	other := strings.NewReplacer("name: slack-app", "name: other-app").Replace(strings.Replace(slackApp, "  sponsored:\n", "", 1))
+	if _, err := Parse([]byte(withSponsored(slackApp + other))); err == nil || !strings.Contains(err.Error(), "clientIDFile") || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("a client id file shared: %v", err)
+	}
+	// A sponsor is matched like a maintainer, case-insensitively.
+	if _, err := Parse([]byte(withSponsored(strings.Replace(slackApp, "sponsor: Smana", "sponsor: sMANA", 1)))); err != nil {
+		t.Fatalf("sponsor case: %v", err)
 	}
 	system := strings.Replace(withSponsored(slackApp), "api:\n",
 		"api:\n  systemIssuer: https://k8s\n  systemJWKS: https://k8s/jwks\n  systemPrincipals: {sa: system:slack-app}\n", 1)

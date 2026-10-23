@@ -650,7 +650,8 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 		bad("api.sponsored needs meter.prices: a ceiling in USD needs priced runs")
 	}
 	system := slices.Collect(maps.Values(c.API.SystemPrincipals))
-	seen := map[string]bool{}
+	finite := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+	seen, files := map[string]bool{}, map[string]string{}
 	for _, s := range c.API.Sponsored {
 		switch {
 		case !factoryRE.MatchString(s.Name):
@@ -666,6 +667,10 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 		seen[s.Name] = true
 		if s.ClientIDFile == "" {
 			bad("api.sponsored.%s: clientIDFile is required", s.Name)
+		} else if other, ok := files[s.ClientIDFile]; ok {
+			bad("api.sponsored.%s: clientIDFile %q is already used by %s", s.Name, s.ClientIDFile, other)
+		} else {
+			files[s.ClientIDFile] = s.Name
 		}
 		if !githubLoginRE.MatchString(s.Sponsor) {
 			bad("api.sponsored.%s: sponsor %q is not a GitHub login", s.Name, s.Sponsor)
@@ -673,7 +678,11 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 		if len(s.Repositories) == 0 {
 			bad("api.sponsored.%s: repositories is empty", s.Name)
 		}
-		for _, name := range s.Repositories {
+		for i, name := range s.Repositories {
+			if slices.Contains(s.Repositories[:i], name) {
+				bad("api.sponsored.%s: %q is listed twice", s.Name, name)
+				continue
+			}
 			// Exact: admission matches the request's repository against this list as written, and
 			// spec.repository becomes the run's octo-sts audience (C22).
 			r := c.listed(name)
@@ -684,13 +693,15 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 			if !r.IsMaintainer(s.Sponsor) {
 				bad("api.sponsored.%s: sponsor %q is not a maintainer of %s", s.Name, s.Sponsor, r.Name)
 			}
-			for id, login := range s.OnBehalfOf.Slack {
+			for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
+				login := s.OnBehalfOf.Slack[id]
 				if !r.IsMaintainer(login) {
 					bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a maintainer of %s", s.Name, id, login, r.Name)
 				}
 			}
 		}
-		for id, login := range s.OnBehalfOf.Slack {
+		for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
+			login := s.OnBehalfOf.Slack[id]
 			if !slackLinkRE.MatchString(id) {
 				bad("api.sponsored.%s: onBehalfOf.slack %q is not <team>/<user>", s.Name, id)
 			}
@@ -698,10 +709,10 @@ func (c *Config) validateSponsored(bad func(string, ...any)) {
 				bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a GitHub login", s.Name, id, login)
 			}
 		}
-		if s.DailyUSD <= 0 || s.DailyUSD > c.Budgets.FactoryDailyUSD {
+		if !finite(s.DailyUSD) || s.DailyUSD <= 0 || s.DailyUSD > c.Budgets.FactoryDailyUSD {
 			bad("api.sponsored.%s: dailyUSD must be above 0 and at most factoryDailyUSD", s.Name)
 		}
-		if s.MaxCostUSD <= 0 || s.MaxCostUSD > s.DailyUSD {
+		if !finite(s.MaxCostUSD) || s.MaxCostUSD <= 0 || s.MaxCostUSD > s.DailyUSD {
 			bad("api.sponsored.%s: maxCostUSD must be above 0 and at most dailyUSD", s.Name)
 		}
 		if s.MaxOpenTasks < 0 {
