@@ -49,7 +49,19 @@ func TestShapes(t *testing.T) {
 		"a version appearing":                     {"v: latest\n", "v: 1.2.3\n", false, false},
 		"a patch beside an untouched pin":         {"a: 1.2.3\nb: 9.9.9\n", "a: 1.2.4\nb: 9.9.9\n", true, true},
 		"a minor on one line, a patch on another": {"a: 1.2.3\nb: 4.5.6\n", "a: 1.3.0\nb: 4.5.7\n", false, true},
-		"a trailing newline dropped":              {"a: 1.2.3\n", "a: 1.2.4", true, true},
+		"a trailing newline dropped":              {"a: 1.2.3\n", "a: 1.2.4", false, false},
+		"a trailing newline added":                {"a: 1.2.3", "a: 1.2.4\n", false, false},
+		"a digest on another reference":           {"img: a:1.2.3 b@" + digA + "\n", "img: a:1.2.4 b@" + digB + "\n", false, false},
+		"a digest in a comment":                   {"image: foo@" + digA + " # 1.2.3\n", "image: foo@" + digB + " # 1.2.4\n", false, false},
+		"two digests swapped on a bump":           {"x: 1.2.3@" + digA + " y@" + digB + "\n", "x: 1.2.4@" + digB + " y@" + digA + "\n", false, false},
+		"a digest beside a bumped tag":            {"image: foo:1.2.3@" + digA + "\n", "image: foo:1.2.4@" + digB + "\n", true, true},
+		"a digest changed, version kept":          {"a: 1.2.3@" + digA + " b: 1.2.3\n", "a: 1.2.3@" + digB + " b: 1.2.4\n", false, false},
+		"a placeholder in the text":               {"\x00V 1.2.3\n", "1.2.4 \x00V\n", false, false},
+		"a NUL in an unchanged line":              {"a\x00: 1\nv: 1.2.3\n", "a\x00: 1\nv: 1.2.4\n", false, false},
+		"CRLF":                                    {"v: 1.2.3\r\n", "v: 1.2.4\r\n", false, false},
+		"a tab":                                   {"v:\t1.2.3\n", "v:\t1.2.4\n", true, true},
+		"a leading zero":                          {"v: 1.2.3\n", "v: 1.2.04\n", false, false},
+		"a leading zero on the base":              {"v: 1.02.3\n", "v: 1.02.4\n", false, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			base, head := map[string]string{f: c.base}, map[string]string{f: c.head}
@@ -60,6 +72,10 @@ func TestShapes(t *testing.T) {
 				t.Fatalf("Minor %v (%s), want %v", ok, why, c.minor)
 			}
 		})
+	}
+	same := map[string]string{f: "v: 1.2.3\n"}
+	if ok, _ := Patch(same, same); ok {
+		t.Fatal("an unchanged file is no bump")
 	}
 	if ok, _ := Patch(map[string]string{}, map[string]string{}); ok {
 		t.Fatal("an empty diff is no bump")
@@ -72,16 +88,26 @@ func TestShapes(t *testing.T) {
 	}
 }
 
-func FuzzNeverAcceptsWhatMasksDiffer(f *testing.F) {
+// Whenever Patch passes, putting base's version tokens (each with its attached digest) back into
+// head yields base byte for byte: nothing but those tokens changed.
+func FuzzOnlyTokensChange(f *testing.F) {
 	f.Add("a: 1.2.3\n", "a: 1.2.4\n")
-	f.Add("v0.1.0@"+digA, "v0.1.1@"+digB)
+	f.Add("v0.1.0@"+digA+"\n", "v0.1.1@"+digB+"\n")
+	f.Add("\x00V 1.2.3\n", "1.2.4 \x00V\n")
+	f.Add("a:1.2.3 b@"+digA+"\n", "a:1.2.4 b@"+digB+"\n")
 	f.Fuzz(func(t *testing.T, a, b string) {
 		ok, _ := Patch(map[string]string{"f": a}, map[string]string{"f": b})
-		if ok && (a == b || len(lines(a)) != len(lines(b))) {
-			t.Fatalf("accepted %q -> %q", a, b)
-		}
 		if okM, _ := Minor(map[string]string{"f": a}, map[string]string{"f": b}); ok && !okM {
 			t.Fatalf("a patch is a minor: %q -> %q", a, b)
+		}
+		if !ok {
+			return
+		}
+		bt := versionRE.FindAllString(a, -1)
+		n := 0
+		got := versionRE.ReplaceAllStringFunc(b, func(string) string { n++; return bt[n-1] })
+		if n != len(bt) || got != a || a == b {
+			t.Fatalf("accepted %q -> %q", a, b)
 		}
 	})
 }
