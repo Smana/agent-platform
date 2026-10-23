@@ -188,16 +188,17 @@ func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRu
 	agreed := Agreed(sets[0], sets[1])
 	drops["unagreed"] = len(sets[0]) - drops["status"] - len(agreed)
 	for _, f := range agreed {
-		if len(out) == cl.Oracle.MaxFindings {
-			drops["over_cap"]++
-			continue
-		}
+		// Shape checks run on every agreed finding: a malformed one refuses the run wherever it sorts.
 		k, why, err := keepable(f, cl)
 		if err != nil {
 			return nil, err
 		}
 		if why != "" {
 			drops[why]++
+			continue
+		}
+		if len(out) == cl.Oracle.MaxFindings {
+			drops["over_cap"]++
 			continue
 		}
 		ts, read := files[k.File]

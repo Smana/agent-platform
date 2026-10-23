@@ -243,6 +243,7 @@ func (c Checks) StatusOf(context string) (state, creator string) {
 // triggered it, on which branch, by whom, and how it ended.
 type WorkflowRun struct {
 	ID         int64
+	RunAttempt int    // 1, then one more per re-run of the same run ID
 	Event      string // schedule | workflow_dispatch | pull_request | push | …
 	Branch     string // the run's head branch
 	Actor      string // the login that triggered it

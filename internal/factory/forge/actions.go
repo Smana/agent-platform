@@ -31,7 +31,7 @@ func (g *GitHub) WorkflowRuns(ctx context.Context, workflow string) ([]WorkflowR
 	}
 	out := make([]WorkflowRun, 0, len(res.WorkflowRuns))
 	for _, r := range res.WorkflowRuns {
-		out = append(out, WorkflowRun{ID: r.GetID(), Event: r.GetEvent(), Branch: r.GetHeadBranch(),
+		out = append(out, WorkflowRun{ID: r.GetID(), RunAttempt: r.GetRunAttempt(), Event: r.GetEvent(), Branch: r.GetHeadBranch(),
 			Actor: r.GetTriggeringActor().GetLogin(), Conclusion: r.GetConclusion(), Created: r.GetCreatedAt().Time})
 	}
 	slices.SortStableFunc(out, func(a, b WorkflowRun) int { return cmp.Compare(b.Created.UnixNano(), a.Created.UnixNano()) })

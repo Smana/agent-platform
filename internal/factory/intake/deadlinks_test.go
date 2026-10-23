@@ -197,3 +197,16 @@ func TestAFindingIsGoneInBothRuns(t *testing.T) {
 		})
 	}
 }
+
+// A malformed finding refuses the run wherever it sorts: past the cap too.
+func TestAMalformedFindingPastTheCapStillRefusesTheRun(t *testing.T) {
+	good := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404"}
+	bad := LinkFinding{File: "docs/z.md", Line: 1, URL: "https://example.com/zzz b", Status: "404"}
+	m := runPair([]LinkFinding{good, bad}, []LinkFinding{good, bad}, "[a]("+goneURL+")")
+	cl := linksClass()
+	cl.Oracle.MaxFindings = 1
+	got, err := deadLinks(t.Context(), m, &config.Repository{Name: "r"}, cl)
+	if len(got) != 0 || !errors.Is(err, errFindingsRefused) {
+		t.Fatalf("a malformed finding after the cap refuses the run: %+v %v", got, err)
+	}
+}

@@ -122,6 +122,32 @@ func TestTheSameRunPairIsEvaluatedOnce(t *testing.T) {
 	}
 }
 
+// A maintainer's re-run keeps the run ID and bumps its attempt, with a new artifact: weighed again.
+func TestARerunOfTheSameRunIsEvaluatedAgain(t *testing.T) {
+	cl := linksClass()
+	cl.Shadow = true
+	sch := deadLinksScheduler(t, cl)
+	f := &countingMerger{Fake: forgetest.NewFake()}
+	runs := func(attempt int) {
+		f.SetRuns([]forge.WorkflowRun{
+			{ID: 2, RunAttempt: attempt, Event: "schedule", Branch: "main", Conclusion: "success"},
+			{ID: 1, RunAttempt: 1, Event: "schedule", Branch: "main", Conclusion: "success"}},
+			map[int64][]byte{1: []byte(`[`), 2: []byte(`[`)})
+	}
+	sch.Forge, sch.Merger = f, f
+	runs(1)
+	_ = sch.Tick(t.Context())
+	_ = sch.Tick(t.Context())
+	if f.artifacts != 1 {
+		t.Fatalf("the same attempt is weighed once: %d reads", f.artifacts)
+	}
+	runs(2)
+	_ = sch.Tick(t.Context())
+	if f.artifacts != 2 {
+		t.Fatalf("a re-run is weighed again: %d reads", f.artifacts)
+	}
+}
+
 type countingMerger struct {
 	*forgetest.Fake
 	artifacts int

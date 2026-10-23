@@ -82,10 +82,14 @@ type Scheduler struct {
 	Log     *slog.Logger
 
 	seenMu sync.Mutex
-	seen   map[string][2]int64 // schedule -> the detector run pair last evaluated, outcome final
+	seen   map[string]weighedRuns // schedule -> the detector run pair last evaluated, outcome final
 	// pending is a pair whose findings await their Task; settle saves it once the Task exists.
-	pending map[string][2]int64
+	pending map[string]weighedRuns
 }
+
+// weighedRuns is the two detector runs weighed, each as (run ID, run attempt): a maintainer's re-run
+// keeps the ID, bumps the attempt and uploads a new artifact.
+type weighedRuns [4]int64
 
 // NeedLeaderElection is true: two schedulers would race every slot.
 func (s *Scheduler) NeedLeaderElection() bool { return true }
@@ -179,11 +183,11 @@ func (s *Scheduler) tick(ctx context.Context, rc *config.Repository) []error {
 }
 
 // remember saves a run pair as weighed.
-func (s *Scheduler) remember(key string, pair [2]int64) {
+func (s *Scheduler) remember(key string, pair weighedRuns) {
 	s.seenMu.Lock()
 	defer s.seenMu.Unlock()
 	if s.seen == nil {
-		s.seen = map[string][2]int64{}
+		s.seen = map[string]weighedRuns{}
 	}
 	s.seen[key] = pair
 }
@@ -251,7 +255,7 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 		return false, "", nil, err
 	}
 	// The leader is the only evaluator: a run pair already weighed is not read again each minute.
-	pair, key := [2]int64{two[0].ID, two[1].ID}, rc.Name+"/"+e.Name
+	pair, key := weighedRuns{two[0].ID, int64(two[0].RunAttempt), two[1].ID, int64(two[1].RunAttempt)}, rc.Name+"/"+e.Name
 	s.seenMu.Lock()
 	same := s.seen[key] == pair
 	s.seenMu.Unlock()
@@ -264,7 +268,7 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 	case err == nil && len(fs) > 0:
 		s.seenMu.Lock()
 		if s.pending == nil {
-			s.pending = map[string][2]int64{}
+			s.pending = map[string]weighedRuns{}
 		}
 		s.pending[key] = pair
 		s.seenMu.Unlock()
