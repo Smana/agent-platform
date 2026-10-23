@@ -75,7 +75,7 @@ func TestTheDeadLinksProbe(t *testing.T) {
 	if len(got) != 1 || got[0].File != "docs/a.md" || got[0].URL != goneURL || got[0].Archive == "" {
 		t.Fatalf("got %+v", got)
 	}
-	text, spec := deadLinksTask(got)
+	text, spec, _ := deadLinksTask(got, 0)
 	golden := filepath.Join("testdata", "dead-links-task.golden")
 	if os.Getenv("UPDATE_GOLDEN") != "" {
 		_ = os.MkdirAll("testdata", 0o755)
@@ -227,5 +227,19 @@ func TestAFindingWithNoSnapshotIsDropped(t *testing.T) {
 	got, err = deadLinks(t.Context(), runPair([]LinkFinding{without}, []LinkFinding{without}, file), &config.Repository{Name: "r"}, cl)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("none left is no finding: %+v %v", got, err)
+	}
+}
+
+// The task text stays under caps.maxTextBytes: findings that would pass it are left out whole.
+func TestTheTaskTextStopsAtTheTextCap(t *testing.T) {
+	var fs []LinkFinding
+	for _, n := range []string{"a", "b", "c"} {
+		u := "https://example.com/" + n
+		fs = append(fs, LinkFinding{File: "docs/a.md", Line: 1, URL: u, Status: "404", Archive: "https://web.archive.org/web/1/" + u})
+	}
+	full, _, _ := deadLinksTask(fs, 0)
+	text, spec, left := deadLinksTask(fs, len(full)-1)
+	if len(spec) != 2 || left != 1 || len(text) > len(full)-1 || spec[1].URL != "https://example.com/b" {
+		t.Fatalf("two fit, one is left out, within the bound: %d findings, %d left, %d bytes of %d", len(spec), left, len(text), len(full)-1)
 	}
 }

@@ -238,21 +238,30 @@ func detectorRun(r forge.WorkflowRun, rc *config.Repository) bool {
 }
 
 // deadLinksTask renders the findings as the task's text (MC6): validated paths and URLs and the
-// statuses' fixed words, nothing else from the artifact.
-func deadLinksTask(fs []LinkFinding) (string, []v1alpha1.Finding) {
+// statuses' fixed words, nothing else from the artifact. It stops adding findings once the text
+// would pass maxBytes (caps.maxTextBytes, 0 for no bound), and says how many it left out: they are
+// over the cap like any past oracle.maxFindings, and a later run pair picks them up.
+func deadLinksTask(fs []LinkFinding, maxBytes int) (text string, spec []v1alpha1.Finding, left int) {
+	const head = "Dead external links, each reported by the last two nightly runs of the dead-links workflow on main:\n\n"
+	const foot = "\nChange only these link targets, in these files: each to the snapshot given, exactly as written. " +
+		"Leave link text, prose and code blocks alone, and add or delete no file."
 	var b strings.Builder
-	b.WriteString("Dead external links, each reported by the last two nightly runs of the dead-links workflow on main:\n\n")
-	spec := make([]v1alpha1.Finding, 0, len(fs))
+	b.WriteString(head)
+	spec = make([]v1alpha1.Finding, 0, len(fs))
 	for i, f := range fs {
 		why := map[string]string{"404": "404 Not Found", "410": "410 Gone", "nxdomain": "the host name does not resolve"}[f.Status]
-		fmt.Fprintf(&b, "%d. `%s`, line %d: <%s> (%s).", i+1, f.File, f.Line, f.URL, why)
+		line := fmt.Sprintf("%d. `%s`, line %d: <%s> (%s).", len(spec)+1, f.File, f.Line, f.URL, why)
 		if f.Archive != "" {
-			fmt.Fprintf(&b, " Snapshot: <%s>.", f.Archive)
+			line += fmt.Sprintf(" Snapshot: <%s>.", f.Archive)
 		}
-		b.WriteString("\n")
+		line += "\n"
+		if maxBytes > 0 && b.Len()+len(line)+len(foot) > maxBytes {
+			left = len(fs) - i
+			break
+		}
+		b.WriteString(line)
 		spec = append(spec, v1alpha1.Finding{File: f.File, URL: f.URL, Archive: f.Archive})
 	}
-	b.WriteString("\nChange only these link targets, in these files: each to the snapshot given, exactly as written. " +
-		"Leave link text, prose and code blocks alone, and add or delete no file.")
-	return b.String(), spec
+	b.WriteString(foot)
+	return b.String(), spec, left
 }

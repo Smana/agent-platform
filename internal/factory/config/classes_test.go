@@ -59,6 +59,12 @@ func TestBadConditionsFail(t *testing.T) {
 			"class x: an oracle reads link targets: diffShape must be links-only"},
 		"too many findings": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 17}}",
 			"class x: oracle.maxFindings must be 1..16"},
+		"an oracle without modifyOnly": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], allowedFiles: ['^docs/.+$'], oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}",
+			"class x: an oracle needs modifyOnly: true, or an added or deleted empty file would pass"},
+		"an oracle without allowedFiles": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], modifyOnly: true, oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}",
+			"class x: an oracle needs allowedFiles, or the probe drops every finding"},
+		"an oracle with a patch too small": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], modifyOnly: true, allowedFiles: ['^docs/.+$'], maxModifiedLines: 19, oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}",
+			"class x: maxModifiedLines 19 is under 2 x oracle.maxFindings (20): one retarget changes two lines"},
 		"an unknown probe": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], oracle: {probe: trivy, workflow: t.yaml, maxFindings: 1}}",
 			`class x: oracle.probe "trivy" is not dead-links`},
 	} {
@@ -68,5 +74,13 @@ func TestBadConditionsFail(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, c.err)
 			}
 		})
+	}
+}
+
+// A complete oracle class passes, with a patch limit that holds every retarget.
+func TestAnOracleClassWithItsConditionsIsValid(t *testing.T) {
+	c := "docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], modifyOnly: true, allowedFiles: ['^docs/.+$'], maxModifiedLines: 20, oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}"
+	if _, err := Parse([]byte(withClasses(t, c))); err != nil {
+		t.Fatal(err)
 	}
 }

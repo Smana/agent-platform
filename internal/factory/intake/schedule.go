@@ -285,7 +285,14 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 	if err != nil || len(fs) == 0 {
 		return false, "", nil, err
 	}
-	text, spec := deadLinksTask(fs)
+	text, spec, left := deadLinksTask(fs, s.Cfg.Caps.MaxTextBytes)
+	if left > 0 {
+		s.log().Info("dead-links text cap", "schedule", e.Name, "left_out", left)
+	}
+	if len(spec) == 0 {
+		s.remember(key, pair) // not even one finding fits: nothing to start, and nothing to weigh again
+		return false, "", nil, nil
+	}
 	return true, text, spec, nil
 }
 

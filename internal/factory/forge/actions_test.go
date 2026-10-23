@@ -120,3 +120,33 @@ func TestRunArtifactRefusesANon200Storage(t *testing.T) {
 		t.Fatalf("a 403 from storage is an error: %q %v", b, err)
 	}
 }
+
+// A re-run leaves several unexpired artifacts of one name, in any order: the newest is read.
+func TestRunArtifactReadsTheNewestOfSeveral(t *testing.T) {
+	r := actionsRig(t)
+	mux := r.gh.srv.Config.Handler.(*http.ServeMux)
+	mux.HandleFunc("GET /repos/Smana/demo/actions/runs/9/artifacts", r.gh.authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"total_count":3,"artifacts":[
+		  {"id":91,"name":"findings","expired":false,"created_at":"2026-10-22T04:30:00Z"},
+		  {"id":92,"name":"findings","expired":false,"created_at":"2026-10-23T04:30:00Z"},
+		  {"id":93,"name":"findings","expired":false,"created_at":"2026-10-21T04:30:00Z"}]}`)
+	}))
+	for _, id := range []string{"91", "92", "93"} {
+		mux.HandleFunc("GET /repos/Smana/demo/actions/artifacts/"+id+"/zip", r.gh.authed(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", r.gh.srv.URL+"/storage/"+id+".zip")
+			w.WriteHeader(http.StatusFound)
+		}))
+		mux.HandleFunc("GET /storage/"+id+".zip", func(w http.ResponseWriter, _ *http.Request) {
+			var zipped bytes.Buffer
+			zw := zip.NewWriter(&zipped)
+			f, _ := zw.Create("findings.json")
+			_, _ = io.WriteString(f, `"`+id+`"`)
+			_ = zw.Close()
+			_, _ = w.Write(zipped.Bytes())
+		})
+	}
+	b, err := r.g.RunArtifact(t.Context(), 9, "findings", "findings.json")
+	if err != nil || string(b) != `"92"` {
+		t.Fatalf("the artifact created last: %q %v", b, err)
+	}
+}

@@ -120,6 +120,12 @@ func validateClass(name string, cl Class, bad func(string, ...any)) {
 			bad("class %s: an oracle needs holdoutChecks, or the head goes unproven (MC5)", name)
 		case cl.DiffShape != "links-only":
 			bad("class %s: an oracle reads link targets: diffShape must be links-only", name)
+		case !cl.ModifyOnly:
+			bad("class %s: an oracle needs modifyOnly: true, or an added or deleted empty file would pass", name)
+		case len(cl.AllowedFiles) == 0:
+			bad("class %s: an oracle needs allowedFiles, or the probe drops every finding", name)
+		case cl.MaxModifiedLines > 0 && cl.MaxModifiedLines < 2*o.MaxFindings:
+			bad("class %s: maxModifiedLines %d is under 2 x oracle.maxFindings (%d): one retarget changes two lines", name, cl.MaxModifiedLines, 2*o.MaxFindings)
 		}
 	}
 	seen := map[string]bool{}

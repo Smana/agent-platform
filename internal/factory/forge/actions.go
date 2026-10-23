@@ -48,7 +48,13 @@ func (g *GitHub) RunArtifact(ctx context.Context, runID int64, name, file string
 	if err != nil {
 		return nil, wrap("list run artifacts", err)
 	}
-	i := slices.IndexFunc(list.Artifacts, func(a *github.Artifact) bool { return a.GetName() == name && !a.GetExpired() })
+	// A re-run uploads a new artifact of the same name: the newest unexpired one is the verdict.
+	i := -1
+	for j, a := range list.Artifacts {
+		if a.GetName() == name && !a.GetExpired() && (i < 0 || a.GetCreatedAt().After(list.Artifacts[i].GetCreatedAt().Time)) {
+			i = j
+		}
+	}
 	if i < 0 {
 		return nil, fmt.Errorf("forge: run %d has no artifact %q", runID, name)
 	}
