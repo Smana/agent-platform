@@ -58,6 +58,7 @@ func TestShapes(t *testing.T) {
 		"a digest changed, version kept":          {"a: 1.2.3@" + digA + " b: 1.2.3\n", "a: 1.2.3@" + digB + " b: 1.2.4\n", false, false},
 		"a placeholder in the text":               {"\x00V 1.2.3\n", "1.2.4 \x00V\n", false, false},
 		"a NUL in an unchanged line":              {"a\x00: 1\nv: 1.2.3\n", "a\x00: 1\nv: 1.2.4\n", false, false},
+		"a C1 NEL in a changed line":              {"v: 1.2.3\u0085\n", "v: 1.2.4\u0085\n", false, false},
 		"CRLF":                                    {"v: 1.2.3\r\n", "v: 1.2.4\r\n", false, false},
 		"a tab":                                   {"v:\t1.2.3\n", "v:\t1.2.4\n", true, true},
 		"a leading zero":                          {"v: 1.2.3\n", "v: 1.2.04\n", false, false},

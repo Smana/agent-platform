@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // A version is any three-number token (R41): the caller's allowedFiles and protectedFiles bound
@@ -156,9 +157,10 @@ func versions(s string, idx [][]int) []version {
 	return out
 }
 
-// hasControl reports a control character other than tab (and the newline that splits lines).
+// hasControl reports a control character (C0, DEL or C1) other than tab and the newline that splits
+// lines.
 func hasControl(s string) bool {
-	return strings.ContainsFunc(s, func(r rune) bool { return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f })
+	return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) && r != '\t' && r != '\n' })
 }
 
 func lines(s string) []string {
