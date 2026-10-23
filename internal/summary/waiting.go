@@ -84,6 +84,7 @@ func reasons() map[string]string {
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
+		"holdout_pending":           "a holdout check has not passed yet",
 		"merge_gate_off":            "no merge class is live, so the factory does not gate this pull request",
 		"policy_pending":            "the policy needs a maintainer's approval",
 		"policy_absent":             "policy-bot has not evaluated the pull request",
@@ -137,6 +138,8 @@ func nextStep(reason string) string {
 		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
+	case "holdout_pending":
+		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
 	}

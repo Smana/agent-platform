@@ -44,6 +44,8 @@ type Fake struct {
 	activityErr  map[string]error
 	filesBase    map[string]string
 	filesHead    map[string]string
+	fileStats    []forge.FileStat
+	diffErr      error
 	open         []forge.PRSummary
 	created      []string
 	armed        []string
@@ -394,11 +396,65 @@ func (f *Fake) SetFiles(base, head map[string]string) {
 	f.filesBase, f.filesHead = maps.Clone(base), maps.Clone(head)
 }
 
-// Files implements the Merger's Files.
-func (f *Fake) Files(context.Context, string, string) (map[string]string, map[string]string, error) {
+// SetDiffError makes Diff fail with err, such as forge.ErrDiffTooLarge.
+func (f *Fake) SetDiffError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return maps.Clone(f.filesBase), maps.Clone(f.filesHead), nil
+	f.diffErr = err
+}
+
+// SetFileStats sets the changed-file list Diff returns in place of the one SetFiles implies.
+func (f *Fake) SetFileStats(fs ...forge.FileStat) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fileStats = slices.Clone(fs)
+}
+
+// Diff implements the Merger's Diff: SetFiles' two sides, and SetFileStats' list, or else the
+// one they imply: a side "" is an added or removed file, and each line that differs at its
+// position counts as one addition and one deletion. These stats are approximate: tests that
+// depend on exact counts set them with SetFileStats.
+func (f *Fake) Diff(context.Context, string, string) (forge.Diff, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffErr != nil {
+		return forge.Diff{}, f.diffErr
+	}
+	d := forge.Diff{Base: maps.Clone(f.filesBase), Head: maps.Clone(f.filesHead), Files: slices.Clone(f.fileStats)}
+	if d.Files != nil {
+		return d, nil
+	}
+	paths := slices.Sorted(maps.Keys(d.Base))
+	for p := range d.Head {
+		if _, ok := d.Base[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	slices.Sort(paths)
+	for _, p := range paths {
+		b, h := d.Base[p], d.Head[p]
+		st := forge.FileStat{Path: p, Status: "modified"}
+		switch {
+		case b == "":
+			st.Status = "added"
+		case h == "":
+			st.Status = "removed"
+		}
+		bl, hl := strings.Split(b, "\n"), strings.Split(h, "\n")
+		for i := range max(len(bl), len(hl)) {
+			if i < len(bl) && i < len(hl) && bl[i] == hl[i] {
+				continue
+			}
+			if i < len(hl) && h != "" {
+				st.Additions++
+			}
+			if i < len(bl) && b != "" {
+				st.Deletions++
+			}
+		}
+		d.Files = append(d.Files, st)
+	}
+	return d, nil
 }
 
 // SetOpenPRs sets the open pull requests OpenPullRequests returns.

@@ -17,7 +17,7 @@ var waitReasons = []string{
 	"human_commit_in_pr", "shadow_would_arm", "auto_merge_cap", "stuck", "ci_red", "secret_scan_red", "review_rounds_exhausted",
 	"no_verdict", "budget-task", "resume_budget", "run_unschedulable", "pod_lost", "deadline", "agent_error", "agent_stuck",
 	"no_pr", "waiting_human_driver", "waiting_room_busy", "waiting_run_slot", "waiting_active_tasks", "waiting_review_wip",
-	"waiting_daily_budget", "waiting_room_log", "waiting_broker_permission",
+	"waiting_daily_budget", "waiting_room_log", "waiting_broker_permission", "holdout_pending",
 }
 
 // The summary repeats the narration's prose (it may not import the factory): a reason added to

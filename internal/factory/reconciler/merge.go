@@ -73,7 +73,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, Paused: paused,
+	classToday, err := r.armedTodayOf(ctx, r.repo(t), t.Spec.PredictedClass)
+	if err != nil {
+		return err
+	}
+	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, ClassArmedToday: classToday, Paused: paused,
 		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
 	if CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
@@ -85,16 +89,21 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		in.Verifiers = verifiers(t)
 	}
 	d := DecideArm(in)
-	if (d.Verdict == "arm" || d.Verdict == "shadow") && (t.Spec.PredictedClass == "docs-links" || t.Spec.PredictedClass == "revert") {
-		// forge.Files is read late: only a decision that would reach the LinksOnly gate of an
-		// entry class pays its 2N+1 API calls. The first pass passed that gate vacuously; this
-		// second pass decides on the real diff.
-		base, head, ferr := r.merger(ctx).Files(ctx, "main", pr.HeadSHA)
-		if ferr != nil {
+	if (d.Verdict == "arm" || d.Verdict == "shadow") && r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) {
+		// The diff is read late: only a decision that would arm or shadow a class with a condition
+		// on its diff pays its 2N+1 API calls. The first pass held those conditions vacuously;
+		// this second pass decides on the real diff.
+		diff, ferr := r.merger(ctx).Diff(ctx, "main", pr.HeadSHA)
+		switch {
+		case errors.Is(ferr, forge.ErrDiffTooLarge):
+			// A full page of files is over any class's maxPatchFiles: hand it off, as the gate does.
+			d = ArmDecision{Verdict: "human", Reason: "patch_too_large"}
+		case ferr != nil:
 			return ferr
+		default:
+			in.Files.Base, in.Files.Head, in.Stats, in.DiffRead = diff.Base, diff.Head, diff.Files, true
+			d = DecideArm(in)
 		}
-		in.Files.Base, in.Files.Head = base, head
-		d = DecideArm(in)
 	}
 	if d.Verdict == "arm" || d.Verdict == "shadow" {
 		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
@@ -752,6 +761,11 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 // merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's labelled
 // merges of today, of every class, count too (v2 D1), once per pull request.
 func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int, error) {
+	return r.armedTodayOf(ctx, rc, "")
+}
+
+// armedTodayOf is armedToday for one class's merges (its maxPerDay), every class's when class is "".
+func (r *Reconciler) armedTodayOf(ctx context.Context, rc *config.Repository, class string) (int, error) {
 	gh, err := r.githubLedger(ctx, rc)
 	if err != nil {
 		return 0, err
@@ -763,12 +777,15 @@ func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int
 	n, seen := 0, map[int]bool{}
 	for i := range l.Items {
 		if ref := l.Items[i].Status.PullRequest; ref != nil && ref.ArmedAt != nil && sameUTCDay(ref.ArmedAt.Time, r.Now()) &&
-			r.onRepo(&l.Items[i], rc) {
+			r.onRepo(&l.Items[i], rc) && (class == "" || l.Items[i].Spec.PredictedClass == class) {
 			n++
 			seen[ref.Number] = true
 		}
 	}
-	for _, ms := range gh {
+	for c, ms := range gh {
+		if class != "" && c != class {
+			continue
+		}
 		for _, m := range ms {
 			if sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
 				n++
