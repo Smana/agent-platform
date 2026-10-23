@@ -430,3 +430,17 @@ func TestDecideFollowsTheProfileTable(t *testing.T) {
 		}
 	}
 }
+
+// v3 feature 5 (ST8, offline proof 4): search is the harness's own read-only tool, plain in both
+// profiles; a bare name never matched the MCP read-only set, so it read as mcp.write and was denied.
+func TestSearchIsAPlainBuiltIn(t *testing.T) {
+	c := Classifier{Branch: "agent/3kq7x2ma", ReadOnlyMCP: readOnlyTools}
+	if got := c.Classify("search", json.RawMessage(`{"question":"Where is the egress allowlist built?"}`), "LOW"); got != Plain {
+		t.Fatalf("search classed %q, want plain", got)
+	}
+	for _, profile := range []string{"attended", "unattended"} {
+		if v := Decide(wire.ApprovalPolicy{Profile: profile}, Plain); v != Allow {
+			t.Fatalf("%s: %s, want allow", profile, v)
+		}
+	}
+}

@@ -16,9 +16,10 @@ func worse(a, b Class) Class {
 
 // The harness's own tools. Anything else is an MCP tool; OpenHands' browser_*
 // tools, enabled when get_default_agent runs without cli_mode, would class as
-// mcp.write.
+// mcp.write. search (v3 feature 5, ST8) is the harness's read-only child: its
+// own actions never reach the bridge.
 var builtins = map[string]bool{"terminal": true, "execute_bash": true, "file_editor": true, "str_replace_editor": true,
-	"task_tracker": true, "think": true, "finish": true, "browser": true}
+	"task_tracker": true, "think": true, "finish": true, "browser": true, "search": true}
 
 func set(s ...string) map[string]bool {
 	m := make(map[string]bool, len(s))
