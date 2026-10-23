@@ -78,7 +78,10 @@ type Comment struct {
 
 // Issue is the snapshot's source (§1, R5).
 type Issue struct {
-	Number       int
+	Number int
+	// ID is REST's numeric id, which the sub-issues API takes (splitter SL8); 0 when read through
+	// GraphQL (Issue).
+	ID           int64
 	URL          string
 	Title        string
 	Body         string
