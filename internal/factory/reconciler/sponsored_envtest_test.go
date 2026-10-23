@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/rooms"
 )
 
 // R5, R8, C1: the CRD installs with its new CEL rules, an api task needs its sponsor and ceiling,
@@ -120,5 +122,35 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 				t.Fatalf("more than the kind rule tripped: %v", err)
 			}
 		})
+	}
+}
+
+// C2: the Room CRD admits a system member, the factory's sponsored watcher, and still refuses any
+// other kind of principal.
+func TestEnvtestASystemMember(t *testing.T) {
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Skip("KUBEBUILDER_ASSETS unset: run `task test`, which sets it")
+	}
+	env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crd")}, ErrorIfCRDPathMissing: true}
+	restCfg, err := env.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = env.Stop() }()
+	c, err := client.New(restCfg, client.Options{Scheme: scheme()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "agent-system"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rooms.Ensure(ctx, c, "agent-system", "rmsponsr", "public", "Smana/cloud-native-ref",
+		roomv1.Member{Principal: "system:slack-app", Role: "watcher"}); err != nil {
+		t.Fatalf("a system watcher: %v", err)
+	}
+	if err := rooms.Ensure(ctx, c, "agent-system", "rmagentx", "public", "Smana/cloud-native-ref",
+		roomv1.Member{Principal: "agent:7f3cq2xz", Role: "watcher"}); err == nil || !strings.Contains(err.Error(), "should match") {
+		t.Fatalf("an agent member: %v", err)
 	}
 }

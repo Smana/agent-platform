@@ -300,6 +300,13 @@ func SnapshotMessage(t *v1alpha1.Task, nonce string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Agent factory task %s: the original task, snapshotted when it was accepted (sha256 %s, %s).\n",
 		t.Name, t.Spec.Source.ContentSHA256, t.Spec.Source.Trust)
+	if p := t.Sponsored(); p != "" { // F4, R8: both identities, and the ceiling
+		fmt.Fprintf(&b, "Requested by %s, sponsored by %s", p, t.Spec.Source.Sponsor)
+		if o := t.Spec.Source.OnBehalfOf; o != "" {
+			fmt.Fprintf(&b, ", on behalf of %s", o)
+		}
+		fmt.Fprintf(&b, "; ceiling $%.2f.\n", float64(t.Spec.MaxMicroUSD)/1e6)
+	}
 	if t.Spec.Source.Trust == "untrusted" { // G2: marked as data inside the fence too
 		b.WriteString(untrustedNotice(fence))
 		fmt.Fprintf(&b, "\n%s\n%s\n%s\n%s\n", fence, untrustedHeader, t.Spec.Text, fence)

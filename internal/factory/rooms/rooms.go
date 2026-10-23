@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,15 +32,16 @@ const brokerActor = "system:room-broker"
 var ErrForeignRoom = errors.New("rooms: a room of that name exists and is not this task's")
 
 // Ensure creates the task's room when absent: owned and driven by system:factory, with the
-// unattended approval profile (SP2 §6), the task's data class and repository. An existing room is
-// adopted only when it is exactly that: its runs inherit its data class (C3), so a task never
-// writes into a room another owner, class or repository made.
-func Ensure(ctx context.Context, c client.Client, ns, id, dataClass, repo string) error {
+// unattended approval profile (SP2 §6), the task's data class and repository, and members (an api
+// task's sponsored watcher, F4). An existing room is adopted only when it is exactly that and
+// holds each member: its runs inherit its data class (C3), so a task never writes into a room
+// another owner, class or repository made.
+func Ensure(ctx context.Context, c client.Client, ns, id, dataClass, repo string, members ...v1alpha1.Member) error {
 	if !envelope.ValidID(id) {
 		return fmt.Errorf("rooms: %q is not a C2 id", id)
 	}
 	want := v1alpha1.RoomSpec{Owner: runs.PrincipalFactory, Driver: runs.PrincipalFactory, DataClass: dataClass,
-		Repository: repo, Approvals: v1alpha1.Approvals{Profile: "unattended"}}
+		Repository: repo, Approvals: v1alpha1.Approvals{Profile: "unattended"}, Members: members}
 	room := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: ns, Labels: map[string]string{runs.LabelTask: id}},
 		Spec: want}
 	err := c.Create(ctx, room)
@@ -57,6 +59,11 @@ func Ensure(ctx context.Context, c client.Client, ns, id, dataClass, repo string
 	if s.Owner != want.Owner || s.DataClass != want.DataClass || s.Repository != want.Repository ||
 		s.Approvals.Profile != want.Approvals.Profile {
 		return fmt.Errorf("%w: %s", ErrForeignRoom, id)
+	}
+	for _, m := range members {
+		if !slices.Contains(s.Members, m) {
+			return fmt.Errorf("%w: %s", ErrForeignRoom, id)
+		}
 	}
 	return nil
 }

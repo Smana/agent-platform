@@ -472,6 +472,17 @@ func (b Budgets) DailyMicroUSD(principal string) int64 {
 	return MicroUSD(b.HumanDailyUSD)
 }
 
+// WithSponsoredDay is b with principal's day set, as Parse sets one from api.sponsored: for a
+// caller that builds a Config by hand.
+func (b Budgets) WithSponsoredDay(principal string, dailyUSD float64) Budgets {
+	days := map[string]int64{principal: MicroUSD(dailyUSD)}
+	for k, v := range b.sponsoredDays {
+		days[k] = v
+	}
+	b.sponsoredDays = days
+	return b
+}
+
 // Ignored is a key the file sets that this release accepts and ignores, and the key to use.
 type Ignored struct{ Key, Use string }
 

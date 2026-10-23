@@ -166,10 +166,16 @@ func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, li
 		return "", errors.New("the daily cap needs the ledger client")
 	}
 	person := r.person(t)
+	// F4, ledger ruling I1: a sponsored principal's day is a bound, not a shadow, whatever
+	// budgets.enforcePrincipal says, and whatever the fleet's own day.
+	enforce := r.Cfg.Budgets.EnforcePrincipal || r.sponsored(t)
 	return api.Reserve(ctx, r.Ledger, r.Namespace, r.Now(), runID(t.Name, len(t.Status.Runs)),
 		api.Reservation{Principal: runs.PrincipalFactory, Person: person, MaxMicroUSD: runMicroUSD(t.Spec.Budget)}, limit,
-		r.Cfg.Budgets.DailyMicroUSD(person), r.Cfg.Budgets.EnforcePrincipal)
+		r.Cfg.Budgets.DailyMicroUSD(person), enforce)
 }
+
+// sponsored is whether the task's runs are charged to a declared sponsored principal.
+func (r *Reconciler) sponsored(t *v1alpha1.Task) bool { return r.Cfg.SponsoredBy(r.person(t)) != nil }
 
 // runMicroUSD is what one run of the task may spend, as the day ledger reserves it: its USD run
 // cap, or its token cap at the reference rate for a tier capped in tokens (TC7).
@@ -180,8 +186,12 @@ func runMicroUSD(b v1alpha1.Budget) int64 {
 	return config.RefMicroUSD(b.RunTokens)
 }
 
-// person is who the task's next run is charged to beside the fleet, "" with per-person caps off.
+// person is the key the task's runs are charged to beside the fleet: an api task's principal
+// always (R7), otherwise the person while per-person caps are on.
 func (r *Reconciler) person(t *v1alpha1.Task) string {
+	if p := t.Sponsored(); p != "" && t.Status.RetriedBy == "" {
+		return p
+	}
 	if !r.Cfg.Budgets.PerPerson.Enabled {
 		return ""
 	}

@@ -73,9 +73,10 @@ type RoomSpec struct {
 	Repository string `json:"repository,omitempty"`
 }
 
-// Member is a human admitted to the room, with a role and the approver flag.
+// Member is a principal admitted to the room, with a role and the approver flag: a human, or a
+// sponsored principal the factory makes a watcher of its task's room (factory interfaces F4).
 type Member struct {
-	// +kubebuilder:validation:Pattern=`^human:[A-Za-z0-9@._-]+$`
+	// +kubebuilder:validation:Pattern=`^(human|system):[A-Za-z0-9@._-]+$`
 	// +kubebuilder:validation:MaxLength=261
 	Principal string `json:"principal"`
 	// Cumulative: watcher < collaborator < owner (§1).

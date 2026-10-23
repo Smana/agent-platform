@@ -44,3 +44,31 @@ func (s Static) Triage(_ context.Context, t *v1alpha1.Task) (Decision, error) {
 		Budget:         BudgetFor(s.Cfg, d.Tier),
 		Classification: v1alpha1.Classification{Tier: d.Tier, Classifier: "static", Fallback: "static"}}, nil
 }
+
+// sponsoredRuns is how many whole runs a ceiling holds: implementer, tester and reviewer. runFits
+// admits a run only while the task's cap still holds a whole run cap, so a run cap equal to the
+// ceiling would starve the second run.
+const sponsoredRuns = 3
+
+// Ceiling caps a budget under an api task's max_cost (F4, R5, C4): the task at the ceiling, each
+// run at a third of it, in USD and in tokens at the reference rate, so an unpriced run keeps a
+// ceiling too. It only ever lowers the class's caps.
+func Ceiling(b v1alpha1.Budget, maxMicroUSD int64) v1alpha1.Budget {
+	if maxMicroUSD <= 0 {
+		return b
+	}
+	taskTokens := int64(float64(maxMicroUSD) / config.RefUSDPerMToken)
+	b.TaskMicroUSD = capAt(b.TaskMicroUSD, maxMicroUSD)
+	b.RunMicroUSD = capAt(b.RunMicroUSD, maxMicroUSD/sponsoredRuns)
+	b.TaskTokens = capAt(b.TaskTokens, taskTokens)
+	b.RunTokens = capAt(b.RunTokens, taskTokens/sponsoredRuns)
+	return b
+}
+
+// capAt is v under c: c when v is unset (0) or above it.
+func capAt(v, c int64) int64 {
+	if v == 0 || v > c {
+		return c
+	}
+	return v
+}
