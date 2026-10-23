@@ -66,3 +66,57 @@ func TestRunArtifactReadsTheFileFromStorage(t *testing.T) {
 		t.Error("an artifact the run does not hold is an error")
 	}
 }
+
+// storageRig is actionsRig with run 7's storage answering as serve says.
+func storageRig(t *testing.T, serve http.HandlerFunc) *rig {
+	t.Helper()
+	r := actionsRig(t)
+	mux := r.gh.srv.Config.Handler.(*http.ServeMux)
+	mux.HandleFunc("GET /repos/Smana/demo/actions/runs/8/artifacts", r.gh.authed(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"total_count":1,"artifacts":[{"id":81,"name":"findings","expired":false}]}`)
+	}))
+	mux.HandleFunc("GET /repos/Smana/demo/actions/artifacts/81/zip", r.gh.authed(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", r.gh.srv.URL+"/storage/81.zip?sig=x")
+		w.WriteHeader(http.StatusFound)
+	}))
+	mux.HandleFunc("GET /storage/81.zip", serve)
+	return r
+}
+
+// The download is bounded: a body past maxArtifactBytes is refused, not read whole.
+func TestRunArtifactRefusesAnOversizedDownload(t *testing.T) {
+	r := storageRig(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, maxArtifactBytes+1))
+	})
+	if b, err := r.g.RunArtifact(t.Context(), 8, "findings", "findings.json"); err == nil || len(b) != 0 {
+		t.Fatalf("a download over %d bytes is refused: %d bytes, %v", maxArtifactBytes, len(b), err)
+	}
+}
+
+// A small zip whose entry inflates past the cap (a zip bomb) is refused: stored zeros compress
+// to a few KiB, so only the bound on the decompressed read stops it.
+func TestRunArtifactRefusesAZipThatInflatesPastTheCap(t *testing.T) {
+	var zipped bytes.Buffer
+	zw := zip.NewWriter(&zipped)
+	w, _ := zw.CreateHeader(&zip.FileHeader{Name: "findings.json", Method: zip.Deflate})
+	_, _ = w.Write(make([]byte, maxArtifactBytes+1))
+	_ = zw.Close()
+	if zipped.Len() > 64<<10 {
+		t.Fatalf("the fixture must be small, is %d bytes", zipped.Len())
+	}
+	r := storageRig(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(zipped.Bytes()) })
+	if b, err := r.g.RunArtifact(t.Context(), 8, "findings", "findings.json"); err == nil || len(b) != 0 {
+		t.Fatalf("an entry inflating past %d bytes is refused: %d bytes, %v", maxArtifactBytes, len(b), err)
+	}
+}
+
+// A storage answer other than 200 is an error, never a body to parse.
+func TestRunArtifactRefusesANon200Storage(t *testing.T) {
+	r := storageRig(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `[]`)
+	})
+	if b, err := r.g.RunArtifact(t.Context(), 8, "findings", "findings.json"); err == nil || len(b) != 0 {
+		t.Fatalf("a 403 from storage is an error: %q %v", b, err)
+	}
+}
