@@ -1151,6 +1151,9 @@ type Loop struct {
 	// Scope is the class's scope mode (scoper design SC2): off, steering or scoper; unset is off.
 	// It never switches the loop on: On reads the loop's three keys only.
 	Scope ScopeMode `json:"scope,omitempty"`
+	// Search offers the class's implementer runs the search tool (v3 feature 5, ST9); absent is off.
+	// It never switches the loop on: On reads the loop's three keys only.
+	Search bool `json:"search,omitempty"`
 }
 
 // ScopeMode is a row's scope. The config is YAML 1.1, where a bare off is the boolean false: it
@@ -1189,6 +1192,16 @@ func (c *Config) ScopeFor(class string) ScopeMode {
 		return ScopeOff
 	}
 	return row.Scope
+}
+
+// SearchFor reports whether class's implementer runs get the search tool (v3 feature 5, ST9): its
+// row's search, else default's. A row is whole: a class row without search is off.
+func (c *Config) SearchFor(class string) bool {
+	row, ok := c.Loops[class]
+	if !ok {
+		row = c.Loops["default"]
+	}
+	return row.Search
 }
 
 // SteeringOn reports whether any class's scope is not off: the merge gate then reads the diff of
