@@ -46,11 +46,11 @@ func TestWebhookCursors(t *testing.T) {
 	if err := s.SetWebhookCursor(ctx, "slack-app", room, 5); err != nil || cursorOf(t, s, "slack-app", room) != 5 {
 		t.Fatalf("a cursor moves forward: %v", err)
 	}
-	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "latecomer", Driver: "system:factory", Retention: 90 * 24 * time.Hour}); err != nil {
+	if _, err := s.EnsureRoom(ctx, NewRoom{ID: "latecome", Driver: "system:factory", Retention: 90 * 24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
-	appendN(t, s, "latecomer", 2)
-	if got := cursorOf(t, s, "slack-app", "latecomer"); got != 0 {
+	appendN(t, s, "latecome", 2)
+	if got := cursorOf(t, s, "slack-app", "latecome"); got != 0 {
 		t.Fatalf("a room created after the subscriber: cursor %d, want 0", got)
 	}
 	for _, gen := range []int{0, 1} { // the same call again, then a new generation
@@ -60,7 +60,7 @@ func TestWebhookCursors(t *testing.T) {
 		if got := cursorOf(t, s, "slack-app", room); got != 5 {
 			t.Fatalf("generation %d: the old cursor is %d, want 5", gen, got)
 		}
-		if got := cursorOf(t, s, "slack-app", "latecomer"); got != 0 {
+		if got := cursorOf(t, s, "slack-app", "latecome"); got != 0 {
 			t.Fatalf("generation %d: a cursor was added for a room that had none: %d", gen, got)
 		}
 	}
@@ -68,7 +68,7 @@ func TestWebhookCursors(t *testing.T) {
 	if _, _, err := s.Subscriber(ctx, "other", 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := cursorOf(t, s, "other", "latecomer"); got != 2 {
+	if got := cursorOf(t, s, "other", "latecome"); got != 2 {
 		t.Fatalf("another subscriber's first registration: cursor %d, want 2", got)
 	}
 }
@@ -118,7 +118,7 @@ func TestWebhookLagging(t *testing.T) {
 	if got, err := s.Lagging(ctx, "slack-app", 10); err != nil || len(got) != 0 {
 		t.Fatalf("a room at its cursor does not lag: %v %v", got, err)
 	}
-	for _, id := range []string{"lagging1", "lagging2"} {
+	for _, id := range []string{"laggingx", "laggingy"} {
 		if _, err := s.EnsureRoom(ctx, NewRoom{ID: id, Driver: "system:factory", Retention: 90 * 24 * time.Hour}); err != nil {
 			t.Fatal(err)
 		}
@@ -130,16 +130,18 @@ func TestWebhookLagging(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(got)
-	if want := []string{"lagging1", "lagging2", room}; !slices.Equal(got, want) {
+	want := []string{"laggingx", "laggingy", room}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
 		t.Fatalf("lagging = %v, want %v", got, want)
 	}
-	if err := s.SetWebhookCursor(ctx, "slack-app", "lagging1", 1); err != nil {
+	if err := s.SetWebhookCursor(ctx, "slack-app", "laggingx", 1); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.Lagging(ctx, "slack-app", 1); err != nil || len(got) != 1 {
 		t.Fatalf("the limit bounds the list: %v %v", got, err)
 	}
-	if got, _ := s.Lagging(ctx, "slack-app", 10); slices.Contains(got, "lagging1") {
+	if got, _ := s.Lagging(ctx, "slack-app", 10); slices.Contains(got, "laggingx") {
 		t.Fatalf("a room at its cursor does not lag: %v", got)
 	}
 }
