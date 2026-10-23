@@ -162,3 +162,77 @@ func TestRunCreateRefusalsAndGate(t *testing.T) {
 }
 
 func jsonOf(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// M3: the advertised schema is enforced by the server: a bad ref or on_behalf_of never reaches the factory.
+func TestRunCreateChecksRefAndSponsor(t *testing.T) {
+	f := &fakeTaskFactory{answer: runrequest.TaskResult{Task: roomID, Room: roomID}}
+	e := setup(t, mcpOn, actorOn(&actLog{}), withSponsored(sponsoredP), withTaskFactory(f), sponsoredRooms(t, world(nil)))
+	base := func(k, v string) map[string]any {
+		return map[string]any{"repo": "Smana/ai-native-ref", "text": "x", "dataClass": "public", "max_cost": 1, k: v}
+	}
+	for k, vs := range map[string][]string{
+		"ref":          {"-x", "a b", "a..b", "a\nb", strings.Repeat("a", 257), "x;rm"},
+		"on_behalf_of": {"slack:T01ABC", "U02DEF", "slack:t01abc/u02def", "slack:T01ABC/U02DEF\nx"},
+	} {
+		for _, v := range vs {
+			if got := call(t, e, bearer("slack-app"), "run_create", base(k, v)); !got.isError {
+				t.Errorf("%s=%q: %+v", k, v, got)
+			}
+		}
+	}
+	if len(f.got) != 0 {
+		t.Fatal("asked the factory")
+	}
+	if got := call(t, e, bearer("slack-app"), "run_create", base("ref", "refs/heads/main")); got.isError {
+		t.Fatalf("a good ref: %+v", got)
+	}
+}
+
+// M5: redaction of untitled text, fail closed, and the task ids' bindings.
+func TestRunCreateUntitledAndIDs(t *testing.T) {
+	f := &fakeTaskFactory{answer: runrequest.TaskResult{Task: roomID, Room: roomID}}
+	args := map[string]any{"repo": "Smana/ai-native-ref", "text": "token SECRET", "dataClass": "public", "max_cost": 1}
+	e := setup(t, mcpOn, actorOn(&actLog{}), withSponsored(sponsoredP), withTaskFactory(f), sponsoredRooms(t, world(nil)))
+	if got := call(t, e, bearer("slack-app"), "run_create", args); !got.isError || !strings.Contains(got.text, "looks like a secret") {
+		t.Fatalf("untitled secret: %+v", got)
+	}
+	nored := setup(t, mcpOn, withSponsored(sponsoredP), withTaskFactory(f), sponsoredRooms(t, world(nil)))
+	args["text"] = "fine"
+	if got := call(t, nored, bearer("slack-app"), "run_create", args); !got.isError || !strings.Contains(got.text, "unavailable") {
+		t.Fatalf("no redactor: %+v", got)
+	}
+	if len(f.got) != 0 {
+		t.Fatal("asked the factory")
+	}
+	// A principal with no token gets unavailable, never a forwarded empty bearer.
+	notoken := sponsoredP
+	notoken.AccessToken = ""
+	inner := &fakeTaskFactory{}
+	et := setup(t, mcpOn, actorOn(&actLog{}), withSponsored(notoken), withTaskFactory(tokenCheck{inner}), sponsoredRooms(t, world(nil)))
+	if got := call(t, et, bearer("slack-app"), "run_create", args); !got.isError || !strings.Contains(got.text, "unavailable") {
+		t.Fatalf("no access token: %+v", got)
+	}
+	// Task ids: a run. id is a sponsored principal's only; the prefixes never cross.
+	ok := startRunTask(t, e, bearer("slack-app"), map[string]any{"repo": "Smana/ai-native-ref", "text": "fine", "dataClass": "public", "max_cost": 1})
+	payload := strings.TrimPrefix(ok.TaskID, "run.")
+	human := runTask{V: 1, By: "human:dev", Room: roomID, Created: time.Now().UnixMilli(), TTL: time.Hour.Milliseconds()}
+	for _, id := range []string{human.id(), "tail." + payload, "run." + strings.TrimPrefix(
+		tailTask{V: 1, By: "system:slack-app", Room: roomID, Created: time.Now().UnixMilli(), TTL: time.Minute.Milliseconds()}.id(), "tail.")} {
+		if _, code := getTask(t, e, bearer("slack-app"), id); code != -32602 {
+			t.Errorf("%.20s: %d", id, code)
+		}
+	}
+	if _, code := getTask(t, e, viaRoomctl("dev"), ok.TaskID); code != -32602 {
+		t.Fatalf("a human with a run id: %d", code)
+	}
+}
+
+// tokenCheck refuses as runrequest.Factory does without a token.
+type tokenCheck struct{ f *fakeTaskFactory }
+
+func (c tokenCheck) CreateTask(ctx context.Context, r runrequest.TaskRequest) (runrequest.TaskResult, error) {
+	if r.AccessToken == "" {
+		return runrequest.TaskResult{}, runrequest.ErrForbidden
+	}
+	return c.f.CreateTask(ctx, r)
+}

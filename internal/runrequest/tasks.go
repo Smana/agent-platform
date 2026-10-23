@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/httpx"
 )
 
@@ -44,7 +45,7 @@ func (e ErrRefused) Error() string {
 // clipped to "refused", so a factory's free text never reaches a model.
 var refusalCodes = []string{"kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
 	"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
-	"max_cost_over_class", "not_linked", "not_a_maintainer", "sponsored_only", "invalid_draft", "bad_text", "tasks_unavailable",
+	"max_cost_over_class", "unauthenticated", "not_permitted", "not_linked", "not_a_maintainer", "sponsored_only", "invalid_draft", "bad_text", "tasks_unavailable",
 	"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "idempotency_conflict"}
 
 // CreateTask posts r to the factory's POST /v1/tasks with the caller's own token, as Request does.
@@ -97,6 +98,9 @@ func (f Factory) CreateTask(ctx context.Context, r TaskRequest) (TaskResult, err
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
 			return TaskResult{}, fmt.Errorf("runrequest: factory answer: %w", err)
+		}
+		if !envelope.ValidID(out.Room) || !envelope.ValidID(out.Task) { // never a task the caller cannot poll
+			return TaskResult{}, fmt.Errorf("runrequest: factory answer: no valid task and room")
 		}
 		return TaskResult{Task: out.Task, Room: out.Room, Issue: out.Issue, Duplicate: out.Duplicate}, nil
 	}

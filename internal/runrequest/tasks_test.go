@@ -8,16 +8,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 func TestCreateTask(t *testing.T) {
 	var auth, key, path string
 	var body map[string]any
+	var rawBody string
 	status, answer := http.StatusCreated, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":false}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, key, path = r.Header.Get("Authorization"), r.Header.Get("Idempotency-Key"), r.URL.Path
 		raw, _ := io.ReadAll(r.Body)
+		rawBody = string(raw)
 		_ = json.Unmarshal(raw, &body)
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(answer))
@@ -30,8 +33,8 @@ func TestCreateTask(t *testing.T) {
 		auth != "Bearer tok" || key != "k1" || path != "/v1/tasks" || body["maxCostUSD"] != float64(2) || body["repository"] != "Smana/x" {
 		t.Fatal(res, err, auth, key, path, body)
 	}
-	if _, leaked := body["AccessToken"]; leaked {
-		t.Fatal("the token is never in the body")
+	if strings.Contains(rawBody, "tok") || strings.Contains(rawBody, "k1") {
+		t.Fatalf("the token and key are never in the body: %s", rawBody)
 	}
 	status, answer = http.StatusOK, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":true}`
 	if res, err = f.CreateTask(t.Context(), req); err != nil || !res.Duplicate {
@@ -44,6 +47,7 @@ func TestCreateTask(t *testing.T) {
 	}{
 		{403, `{"error":"not_linked"}`, "not_linked"}, {409, `{"error":"idempotency_conflict"}`, "idempotency_conflict"},
 		{503, `{"error":"tasks_unavailable"}`, "tasks_unavailable"}, {400, `{"error":"leak: secret"}`, "refused"},
+		{401, `{"error":"unauthenticated"}`, "unauthenticated"}, {403, `{"error":"not_permitted"}`, "not_permitted"},
 		{500, `not json`, "refused"}, {403, `{"error":"admitted"}`, "refused"},
 	} {
 		status, answer = c.status, c.body
@@ -58,5 +62,21 @@ func TestCreateTask(t *testing.T) {
 	}
 	if _, err := f.CreateTask(t.Context(), TaskRequest{AccessToken: "t"}); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("no key: %v", err)
+	}
+}
+
+// A 2xx whose room or task is no id is an error, never a task the caller cannot poll.
+func TestCreateTaskValidatesItsAnswer(t *testing.T) {
+	for _, answer := range []string{`{"task":"abcd2345","room":"../x"}`, `{"task":"abcd2345","room":""}`,
+		`{"task":"BAD","room":"abcd2345"}`, `{"room":"abcd2345"}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(answer))
+		}))
+		_, err := Factory{URL: srv.URL}.CreateTask(t.Context(), TaskRequest{AccessToken: "t", IdempotencyKey: "k"})
+		srv.Close()
+		if err == nil {
+			t.Errorf("%s: accepted", answer)
+		}
 	}
 }

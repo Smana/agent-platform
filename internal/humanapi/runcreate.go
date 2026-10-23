@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/Smana/agent-platform/internal/authn"
@@ -32,6 +33,12 @@ var runCreateSchema = json.RawMessage(`{"type":"object","additionalProperties":f
 	`"text":{"type":"string","minLength":1,"maxLength":16384},"dataClass":{"enum":["public"]},"max_cost":{"type":"number","exclusiveMinimum":0},` +
 	`"on_behalf_of":{"type":"string","pattern":"^slack:T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$"},"ref":{"type":"string","maxLength":256},` +
 	`"idempotency_key":{"type":"string","minLength":1,"maxLength":128}}}`)
+
+// refRE is a git ref as run_create takes it: no leading dash, no whitespace, at most 256; an empty ref is none.
+var (
+	refRE      = regexp.MustCompile(`^([A-Za-z0-9._/][A-Za-z0-9._/-]{0,255})?$`)
+	onBehalfRE = regexp.MustCompile(`^slack:T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$`)
+)
 
 type runCreateArgs struct {
 	Repo           string  `json:"repo"`
@@ -58,6 +65,12 @@ func (s *Server) createTask(ctx context.Context, p authn.Principal, args json.Ra
 		a.DataClass != "public" || len(a.IdempotencyKey) > maxIdempotencyKey {
 		return runrequest.TaskResult{}, toolError("invalid_arguments: repo, text, dataClass public and max_cost above 0 are required; " +
 			"idempotency_key is at most 128 characters")
+	}
+	if !refRE.MatchString(a.Ref) || strings.Contains(a.Ref, "..") {
+		return runrequest.TaskResult{}, toolError("bad_ref: ref is a git ref of at most 256 characters")
+	}
+	if a.OnBehalfOf != "" && !onBehalfRE.MatchString(a.OnBehalfOf) {
+		return runrequest.TaskResult{}, toolError("invalid_arguments: on_behalf_of is slack:<team>/<user>")
 	}
 	if a.Title != "" {
 		d, err := s.checkDraft(ctx, a.Title, a.Text)
