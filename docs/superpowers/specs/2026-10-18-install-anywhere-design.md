@@ -48,8 +48,8 @@ human:
 | Identity | Every `:8080` request is `human:local`, in the admin and member groups |
 | Reachability | `:8080` binds `127.0.0.1` in this mode; a non-loopback address is a startup error, with no override |
 | CSRF | A write whose `Origin` is not `publicURL` (default `http://localhost:8080`) is 403 |
-| roomctl | When `/config` reports local mode, `roomctl` skips the login |
-| `:8090` (MCP) | Not started without an `mcp` block; the quickstart sets none |
+| roomctl | Out of scope for 3b: it needs https and an IdP. The quickstart drives rooms and runs with `kubectl apply` and watches them in the web UI |
+| `:8090` (MCP) | In local mode without `ROOMS_MCP_KEY`, not started. Elsewhere unchanged (today it starts and refuses every call without a key) |
 | Validation | `mode: local` with OIDC fields set is refused |
 
 ## Broker: TokenReview run issuer
@@ -73,9 +73,14 @@ systemIssuer: null             # optional: without it, system routes answer 401
 
 ## Broker: `migrate`
 
-- `room-broker migrate` embeds `internal/store/migrations`, verifies `atlas.sum`, takes a
-  Postgres advisory lock, and applies pending files in order, recording each in
-  `room_broker_revisions (version, checksum, applied_at)`.
+- `room-broker migrate` embeds `internal/store/migrations`, takes a Postgres advisory lock, and
+  applies pending files in order, recording each in
+  `room_broker_revisions (version, checksum, applied_at)`, the checksum being the file's SHA-256.
+  `atlas.sum` stays CI's check (`task migrations`); re-implementing Atlas's hash chain at run time
+  buys nothing the build does not already guarantee.
+- It runs as the database owner. The migrations GRANT to the login roles `rooms_broker` and
+  `rooms_retention`, which must exist first: the quickstart creates all three with CNPG managed
+  roles, as cloud-native-ref does.
 - A file runs in a transaction unless it starts with `-- atlas:txmode none` (three do, for
   `CREATE INDEX CONCURRENTLY`).
 - A checksum mismatch, or a recorded version it does not ship, is refused.
@@ -127,7 +132,7 @@ flowchart TD
   N --> S[Secrets agent-model, agent-git]
   S --> H[helm install agent-platform -f values-quickstart.yaml]
   H --> F[port-forward :8080; print the URL and the next command]
-  F --> R["roomctl run --repo $REPO --task '…' → watch it in the room"]
+  F --> R["task quickstart:run TASK='…' → kubectl apply Room + AgentRun; watch it in the room"]
 ```
 
 | Detail | Choice |
@@ -155,6 +160,7 @@ This table goes in `docs/quickstart.md`, and the README's guarantee claims link 
 | ZITADEL login, roles, approvals by member | One local user, port-forward only |
 | The Atlas operator migrates; TLS from OpenBao | The `migrate` init container; a self-signed CA |
 | Agent `room_*` tools, warm sandboxes, suspend, Kueue, the factory | Absent |
+| Each role gets a token scoped to what it may do (a reviewer cannot push) | Every role gets the same PAT, readable by the agent: the rules ("push only to your branch", "read-only") are instructions, not enforcement |
 | The room, the bridge, gVisor, default-deny + FQDN egress | **Same** |
 
 ## Error handling
