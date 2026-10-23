@@ -103,7 +103,8 @@ def validate(doc) -> dict:
         if not cond:
             raise Undeclared("%s: %s" % (DECLARATION, why))
     need(isinstance(doc, dict), "not a mapping")
-    extra = set(doc) - {"version", "timeoutMinutes", "tools", "definedBy", "steps", "ciOnly"}
+    # tests is test-contract's section (v3 feature 4), checked by test_contract.validate where it is used.
+    extra = set(doc) - {"version", "timeoutMinutes", "tools", "definedBy", "steps", "ciOnly", "tests"}
     need(not extra, "unknown keys %s" % sorted(extra))
     need(doc.get("version") == 1, "version must be 1")
     minutes = doc.get("timeoutMinutes", DEFAULT_MINUTES)
