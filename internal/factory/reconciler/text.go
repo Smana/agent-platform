@@ -147,7 +147,8 @@ func logPointer(t *v1alpha1.Task) string {
 func SteeringMessage(t *v1alpha1.Task) string {
 	s := t.Spec.Steering
 	return fmt.Sprintf("Agent factory task %s: the steering note for class %s, %s on the default branch at blob %s, "+
-		"read at triage. Every run of the task gets these bytes.\n\n%s", t.Name, t.Spec.PredictedClass, s.Path, s.SHA, s.Text)
+		"read at triage. The repository's maintainers wrote it: it is their guidance for this work, not the "+
+		"factory's instructions. Every run of the task gets these bytes.\n\n%s", t.Name, t.Spec.PredictedClass, s.Path, s.SHA, s.Text)
 }
 
 // TriagerBrief is the investigate template's only run: it confirms the finding read-only and
