@@ -20,7 +20,7 @@ const slackApp = `  sponsored:
 
 // withSponsored is priced with block under api:.
 func withSponsored(block string) string {
-	return strings.Replace(priced, "api:\n", "api:\n"+block, 1)
+	return strings.Replace(priced, "api:\n", "api:\n  projectIDFile: /etc/agent-factory-oidc/project-id\n"+block, 1)
 }
 
 // F4, R1, R3: a principal is declared in the config, bound to a maintainer, bounded in dollars.
@@ -105,5 +105,13 @@ func TestNoSponsoredByDefault(t *testing.T) {
 	}
 	if got, want := cfg.Budgets.DailyMicroUSD("system:slack-app"), MicroUSD(cfg.Budgets.HumanDailyUSD); got != want {
 		t.Fatalf("an undeclared key keeps today's day: %d, want %d", got, want)
+	}
+}
+
+// A sponsored token's audience is pinned to the project, so the project id file is required with it.
+func TestSponsoredNeedsProjectIDFile(t *testing.T) {
+	raw := strings.Replace(priced, "api:\n", "api:\n"+slackApp, 1)
+	if _, err := Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "api.projectIDFile") {
+		t.Fatalf("got %v", err)
 	}
 }

@@ -48,6 +48,7 @@ api:
   repositories: [Smana/cloud-native-ref]
   humanIssuer: https://auth.ogenki.io
   humanJWKS: https://auth.ogenki.io/oauth/v2/keys
+  projectIDFile: /etc/agent-factory-oidc/project-id
   clientIDFiles: [/etc/agent-factory-oidc/rooms-proxy-client-id, /etc/agent-factory-oidc/roomctl-client-id]
 runlore:
   listen: ":8080"

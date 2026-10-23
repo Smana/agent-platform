@@ -36,3 +36,16 @@ func TestLoadMCPSponsored(t *testing.T) {
 		}
 	}
 }
+
+// C22, as the factory's api.sponsored: a name another component answers to is refused.
+func TestLoadMCPSponsoredReservedNames(t *testing.T) {
+	roomctl := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
+	roomctl = strings.Replace(roomctl, "systemPrincipals:\n", "systemPrincipals:\n  system:serviceaccount:x:y: system:slack-app\n", 1)
+	for _, name := range []string{"policy", "factory", "room-broker", "slack-app"} {
+		doc := "factoryURL: http://factory.example:8080\n" + roomctl +
+			"  mcp:\n    enabled: true\n    sponsored:\n      - {name: " + name + ", clientIDFile: /x}\n"
+		if _, err := Load(write(t, doc)); err == nil || !strings.Contains(err.Error(), `"`+name+`" is reserved`) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

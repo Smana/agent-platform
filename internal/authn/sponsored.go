@@ -26,12 +26,22 @@ type Sponsored struct {
 	V       *Verifier
 	Clients []SponsoredClient
 	Exclude func() []string
+	// Audience is the project id a token's aud must hold, as the human path pins it; unset or
+	// unreadable, nobody is admitted.
+	Audience func() string
 }
 
 // Authenticate maps raw to its sponsored principal, or ErrUnauthenticated.
 func (s *Sponsored) Authenticate(ctx context.Context, raw string) (Principal, error) {
 	refused := fmt.Errorf("%w: not a sponsored principal", ErrUnauthenticated)
 	if s == nil || s.V == nil {
+		return Principal{}, refused
+	}
+	var aud string
+	if s.Audience != nil {
+		aud = s.Audience()
+	}
+	if aud == "" {
 		return Principal{}, refused
 	}
 	var human []string
@@ -53,7 +63,7 @@ func (s *Sponsored) Authenticate(ctx context.Context, raw string) (Principal, er
 			continue
 		}
 		cl, err := s.V.VerifyAuthorizedParty(ctx, raw, id)
-		if err != nil || cl.ExpiresAt == nil || cl.Subject == "" {
+		if err != nil || cl.ExpiresAt == nil || cl.Subject == "" || !slices.Contains(cl.Audience, aud) {
 			continue
 		}
 		return Principal{Kind: envelope.ActorSystem, ID: "system:" + c.Name, Sub: cl.Subject, ClientID: id,

@@ -136,3 +136,79 @@ func TestSponsoredInstructions(t *testing.T) {
 		t.Fatalf("human %q, sponsored %q", human, sponsored)
 	}
 }
+
+// R13: a sponsored principal reads; the summary holds no action and nothing that needs it, however
+// the room stands, since `Allowed` grants it Read only (I1).
+func TestSponsoredSummaryAdvertisesNothing(t *testing.T) {
+	w := world(nil)
+	e := setup(t, mcpOn, withSponsored(sponsoredP), sponsoredRooms(t, w))
+	got := call(t, e, bearer("slack-app"), "room_summary", map[string]any{"room": roomID})
+	var s struct {
+		NeedsYou []json.RawMessage
+		Actions  []json.RawMessage
+	}
+	if got.isError || json.Unmarshal(got.structured, &s) != nil || len(s.Actions) != 0 || len(s.NeedsYou) != 0 {
+		t.Fatalf("%s", got.structured)
+	}
+}
+
+// R13: another room's log is denied by tail as it is by summary, and a task id forged for another
+// room, or for another principal, reads nothing.
+func TestSponsoredTailAndTasksStayInTheirRooms(t *testing.T) {
+	w := world(nil)
+	e := setup(t, mcpOn, withSponsored(sponsoredP), sponsoredRooms(t, w))
+	if got := call(t, e, bearer("slack-app"), "room_tail", map[string]any{"room": roomID}); got.isError {
+		t.Fatalf("its own room: %s", got.text)
+	}
+	if got := call(t, e, bearer("slack-app"), "room_tail", map[string]any{"room": roomB}); !got.isError || !strings.Contains(got.text, noSuchRoom) {
+		t.Fatalf("another room: %+v", got)
+	}
+	now := time.Now()
+	mk := func(by, room string) string {
+		return tailTask{V: 1, By: by, Room: room, Created: now.UnixMilli(), TTL: 60000}.id()
+	}
+	_, out := rpc(t, e, bearer("slack-app"), "tasks/get", map[string]any{"taskId": mk("system:slack-app", roomID)})
+	if out["error"] != nil {
+		t.Fatalf("its own room's task: %v", out)
+	}
+	// another room: the task fails as no such room, and holds no event
+	forged := map[string]any{"taskId": mk("system:slack-app", roomB)}
+	_, out = rpc(t, e, bearer("slack-app"), "tasks/get", forged)
+	if res, _ := out["result"].(map[string]any); res["status"] != "failed" || res["statusMessage"] != noSuchRoom {
+		t.Errorf("another room, tasks/get: %v", out)
+	}
+	_, out = rpc(t, e, bearer("slack-app"), "tasks/result", forged)
+	if res, _ := out["result"].(map[string]any); res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), noSuchRoom) || res["structuredContent"] != nil {
+		t.Errorf("another room, tasks/result: %v", out)
+	}
+	// another principal's id is no task of its
+	for _, method := range []string{"tasks/get", "tasks/result"} {
+		_, out := rpc(t, e, bearer("slack-app"), method, map[string]any{"taskId": mk("human:dev", roomID)})
+		if out["error"] == nil || out["result"] != nil {
+			t.Errorf("another principal, %s: %v", method, out)
+		}
+	}
+}
+
+// R13: an expired token, and a principal that is not sponsored, are refused on /mcp.
+func TestSponsoredPrincipalRefusals(t *testing.T) {
+	expired := sponsoredP
+	expired.Expiry = time.Now().Add(-time.Minute)
+	notSponsored := sponsoredP
+	notSponsored.ID, notSponsored.Sponsored = "system:other", false
+	var e env
+	for name, token := range map[string]string{"expired": "slack-app", "not sponsored": "other"} {
+		if name == "expired" {
+			e = setup(t, mcpOn, withSponsored(expired))
+		} else {
+			e = setup(t, mcpOn, withSponsored(notSponsored))
+		}
+		if code, _ := rpc(t, e, bearer(token), "tools/list", nil); code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", name, code)
+		}
+	}
+	e = setup(t, mcpOn, withSponsored(sponsoredP))
+	if code, _ := rpc(t, e, bearer("slack-app"), "tools/list", nil); code != http.StatusOK {
+		t.Fatalf("the control: %d", code)
+	}
+}

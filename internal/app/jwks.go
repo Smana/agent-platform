@@ -117,7 +117,8 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 			clients = append(clients, authn.SponsoredClient{Name: sp.Name, ClientID: idFile(sp.ClientIDFile)})
 		}
 		web, roomctl := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile)
-		sponsored = &authn.Sponsored{V: hv, Clients: clients, Exclude: func() []string { return []string{web(), roomctl()} }}
+		sponsored = &authn.Sponsored{V: hv, Clients: clients, Exclude: func() []string { return []string{web(), roomctl()} },
+			Audience: idFile(h.ProjectIDFile)}
 	}
 	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all,
 		sponsored: sponsored}, nil

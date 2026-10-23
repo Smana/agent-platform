@@ -55,6 +55,8 @@ type Subject struct {
 	Approver bool // the room's approver flag
 	Driver   bool // holds the driver token
 	WebUI    bool // came through the web client, not a CLI token (ruling P18)
+	// Sponsored marks a sponsored principal (R13): it reads, whatever else its kind is granted.
+	Sponsored bool
 }
 
 // Action is one thing a Subject may do in a room.
@@ -90,6 +92,9 @@ func uiOnly(a Action) bool {
 
 // Allowed reports whether s may perform a in the room s was resolved for.
 func Allowed(s Subject, a Action) bool {
+	if s.Sponsored { // R13: a sponsored principal reads, whatever its kind is granted
+		return a == Read
+	}
 	switch s.Kind {
 	case envelope.ActorAgent:
 		return a == Read || a == Chat // room_read, room_post; handoff and verdict are gated per tool
@@ -158,6 +163,7 @@ func (g Groups) IsAdmin(p authn.Principal) bool {
 func (g Groups) Resolve(room *v1alpha1.Room, p authn.Principal, driver string, webUI bool) Subject {
 	s := Subject{Kind: p.Kind, ID: p.ID, Driver: p.ID == driver, WebUI: webUI}
 	if p.Sponsored { // R13: a watcher of the rooms it is a member of, as wire.You shows it
+		s.Sponsored = true
 		for _, m := range room.Spec.Members {
 			if m.Principal == p.ID && ParseRole(m.Role) >= Watcher {
 				s.Role = Watcher

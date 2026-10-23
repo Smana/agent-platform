@@ -553,6 +553,9 @@ type API struct {
 	HumanJWKS    string   `json:"humanJWKS"`
 	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
 	ClientIDFiles []string `json:"clientIDFiles"`
+	// ProjectIDFile holds the ZITADEL project id a sponsored token's aud must hold, as the broker's
+	// human.projectIDFile pins the human path; required while api.sponsored is non-empty.
+	ProjectIDFile string `json:"projectIDFile,omitempty"`
 	// Groups defaults to agents-admin and agents-member.
 	Groups Groups `json:"groups"`
 	// Empty today (R23): no system caller of POST /v1/runs exists.
@@ -648,6 +651,9 @@ var (
 var reservedPrincipals = []string{"factory", "runlore", "scheduler", "room-broker", "policy"}
 
 func (c *Config) validateSponsored(bad func(string, ...any)) {
+	if len(c.API.Sponsored) > 0 && c.API.ProjectIDFile == "" {
+		bad("api.sponsored needs api.projectIDFile: a sponsored token's audience is pinned to the project")
+	}
 	if len(c.API.Sponsored) > 0 && len(c.Meter.Prices) == 0 {
 		// Without prices a tier is capped in tokens and usdCapped never holds: a ceiling in dollars
 		// would silently be a ceiling in nothing (C13).

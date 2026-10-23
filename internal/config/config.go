@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,6 +69,10 @@ type SponsoredConfig struct {
 	Name         string `json:"name"`
 	ClientIDFile string `json:"clientIDFile"`
 }
+
+// reservedSponsored are names another component answers to, as the factory's reservation (C22);
+// a systemPrincipals value is reserved too.
+var reservedSponsored = []string{"factory", "runlore", "scheduler", "room-broker", "policy"}
 
 // sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
 var sponsoredNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -202,7 +208,7 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("systemPrincipals[%s]: %q must be system:<component>", sub, id))
 		}
 	}
-	errs = append(errs, c.Human.validate()...)
+	errs = append(errs, c.Human.validate(slices.Collect(maps.Values(c.SystemPrincipals)))...)
 	if len(c.Human.MCP.Sponsored) > 0 && c.FactoryURL == "" {
 		errs = append(errs, errors.New("human.mcp.sponsored needs factoryURL: run_create posts to the factory's POST /v1/tasks"))
 	}
@@ -229,7 +235,7 @@ func (c *Config) runIssuerMatchesKind() []error {
 	return []error{fmt.Errorf("runs / runIssuers: no runIssuers[].subPattern matches %q (namespace %q, namePrefix %q) and captures the run id", sub, c.Runs.Namespace, c.Runs.NamePrefix)}
 }
 
-func (h HumanConfig) validate() []error {
+func (h HumanConfig) validate(system []string) []error {
 	errs := issuer("human", IssuerConfig{Issuer: h.Issuer, JWKSURL: h.JWKSURL})
 	if h.ClientIDFile == "" {
 		errs = append(errs, errors.New("human.clientIDFile: is required"))
@@ -261,6 +267,8 @@ func (h HumanConfig) validate() []error {
 		switch {
 		case !sponsoredNameRE.MatchString(sp.Name):
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is not a DNS label", sp.Name))
+		case slices.Contains(reservedSponsored, sp.Name) || slices.Contains(system, "system:"+sp.Name):
+			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is reserved", sp.Name))
 		case seen[sp.Name]:
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is declared twice", sp.Name))
 		case sp.ClientIDFile == "":

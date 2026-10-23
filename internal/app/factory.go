@@ -229,7 +229,11 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				return strings.TrimSpace(string(b))
 			}})
 		}
-		auth.Sponsored = &authn.Sponsored{V: humansV, Clients: clients, Exclude: clientIDs}
+		auth.Sponsored = &authn.Sponsored{V: humansV, Clients: clients, Exclude: clientIDs,
+			Audience: func() string {
+				b, _ := os.ReadFile(filepath.Clean(cfg.API.ProjectIDFile))
+				return strings.TrimSpace(string(b))
+			}}
 	}
 	redactor, err := redact.New()
 	if err != nil {

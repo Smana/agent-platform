@@ -207,3 +207,33 @@ func TestASystemActorIsGrantedNothingByDefault(t *testing.T) {
 		})
 	}
 }
+
+// R13, I1: a sponsored subject reads and nothing else, whatever its kind is granted.
+func TestAllowedSponsoredReadsOnly(t *testing.T) {
+	s := Subject{Kind: envelope.ActorSystem, ID: "system:slack-app", Role: Watcher, Sponsored: true}
+	all := []Action{Read, Chat, Queue, Steer, Interrupt, StartRun, Decide, DriverRequest, DriverGive, DriverTake,
+		Fork, Invite, Close, PromoteQueued, RemoveQueued}
+	for _, a := range all {
+		if got := Allowed(s, a); got != (a == Read) {
+			t.Errorf("%s: %v", a, got)
+		}
+	}
+	s.Driver = true // even a holder of the driver token
+	for _, a := range all {
+		if got := Allowed(s, a); got != (a == Read) {
+			t.Errorf("driver, %s: %v", a, got)
+		}
+	}
+	if !Allowed(Subject{Kind: envelope.ActorSystem, ID: "system:factory"}, Queue) {
+		t.Fatal("a system subject that is not sponsored is unchanged")
+	}
+}
+
+// Resolve marks a sponsored principal's subject.
+func TestResolveMarksSponsored(t *testing.T) {
+	room := &v1alpha1.Room{Spec: v1alpha1.RoomSpec{Members: []v1alpha1.Member{{Principal: "system:slack-app", Role: "watcher"}}}}
+	s := Groups{}.Resolve(room, authn.Principal{Kind: envelope.ActorSystem, ID: "system:slack-app", Sponsored: true}, "", false)
+	if !s.Sponsored || s.Role != Watcher {
+		t.Fatalf("%+v", s)
+	}
+}
