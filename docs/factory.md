@@ -611,7 +611,7 @@ merge:
 `flux.source` must name a Flux **GitRepository** (`namespace/name`, the one that delivers the
 repository to the factory's cluster); an OCIRepository is not read, so the signal would end
 `inconclusive` (config validation checks only the format). `flux` needs the chart's `monitor.flux.enabled` (off by default). It renders the ClusterRole and
-ClusterRoleBinding `agent-factory-flux-reader`: `get` on `gitrepositories`, `get` and `list` on
+ClusterRoleBinding `agent-factory-flux-reader`: `get` on `gitrepositories`, `list` on
 `kustomizations` and `helmreleases`, no `watch`, nothing else of the cluster. The reads are uncached.
 Without it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
 
@@ -621,7 +621,7 @@ Without it every read is refused and the signal ends `inconclusive`. `merge.brea
 |---|---|---|---|
 | Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
 | Detector (oracle) | Each scheduled run of the class's oracle workflow after the merge, oldest first, through the probe's readers | A run reports gone a target this merge wrote | `oracleRuns` clean runs. A run that failed or whose findings are refused: `inconclusive` |
-| Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready between the application and `within` later | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
+| Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready from the blame start (the source's fetch of the merge commit, or the merge's own time when the source was first seen already at a later commit) until `within` after the source was first seen holding it | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
 
 The detector signal reads each scheduled run after the merge (or a maintainer's `workflow_dispatch`),
