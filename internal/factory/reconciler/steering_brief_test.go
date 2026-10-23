@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -20,13 +21,32 @@ func steered(tk *v1alpha1.Task) *v1alpha1.Task {
 	return tk
 }
 
-// "Briefs per mode", off: today's brief, byte for byte.
+// "Briefs per mode", off: today's brief, byte for byte. The goldens are origin/main's output (before
+// steering existed) for the same fixed tasks; a scope-off task must still equal them.
 func TestOffBriefsAreTodays(t *testing.T) {
-	tk := issueTask("3buqdlot", 7, "# Fix the link")
-	off := *tk
-	off.Spec.ScopeMode = "off"
-	if FirstBrief(&off, "n0nce234") != FirstBrief(tk, "n0nce234") || strings.Contains(FirstBrief(&off, "n0nce234"), "STEERING-") {
-		t.Fatal("off changed the first brief")
+	golden := func(name string) string {
+		b, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, mode := range []string{"", "off"} {
+		first := issueTask("3buqdlot", 7, "# Fix the link")
+		first.Spec.ScopeMode = mode
+		if FirstBrief(first, "n0nce234") != golden("first_brief.golden") {
+			t.Errorf("mode %q changed the first brief", mode)
+		}
+		big := issueTask("3buqdlot", 7, strings.Repeat("s", 14336))
+		big.Spec.ScopeMode = mode
+		if FirstBrief(big, "n0nce234") != golden("first_brief_big.golden") {
+			t.Errorf("mode %q changed the big first brief", mode)
+		}
+		rev := reviseTask()
+		rev.Spec.ScopeMode = mode
+		if b, _ := ReviseBrief(rev, worstLog(), nil, "n0nce234"); b != golden("revise_brief.golden") {
+			t.Errorf("mode %q changed the revision brief", mode)
+		}
 	}
 }
 
