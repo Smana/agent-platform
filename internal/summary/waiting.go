@@ -100,6 +100,10 @@ func reasons() map[string]string {
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
+		"not_adopted_author":        "it is not authored by a login the class adopts",
+		"branch_not_allowed":        "its branch is not one the class adopts",
+		"release_age_pending":       "the release age check has not passed yet",
+		"release_age_red":           "the release age check failed, or was not posted by the adopted login",
 		"holdout_pending":           "a holdout check has not passed yet",
 		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"merge_gate_off":            "no merge class is live, so the factory does not gate this pull request",
@@ -166,6 +170,8 @@ func nextStep(reason string) string {
 		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
+	case "release_age_pending":
+		return "nothing to do: the task goes on when the release age check passes"
 	case "holdout_pending":
 		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting until merge.awaitingCIFor, if set (agent-platform #182)"
 	case "ci_wait_expired":

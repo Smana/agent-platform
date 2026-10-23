@@ -86,7 +86,10 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, ClassArmedToday: classToday, Paused: paused,
 		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
-	if CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+	cl := gateOf(r.repo(t), t.Spec.PredictedClass)
+	adopted := cl.Adopted()
+	if !adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+		// An adopted task has no room and no run (M12): the head is the pull request's, as read.
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
 		// approved. Neither read matters while CI decides on its own, so they wait for green.
 		in.ReportedHead, err = r.reportedHead(ctx, t)
@@ -110,10 +113,15 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return ferr
 		default:
 			in.Files.Base, in.Files.Head, in.Stats, in.DiffRead = diff.Base, diff.Head, diff.Files, true
+			if adopted {
+				if in.Adoption, err = r.adoption(ctx, t, pr, cl); err != nil {
+					return err
+				}
+			}
 			d = DecideArm(in)
 		}
 	}
-	if d.Verdict == "arm" || d.Verdict == "shadow" {
+	if !adopted && (d.Verdict == "arm" || d.Verdict == "shadow") {
 		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
 		// first gate or during a revision run. Only who moved the branch tells it apart, as on a CI
 		// fix (humanCommit), so every path into a merge reads it.
@@ -150,9 +158,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.Reason = d.Reason
 		return nil
-	case "ci_red":
-		return r.fixCI(ctx, t, pr, checks)
-	case "ci_cancelled":
+	case "ci_red", "ci_cancelled":
+		if adopted {
+			// R45, L15: the pull request is another author's and nothing of the factory's runs on
+			// it: no fix run, no re-run of its CI. A maintainer or its author takes it from here.
+			t.Status.PullRequest.HeadSHA = pr.HeadSHA
+			r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+			narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
+			return nil
+		}
+		if d.Verdict == "ci_red" {
+			return r.fixCI(ctx, t, pr, checks)
+		}
 		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
 		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
@@ -422,7 +439,39 @@ func pushDeadline(t *v1alpha1.Task) time.Time {
 // one wholly the App's whose newest move is not yet the head — GitHub records a push a little
 // after it lands. A read error is returned, as factoryCommits's is: the caller retries.
 func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) (pushCheck, error) {
-	ps, err := r.gh(ctx).BranchActivity(ctx, "agent/"+t.Name)
+	return r.pushedBy(ctx, "agent/"+t.Name, []string{r.Cfg.AgentsLogin}, head)
+}
+
+// adoption reads what an adopted class's author mode decides on: every commit's author, the head
+// among them, and who pushed the branch. A list past GitHub's cap, or one without the head, is a
+// stranger's. An adopted task never waits for a push to be recorded: there is no run to finish.
+func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR, cl config.Class) (a struct {
+	Read          bool
+	CommitAuthors []string
+	Pushed        pushCheck
+}, err error) {
+	a.Read = true
+	cs, err := r.gh(ctx).PullRequestCommits(ctx, t.Status.PullRequest.Number)
+	switch {
+	case errors.Is(err, forge.ErrCommitsTruncated):
+		a.CommitAuthors = []string{""}
+		return a, nil
+	case err != nil:
+		return a, err
+	}
+	for _, c := range cs {
+		a.CommitAuthors = append(a.CommitAuthors, c.Author)
+	}
+	if !slices.ContainsFunc(cs, func(c forge.Commit) bool { return c.SHA == pr.HeadSHA }) {
+		a.CommitAuthors = append(a.CommitAuthors, "") // the head is not among them: a push since
+	}
+	a.Pushed, err = r.pushedBy(ctx, pr.HeadRef, cl.Author.Adopt.Logins, pr.HeadSHA)
+	return a, err
+}
+
+// pushedBy is factoryPushed over any branch and any set of logins.
+func (r *Reconciler) pushedBy(ctx context.Context, branch string, logins []string, head string) (pushCheck, error) {
+	ps, err := r.gh(ctx).BranchActivity(ctx, branch)
 	if errors.Is(err, forge.ErrActivityTruncated) {
 		return pushStranger, nil
 	}
@@ -434,7 +483,7 @@ func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head s
 	}
 	want := ps[0].After // newest first
 	for _, p := range ps {
-		if p.Actor == "" || !forge.SameLogin(p.Actor, r.Cfg.AgentsLogin) || p.After != want {
+		if p.Actor == "" || !slices.ContainsFunc(logins, func(l string) bool { return forge.SameLogin(p.Actor, l) }) || p.After != want {
 			return pushStranger, nil
 		}
 		if p.Type == "branch_creation" {

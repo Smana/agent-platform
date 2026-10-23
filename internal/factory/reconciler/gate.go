@@ -12,6 +12,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/mdlinks"
+	"github.com/Smana/agent-platform/internal/factory/semverdiff"
 )
 
 // Condition is one condition a class declares in its config (merge gate classes MC1): Declared
@@ -33,6 +34,7 @@ func Conditions() []Condition {
 		{"maxPatchFiles", func(cl config.Class) bool { return cl.MaxPatchFiles > 0 }, maxPatchFiles},
 		{"maxModifiedLines", func(cl config.Class) bool { return cl.MaxModifiedLines > 0 }, maxModifiedLines},
 		{"diffShape", func(cl config.Class) bool { return cl.DiffShape != "" }, diffShape},
+		{"releaseAgeCheck", func(cl config.Class) bool { return cl.ReleaseAgeCheck != "" }, releaseAge},
 		{"holdoutChecks", func(cl config.Class) bool { return len(cl.HoldoutChecks) > 0 }, holdoutChecks},
 		{"oracle", func(cl config.Class) bool { return cl.Oracle != nil }, oracle},
 	}
@@ -116,14 +118,45 @@ func maxModifiedLines(cl config.Class, in ArmInputs) (string, bool) {
 }
 
 // diffShape: links-only is R52's promise, read on in.Files as it always was, so a diff not read
-// yet passes it vacuously (LinksOnly of two empty trees).
+// yet passes it vacuously (LinksOnly of two empty trees). The semver shapes are computed from the
+// diff (MC11) and are held by declared until it is read.
 func diffShape(cl config.Class, in ArmInputs) (string, bool) {
-	if cl.DiffShape == "links-only" {
+	switch cl.DiffShape {
+	case "links-only":
 		if ok, _ := mdlinks.LinksOnly(in.Files.Base, in.Files.Head); !ok {
+			return "class_mismatch", false
+		}
+	case "semver-patch":
+		if ok, _ := semverdiff.Patch(in.Files.Base, in.Files.Head); !ok {
+			return "class_mismatch", false
+		}
+	case "semver-minor":
+		if ok, _ := semverdiff.Minor(in.Files.Base, in.Files.Head); !ok {
 			return "class_mismatch", false
 		}
 	}
 	return "", false
+}
+
+// releaseAge (MC11): the release age is a commit status an adopted login posts (Renovate's
+// renovate/stability-days). Not posted yet, or pending, waits; posted by anyone else, or anything
+// but success, refuses. An unreadable age is a refusal: the status is read from the rollup, which
+// reports "" for a status it does not hold, and a truncated rollup may hold it unseen.
+func releaseAge(cl config.Class, in ArmInputs) (string, bool) {
+	state, creator := in.Checks.StatusOf(cl.ReleaseAgeCheck)
+	if state != "" && !slices.ContainsFunc(cl.Author.Adopt.Logins, func(l string) bool { return forge.SameLogin(creator, l) }) {
+		return "release_age_red", false
+	}
+	switch state {
+	case "SUCCESS":
+		return "", false
+	case "", "PENDING":
+		if in.Checks.Truncated && state == "" {
+			return "release_age_red", false // a rollup read in part may hold it unseen
+		}
+		return "release_age_pending", true
+	}
+	return "release_age_red", false
 }
 
 // holdoutChecks (loops L7): each named check passed on the head, posted by GitHub Actions, and
@@ -171,6 +204,11 @@ func unreported(in ArmInputs, cl config.Class) []string {
 	for _, n := range in.Cfg.RepositoryFor(in.Task.Spec.Repository).Merge.RequiredChecks {
 		if i := slices.IndexFunc(in.Checks.Runs, func(c forge.Check) bool { return c.Name == n }); i < 0 || in.Checks.Runs[i].State != "SUCCESS" {
 			add(n)
+		}
+	}
+	if cl.ReleaseAgeCheck != "" {
+		if state, _ := in.Checks.StatusOf(cl.ReleaseAgeCheck); state != "SUCCESS" {
+			add(cl.ReleaseAgeCheck)
 		}
 	}
 	for _, n := range cl.HoldoutChecks {
@@ -222,10 +260,17 @@ func oracle(_ config.Class, in ArmInputs) (string, bool) {
 // onDiff are the conditions that read the diff, which hold until it is read.
 var onDiff = []string{"allowedFiles", "protectedFiles", "modifyOnly", "maxPatchFiles", "maxModifiedLines", "oracle"}
 
+// onDiffFor is whether the condition reads the diff for this class (L8): diffShape does for the
+// semver shapes, which would refuse two empty trees, and not for links-only (R52's vacuous pass).
+func onDiffFor(c Condition, cl config.Class) bool {
+	return slices.Contains(onDiff, c.Key) ||
+		c.Key == "diffShape" && (cl.DiffShape == "semver-patch" || cl.DiffShape == "semver-minor")
+}
+
 // declared checks the class's declared conditions in order: the first refusal, or "".
 func declared(cl config.Class, in ArmInputs) (string, bool) {
 	for _, c := range Conditions() {
-		if !c.Declared(cl) || (!in.DiffRead && slices.Contains(onDiff, c.Key)) {
+		if !c.Declared(cl) || (!in.DiffRead && onDiffFor(c, cl)) {
 			continue
 		}
 		if reason, wait := c.Check(cl, in); reason != "" {

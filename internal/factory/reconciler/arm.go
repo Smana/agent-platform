@@ -36,6 +36,13 @@ type ArmInputs struct {
 	DiffRead bool
 	// ClassArmedToday is today's merges of the task's class, against the class's maxPerDay.
 	ClassArmedToday int
+	// Adoption is what an adopted class's author mode reads beyond the pull request (MC10): the
+	// commits' authors and who pushed the branch. Read is false until awaitingCI has read them.
+	Adoption struct {
+		Read          bool
+		CommitAuthors []string
+		Pushed        pushCheck
+	}
 }
 
 // ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | ci_cancelled | escalate | human.
@@ -85,7 +92,13 @@ func DecideArm(in ArmInputs) ArmDecision {
 	human := func(reason, matched string) ArmDecision {
 		return ArmDecision{Verdict: "human", Reason: reason, Matched: matched}
 	}
-	if !forge.SameLogin(in.PR.Author, in.Cfg.AgentsLogin) {
+	class := in.Task.Spec.PredictedClass
+	cl := gateOf(rc, class)
+	if cl.Adopted() {
+		if reason := adoptAuthor(in, cl); reason != "" {
+			return human(reason, class)
+		}
+	} else if !forge.SameLogin(in.PR.Author, in.Cfg.AgentsLogin) {
 		return human("not_agent_authored", "")
 	}
 	for _, rv := range in.PR.Reviews {
@@ -93,12 +106,14 @@ func DecideArm(in ArmInputs) ArmDecision {
 			return human("maintainer_approved", "review") // success came from a human: a human merges
 		}
 	}
-	class := in.Task.Spec.PredictedClass
-	cl := gateOf(rc, class)
 	if !cl.Live && !cl.Shadow {
 		return human("class_mismatch", "live") // the diff matched a live class the triage did not predict
 	}
-	if reason := agentEvidence(in); reason != "" {
+	if cl.Adopted() {
+		if reason := adoptEvidence(in, cl); reason != "" {
+			return human(reason, class)
+		}
+	} else if reason := agentEvidence(in); reason != "" {
 		return human(reason, class)
 	}
 	if in.DiffRead && in.Cfg.SteeringOn() && touchesSteering(in.Stats) {
@@ -192,6 +207,41 @@ func agentEvidence(in ArmInputs) string {
 	trailer := in.PR.Trailer("Agent-Run")
 	if !slices.ContainsFunc(in.Task.Status.Runs, func(r v1alpha1.RunRecord) bool { return r.ID == trailer }) {
 		return "foreign_trailer" // SC-14, SP1 R9: another task's run pushed here
+	}
+	return ""
+}
+
+// adoptAuthor is the adopted author mode's identity rows (MC10): the pull request's author is one
+// of the class's logins and its head branch matches one of its branches. Both are read from
+// GitHub, never from the description.
+func adoptAuthor(in ArmInputs, cl config.Class) string {
+	a := cl.Author.Adopt
+	if !slices.ContainsFunc(a.Logins, func(l string) bool { return forge.SameLogin(in.PR.Author, l) }) {
+		return "not_adopted_author"
+	}
+	// Validate made every pattern start with ^, and a branch pattern is a prefix: it is not
+	// wrapped in ^(?:p)$ as allowedFiles is.
+	if !matchesAny(compile(a.Branches, false), in.PR.HeadRef) {
+		return "branch_not_allowed"
+	}
+	return ""
+}
+
+// adoptEvidence is the adopted mode's evidence in place of the agents': every commit of the pull
+// request is one of the class's logins' and so is every push of its branch (GitHub's record, not
+// a claim). It holds until awaitingCI has read both.
+func adoptEvidence(in ArmInputs, cl config.Class) string {
+	if !in.Adoption.Read {
+		return ""
+	}
+	logins := cl.Author.Adopt.Logins
+	for _, a := range in.Adoption.CommitAuthors {
+		if !slices.ContainsFunc(logins, func(l string) bool { return a != "" && forge.SameLogin(a, l) }) {
+			return "human_commit_in_pr"
+		}
+	}
+	if in.Adoption.Pushed != pushFactory {
+		return "human_commit_in_pr"
 	}
 	return ""
 }
