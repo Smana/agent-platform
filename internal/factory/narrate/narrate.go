@@ -246,6 +246,7 @@ func reasons() map[string]string {
 		"oracle_finding_open":       "a link its task was opened to fix is still a link target in the head, or the file holding it was not changed",
 		"oracle_unrequested":        "it moves a link target the task's findings did not ask to move, or moves one anywhere but the exact snapshot its finding gave",
 		"holdout_pending":           "a holdout check its class requires has not passed yet",
+		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"foreign_trailer":           "its head commit comes from another task's run",
 		"class_paused":              "auto-merge of this class is paused after a revert",
 		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
@@ -467,6 +468,21 @@ func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 		body += "\n\nTo merge: " + summ.MergeHow(t.Spec.Repository, pr.Number) + "."
 	}
 	return Event{Key: "human-" + reason + "-" + fmt.Sprint(len(t.Status.Runs)), Body: body}
+}
+
+// ChecksNeverReported says the wait in AwaitingCI outlasted merge.awaitingCIFor (#182), naming
+// the checks that never reported. Nothing was merged.
+func ChecksNeverReported(t *v1alpha1.Task, missing []string) Event {
+	var head string
+	var waited time.Duration
+	if pr := t.Status.PullRequest; pr != nil {
+		head = pr.HeadSHA
+	}
+	if t.Status.PhaseSince != nil {
+		waited = time.Since(t.Status.PhaseSince.Time).Round(time.Minute)
+	}
+	return Event{Key: "ci-wait-expired-" + head, Body: fmt.Sprintf("Agent factory task `%s` waited %s for checks that never reported: %s. "+
+		"Nothing was merged; a maintainer decides.", t.Name, waited, strings.Join(missing, ", "))}
 }
 
 // BackToGate says a transient hand-off returned to the merge gate (N1), and why. n is the task's

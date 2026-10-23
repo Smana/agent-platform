@@ -343,7 +343,10 @@ type Merge struct {
 	CheckReruns  int32    `json:"checkReruns"`
 	VerifyFor    Duration `json:"verifyFor"`    // 30m of main's CI after an auto-merge
 	RevertWindow Duration `json:"revertWindow"` // 7 days for a maintainer's factory/revert
-	Breaker      Breaker  `json:"breaker"`
+	// AwaitingCIFor bounds a pull request's stay in AwaitingCI on a wait verdict (#182): past it,
+	// a human is told which checks never reported. 0 is no bound, the behaviour before it.
+	AwaitingCIFor Duration `json:"awaitingCIFor,omitempty"`
+	Breaker       Breaker  `json:"breaker"`
 }
 
 // Breaker is the circuit breaker's outcome window (R41, review G5): a class whose last Window
@@ -1302,6 +1305,9 @@ func (c *Config) validateRepository(r *Repository, seenSchedule map[string]bool,
 	}
 	if r.Merge.RevertWindow.Duration <= 0 {
 		bad("merge.revertWindow must be positive")
+	}
+	if r.Merge.AwaitingCIFor.Duration < 0 {
+		bad("merge.awaitingCIFor must be 0 (no bound) or positive")
 	}
 	if b := r.Merge.Breaker; b.Window < 1 || b.MaxReverts < 1 || b.MaxReverts > b.Window {
 		bad("merge.breaker needs 1 ≤ maxReverts ≤ window (R41)")

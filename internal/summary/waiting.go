@@ -101,6 +101,7 @@ func reasons() map[string]string {
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
 		"holdout_pending":           "a holdout check has not passed yet",
+		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"merge_gate_off":            "no merge class is live, so the factory does not gate this pull request",
 		"policy_pending":            "the policy needs a maintainer's approval",
 		"policy_absent":             "policy-bot has not evaluated the pull request",

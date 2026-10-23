@@ -133,6 +133,15 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	switch d.Verdict {
 	case "wait":
+		if b := r.repo(t).Merge.AwaitingCIFor.Duration; b > 0 && t.Status.PhaseSince != nil && r.Now().Sub(t.Status.PhaseSince.Time) >= b {
+			// #182: a check that never reports (a typo in a holdout, a workflow not set up) must not
+			// hold the task silently. Nothing merged: the hand-off says what is missing.
+			t.Status.PullRequest.HeadSHA = pr.HeadSHA
+			ev := narrate.ChecksNeverReported(t, unreported(in, gateOf(r.repo(t), t.Spec.PredictedClass))) // before to: it restarts PhaseSince
+			r.to(t, v1alpha1.PhaseAwaitingHuman, "ci_wait_expired")
+			narrateOn(t, pr.Number, ev)
+			return nil
+		}
 		t.Status.Reason = d.Reason
 		return nil
 	case "ci_red":

@@ -362,6 +362,7 @@ func TestBadConfigsFail(t *testing.T) {
 		"negative check reruns":      {"checkReruns: 1", "checkReruns: -1", "merge.checkReruns must be 0 or more"},
 		"verify for not positive":    {"verifyFor: 30m", "verifyFor: 0s", "merge.verifyFor must be positive"},
 		"revert window not positive": {"revertWindow: 168h", "revertWindow: 0s", "merge.revertWindow must be positive"},
+		"await ci bound negative":    {"revertWindow: 168h", "revertWindow: 168h\n  awaitingCIFor: -1m", "merge.awaitingCIFor must be 0 (no bound) or positive"},
 		// R41 (review G5): the breaker's window must be able to trip: 1 ≤ maxReverts ≤ window.
 		"breaker never trips":       {"maxReverts: 1}", "maxReverts: 0}", "merge.breaker needs 1 ≤ maxReverts ≤ window"},
 		"breaker window 0":          {"breaker: {window: 10", "breaker: {window: 0", "merge.breaker needs 1 ≤ maxReverts ≤ window"},

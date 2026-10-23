@@ -986,3 +986,21 @@ type failingLog struct{ fakeLog }
 func (*failingLog) EventsSince(context.Context, string, int64, func(envelope.Event) bool) ([]envelope.Event, int64, error) {
 	return nil, 0, errors.New("no_room")
 }
+
+// setPhaseSince backdates the task's entry into its phase, for the bounds that read it.
+func (g *rig) setPhaseSince(t *testing.T, name string, at time.Time) {
+	t.Helper()
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: name}, &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.PhaseSince = &metav1.Time{Time: at}
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// contains reports whether any comment holds s.
+func contains(comments []string, s string) bool {
+	return slices.ContainsFunc(comments, func(c string) bool { return strings.Contains(c, s) })
+}
