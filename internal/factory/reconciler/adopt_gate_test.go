@@ -46,6 +46,7 @@ func adoptRig(t *testing.T) *rig {
 	tk.Status.Phase, tk.Status.RoomRef, tk.Status.Runs = v1alpha1.PhaseAwaitingCI, "", nil
 	tk.Status.PullRequest = &v1alpha1.PullRequestRef{Number: 30, NodeID: "PR_30", HeadSHA: adoptHead}
 	g := newRig(t, tk)
+	g.r.Rooms = noEmptyRoom{g.r.Rooms} // the broker's behaviour for every adopted test (M12)
 	g.r.Merger = g.f
 	g.r.Cfg.AgentsLogin, g.r.Cfg.FactoryLogin = "ogenki-agents[bot]", "ogenki-agent-factory[bot]"
 	g.r.Cfg.Classes = map[string]config.Class{"deps-patch": depsPatchClass()}
@@ -77,6 +78,12 @@ func (g *rig) setAuthor(_ int, who string)  { g.editPR(func(p *forge.PR) { p.Aut
 func (g *rig) approve(_ int, who string) {
 	g.editPR(func(p *forge.PR) {
 		p.Reviews = append(p.Reviews, forge.Review{ID: 1, Author: who, State: "APPROVED", At: now})
+	})
+}
+
+func (g *rig) review(_ int, id int64, who, state string) {
+	g.editPR(func(p *forge.PR) {
+		p.Reviews = append(p.Reviews, forge.Review{ID: id, Author: who, State: state, At: now})
 	})
 }
 
@@ -164,6 +171,29 @@ func TestAdoptedGate(t *testing.T) {
 		"a minor": {func(g *rig) {
 			g.f.SetFiles(map[string]string{depFile: "version: 3.8.4\n"}, map[string]string{depFile: "version: 3.9.0\n"})
 		}, v1alpha1.PhaseAwaitingHuman, "class_mismatch"},
+		"a maintainer vetoed": {func(g *rig) { g.review(30, 7, "Smana", "CHANGES_REQUESTED") },
+			v1alpha1.PhaseAwaitingHuman, "changes_requested"},
+		"a veto nobody lifted, another approved": {func(g *rig) {
+			g.review(30, 7, "Smana", "CHANGES_REQUESTED")
+			g.review(30, 8, "someone", "APPROVED")
+		}, v1alpha1.PhaseAwaitingHuman, "changes_requested"},
+		"a fork": {func(g *rig) { g.editPR(func(p *forge.PR) { p.CrossRepository = true }) }, v1alpha1.PhaseAwaitingHuman, "fork_pull_request"},
+		"a force-push by renovate": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x", forge.Push{Type: "force_push", Actor: bot, Before: "c2", After: adoptHead},
+				forge.Push{Type: "push", Actor: bot, Before: "c1", After: "c2"}, forge.Push{Type: "branch_creation", Actor: bot, After: "c1"})
+		}, v1alpha1.PhaseAwaitingHuman, "shadow_would_arm"},
+		"a rebase, the branch created again": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x", forge.Push{Type: "branch_creation", Actor: bot, After: adoptHead},
+				forge.Push{Type: "branch_deletion", Actor: bot, Before: "c1"})
+		}, v1alpha1.PhaseAwaitingHuman, "shadow_would_arm"},
+		"a push GitHub has not recorded, past its wait": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x")
+			g.editPR(func(p *forge.PR) { p.HeadCommittedAt = now.Add(-11 * time.Minute) })
+		}, v1alpha1.PhaseAwaitingHuman, "push_unrecorded"},
+		"a push GitHub has not recorded, within its wait": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x")
+			g.editPR(func(p *forge.PR) { p.HeadCommittedAt = now.Add(-2 * time.Minute) })
+		}, v1alpha1.PhaseAwaitingCI, "push_unrecorded"},
 		"a maintainer approved": {func(g *rig) { g.approve(30, "Smana") }, v1alpha1.PhaseAwaitingHuman, "maintainer_approved"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -206,7 +236,6 @@ func TestAnAdoptedLiveClassMergesThePinnedHead(t *testing.T) {
 // the broker refuses a room named "", and every adopted Task would retry forever.
 func TestAnAdoptedTaskReadsNoRoom(t *testing.T) {
 	g := adoptRig(t)
-	g.r.Rooms = noEmptyRoom{g.r.Rooms}
 	if tk := g.reconcile(t, adoptTask, 1); tk.Status.Reason != "shadow_would_arm" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
@@ -215,7 +244,6 @@ func TestAnAdoptedTaskReadsNoRoom(t *testing.T) {
 // L15: a cancelled check on Renovate's PR is handed off, never re-run by the factory.
 func TestAnAdoptedCancelledCheckHandsOff(t *testing.T) {
 	g := adoptRig(t)
-	g.r.Rooms = noEmptyRoom{g.r.Rooms}
 	g.cancelOne(30)
 	if tk := g.reconcile(t, adoptTask, 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "ci_cancelled" ||
 		len(g.f.Reruns()) != 0 {
@@ -226,7 +254,6 @@ func TestAnAdoptedCancelledCheckHandsOff(t *testing.T) {
 // R45: a red check on Renovate's PR is handed off, never fixed by a run of the factory's.
 func TestAnAdoptedRedCheckHandsOff(t *testing.T) {
 	g := adoptRig(t)
-	g.r.Rooms = noEmptyRoom{g.r.Rooms}
 	c, _ := g.f.PullRequestChecks(t.Context(), 30)
 	c.Runs[0].State = "FAILURE"
 	g.f.SetChecks(30, c)
@@ -248,5 +275,132 @@ func TestTheReleaseAgeIsAWaitedOnCheck(t *testing.T) {
 	in.Checks, _ = g.f.PullRequestChecks(t.Context(), 30)
 	if got := unreported(in, depsPatchClass()); len(got) != 1 || got[0] != ageCheck {
 		t.Fatalf("pending: %v", got)
+	}
+}
+
+// A maintainer's veto holds in a live class too: nothing merges over it.
+func TestAnAdoptedVetoHoldsInALiveClass(t *testing.T) {
+	g := adoptRig(t)
+	cl := depsPatchClass()
+	cl.Shadow, cl.Live = false, true
+	g.r.Cfg.Classes["deps-patch"] = cl
+	g.review(30, 7, "Smana", "CHANGES_REQUESTED")
+	if tk := g.reconcile(t, adoptTask, 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "changes_requested" ||
+		len(g.f.Armed()) != 0 {
+		t.Fatalf("%s %s %v", tk.Status.Phase, tk.Status.Reason, g.f.Armed())
+	}
+}
+
+// A veto the same reviewer later approved over is lifted (the supersede rule of the revise path).
+func TestALiftedVetoIsNoVeto(t *testing.T) {
+	g := adoptRig(t)
+	g.review(30, 7, "Smana", "CHANGES_REQUESTED")
+	g.review(30, 8, "Smana", "APPROVED")
+	if tk := g.reconcile(t, adoptTask, 1); tk.Status.Reason != "maintainer_approved" {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// the adoption was never read: an adopted decision that would arm or shadow refuses.
+func TestAnAdoptedDecisionNeedsItsAdoptionRead(t *testing.T) {
+	g := adoptRig(t)
+	pr, _ := g.f.PullRequest(t.Context(), 30)
+	c, _ := g.f.PullRequestChecks(t.Context(), 30)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), keyFor(adoptTask), &tk)
+	in := ArmInputs{PR: pr, Checks: c, Task: &tk, Cfg: g.r.Cfg, DiffRead: true}
+	in.Files.Base, in.Files.Head = map[string]string{depFile: "version: 3.8.3\n"}, map[string]string{depFile: "version: 3.8.4\n"}
+	in.Stats = []forge.FileStat{{Path: depFile, Status: "modified", Additions: 1, Deletions: 1}}
+	if d := DecideArm(in); d.Verdict != "human" || d.Reason != "adoption_unread" {
+		t.Fatalf("%+v", d)
+	}
+}
+
+// cleanHead is a new Renovate push: a new head, its commits and its push chain Renovate's, CI green.
+func (g *rig) cleanHead(sha string) {
+	g.editPR(func(p *forge.PR) {
+		p.HeadSHA, p.Reviews, p.CrossRepository, p.HeadCommittedAt = sha, nil, false, time.Time{}
+	})
+	g.f.SetCommits(30, forge.Commit{SHA: "c1", Author: bot}, forge.Commit{SHA: sha, Author: bot})
+	g.f.SetActivity("renovate/kyverno-3.x", forge.Push{Type: "force_push", Actor: bot, Before: "c1", After: sha},
+		forge.Push{Type: "branch_creation", Actor: bot, After: "c1"})
+	checks := green("SUCCESS")
+	checks.Statuses = append(checks.Statuses, forge.Status{Context: ageCheck, State: "SUCCESS", Creator: bot})
+	g.f.SetChecks(30, checks)
+	g.f.SetFiles(map[string]string{depFile: "version: 3.8.3\n"}, map[string]string{depFile: "version: 3.8.4\n"})
+}
+
+const newHead = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+// Ruling 3: a hand-off the adopted login's next push can clear returns to the gate on that new
+// head, and is decided again from the start; the same head stays handed off.
+func TestAnAdoptedHandOffReturnsOnANewHead(t *testing.T) {
+	for name, edit := range map[string]struct {
+		edit   func(g *rig)
+		reason string
+	}{
+		"a stranger's push": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x", forge.Push{Type: "push", Actor: "Smana", Before: "c1", After: adoptHead},
+				forge.Push{Type: "branch_creation", Actor: bot, After: "c1"})
+		}, "human_commit_in_pr"},
+		"a red check": {func(g *rig) {
+			c, _ := g.f.PullRequestChecks(t.Context(), 30)
+			c.Runs[0].State = "FAILURE"
+			g.f.SetChecks(30, c)
+		}, "ci_red"},
+		"a failed release age": {func(g *rig) { g.setStatus(30, ageCheck, "FAILURE", bot) }, "release_age_red"},
+		"an unrecorded push":   {func(g *rig) { g.f.SetActivity("renovate/kyverno-3.x") }, "push_unrecorded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := adoptRig(t)
+			edit.edit(g)
+			if tk := g.reconcile(t, adoptTask, 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != edit.reason {
+				t.Fatalf("hand-off: %s %s", tk.Status.Phase, tk.Status.Reason)
+			}
+			if tk := g.reconcile(t, adoptTask, 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != edit.reason ||
+				tk.Status.GateReentries != 0 {
+				t.Fatalf("the same head stays: %s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
+			}
+			g.cleanHead(newHead)
+			tk := g.reconcile(t, adoptTask, 1)
+			if tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.GateReentries != 1 {
+				t.Fatalf("a new head returns: %s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
+			}
+			if tk = g.reconcile(t, adoptTask, 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "shadow_would_arm" {
+				t.Fatalf("decided again: %s %s", tk.Status.Phase, tk.Status.Reason)
+			}
+		})
+	}
+}
+
+// Ruling 3: the diff, a fork and a maintainer's veto are final for the pull request: a new push
+// does not bring the task back.
+func TestAnAdoptedTerminalReasonStaysPut(t *testing.T) {
+	for name, edit := range map[string]struct {
+		edit   func(g *rig)
+		reason string
+	}{
+		"a minor": {func(g *rig) {
+			g.f.SetFiles(map[string]string{depFile: "version: 3.8.4\n"}, map[string]string{depFile: "version: 3.9.0\n"})
+		}, "class_mismatch"},
+		"a fork":   {func(g *rig) { g.editPR(func(p *forge.PR) { p.CrossRepository = true }) }, "fork_pull_request"},
+		"a veto":   {func(g *rig) { g.review(30, 7, "Smana", "CHANGES_REQUESTED") }, "changes_requested"},
+		"a branch": {func(g *rig) { g.setHeadRef(30, "feature/x") }, "branch_not_allowed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := adoptRig(t)
+			edit.edit(g)
+			if tk := g.reconcile(t, adoptTask, 1); tk.Status.Reason != edit.reason {
+				t.Fatalf("hand-off: %s %s", tk.Status.Phase, tk.Status.Reason)
+			}
+			g.cleanHead(newHead)
+			if edit.reason == "branch_not_allowed" {
+				g.setHeadRef(30, "feature/x")
+			}
+			if tk := g.reconcile(t, adoptTask, 2); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != edit.reason ||
+				tk.Status.GateReentries != 0 {
+				t.Fatalf("stays: %s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
+			}
+		})
 	}
 }

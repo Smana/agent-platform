@@ -33,7 +33,7 @@ import (
 
 const prJSON = `{"data":{"repository":{"pullRequest":{
  "id":"PR_kwDO1","number":12,"url":"https://github.com/Smana/demo/pull/12","title":"docs: fix a link","state":"OPEN",
- "headRefName":"agent/3buqdlot","headRefOid":"abc123",
+ "headRefName":"agent/3buqdlot","headRefOid":"abc123","isCrossRepository":false,
  "author":{"__typename":"Bot","login":"ogenki-agents"},
  "mergedBy":null,"mergeCommit":null,"autoMergeRequest":null,
  "labels":{"nodes":[{"name":"factory/class:docs-links"}]},
@@ -275,6 +275,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			return
 		}
 		if strings.Contains(string(b), "pullRequest(") {
+			if strings.Contains(string(b), `"number":13`) {
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"isCrossRepository":false`, `"isCrossRepository":true`, 1))
+				return
+			}
 			_, _ = io.WriteString(w, prJSON)
 			return
 		}
@@ -747,6 +751,18 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	return &rig{g: g, gh: gh, clk: clk, opts: o, keyTo: keyFile}
+}
+
+// A pull request from a fork says so: the adopted author mode refuses it by this field.
+func TestPullRequestReadsAFork(t *testing.T) {
+	r := newRig(t)
+	pr, err := r.g.PullRequest(t.Context(), 12)
+	if err != nil || pr.CrossRepository {
+		t.Fatalf("the own repository's: %+v %v", pr, err)
+	}
+	if pr, err = r.g.PullRequest(t.Context(), 13); err != nil || !pr.CrossRepository {
+		t.Fatalf("a fork's: %+v %v", pr, err)
+	}
 }
 
 func TestPullRequestSnapshot(t *testing.T) {

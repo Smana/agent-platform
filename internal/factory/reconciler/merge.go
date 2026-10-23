@@ -88,6 +88,12 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
 	cl := gateOf(r.repo(t), t.Spec.PredictedClass)
 	adopted := cl.Adopted()
+	if adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+		// Read once, before any decision that could arm or shadow: the evidence never passes unread.
+		if in.Adoption, err = r.adoption(ctx, t, pr, cl); err != nil {
+			return err
+		}
+	}
 	if !adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
 		// An adopted task has no room and no run (M12): the head is the pull request's, as read.
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
@@ -113,13 +119,12 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return ferr
 		default:
 			in.Files.Base, in.Files.Head, in.Stats, in.DiffRead = diff.Base, diff.Head, diff.Files, true
-			if adopted {
-				if in.Adoption, err = r.adoption(ctx, t, pr, cl); err != nil {
-					return err
-				}
-			}
 			d = DecideArm(in)
 		}
+	}
+	if adopted && d.Reason == "push_unrecorded" && r.Now().Before(pr.HeadCommittedAt.Add(pushRecordWaitAdopted)) {
+		// GitHub records a push a little after it lands: wait for the head's, then hand off.
+		d = ArmDecision{Verdict: "wait", Reason: "push_unrecorded", Matched: d.Matched}
 	}
 	if !adopted && (d.Verdict == "arm" || d.Verdict == "shadow") {
 		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
@@ -234,6 +239,21 @@ const maxGateReentries = 3
 // re-reviews it itself.
 func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
 	why := t.Status.Reason
+	if gateOf(r.repo(t), t.Spec.PredictedClass).Adopted() {
+		// An adopted hand-off the author's next push can clear returns on that new head (the whole
+		// gate decides it again, a veto and the push chain included); a diff, a fork or a veto
+		// never comes back. The cap bounds the returns.
+		switch why {
+		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded":
+		default:
+			return false, nil
+		}
+		if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA == t.Status.PullRequest.HeadSHA {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_new_head", pr.HeadSHA)
+		return true, nil
+	}
 	switch why {
 	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
 	default:
@@ -445,11 +465,7 @@ func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head s
 // adoption reads what an adopted class's author mode decides on: every commit's author, the head
 // among them, and who pushed the branch. A list past GitHub's cap, or one without the head, is a
 // stranger's. An adopted task never waits for a push to be recorded: there is no run to finish.
-func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR, cl config.Class) (a struct {
-	Read          bool
-	CommitAuthors []string
-	Pushed        pushCheck
-}, err error) {
+func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR, cl config.Class) (a Adoption, err error) {
 	a.Read = true
 	cs, err := r.gh(ctx).PullRequestCommits(ctx, t.Status.PullRequest.Number)
 	switch {
@@ -468,6 +484,10 @@ func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR
 	a.Pushed, err = r.pushedBy(ctx, pr.HeadRef, cl.Author.Adopt.Logins, pr.HeadSHA)
 	return a, err
 }
+
+// pushRecordWaitAdopted is how long, from the head's commit time, an adopted head's push is waited
+// for in GitHub's activity before the task hands off: there is no run whose finish could date it.
+const pushRecordWaitAdopted = 10 * time.Minute
 
 // pushedBy is factoryPushed over any branch and any set of logins.
 func (r *Reconciler) pushedBy(ctx context.Context, branch string, logins []string, head string) (pushCheck, error) {

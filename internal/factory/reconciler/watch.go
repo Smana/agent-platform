@@ -196,22 +196,31 @@ func (r *Reconciler) changesRequested(t *v1alpha1.Task, pr forge.PR) []forge.Rev
 		return nil
 	}
 	since := current(t).Started
+	var out []forge.Review
+	for _, rv := range openChangeRequests(pr.Reviews) {
+		if r.repo(t).IsMaintainer(rv.Author) && !slices.Contains(t.Status.Handled, rv.ID) && (since == nil || rv.At.After(since.Time)) {
+			out = append(out, rv)
+		}
+	}
+	slices.SortFunc(out, func(a, b forge.Review) int { return cmp.Compare(a.ID, b.ID) })
+	return out
+}
+
+// openChangeRequests are the CHANGES_REQUESTED reviews their author has not approved over since,
+// oldest first as GitHub lists them: a login's later APPROVED review lifts its earlier requests.
+func openChangeRequests(reviews []forge.Review) []forge.Review {
 	approvedAt := map[string]int{} // a login's latest approval, by index; logins fold case
-	for i, rv := range pr.Reviews {
+	for i, rv := range reviews {
 		if rv.State == "APPROVED" {
 			approvedAt[strings.ToLower(rv.Author)] = i
 		}
 	}
 	var out []forge.Review
-	for i, rv := range pr.Reviews {
-		last, approved := approvedAt[strings.ToLower(rv.Author)]
-		superseded := approved && last > i
-		if rv.State == "CHANGES_REQUESTED" && r.repo(t).IsMaintainer(rv.Author) && !superseded &&
-			!slices.Contains(t.Status.Handled, rv.ID) && (since == nil || rv.At.After(since.Time)) {
+	for i, rv := range reviews {
+		if last, approved := approvedAt[strings.ToLower(rv.Author)]; rv.State == "CHANGES_REQUESTED" && (!approved || last < i) {
 			out = append(out, rv)
 		}
 	}
-	slices.SortFunc(out, func(a, b forge.Review) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 

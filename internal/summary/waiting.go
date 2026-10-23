@@ -100,6 +100,10 @@ func reasons() map[string]string {
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
+		"changes_requested":         "a reviewer requested changes, and the factory does not merge over them",
+		"fork_pull_request":         "it comes from a fork, which the factory never adopts",
+		"push_unrecorded":           "GitHub has not recorded the push of its head",
+		"adoption_unread":           "who authored its commits and pushed its branch could not be read",
 		"not_adopted_author":        "it is not authored by a login the class adopts",
 		"branch_not_allowed":        "its branch is not one the class adopts",
 		"release_age_pending":       "the release age check has not passed yet",
@@ -170,6 +174,8 @@ func nextStep(reason string) string {
 		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
+	case "push_unrecorded":
+		return "nothing to do: the task goes on when GitHub records the push, or hands off after 10 minutes"
 	case "release_age_pending":
 		return "nothing to do: the task goes on when the release age check passes"
 	case "holdout_pending":

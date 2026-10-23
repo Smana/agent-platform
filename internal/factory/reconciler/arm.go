@@ -38,11 +38,14 @@ type ArmInputs struct {
 	ClassArmedToday int
 	// Adoption is what an adopted class's author mode reads beyond the pull request (MC10): the
 	// commits' authors and who pushed the branch. Read is false until awaitingCI has read them.
-	Adoption struct {
-		Read          bool
-		CommitAuthors []string
-		Pushed        pushCheck
-	}
+	Adoption Adoption
+}
+
+// Adoption is what an adopted class's author mode reads beyond the pull request (MC10).
+type Adoption struct {
+	Read          bool
+	CommitAuthors []string
+	Pushed        pushCheck
 }
 
 // ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | ci_cancelled | escalate | human.
@@ -105,6 +108,11 @@ func DecideArm(in ArmInputs) ArmDecision {
 		if rv.State == "APPROVED" && rc.IsMaintainer(rv.Author) {
 			return human("maintainer_approved", "review") // success came from a human: a human merges
 		}
+	}
+	// An agents pull request answers a veto with a revision run (watch.go). An adopted one has no
+	// run, so the veto is the gate's: nothing merges, or is counted as would-merge, over it.
+	if cl.Adopted() && len(openChangeRequests(in.PR.Reviews)) > 0 {
+		return human("changes_requested", class)
 	}
 	if !cl.Live && !cl.Shadow {
 		return human("class_mismatch", "live") // the diff matched a live class the triage did not predict
@@ -215,6 +223,9 @@ func agentEvidence(in ArmInputs) string {
 // of the class's logins and its head branch matches one of its branches. Both are read from
 // GitHub, never from the description.
 func adoptAuthor(in ArmInputs, cl config.Class) string {
+	if in.PR.CrossRepository {
+		return "fork_pull_request" // the branch name and the author are a fork's to choose
+	}
 	a := cl.Author.Adopt
 	if !slices.ContainsFunc(a.Logins, func(l string) bool { return forge.SameLogin(in.PR.Author, l) }) {
 		return "not_adopted_author"
@@ -229,10 +240,10 @@ func adoptAuthor(in ArmInputs, cl config.Class) string {
 
 // adoptEvidence is the adopted mode's evidence in place of the agents': every commit of the pull
 // request is one of the class's logins' and so is every push of its branch (GitHub's record, not
-// a claim). It holds until awaitingCI has read both.
+// a claim). A decision that has not read both never passes: awaitingCI reads them first.
 func adoptEvidence(in ArmInputs, cl config.Class) string {
 	if !in.Adoption.Read {
-		return ""
+		return "adoption_unread"
 	}
 	logins := cl.Author.Adopt.Logins
 	for _, a := range in.Adoption.CommitAuthors {
@@ -240,7 +251,11 @@ func adoptEvidence(in ArmInputs, cl config.Class) string {
 			return "human_commit_in_pr"
 		}
 	}
-	if in.Adoption.Pushed != pushFactory {
+	switch in.Adoption.Pushed {
+	case pushFactory:
+	case pushUnrecorded:
+		return "push_unrecorded" // awaitingCI waits for it a while before it hands off
+	default:
 		return "human_commit_in_pr"
 	}
 	return ""

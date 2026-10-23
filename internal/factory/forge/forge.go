@@ -132,6 +132,8 @@ type PR struct {
 	HeadRef     string
 	HeadSHA     string
 	HeadMessage string
+	// CrossRepository: the head is a branch of a fork, not of this repository.
+	CrossRepository bool
 	// The head commit's committer date: set by whoever committed, so a claim like Trailer's.
 	HeadCommittedAt time.Time
 	MergedBy        string
