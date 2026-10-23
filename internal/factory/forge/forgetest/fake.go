@@ -45,6 +45,9 @@ type Fake struct {
 	filesBase    map[string]string
 	filesHead    map[string]string
 	fileStats    []forge.FileStat
+	runs         []forge.WorkflowRun
+	artifacts    map[int64][]byte
+	mainFiles    map[string]string
 	diffErr      error
 	open         []forge.PRSummary
 	created      []string
@@ -401,6 +404,45 @@ func (f *Fake) SetDiffError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.diffErr = err
+}
+
+// SetRuns sets the workflow runs WorkflowRuns returns, and each run's findings artifact.
+func (f *Fake) SetRuns(runs []forge.WorkflowRun, artifacts map[int64][]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs, f.artifacts = slices.Clone(runs), maps.Clone(artifacts)
+}
+
+// SetMainFiles sets the files FileAt reads, at any ref.
+func (f *Fake) SetMainFiles(files map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mainFiles = maps.Clone(files)
+}
+
+// WorkflowRuns implements the Merger's WorkflowRuns.
+func (f *Fake) WorkflowRuns(context.Context, string) ([]forge.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.runs), nil
+}
+
+// RunArtifact implements the Merger's RunArtifact: the run's artifact as SetRuns gave it.
+func (f *Fake) RunArtifact(_ context.Context, id int64, name, _ string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.artifacts[id]
+	if !ok {
+		return nil, fmt.Errorf("forgetest: run %d has no artifact %q", id, name)
+	}
+	return b, nil
+}
+
+// FileAt implements the Merger's FileAt.
+func (f *Fake) FileAt(_ context.Context, path, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mainFiles[path], nil
 }
 
 // SetFileStats sets the changed-file list Diff returns in place of the one SetFiles implies.

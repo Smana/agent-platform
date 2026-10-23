@@ -26,6 +26,17 @@ func (Absent) CommitChecks(context.Context, string) ([]Check, error) { return ni
 // RerunCheck implements Merger.
 func (Absent) RerunCheck(context.Context, int64) error { return ErrNoMerger }
 
+// WorkflowRuns implements the Merger's WorkflowRuns and fails closed.
+func (Absent) WorkflowRuns(context.Context, string) ([]WorkflowRun, error) { return nil, ErrNoMerger }
+
+// RunArtifact implements the Merger's RunArtifact and fails closed.
+func (Absent) RunArtifact(context.Context, int64, string, string) ([]byte, error) {
+	return nil, ErrNoMerger
+}
+
+// FileAt implements the Merger's FileAt and fails closed.
+func (Absent) FileAt(context.Context, string, string) (string, error) { return "", ErrNoMerger }
+
 // Diff implements the Merger's Diff and fails closed.
 func (Absent) Diff(context.Context, string, string) (Diff, error) { return Diff{}, ErrNoMerger }
 
