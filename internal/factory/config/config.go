@@ -213,10 +213,11 @@ func (r *Repository) IsMaintainer(login string) bool {
 	return slices.ContainsFunc(r.Maintainers, func(m string) bool { return strings.EqualFold(m, login) })
 }
 
-// NeedsMerger reports whether a class of the repository is live or in shadow.
+// NeedsMerger reports whether a class of the repository is live, in shadow or monitored: a
+// monitor reads main's checks and writes labels through the merger App.
 func (r *Repository) NeedsMerger() bool {
 	for _, cl := range r.Classes {
-		if cl.Live || cl.Shadow {
+		if cl.Live || cl.Shadow || cl.Monitor != nil {
 			return true
 		}
 	}

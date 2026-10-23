@@ -140,12 +140,14 @@ func TestAFullPageInsideTheWindowIsTruncated(t *testing.T) {
 		}
 	}
 	g := declaredRig(t)
+	followUpBreaker(g)    // the extended ledger reads, and the truncation check with them, are keyed on
 	fill(g, 90*time.Hour) // the oldest created merged most recently: older pages could hold more
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "ledger_truncated" ||
 		len(g.f.Armed()) != 0 {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 	g = declaredRig(t)
+	followUpBreaker(g)
 	fill(g, 500*time.Hour) // the oldest merged longest ago: the page holds the window
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAutoMerging {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)

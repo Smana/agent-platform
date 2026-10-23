@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,7 +79,12 @@ func (r *Reconciler) monitorDue(t *v1alpha1.Task) bool {
 		return false
 	}
 	cl, ok := r.repo(t).Classes[t.Spec.PredictedClass]
-	return ok && cl.Monitor != nil && (t.Status.Monitor == nil || !t.Status.Monitor.Posted)
+	if !ok || cl.Monitor == nil || (t.Status.Monitor != nil && t.Status.Monitor.Posted) {
+		return false
+	}
+	// Declaring a monitor never back-fills history: a merge whose window is already over, counted
+	// from GitHub's merge time, starts no watch.
+	return t.Status.Monitor != nil || r.Now().Sub(ref.MergedAt.Time) <= cl.Monitor.FollowUpWindow.Duration+searchLag
 }
 
 // Worst is the monitor's verdict over its signals: regression over inconclusive over healthy; ""
@@ -164,11 +170,12 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 			class, verdict := t.Spec.PredictedClass, m.Verdict
 			record(ctx, func(ctx context.Context) { r.Metrics.MonitorVerdict(ctx, class, verdict) })
 		}
-		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), false))
+		demotes := r.repo(t).Merge.Breaker.MaxFollowUps > 0
+		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), false, demotes))
 		if m.Verdict == "regression" {
 			// M2: its own key, or narrateOn drops it as the PR's comment already queued.
-			if n := r.Cfg.ControlFor().Issue; n > 0 {
-				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), true))
+			if n := r.controlIssue(t); n > 0 {
+				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), true, demotes))
 			}
 		}
 		m.Posted = m.Verdict != "regression" || ended // a regression is posted at once and watched on for follow-ups
@@ -477,7 +484,17 @@ func (r *Reconciler) followUpFound(ctx context.Context, t *v1alpha1.Task, p forg
 	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "follow_up") })
 	narrateOn(t, ref.Number, narrate.FollowUpFound(t, ref.Number, p.Number, false))
-	if n := r.Cfg.ControlFor().Issue; n > 0 {
+	if n := r.controlIssue(t); n > 0 {
 		narrateOn(t, n, narrate.FollowUpFound(t, ref.Number, p.Number, true))
 	}
+}
+
+// controlIssue is the kill switch's issue when it lives on the task's repository, else 0: a
+// comment is posted through the task's repository, so another repository's issue of the same
+// number is never its to write (as intake's controlIssue decides).
+func (r *Reconciler) controlIssue(t *v1alpha1.Task) int {
+	if ctl := r.Cfg.ControlFor(); ctl.Issue > 0 && strings.EqualFold(ctl.Repository, t.Spec.Repository) {
+		return ctl.Issue
+	}
+	return 0
 }

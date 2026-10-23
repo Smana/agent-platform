@@ -507,3 +507,17 @@ func TestChecksNeverReportedSaysWhatAndHowLong(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 }
+
+// A regression is demoted only when the breaker counts follow-ups and regressions
+// (breaker.maxFollowUps > 0); at 0 it is recorded and counts toward nothing, and the text says so.
+func TestAMonitorRegressionSaysWhatItCosts(t *testing.T) {
+	tk := &v1alpha1.Task{Spec: v1alpha1.TaskSpec{PredictedClass: "dead-links"}}
+	on := MonitorVerdict(tk, 12, "regression", []string{"main CI: regression"}, false, true).Body
+	off := MonitorVerdict(tk, 12, "regression", []string{"main CI: regression"}, false, false).Body
+	if !strings.Contains(on, "demoted at its next decision") || strings.Contains(off, "demoted") || !strings.Contains(off, "not counted") {
+		t.Fatalf("on %q off %q", on, off)
+	}
+	if got := Reason("class_paused"); !strings.Contains(got, "follow-up") || !strings.Contains(got, "revert") {
+		t.Fatalf("class_paused names every cause: %q", got)
+	}
+}

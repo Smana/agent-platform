@@ -684,7 +684,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 	class := t.Spec.PredictedClass
 	record(ctx, func(ctx context.Context) { r.Metrics.PROutcome(ctx, class, "reverted") })
 	narrateOn(t, ref.Number, narrate.RevertOpened(t, rv.Number, why))
-	if n := r.Cfg.ControlFor().Issue; n > 0 { // R41: where the kill switch lives
+	if n := r.controlIssue(t); n > 0 { // R41: where the kill switch lives
 		b := r.repo(t).Merge.Breaker
 		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
 	}

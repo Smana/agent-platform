@@ -40,6 +40,16 @@ func (g *rig) setDone(t *testing.T, name string, n int, who, sha string, at time
 		HeadRef: "agent/" + name, MergedBy: who, MergedAt: at, MergeCommitSHA: sha})
 }
 
+// ended runs the watch of a merge made 167 h ago: its first pass starts it inside the window, and
+// a pass 2 h later (past followUpWindow plus searchLag) ends it. Declaring a monitor never
+// back-fills a merge whose window is already over, so a window ends only by being watched.
+func (g *rig) ended(t *testing.T) *v1alpha1.Task {
+	t.Helper()
+	g.reconcile(t, "3buqdlot", 1)
+	g.r.Now = func() time.Time { return now.Add(2 * time.Hour) }
+	return g.reconcile(t, "3buqdlot", 2)
+}
+
 // monitorRig: task 3buqdlot of a monitored class, merged by a maintainer 2 h ago at PR 12 as
 // mSHA, which changed website/content/docs/a.md line 7.
 func monitorRig(t *testing.T) *rig {
@@ -158,8 +168,8 @@ func TestMainSignal(t *testing.T) {
 // reconciler's books. A class without monitor is never watched (R29).
 func TestTheVerdictClosesTheWatch(t *testing.T) {
 	g := monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
-	tk := g.reconcile(t, "3buqdlot", 2)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
+	tk := g.ended(t)
 	if tk.Status.Monitor.Verdict != "healthy" || !tk.Status.Monitor.Posted || !contains(g.f.Comments(12), "verdict=healthy") ||
 		!slices.Contains(g.f.Added(12), MergedLabel("dead-links")) {
 		t.Fatalf("%+v %q", tk.Status.Monitor, g.f.Comments(12))
@@ -232,14 +242,14 @@ func TestAnUnreadFollowUpIsInconclusive(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := monitorRig(t)
-			g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+			g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
 			p := later(20, "Smana", "fix")
 			p.MergedAt = now.Add(-100 * time.Hour)
 			g.f.SetMerged(p)
 			g.f.SetPullFiles(20, overlapping)
 			g.f.SetBlame("bbbb0", testFile, mBlame...)
 			arm(g)
-			tk := g.reconcile(t, "3buqdlot", 1)
+			tk := g.ended(t)
 			m := tk.Status.Monitor
 			if m.Verdict != "inconclusive" || len(m.FollowUps) != 0 || !m.Posted {
 				t.Fatalf("%+v", m)
@@ -256,16 +266,16 @@ func TestAnUnreadFollowUpIsInconclusive(t *testing.T) {
 // read of a window the later half does cover (a younger merge) is complete and stays healthy.
 func TestANarrowedReadIsInconclusive(t *testing.T) {
 	g := monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
 	g.f.TruncateMergedBefore(now.Add(-100 * time.Hour))
-	tk := g.reconcile(t, "3buqdlot", 1)
+	tk := g.ended(t)
 	if m := tk.Status.Monitor; m.Verdict != "inconclusive" || !m.FollowUpsUnread || len(m.FollowUps) != 0 {
 		t.Fatalf("a half-read window is not healthy: %+v", m)
 	}
 	g = monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
 	g.f.TruncateMergedBefore(now.Add(-170 * time.Hour)) // nothing truncates: the whole window reads
-	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Monitor.Verdict != "healthy" {
+	if tk := g.ended(t); tk.Status.Monitor.Verdict != "healthy" {
 		t.Fatalf("a whole read is healthy: %+v", tk.Status.Monitor)
 	}
 }
@@ -368,13 +378,13 @@ func TestRebaseMergesAreReadOnlyWhenSafe(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := monitorRig(t)
-			g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+			g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
 			p := later(20, "Smana", "fix")
 			p.MergedAt, p.Commits, p.ParentPulls = now.Add(-100*time.Hour), c.commits, c.parents
 			g.f.SetMerged(p)
 			g.f.SetPullFiles(20, overlapping)
 			g.f.SetBlame("bbbb0", testFile, mBlame...)
-			m := g.reconcile(t, "3buqdlot", 1).Status.Monitor
+			m := g.ended(t).Status.Monitor
 			if got := slices.Contains(m.FollowUps, 20); got != c.follow || m.FollowUpsUnread == c.follow {
 				t.Fatalf("follow-up %v unread %v: %+v", got, m.FollowUpsUnread, m)
 			}
@@ -392,8 +402,8 @@ func TestAnOpenSignalIsInconclusiveAtTheEnd(t *testing.T) {
 	cl := g.r.Cfg.Classes["dead-links"]
 	cl.Monitor.OracleRuns, cl.Monitor.Flux = 2, &config.FluxWatch{Source: "flux-system/cnref", Within: config.Duration{Duration: time.Hour}}
 	g.r.Cfg.Classes["dead-links"] = cl
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
-	m := g.reconcile(t, "3buqdlot", 1).Status.Monitor
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
+	m := g.ended(t).Status.Monitor
 	if m.Oracle != "inconclusive" || m.Flux != "inconclusive" || m.Verdict != "inconclusive" || m.Main != "healthy" {
 		t.Fatalf("%+v", m)
 	}
@@ -402,19 +412,19 @@ func TestAnOpenSignalIsInconclusiveAtTheEnd(t *testing.T) {
 // The verdict comment says how many follow-ups were counted, beside a healthy verdict.
 func TestTheVerdictNamesItsFollowUps(t *testing.T) {
 	g := monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
 	p := later(20, "Smana", "fix")
 	p.MergedAt = now.Add(-100 * time.Hour)
 	g.f.SetMerged(p)
 	g.f.SetPullFiles(20, overlapping)
 	g.f.SetBlame("bbbb0", testFile, mBlame...)
-	g.reconcile(t, "3buqdlot", 1)
+	g.ended(t)
 	if cs := g.f.Comments(12); !contains(cs, "verdict=healthy") || !contains(cs, "follow_ups=1") {
 		t.Fatalf("%q", cs)
 	}
 	g = monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
-	g.reconcile(t, "3buqdlot", 1)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
+	g.ended(t)
 	if !contains(g.f.Comments(12), "follow_ups=0") {
 		t.Fatalf("%q", g.f.Comments(12))
 	}
@@ -445,8 +455,8 @@ func TestTheMonitorCachesAreBounded(t *testing.T) {
 		t.Fatal("the throttle entry goes with the horizon")
 	}
 	g = monitorRig(t)
-	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
-	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.Monitor.Posted {
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-167*time.Hour))
+	if tk := g.ended(t); !tk.Status.Monitor.Posted {
 		t.Fatal("posted")
 	}
 	if _, ok := g.r.mon.lastPass("3buqdlot"); ok {

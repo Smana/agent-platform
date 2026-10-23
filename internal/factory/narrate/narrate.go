@@ -248,7 +248,7 @@ func reasons() map[string]string {
 		"holdout_pending":           "a holdout check its class requires has not passed yet",
 		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"foreign_trailer":           "its head commit comes from another task's run",
-		"class_paused":              "auto-merge of this class is paused after a revert",
+		"class_paused":              "auto-merge of this class is paused after a revert, a follow-up fix or a regression in its recent merges",
 		"ledger_truncated":          "the merge ledger read is incomplete (a full page of 100 labelled pull requests), so the factory does not arm",
 		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
@@ -539,14 +539,18 @@ func RevertStalled(t *v1alpha1.Task, number int) Event {
 
 // MonitorVerdict is the post-merge monitor's reading of pull request n (MC7), with the signals it
 // read. control gives the copy on the control issue its own key (M2).
-func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, control bool) Event {
+func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, control, demotes bool) Event {
 	key := fmt.Sprintf("monitor-%d verdict=%s", n, verdict)
 	if control {
 		key = fmt.Sprintf("monitor-%d control verdict=%s", n, verdict)
 	}
 	body := fmt.Sprintf("Agent factory monitor of #%d (`%s`): **%s**. %s", n, t.Spec.PredictedClass, verdict, strings.Join(why, " · "))
 	if verdict == "regression" {
-		body += "\n\nThe class is demoted at its next decision (breaker.maxFollowUps); nothing is reverted (MC7)."
+		if demotes {
+			body += "\n\nThe class is demoted at its next decision (breaker.maxFollowUps); nothing is reverted (MC7)."
+		} else {
+			body += "\n\nbreaker.maxFollowUps is 0: this regression is recorded but not counted toward the breaker; nothing is reverted (MC7)."
+		}
 	}
 	return Event{Key: key, Body: body}
 }

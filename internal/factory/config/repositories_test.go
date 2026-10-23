@@ -183,3 +183,15 @@ func TestBadRepositoriesFail(t *testing.T) {
 		})
 	}
 }
+
+// A class that declares a monitor reads main's checks through the merger, so it needs the key as
+// live and shadow do.
+func TestAMonitoredClassNeedsTheMerger(t *testing.T) {
+	r := &Repository{Classes: map[string]Class{"dead-links": {Monitor: &Monitor{}}}}
+	if !r.NeedsMerger() {
+		t.Fatal("monitor needs the merger")
+	}
+	if (&Repository{Classes: map[string]Class{"x": {}}}).NeedsMerger() {
+		t.Fatal("an off class does not")
+	}
+}

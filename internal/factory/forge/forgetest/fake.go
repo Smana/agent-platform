@@ -68,6 +68,7 @@ type Fake struct {
 	blame        map[string][]forge.BlameRange
 	blameCalls   int
 	mergedErr    error
+	labelReads   []string  // the labels PullsWithLabel was asked for, in order
 	mergedCutoff time.Time // MergedSince truncates a read that starts before it
 	filesErr     map[int]error
 	blameErr     map[string]error
@@ -733,6 +734,7 @@ func (f *Fake) FailLabelReadsFor(label string, err error) {
 func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.LabelledPull, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.labelReads = append(f.labelReads, label)
 	if f.labelErr != nil {
 		return nil, f.labelErr
 	}
@@ -747,6 +749,13 @@ func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.Labelled
 	}
 	slices.Reverse(out)
 	return out, nil
+}
+
+// LabelReads are the labels PullsWithLabel was asked for, in order.
+func (f *Fake) LabelReads() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.labelReads)
 }
 
 // OpenPullRequests implements the forge's OpenPullRequests.

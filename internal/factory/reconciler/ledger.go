@@ -104,9 +104,15 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 	if byClass, ok := r.ledger.byRepo[rc.Name]; ok {
 		return byClass, nil
 	}
-	rg, err := r.merger(ctx).PullsWithLabel(ctx, RegressionLabel)
-	if err != nil {
-		return nil, fmt.Errorf("read the merge ledger: %w", err)
+	// Off by default: without a monitor or maxFollowUps the ledger reads what it always read, the
+	// auto-merged list per class and each merge's revert; nothing below is asked of GitHub.
+	ext := rc.AnyMonitored() || rc.Merge.Breaker.MaxFollowUps > 0
+	var rg []forge.LabelledPull
+	if ext {
+		var err error
+		if rg, err = r.merger(ctx).PullsWithLabel(ctx, RegressionLabel); err != nil {
+			return nil, fmt.Errorf("read the merge ledger: %w", err)
+		}
 	}
 	regressed, oldestRegressed := make(map[int]bool, len(rg)), 0
 	for _, p := range rg {
@@ -121,12 +127,14 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 		if err != nil {
 			return nil, fmt.Errorf("read the merge ledger: %w", err)
 		}
-		all, err := r.merger(ctx).PullsWithLabel(ctx, MergedLabel(class))
-		if err != nil {
-			return nil, fmt.Errorf("read the merge ledger: %w", err)
-		}
-		if r.pageTruncated(auto, rc.Merge.Breaker.Window) || r.pageTruncated(all, rc.Merge.Breaker.Window) {
-			return nil, errLedgerTruncated
+		var all []forge.LabelledPull
+		if ext {
+			if all, err = r.merger(ctx).PullsWithLabel(ctx, MergedLabel(class)); err != nil {
+				return nil, fmt.Errorf("read the merge ledger: %w", err)
+			}
+			if r.pageTruncated(auto, rc.Merge.Breaker.Window) || r.pageTruncated(all, rc.Merge.Breaker.Window) {
+				return nil, errLedgerTruncated
+			}
 		}
 		var ms []Merge
 		at := map[int]int{}
@@ -146,7 +154,7 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 		}
 		newestFirst(ms)
 		for i := range ms[:min(len(ms), rc.Merge.Breaker.Window)] {
-			if len(rg) >= ledgerPage && ms[i].Number < oldestRegressed {
+			if ext && len(rg) >= ledgerPage && ms[i].Number < oldestRegressed {
 				return nil, errLedgerTruncated // its regression label may be past the page
 			}
 			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
@@ -156,6 +164,9 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 				return nil, fmt.Errorf("read the merge ledger: %w", err)
 			}
 			ms[i].Reverted = len(rv) > 0
+			if !ext {
+				continue
+			}
 			// A fix in review is not yet a fix: only a merged follow-up counts.
 			fu, err := r.merger(ctx).PullsWithLabel(ctx, FollowUpOfLabel(ms[i].Number))
 			if err != nil {
