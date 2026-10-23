@@ -278,6 +278,11 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `[{"number":901,"pull_request":{"url":"x"}}]`)
 			return
 		}
+		if q.Get("labels") == "factory/child-of:#9" { // a list longer than one page
+			w.Header().Set("Link", `<https://api.github.com/repos/Smana/demo/issues?page=2>; rel="next"`)
+			_, _ = io.WriteString(w, `[{"number":41,"id":4101,"state":"open"}]`)
+			return
+		}
 		if q.Get("labels") == "factory/child-of:#7" {
 			if q.Get("state") != "all" {
 				t.Errorf("a split's parts are read open or closed: %v", q)
@@ -321,6 +326,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			Labels      []string
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Title == "refused" {
+			http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+			return
+		}
 		if in.Title != "Part 1 of 2 of #7" || !slices.Equal(in.Labels, []string{"factory/child-of:#7", "class:docs"}) {
 			t.Errorf("create %+v", in)
 		}
@@ -334,6 +343,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			SubIssueID int64 `json:"sub_issue_id"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if r.PathValue("n") == "8" {
+			http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+			return
+		}
 		if r.PathValue("n") != "7" || in.SubIssueID != 3101 {
 			t.Errorf("sub-issue %s %+v", r.PathValue("n"), in)
 		}
@@ -343,6 +356,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	mux.HandleFunc("PATCH /repos/Smana/demo/issues/{n}", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		var in map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&in)
+		if r.PathValue("n") == "8" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
 		if r.PathValue("n") != "7" || in["state"] != "closed" || in["state_reason"] != "completed" {
 			t.Errorf("close %s %v", r.PathValue("n"), in)
 		}
@@ -1460,5 +1477,24 @@ func TestIssuesAreOpenedLinkedAndClosed(t *testing.T) {
 	all, err := r.g.IssuesLabelled(ctx, "factory/child-of:#7")
 	if err != nil || len(all) != 1 || all[0].Number != 31 || all[0].ID != 3101 || !strings.Contains(all[0].Body, "split=3buqdlot/1") {
 		t.Fatalf("%+v %v", all, err)
+	}
+}
+
+// A list that does not fit one page is an error, never a short list read as a missing part (a
+// duplicate child); a refused create, link or close returns the forge's error.
+func TestIssueCallsFailLoudly(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.g.IssuesLabelled(ctx, "factory/child-of:#9"); err == nil {
+		t.Error("a second page was ignored")
+	}
+	if _, err := r.g.CreateIssue(ctx, "refused", "b", nil); err == nil {
+		t.Error("a 422 on create was swallowed")
+	}
+	if err := r.g.AddSubIssue(ctx, 8, 1); err == nil {
+		t.Error("a 422 on the link was swallowed")
+	}
+	if err := r.g.CloseIssue(ctx, 8); err == nil {
+		t.Error("a 404 on close was swallowed")
 	}
 }

@@ -112,3 +112,22 @@ func TestFMergeRefusesAMovedHead(t *testing.T) {
 		t.Fatalf("the merge records the decided head: %v", a)
 	}
 }
+
+// A created issue is numbered above every seeded one, and creates and closes can be made to fail.
+func TestFakeIssuesNeverCollideAndCanFail(t *testing.T) {
+	f := NewFake()
+	f.SetIssue(forge.Issue{Number: 501, Title: "seeded"})
+	iss, err := f.CreateIssue(t.Context(), "t", "b", nil)
+	if err != nil || iss.Number <= 501 {
+		t.Fatalf("%+v %v", iss, err)
+	}
+	boom := errors.New("boom")
+	f.FailCreates(boom)
+	f.FailCloses(boom)
+	if _, err := f.CreateIssue(t.Context(), "t", "b", nil); !errors.Is(err, boom) {
+		t.Errorf("create: %v", err)
+	}
+	if err := f.CloseIssue(t.Context(), iss.Number); !errors.Is(err, boom) {
+		t.Errorf("close: %v", err)
+	}
+}

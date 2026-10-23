@@ -63,6 +63,8 @@ type Fake struct {
 	files        map[string]string // default-branch files by path; "!" fails the read
 	calls        []string
 	subErr       error
+	createErr    error
+	closeErr     error
 	nextID       int64
 }
 
@@ -269,8 +271,14 @@ func (f *Fake) ClosePR(_ context.Context, n int) error {
 func (f *Fake) CreateIssue(_ context.Context, title, body string, labels []string) (forge.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return forge.Issue{}, f.createErr
+	}
 	f.created = append(f.created, title+"\n"+body+"\nlabels: "+strings.Join(labels, ","))
 	n := 500 + len(f.created)
+	for k := range f.issues { // above every seeded issue: a number is never reused
+		n = max(n, k+1)
+	}
 	i := forge.Issue{Number: n, ID: int64(9000 + n), Title: title, Body: body, State: "OPEN",
 		Author: "ogenki-agent-factory[bot]", Labels: slices.Clone(labels)}
 	f.issues[n] = i
@@ -305,11 +313,28 @@ func (f *Fake) FailSubIssues(err error) {
 	f.subErr = err
 }
 
+// FailCreates makes every CreateIssue fail with err.
+func (f *Fake) FailCreates(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createErr = err
+}
+
+// FailCloses makes every CloseIssue fail with err.
+func (f *Fake) FailCloses(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeErr = err
+}
+
 // CloseIssue implements the forge's CloseIssue: the stored issue reads CLOSED, "close-issue n" in Calls.
 func (f *Fake) CloseIssue(_ context.Context, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, fmt.Sprintf("close-issue %d", n))
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	if i, ok := f.issues[n]; ok {
 		i.State = "CLOSED"
 		f.issues[n] = i

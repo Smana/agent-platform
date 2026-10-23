@@ -316,11 +316,14 @@ func restIssue(i *github.Issue) Issue {
 // IssuesLabelled are the issues carrying label, open or closed: one page of 100, since a split
 // opens at most five parts under one label. Pull requests are left out.
 func (g *GitHub) IssuesLabelled(ctx context.Context, label string) ([]Issue, error) {
-	iss, _, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, &github.IssueListByRepoOptions{
+	iss, resp, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, &github.IssueListByRepoOptions{
 		State: "all", Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
 	g.mark(err)
 	if err != nil {
 		return nil, wrap("list labelled issues", err)
+	}
+	if resp.NextPage != 0 { // a short list would read as a missing part, and open a duplicate
+		return nil, fmt.Errorf("forge: more than 100 issues carry %q", label)
 	}
 	var out []Issue
 	for _, i := range iss {
