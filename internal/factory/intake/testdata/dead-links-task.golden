@@ -2,4 +2,4 @@ Dead external links, each reported by the last two nightly runs of the dead-link
 
 1. `docs/a.md`, line 3: <https://example.com/gone> (404 Not Found). Snapshot: <https://web.archive.org/web/20261011195309/https://example.com/gone>.
 
-Change only these link targets, in these files: each to a page on the same host, or to the snapshot given. Leave link text, prose and code blocks alone, and add or delete no file. A target with no replacement on its host and no snapshot stays as it is.
+Change only these link targets, in these files: each to the snapshot given, exactly as written. Leave link text, prose and code blocks alone, and add or delete no file. A target with no snapshot stays as it is: it is not yours to move.

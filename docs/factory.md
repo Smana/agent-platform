@@ -260,7 +260,7 @@ another on one branch, and only the implementer writes. `templates.<name>.roles`
 | Template | Picked when |
 |---|---|
 | `investigate` | The task came from RunLore; its data class is forced to `internal` |
-| `solo` | Class `docs-links`, tier below `frontier` |
+| `solo` | A class with an `oracle` (such as `dead-links`), always at `light`, without the classifier; otherwise class `docs-links`, tier below `frontier` |
 | `pair` | Class `docs-links` at `frontier`, or any other class below `frontier` |
 | `trio` | Any other class at `frontier` |
 
@@ -490,6 +490,43 @@ A shadow decision's comment carries the head it judged (`event=would-arm-<n> hea
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
+## Oracle classes
+
+A class with an `oracle` (`dead-links` is the first) has a detector, a GitHub Actions workflow on
+`main`, that says what is wrong; the gate proves the pull request fixed exactly that and nothing
+else.
+
+**The detector.** `oracle.workflow` must upload an artifact named `findings` holding
+`findings.json` on every run, `[]` when nothing is dead. A run without it is an error (the probe
+retries every tick and starts nothing), not a clean run. Each entry is `{file, line, url, status}`
+with an optional `archive`, a `web.archive.org` snapshot of that same URL. `status` is `404`,
+`410` or `nxdomain` for a finding; anything else (403, 429, 5xx, a timeout) is never one.
+
+**The probe.** It reads the newest two completed runs of the workflow on `main` that a schedule or
+a maintainer's `workflow_dispatch` started (a pull request's run, or another actor's dispatch, is
+skipped); both must have succeeded. A finding needs two consecutive runs: it is kept only when both
+report the same file and URL with a gone status. It must also be allowed (`allowedFiles`, not
+`protectedFiles`, `https`) and still a link target in that file on `main`. A finding is dropped,
+not refused, for: a path the class may not change, an `http` URL, or a URL no longer a link target
+on `main`. Findings past `oracle.maxFindings` are dropped, keeping the first in file-then-URL
+order; once the task is closed, a later run pair picks up what remains. A malformed entry anywhere in a run, even one
+past the cap, refuses the whole run: it starts no task, is logged and counted as an intake error.
+A run pair is weighed once; a maintainer's re-run of a run (a new attempt) is weighed again.
+
+**The task.** Its text is rendered from the validated paths and URLs and fixed words only, never
+free text from the artifact, and its `spec.findings` carry `{file, url, archive}`. The template is
+`solo` at `light`, with no classifier call and no reviewer.
+
+**The gate.** The `oracle` condition holds when every finding was a link target in its file on the
+base and none is on the head, and every other link target the head moved is a finding's, moved to
+exactly the `archive` that finding gave. A move to a page on the same host, or to any other
+snapshot, is `oracle_unrequested`; a finding with no `archive` has no allowed move (removing the
+target changes the target count, which is also `oracle_unrequested`), so the task leaves it alone. A finding still on the head is
+`oracle_finding_open`. `holdoutChecks` and `diffShape: links-only` hold the rest of the diff.
+
+The merger App's token must read `actions` (runs and artifacts). Artifact downloads redirect to
+`productionresultssa*.blob.core.windows.net`, which the factory's egress must allow.
+
 ## Escalation, reminders and stale tasks
 
 A maintainer's review reaches the next run once queued: the factory re-reads the pull request just
@@ -616,9 +653,9 @@ Each `repositories` entry:
 | `name` | `owner/name` | Required |
 | `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
 | `triggerLabel` | The start label, `factory/ready` | Required |
-| `classes` | `<name>: {live, shadow, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, maxPerDay}`; `live` and `shadow` never both; an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
+| `classes` | `<name>: {live, shadow, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay}`; `oracle` needs `holdoutChecks` and `diffShape: links-only`; `live` and `shadow` never both; an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
-| `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
+| `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
 `api.repositories`, the run-request API's allowlist, is the entries' names.
 

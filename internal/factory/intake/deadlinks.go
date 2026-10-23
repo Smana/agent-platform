@@ -248,8 +248,8 @@ func deadLinksTask(fs []LinkFinding) (string, []v1alpha1.Finding) {
 		b.WriteString("\n")
 		spec = append(spec, v1alpha1.Finding{File: f.File, URL: f.URL, Archive: f.Archive})
 	}
-	b.WriteString("\nChange only these link targets, in these files: each to a page on the same host, or to the snapshot " +
-		"given. Leave link text, prose and code blocks alone, and add or delete no file. A target with no " +
-		"replacement on its host and no snapshot stays as it is.")
+	b.WriteString("\nChange only these link targets, in these files: each to the snapshot given, exactly as written. " +
+		"Leave link text, prose and code blocks alone, and add or delete no file. A target with no snapshot stays " +
+		"as it is: it is not yours to move.")
 	return b.String(), spec
 }
