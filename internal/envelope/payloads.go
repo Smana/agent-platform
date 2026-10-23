@@ -110,6 +110,9 @@ type HandoffPayload struct {
 	Branch   string `json:"branch"`
 	// Scope is the scoper's bounded task (scoper design SC6): a triager's handoff only.
 	Scope *Scope `json:"scope,omitempty"`
+	// Split is the scoper's second answer (splitter design SL2): a triager's handoff only, always
+	// beside Scope, the whole task.
+	Split *Split `json:"split,omitempty"`
 }
 
 // MaxProgressNote bounds a progress note, in characters.

@@ -142,14 +142,17 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 		{Name: "room_handoff", Roles: []string{"implementer", "tester", "triager"}, Action: policy.Chat,
 			Description: "Hand the work to the next role, with the commit you pushed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). Call it once, then finish.",
 			InputSchema: json.RawMessage(handoffSchema("")),
-			// The scope is the scoper's (scoper design SC6): only the triager is shown it.
-			RoleSchemas: map[string]json.RawMessage{"triager": json.RawMessage(handoffSchema(envelope.ScopeSchema))},
+			// The scope and the split are the scoper's (scoper design SC6, splitter design SL2): only the
+			// triager is shown them.
+			RoleSchemas: map[string]json.RawMessage{"triager": json.RawMessage(handoffSchema(
+				`,"scope":` + envelope.ScopeSchema + `,"split":` + envelope.SplitSchema))},
 			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 				var a struct {
 					ToRole  string          `json:"toRole"`
 					Summary string          `json:"summary"`
 					Commit  string          `json:"commit"`
 					Scope   *envelope.Scope `json:"scope"`
+					Split   *envelope.Split `json:"split"`
 				}
 				if mcpwire.DecodeArgs(args, &a) != nil || !isRole(a.ToRole) || !text(a.Summary, maxSummary) || !commitRE.MatchString(a.Commit) {
 					return nil, argError("toRole is implementer, reviewer, tester or triager; summary 1 to 8192 bytes; commit the full 40-hex sha from git rev-parse HEAD, never an abbreviation")
@@ -162,8 +165,15 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 						return nil, argError(err.Error())
 					}
 				}
+				if a.Split != nil && c.Run.Role != "triager" {
+					return nil, argError("split is the triager's: hand off without it")
+				}
+				// A split always travels beside the whole task, ready: a question bounces alone (SL2).
+				if a.Split != nil && (a.Scope == nil || a.Scope.State != envelope.ScopeReady || a.Split.Validate() != nil) {
+					return nil, argError(envelope.ErrSplit.Error())
+				}
 				return appendAs(ctx, c, envelope.Handoff, envelope.HandoffPayload{FromRole: c.Run.Role, ToRole: a.ToRole,
-					Summary: a.Summary, Commit: a.Commit, Branch: c.Run.Branch, Scope: a.Scope})
+					Summary: a.Summary, Commit: a.Commit, Branch: c.Run.Branch, Scope: a.Scope, Split: a.Split})
 			}},
 		{Name: "room_verdict", Roles: []string{"reviewer", "tester"}, Action: policy.Chat,
 			Description: "Record your review: approve or changes, a summary, and the commit you reviewed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). A verdict is not a merge.",
@@ -185,12 +195,9 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 	}
 }
 
-// handoffSchema is room_handoff's input schema; scope, when given, is listed as its scope property.
-func handoffSchema(scope string) string {
-	extra := ""
-	if scope != "" {
-		extra = `,"scope":` + scope
-	}
+// handoffSchema is room_handoff's input schema; extra is raw properties appended to its own (the
+// triager's scope and split).
+func handoffSchema(extra string) string {
 	return `{"type":"object","additionalProperties":false,"required":["toRole","summary","commit"],"properties":{"toRole":{"enum":["implementer","reviewer","tester","triager"]},"summary":{"type":"string","minLength":1,"maxLength":8192},"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"}` + extra + `}}`
 }
 
