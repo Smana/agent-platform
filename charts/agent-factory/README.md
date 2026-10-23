@@ -18,6 +18,7 @@ is described in [docs/factory.md](../../docs/factory.md).
 | `oidcSecret` | `agent-factory-oidc` | the ZITADEL client ids the API accepts tokens from (`rooms-proxy`, `roomctl`): ids, not secrets | `/etc/agent-factory-oidc`, mode 0444 | the factory API's token check | Yes |
 | `intakeSecret` | `agent-factory-intake` | `token` (the RunLore intake's bearer token, from the `agents-secrets` store) | `/etc/agent-factory-intake`, mode 0440, optional | `config.runlore.tokenFile` | Only for the RunLore intake: without it the intake answers 503 to every request |
 | `zitadelReaderSecret` | `agent-factory-zitadel-reader` | `reader.json` (the broker's read-only ZITADEL reader: `{"pat", "githubIdpId"}`) | `/etc/agent-factory-zitadel-reader`, mode 0440, optional | `config.api.access.readerFile` | v2 D4: resolves an API caller to their GitHub login; without it every human run is refused `repository_permission` |
+| `sponsoredSecret` | `agent-factory-sponsored` | `<name>-client-id`, one per sponsored principal (the machine client's ZITADEL client id), and `project-id` (the project every sponsored token's audience must hold) | `/etc/agent-factory-sponsored`, mode 0440, optional | `config.api.sponsored[].clientIDFile`, `config.api.projectIDFile` | F4: only with `config.api.sponsored`, which needs both files; without the Secret every sponsored token is refused |
 
 The broker token is not a Secret: the chart projects a service-account token with audience
 `roomsAudience` (`rooms-system`) at `/var/run/secrets/agents/rooms/token`, and

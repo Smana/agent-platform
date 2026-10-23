@@ -59,6 +59,7 @@ spec:
             - {name: oidc, mountPath: /etc/agent-factory-oidc, readOnly: true}
             - {name: intake, mountPath: /etc/agent-factory-intake, readOnly: true}
             - {name: zitadel-reader, mountPath: /etc/agent-factory-zitadel-reader, readOnly: true}
+            - {name: sponsored, mountPath: /etc/agent-factory-sponsored, readOnly: true}
       volumes:
         - name: config
           configMap: {name: agent-factory-config}
@@ -86,3 +87,7 @@ spec:
           # optional: without it the run-request API cannot resolve a caller's GitHub login, and
           # refuses every human run (v2 D4); 0440 with fsGroup, as the other secrets.
           secret: {secretName: {{ .Values.zitadelReaderSecret }}, defaultMode: 0440, optional: true}
+        - name: sponsored
+          # optional: without it no sponsored client id or project id reads, and every sponsored
+          # token is refused; 0440 with fsGroup, as the other secrets.
+          secret: {secretName: {{ .Values.sponsoredSecret }}, defaultMode: 0440, optional: true}
