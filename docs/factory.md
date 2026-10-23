@@ -29,6 +29,7 @@ without case.
 | Label `factory/stop` on the issue or its pull request | The running task stops within a poll: its runs are revoked and deleted, the task ends `Stopped`. The label is removed once it hit a task; with no task running it stays, so a task started later stops at once. Anyone else's is removed and answered | A maintainer |
 | Label `factory/revert` on an auto-merged pull request, within `merge.revertWindow` | The factory opens a revert pull request through the merger App and the task ends `Reverted`; the class counts the revert towards its [breaker](#the-merge-gate). A human merge is never reverted | A maintainer |
 | Label `class:<name>` on the issue, before triage | Predicts the task's merge class, when `<name>` is a class in the config other than `revert` | A maintainer |
+| Comment `/factory split` alone on a line, on the issue of a task escalated `split_proposed` | Approves the proposed [split](#splits); the commenter pays for every part. Read before `/factory retry` | A maintainer with `write` on the repository |
 | Comment `/factory retry` alone on a line, on an escalated task's issue or pull request | A fresh run; see [Escalation](#escalation-reminders-and-stale-tasks) | A maintainer with `write` on the repository |
 | A **Request changes** review on the task's pull request | Queued in the room; the next implementer run revises on the same branch with the review in its brief, then the pull request goes straight back to the maintainer | A maintainer |
 | Label `factory/stop` on the control issue (`control.issue`), or the `agent-factory-stop` ConfigMap | Every task stops, intake pauses; see [The kill switch](#the-kill-switch) | A maintainer, an operator |
@@ -53,6 +54,8 @@ The factory also writes labels of its own:
 | `factory/orphaned` | An open `agent/<id>` pull request whose task no longer exists (a cluster rebuild) | Human-only from now on; re-label the issue `factory/ready` to start again. Nothing is ever adopted from it |
 | `factory/needs-author` | The issue of a bounced task | Removed when the task leaves `Escalated` |
 | `factory/proposed` | An issue the RunLore intake opened | A finding under investigation |
+| `factory/split-proposed` | The issue of a task whose scoper proposes a split | Removed when the task leaves `Escalated` |
+| `factory/child-of:#p` | A part's issue, applied by the factory when it opens it | The family's ledger: intake honours it only when the factory applied it |
 
 ## A task's life
 
@@ -94,6 +97,11 @@ stateDiagram-v2
   Queued --> Escalated: task budget spent
   Implementing --> Escalated: run failed, stuck, lost
   Implementing --> Escalated: the scoper's question (needs_author)
+  Implementing --> Escalated: the scoper's split (split_proposed)
+  Escalated --> Split: /factory split
+  Split --> Done: every part merged (children_merged)
+  Split --> Closed: a part dropped or reverted (child_dropped)
+  Split --> Escalated: the family's cap is spent (budget-family)
   Reviewing --> Escalated: rounds spent, no verdict
   AwaitingCI --> Escalated: CI red after fixes, secret found
   Escalated --> Queued: /factory retry
@@ -213,6 +221,8 @@ every maintainer.
 | `revoked` | The run was stopped by hand |
 | `budget-run` | The run spent its run cap |
 | `needs_author` | The scoper asked the issue's author one question: the issue gets it (a public task's, quoted) and the label `factory/needs-author`. The author edits the issue and a maintainer re-applies `factory/ready` (a new task, scoped again), or a maintainer comments `/factory retry` (the task proceeds on the scoper's first assumption), or it expires |
+| `split_proposed` | The scoper proposes to land the task as parts: the issue gets the plan and the label `factory/split-proposed`. A maintainer comments `/factory split` to approve it, or `/factory retry` to run the task whole (at the parent's own tier cap), or edits the issue and re-applies `factory/ready` (a new task, which supersedes this one), or it expires at `caps.escalatedHours` |
+| `budget-family` | The family's cap (`spec.split.familyMicroUSD`) has no room for another whole run of the next part. `/factory retry` is ignored: the merged parts stay, so open the rest as a new issue; it expires at `caps.escalatedHours` |
 | `budget-principal` | The factory's daily budget in dollars is spent |
 | `budget-fleet` | The agent gateway's fleet-wide token budget is spent |
 | `failed` or another run phase, lowercased | The run ended without a more specific reason from the room or the meter |
@@ -229,11 +239,11 @@ A task ends with one of these:
 
 | Phase | Reasons |
 |---|---|
-| `Done` | `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: open a new issue with the text you approve and label it) |
+| `Done` | `children_merged` (a split's last part merged), `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: open a new issue with the text you approve and label it) |
 | `NoOp` | `no_pr` (the run opened no pull request), `no_action` (the triager found nothing to change). Add detail and re-apply `factory/ready` |
 | `Rejected` | `text_too_long` (over `caps.maxTextBytes`), `daily_task_cap` (`caps.tasksPerDay`). Fix it and re-apply `factory/ready` |
-| `Closed` | `pr_closed`, `stale` |
-| `Stopped` | `stopped_by_label`, `stopped_by_annotation`, `superseded`, `kill_switch`, `escalation_expired` |
+| `Closed` | `pr_closed`, `stale`, `child_dropped` (a part's issue closed unmerged, or a part reverted) |
+| `Stopped` | `stopped_by_label`, `stopped_by_annotation`, `superseded`, `kill_switch`, `escalation_expired`, `family_dropped` (a part stopped because another part was dropped or reverted) |
 | `Reverted` | `main_red`, `revert_requested` |
 
 ## Narration
@@ -600,6 +610,9 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `spec.steering` | `path`, `sha` (the git blob), `text`: the class's steering note on the default branch, read at triage; unset for none |
 | `status.phase`, `status.reason`, `status.phaseSince` | The phase above, why, and since when |
 | `status.classification` | The classifier's `tier`, `confidence`, `classifier`, `fallback` (`none`, `default`, `static`), `shadow` verdicts, `control` (forced to `frontier`) and `fit` (scored at the end) |
+| `spec.split` | `maxChildren` (2–5), `familyMicroUSD`, `childTier`: set at triage on a task C7 rated `frontier` whose class has a `split` row. The family's cap lives here; the parent's `spec.budget` stays its tier's |
+| `spec.parent` | On a part: `task`, `issue`, `index`, `of`. Fixed at creation. A part is requested by the approver and carries its parent's snapshot whole (`text`, `contentSHA256`) |
+| `spec.scope` | On a part: its own scope (`state: ready`, `task`, `touches`, `leave`, `plan`, `assumptions`, `acceptance`), from the approved split. Never changes once set; a revision brief keeps it whole |
 | `status.runs[]` | Each run: `id`, `role`, `trigger` (`initial`, `review`, `human`, `ci`, `retry`, `resume`), `round`, `phase`, `reason`, `verdict`, `tokens`, `costMicroUSD`, `unpriced`, `startSeq`, `headSHA`, `started`, `finished`, and `provenance`, what it ran on: `factoryVersion` (the claim's CREATE-only `agents.ogenki.io/factory-version`), `compositionRevision` (the claim's `spec.crossplane.compositionRevisionRef.name`), `harnessImage` (the claim's `status.harnessImage`, the harness container's `imageID`) and `servedModels` (the meter's `gen_ai_request_model`, at most 8, each at most 64 characters: a longer name is skipped, never truncated). Each is written once, as it becomes known; empty means unknown. A run created before the upgrade (its claim has no factory version) stays empty, and a value over the CRD's bound is not recorded |
 | `status.roomRef` | The task's room, named like the task |
 | `status.pullRequest` | `number`, `url`, `nodeID`, `headSHA`, `mergeCommitSHA`, `mergedBy`, `autoMerged`, `armedAt`, `mergedAt`, `revertNumber`, `author`, `reviewers` |
@@ -615,14 +628,16 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `status.handled` | GitHub review and comment ids already acted on |
 | `status.configHash` | The config that triaged the task |
 | `status.scope` | `state` (`ready`, `question`, `assumed`, `missing`, `failed`) and `seq` (the scope's handoff): the scoper's outcome, kept when the task stops |
+| `status.split` | `state` (`proposed`, `approved`, `declined`, `superseded`, `expired`, `ignored`), `seq` (the split's handoff), `of`, `approvedBy` (`github:<login>`, every part's payer) and `children[]` (`index`, `issue`, `task`, `outcome`: `landed`, `dropped`, `reverted`) |
 | `status.lastActivity` | The running run's last room event, for stuck detection |
 | `status.trace` | The task's root span ids |
 
 | Metadata | Meaning |
 |---|---|
-| Annotation `agents.ogenki.io/stop` | Stop this task: `true` by hand, `label` from `factory/stop`, `superseded` by a new `factory/ready` |
+| Annotation `agents.ogenki.io/stop` | Stop this task: `true` by hand, `label` from `factory/stop`, `superseded` by a new `factory/ready`, `family_dropped` on a part whose family ended `Closed` |
 | Annotation `agents.ogenki.io/revert` | A maintainer's `factory/revert` |
 | Label `agents.ogenki.io/issue` | The issue number |
+| Label `agents.ogenki.io/parent` | A part's parent task: how the factory lists a family and sums its spend. Only `spec.parent` counts as membership |
 | Label `agents.ogenki.io/source-key` | Groups a RunLore finding's tasks |
 
 ### The config file
@@ -653,7 +668,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
 | `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 | `sandbox` | `suspend: {enabled}`: a run `POST /v1/runs` starts in an attended room gets `spec.suspendable: true`, which lets the room broker suspend it while its approval waits on an idle room (the broker's `suspend` config). Fixed on the claim at create | `enabled` false |
-| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`, `scoper`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering) or [scoper](#the-scoper): never part of the loop, so `{scope: steering}` alone switches no loop on. `search: true` offers the class's implementer runs the [search tool](../images/agent-harness/README.md) (`spec.loop.search`, which the harness reads as `AGENT_SEARCH=1`); like `scope`, it never switches the loop on, and a row is read whole, so a class row without `search` is off whatever `default` says. The room-bridge classes a bare `search` as the plain built-in only on a run given it, assuming MCP tools reach it prefixed (`server_tool`): an unprefixed MCP tool named `search` would also class plain (and the SDK refuses the duplicate tool name at start). Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
+| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`, `scoper`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering) or [scoper](#the-scoper): never part of the loop, so `{scope: steering}` alone switches no loop on; `split` (`{maxChildren 2–5, familyUSD, childTier}`; `familyUSD` defaults to four of the child tier's `taskUSD`, `childTier` to `standard`) is refused without `scope: scoper` on the same row, on `docs-links`, `revert` or an oracle class, and without `meter.prices`; it lets the scoper of a task C7 itself rated `frontier` propose [a split](#splits). `search: true` offers the class's implementer runs the [search tool](../images/agent-harness/README.md) (`spec.loop.search`, which the harness reads as `AGENT_SEARCH=1`); like `scope`, it never switches the loop on, and a row is read whole, so a class row without `search` is off whatever `default` says. The room-bridge classes a bare `search` as the plain built-in only on a run given it, assuming MCP tools reach it prefixed (`server_tool`): an unprefixed MCP tool named `search` would also class plain (and the SDK refuses the duplicate tool name at start). Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
 
 Each `repositories` entry:
 
@@ -760,6 +775,45 @@ takes the scoper's first assumption instead.
   on the assumption, state `assumed`, with no second scoper run). Otherwise it stops at
   `caps.escalatedHours` (`escalation_expired`). The author's own comments end nothing, and the
   room's owner sees the wait as an `answer` need.
+
+## Splits
+
+On a class whose `loops` row has `split`, the scoper of a task C7 itself rated `frontier` (a
+control-forced `frontier` does not count) may hand off a split beside the whole task's scope: two to
+`maxChildren` parts, each a scope in state `ready`, in the order they merge. A split the task was not
+offered, that holds too many parts or that fails validation is ignored (`status.split.state:
+ignored`, counted) and the task runs on its scope. Otherwise the factory comments the plan on the
+issue, labels it `factory/split-proposed` and waits `Escalated`, `split_proposed`. No part exists
+before a maintainer's `/factory split`.
+
+- **The approver pays.** `/factory split` needs `write` on the repository, is read before
+  `/factory retry`, and charges the approver for every part: their day is checked first (spent and
+  enforced, the command waits and they are told once). A part re-labelled later is paid by whoever
+  re-labels it.
+- **One part at a time.** The parent waits in `Split` and opens part 1, then part *k* + 1 only when
+  part *k* is `Done`: an issue `Part k of N of #p`, labelled `factory/child-of:#p` and the parent's
+  `class:`, linked as a sub-issue, and a task of its own on `agent/<part>`. A part carries the
+  parent's snapshot exactly, class and steering, its own scope in `spec.scope`, runs `pair` at
+  `childTier` (never a scoper), and goes through the class's merge gate. Its brief says "part k of N
+  of #p", asks for `Fixes #<part>` only, and puts the part's checks first, so the completion judge
+  reads the part's, not the whole issue's.
+- **The family cap.** `spec.split.familyMicroUSD` bounds the parent's runs and every run of every part
+  together; a part's cap is `min(childTier.taskUSD, what is left)`, and a run the meter could not
+  price counts at the reference rate. The parent keeps its own tier's `taskMicroUSD`, so a declined
+  split (`/factory retry`) runs the whole task at that cap, never more than it would cost whole. When
+  what is left cannot hold one run of the next part the parent escalates `budget-family`.
+- **The end.** The parent issue closes as completed and the task ends `Done`, `children_merged`, when
+  the last part merges. A part's issue closed unmerged, or a part reverted, ends the parent `Closed`,
+  `child_dropped`; every part still running is stopped, with the stop reason `family_dropped`, so it
+  cannot merge on a tree without the part before it. A part that escalates or stops, with its issue
+  open, keeps the parent waiting until a maintainer re-labels (`factory/ready` on the part's issue:
+  the new task rejoins the family because the factory applied the issue's child-of label, which no
+  one else's label does) or closes it. A revert
+  after the parent closed is commented on the parent's issue.
+- **Stopping.** `factory/stop` on the parent's issue stops the parent and every part not yet ended.
+  An approved parent never runs an implementer, and ignores `/factory retry`.
+- **Tier fit** is unscored for a part and for a parent whose split was approved; the parent's room
+  summary reads `running` while it is in `Split`.
 
 ### The factory's API
 

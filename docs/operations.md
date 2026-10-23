@@ -222,7 +222,7 @@ absent rather than 0.
 | `agent_factory_budget_cap_usd` | gauge | `principal` | The principal's daily cap in USD |
 | `agent_factory_budget_remaining_usd` | gauge | `principal` | USD the principal has left today, 0 once its day is spent |
 | `agent_factory_budget_spent_usd` | gauge | `principal` | USD the principal spent today, unclamped: how far past its cap a day ran. Each principal of yesterday reads 0 from the day's first settled tick |
-| `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve` |
+| `agent_factory_human_interventions_total` | counter | `kind`, `repository` | `stop`, `retry`, `request_changes`, `steer`, `takeover`, `approve`, `split` |
 | `agent_factory_merge_decisions_total` | counter | `class`, `verdict`, `reason` | The merge gate's decisions: `arm`, `shadow`, `human`, `escalate`, `ci_red`, `ci_cancelled`; a wait is none |
 | `agent_factory_class_mismatch_total` | counter | `predicted`, `matched` | The predicted class differs from the one policy-bot matched |
 | `agent_factory_tier_fit_total` | counter | `classifier`, `tier`, `fit`, `control` | A finished task's tier fit, per classifier |
@@ -247,6 +247,8 @@ absent rather than 0.
 | `agent_factory_steering_reads_total` | counter | `class`, `read`, `repository` | Steering notes read at triage, in a mode other than `off`: `used`, `absent`, `invalid`, or `unowned` (the repository's fence does not name this factory, or its cache is stale: not read) |
 | `agent_factory_scoper_runs_total` | counter | `class`, `outcome`, `repository` | Scoper runs as they end: `ready`, `question`, `assumed`, `missing`, `failed` |
 | `agent_factory_scope_bounces_total` | counter | `class`, `exit`, `repository` | Bounced tasks leaving their wait: `relabel`, `retry`, `expired` |
+| `agent_factory_splits_total` | counter | `class`, `outcome`, `repository` | Split handoffs, once each: `approved`, `declined`, `superseded`, `expired`, `ignored` |
+| `agent_factory_split_children_total` | counter | `class`, `outcome`, `repository` | Parts of a split, once each when their parent ends: `landed`, `dropped`, `reverted` |
 | `agent_factory_rooms_closed_at_cap_total` | counter | `reason` | Rooms closed at the cap (below): `human_driver`, `facts_due` |
 | `agent_factory_github_up` | gauge | — | 1 while any GitHub call succeeded in the last 3 minutes, per replica |
 | `agent_factory_github_rate_remaining` | gauge | — | The factory App's remaining REST rate limit |
