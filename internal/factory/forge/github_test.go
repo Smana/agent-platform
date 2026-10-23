@@ -481,6 +481,9 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 					"encoding": "none", "size": 2 << 20, "content": ""})
 			case body == "dir":
 				_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "x.md", "path": p + "/x.md", "type": "file"}})
+			case body == "symlink" || body == "submodule":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": body, "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"size": 12, "target": "../elsewhere.md"})
 			case body == "denied":
 				http.Error(w, `{"message":"Forbidden"}`, http.StatusForbidden)
 			case !ok:
@@ -1358,17 +1361,34 @@ func TestDefaultBranchFileReadsASteeringNote(t *testing.T) {
 	}
 }
 
-// Every read that is not a clean 200 or a 404 is an error: never "no note" (SC4).
-func TestDefaultBranchFileFailsClosed(t *testing.T) {
+// A path that is never a readable note (a directory, a file over 1 MB, a symlink, a submodule) is
+// ErrNotAFile: retrying cannot change it, so the caller proceeds unsteered.
+func TestDefaultBranchFileNeverReadable(t *testing.T) {
 	const p = ".github/agent-factory/steering/docs.md"
-	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a 403": "denied", "a 500": "!"} {
+	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a symlink": "symlink", "a submodule": "submodule"} {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t)
 			r.gh.mu.Lock()
 			r.gh.steer = map[string]string{p: body}
 			r.gh.mu.Unlock()
-			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); err == nil || found {
-				t.Fatalf("found %v err %v, want an error", found, err)
+			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); !errors.Is(err, ErrNotAFile) || found {
+				t.Fatalf("found %v err %v, want ErrNotAFile", found, err)
+			}
+		})
+	}
+}
+
+// A 403, a 5xx or a network failure is retryable: an error that is not ErrNotAFile, never "no note" (SC4).
+func TestDefaultBranchFileFailsClosed(t *testing.T) {
+	const p = ".github/agent-factory/steering/docs.md"
+	for name, body := range map[string]string{"a 403": "denied", "a 500": "!"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.gh.mu.Lock()
+			r.gh.steer = map[string]string{p: body}
+			r.gh.mu.Unlock()
+			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); err == nil || found || errors.Is(err, ErrNotAFile) {
+				t.Fatalf("found %v err %v, want a retryable error", found, err)
 			}
 		})
 	}

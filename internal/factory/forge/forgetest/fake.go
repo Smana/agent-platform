@@ -664,7 +664,10 @@ func (f *Fake) OpenPullRequests(context.Context) ([]forge.PRSummary, error) {
 	return slices.Clone(f.open), nil
 }
 
-// SetFile sets path's text on the default branch; "!" makes its read fail.
+// NotAFile as a SetFile text makes the read fail with forge.ErrNotAFile (a directory, a symlink).
+const NotAFile = "<not-a-file>"
+
+// SetFile sets path's text on the default branch; "!" makes its read fail, NotAFile makes it unreadable for good.
 func (f *Fake) SetFile(path, text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -684,6 +687,8 @@ func (f *Fake) DefaultBranchFile(_ context.Context, path string) (string, string
 		return "", "", false, nil
 	case text == "!":
 		return "", "", false, errors.New("forgetest: read failed")
+	case text == NotAFile:
+		return "", "", false, forge.ErrNotAFile
 	}
 	return text, fmt.Sprintf("%x", sha256.Sum256([]byte(text)))[:40], true, nil
 }

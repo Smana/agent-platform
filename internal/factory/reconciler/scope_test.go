@@ -13,6 +13,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
 )
 
 const reviewNote = "# Steering: review\n\n## Verify\n- `task check` (CI: check): every gate passes.\n"
@@ -74,6 +75,17 @@ func TestTriageReadsTheSteeringNote(t *testing.T) {
 	g.f.SetFile(".github/agent-factory/steering/review.md", reviewNote)
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Spec.Steering == nil || tk.Status.Phase != "Triaged" {
 		t.Fatalf("the retry: %s %+v", tk.Status.Phase, tk.Spec.Steering)
+	}
+}
+
+// A note path that is never readable (a directory, an oversized file, a symlink, a submodule) must
+// not loop triage: the task proceeds unsteered, counted "invalid".
+func TestAnUnreadableNotePathProceedsUnsteered(t *testing.T) {
+	g := scopeRig(t, config.ScopeSteering)
+	g.f.SetFile(".github/agent-factory/steering/review.md", forgetest.NotAFile)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Spec.Steering != nil || tk.Status.Phase != "Triaged" || !slices.Contains(g.metrics.recorded, "steering review invalid") {
+		t.Fatalf("steering %+v phase %s metrics %v", tk.Spec.Steering, tk.Status.Phase, g.metrics.recorded)
 	}
 }
 

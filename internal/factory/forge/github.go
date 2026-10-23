@@ -936,7 +936,9 @@ func (g *GitHub) FenceFile(ctx context.Context) ([]byte, bool, error) {
 }
 
 // DefaultBranchFile is path on the default branch, its text and git blob sha; found is false on
-// GitHub's 404. Any other failure is an error: triage retries rather than read "no note" (SC4).
+// GitHub's 404. A path that is never a readable file (a directory, over 1 MB, a symlink, a
+// submodule) is ErrNotAFile, with the sha when GitHub gave one. Any other failure (5xx, 403,
+// network) is a retryable error: triage retries rather than read "no note" (SC4).
 func (g *GitHub) DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error) {
 	fc, _, resp, err := g.rest.Repositories.GetContents(ctx, g.owner, g.name, path, nil)
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
@@ -947,14 +949,20 @@ func (g *GitHub) DefaultBranchFile(ctx context.Context, path string) (text, sha 
 	if err != nil {
 		return "", "", false, wrap("read "+path, err)
 	}
-	if fc == nil {
-		return "", "", false, fmt.Errorf("forge: %s is not a file", path)
+	if fc == nil { // a directory listing
+		return "", "", false, fmt.Errorf("forge: %s is a directory: %w", path, ErrNotAFile)
+	}
+	if t := fc.GetType(); t != "file" {
+		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s is a %s: %w", path, t, ErrNotAFile)
+	}
+	if fc.GetEncoding() == "none" { // the contents API withholds the body of a file over 1 MB
+		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s is %d bytes and not readable through the contents API: %w", path, fc.GetSize(), ErrNotAFile)
 	}
 	if text, err = fc.GetContent(); err != nil {
 		return "", "", false, wrap("decode "+path, err)
 	}
 	if text == "" && fc.GetSize() > 0 {
-		return "", "", false, fmt.Errorf("forge: %s is %d bytes and not readable through the contents API", path, fc.GetSize())
+		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s is %d bytes and not readable through the contents API: %w", path, fc.GetSize(), ErrNotAFile)
 	}
 	return text, fc.GetSHA(), true, nil
 }
