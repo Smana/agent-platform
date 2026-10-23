@@ -6,11 +6,15 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -112,5 +116,60 @@ func TestAuthenticatorSponsoredBranch(t *testing.T) {
 		"groups": []string{"agents-member"}})
 	if p, err := call(human); err != nil || p.ID != "human:291" || p.Sponsored {
 		t.Fatalf("a human token: %+v %v", p, err)
+	}
+}
+
+// F4: with the cluster's issuer wired too, each token is admitted by its own branch; and a client
+// the config excludes (a human's) is never a sponsored principal.
+func TestAuthenticatorSponsoredBesideSystems(t *testing.T) {
+	zitadel, eks := newSigner(t), newSigner(t)
+	v := zitadel.verifier("https://auth.ogenki.io")
+	mk := func(exclude ...string) *Authenticator {
+		return &Authenticator{Humans: v, Groups: policy.Groups{Admin: "agents-admin", Member: "agents-member"},
+			ClientIDs:   func() []string { return []string{"roomctl-id"} },
+			Systems:     eks.verifier("https://oidc.eks"),
+			SystemAllow: map[string]string{"system:serviceaccount:agent-system:runner": "system:runner"},
+			Sponsored: &authn.Sponsored{V: v, Clients: []authn.SponsoredClient{{Name: "slack-app", ClientID: func() string { return "slack-id" }}},
+				Exclude: func() []string { return exclude }}}
+	}
+	call := func(a *Authenticator, tok string) (authn.Principal, error) {
+		r := httptest.NewRequestWithContext(t.Context(), "POST", "/v1/runs", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		return a.Authenticate(r)
+	}
+	a := mk("roomctl-id")
+	sp := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "345", "client_id": "slack-id"})
+	if p, err := call(a, sp); err != nil || p.ID != "system:slack-app" || !p.Sponsored || p.ClientID != "slack-id" {
+		t.Fatalf("a sponsored token beside Systems: %+v %v", p, err)
+	}
+	sys := eks.token(t, jwt.MapClaims{"iss": "https://oidc.eks", "sub": "system:serviceaccount:agent-system:runner", "aud": AudienceSystem})
+	if p, err := call(a, sys); err != nil || p.ID != "system:runner" || p.Sponsored || p.AccessToken != "" {
+		t.Fatalf("a cluster token: %+v %v", p, err)
+	}
+	// slack-id is also a human client's id: the exclusion wins, and nothing else admits it.
+	if p, err := call(mk("slack-id"), sp); err == nil || p.Sponsored {
+		t.Fatalf("an excluded client's token was admitted: %+v", p)
+	}
+}
+
+// F4, invariant 1, end to end: a real signed sponsored token through the real Authenticator is
+// refused on /v1/runs, and nothing is created or reserved.
+func TestRunsRefusesRealSponsoredToken(t *testing.T) {
+	zitadel := newSigner(t)
+	v := zitadel.verifier("https://auth.ogenki.io")
+	st := &store{}
+	c := fake.NewClientBuilder().WithScheme(scheme()).Build()
+	s := mkServer(t, st, c, false, false, "7f3cq2xz", 5_000_000)
+	s.Auth = &Authenticator{Humans: v, Groups: s.Groups, ClientIDs: func() []string { return []string{"roomctl-id"} },
+		Sponsored: &authn.Sponsored{V: v, Clients: []authn.SponsoredClient{{Name: "slack-app", ClientID: func() string { return "slack-id" }}},
+			Exclude: func() []string { return []string{"roomctl-id"} }}}
+	tok := zitadel.token(t, jwt.MapClaims{"iss": "https://auth.ogenki.io", "sub": "345", "client_id": "slack-id"})
+	w := post(s.Handler(), tok, base())
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"error":"sponsored_only_tasks"`) || len(st.created) != 0 {
+		t.Fatalf("%d %s %d", w.Code, w.Body, len(st.created))
+	}
+	var cms corev1.ConfigMapList
+	if err := c.List(t.Context(), &cms); err != nil || len(cms.Items) != 0 {
+		t.Fatalf("a ledger was written: %d %v", len(cms.Items), err)
 	}
 }

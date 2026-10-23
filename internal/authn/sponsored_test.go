@@ -36,6 +36,11 @@ func TestSponsored(t *testing.T) {
 			}
 		})
 	}
+	// signed by a key the verifier does not trust, with every claim right
+	rogue := newSigner(t).accessToken(t, "345", []string{"proj"}, id, nil, time.Hour)
+	if _, err := s.Authenticate(t.Context(), rogue); err == nil {
+		t.Fatal("a token from an untrusted key was admitted")
+	}
 	id = "roomctl-1" // a rotation that lands on a human client's id must refuse, never admit roomctl's tokens
 	if _, err := s.Authenticate(t.Context(), tok("roomctl-1", "345")); err == nil {
 		t.Fatal("a principal sharing a human client id was admitted")
