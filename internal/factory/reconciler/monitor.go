@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -31,14 +32,16 @@ const searchLag = 5 * time.Minute
 const maxFollowUps = 16
 
 // monitorCache holds what the monitor reads more than once, per process: the last pass of each
-// task (the throttle), GitHub's merged window, and the files and blame of the pull requests it
-// compares. Everything in it is a read of immutable history or a bounded refresh.
+// task (the throttle), GitHub's merged window, and what it derived from the files and blame of
+// the pull requests it compares. Every entry carries the merge time of the pull request it
+// describes and is pruned once that is older than the longest follow-up window plus searchLag; a
+// task's throttle entry goes when its verdict is posted. Raw patches are never kept.
 type monitorCache struct {
 	mu     sync.Mutex
 	last   map[string]time.Time // task -> its last completed pass
 	merged map[string]mergedRead
-	files  map[string][]forge.FilePatch
-	blame  map[string][]forge.BlameRange
+	files  map[string]derivedFiles
+	blame  map[string]derivedBlame
 }
 
 // mergedRead is one MergedSince answer: from is where it starts, narrowed when the search
@@ -47,6 +50,24 @@ type mergedRead struct {
 	from  time.Time
 	at    time.Time
 	pulls []forge.MergedPull
+}
+
+// derivedFile is what the overlap check needs of one file of a pull request: its names and the
+// base lines its patch changes. unread: the lines are unknown (an omitted patch, a malformed hunk).
+type derivedFile struct {
+	path, blamePath string
+	lines           []int
+	unread          bool
+}
+
+type derivedFiles struct {
+	files []derivedFile
+	at    time.Time // the pull request's merge time
+}
+
+type derivedBlame struct {
+	ranges []forge.BlameRange
+	at     time.Time
 }
 
 // monitorDue: a Done task merged through a class that declares a monitor (R29), whose verdict is
@@ -129,7 +150,7 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	switch v := Worst(read...); {
 	case v == "regression": // a follow-up is its own bad outcome (Task 3), never a monitor verdict
 		m.Verdict = "regression"
-	case ended:
+	case ended && m.Verdict == "":
 		if v == "healthy" && m.FollowUpsUnread {
 			v = "inconclusive" // a follow-up read that could not say is no clean window
 		}
@@ -152,13 +173,17 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		m.Posted = m.Verdict != "regression" || ended // a regression is posted at once and watched on for follow-ups
 	}
-	r.mon.passed(t.Name, r.Now())
+	if m.Posted {
+		r.mon.forget(t.Name) // nothing is due again
+	} else {
+		r.mon.passed(t.Name, r.Now())
+	}
 	return nil
 }
 
 // monitorWhy lists the signals the verdict read, for the comment.
 func monitorWhy(m *v1alpha1.MonitorStatus) []string {
-	out := []string{"main CI: " + cmpOpen(m.Main)}
+	out := []string{"main CI: " + cmpOpen(m.Main), fmt.Sprintf("follow_ups=%d", len(m.FollowUps))}
 	if m.Oracle != "" {
 		out = append(out, "detector: "+m.Oracle)
 	}
@@ -166,7 +191,7 @@ func monitorWhy(m *v1alpha1.MonitorStatus) []string {
 		out = append(out, "Flux: "+m.Flux)
 	}
 	if len(m.FollowUps) > 0 {
-		out = append(out, fmt.Sprintf("follow-up fixes: %v", m.FollowUps))
+		out = append(out, fmt.Sprintf("follow-up fixes: %v, counted by the breaker, not in this verdict", m.FollowUps))
 	}
 	if m.FollowUpsUnread {
 		out = append(out, "follow-up reads incomplete")
@@ -226,16 +251,47 @@ func (c *monitorCache) passed(task string, at time.Time) {
 	c.last[task] = at
 }
 
-// mergedSince is the repository's merged pull requests since from, kept for monitorEvery. A search
-// that truncates is read again from the middle of the window: what it returns is then incomplete
-// for a task that needs the earlier half, which the caller learns from complete.
-func (r *Reconciler) mergedSince(ctx context.Context, t *v1alpha1.Task, from time.Time) (pulls []forge.MergedPull, complete bool, err error) {
-	c := &r.mon
+func (c *monitorCache) forget(task string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if hit, ok := c.merged[t.Spec.Repository]; ok && r.Now().Sub(hit.at) < monitorEvery && !hit.from.After(from) {
+	delete(c.last, task)
+}
+
+// prune drops what describes a pull request merged before cutoff, and throttle entries older than it.
+func (c *monitorCache) prune(cutoff time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	maps.DeleteFunc(c.files, func(_ string, d derivedFiles) bool { return d.at.Before(cutoff) })
+	maps.DeleteFunc(c.blame, func(_ string, d derivedBlame) bool { return d.at.Before(cutoff) })
+	maps.DeleteFunc(c.last, func(_ string, at time.Time) bool { return at.Before(cutoff) })
+}
+
+// longestWindow is the longest followUpWindow any class declares.
+func (r *Reconciler) longestWindow() time.Duration {
+	var w time.Duration
+	for _, rc := range r.Cfg.Repos() {
+		for _, cl := range rc.Classes {
+			if cl.Monitor != nil {
+				w = max(w, cl.Monitor.FollowUpWindow.Duration)
+			}
+		}
+	}
+	return w
+}
+
+// mergedSince is the repository's merged pull requests since from, kept for monitorEvery unless
+// fresh asks for a read now. A search that truncates is read again from the middle of the window:
+// what it returns is then incomplete for a task that needs the earlier half, which the caller
+// learns from complete. The cache lock is not held across the GitHub calls.
+func (r *Reconciler) mergedSince(ctx context.Context, t *v1alpha1.Task, from time.Time, fresh bool) (pulls []forge.MergedPull, complete bool, err error) {
+	c := &r.mon
+	c.mu.Lock()
+	hit, ok := c.merged[t.Spec.Repository]
+	c.mu.Unlock()
+	if ok && !fresh && r.Now().Sub(hit.at) < monitorEvery && !hit.from.After(from) {
 		return hit.pulls, true, nil
 	}
+	c.prune(r.Now().Add(-r.longestWindow() - searchLag))
 	read := from
 	pulls, err = r.merger(ctx).MergedSince(ctx, read)
 	if errors.Is(err, forge.ErrMergedTruncated) {
@@ -246,6 +302,8 @@ func (r *Reconciler) mergedSince(ctx context.Context, t *v1alpha1.Task, from tim
 	if err != nil {
 		return nil, false, err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.merged == nil {
 		c.merged = map[string]mergedRead{}
 	}
@@ -253,38 +311,47 @@ func (r *Reconciler) mergedSince(ctx context.Context, t *v1alpha1.Task, from tim
 	return pulls, !read.After(from), nil
 }
 
-// pullFiles is a pull request's files, read once per process: a merged pull request's do not change.
-func (r *Reconciler) pullFiles(ctx context.Context, t *v1alpha1.Task, n int) ([]forge.FilePatch, error) {
+// pullFiles is what a pull request's files say, read once per process: a merged pull request's
+// do not change. at is its merge time, for pruning.
+func (r *Reconciler) pullFiles(ctx context.Context, t *v1alpha1.Task, n int, at time.Time) ([]derivedFile, error) {
 	k := fmt.Sprintf("%s#%d", t.Spec.Repository, n)
 	c := &r.mon
 	c.mu.Lock()
-	fs, ok := c.files[k]
+	d, ok := c.files[k]
 	c.mu.Unlock()
 	if ok {
-		return fs, nil
+		return d.files, nil
 	}
 	fs, err := r.merger(ctx).PullFiles(ctx, n)
 	if err != nil {
 		return nil, err
 	}
+	d = derivedFiles{at: at}
+	for _, f := range fs {
+		df := derivedFile{path: f.Path, blamePath: f.BlamePath()}
+		if df.lines, err = f.BaseLines(); err != nil {
+			df.unread = true
+		}
+		d.files = append(d.files, df)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.files == nil {
-		c.files = map[string][]forge.FilePatch{}
+		c.files = map[string]derivedFiles{}
 	}
-	c.files[k] = fs
-	return fs, nil
+	c.files[k] = d
+	return d.files, nil
 }
 
 // blameAt is who last changed a file's lines before a merge, read once per process.
-func (r *Reconciler) blameAt(ctx context.Context, t *v1alpha1.Task, sha, path string) ([]forge.BlameRange, error) {
+func (r *Reconciler) blameAt(ctx context.Context, t *v1alpha1.Task, sha, path string, at time.Time) ([]forge.BlameRange, error) {
 	k := t.Spec.Repository + "\x00" + sha + "\x00" + path
 	c := &r.mon
 	c.mu.Lock()
-	rs, ok := c.blame[k]
+	d, ok := c.blame[k]
 	c.mu.Unlock()
 	if ok {
-		return rs, nil
+		return d.ranges, nil
 	}
 	rs, err := r.merger(ctx).BlameAtParent(ctx, sha, path)
 	if err != nil {
@@ -293,9 +360,9 @@ func (r *Reconciler) blameAt(ctx context.Context, t *v1alpha1.Task, sha, path st
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.blame == nil {
-		c.blame = map[string][]forge.BlameRange{}
+		c.blame = map[string]derivedBlame{}
 	}
-	c.blame[k] = rs
+	c.blame[k] = derivedBlame{ranges: rs, at: at}
 	return rs, nil
 }
 
@@ -308,7 +375,8 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 	ref, m := t.Status.PullRequest, t.Status.Monitor
 	// L6, search lag: every read starts before the merge, so a pull request the index was slow to
 	// show is found by the next one.
-	merged, complete, err := r.mergedSince(ctx, t, m.Since.Add(-searchLag))
+	// The final pass reads fresh: the cache's 10 minutes would otherwise hide the window's last.
+	merged, complete, err := r.mergedSince(ctx, t, m.Since.Add(-searchLag), r.Now().Sub(m.Since.Time) >= cl.Monitor.FollowUpWindow.Duration+searchLag)
 	if err != nil {
 		r.log().Warn("follow-up read failed", "task.id", t.Name, "err", err)
 		m.FollowUpsUnread = true
@@ -325,7 +393,7 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 		found := slices.Contains(p.Labels, FollowUpOfLabel(ref.Number))
 		if !found {
 			if mine == nil {
-				fs, err := r.pullFiles(ctx, t, ref.Number)
+				fs, err := r.pullFiles(ctx, t, ref.Number, m.Since.Time)
 				if err != nil {
 					r.log().Warn("follow-up read failed: the merge's files", "task.id", t.Name, "err", err)
 					m.FollowUpsUnread = true
@@ -333,8 +401,15 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 				}
 				mine = map[string]bool{}
 				for _, f := range fs {
-					mine[f.Path] = true
+					mine[f.path] = true
 				}
+			}
+			if p.MultiCommitRebase() {
+				// A rebase of several commits leaves the first parent short of the base: blame there
+				// reads the wrong lines. Unread, never "no overlap".
+				r.log().Warn("follow-up read: a multi-commit rebase merge", "task.id", t.Name, "pr", p.Number)
+				unread = true
+				continue
 			}
 			var ok bool
 			if found, ok = r.overlaps(ctx, t, p, mine); !ok {
@@ -352,37 +427,36 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 // when some file of it could not be read: found is then only what the others showed.
 func (r *Reconciler) overlaps(ctx context.Context, t *v1alpha1.Task, p forge.MergedPull, mine map[string]bool) (found, ok bool) {
 	ref := t.Status.PullRequest
-	fs, err := r.pullFiles(ctx, t, p.Number)
+	fs, err := r.pullFiles(ctx, t, p.Number, p.MergedAt)
 	if err != nil {
 		r.log().Warn("follow-up read failed: a later pull request's files", "task.id", t.Name, "pr", p.Number, "err", err)
 		return false, false
 	}
 	ok = true
 	for _, f := range fs {
-		if !mine[f.Path] && !mine[f.BlamePath()] {
+		if !mine[f.path] && !mine[f.blamePath] {
 			continue
 		}
-		lines, err := f.BaseLines()
-		if err != nil {
-			r.log().Warn("follow-up read failed: the lines a patch changed", "task.id", t.Name, "pr", p.Number, "err", err)
+		if f.unread {
+			r.log().Warn("follow-up read failed: the lines a patch changed", "task.id", t.Name, "pr", p.Number, "file", f.path)
 			ok = false
 			continue
 		}
-		if len(lines) == 0 {
+		if len(f.lines) == 0 {
 			continue // a pure addition changes no line m wrote
 		}
 		if p.MergeCommitSHA == "" {
 			ok = false
 			continue
 		}
-		rs, err := r.blameAt(ctx, t, p.MergeCommitSHA, f.BlamePath())
+		rs, err := r.blameAt(ctx, t, p.MergeCommitSHA, f.blamePath, p.MergedAt)
 		if err != nil {
 			r.log().Warn("follow-up read failed: blame", "task.id", t.Name, "pr", p.Number, "err", err)
 			ok = false
 			continue
 		}
 		if slices.ContainsFunc(rs, func(b forge.BlameRange) bool {
-			return b.Commit == ref.MergeCommitSHA && slices.ContainsFunc(lines, func(l int) bool { return l >= b.Start && l <= b.End })
+			return b.Commit == ref.MergeCommitSHA && slices.ContainsFunc(f.lines, func(l int) bool { return l >= b.Start && l <= b.End })
 		}) {
 			return true, ok
 		}

@@ -469,8 +469,18 @@ func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull
 					HeadRefName string
 					Title       string
 					MergedAt    *githubv4.DateTime
-					MergeCommit *struct{ Oid string }
-					Labels      struct {
+					MergeCommit *struct {
+						Oid     string
+						Parents struct {
+							Nodes []struct {
+								AssociatedPullRequests struct {
+									Nodes []struct{ Number int }
+								} `graphql:"associatedPullRequests(first: 5)"`
+							}
+						} `graphql:"parents(first: 1)"`
+					}
+					Commits struct{ TotalCount int }
+					Labels  struct {
 						Nodes    []struct{ Name string }
 						PageInfo struct{ HasNextPage bool }
 					} `graphql:"labels(first: 20)"`
@@ -490,12 +500,17 @@ func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull
 		if p.Labels.PageInfo.HasNextPage {
 			return nil, ErrMergedTruncated
 		}
-		mp := MergedPull{Number: p.Number, Author: p.Author.login(), HeadRef: p.HeadRefName, Title: p.Title}
+		mp := MergedPull{Number: p.Number, Author: p.Author.login(), HeadRef: p.HeadRefName, Title: p.Title, Commits: p.Commits.TotalCount}
 		if p.MergedAt != nil {
 			mp.MergedAt = p.MergedAt.Time
 		}
 		if p.MergeCommit != nil {
 			mp.MergeCommitSHA = p.MergeCommit.Oid
+			for _, par := range p.MergeCommit.Parents.Nodes {
+				for _, a := range par.AssociatedPullRequests.Nodes {
+					mp.ParentPulls = append(mp.ParentPulls, a.Number)
+				}
+			}
 		}
 		for _, l := range p.Labels.Nodes {
 			mp.Labels = append(mp.Labels, l.Name)

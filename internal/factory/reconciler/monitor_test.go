@@ -11,6 +11,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
@@ -213,6 +215,20 @@ func TestAnUnreadFollowUpIsInconclusive(t *testing.T) {
 		"read error": func(g *rig) {
 			g.f.FailPullFiles(20, errors.New("boom"))
 		},
+		"the merge's own files": func(g *rig) { g.f.FailPullFiles(12, errors.New("boom")) },
+		"a malformed hunk": func(g *rig) {
+			g.f.SetPullFiles(20, forge.FilePatch{Path: testFile, Status: "modified", Patch: "@@ bogus @@\n-a\n+b\n"})
+		},
+		"no merge commit": func(g *rig) {
+			p := later(20, "Smana", "fix")
+			p.MergedAt, p.MergeCommitSHA = now.Add(-100*time.Hour), ""
+			g.f.SetMerged(p)
+		},
+		"a multi-commit rebase": func(g *rig) {
+			p := later(20, "Smana", "fix")
+			p.MergedAt, p.Commits, p.ParentPulls = now.Add(-100*time.Hour), 3, []int{20}
+			g.f.SetMerged(p)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := monitorRig(t)
@@ -232,6 +248,25 @@ func TestAnUnreadFollowUpIsInconclusive(t *testing.T) {
 				t.Fatalf("%q", g.f.Comments(12))
 			}
 		})
+	}
+}
+
+// The busy repository: the whole window truncates, the later half reads fine and holds no
+// follow-up. The read was incomplete, so the window ends inconclusive, never healthy; the same
+// read of a window the later half does cover (a younger merge) is complete and stays healthy.
+func TestANarrowedReadIsInconclusive(t *testing.T) {
+	g := monitorRig(t)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.f.TruncateMergedBefore(now.Add(-100 * time.Hour))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if m := tk.Status.Monitor; m.Verdict != "inconclusive" || !m.FollowUpsUnread || len(m.FollowUps) != 0 {
+		t.Fatalf("a half-read window is not healthy: %+v", m)
+	}
+	g = monitorRig(t)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.f.TruncateMergedBefore(now.Add(-170 * time.Hour)) // nothing truncates: the whole window reads
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Monitor.Verdict != "healthy" {
+		t.Fatalf("a whole read is healthy: %+v", tk.Status.Monitor)
 	}
 }
 
@@ -261,17 +296,35 @@ func TestALateIndexedFollowUpIsFoundByTheNextRead(t *testing.T) {
 	}
 }
 
-// The monitor reads GitHub once per monitorEvery, whatever wakes the reconciler.
+// countingForge counts the task App's uncached reads.
+type countingForge struct {
+	TaskForge
+	prs int
+}
+
+func (c *countingForge) PullRequest(ctx context.Context, n int) (forge.PR, error) {
+	c.prs++
+	return c.TaskForge.PullRequest(ctx, n)
+}
+
+// The monitor reads GitHub once per monitorEvery, whatever wakes the reconciler: its own status
+// write wakes it at once. PullRequest is uncached, so it is the throttle's proof.
 func TestTheMonitorReadsOncePerInterval(t *testing.T) {
 	g := monitorRig(t)
-	g.f.SetMerged(later(20, "Smana", "fix"))
-	g.f.SetPullFiles(20, overlapping)
-	g.f.SetBlame("bbbb0", testFile, mBlame...)
+	cf := &countingForge{TaskForge: g.f}
+	g.r.Forge = cf
 	g.reconcile(t, "3buqdlot", 1)
-	calls := g.f.BlameCalls()
+	if cf.prs != 1 {
+		t.Fatalf("one read on the first pass: %d", cf.prs)
+	}
 	g.reconcile(t, "3buqdlot", 3)
-	if g.f.BlameCalls() != calls {
-		t.Fatalf("blame is cached and the pass throttled: %d then %d", calls, g.f.BlameCalls())
+	if cf.prs != 1 {
+		t.Fatalf("a pass inside monitorEvery reads nothing: %d reads", cf.prs)
+	}
+	g.r.Now = func() time.Time { return now.Add(monitorEvery + time.Minute) }
+	g.reconcile(t, "3buqdlot", 1)
+	if cf.prs != 2 {
+		t.Fatalf("a pass after monitorEvery reads again: %d reads", cf.prs)
 	}
 }
 
@@ -295,5 +348,193 @@ func TestPausedCountsTheTasksOwnMonitorOutcomes(t *testing.T) {
 				t.Fatalf("a healthy watch demotes nothing: %v %v", d, err)
 			}
 		})
+	}
+}
+
+// MC13 ruling: cloud-native-ref squashes, ai-native-ref may also rebase. A multi-commit rebase
+// leaves the first parent short of the base, so its blame is unread; a single-commit rebase, and a
+// squash of many commits (whose parent is the base), are read as usual.
+func TestRebaseMergesAreReadOnlyWhenSafe(t *testing.T) {
+	for name, c := range map[string]struct {
+		commits int
+		parents []int
+		follow  bool
+	}{
+		"a squash of three commits":  {3, []int{7}, true},
+		"a single-commit rebase":     {1, []int{20}, true},
+		"a multi-commit rebase":      {3, []int{20}, false},
+		"commits unknown, no parent": {0, nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := monitorRig(t)
+			g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+			p := later(20, "Smana", "fix")
+			p.MergedAt, p.Commits, p.ParentPulls = now.Add(-100*time.Hour), c.commits, c.parents
+			g.f.SetMerged(p)
+			g.f.SetPullFiles(20, overlapping)
+			g.f.SetBlame("bbbb0", testFile, mBlame...)
+			m := g.reconcile(t, "3buqdlot", 1).Status.Monitor
+			if got := slices.Contains(m.FollowUps, 20); got != c.follow || m.FollowUpsUnread == c.follow {
+				t.Fatalf("follow-up %v unread %v: %+v", got, m.FollowUpsUnread, m)
+			}
+			if !c.follow && m.Verdict != "inconclusive" {
+				t.Fatalf("a read that cannot say ends inconclusive: %+v", m)
+			}
+		})
+	}
+}
+
+// At the window's end an open signal never said healthy: Oracle and Flux readings arrive in Task 8,
+// until then a class that declares them ends inconclusive.
+func TestAnOpenSignalIsInconclusiveAtTheEnd(t *testing.T) {
+	g := monitorRig(t)
+	cl := g.r.Cfg.Classes["dead-links"]
+	cl.Monitor.OracleRuns, cl.Monitor.Flux = 2, &config.FluxWatch{Source: "flux-system/cnref", Within: config.Duration{Duration: time.Hour}}
+	g.r.Cfg.Classes["dead-links"] = cl
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	m := g.reconcile(t, "3buqdlot", 1).Status.Monitor
+	if m.Oracle != "inconclusive" || m.Flux != "inconclusive" || m.Verdict != "inconclusive" || m.Main != "healthy" {
+		t.Fatalf("%+v", m)
+	}
+}
+
+// The verdict comment says how many follow-ups were counted, beside a healthy verdict.
+func TestTheVerdictNamesItsFollowUps(t *testing.T) {
+	g := monitorRig(t)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	p := later(20, "Smana", "fix")
+	p.MergedAt = now.Add(-100 * time.Hour)
+	g.f.SetMerged(p)
+	g.f.SetPullFiles(20, overlapping)
+	g.f.SetBlame("bbbb0", testFile, mBlame...)
+	g.reconcile(t, "3buqdlot", 1)
+	if cs := g.f.Comments(12); !contains(cs, "verdict=healthy") || !contains(cs, "follow_ups=1") {
+		t.Fatalf("%q", cs)
+	}
+	g = monitorRig(t)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	g.reconcile(t, "3buqdlot", 1)
+	if !contains(g.f.Comments(12), "follow_ups=0") {
+		t.Fatalf("%q", g.f.Comments(12))
+	}
+}
+
+// The caches hold what was derived (never a raw patch), prune what describes a merge older than
+// the longest window plus searchLag, and a posted verdict ends its task's throttle entry.
+func TestTheMonitorCachesAreBounded(t *testing.T) {
+	g := monitorRig(t)
+	g.f.SetMerged(later(20, "Smana", "fix"))
+	g.f.SetPullFiles(20, overlapping)
+	g.f.SetBlame("bbbb0", testFile, mBlame...)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if len(g.r.mon.files) != 2 || len(g.r.mon.blame) != 1 {
+		t.Fatalf("files %d blame %d", len(g.r.mon.files), len(g.r.mon.blame))
+	}
+	if _, ok := g.r.mon.lastPass("3buqdlot"); !ok {
+		t.Fatal("an open watch is throttled")
+	}
+	g.r.Now = func() time.Time { return now.Add(168*time.Hour + 2*searchLag) }
+	if _, _, err := g.r.mergedSince(t.Context(), tk, now, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.r.mon.files) != 0 || len(g.r.mon.blame) != 0 {
+		t.Fatalf("entries for merges past the horizon are gone: files %d blame %d", len(g.r.mon.files), len(g.r.mon.blame))
+	}
+	if _, ok := g.r.mon.lastPass("3buqdlot"); ok {
+		t.Fatal("the throttle entry goes with the horizon")
+	}
+	g = monitorRig(t)
+	g.setDone(t, "3buqdlot", 12, "Smana", mSHA, now.Add(-169*time.Hour))
+	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.Monitor.Posted {
+		t.Fatal("posted")
+	}
+	if _, ok := g.r.mon.lastPass("3buqdlot"); ok {
+		t.Fatal("a posted verdict leaves no throttle entry")
+	}
+}
+
+// The window's last minutes: a final pass reads fresh, whatever the cache holds.
+func TestTheFinalReadBypassesTheMergedCache(t *testing.T) {
+	g := monitorRig(t)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	from := now.Add(-3 * time.Hour)
+	if ps, _, _ := g.r.mergedSince(t.Context(), tk, from, false); len(ps) != 0 {
+		t.Fatal("nothing yet")
+	}
+	g.f.SetMerged(later(20, "Smana", "fix"))
+	if ps, _, _ := g.r.mergedSince(t.Context(), tk, from, false); len(ps) != 0 {
+		t.Fatal("the cache answers inside its interval")
+	}
+	if ps, _, _ := g.r.mergedSince(t.Context(), tk, from, true); len(ps) != 1 {
+		t.Fatal("fresh reads again")
+	}
+}
+
+// A write that fails does not leave the pass recorded: the retry is not throttled.
+func TestAFailedStatusWriteDoesNotThrottleTheRetry(t *testing.T) {
+	g := monitorRig(t)
+	g.r.mon.passed("3buqdlot", now)
+	g.r.mon.forget("3buqdlot")
+	if _, ok := g.r.mon.lastPass("3buqdlot"); ok {
+		t.Fatal("forget clears the pass")
+	}
+	lose := true
+	c := interceptor.NewClient(g.c.(client.WithWatch), interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, o client.Object, opts ...client.SubResourceUpdateOption) error {
+		if tk, ok := o.(*v1alpha1.Task); ok && lose && tk.Status.Monitor != nil {
+			lose = false
+			return errors.New("stale")
+		}
+		return cl.SubResource(sub).Update(ctx, o, opts...)
+	}})
+	g.r.Client = c
+	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
+		t.Fatal("the status write is lost")
+	}
+	if _, ok := g.r.mon.lastPass("3buqdlot"); ok {
+		t.Fatal("a pass whose write was lost is not recorded")
+	}
+}
+
+// L6: the Task's MergedAt is GitHub's, wherever the factory sees the merge: a human merge from
+// AwaitingCI, one from AwaitingHuman (prEnded) and the merger's own from AutoMerging. This changes
+// the breaker's window for every class, as intended: it is the merge's real time.
+func TestMergedAtIsGitHubsEverywhere(t *testing.T) {
+	at := now.Add(-3 * time.Hour)
+	for name, c := range map[string]struct {
+		phase, who string
+	}{
+		"awaitingCI":    {v1alpha1.PhaseAwaitingCI, "Smana"},
+		"awaitingHuman": {v1alpha1.PhaseAwaitingHuman, "Smana"},
+		"autoMerging":   {v1alpha1.PhaseAutoMerging, "ogenki-agent-merger[bot]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := mergeRig(t, c.phase)
+			g.f.SetPR(forge.PR{Number: 12, NodeID: "PR_12", State: "MERGED", Author: "ogenki-agents[bot]", HeadRef: "agent/3buqdlot",
+				HeadSHA: "abc", MergedBy: c.who, MergedAt: at, MergeCommitSHA: mSHA})
+			tk := g.reconcile(t, "3buqdlot", 1)
+			if ma := tk.Status.PullRequest.MergedAt; ma == nil || !ma.Time.Equal(at) {
+				t.Fatalf("%s %s merged at %v, want GitHub's %v", tk.Status.Phase, tk.Status.Reason, ma, at)
+			}
+		})
+	}
+}
+
+// The settle requeue never delays the monitor: the smaller of the two wins, and a watched task
+// settles while it is watched.
+func TestTheSettleRequeueDoesNotDelayTheMonitor(t *testing.T) {
+	g := monitorRig(t)
+	g.r.Cfg.Poll.Meter = config.Duration{Duration: 10 * time.Minute} // settle window 20m30s
+	g.patch(t, func(tk *v1alpha1.Task) {
+		tk.Status.Runs = []v1alpha1.RunRecord{{ID: rid(0), Role: "implementer", Trigger: "initial"}}
+		ps := metav1.NewTime(now)
+		tk.Status.PhaseSince = &ps
+	})
+	res, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot"))
+	if err != nil || res.RequeueAfter != monitorEvery {
+		t.Fatalf("%v %v", res, err)
+	}
+	g.r.Now = func() time.Time { return now.Add(21 * time.Minute) }
+	if tk := g.reconcile(t, "3buqdlot", 1); !tk.Status.UsageSettled {
+		t.Fatal("a watched task settles its usage")
 	}
 }

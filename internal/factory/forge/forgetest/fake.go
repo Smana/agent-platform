@@ -68,6 +68,7 @@ type Fake struct {
 	blame        map[string][]forge.BlameRange
 	blameCalls   int
 	mergedErr    error
+	mergedCutoff time.Time // MergedSince truncates a read that starts before it
 	filesErr     map[int]error
 	blameErr     map[string]error
 	subErr       error
@@ -798,6 +799,14 @@ func (f *Fake) FailMergedSince(err error) {
 	f.mergedErr = err
 }
 
+// TruncateMergedBefore makes MergedSince answer forge.ErrMergedTruncated for a read that starts
+// before at, as a busy repository's search of 100 does, and answer from at on; the zero time clears it.
+func (f *Fake) TruncateMergedBefore(at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mergedCutoff = at
+}
+
 // MergedSince implements the Merger's MergedSince: the set pull requests merged at or after since,
 // which the search takes to the second.
 func (f *Fake) MergedSince(_ context.Context, since time.Time) ([]forge.MergedPull, error) {
@@ -805,6 +814,9 @@ func (f *Fake) MergedSince(_ context.Context, since time.Time) ([]forge.MergedPu
 	defer f.mu.Unlock()
 	if f.mergedErr != nil {
 		return nil, f.mergedErr
+	}
+	if !f.mergedCutoff.IsZero() && since.Before(f.mergedCutoff) {
+		return nil, forge.ErrMergedTruncated
 	}
 	since = since.Truncate(time.Second)
 	var out []forge.MergedPull

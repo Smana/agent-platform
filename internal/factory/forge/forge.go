@@ -293,6 +293,18 @@ type MergedPull struct {
 	Title          string
 	MergedAt       time.Time
 	Labels         []string
+	// Commits is how many commits the pull request had; ParentPulls the pull requests its merge
+	// commit's first parent belongs to. Together they tell a rebase merge of several commits (the
+	// first parent is then one of its own commits, not the base) from a squash.
+	Commits     int
+	ParentPulls []int
+}
+
+// MultiCommitRebase reports a pull request merged by rebasing more than one commit: its merge
+// commit's first parent is a commit of the same pull request. A single-commit rebase has the base
+// for parent, as a squash does.
+func (p MergedPull) MultiCommitRebase() bool {
+	return p.Commits > 1 && slices.Contains(p.ParentPulls, p.Number)
 }
 
 // FilePatch is one file a pull request changed: its path, its previous path on a rename, GitHub's

@@ -224,8 +224,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	case r.settling(&t):
 		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
 	}
+	if err == nil && ended && watchWait && r.settling(&t) {
+		// A task kept alive by a watch still settles its usage: the switch above took the watch.
+		err = r.settle(context.WithValue(ctx, effectsKey{}, fx), &t)
+	}
 	if !equality.Semantic.DeepEqual(*before, t.Status) {
 		if uerr := r.Client.Status().Update(ctx, &t); uerr != nil {
+			r.mon.forget(t.Name) // the pass was not recorded: its retry must not wait out the throttle
 			return ctrl.Result{}, errors.Join(err, uerr)
 		}
 		for _, f := range fx.after {
@@ -276,7 +281,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{RequeueAfter: r.Cfg.Poll.Tasks.Duration}, nil
 		}
 		if err == nil && r.settling(&t) {
-			return ctrl.Result{RequeueAfter: r.settleLeft(&t)}, nil // for the settle, at its window
+			wait := r.settleLeft(&t) // for the settle, at its window, unless a merge under watch is due sooner
+			if r.monitorDue(&t) {
+				wait = min(wait, monitorEvery)
+			}
+			return ctrl.Result{RequeueAfter: wait}, nil
 		}
 		if err == nil && r.monitorDue(&t) && (closeLeft <= 0 || closeLeft > monitorEvery) {
 			return ctrl.Result{RequeueAfter: monitorEvery}, nil // a merge under watch is read on its own clock

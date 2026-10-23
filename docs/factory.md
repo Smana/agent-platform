@@ -586,6 +586,10 @@ A shadow decision's comment carries the head it judged (`event=would-arm-<n> hea
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
+### The post-merge monitor
+
+A class that declares `monitor` keeps its merged tasks on the reconciler's books until the verdict is posted. Each watched task is read at most once per 10 minutes: `PullRequest`, `CommitChecks` until main's signal is final, and one `MergedSince` per repository (shared by every task of it). Each later pull request is read once per process (`PullFiles`, plus one blame per file both changed), so a steady state costs about 2 GitHub calls per watched task per 10 minutes. A factory restart forgets those caches and re-reads up to 100 pull requests and their blames in one burst per repository. A follow-up read that fails or cannot say (no blame, an omitted patch, a truncated search, a rebase merge of several commits) ends the watch `inconclusive`, never `healthy`. The full description comes with the merge gate follow-ups docs.
+
 ## Oracle classes
 
 A class with an `oracle` (`dead-links` is the first) has a detector, a GitHub Actions workflow on

@@ -85,9 +85,10 @@ const labelledJSON = `{"data":{"repository":{"pullRequests":{"nodes":[
 // The follow-up reads: merged pull requests found by search, a bot author without its suffix.
 const mergedJSON = `{"data":{"search":{"nodes":[
  {"number":51,"author":{"__typename":"Bot","login":"renovate"},"headRefName":"renovate/x","title":"chore(deps): bump x",
-  "mergedAt":"2026-10-17T08:00:00Z","mergeCommit":{"oid":"m51"},"labels":{"nodes":[{"name":"factory/merged:deps-patch"},{"name":"dependencies"}]}},
+  "mergedAt":"2026-10-17T08:00:00Z","commits":{"totalCount":3},
+  "mergeCommit":{"oid":"m51","parents":{"nodes":[{"associatedPullRequests":{"nodes":[{"number":51}]}}]}},"labels":{"nodes":[{"name":"factory/merged:deps-patch"},{"name":"dependencies"}]}},
  {"number":52,"author":{"__typename":"User","login":"Smana"},"headRefName":"fix/y","title":"fix: y",
-  "mergedAt":"2026-10-18T08:00:00Z","mergeCommit":null,"labels":{"nodes":[]}}]}}}`
+  "mergedAt":"2026-10-18T08:00:00Z","commits":{"totalCount":1},"mergeCommit":null,"labels":{"nodes":[]}}]}}}`
 
 const blameJSON = `{"data":{"repository":{"object":{"parents":{"nodes":[{"blame":{"ranges":[
  {"startingLine":1,"endingLine":9,"commit":{"oid":"aaa"}},{"startingLine":10,"endingLine":12,"commit":{"oid":"bbb"}}]}}]}}}}}`
@@ -1579,9 +1580,9 @@ func TestMergedSinceSearchesMergedPullRequestsSince(t *testing.T) {
 		t.Fatalf("the search sent: %v %s", err, b[len(b)-1])
 	}
 	want := []MergedPull{
-		{Number: 51, Author: "renovate[bot]", HeadRef: "renovate/x", MergeCommitSHA: "m51", Title: "chore(deps): bump x",
+		{Number: 51, Author: "renovate[bot]", HeadRef: "renovate/x", MergeCommitSHA: "m51", Title: "chore(deps): bump x", Commits: 3, ParentPulls: []int{51},
 			MergedAt: time.Date(2026, 10, 17, 8, 0, 0, 0, time.UTC), Labels: []string{"factory/merged:deps-patch", "dependencies"}},
-		{Number: 52, Author: "Smana", HeadRef: "fix/y", Title: "fix: y", MergedAt: time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)},
+		{Number: 52, Author: "Smana", HeadRef: "fix/y", Title: "fix: y", Commits: 1, MergedAt: time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC)},
 	}
 	if len(ps) != 2 || !reflect.DeepEqual(ps, want) {
 		t.Fatalf("%+v", ps)
@@ -1655,5 +1656,21 @@ func TestMergedSinceWithUnreadLabelsIsTruncated(t *testing.T) {
 	r := newRig(t)
 	if ps, err := r.g.MergedSince(t.Context(), time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)); !errors.Is(err, ErrMergedTruncated) || ps != nil {
 		t.Fatalf("%+v %v", ps, err)
+	}
+}
+
+func TestMultiCommitRebase(t *testing.T) {
+	for name, c := range map[string]struct {
+		p    MergedPull
+		want bool
+	}{
+		"squash of three":     {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{4}}, false},
+		"rebase of three":     {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{5}}, true},
+		"rebase of one":       {MergedPull{Number: 5, Commits: 1, ParentPulls: []int{5}}, false},
+		"parent unassociated": {MergedPull{Number: 5, Commits: 3}, false},
+	} {
+		if got := c.p.MultiCommitRebase(); got != c.want {
+			t.Errorf("%s: %v", name, got)
+		}
 	}
 }
