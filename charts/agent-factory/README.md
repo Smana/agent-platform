@@ -41,6 +41,7 @@ uid and nobody else.
 | `replicas` | `2` | Controller replicas |
 | `resources` | requests 100m / 256Mi, limits 500m / 512Mi | The container's resources |
 | `githubSecret`, `mergerSecret`, `brokerCASecret`, `oidcSecret`, `intakeSecret` | see the table above | Secret names |
+| `monitor.flux.enabled` | `false` | Renders the read-only ClusterRole and ClusterRoleBinding `agent-factory-flux-reader` (`get` on gitrepositories, `get` and `list` on kustomizations and helmreleases, no watch) for a class's `monitor.flux`; without it the Flux signal ends `inconclusive` ([docs/factory.md](../../docs/factory.md#the-post-merge-monitor)) |
 | `roomsAudience` | `rooms-system` | Audience of the projected token for the broker's system API |
 | `config` | `{}` | The factory config, rendered verbatim; an empty config fails the start |
 

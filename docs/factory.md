@@ -608,14 +608,18 @@ merge:
   breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}   # maxFollowUps 0, the default, counts none
 ```
 
-`flux` needs the chart's `monitor.flux.enabled` (a read-only ClusterRole, off by default); without
-it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
+`flux` needs the chart's `monitor.flux.enabled` (off by default). It renders the ClusterRole and
+ClusterRoleBinding `agent-factory-flux-reader`: `get` on `gitrepositories`, `get` and `list` on
+`kustomizations` and `helmreleases`, no `watch`, nothing else of the cluster. The reads are uncached.
+Without it every read is refused and the signal ends `inconclusive`. `merge.breaker.maxFollowUps` must be between 0 and `window`.
 
 **The signals.**
 
 | Signal | Reads | Regression | Healthy |
 |---|---|---|---|
 | Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
+| Detector (oracle) | Each scheduled run of the class's oracle workflow after the merge, oldest first, through the probe's readers | A run reports gone a target this merge wrote | `oracleRuns` clean runs. A run that failed or whose findings are refused: `inconclusive` |
+| Flux | The `source` GitRepository (`get`), and the Kustomizations and HelmReleases of that source (`list`), on the factory's cluster | A Kustomization or HelmRelease of the source turned not Ready between the application and `within` later | The source holds the merge, `within` has passed since it applied it, nothing turned not Ready in the window. A source that never holds the merge within `within`, or is suspended: `inconclusive` |
 | Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
 
 The detector signal reads each scheduled run after the merge, oldest first: one that reports gone a
