@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,9 +54,6 @@ const (
 
 // errReplayConflict is a Task of the key's name that is not this principal's for this key.
 var errReplayConflict = errors.New("api: the name belongs to another request")
-
-// errSecret is an issue that holds what looks like a secret.
-var errSecret = errors.New("api: the issue holds a secret")
 
 // errNoForge is a titled request on a repository with no GitHub connection (C24).
 var errNoForge = errors.New("api: no GitHub connection for the repository")
@@ -148,6 +146,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		out(http.StatusBadRequest, err.Error())
 		return
 	}
+	// What reaches the issue and the agents is scanned before any side effect, failing closed.
+	if s.Redact == nil {
+		fail(http.StatusServiceUnavailable, "intake_failed", errors.New("api: no redactor"))
+		return
+	}
+	if _, rules := s.Redact.String(title + "\n" + text); len(rules) > 0 {
+		out(http.StatusBadRequest, "invalid_draft")
+		return
+	}
 	name := taskid.Name("api:" + sp.Name + ":" + key)
 	if t, found, err := s.existing(ctx, name); err != nil {
 		fail(http.StatusServiceUnavailable, "tasks_unavailable", err)
@@ -181,9 +188,6 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errReplayConflict):
 		out(http.StatusConflict, "idempotency_conflict")
-		return
-	case errors.Is(err, errSecret):
-		out(http.StatusBadRequest, "invalid_draft")
 		return
 	case err != nil:
 		fail(http.StatusServiceUnavailable, "intake_failed", err)
@@ -295,14 +299,6 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 			return 0, nil, errNoForge // before the Task: a Task that can never get its issue is not created
 		}
 	}
-	if filer != nil { // the issue is public: the broker's redactor holds it, failing closed without one
-		if s.Redact == nil {
-			return 0, nil, errors.New("api: no redactor")
-		}
-		if _, rules := s.Redact.String(title + "\n" + text); len(rules) > 0 {
-			return 0, nil, errSecret
-		}
-	}
 	snapshot := text
 	if title != "" {
 		snapshot = "# " + title + "\n\n" + text
@@ -337,7 +333,8 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 	footer := fmt.Sprintf("\n\n---\nFiled by the agent factory, sponsored by @%s through %s. Its room: %s/r/%s (tailnet only).",
 		login, sp.Principal(), strings.TrimSuffix(s.Cfg.RoomsURL, "/"), name)
 	// Past the Task, a client that hangs up must not orphan the issue: filing and linking outlive ctx.
-	fctx := context.WithoutCancel(ctx)
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	iss, err := filer.CreateIssue(fctx, title, text+footer, nil) // no label (R10)
 	if err != nil {
 		return 0, nil, err // the Task exists; a replay finds it and files nothing, so the owner sees it without an issue
@@ -350,6 +347,9 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 			break
 		}
 		if !apierrors.IsConflict(err) || attempt == 3 {
+			if s.Log != nil { // the issue exists and is unlinked: name it so an operator can link it by hand
+				s.Log.ErrorContext(ctx, "intake: the filed issue is not linked to its task", "task", name, "issue", iss.Number, "error", err)
+			}
 			return 0, nil, err
 		}
 	}

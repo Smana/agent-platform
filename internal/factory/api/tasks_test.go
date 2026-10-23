@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
 	"github.com/Smana/agent-platform/internal/redact"
 )
 
@@ -359,5 +361,65 @@ func TestCreateTaskPatchRetries(t *testing.T) {
 	}
 	if ts := tasks(t, s); len(ts) != 1 || ts[0].Spec.Issue != 42 || fails != 0 {
 		t.Fatalf("%+v", ts)
+	}
+}
+
+// An untitled request's text is scanned too: nothing is created for a secret.
+func TestCreateTaskUntitledSecret(t *testing.T) {
+	s, f := newTaskServer(t, slack, 0)
+	secret := "ghp_" + strings.Repeat("aB3dE5gH7j", 3) + "aB3dE5"
+	body := `{"repository":"Smana/cloud-native-ref","text":"use ` + secret + ` here","dataClass":"public","maxCostUSD":2}`
+	if rec := postTask(s, body, "k"); rec.Code != 400 || !strings.Contains(rec.Body.String(), "invalid_draft") ||
+		len(f.got) != 0 || len(tasks(t, s)) != 0 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// No redactor fails closed, creating nothing.
+func TestCreateTaskWithoutARedactor(t *testing.T) {
+	s, f := newTaskServer(t, slack, 0)
+	s.Redact = nil
+	if rec := postTask(s, draft, "k"); rec.Code != 503 || !strings.Contains(rec.Body.String(), "intake_failed") ||
+		len(f.got) != 0 || len(tasks(t, s)) != 0 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// The AlreadyExists race: the early read finds nothing, Create loses to a Task of the name that is
+// not this principal's for this key, and the answer is a conflict, not a duplicate.
+func TestCreateTaskRaceConflict(t *testing.T) {
+	squat := openTask(taskid.Name("api:slack-app:k"))
+	squat.Spec.Source.Key = "api:slack-app:elsewhere"
+	first := true
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(squat, ledgerCM(now.UTC().Format(LedgerDayLayout), nil)).
+		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+			if _, ok := o.(*factoryv1.Task); ok && first {
+				first = false
+				return apierrors.NewNotFound(schema.GroupResource{Group: "factory", Resource: "tasks"}, k.Name)
+			}
+			return cl.Get(ctx, k, o, opts...)
+		}}).Build()
+	s := mkServer(t, &store{}, c, false, false, "7f3cq2xz", 5_000_000)
+	f := &fakeFiler{}
+	s.Auth, s.Cfg, s.Redact = byToken{"t": slack}, sponsoredCfg(), testRedactor(t)
+	s.Forges = func(string) IssueFiler { return f }
+	if rec := postTask(s, draft, "k"); rec.Code != 409 || !strings.Contains(rec.Body.String(), "idempotency_conflict") || len(f.got) != 0 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// A link that never lands names the filed issue in the log, so an operator can link it by hand.
+func TestCreateTaskOrphanIsLogged(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(scheme()).WithObjects(ledgerCM(now.UTC().Format(LedgerDayLayout), nil)).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+			return errors.New("apiserver down")
+		}}).Build()
+	s := mkServer(t, &store{}, c, false, false, "7f3cq2xz", 5_000_000)
+	var logs strings.Builder
+	s.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	s.Auth, s.Cfg, s.Redact = byToken{"t": slack}, sponsoredCfg(), testRedactor(t)
+	s.Forges = func(string) IssueFiler { return &fakeFiler{} }
+	if rec := postTask(s, draft, "k"); rec.Code != 503 || !strings.Contains(logs.String(), "issue=42") {
+		t.Fatalf("%d %s\n%s", rec.Code, rec.Body, logs.String())
 	}
 }
