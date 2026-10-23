@@ -955,6 +955,9 @@ func (g *GitHub) DefaultBranchFile(ctx context.Context, path string) (text, sha 
 	if t := fc.GetType(); t != "file" {
 		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s is a %s: %w", path, t, ErrNotAFile)
 	}
+	if fc.GetPath() != path { // a symlink to a file: the API answers with the target, whose bytes are not this path's
+		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s resolves to %s: %w", path, fc.GetPath(), ErrNotAFile)
+	}
 	if fc.GetEncoding() == "none" { // the contents API withholds the body of a file over 1 MB
 		return "", fc.GetSHA(), false, fmt.Errorf("forge: %s is %d bytes and not readable through the contents API: %w", path, fc.GetSize(), ErrNotAFile)
 	}

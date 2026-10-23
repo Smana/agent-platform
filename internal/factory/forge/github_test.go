@@ -484,6 +484,9 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			case body == "symlink" || body == "submodule":
 				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": body, "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
 					"size": 12, "target": "../elsewhere.md"})
+			case body == "linked":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "other.md", "path": "docs/other.md", "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"encoding": "base64", "size": 2, "content": base64.StdEncoding.EncodeToString([]byte("x\n"))})
 			case body == "denied":
 				http.Error(w, `{"message":"Forbidden"}`, http.StatusForbidden)
 			case !ok:
@@ -1365,7 +1368,7 @@ func TestDefaultBranchFileReadsASteeringNote(t *testing.T) {
 // ErrNotAFile: retrying cannot change it, so the caller proceeds unsteered.
 func TestDefaultBranchFileNeverReadable(t *testing.T) {
 	const p = ".github/agent-factory/steering/docs.md"
-	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a symlink": "symlink", "a submodule": "submodule"} {
+	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a symlink": "symlink", "a submodule": "submodule", "a symlink resolved to its target": "linked"} {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t)
 			r.gh.mu.Lock()
