@@ -56,7 +56,7 @@ No interactivity and no slash command.
 | `channels` | Required, at least one: `<channel id>: {repositories: [owner/name], maxCostUSD}`. The repositories a draft there may name, and the `max_cost` a check mark there sends (at least 0.01) |
 | `signingSecretFile`, `botTokenFile`, `webhookKeyFile`, `botUserIDFile` | Required mounted files; each must be readable and non-empty, and the webhook key must parse (one or two base64 lines of at least 32 bytes): the App refuses to start otherwise, naming the field and never the content |
 | `clientIDFile`, `clientSecretFile`, `projectIDFile`, `issuerURL` | Required: the ZITADEL machine user's client, the project whose audience the token carries, and the issuer (an absolute `https` URL; `http` is accepted only for a loopback host, in tests). The three files are checked at start like the others |
-| `brokerURL`, `roomsURL` | The broker (its `/mcp`) and the room pages' base URL |
+| `brokerURL`, `roomsURL` | The broker's base URL, its human listener (`http://<svc>.<ns>.svc.cluster.local:8080`, no path: the App calls `<brokerURL>/mcp`), and the room pages' base URL |
 | `namespace` | Where the `factory-slack-threads` ConfigMap lives |
 | `eventsAddr` `:8080` | Slack's events, `POST /slack/events`: the public route |
 | `webhooksAddr` `:8081` | The broker's webhooks, `POST /webhooks`: cluster only |
