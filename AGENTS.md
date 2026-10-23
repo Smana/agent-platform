@@ -147,6 +147,7 @@ flowchart LR
 |---|---|---|
 | Entry | `cmd/room-broker` | `serve` and `retention` subcommands |
 | Entry | `cmd/room-bridge` | the sidecar binary |
+| Entry | `cmd/factory-slack-app`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
 | Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
 | Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter |
