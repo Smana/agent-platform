@@ -1,8 +1,18 @@
 # test-contract in CI (v3 feature 4, TF7): the same script the harness runs for the tester's red
-# check, so the sandbox and the CI agree. Pin it by commit. Needs python3 with PyYAML, git history
-# holding both commits, and the repository's toolchain on PATH.
+# check, so the sandbox and the CI agree.
+#
+# Use it ONLY as   uses: Smana/agent-platform/.github/actions/test-contract@<40-hex sha>
+# and never from the pull request's own tree (`uses: ./...`): the change under judgement would then
+# bring the judge. Pin it by commit.
+#
+# The calling job needs: python3 with PyYAML; actions/checkout with `fetch-depth: 0` (both commits
+# and their merge base in the history) and `persist-credentials: false` (the tests run code from the
+# change: no token may sit in .git/config); `contents: read`; the repository's toolchain on PATH.
 name: test-contract
-description: Every test a pull request adds fails on the base plus the tests and passes at the head.
+description: >-
+  Every test a pull request adds fails on the base plus the tests and passes at the head. Use it as
+  Smana/agent-platform/.github/actions/test-contract@<sha>, never from the pull request's own tree; check out
+  with fetch-depth 0 and persist-credentials false.
 inputs:
   base:
     description: The base branch's commit; the tests' declaration is read there.

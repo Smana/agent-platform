@@ -92,7 +92,10 @@ USER root
 RUN /usr/local/bin/python -m pip install --no-cache-dir --root-user-action=ignore --require-hashes --only-binary=:all: \
       -r /opt/agent/tests/contract-requirements.txt
 USER 10001
-RUN cd /opt/agent && /agent-server/.venv/bin/python -m unittest discover -s tests -v
+# A missing pytest is a failure here, never a skip: the fixture must run in the image.
+ENV TEST_CONTRACT_REQUIRE_PYTEST=1
+RUN python3 -c "import pytest" \
+ && cd /opt/agent && /agent-server/.venv/bin/python -m unittest discover -s tests -v
 
 # The default target, and what CI publishes.
 FROM harness
