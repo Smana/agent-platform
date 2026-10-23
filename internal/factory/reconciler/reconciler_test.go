@@ -777,7 +777,7 @@ func TestStopObjectStopsEverything(t *testing.T) {
 // A stop annotation stops the task and counts as an intervention; a finished run is deleted but
 // never annotated revoked.
 func TestStopAnnotation(t *testing.T) {
-	for why, want := range map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded", "x": "stopped_by_annotation"} {
+	for why, want := range map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded", "family_dropped": "family_dropped", "x": "stopped_by_annotation"} {
 		t.Run(why, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
 			tk := g.reconcile(t, "3buqdlot", 3)

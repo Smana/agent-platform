@@ -204,11 +204,11 @@ func TestADroppedOrRevertedPartEndsTheFamily(t *testing.T) {
 	}
 	// The running part 2 must not outlive the family: stopped, its outcome recorded and counted.
 	if len(p.Status.Split.Children) != 2 || p.Status.Split.Children[1].Outcome != "dropped" ||
-		childTask(t, g, 2).Annotations[v1alpha1.AnnotationStop] == "" || !slices.Contains(g.metrics.recorded, "split_child review dropped") {
+		childTask(t, g, 2).Annotations[v1alpha1.AnnotationStop] != StopFamilyDropped || !slices.Contains(g.metrics.recorded, "split_child review dropped") {
 		t.Fatalf("%+v %v", p.Status.Split, childTask(t, g, 2).Annotations)
 	}
-	if c := g.reconcile(t, child(2), 1); c.Status.Phase != v1alpha1.PhaseStopped {
-		t.Fatalf("part 2: %s", c.Status.Phase)
+	if c := g.reconcile(t, child(2), 1); c.Status.Phase != v1alpha1.PhaseStopped || c.Status.Reason != "family_dropped" {
+		t.Fatalf("part 2: %s %s", c.Status.Phase, c.Status.Reason)
 	}
 }
 
@@ -389,5 +389,32 @@ func TestTheFamilysCapHolds(t *testing.T) {
 	g.f.SetComments(7, retryBy(90, "Smana", -90*time.Minute))
 	if p = g.reconcile(t, "3buqdlot", 1); p.Status.Phase != v1alpha1.PhaseEscalated {
 		t.Fatalf("a retry ran an approved parent (SR9): %s", p.Status.Phase)
+	}
+}
+
+// A priced run is USD-capped: a part whose tier has a USD price is not refused on tokens, however
+// few the family's remaining dollars leave at the reference rate; an unpriced tier keeps the token
+// bound (and no USD one).
+func TestAPricedPartIsNotRefusedOnTokens(t *testing.T) {
+	g := approved(t)
+	p := g.reconcile(t, "3buqdlot", 0)
+	tr := g.r.Cfg.Tiers["standard"]
+	tr.RunTokens, tr.TaskTokens = 6_000_000, 12_000_000 // more tokens than the dollars left buy at the reference rate
+	g.r.Cfg.Tiers["standard"] = tr
+	if !g.r.partFits(p, 2_600_000) {
+		t.Error("a priced part with a run's dollars left is refused on tokens")
+	}
+	if g.r.partFits(p, 2_000_000) {
+		t.Error("a priced part without a run's dollars left fits")
+	}
+	tr.RunUSD, tr.TaskUSD = 0, 0 // no USD price: the token bound decides
+	g.r.Cfg.Tiers["standard"] = tr
+	if g.r.partFits(p, 2_600_000) {
+		t.Error("an unpriced part fits past its token bound")
+	}
+	tr.RunTokens, tr.TaskTokens = 1_500_000, 3_000_000
+	g.r.Cfg.Tiers["standard"] = tr
+	if !g.r.partFits(p, 5_000_000) {
+		t.Error("an unpriced part within its token bound is refused")
 	}
 }

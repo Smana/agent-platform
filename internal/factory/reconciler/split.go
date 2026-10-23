@@ -58,9 +58,11 @@ const (
 	SplitSuperseded = "superseded"
 	SplitExpired    = "expired"
 	SplitIgnored    = "ignored"
-	ChildLanded     = "landed"
-	ChildDropped    = "dropped"
-	ChildReverted   = "reverted"
+	// StopFamilyDropped is the stop annotation of a part stopped because its family ended Closed.
+	StopFamilyDropped = "family_dropped"
+	ChildLanded       = "landed"
+	ChildDropped      = "dropped"
+	ChildReverted     = "reverted"
 )
 
 // splitHandoff is the scoper's second answer (SL4, SR6): a split the task was offered goes to a
@@ -267,9 +269,15 @@ func (r *Reconciler) childBudget(p *v1alpha1.Task, left int64) v1alpha1.Budget {
 	return b
 }
 
-// fits: the cap holds one whole run (runFits' rule, owner 2026-10-07).
-func fits(b v1alpha1.Budget) bool {
-	return b.TaskMicroUSD > 0 && b.TaskMicroUSD >= b.RunMicroUSD && b.TaskTokens >= b.RunTokens
+// partFits: the part's cap holds one whole run (runFits' rule, owner 2026-10-07). A tier with a USD
+// price is USD-capped, so only dollars decide; one without keeps its token cap, which the family's
+// remaining dollars narrow (childBudget).
+func (r *Reconciler) partFits(p *v1alpha1.Task, left int64) bool {
+	b := r.childBudget(p, left)
+	if r.Cfg.Tiers[p.Spec.Split.ChildTier].TaskUSD > 0 {
+		return b.TaskMicroUSD > 0 && b.TaskMicroUSD >= b.RunMicroUSD
+	}
+	return b.TaskTokens > 0 && b.TaskTokens >= b.RunTokens
 }
 
 // childScope is part k of the parent's split: the handoff status.split names, checked again.
@@ -401,10 +409,10 @@ func (r *Reconciler) inherit(ctx context.Context, t *v1alpha1.Task) (string, err
 	if err != nil {
 		return "", err
 	}
-	b := r.childBudget(&p, left)
-	if !fits(b) {
+	if !r.partFits(&p, left) {
 		return ReasonBudgetFamily, nil
 	}
+	b := r.childBudget(&p, left)
 	if t.Spec.Scope == nil { // a re-labelled generation: the part's scope from the parent's split
 		sc, err := r.childScope(ctx, &p, t.Spec.Parent.Index)
 		if err != nil {
@@ -480,7 +488,7 @@ func (r *Reconciler) splitting(ctx context.Context, t *v1alpha1.Task) error {
 	if err != nil {
 		return err
 	}
-	if !fits(r.childBudget(t, left)) {
+	if !r.partFits(t, left) {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, ReasonBudgetFamily) // SL10
 	}
 	return r.openChild(ctx, t, int32(len(sp.Children))+1) //nolint:gosec // Validate bounds the parts to 2..5
@@ -520,7 +528,7 @@ func (r *Reconciler) stopOpenParts(ctx context.Context, sp *v1alpha1.SplitStatus
 		if n.Annotations == nil {
 			n.Annotations = map[string]string{}
 		}
-		n.Annotations[v1alpha1.AnnotationStop] = "true"
+		n.Annotations[v1alpha1.AnnotationStop] = StopFamilyDropped
 		if err := r.Client.Patch(ctx, n, patch); err != nil {
 			return client.IgnoreNotFound(err)
 		}

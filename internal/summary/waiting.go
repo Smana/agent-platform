@@ -133,6 +133,7 @@ func reasons() map[string]string {
 		"budget-family":             "the cap of the task and its parts has no room left for another part's run",
 		"children_merged":           "every part of the split merged",
 		"child_dropped":             "a part of the split was closed without merging, or its merge was reverted",
+		"family_dropped":            "the split's family was dropped because another part was dropped or reverted",
 		"parent_not_split":          "its parent task is no longer waiting on its parts",
 		"parent_missing":            "its parent task no longer exists",
 		"no_pr":                     "the agent opened no pull request",
