@@ -77,7 +77,7 @@ func toolNames(t *testing.T, e env, h http.Header) string {
 // forks or stops; a call to a human's tool is an unknown tool (C2).
 func TestSponsoredToolList(t *testing.T) {
 	e := setup(t, mcpOn, withSponsored(sponsoredP))
-	if got := toolNames(t, e, bearer("slack-app")); got != "issue_draft,room_summary,room_tail" {
+	if got := toolNames(t, e, bearer("slack-app")); got != "run_create,issue_draft,room_summary,room_tail" {
 		t.Fatalf("%s", got)
 	}
 	if got := toolNames(t, e, viaRoomctl("dev")); got != "rooms_list,room_summary,room_tail,room_queue,room_fork,issue_draft" {

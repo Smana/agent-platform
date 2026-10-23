@@ -91,6 +91,8 @@ type Server struct {
 	// Sponsored authenticates a sponsored principal's bearer on /mcp (factory interfaces F4, R13);
 	// nil while human.mcp.sponsored is empty, and then every sponsored token is refused.
 	Sponsored SponsoredAuthenticator
+	// Tasks is run_create's factory; nil answers no_factory.
+	Tasks TaskCreator
 
 	Humans Authenticator
 	Groups policy.Groups

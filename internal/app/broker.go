@@ -29,12 +29,14 @@ import (
 	"github.com/Smana/agent-platform/internal/bridgeapi"
 	"github.com/Smana/agent-platform/internal/config"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/humanapi/ui"
 	"github.com/Smana/agent-platform/internal/metrics"
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/redact"
 	"github.com/Smana/agent-platform/internal/roomctrl"
+	"github.com/Smana/agent-platform/internal/runrequest"
 	"github.com/Smana/agent-platform/internal/runwatch"
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/suspend"
@@ -193,6 +195,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	if a.sponsored != nil { // only a non-nil value: the interface is never a typed nil
 		humans.Sponsored = a.sponsored
+	}
+	if len(cfg.Human.MCP.Sponsored) > 0 { // the factory's URL is the config's, never a request's
+		humans.Tasks = runrequest.Factory{URL: cfg.FactoryURL, HC: httpx.New(factoryTimeout, nil)}
 	}
 	key := mcpKey(getenv)
 	if key == "" {
