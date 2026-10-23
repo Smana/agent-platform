@@ -24,8 +24,8 @@ const purgeStatementTimeout = 10 * time.Minute
 // transaction, so each stays bounded by the room limits (100 000 events). Each
 // transaction runs under its own purgeStatementTimeout (SET LOCAL), not the
 // session's statement_timeout. It runs as rooms_retention; the broker's role
-// holds no DELETE and fails. Every table referencing rooms (queue, approvals) is
-// deleted before the room's row.
+// holds no DELETE and fails. Every table referencing rooms
+// (queue, approvals, webhook_cursors) is deleted before the room's row.
 func (s *Store) PurgeExpired(ctx context.Context) (rooms, events int64, err error) {
 	ids, err := s.expiredRooms(ctx)
 	if err != nil {
@@ -65,6 +65,10 @@ func (s *Store) purge(ctx context.Context, roomID string) (int64, error) {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM approvals WHERE room_id = $1
+		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM webhook_cursors WHERE room_id = $1
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
 		return 0, err
 	}

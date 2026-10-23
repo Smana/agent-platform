@@ -65,6 +65,7 @@ func Clip(kind, v string) string {
 // room (M1): what it has sent is that subscriber's, so two subscribers at different cursors never
 // share it. The emitter warms it by replaying the room up to the subscriber's cursor.
 type Tracker struct {
+	seq    int64  // the last seq read: an entry at or below it is a replay and means nothing
 	phase  string // the last task phase seen: an event fires on a change only (M2)
 	pr     int    // the last pull request number seen, for merged, reverted and verdict_posted
 	prSent bool
@@ -74,6 +75,10 @@ type Tracker struct {
 // Events is what ev means to a subscriber of room, whose repository is repo: none, one or a few
 // events, each carrying ids, states and codes only. A message is never decoded (M3).
 func (t *Tracker) Events(room, repo string, ev envelope.Event) []Event {
+	if ev.Seq <= t.seq {
+		return nil
+	}
+	t.seq = ev.Seq
 	if ev.Type == envelope.ApprovalRequested {
 		return []Event{{Type: "room.waiting_for_human", Room: room, Reason: "approval"}}
 	}

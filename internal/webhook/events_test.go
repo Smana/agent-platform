@@ -79,8 +79,22 @@ func TestEvents(t *testing.T) {
 			t.Errorf("seq %d: %v, want %v", s.ev.Seq, g, s.want)
 		}
 	}
-	if len(Types()) != 11 {
-		t.Fatalf("%v", Types())
+	// An entry at or below the last seq seen is a replay: nothing is emitted again, even when its
+	// facts differ from the current phase's.
+	for _, replay := range []envelope.Event{fact(13, envelope.TaskFacts{Phase: "Merged"}), fact(14, envelope.TaskFacts{Phase: "Done"}),
+		runPhase(4, "cf4ato2x", "Running", ""), approval(9)} {
+		if g := got(replay); len(g) != 0 {
+			t.Errorf("replayed seq %d emitted %v", replay.Seq, g)
+		}
+	}
+	if g := got(fact(17, envelope.TaskFacts{Phase: "Reverted"})); len(g) != 1 {
+		t.Errorf("a new seq is still read after a replay: %v", g)
+	}
+	wantTypes := []string{"room.task_received", "room.task_triaged", "room.run_started", "room.run_ended",
+		"room.waiting_for_human", "room.pr_opened", "room.verdict_posted", "room.merged", "room.reverted",
+		"room.budget_reached", "room.ended"}
+	if !slices.Equal(Types(), wantTypes) {
+		t.Fatalf("Types() = %v, want %v", Types(), wantTypes)
 	}
 	for kind, c := range map[string]struct{ in, want string }{
 		"reason": {"needs_author", "needs_author"},
@@ -94,5 +108,40 @@ func TestEvents(t *testing.T) {
 	}
 	if Clip("reason", "") != "" {
 		t.Error("an empty value stays empty, so it is omitted")
+	}
+}
+
+// R19: every way a task or a run ends has its event, from the log alone: a reverted merge, a
+// rejected, failed, stopped or revoked end.
+func TestEventsEndings(t *testing.T) {
+	pr7 := &envelope.PRFact{Number: 7, URL: "https://github.com/Smana/ai-native-ref/pull/7"}
+	for name, c := range map[string]struct {
+		prior []envelope.Event
+		ev    envelope.Event
+		want  []string
+	}{
+		"reverted": {[]envelope.Event{fact(1, envelope.TaskFacts{Phase: "Merged", PR: pr7})}, fact(2, envelope.TaskFacts{Phase: "Reverted"}),
+			[]string{`{"type":"room.reverted","room":"aaaaaaaa","pr":7}`, `{"type":"room.ended","room":"aaaaaaaa","state":"failed"}`}},
+		"rejected":   {nil, fact(1, envelope.TaskFacts{Phase: "Rejected"}), []string{`{"type":"room.ended","room":"aaaaaaaa","state":"failed"}`}},
+		"stopped":    {nil, fact(1, envelope.TaskFacts{Phase: "Stopped"}), []string{`{"type":"room.ended","room":"aaaaaaaa","state":"stopped"}`}},
+		"run failed": {nil, runPhase(1, "cf4ato2x", "Failed", ""), []string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2x"}`}},
+		"run revoked": {nil, runPhase(1, "cf4ato2x", "Revoked", "budget-person"),
+			[]string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2x"}`, `{"type":"room.budget_reached","room":"aaaaaaaa","limit":"budget-person"}`}},
+		"run revoked by hand": {nil, runPhase(1, "cf4ato2x", "Revoked", "manual"), []string{`{"type":"room.run_ended","room":"aaaaaaaa","run":"cf4ato2x"}`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tr Tracker
+			for _, ev := range c.prior {
+				tr.Events("aaaaaaaa", "Smana/ai-native-ref", ev)
+			}
+			var got []string
+			for _, e := range tr.Events("aaaaaaaa", "Smana/ai-native-ref", c.ev) {
+				b, _ := json.Marshal(e)
+				got = append(got, string(b))
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("%v, want %v", got, c.want)
+			}
+		})
 	}
 }

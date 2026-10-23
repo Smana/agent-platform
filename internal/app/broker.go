@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +42,7 @@ import (
 	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/suspend"
 	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/agent-platform/internal/webhook"
 )
 
 // The broker's listeners and bounds (§9 ports; GP-18 for :8443).
@@ -206,6 +208,12 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	tools := roomMCP(key, subPatterns(cfg.RunIssuers), logStore, red, rw.watch, m, log)
 	if err := addVerdictPoster(getenv("ROOMS_GITHUB_APP_DIR"), mgr.Add, logStore, mgr.GetClient(), ns, cfg.PublicURL, m, log); err != nil {
 		return fmt.Errorf("room-broker: verdict poster: %w", err)
+	}
+	if len(cfg.Webhooks) > 0 { // R30: no subscriber, no emitter
+		if err := mgr.Add(&webhook.Emitter{Subs: webhookSubscribers(cfg.Webhooks), Events: st,
+			Rooms: roomRepository(mgr.GetClient(), ns), State: st, Metrics: m, Logger: log, Now: time.Now}); err != nil {
+			return fmt.Errorf("room-broker: webhook emitter: %w", err)
+		}
 	}
 	ops := opsHandler(st.Ping, st.SchemaReady, boundedSync(rw.synced), func() bool { return ctx.Err() != nil }, exp.Handler())
 
@@ -396,4 +404,30 @@ func withSuspend(rc *roomctrl.Reconciler, cfg config.SuspendConfig, c client.Cli
 	}
 	rc.Suspend = &suspend.Suspender{Client: c, Approvals: a, After: cfg.After.Duration, Log: log}
 	log.Info("the suspend trigger is on", "after", cfg.After.Duration)
+}
+
+// webhookSubscribers maps the config's subscribers to the emitter's.
+func webhookSubscribers(cfg []config.WebhookConfig) []webhook.Subscriber {
+	out := make([]webhook.Subscriber, 0, len(cfg))
+	for _, w := range cfg {
+		out = append(out, webhook.Subscriber{Name: w.Name, Network: w.Network, URL: w.URL, SecretFile: w.SecretFile,
+			Events: w.Events, Repositories: w.Repositories, Generation: w.Generation})
+	}
+	return out
+}
+
+// roomRepository reads a Room's repository from the manager's cache (M5): the database has no
+// repository column. A Room not found yet is "", which holds the room's events back.
+func roomRepository(rooms client.Reader, ns string) webhook.RoomRepo {
+	return func(ctx context.Context, room string) (string, error) {
+		var r v1alpha1.Room
+		err := rooms.Get(ctx, client.ObjectKey{Namespace: ns, Name: room}, &r)
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return r.Spec.Repository, nil
+	}
 }
