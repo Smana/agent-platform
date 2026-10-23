@@ -60,7 +60,8 @@ tests:
 
 
 def sh(cwd, *args):
-    subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+    # The image's /etc/gitconfig hooks every commit (commit-msg needs RUN_ID): fixtures read none of it.
+    subprocess.run(args, cwd=cwd, check=True, capture_output=True, env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1"})
 
 
 class Fixture:
