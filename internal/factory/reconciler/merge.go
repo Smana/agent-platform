@@ -753,26 +753,31 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	for i := range l.Items {
 		o := &l.Items[i]
 		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
-			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted})
+			tasks = append(tasks, Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
+				Auto: ref.ArmedAt != nil})
 		}
 	}
 	demoted, _ := Demoted(uniteMerges(tasks, gh[class]), rc.Merge.Breaker)
 	return demoted, nil
 }
 
-// Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, and how
-// many they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
+// Demoted reports whether the newest b.Window merges hold at least b.MaxReverts reverts, or (when
+// b.MaxFollowUps is set) that many merges with a follow-up or a regression, and how many reverts
+// they hold. A zero-value breaker demotes every class (0 ≥ 0): fail-closed; strict decode
 // and Validate keep it off the production path, so a test rig that builds config.Merge by hand
 // must set a breaker.
 func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 	newestFirst(merges)
-	reverts := 0
+	reverts, followUps := 0, 0
 	for _, m := range merges[:min(len(merges), b.Window)] {
 		if m.Reverted {
 			reverts++
 		}
+		if m.FollowUp || m.Regression {
+			followUps++
+		}
 	}
-	return reverts >= b.MaxReverts, reverts
+	return reverts >= b.MaxReverts || (b.MaxFollowUps > 0 && followUps >= b.MaxFollowUps), reverts
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
@@ -805,7 +810,8 @@ func (r *Reconciler) armedTodayOf(ctx context.Context, rc *config.Repository, cl
 			continue
 		}
 		for _, m := range ms {
-			if sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
+			// Only the merger's merges fill the day: a maintainer's or Renovate's (factory/merged) do not (M1).
+			if m.Auto && sameUTCDay(m.At, r.Now()) && !seen[m.Number] {
 				n++
 				seen[m.Number] = true
 			}
