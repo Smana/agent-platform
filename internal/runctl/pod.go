@@ -111,8 +111,10 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 		env = append(env, corev1.EnvVar{Name: "AGENT_CHECKS", Value: "1"},
 			corev1.EnvVar{Name: "AGENT_RUN_SECONDS", Value: strconv.FormatInt(deadline, 10)})
 	}
-	// v3 feature 5: the search tool, which the harness offers an implementer only.
-	if s.Loop.Search {
+	// v3 feature 5: the search tool, which the harness offers an implementer only; the bridge reads
+	// the same switch to class a bare "search" as that tool (and not as an MCP write).
+	searchOn := s.Loop.Search && s.Role == "implementer"
+	if searchOn {
 		env = append(env, corev1.EnvVar{Name: "AGENT_SEARCH", Value: "1"})
 	}
 	harness := corev1.Container{
@@ -150,6 +152,9 @@ func Pod(r *v1alpha1.AgentRun, c Config, m Model, runID string) *corev1.Pod {
 			{Name: "HARNESS_URL", Value: fmt.Sprintf("http://127.0.0.1:%d", HarnessPort)},
 			{Name: "ROOM_TOKEN_FILE", Value: "/var/run/secrets/agents/room/token"},
 			{Name: "EGRESS_PROFILES", Value: egressProfiles(r)}, {Name: "FLUSH_GRACE", Value: bridgeFlushGrace},
+		}
+		if searchOn {
+			bridgeEnv = append(bridgeEnv, corev1.EnvVar{Name: "AGENT_SEARCH", Value: "1"})
 		}
 		health := corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(BridgeHealthPort)}}
 		inits = []corev1.Container{{

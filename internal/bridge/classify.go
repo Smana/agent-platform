@@ -80,11 +80,17 @@ type Classifier struct {
 	// ReadOnlyMCP holds the MCP tools that only read, as <server>__<tool>.
 	// Anything else is mcp.write; the zero value gates every MCP tool.
 	ReadOnlyMCP map[string]bool
+	// SearchBuiltin is AGENT_SEARCH=1: the run was given the harness's search tool, so a bare
+	// "search" is that tool and plain. Without it a bare "search" is an MCP tool like any other.
+	SearchBuiltin bool
 }
 
 // Classify maps one harness action to its class, deterministically: the
 // harness's own risk label only matters when nothing else matched.
 func (c Classifier) Classify(tool string, action json.RawMessage, risk string) Class {
+	if tool == "search" && c.SearchBuiltin {
+		return Plain
+	}
 	if !builtins[tool] {
 		if c.readOnly(tool) {
 			return Plain

@@ -432,11 +432,23 @@ func TestDecideFollowsTheProfileTable(t *testing.T) {
 }
 
 // v3 feature 5 (ST8, offline proof 4): search is the harness's own read-only tool, plain in both
-// profiles; a bare name never matched the MCP read-only set, so it read as mcp.write and was denied.
-func TestSearchIsAPlainBuiltIn(t *testing.T) {
-	c := Classifier{Branch: "agent/3kq7x2ma", ReadOnlyMCP: readOnlyTools}
-	if got := c.Classify("search", json.RawMessage(`{"question":"Where is the egress allowlist built?"}`), "LOW"); got != Plain {
-		t.Fatalf("search classed %q, want plain", got)
+// profiles, but only on a run that was given it (SearchBuiltin): a bare "search" is otherwise an MCP
+// tool from an unprefixed backend and stays mcp.write. A prefixed name is MCP either way.
+func TestSearchIsAPlainBuiltInOnlyWhenOffered(t *testing.T) {
+	q := json.RawMessage(`{"question":"Where is the egress allowlist built?"}`)
+	for _, tc := range []struct {
+		tool  string
+		flag  bool
+		class Class
+	}{
+		{"search", true, Plain}, {"search", false, MCPWrite},
+		{"platform__search", true, MCPWrite}, {"platform__search", false, MCPWrite},
+		{"x_search", true, MCPWrite}, {"x_search", false, MCPWrite},
+	} {
+		c := Classifier{Branch: "agent/3kq7x2ma", ReadOnlyMCP: readOnlyTools, SearchBuiltin: tc.flag}
+		if got := c.Classify(tc.tool, q, "LOW"); got != tc.class {
+			t.Errorf("%s (flag %v) classed %q, want %q", tc.tool, tc.flag, got, tc.class)
+		}
 	}
 	for _, profile := range []string{"attended", "unattended"} {
 		if v := Decide(wire.ApprovalPolicy{Profile: profile}, Plain); v != Allow {
