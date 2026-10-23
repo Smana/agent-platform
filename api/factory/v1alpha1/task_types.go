@@ -96,6 +96,11 @@ type TaskSpec struct {
 	// The class's steering note, read on the default branch at triage (SC3); unset for none.
 	// +optional
 	Steering *Steering `json:"steering,omitempty"`
+	// Search offers its implementer runs the search tool (v3 feature 5, ST9), read from
+	// loops.<class>.search at triage so a config change never moves a task already triaged; every
+	// implementer claim of the task carries spec.loop.search.
+	// +optional
+	Search bool `json:"search,omitempty"`
 }
 
 // Finding is one dead external link two consecutive detector runs on main reported (MC5).

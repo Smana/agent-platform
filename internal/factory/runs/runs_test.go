@@ -413,12 +413,14 @@ func TestBuildWritesTheLoopOnlyWhenSet(t *testing.T) {
 // field validation, so an XRD that would prune it refuses the claim instead of running loop-off.
 func TestCreateIsStrictOnlyForALoopClaim(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		loop *Loop
-		want string
+		name   string
+		loop   *Loop
+		search bool
+		want   string
 	}{
-		{"no loop", nil, ""},
-		{"a loop", &Loop{StallSteps: 80, Continuations: 2}, "Strict"},
+		{"no loop", nil, false, ""},
+		{"a loop", &Loop{StallSteps: 80, Continuations: 2}, false, "Strict"},
+		{"search", nil, true, "Strict"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var got string
@@ -432,7 +434,7 @@ func TestCreateIsStrictOnlyForALoopClaim(t *testing.T) {
 					return cl.Create(ctx, obj, opts...)
 				}}).Build()
 			sp := spec()
-			sp.Loop = c.loop
+			sp.Loop, sp.Search = c.loop, c.search
 			if err := (Client{C: cl}).Create(t.Context(), sp); err != nil {
 				t.Fatal(err)
 			}
@@ -456,5 +458,32 @@ func TestBuildWritesLoopChecksOnlyWhenOn(t *testing.T) {
 	}
 	if p, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "egress", "profiles"); !slices.Equal(p, []string{"golang", "pypi"}) {
 		t.Fatalf("egress %v", p)
+	}
+}
+
+// v3 feature 5: spec.loop.search is written only when on, as spec.loop's only key (Create's Strict
+// validation for it is TestCreateIsStrictOnlyForALoopClaim).
+func TestBuildWritesLoopSearchOnlyWhenOn(t *testing.T) {
+	if _, found, _ := unstructured.NestedMap(Build(spec()).Object, "spec", "loop"); found {
+		t.Fatal("spec.loop written for a run without search")
+	}
+	s := spec()
+	s.Search = true
+	if loop, _, _ := unstructured.NestedMap(Build(s).Object, "spec", "loop"); !reflect.DeepEqual(loop, map[string]any{"search": true}) {
+		t.Fatalf("spec.loop %v, want {search: true}", loop)
+	}
+}
+
+// The loop's keys, checks and search share the one spec.loop.
+func TestBuildJoinsChecksSearchAndTheLoop(t *testing.T) {
+	s := spec()
+	s.Checks, s.Search = true, true
+	if loop, _, _ := unstructured.NestedMap(Build(s).Object, "spec", "loop"); !reflect.DeepEqual(loop, map[string]any{"checks": true, "search": true}) {
+		t.Fatalf("checks+search: spec.loop %v", loop)
+	}
+	s.Loop = &Loop{StallSteps: 40, Continuations: 2}
+	want := map[string]any{"stallSteps": int64(40), "continuations": int64(2), "checks": true, "search": true}
+	if loop, _, _ := unstructured.NestedMap(Build(s).Object, "spec", "loop"); !reflect.DeepEqual(loop, want) {
+		t.Fatalf("loop+checks+search: spec.loop %v, want %v", loop, want)
 	}
 }
