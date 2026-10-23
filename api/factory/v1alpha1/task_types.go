@@ -52,6 +52,7 @@ type TaskList struct {
 // TaskSpec is what the task was asked to do, fixed at admission.
 // +kubebuilder:validation:XValidation:rule="has(self.parent) == has(oldSelf.parent) && (!has(self.parent) || self.parent == oldSelf.parent)",message="spec.parent is fixed at creation"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
+// +kubebuilder:validation:XValidation:rule="self.source.kind != 'api' || (has(self.maxMicroUSD) && self.maxMicroUSD > 0)",message="an api task carries maxMicroUSD"
 type TaskSpec struct {
 	Source Source `json:"source"`
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`
@@ -98,6 +99,13 @@ type TaskSpec struct {
 	// The class's steering note, read on the default branch at triage (SC3); unset for none.
 	// +optional
 	Steering *Steering `json:"steering,omitempty"`
+	// The request's ceiling in micro-USD (F4, R5): triage caps the task and each run under it. Set
+	// on api tasks only; 0 elsewhere.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000000
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="maxMicroUSD never changes"
+	// +optional
+	MaxMicroUSD int64 `json:"maxMicroUSD,omitempty"`
 	// Search offers its implementer runs the search tool (v3 feature 5, ST9), read from
 	// loops.<class>.search at triage so a config change never moves a task already triaged; every
 	// implementer claim of the task carries spec.loop.search.
@@ -227,9 +235,16 @@ type TaskAcceptance struct {
 	Proves string `json:"proves"`
 }
 
-// Source is where the task came from and how far its text is trusted.
+// Source is where the task came from and how far its text is trusted. No rule holds the whole
+// source: the splitter's inherit() rewrites contentSHA256 of a re-labelled part, so only the
+// fields F4 adds, and the kind, are held (C1).
+// +kubebuilder:validation:XValidation:rule="self.kind != 'api' || (has(self.sponsor) && self.sponsor != ”)",message="an api task names its sponsor"
+// +kubebuilder:validation:XValidation:rule="self.kind == 'api' || (!has(self.sponsor) && !has(self.onBehalfOf))",message="only an api task has a sponsor"
+// +kubebuilder:validation:XValidation:rule="self.kind == oldSelf.kind",message="a task's source kind never changes"
+// +kubebuilder:validation:XValidation:rule="has(self.sponsor) == has(oldSelf.sponsor) && (!has(self.sponsor) || self.sponsor == oldSelf.sponsor)",message="source.sponsor never changes"
+// +kubebuilder:validation:XValidation:rule="has(self.onBehalfOf) == has(oldSelf.onBehalfOf) && (!has(self.onBehalfOf) || self.onBehalfOf == oldSelf.onBehalfOf)",message="source.onBehalfOf never changes"
 type Source struct {
-	// +kubebuilder:validation:Enum=issue;runlore;schedule
+	// +kubebuilder:validation:Enum=issue;runlore;schedule;api
 	Kind string `json:"kind"`
 	// Smana/cloud-native-ref#2112, runlore:<alert>/<resource>, or the schedule name.
 	// +kubebuilder:validation:MaxLength=512
@@ -245,6 +260,16 @@ type Source struct {
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
 	// +kubebuilder:validation:MaxLength=64
 	ContentSHA256 string `json:"contentSHA256"`
+	// The maintainer accountable for an api task, as a ledger key (F4, R8): github:<login>.
+	// +kubebuilder:validation:Pattern=`^github:[a-z0-9][a-z0-9-]{0,38}$`
+	// +kubebuilder:validation:MaxLength=46
+	// +optional
+	Sponsor string `json:"sponsor,omitempty"`
+	// The external user a link made the sponsor (R9): slack:<team>/<user>.
+	// +kubebuilder:validation:Pattern=`^slack:T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	OnBehalfOf string `json:"onBehalfOf,omitempty"`
 }
 
 // Budget is the task's tier and caps, resolved at triage.
