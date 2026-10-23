@@ -143,6 +143,9 @@ func scoperRun(t *v1alpha1.Task) bool {
 // taskScope is the task's scope for an implementer brief: the handoff status.scope names, nil when
 // the scoper left none or never ran.
 func (r *Reconciler) taskScope(ctx context.Context, t *v1alpha1.Task) (*Scoped, error) {
+	if t.Spec.Scope != nil { // a part of a split: its scope is its spec's, approved with the split (SL5, SL9)
+		return &Scoped{Scope: envelopeScope(t.Spec.Scope), Part: t.Spec.Parent}, nil
+	}
 	st := t.Status.Scope
 	if st == nil || st.Seq == 0 {
 		return nil, nil

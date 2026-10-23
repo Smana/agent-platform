@@ -306,6 +306,15 @@ func taskScopeOf(s *envelope.Scope) *v1alpha1.TaskScope {
 	return out
 }
 
+// envelopeScope is taskScopeOf's inverse: a part's scope as the brief renders it.
+func envelopeScope(s *v1alpha1.TaskScope) envelope.Scope {
+	out := envelope.Scope{State: s.State, Task: s.Task, Touches: s.Touches, Leave: s.Leave, Plan: s.Plan, Assumptions: s.Assumptions}
+	for _, a := range s.Acceptance {
+		out.Acceptance = append(out.Acceptance, envelope.Acceptance{Check: a.Check, Proves: a.Proves})
+	}
+	return out
+}
+
 // openChild opens part k (SL7, SL8, SR10): its issue, found by its marker or created, and its Task,
 // recorded on the parent in this pass. Each step is idempotent, so a replay after a lost status
 // write opens no second issue and creates no second Task.
