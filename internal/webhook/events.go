@@ -33,12 +33,14 @@ func States() []string {
 }
 
 // Reasons lists the values an event's reason may hold: the wait reasons the summary has prose
-// for, the run ends that escalate a task, and the broker's approval. internal/factory is not
-// imported: the summary repeats the factory's reasons for the same reason.
+// for, the run ends that escalate a task, the broker's approval, and the three escalations the
+// factory raises on a room it cannot use. They repeat the factory's strings: this package
+// imports nothing of the factory's reconciler, so a new factory reason needs a line here.
 func Reasons() []string {
 	out := summary.Reasons()
 	out = append(out, "approval", "manual", "revoked", "deleted", "principal_unknown",
-		"budget-run", "budget-principal", "budget-fleet", "budget-person")
+		"budget-run", "budget-principal", "budget-fleet", "budget-person",
+		"foreign_room", "room_log_unreadable", "rooms_crd_outdated")
 	slices.Sort(out)
 	return slices.Compact(out)
 }

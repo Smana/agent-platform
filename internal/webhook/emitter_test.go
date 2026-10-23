@@ -151,6 +151,7 @@ type emitterRig struct {
 	slp    chan time.Duration
 
 	calls    map[string]int // how often roomRepo was asked about each room
+	ranges   map[string]int // how often the log was read for each room
 	outcomes map[string]int // "subscriber/outcome" -> count
 	subErrs  int            // the next Subscriber calls that fail
 	lagErrs  int            // the next Lagging calls that fail
@@ -164,7 +165,7 @@ func newEmitterRig(t *testing.T, url string, events []string) *emitterRig {
 	t.Cleanup(cancel)
 	r := &emitterRig{t: t, ctx: ctx, cancel: cancel, logs: map[string][]envelope.Event{}, repo: map[string]string{}, cur: map[[2]string]int64{},
 		fail: map[string]int{}, off: map[string]bool{}, reg: map[string]bool{}, dis: map[string]int{},
-		calls: map[string]int{}, outcomes: map[string]int{}, note: make(chan [2]any, 100), ups: make(chan struct{}, 10), slp: make(chan time.Duration)}
+		calls: map[string]int{}, ranges: map[string]int{}, outcomes: map[string]int{}, note: make(chan [2]any, 100), ups: make(chan struct{}, 10), slp: make(chan time.Duration)}
 	r.em = &Emitter{Events: r, Rooms: r.roomRepo, State: r, Metrics: r, Now: time.Now, Sleep: r.sleep,
 		FactoryPrincipal: "system:factory", SweepEvery: 10 * time.Millisecond, MinBackoff: 5 * time.Millisecond}
 	r.addSubscriber("slack-app", url, events)
@@ -246,6 +247,7 @@ func (r *emitterRig) log(room string, ev envelope.Event) {
 func (r *emitterRig) Range(_ context.Context, room string, after int64, limit int) ([]envelope.Event, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ranges[room]++
 	var out []envelope.Event
 	for _, ev := range r.logs[room] {
 		if ev.Seq > after && len(out) < limit {
@@ -442,6 +444,12 @@ func (r *emitterRig) disabled(name string) bool {
 	return r.off[name]
 }
 
+func (r *emitterRig) failures(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fail[name]
+}
+
 func (r *emitterRig) gauge(name string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -508,6 +516,44 @@ func TestEmitterSealedRoomWithoutRepository(t *testing.T) {
 	if rig.cursor("jjjjjjjj") != 0 || rig.outcome("slack-app", "unresolved") != 1 {
 		t.Fatal("an open room with no known repository is held, not given up")
 	}
+}
+
+// A room with no repository, in its log or its Room, is read again only when its log grew (a
+// notification) or the listener reconnected, not on every sweep.
+func TestEmitterRepoLessRoomIsNotRereadUntilItGrows(t *testing.T) {
+	var hits atomic.Int32
+	srv := counting(&hits)
+	defer srv.Close()
+	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
+	rig.withRepo("tttttttt", "")
+	rig.start()
+	rig.log("tttttttt", fact(1, factsPhase("Done")))
+	waitFor(t, "sweeps over the room", func() bool { return rig.asked("tttttttt") >= 3 })
+	settled := rig.rangeCalls("tttttttt")
+	n := rig.asked("tttttttt")
+	waitFor(t, "more sweeps", func() bool { return rig.asked("tttttttt") >= n+3 })
+	if got := rig.rangeCalls("tttttttt"); got != settled {
+		t.Fatalf("the unchanged room was read %d more times", got-settled)
+	}
+	// It grows: its log is read again, and the seal ends it.
+	rig.log("tttttttt", seal(2))
+	rig.waitCursor(t, "tttttttt", 2)
+	if rig.outcome("slack-app", "unresolved") != 1 {
+		t.Fatalf("unresolved %d, want 1", rig.outcome("slack-app", "unresolved"))
+	}
+	// A room that grew while the listener was down is read again once it reconnects.
+	rig.withRepo("uuuuuuuu", "")
+	rig.log("uuuuuuuu", fact(1, factsPhase("Done")))
+	waitFor(t, "sweeps over the room", func() bool { return rig.asked("uuuuuuuu") >= 3 })
+	rig.silent("uuuuuuuu", seal(2))
+	rig.reconnect()
+	rig.waitCursor(t, "uuuuuuuu", 2)
+}
+
+func (r *emitterRig) rangeCalls(room string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ranges[room]
 }
 
 // I1: a Lagging that failed on ready is retried by the sweep, and a list cut at the limit is
@@ -607,21 +653,40 @@ func TestEmitterRetriesStopWhenDisabled(t *testing.T) {
 	}
 }
 
-// M-c: an unreadable key file is counted no_key on every attempt, the last included.
-func TestEmitterNoKeyOnTheLastAttempt(t *testing.T) {
+// An unreadable key file holds the room: nothing is retried in the delivery, the cursor stays,
+// no failure counts toward the disable threshold, and the next sweep tries again, so a key fixed
+// later gets every held event.
+func TestEmitterNoKeyHoldsTheRoom(t *testing.T) {
 	var hits atomic.Int32
 	srv := counting(&hits)
 	defer srv.Close()
-	rig := newEmitterRig(t, srv.URL, []string{"room.ended"})
-	if err := os.Remove(rig.em.Subs[0].SecretFile); err != nil {
+	rig := newEmitterRig(t, srv.URL, []string{"room.task_received", "room.task_triaged", "room.ended"})
+	keyFile := rig.em.Subs[0].SecretFile
+	if err := os.Remove(keyFile); err != nil {
 		t.Fatal(err)
 	}
 	rig.start()
-	rig.log("aaaaaaaa", fact(1, factsPhase("Done")))
-	rig.stepRetries(t)
-	rig.waitCursor(t, "aaaaaaaa", 1)
-	if rig.outcome("slack-app", "no_key") != 4 || rig.outcome("slack-app", "failed") != 0 || hits.Load() != 0 {
-		t.Fatalf("no_key %d, failed %d, hits %d", rig.outcome("slack-app", "no_key"), rig.outcome("slack-app", "failed"), hits.Load())
+	rig.log("aaaaaaaa", fact(1, factsPhase("Received")))
+	rig.log("aaaaaaaa", fact(2, factsPhase("Triaged")))
+	rig.log("aaaaaaaa", fact(3, factsPhase("Done")))
+	waitFor(t, "several sweeps to count no_key", func() bool { return rig.outcome("slack-app", "no_key") >= 4 })
+	if rig.cursor("aaaaaaaa") != 0 || hits.Load() != 0 {
+		t.Fatalf("cursor %d, hits %d: a missing key must hold the room", rig.cursor("aaaaaaaa"), hits.Load())
+	}
+	if rig.disabled("slack-app") || rig.failures("slack-app") != 0 || rig.outcome("slack-app", "failed") != 0 {
+		t.Fatalf("disabled %v, failures %d: a missing key is not a failed delivery", rig.disabled("slack-app"), rig.failures("slack-app"))
+	}
+	// The key is fixed: the held events are delivered, in order.
+	tmp := keyFile + ".new"
+	if err := os.WriteFile(tmp, []byte(base64.StdEncoding.EncodeToString(k1)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, keyFile); err != nil {
+		t.Fatal(err)
+	}
+	rig.waitCursor(t, "aaaaaaaa", 3)
+	if hits.Load() != 3 {
+		t.Fatalf("%d deliveries after the key was fixed, want 3", hits.Load())
 	}
 }
 

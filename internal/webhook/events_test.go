@@ -106,6 +106,12 @@ func TestEvents(t *testing.T) {
 			t.Errorf("Clip(%s, %s) = %s, want %s", kind, c.in, g, c.want)
 		}
 	}
+	// the broker's own wait reasons are listed, not sent as "other"
+	for _, r := range []string{"foreign_room", "room_log_unreadable", "rooms_crd_outdated"} {
+		if g := Clip("reason", r); g != r || !slices.Contains(Reasons(), r) {
+			t.Errorf("Clip(reason, %s) = %s", r, g)
+		}
+	}
 	if Clip("reason", "") != "" {
 		t.Error("an empty value stays empty, so it is omitted")
 	}

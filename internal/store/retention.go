@@ -25,7 +25,7 @@ const purgeStatementTimeout = 10 * time.Minute
 // transaction runs under its own purgeStatementTimeout (SET LOCAL), not the
 // session's statement_timeout. It runs as rooms_retention; the broker's role
 // holds no DELETE and fails. Every table referencing rooms
-// (queue, approvals, webhook_cursors) is deleted before the room's row.
+// (queue, approvals, and webhook_cursors when the migration ran) is deleted before the room's row.
 func (s *Store) PurgeExpired(ctx context.Context) (rooms, events int64, err error) {
 	ids, err := s.expiredRooms(ctx)
 	if err != nil {
@@ -68,9 +68,17 @@ func (s *Store) purge(ctx context.Context, roomID string) (int64, error) {
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM webhook_cursors WHERE room_id = $1
-		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+	// An older schema has no webhook_cursors: the table is checked in this transaction, so a
+	// migration cannot land between the check and the DELETE.
+	var cursors bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('public.webhook_cursors') IS NOT NULL`).Scan(&cursors); err != nil {
 		return 0, err
+	}
+	if cursors {
+		if _, err := tx.Exec(ctx, `DELETE FROM webhook_cursors WHERE room_id = $1
+		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID); err != nil {
+			return 0, err
+		}
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM events WHERE room_id = $1
 		AND room_id IN (SELECT room_id FROM rooms WHERE `+expired+`)`, roomID)

@@ -100,6 +100,7 @@ type Emitter struct {
 	mismatched map[workerKey]bool
 	catchup    map[string]bool // subscribers whose Lagging must still run (or run again)
 	rooms      map[string]*roomInfo
+	epoch      int // bumped on every (re)connect: notifications sent in the gap are gone
 	trackers   map[workerKey]*list.Element
 	lru        *list.List // of *trackerEntry, most recent first
 	wg         sync.WaitGroup
@@ -120,6 +121,12 @@ type roomInfo struct {
 	cr      string // the Room's spec.repository, once seen
 	scanned int64
 	sealed  bool
+	// last is the highest seq a notification named; epoch is the listener epoch the log was last
+	// read at; read says it was read at all. A room whose repository is unknown is read again
+	// only when last passed scanned or the epoch moved on.
+	last  int64
+	epoch int
+	read  bool
 }
 
 // resolved is what resolve knows of a room.
@@ -243,12 +250,14 @@ func (e *Emitter) listen(ctx context.Context, queue chan<- string) {
 		err := e.Events.Listen(ctx, func() {
 			backoff = e.MinBackoff
 			e.mu.Lock()
+			e.epoch++
 			for _, s := range e.subs {
 				e.catchup[s.Name] = true
 			}
 			e.mu.Unlock()
 			e.catchUp(ctx)
-		}, func(room string, _ int64) {
+		}, func(room string, seq int64) {
+			e.note(room, seq)
 			select {
 			case queue <- room:
 			default: // fn must not block: the sweep picks the room up
@@ -289,6 +298,32 @@ func (e *Emitter) catchUp(ctx context.Context) {
 		e.catchup[s.Name] = len(rooms) >= e.LaggingLimit
 		e.mu.Unlock()
 	}
+}
+
+// note records that room's log reached seq.
+func (e *Emitter) note(room string, seq int64) {
+	info := e.info(room)
+	info.mu.Lock()
+	info.last = max(info.last, seq)
+	info.mu.Unlock()
+}
+
+// info is room's cache entry, created when missing.
+func (e *Emitter) info(room string) *roomInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	info := e.rooms[room]
+	if info == nil {
+		if len(e.rooms) >= maxRooms {
+			for k := range e.rooms {
+				delete(e.rooms, k)
+				break
+			}
+		}
+		info = &roomInfo{}
+		e.rooms[room] = info
+	}
+	return info
 }
 
 func (e *Emitter) markDirty(room string) {
@@ -405,15 +440,15 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 		e.Logger.Warn("webhook: resolve repository", "subscriber", s.Name, "room", room, "error", err)
 		return true
 	}
+	if repo == "" && !sealed {
+		return true // the Room may appear, and its events are then still wanted (M5)
+	}
 	cur, err := e.State.WebhookCursor(ctx, s.Name, room)
 	if err != nil {
 		e.Logger.Warn("webhook: read cursor", "subscriber", s.Name, "room", room, "error", err)
 		return true
 	}
 	if repo == "" {
-		if !sealed {
-			return true // the Room may appear, and its events are then still wanted (M5)
-		}
 		// A closed room whose repository nothing names: its events cannot be matched to a
 		// subscriber. Moving on keeps it from staying dirty forever.
 		if scanned > cur {
@@ -444,9 +479,15 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 					if s.disabled.Load() || !slices.Contains(s.Events, out.Type) {
 						continue
 					}
-					if !e.deliver(ctx, s, room, ev.Seq, out) {
+					switch e.deliver(ctx, s, room, ev.Seq, out) {
+					case ctxEnded:
 						e.dropTracker(workerKey{s.Name, room})
-						return false // ctx ended; the cursor stays
+						return false // the cursor stays
+					case noKey:
+						// The key is the operator's to fix: hold the room, cursor and all, and
+						// try again on the next sweep. The Tracker read ev, so it is re-warmed.
+						e.dropTracker(workerKey{s.Name, room})
+						return true
 					}
 				}
 			}
@@ -469,22 +510,14 @@ func (e *Emitter) work(ctx context.Context, s *subState, room string) (held bool
 // spec.repository when the log has none. When both exist and differ (case aside) the room is a
 // mismatch and nothing is delivered. It reads the log once, then only what was appended since.
 func (e *Emitter) resolve(ctx context.Context, room string) (resolved, error) {
+	info := e.info(room)
 	e.mu.Lock()
-	info := e.rooms[room]
-	if info == nil {
-		if len(e.rooms) >= maxRooms {
-			for k := range e.rooms {
-				delete(e.rooms, k)
-				break
-			}
-		}
-		info = &roomInfo{}
-		e.rooms[room] = info
-	}
+	epoch := e.epoch
 	e.mu.Unlock()
 	info.mu.Lock()
 	defer info.mu.Unlock()
-	for info.logRepo == "" {
+	// A room still without a repository is read again only when its log may have grown.
+	for info.logRepo == "" && (!info.read || info.scanned < info.last || info.epoch != epoch) {
 		evs, err := e.Events.Range(ctx, room, info.scanned, pageSize)
 		if err != nil {
 			return resolved{}, err
@@ -499,6 +532,7 @@ func (e *Emitter) resolve(ctx context.Context, room string) (resolved, error) {
 			}
 		}
 		if len(evs) < pageSize {
+			info.read, info.epoch = true, epoch
 			break
 		}
 	}
@@ -568,59 +602,67 @@ func (e *Emitter) dropTracker(key workerKey) {
 	}
 }
 
-// deliver posts ev with its retries. It returns false only when ctx ended; a delivery given up
-// is counted against the subscriber and returns true, so the cursor moves on.
-func (e *Emitter) deliver(ctx context.Context, s *subState, room string, seq int64, ev Event) bool {
+// outcome of one deliver.
+type outcome int
+
+const (
+	moveOn   outcome = iota // delivered, or given up: the cursor moves on
+	ctxEnded                // the context ended: the cursor stays
+	noKey                   // the key file is unreadable: the room is held, nothing counts against the subscriber
+)
+
+// deliver posts ev with its retries. A delivery given up is counted against the subscriber and
+// moves on. A missing key is not the subscriber's failure and drops nothing: it is counted once
+// and the room is held for the next sweep.
+func (e *Emitter) deliver(ctx context.Context, s *subState, room string, seq int64, ev Event) outcome {
 	body, err := json.Marshal(ev)
 	if err != nil {
-		return true
+		return moveOn
 	}
 	id := ID(s.Name, room, seq, ev.Type)
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
-			return false
+			return ctxEnded
 		}
 		if s.disabled.Load() {
-			return true // disabled while retrying: stop, the cursor moves on
+			return moveOn // disabled while retrying: stop, the cursor moves on
 		}
-		outcome := e.post(ctx, s, id, body)
-		if outcome == "delivered" {
-			e.Metrics.WebhookDelivery(ctx, s.Name, outcome)
+		result := e.post(ctx, s, id, body)
+		if result == "delivered" {
+			e.Metrics.WebhookDelivery(ctx, s.Name, result)
 			if err := e.State.Succeeded(ctx, s.Name); err != nil {
 				e.Logger.Warn("webhook: record success", "subscriber", s.Name, "error", err)
 			}
-			return true
+			return moveOn
+		}
+		if result == "no_key" {
+			e.Metrics.WebhookDelivery(ctx, s.Name, result)
+			return noKey
 		}
 		if attempt == len(retryWaits) {
-			if outcome != "no_key" { // an unreadable key file is the cause, whichever attempt it was
-				outcome = "failed"
-			}
-			e.Metrics.WebhookDelivery(ctx, s.Name, outcome)
+			e.Metrics.WebhookDelivery(ctx, s.Name, "failed")
 			break
 		}
-		if outcome != "no_key" {
-			outcome = "retried"
-		}
-		e.Metrics.WebhookDelivery(ctx, s.Name, outcome)
+		e.Metrics.WebhookDelivery(ctx, s.Name, "retried")
 		if e.sleep(ctx, retryWaits[attempt]) != nil {
-			return false
+			return ctxEnded
 		}
 	}
 	n, err := e.State.Failed(ctx, s.Name)
 	if err != nil {
 		e.Logger.Warn("webhook: record failure", "subscriber", s.Name, "error", err)
-		return true
+		return moveOn
 	}
 	if n >= disableAfter {
 		if err := e.State.Disable(ctx, s.Name); err != nil {
 			e.Logger.Warn("webhook: disable", "subscriber", s.Name, "error", err)
-			return true
+			return moveOn
 		}
 		s.disabled.Store(true)
 		e.Metrics.WebhookDisabled(ctx, s.Name, true)
 		e.Logger.Warn("webhook subscriber disabled", "subscriber", s.Name)
 	}
-	return true
+	return moveOn
 }
 
 // post is one attempt: "delivered" on a 2xx, "no_key" when the key file cannot be read (it is
