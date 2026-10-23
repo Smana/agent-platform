@@ -925,6 +925,8 @@ func (m *Meter) daySpent(r runs.Run, spent map[string]int64) bool {
 // their own rate is the point (OD-3), and B1 bounds the same money at the gateway.
 func (m *Meter) revocation(r runs.Run, tokens, b1, usd, capUSD int64, throttled bool, daySpent bool) (reason, limit string) {
 	switch {
+	case r.MaxMicroUSD <= 0 && m.Budgets.Sponsored(r.ChargedTo): // F4, N-1: fail closed, never on the tier's cap
+		return ReasonBudgetRun, LimitRunUSD
 	case capUSD > 0 && usd >= capUSD:
 		return ReasonBudgetRun, LimitRunUSD
 	case capUSD <= 0 && r.MaxTokens > 0 && tokens >= r.MaxTokens:

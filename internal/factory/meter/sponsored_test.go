@@ -76,7 +76,7 @@ func TestASponsoredPrincipalsDayRevokesWithoutEnforcePrincipal(t *testing.T) {
 		t.Fatal("the fixture's flag is off")
 	}
 	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{
-		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 5_000_000, Principal: "system:factory", ChargedTo: "system:slack-app", Created: day},
+		{ID: "aaaaaaaa", Phase: "Running", MaxTokens: 5_000_000, Principal: "system:factory", ChargedTo: "system:slack-app", MaxMicroUSD: 666_666, Created: day},
 		{ID: "bbbbbbbb", Phase: "Running", MaxTokens: 5_000_000, Principal: "system:factory", ChargedTo: "github:alice", Created: day},
 	}}
 	c := fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(
@@ -90,5 +90,37 @@ func TestASponsoredPrincipalsDayRevokesWithoutEnforcePrincipal(t *testing.T) {
 		if got := st.patches[id][runs.AnnRevoked]; got != want {
 			t.Errorf("%s: %q, want %q", id, got, want)
 		}
+	}
+}
+
+// N-1: a run charged to a sponsored principal whose own cap is missing, unreadable or not positive
+// is revoked, never left on its tier's cap; a run of an unsponsored key without one is untouched.
+func TestASponsoredRunWithoutItsCapIsRevoked(t *testing.T) {
+	cfg := sponsoredConfig(t)
+	for name, c := range map[string]struct {
+		chargedTo string
+		cap       int64
+		want      string
+	}{
+		"missing":                 {"system:slack-app", 0, "budget-run"},
+		"garbage or non-positive": {"system:slack-app", -1, "budget-run"},
+		"present":                 {"system:slack-app", 666_666, ""},
+		"an unsponsored run":      {"github:alice", 0, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := standardRun("aaaaaaaa")
+			r.Principal, r.ChargedTo, r.MaxMicroUSD = runs.PrincipalFactory, c.chargedTo, c.cap
+			st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{r}}
+			var revoked []revocation
+			var fell []string
+			m := usdMeter(st, typed{"aaaaaaaa": typedUsage(Usage{Input: 1_000, Output: 100})}, &revoked, &fell)
+			m.Budgets = cfg.Budgets
+			if err := m.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := st.patches["aaaaaaaa"][runs.AnnRevoked]; got != c.want {
+				t.Fatalf("revoked %q, want %q", got, c.want)
+			}
+		})
 	}
 }

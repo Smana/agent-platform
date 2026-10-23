@@ -501,3 +501,19 @@ func TestMaxMicroUSDRoundTrips(t *testing.T) {
 		t.Fatal("no cap, no annotation")
 	}
 }
+
+// N-1: a cap annotation that is present but unreadable or not positive reads back as -1, never as
+// an absent cap (0): the meter revokes the first and the second alike.
+func TestAnUnreadableMaxMicroUSDIsNotAnAbsentOne(t *testing.T) {
+	for v, want := range map[string]int64{"666666": 666_666, "": 0, "abc": -1, "0": -1, "-5": -1} {
+		u := Build(spec())
+		if v != "" {
+			ann := u.GetAnnotations()
+			ann[AnnMaxMicroUSD] = v
+			u.SetAnnotations(ann)
+		}
+		if r, _ := FromUnstructured(u); r.MaxMicroUSD != want {
+			t.Errorf("%q: %d, want %d", v, r.MaxMicroUSD, want)
+		}
+	}
+}

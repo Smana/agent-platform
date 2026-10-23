@@ -275,7 +275,15 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 		r.StartSeq = v
 	}
 	r.MaxTokens, _, _ = unstructured.NestedInt64(u.Object, "spec", "budget", "maxTokens")
-	r.MaxMicroUSD, _ = strconv.ParseInt(u.GetAnnotations()[AnnMaxMicroUSD], 10, 64)
+	// Absent is 0; present but unreadable or not positive is -1, so the meter can tell a run
+	// that never had a cap from one whose cap was damaged: both are revoked when sponsored.
+	if raw, ok := u.GetAnnotations()[AnnMaxMicroUSD]; ok {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			r.MaxMicroUSD = v
+		} else {
+			r.MaxMicroUSD = -1
+		}
+	}
 	// The annotation is the run's monotonic high-water mark (R12); status is the fallback.
 	if v, err := strconv.ParseInt(u.GetAnnotations()[AnnUsage], 10, 64); err == nil {
 		r.Tokens = v

@@ -84,6 +84,25 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 			}
 		})
 	}
+	// B-1: spec.budget is mutable, so an api task's USD caps are held under its ceiling by the CRD.
+	for name, edit := range map[string]func(*v1alpha1.Task){
+		"a raised run cap":  func(tk *v1alpha1.Task) { tk.Spec.Budget.RunMicroUSD = 5_000_001 },
+		"a raised task cap": func(tk *v1alpha1.Task) { tk.Spec.Budget.TaskMicroUSD = 5_000_001 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tk := ok.DeepCopy()
+			edit(tk)
+			if err := c.Update(ctx, tk); err == nil || !strings.Contains(err.Error(), "an api task's budget stays under its ceiling") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+	within := ok.DeepCopy()
+	within.Spec.Budget.RunMicroUSD, within.Spec.Budget.TaskMicroUSD = 1_666_666, 5_000_000
+	if err := c.Update(ctx, within); err != nil {
+		t.Fatalf("a budget at the ceiling: %v", err)
+	}
+	ok.ResourceVersion = within.ResourceVersion
 	// C1: the splitter's inherit() rewrites a re-labelled part's text and hash; the source's other
 	// fields hold, so the update goes through.
 	ok.Spec.Text, ok.Spec.Source.ContentSHA256 = "u", strings.Repeat("c", 64)
@@ -100,7 +119,8 @@ func TestEnvtestSponsoredTask(t *testing.T) {
 	if err := c.Create(ctx, plain); err != nil {
 		t.Fatal(err)
 	}
-	plain.Spec.Issue = 7 // the rules never bite a task without a ceiling or a sponsor
+	plain.Spec.Budget.RunMicroUSD, plain.Spec.Budget.TaskMicroUSD = 90_000_000, 99_000_000 // no ceiling to hold it under
+	plain.Spec.Issue = 7                                                                   // the rules never bite a task without a ceiling or a sponsor
 	if err := c.Update(ctx, plain); err != nil {
 		t.Fatalf("a non-api task's update: %v", err)
 	}

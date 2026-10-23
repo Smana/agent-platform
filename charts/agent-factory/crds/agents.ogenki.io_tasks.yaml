@@ -447,6 +447,11 @@ spec:
             - message: an api task carries maxMicroUSD
               rule: self.source.kind != 'api' || (has(self.maxMicroUSD) && self.maxMicroUSD
                 > 0)
+            - message: an api task's budget stays under its ceiling
+              rule: self.source.kind != 'api' || !has(self.budget) || (has(self.maxMicroUSD)
+                && (!has(self.budget.runMicroUSD) || self.budget.runMicroUSD <= self.maxMicroUSD)
+                && (!has(self.budget.taskMicroUSD) || self.budget.taskMicroUSD <=
+                self.maxMicroUSD))
           status:
             description: |-
               TaskStatus is the task's audit record: the whole §4 record, including the fields later
