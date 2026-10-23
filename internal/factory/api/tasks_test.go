@@ -283,15 +283,16 @@ func TestCreateTaskRefusals(t *testing.T) {
 		status int
 		reason string
 	}{
-		"kill switch":       {slack, draft, func(s *Server) { s.Stopped = func(context.Context) bool { return true } }, 503, "kill_switch"},
-		"unauthenticated":   {authn.Principal{}, draft, func(s *Server) { s.Auth = byToken{} }, 401, "unauthenticated"},
-		"not owned":         {slack, draft, func(s *Server) { s.Owned = func(string) bool { return false } }, 409, "repository_not_owned"},
-		"bad ref":           {slack, strings.Replace(draft, `"ref":"slack`, `"ref":"`+strings.Repeat("x", 300)+`slack`, 1), nil, 400, "bad_ref"},
-		"bad text":          {slack, `{"repository":"Smana/cloud-native-ref","text":"  ","dataClass":"public","maxCostUSD":2}`, nil, 400, "bad_text"},
-		"unprefixed link":   {slack, strings.Replace(draft, "slack:T01ABC", "T01ABC", 1), nil, 403, "not_linked"},
-		"huge ceiling":      {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":1e300`, 1), nil, 400, "max_cost_over_principal"},
-		"negative ceiling":  {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":-3`, 1), nil, 400, "max_cost_required"},
-		"a secret in issue": {slack, strings.Replace(draft, `x\u200b`, secret, 1), nil, 400, "invalid_draft"},
+		"kill switch":            {slack, draft, func(s *Server) { s.Stopped = func(context.Context) bool { return true } }, 503, "kill_switch"},
+		"unauthenticated":        {authn.Principal{}, draft, func(s *Server) { s.Auth = byToken{} }, 401, "unauthenticated"},
+		"not owned":              {slack, draft, func(s *Server) { s.Owned = func(string) bool { return false } }, 409, "repository_not_owned"},
+		"bad ref":                {slack, strings.Replace(draft, `"ref":"slack`, `"ref":"`+strings.Repeat("x", 300)+`slack`, 1), nil, 400, "bad_ref"},
+		"bad text":               {slack, `{"repository":"Smana/cloud-native-ref","text":"  ","dataClass":"public","maxCostUSD":2}`, nil, 400, "bad_text"},
+		"unprefixed link":        {slack, strings.Replace(draft, "slack:T01ABC", "T01ABC", 1), nil, 403, "not_linked"},
+		"huge ceiling":           {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":1e300`, 1), nil, 400, "max_cost_over_principal"},
+		"a ceiling under a cent": {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":0.009`, 1), nil, 400, "max_cost_required"},
+		"negative ceiling":       {slack, strings.Replace(draft, `"maxCostUSD":2`, `"maxCostUSD":-3`, 1), nil, 400, "max_cost_required"},
+		"a secret in issue":      {slack, strings.Replace(draft, `x\u200b`, secret, 1), nil, 400, "invalid_draft"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, f := newTaskServer(t, c.p, 0)

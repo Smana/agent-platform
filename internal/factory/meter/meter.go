@@ -523,14 +523,19 @@ func (m *Meter) unsettled(id string) int64 {
 // usdCap is the run's cap in micro-USD, or 0 and why it is capped in tokens instead ("" for a
 // tier with no USD cap). why is the run's pricing verdict this tick: "" when priced or unread.
 func (m *Meter) usdCap(r runs.Run, why string) (int64, string) {
-	c := m.RunUSD[r.Tier]
+	tier := int64(math.Round(m.RunUSD[r.Tier] * 1e6))
+	// An api task's run carries its own cap, a third of its ceiling (F4, C-1): the lower holds.
+	c := r.MaxMicroUSD
+	if tier > 0 && (c <= 0 || tier < c) {
+		c = tier
+	}
 	switch {
 	case c <= 0:
 		return 0, ""
 	case why != "":
 		return 0, why
 	}
-	return int64(math.Round(c * 1e6)), ""
+	return c, ""
 }
 
 // forget drops the memory of runs that no longer exist, first reporting the cost of any deleted
@@ -900,8 +905,14 @@ func charged(r runs.Run) []string {
 
 // daySpent reports whether any key the run is charged to has spent its day: budget-principal's
 // test, a person's day included (D5). A nil spent column reads nothing spent.
+//
+// Unless EnforcePrincipal (R3's shadow), only a sponsored principal's day counts: it is a bound
+// whatever that flag says (F4, R7).
 func (m *Meter) daySpent(r runs.Run, spent map[string]int64) bool {
 	for _, k := range charged(r) {
+		if !m.Budgets.EnforcePrincipal && !m.Budgets.Sponsored(k) {
+			continue
+		}
 		if spent != nil && spent[k] >= m.dailyCap(k) {
 			return true
 		}
@@ -922,7 +933,7 @@ func (m *Meter) revocation(r runs.Run, tokens, b1, usd, capUSD int64, throttled 
 		return ReasonBudgetRun, LimitGatewayCeiling
 	case throttled:
 		return ReasonBudgetFleet, LimitFleet // B2, the only other bucket on agent-router (R13)
-	case m.Budgets.EnforcePrincipal && daySpent:
+	case daySpent:
 		return ReasonBudgetPrincipal, LimitPrincipalDay
 	}
 	return "", ""

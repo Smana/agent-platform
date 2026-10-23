@@ -52,16 +52,16 @@ const sponsoredRuns = 3
 
 // Ceiling caps a budget under an api task's max_cost (F4, R5, C4): the task at the ceiling, each
 // run at a third of it, in USD and in tokens at the reference rate, so an unpriced run keeps a
-// ceiling too. It only ever lowers the class's caps.
+// ceiling too. It only ever lowers the class's caps, and never to 0, which reads as unset (I-2).
 func Ceiling(b v1alpha1.Budget, maxMicroUSD int64) v1alpha1.Budget {
 	if maxMicroUSD <= 0 {
 		return b
 	}
 	taskTokens := int64(float64(maxMicroUSD) / config.RefUSDPerMToken)
 	b.TaskMicroUSD = capAt(b.TaskMicroUSD, maxMicroUSD)
-	b.RunMicroUSD = capAt(b.RunMicroUSD, maxMicroUSD/sponsoredRuns)
-	b.TaskTokens = capAt(b.TaskTokens, taskTokens)
-	b.RunTokens = capAt(b.RunTokens, taskTokens/sponsoredRuns)
+	b.RunMicroUSD = capAt(b.RunMicroUSD, max(1, maxMicroUSD/sponsoredRuns))
+	b.TaskTokens = capAt(b.TaskTokens, max(1, taskTokens))
+	b.RunTokens = capAt(b.RunTokens, max(1, taskTokens/sponsoredRuns))
 	return b
 }
 

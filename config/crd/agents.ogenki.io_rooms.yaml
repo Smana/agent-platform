@@ -132,6 +132,11 @@ spec:
                   - principal
                   - role
                   type: object
+                  x-kubernetes-validations:
+                  - message: 'a system member only watches: never an owner, a collaborator
+                      or an approver'
+                    rule: '!self.principal.startsWith(''system:'') || (self.role ==
+                      ''watcher'' && !(has(self.approver) && self.approver))'
                 maxItems: 20
                 type: array
                 x-kubernetes-list-map-keys:

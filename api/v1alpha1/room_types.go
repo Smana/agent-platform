@@ -75,6 +75,7 @@ type RoomSpec struct {
 
 // Member is a principal admitted to the room, with a role and the approver flag: a human, or a
 // sponsored principal the factory makes a watcher of its task's room (factory interfaces F4).
+// +kubebuilder:validation:XValidation:rule="!self.principal.startsWith('system:') || (self.role == 'watcher' && !(has(self.approver) && self.approver))",message="a system member only watches: never an owner, a collaborator or an approver"
 type Member struct {
 	// +kubebuilder:validation:Pattern=`^(human|system):[A-Za-z0-9@._-]+$`
 	// +kubebuilder:validation:MaxLength=261

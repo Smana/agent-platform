@@ -215,6 +215,9 @@ func (r *Reconciler) startRun(ctx context.Context, t *v1alpha1.Task, s runs.Spec
 		return err
 	}
 	s.RunID, s.StartSeq, s.ChargedTo = runID(t.Name, len(t.Status.Runs)), last, r.person(t)
+	if t.Spec.MaxMicroUSD > 0 { // F4, C-1: the meter holds an api task's run to its own cap, not the tier's
+		s.MaxMicroUSD = runMicroUSD(t.Spec.Budget)
+	}
 	// The loop policy closes implementer runs only (L2); every one of them, revisions and CI fixes
 	// included, carries the task's policy, read at triage.
 	if l := t.Spec.Loop; l != nil && s.Role == "implementer" {

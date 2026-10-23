@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -10,8 +11,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
@@ -45,8 +49,7 @@ func priceTiers(g *rig) {
 func TestSponsoredTaskEndToEnd(t *testing.T) {
 	tk := issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md.")
 	sponsor(tk, 2_000_000)
-	g := newRig(t, tk) // per-person caps off, as the default config ships
-	priceTiers(g)
+	g := sponsoredDayRig(t, tk)          // per-person caps off, as the default config ships
 	got := g.reconcile(t, "3buqdlot", 3) // Received → Triaged → Queued → Implementing
 	if got.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
@@ -132,11 +135,22 @@ func TestEnsureAdoptsARoomHoldingTheMember(t *testing.T) {
 	}
 }
 
-const sponsoredDayUSD = 3.0
+// sponsoredDayMicro is system:slack-app's day in the fixture config ($10).
+const sponsoredDayMicro = 10_000_000
 
-// sponsoredDayRig is a rig with a sponsored Task whose principal has a $3 day, the shadow flag
-// (budgets.enforcePrincipal) off, and its triage done: the next reconcile admits its run.
-func sponsoredDayRig(t *testing.T, factoryDailyUSD float64, objs ...*v1alpha1.Task) *rig {
+// sponsoredConfig is the parsed fixture: system:slack-app with a $10 day, and budgets.enforceTask
+// and budgets.enforcePrincipal off, as the default config ships.
+func sponsoredConfig(t *testing.T) *config.Config {
+	t.Helper()
+	c, err := config.Load("../config/testdata/sponsored.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// sponsoredDayRig is a rig with sponsored Tasks and the parsed fixture's budgets and principals.
+func sponsoredDayRig(t *testing.T, objs ...*v1alpha1.Task) *rig {
 	t.Helper()
 	g := newRig(t)
 	for _, tk := range objs {
@@ -146,9 +160,8 @@ func sponsoredDayRig(t *testing.T, factoryDailyUSD float64, objs ...*v1alpha1.Ta
 		}
 	}
 	priceTiers(g)
-	g.r.Cfg.API.Sponsored = []config.Sponsored{{Name: "slack-app", DailyUSD: sponsoredDayUSD}}
-	g.r.Cfg.Budgets = config.Budgets{FactoryDailyUSD: factoryDailyUSD, HumanDailyUSD: 8.5, EnforcePrincipal: false}.
-		WithSponsoredDay("system:slack-app", sponsoredDayUSD)
+	lc := sponsoredConfig(t)
+	g.r.Cfg.API, g.r.Cfg.Budgets = lc.API, lc.Budgets
 	return g
 }
 
@@ -166,16 +179,14 @@ func holdDay(t *testing.T, g *rig, micro int64) {
 // refused and never starts.
 func TestASponsoredRunIsRefusedWhenThePrincipalsDayIsFull(t *testing.T) {
 	for name, c := range map[string]struct {
-		factoryDailyUSD float64
-		hold            func(*testing.T, *rig)
+		hold func(*testing.T, *rig)
 	}{
-		"reservations hold the day":           {25, func(t *testing.T, g *rig) { holdDay(t, g, 3_000_000) }},
-		"the day's spend fills it":            {25, func(t *testing.T, g *rig) { settleSpend(t, g, 3_000_000) }},
-		"reservations, the fleet's day unset": {0, func(t *testing.T, g *rig) { holdDay(t, g, 3_000_000) }},
-		"one run short":                       {25, func(t *testing.T, g *rig) { holdDay(t, g, 3_000_000-666_666+1) }},
+		"reservations hold the day": {func(t *testing.T, g *rig) { holdDay(t, g, sponsoredDayMicro) }},
+		"the day's spend fills it":  {func(t *testing.T, g *rig) { settleSpend(t, g, sponsoredDayMicro) }},
+		"one run short":             {func(t *testing.T, g *rig) { holdDay(t, g, sponsoredDayMicro-666_666+1) }},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := sponsoredDayRig(t, c.factoryDailyUSD, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
+			g := sponsoredDayRig(t, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
 			c.hold(t, g)
 			got := g.reconcile(t, "3buqdlot", 3)
 			if got.Status.Phase == v1alpha1.PhaseImplementing || len(g.runs.specs) != 0 {
@@ -213,25 +224,60 @@ func settleSpend(t *testing.T, g *rig, micro int64) {
 
 // A run that fits is admitted, and its reservation is charged to the principal's day.
 func TestASponsoredRunThatFitsIsAdmittedAndCharged(t *testing.T) {
-	g := sponsoredDayRig(t, 25, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
-	holdDay(t, g, 3_000_000-666_666) // exactly one run left
+	g := sponsoredDayRig(t, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
+	holdDay(t, g, sponsoredDayMicro-666_666) // exactly one run left
 	if got := g.reconcile(t, "3buqdlot", 3); got.Status.Phase != v1alpha1.PhaseImplementing {
 		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
 	}
 	used, err := api.DayUsed(t.Context(), g.c, "agent-system", "system:slack-app", now)
-	if err != nil || used != 3_000_000 {
+	if err != nil || used != sponsoredDayMicro {
 		t.Fatalf("used %d, %v", used, err)
 	}
 }
 
-// R50, F4: two runs of two different Tasks of one sponsored principal race for its last slot; the
-// ledger's conflict-checked write admits exactly one, whatever the interleaving.
+// R50, F4: two runs of two different Tasks of one sponsored principal race for its last slot. A
+// barrier holds both until each has read the ledger, so both see the slot free: the write's
+// conflict check admits exactly one, and the loser re-reads and is refused.
 func TestTwoSponsoredRunsRaceForTheLastSlot(t *testing.T) {
-	g := sponsoredDayRig(t, 25)
-	holdDay(t, g, 3_000_000-666_666) // one run's room left
+	g := sponsoredDayRig(t)
+	holdDay(t, g, sponsoredDayMicro-666_666) // one run's room left
+	var (
+		mu        sync.Mutex
+		gets      int
+		conflicts int
+		both      = make(chan struct{})
+	)
+	ledger := func(o client.Object) bool { return strings.HasPrefix(o.GetName(), api.LedgerPrefix) }
+	g.r.Ledger = interceptor.NewClient(g.c.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+			err := c.Get(ctx, key, o, opts...)
+			if strings.HasPrefix(key.Name, api.LedgerPrefix) && err == nil {
+				mu.Lock()
+				if gets++; gets == 2 {
+					close(both)
+				}
+				mu.Unlock()
+			}
+			return err
+		},
+		Update: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.UpdateOption) error {
+			if ledger(o) {
+				select {
+				case <-both:
+				case <-time.After(5 * time.Second):
+					t.Error("the barrier: the second run never read the ledger")
+				}
+			}
+			err := c.Update(ctx, o, opts...)
+			if apierrors.IsConflict(err) {
+				mu.Lock()
+				conflicts++
+				mu.Unlock()
+			}
+			return err
+		}})
 	var (
 		wg            sync.WaitGroup
-		mu            sync.Mutex
 		landed, refus int
 	)
 	for _, id := range []string{"aaaaaaaa", "bbbbbbbb"} {
@@ -260,7 +306,89 @@ func TestTwoSponsoredRunsRaceForTheLastSlot(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if landed != 1 || refus != 1 {
-		t.Fatalf("%d admitted, %d refused", landed, refus)
+	if landed != 1 || refus != 1 || conflicts < 1 {
+		t.Fatalf("%d admitted, %d refused, %d conflicts", landed, refus, conflicts)
+	}
+}
+
+// F4, C-1: an api task's run carries its own USD cap, a third of the ceiling; a run of any other
+// task carries none, so the meter's behaviour for it is the tier's alone.
+func TestARunCarriesItsOwnUSDCap(t *testing.T) {
+	g := sponsoredDayRig(t, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
+	if got := g.reconcile(t, "3buqdlot", 3); got.Status.Phase != v1alpha1.PhaseImplementing {
+		t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+	}
+	if s := g.runs.specs[rid(0)]; s.MaxMicroUSD != 666_666 {
+		t.Fatalf("max micro-USD %d", s.MaxMicroUSD)
+	}
+	h := newRig(t, issueTask("3buqdlot", 7, "x"))
+	h.reconcile(t, "3buqdlot", 3)
+	if s := h.runs.specs[rid(0)]; s.MaxMicroUSD != 0 {
+		t.Fatalf("an issue task's run carries a cap: %d", s.MaxMicroUSD)
+	}
+}
+
+// F4, I-3: an api task's task cap is enforced whatever budgets.enforceTask says (the fixture
+// ships it off); an issue task's stays a shadow there.
+func TestAnAPITasksTaskCapIsEnforcedWhateverTheFlagSays(t *testing.T) {
+	for name, c := range map[string]struct {
+		api     bool
+		started bool
+	}{"an api task": {true, false}, "an issue task": {false, true}} {
+		t.Run(name, func(t *testing.T) {
+			tk := issueTask("3buqdlot", 7, "Fix the dead link in docs/a.md.")
+			var g *rig
+			if c.api {
+				g = sponsoredDayRig(t, issueTaskNoIssue(tk))
+			} else {
+				g = newRig(t, tk)
+				priceTiers(g)
+				g.r.Cfg.Budgets = sponsoredConfig(t).Budgets
+			}
+			if g.r.Cfg.Budgets.EnforceTask {
+				t.Fatal("the fixture's flag is off")
+			}
+			g.reconcile(t, "3buqdlot", 2) // Received → Triaged → Queued
+			var cur v1alpha1.Task
+			if err := g.c.Get(t.Context(), types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}, &cur); err != nil {
+				t.Fatal(err)
+			}
+			b := cur.Spec.Budget
+			cur.Status.Usage.CostMicroUSD = b.TaskMicroUSD - b.RunMicroUSD + 1 // less than a whole run left
+			if err := g.c.Status().Update(t.Context(), &cur); err != nil {
+				t.Fatal(err)
+			}
+			got := g.reconcile(t, "3buqdlot", 1)
+			_, started := g.runs.specs[rid(0)]
+			if started != c.started {
+				t.Fatalf("started %v, want %v: %s %s", started, c.started, got.Status.Phase, got.Status.Reason)
+			}
+			if !c.started && (got.Status.Phase != v1alpha1.PhaseEscalated || got.Status.Reason != "budget-task") {
+				t.Fatalf("%s %s", got.Status.Phase, got.Status.Reason)
+			}
+		})
+	}
+}
+
+// issueTaskNoIssue is tk, ready to become a sponsored task of a rig that has none yet.
+func issueTaskNoIssue(tk *v1alpha1.Task) *v1alpha1.Task { tk.Spec.Issue = 0; return tk }
+
+// M-8: an api task whose principal left the config is never run in shadow: it is escalated before
+// any reservation.
+func TestAnAPITaskOfAnUnknownPrincipalIsEscalated(t *testing.T) {
+	g := sponsoredDayRig(t, issueTask("3buqdlot", 0, "Fix the dead link in docs/a.md."))
+	g.r.Cfg.API.Sponsored = nil
+	got := g.reconcile(t, "3buqdlot", 3)
+	if got.Status.Phase != v1alpha1.PhaseEscalated || got.Status.Reason != "principal_unknown" || len(g.runs.specs) != 0 {
+		t.Fatalf("%s %s, %d specs", got.Status.Phase, got.Status.Reason, len(g.runs.specs))
+	}
+	var cm corev1.ConfigMap
+	key := types.NamespacedName{Namespace: "agent-system", Name: api.LedgerPrefix + now.UTC().Format(api.LedgerDayLayout)}
+	if err := g.c.Get(t.Context(), key, &cm); err == nil {
+		for k := range cm.Data {
+			if strings.HasPrefix(k, api.LedgerReserved) {
+				t.Fatalf("a reservation was made: %s", k)
+			}
+		}
 	}
 }

@@ -153,4 +153,21 @@ func TestEnvtestASystemMember(t *testing.T) {
 		roomv1.Member{Principal: "agent:7f3cq2xz", Role: "watcher"}); err == nil || !strings.Contains(err.Error(), "should match") {
 		t.Fatalf("an agent member: %v", err)
 	}
+	// M-9: a system member only ever watches; a human keeps every role and the approver flag.
+	for name, tc := range map[string]struct {
+		id string
+		m  roomv1.Member
+		ok bool
+	}{
+		"a system owner":    {"rmsysown", roomv1.Member{Principal: "system:slack-app", Role: "owner"}, false},
+		"a system approver": {"rmsysapp", roomv1.Member{Principal: "system:slack-app", Role: "watcher", Approver: true}, false},
+		"a human approver":  {"rmhumapp", roomv1.Member{Principal: "human:291", Role: "owner", Approver: true}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := rooms.Ensure(ctx, c, "agent-system", tc.id, "public", "Smana/cloud-native-ref", tc.m)
+			if (err == nil) != tc.ok || (err != nil && !strings.Contains(err.Error(), "a system member only watches")) {
+				t.Fatalf("%v", err)
+			}
+		})
+	}
 }

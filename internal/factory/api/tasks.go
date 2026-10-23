@@ -50,6 +50,7 @@ const (
 	reasonSponsoredOnly = "sponsored_only"
 	reasonPrincipalOver = "principal_budget_exhausted"
 	maxRefLen           = 256
+	minMaxCostUSD       = 0.01 // the smallest ceiling an api task may ask for (I-2)
 )
 
 // errReplayConflict is a Task of the key's name that is not this principal's for this key.
@@ -120,7 +121,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	case len(s.Cfg.Meter.Prices) == 0: // C13: a ceiling in dollars needs priced runs; before the ceiling checks
 		out(http.StatusServiceUnavailable, "meter_unpriced")
 		return
-	case !(in.MaxCostUSD > 0):
+	case !(in.MaxCostUSD >= minMaxCostUSD): // under a cent a third of it rounds a cap to 0, which reads as unset
 		out(http.StatusBadRequest, "max_cost_required")
 		return
 	case in.MaxCostUSD > sp.MaxCostUSD:

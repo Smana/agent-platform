@@ -456,6 +456,10 @@ type PerPerson struct {
 // PrincipalFactory is the fleet's ledger key: the factory's own principal.
 const PrincipalFactory = "system:factory"
 
+// Sponsored is whether key is a declared sponsored principal's: its day is a bound, never a
+// shadow (F4, R7).
+func (b Budgets) Sponsored(key string) bool { _, ok := b.sponsoredDays[key]; return ok }
+
 // DailyMicroUSD is the day of a ledger key, in the ledger's micro-USD: the fleet's for
 // PrincipalFactory, the person day for any other key while per-person caps are on, else
 // humanDailyUSD.
@@ -470,17 +474,6 @@ func (b Budgets) DailyMicroUSD(principal string) int64 {
 		return MicroUSD(b.PerPerson.DailyUSD)
 	}
 	return MicroUSD(b.HumanDailyUSD)
-}
-
-// WithSponsoredDay is b with principal's day set, as Parse sets one from api.sponsored: for a
-// caller that builds a Config by hand.
-func (b Budgets) WithSponsoredDay(principal string, dailyUSD float64) Budgets {
-	days := map[string]int64{principal: MicroUSD(dailyUSD)}
-	for k, v := range b.sponsoredDays {
-		days[k] = v
-	}
-	b.sponsoredDays = days
-	return b
 }
 
 // Ignored is a key the file sets that this release accepts and ignores, and the key to use.

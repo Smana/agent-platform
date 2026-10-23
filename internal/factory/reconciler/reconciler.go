@@ -872,7 +872,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if !runFits(t) {
 		limit := taskLimit(t)
-		if r.Cfg.Budgets.EnforceTask {
+		if r.Cfg.Budgets.EnforceTask || t.Sponsored() != "" { // F4: an api task's ceiling is never a shadow
 			record(ctx, func(ctx context.Context) { r.Metrics.RunRevoked(ctx, "budget-task", limit) })
 			return r.end(ctx, t, v1alpha1.PhaseEscalated, "budget-task") // no new run past the task cap (C5)
 		}
@@ -883,12 +883,12 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 			"used_micro_usd", t.Status.Usage.CostMicroUSD, "cap_micro_usd", t.Spec.Budget.TaskMicroUSD)
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
-	// A sponsored principal's own day is reserved here even when the fleet's is unset.
+	// M-8: an api task's principal that left the config would run in shadow: refuse it first.
+	if p := t.Sponsored(); p != "" && r.Cfg.SponsoredBy(p) == nil {
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, "principal_unknown")
+	}
 	limit, sponsored := r.Cfg.Budgets.DailyMicroUSD(runs.PrincipalFactory), r.sponsored(t)
-	if limit > 0 || sponsored {
-		if limit <= 0 {
-			limit = 1 << 62 // no fleet day: only the principal's binds
-		}
+	if limit > 0 {
 		over, err := r.reserveFactoryDay(ctx, t, limit)
 		switch {
 		case errors.Is(err, api.ErrPersonOverBudget): // D4/D5: the person's day, not the fleet's: refused, not queued
