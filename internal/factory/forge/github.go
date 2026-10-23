@@ -616,6 +616,9 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 											Name       string
 											Status     string
 											Conclusion string
+											CheckSuite struct {
+												App *struct{ DatabaseID int64 }
+											}
 										} `graphql:"... on CheckRun"`
 										StatusContext struct {
 											Context string
@@ -651,7 +654,11 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 	for _, n := range rollup.Contexts.Nodes {
 		switch n.Typename {
 		case "CheckRun":
-			out.Runs = append(out.Runs, Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)})
+			c := Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)}
+			if a := n.CheckRun.CheckSuite.App; a != nil {
+				c.App = a.DatabaseID
+			}
+			out.Runs = append(out.Runs, c)
 		case "StatusContext":
 			out.Statuses = append(out.Statuses, Status{Context: n.StatusContext.Context, State: n.StatusContext.State, Creator: n.StatusContext.Creator.login()})
 		}
@@ -833,33 +840,35 @@ func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
 	return out, nil
 }
 
-// Files are the contents of every file head changes since it forked from base, read at their
+// Diff is the contents of every file head changes since it forked from base, read at their
 // merge base and at head — what a squash merge applies, not head against base's tip: an added
 // file's base side and a deleted file's head side read "", so the maps' union is the changed
 // set. A rename reads as its delete beside its add — which is right: a rename is not a link
 // retarget. §5.1's links-only test for the docs classes (R52) decides on these.
-func (g *GitHub) Files(ctx context.Context, base, head string) (map[string]string, map[string]string, error) {
+func (g *GitHub) Diff(ctx context.Context, base, head string) (Diff, error) {
 	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, base, head, &github.ListOptions{PerPage: 100})
 	g.mark(err)
 	if err != nil {
-		return nil, nil, wrap("compare commits", err)
+		return Diff{}, wrap("compare commits", err)
 	}
 	if len(cmp.Files) == 100 { // one page exactly: unseen files must not let a diff pass as links-only
-		return nil, nil, fmt.Errorf("forge: 100 files differ between %s and %s, a full page: the links-only test cannot see them all", base, head)
+		return Diff{}, fmt.Errorf("forge: 100 files differ between %s and %s, a full page: the links-only test cannot see them all", base, head)
 	}
 	// The file list is three-dot: changed since the merge base. Reading the base side at base's
 	// tip instead would fold in whatever landed there since the branch was cut
 	// (cloud-native-ref#2515), so both sides come from the commits the list compares.
 	mergeBase := cmp.GetMergeBaseCommit().GetSHA()
 	if mergeBase == "" {
-		return nil, nil, fmt.Errorf("forge: comparing %s and %s returned no merge base: the links-only test cannot tell the PR's change from %s's", base, head, base)
+		return Diff{}, fmt.Errorf("forge: comparing %s and %s returned no merge base: the links-only test cannot tell the PR's change from %s's", base, head, base)
 	}
-	baseFiles, headFiles := make(map[string]string, len(cmp.Files)), make(map[string]string, len(cmp.Files))
+	d := Diff{Base: make(map[string]string, len(cmp.Files)), Head: make(map[string]string, len(cmp.Files))}
 	for _, f := range cmp.Files {
 		p := f.GetFilename()
+		d.Files = append(d.Files, FileStat{Path: p, Previous: f.GetPreviousFilename(), Status: f.GetStatus(),
+			Additions: f.GetAdditions(), Deletions: f.GetDeletions()})
 		hc, err := g.fileAt(ctx, p, head)
 		if err != nil {
-			return nil, nil, err
+			return Diff{}, err
 		}
 		bp := f.GetPreviousFilename()
 		if bp == "" {
@@ -867,11 +876,11 @@ func (g *GitHub) Files(ctx context.Context, base, head string) (map[string]strin
 		}
 		bc, err := g.fileAt(ctx, bp, mergeBase)
 		if err != nil {
-			return nil, nil, err
+			return Diff{}, err
 		}
-		headFiles[p], baseFiles[bp] = hc, bc
+		d.Head[p], d.Base[bp] = hc, bc
 	}
-	return baseFiles, headFiles, nil
+	return d, nil
 }
 
 // fileAt is one file's content at one commit. Absent there — an added file's base, a deleted

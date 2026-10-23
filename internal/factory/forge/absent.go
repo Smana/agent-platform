@@ -26,10 +26,8 @@ func (Absent) CommitChecks(context.Context, string) ([]Check, error) { return ni
 // RerunCheck implements Merger.
 func (Absent) RerunCheck(context.Context, int64) error { return ErrNoMerger }
 
-// Files implements the Merger's Files and fails closed.
-func (Absent) Files(context.Context, string, string) (map[string]string, map[string]string, error) {
-	return nil, nil, ErrNoMerger
-}
+// Diff implements the Merger's Diff and fails closed.
+func (Absent) Diff(context.Context, string, string) (Diff, error) { return Diff{}, ErrNoMerger }
 
 // Merge implements the Merger's Merge and fails closed.
 func (Absent) Merge(context.Context, string, string) error { return ErrNoMerger }

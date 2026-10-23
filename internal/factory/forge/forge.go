@@ -178,6 +178,31 @@ type Check struct {
 	ID    int64 // the check run's database id, which is its Actions job id
 	Name  string
 	State string // SUCCESS | FAILURE | CANCELLED | PENDING
+	// App is the database id of the GitHub App whose check suite holds the run: GitHub Actions
+	// is ActionsApp. 0 when GitHub did not say.
+	App int64
+}
+
+// ActionsApp is GitHub Actions' App id on github.com, the one classic protection pins required
+// checks to (15368).
+const ActionsApp int64 = 15368
+
+// FileStat is one changed file as GitHub's compare lists it: its status (added, removed,
+// modified, renamed, copied, changed, unchanged), its previous name on a rename, and its line
+// counts, which policy-bot's modified_lines sums.
+type FileStat struct {
+	Path      string
+	Previous  string
+	Status    string
+	Additions int
+	Deletions int
+}
+
+// Diff is what a squash merge of head applies (R52): each changed file's content at the merge
+// base and at head, "" where it is absent, and GitHub's own list of the changed files.
+type Diff struct {
+	Base, Head map[string]string
+	Files      []FileStat
 }
 
 // Status is one classic commit status, policy-bot's among them.
@@ -242,7 +267,7 @@ type Merger interface {
 	// RerunCheck re-runs the Actions job a check run is. It needs actions: write, beyond what
 	// the merger App held until merge.checkReruns was turned on.
 	RerunCheck(ctx context.Context, id int64) error
-	Files(ctx context.Context, base, head string) (baseFiles, headFiles map[string]string, err error)
+	Diff(ctx context.Context, base, head string) (Diff, error)
 	Merge(ctx context.Context, nodeID, head string) error
 	EnableAutoMerge(ctx context.Context, nodeID, expectedHeadSHA string) error
 	DisableAutoMerge(ctx context.Context, nodeID string) error

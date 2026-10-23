@@ -83,8 +83,9 @@ func TestFakeRecordsWhatTheFactoryDid(t *testing.T) {
 		t.Errorf("%+v %v", p, err)
 	}
 	f.SetFiles(map[string]string{"docs/a.md": "old"}, map[string]string{"docs/a.md": "new"})
-	if b, h, err := f.Files(ctx, "base", "head"); err != nil || b["docs/a.md"] != "old" || h["docs/a.md"] != "new" {
-		t.Errorf("files %v %v %v", b, h, err)
+	if d, err := f.Diff(ctx, "base", "head"); err != nil || d.Base["docs/a.md"] != "old" || d.Head["docs/a.md"] != "new" ||
+		len(d.Files) != 1 || d.Files[0] != (forge.FileStat{Path: "docs/a.md", Status: "modified", Additions: 1, Deletions: 1}) {
+		t.Errorf("diff %+v %v", d, err)
 	}
 }
 

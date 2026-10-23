@@ -89,11 +89,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// forge.Files is read late: only a decision that would reach the LinksOnly gate of an
 		// entry class pays its 2N+1 API calls. The first pass passed that gate vacuously; this
 		// second pass decides on the real diff.
-		base, head, ferr := r.merger(ctx).Files(ctx, "main", pr.HeadSHA)
+		diff, ferr := r.merger(ctx).Diff(ctx, "main", pr.HeadSHA)
 		if ferr != nil {
 			return ferr
 		}
-		in.Files.Base, in.Files.Head = base, head
+		in.Files.Base, in.Files.Head = diff.Base, diff.Head
 		d = DecideArm(in)
 	}
 	if d.Verdict == "arm" || d.Verdict == "shadow" {

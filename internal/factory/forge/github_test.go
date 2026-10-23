@@ -92,7 +92,7 @@ const appID = "123456"
 // rollupJSON is the merger's one-query read of a head commit (task 7.1, R16): three check runs
 // in three states and one policy-bot commit status whose creator is a Bot.
 const rollupJSON = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
-   {"__typename":"CheckRun","name":"Pre-commit checks","status":"COMPLETED","conclusion":"SUCCESS"},
+   {"__typename":"CheckRun","name":"Pre-commit checks","status":"COMPLETED","conclusion":"SUCCESS","checkSuite":{"app":{"databaseId":15368}}},
    {"__typename":"CheckRun","name":"Kubernetes validation","status":"IN_PROGRESS","conclusion":null},
    {"__typename":"CheckRun","name":"Security scanning","status":"COMPLETED","conclusion":"FAILURE"},
    {"__typename":"StatusContext","context":"policy-bot: main","state":"PENDING","creator":{"__typename":"Bot","login":"ogenki-merge-gate"}}
@@ -427,7 +427,7 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	mux.HandleFunc("GET /repos/Smana/demo/compare/{basehead}", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("basehead") {
 		case "old...new": // one modified file: both sides have content.
-			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/a.md","status":"modified"}]}`)
+			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/a.md","status":"modified","additions":2,"deletions":1}]}`)
 		case "old...mid": // a file over the contents API's megabyte: GitHub lists it without content.
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/big.png","status":"modified"}]}`)
 		case "main...behind": // a branch cut at "fork", before main moved on: three-dot lists its own change.
@@ -818,7 +818,7 @@ func TestChecksAndMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS"}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
+	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS", App: ActionsApp}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
 	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
 		t.Fatalf("%+v", c.Runs)
 	}
@@ -892,17 +892,20 @@ func TestRevertLabelListsClosedPullRequests(t *testing.T) {
 func TestFilesReadsBothSidesOfADiff(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
-	b, h, err := r.g.Files(ctx, "old", "new")
+	d, err := r.g.Diff(ctx, "old", "new")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b["docs/a.md"] != aBase || h["docs/a.md"] != aHead {
-		t.Fatalf("base %q head %q", b["docs/a.md"], h["docs/a.md"])
+	if d.Base["docs/a.md"] != aBase || d.Head["docs/a.md"] != aHead {
+		t.Fatalf("base %q head %q", d.Base["docs/a.md"], d.Head["docs/a.md"])
 	}
-	if _, _, err := r.g.Files(ctx, "old", "mid"); err == nil || !strings.Contains(err.Error(), "big.png") {
+	if want := (FileStat{Path: "docs/a.md", Status: "modified", Additions: 2, Deletions: 1}); len(d.Files) != 1 || d.Files[0] != want {
+		t.Fatalf("files %+v, want [%+v]: GitHub's own counts, which policy-bot's modified_lines sums", d.Files, want)
+	}
+	if _, err := r.g.Diff(ctx, "old", "mid"); err == nil || !strings.Contains(err.Error(), "big.png") {
 		t.Errorf("an unfetchable file must be an error, not a skip: %v", err)
 	}
-	if _, _, err := r.g.Files(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
+	if _, err := r.g.Diff(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
 		t.Errorf("a truncated compare must be an error: %v", err)
 	}
 }
@@ -913,14 +916,14 @@ func TestFilesReadsBothSidesOfADiff(t *testing.T) {
 func TestFilesReadsTheBaseAtTheMergeBase(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
-	b, h, err := r.g.Files(ctx, "main", "behind")
+	d, err := r.g.Diff(ctx, "main", "behind")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b["docs/b.md"] != bFork || h["docs/b.md"] != bHead {
-		t.Fatalf("base %q head %q: the base must be the merge base, not main's tip", b["docs/b.md"], h["docs/b.md"])
+	if d.Base["docs/b.md"] != bFork || d.Head["docs/b.md"] != bHead {
+		t.Fatalf("base %q head %q: the base must be the merge base, not main's tip", d.Base["docs/b.md"], d.Head["docs/b.md"])
 	}
-	if _, _, err := r.g.Files(ctx, "main", "nobase"); err == nil || !strings.Contains(err.Error(), "merge base") {
+	if _, err := r.g.Diff(ctx, "main", "nobase"); err == nil || !strings.Contains(err.Error(), "merge base") {
 		t.Errorf("a compare without a merge base must be an error: %v", err)
 	}
 }
