@@ -17,7 +17,7 @@ import (
 // amendment (external reviews R02, R03; ruling R52): ReportedHead is the commit of the
 // latest handoff or final room event whose broker-stamped actor is one of the task's implementer
 // runs ("" when none named one); Verifiers are the task's reviewer and tester run records, each
-// carrying the head it was given; Files is the forge.Files read of the pull request's diff.
+// carrying the head it was given; Files is the forge.Diff read of the pull request's diff.
 type ArmInputs struct {
 	PR           forge.PR
 	Checks       forge.Checks
@@ -31,6 +31,12 @@ type ArmInputs struct {
 	// NotOwned: the repository's fence file does not name this factory (v2 D7). It never merges
 	// there, whatever else holds.
 	NotOwned bool
+	// Stats is GitHub's list of the changed files, and DiffRead is true once Files and Stats hold
+	// the pull request's diff: until then the declared conditions on the diff hold (MC1).
+	Stats    []forge.FileStat
+	DiffRead bool
+	// ClassArmedToday is today's merges of the task's class, against the class's maxPerDay.
+	ClassArmedToday int
 }
 
 // ArmDecision is the verdict and why. Verdict ∈ arm | shadow | wait | ci_red | ci_cancelled | escalate | human.
@@ -69,40 +75,16 @@ func CIState(c forge.Checks, required []string) string {
 	return state
 }
 
-// DecideArm is §5.1's merge-actor rule. Every "no" fails towards a human (property 3).
+// DecideArm is §5.1's merge-actor rule: a fixed base no class can remove, one author mode, and
+// the conditions the class declares (merge gate classes MC1). Every "no" fails towards a human
+// (property 3), each with its own reason.
 func DecideArm(in ArmInputs) ArmDecision {
 	rc := in.Cfg.RepositoryFor(in.Task.Spec.Repository)
-	// R42 (review G6): TruffleHog runs --only-verified, so a red scan is a live credential in the
-	// diff. A fix run would remove it from the head and leave it in a public history.
-	if i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == rc.Merge.LeakScanCheck }); i >= 0 &&
-		in.Checks.Runs[i].State == "FAILURE" {
-		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}
-	}
-	switch CIState(in.Checks, rc.Merge.RequiredChecks) {
-	case "FAILURE":
-		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}
-	case "CANCELLED":
-		return ArmDecision{Verdict: "ci_cancelled", Reason: "ci_cancelled"}
-	case "PENDING":
-		return ArmDecision{Verdict: "wait", Reason: "ci_pending"}
+	if d, done := baseChecks(in, rc); done {
+		return d
 	}
 	human := func(reason, matched string) ArmDecision {
 		return ArmDecision{Verdict: "human", Reason: reason, Matched: matched}
-	}
-	if in.NotOwned {
-		return human("not_owned", "")
-	}
-	class := in.Task.Spec.PredictedClass
-	state, creator := in.Checks.StatusOf("policy-bot: main")
-	if !forge.SameLogin(creator, rc.Merge.PolicyBotLogin) {
-		return human("policy_absent", "") // policy-bot down, or a status someone else posted
-	}
-	switch state {
-	case "ERROR":
-		return human("gate_path", "gate") // unmergeable, even with an approval (S9)
-	case "SUCCESS":
-	default:
-		return human("policy_pending", "review")
 	}
 	if !forge.SameLogin(in.PR.Author, in.Cfg.AgentsLogin) {
 		return human("not_agent_authored", "")
@@ -112,18 +94,86 @@ func DecideArm(in ArmInputs) ArmDecision {
 			return human("maintainer_approved", "review") // success came from a human: a human merges
 		}
 	}
-	cl := rc.Classes[class]
+	class := in.Task.Spec.PredictedClass
+	cl := gateOf(rc, class)
 	if !cl.Live && !cl.Shadow {
 		return human("class_mismatch", "live") // the diff matched a live class the triage did not predict
 	}
+	if reason := agentEvidence(in); reason != "" {
+		return human(reason, class)
+	}
+	if reason, wait := declared(cl, in); wait {
+		return ArmDecision{Verdict: "wait", Reason: reason, Matched: class}
+	} else if reason != "" {
+		return human(reason, class)
+	}
+	if in.Paused {
+		return human("class_paused", class)
+	}
+	if in.ArmedToday >= rc.Merge.AutoMergesPerDay || (cl.MaxPerDay > 0 && in.ClassArmedToday >= cl.MaxPerDay) {
+		return human("auto_merge_cap", class)
+	}
+	if !cl.Live { // R32: every condition holds, and the gate is in shadow until the wave
+		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class}
+	}
+	return ArmDecision{Verdict: "arm", Matched: class}
+}
+
+// gateOf is the class as the gate reads it: its config, with the diff shape built into
+// docs-links and revert (R52) when the config names none.
+func gateOf(rc *config.Repository, class string) config.Class {
+	cl := rc.Classes[class]
+	if cl.DiffShape == "" {
+		cl.DiffShape = config.BuiltInShape(class)
+	}
+	return cl
+}
+
+// baseChecks are the base's rows before any class is read: the secret scan, CI, the fence and
+// policy-bot. done is false when all of them hold.
+func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
+	// R42 (review G6): TruffleHog runs --only-verified, so a red scan is a live credential in the
+	// diff. A fix run would remove it from the head and leave it in a public history.
+	if i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == rc.Merge.LeakScanCheck }); i >= 0 &&
+		in.Checks.Runs[i].State == "FAILURE" {
+		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}, true
+	}
+	switch CIState(in.Checks, rc.Merge.RequiredChecks) {
+	case "FAILURE":
+		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}, true
+	case "CANCELLED":
+		return ArmDecision{Verdict: "ci_cancelled", Reason: "ci_cancelled"}, true
+	case "PENDING":
+		return ArmDecision{Verdict: "wait", Reason: "ci_pending"}, true
+	}
+	if in.NotOwned {
+		return ArmDecision{Verdict: "human", Reason: "not_owned"}, true
+	}
+	state, creator := in.Checks.StatusOf("policy-bot: main")
+	if !forge.SameLogin(creator, rc.Merge.PolicyBotLogin) {
+		return ArmDecision{Verdict: "human", Reason: "policy_absent"}, true // policy-bot down, or a status someone else posted
+	}
+	switch state {
+	case "ERROR":
+		return ArmDecision{Verdict: "human", Reason: "gate_path", Matched: "gate"}, true // unmergeable, even with an approval (S9)
+	case "SUCCESS":
+		return ArmDecision{}, false
+	default:
+		return ArmDecision{Verdict: "human", Reason: "policy_pending", Matched: "review"}, true
+	}
+}
+
+// agentEvidence is the agents author mode's evidence (R02, R03, SC-14): "" when the room
+// reported this head, the verifiers approved it and its trailer names one of the task's runs.
+func agentEvidence(in ArmInputs) string {
 	if slices.Contains(in.Cfg.Templates[in.Task.Spec.Template].Roles, "reviewer") && in.Task.Status.Verdict != "approve" {
-		return human("no_approving_verdict", class)
+		return "no_approving_verdict"
 	}
 	// R02: the rule can only speak about the commit the room named. An unreported head — a run
 	// pushed without a handoff, or a push after the last report, the trailer inside the head
 	// notwithstanding — is a commit nobody watched.
 	if in.ReportedHead == "" || in.ReportedHead != in.PR.HeadSHA {
-		return human("head_unreported", class)
+		return "head_unreported"
 	}
 	// R03: an approve is of the head its run was given, and of it only. If the verifier's last
 	// approve predates the head the room just reported, the approval was pulled out from under.
@@ -133,31 +183,15 @@ func DecideArm(in ArmInputs) ArmDecision {
 			continue
 		}
 		if r.HeadSHA != in.PR.HeadSHA {
-			return human("verdict_stale", class)
+			return "verdict_stale"
 		}
 		break
 	}
 	trailer := in.PR.Trailer("Agent-Run")
 	if !slices.ContainsFunc(in.Task.Status.Runs, func(r v1alpha1.RunRecord) bool { return r.ID == trailer }) {
-		return human("foreign_trailer", class) // SC-14, SP1 R9: another task's run pushed here
+		return "foreign_trailer" // SC-14, SP1 R9: another task's run pushed here
 	}
-	// R52: the two entry classes carry a promise about the diff, not just the head: a docs-links
-	// or revert change that moved anything but link targets is not the class it claims.
-	if class == "docs-links" || class == "revert" {
-		if ok, _ := LinksOnly(in.Files.Base, in.Files.Head); !ok {
-			return human("class_mismatch", class)
-		}
-	}
-	if in.Paused {
-		return human("class_paused", class)
-	}
-	if in.ArmedToday >= rc.Merge.AutoMergesPerDay {
-		return human("auto_merge_cap", class)
-	}
-	if !cl.Live { // R32: every condition holds, and the gate is in shadow until the wave
-		return ArmDecision{Verdict: "shadow", Reason: "shadow_would_arm", Matched: class}
-	}
-	return ArmDecision{Verdict: "arm", Matched: class}
+	return ""
 }
 
 // reLinkTarget matches one link's target: a reference definition's ([label]: target at a line
