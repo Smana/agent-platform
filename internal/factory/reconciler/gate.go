@@ -3,8 +3,13 @@
 package reconciler
 
 import (
+	"maps"
+	"net/url"
 	"regexp"
 	"slices"
+	"strings"
+
+	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
@@ -31,6 +36,7 @@ func Conditions() []Condition {
 		{"maxModifiedLines", func(cl config.Class) bool { return cl.MaxModifiedLines > 0 }, maxModifiedLines},
 		{"diffShape", func(cl config.Class) bool { return cl.DiffShape != "" }, diffShape},
 		{"holdoutChecks", func(cl config.Class) bool { return len(cl.HoldoutChecks) > 0 }, holdoutChecks},
+		{"oracle", func(cl config.Class) bool { return cl.Oracle != nil }, oracle},
 	}
 }
 
@@ -154,8 +160,50 @@ func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
+// oracle (MC5, MC6): the head no longer holds any of the task's findings — each finding's file
+// changed, and its URL is no longer a link target there — and every target it moved is a
+// finding's, moved to the same host or to the snapshot the finding gave. diffShape links-only
+// (Validate) has already held the rest of the text and the targets' count.
+func oracle(_ config.Class, in ArmInputs) (string, bool) {
+	fs := in.Task.Spec.Findings
+	if len(fs) == 0 {
+		return "oracle_finding_open", false // a task of an oracle class is its findings: none is no proof
+	}
+	for _, f := range fs {
+		h, ok := in.Files.Head[f.File]
+		if _, ts := mdlinks.Targets(h); !ok || slices.Contains(ts, f.URL) {
+			return "oracle_finding_open", false
+		}
+	}
+	for _, p := range slices.Sorted(maps.Keys(in.Files.Head)) {
+		_, tb := mdlinks.Targets(in.Files.Base[p])
+		_, th := mdlinks.Targets(in.Files.Head[p])
+		if len(tb) != len(th) {
+			return "oracle_unrequested", false
+		}
+		for i := range tb {
+			if tb[i] == th[i] {
+				continue
+			}
+			j := slices.IndexFunc(fs, func(f v1alpha1.Finding) bool { return f.File == p && f.URL == tb[i] })
+			if j < 0 || (th[i] != fs[j].Archive && !sameHost(tb[i], th[i])) {
+				return "oracle_unrequested", false
+			}
+		}
+	}
+	return "", false
+}
+
+// sameHost: both are https URLs on one host.
+func sameHost(a, b string) bool {
+	ua, ea := url.Parse(a)
+	ub, eb := url.Parse(b)
+	return ea == nil && eb == nil && ua.Scheme == "https" && ub.Scheme == "https" && ua.Host != "" &&
+		strings.EqualFold(ua.Host, ub.Host)
+}
+
 // onDiff are the conditions that read the diff, which hold until it is read.
-var onDiff = []string{"allowedFiles", "protectedFiles", "modifyOnly", "maxPatchFiles", "maxModifiedLines"}
+var onDiff = []string{"allowedFiles", "protectedFiles", "modifyOnly", "maxPatchFiles", "maxModifiedLines", "oracle"}
 
 // declared checks the class's declared conditions in order: the first refusal, or "".
 func declared(cl config.Class, in ArmInputs) (string, bool) {

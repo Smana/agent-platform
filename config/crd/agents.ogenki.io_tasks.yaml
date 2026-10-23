@@ -104,6 +104,36 @@ spec:
                 - public
                 - internal
                 type: string
+              findings:
+                description: |-
+                  The findings an oracle class's probe made this task of (merge gate classes MC6): what the
+                  run is asked to fix, and what the gate's oracle checks the head no longer holds.
+                items:
+                  description: Finding is one dead external link two consecutive detector
+                    runs on main reported (MC5).
+                  properties:
+                    archive:
+                      description: |-
+                        The Wayback Machine's closest snapshot of URL, an https://web.archive.org/web/ URL; empty
+                        when it has none.
+                      maxLength: 2048
+                      type: string
+                    file:
+                      description: The Markdown file on main that holds the link.
+                      maxLength: 512
+                      minLength: 1
+                      type: string
+                    url:
+                      description: The link target, an https URL.
+                      maxLength: 2048
+                      minLength: 1
+                      type: string
+                  required:
+                  - file
+                  - url
+                  type: object
+                maxItems: 16
+                type: array
               issue:
                 description: The issue the factory narrates on; 0 for a task without
                   one (R28).

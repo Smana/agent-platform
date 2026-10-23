@@ -120,6 +120,7 @@ func TestEveryConditionOnTheDiffMakesTheClassReadIt(t *testing.T) {
 		"modifyOnly":       {ModifyOnly: true},
 		"maxPatchFiles":    {MaxPatchFiles: 1},
 		"maxModifiedLines": {MaxModifiedLines: 1},
+		"oracle":           {Oracle: &config.Oracle{}},
 	}
 	for _, key := range onDiff {
 		cl, ok := declare[key]

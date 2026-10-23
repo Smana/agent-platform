@@ -83,6 +83,28 @@ type TaskSpec struct {
 	// the loop is off for the task's class.
 	// +optional
 	Loop *Loop `json:"loop,omitempty"`
+	// The findings an oracle class's probe made this task of (merge gate classes MC6): what the
+	// run is asked to fix, and what the gate's oracle checks the head no longer holds.
+	// +kubebuilder:validation:MaxItems=16
+	// +optional
+	Findings []Finding `json:"findings,omitempty"`
+}
+
+// Finding is one dead external link two consecutive detector runs on main reported (MC5).
+type Finding struct {
+	// The Markdown file on main that holds the link.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	File string `json:"file"`
+	// The link target, an https URL.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
+	// The Wayback Machine's closest snapshot of URL, an https://web.archive.org/web/ URL; empty
+	// when it has none.
+	// +kubebuilder:validation:MaxLength=2048
+	// +optional
+	Archive string `json:"archive,omitempty"`
 }
 
 // Loop is a task's loop policy, every value resolved at triage.

@@ -53,6 +53,14 @@ func TestBadConditionsFail(t *testing.T) {
 		"a holdout twice":     {"docs-links: {}\n  revert: {}\n  x: {holdoutChecks: [a, a]}", `class x: holdoutChecks names "a" empty or twice`},
 		"live and shadow":     {"docs-links: {live: true, shadow: true}\n  revert: {}", "class docs-links: live and shadow never together (R32)"},
 		"a negative per day":  {"docs-links: {}\n  revert: {}\n  x: {maxPerDay: -2}", "class x: maxPerDay must be 0 (no cap) or more"},
+		"an oracle without a holdout": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}",
+			"class x: an oracle needs holdoutChecks, or the head goes unproven (MC5)"},
+		"an oracle off links-only": {"docs-links: {}\n  revert: {}\n  x: {holdoutChecks: [h], oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 10}}",
+			"class x: an oracle reads link targets: diffShape must be links-only"},
+		"too many findings": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], oracle: {probe: dead-links, workflow: dead-links.yaml, maxFindings: 17}}",
+			"class x: oracle.maxFindings must be 1..16"},
+		"an unknown probe": {"docs-links: {}\n  revert: {}\n  x: {diffShape: links-only, holdoutChecks: [h], oracle: {probe: trivy, workflow: t.yaml, maxFindings: 1}}",
+			`class x: oracle.probe "trivy" is not dead-links`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(withClasses(t, c.classes)))
