@@ -360,10 +360,11 @@ func TestRebaseMergesAreReadOnlyWhenSafe(t *testing.T) {
 		parents []int
 		follow  bool
 	}{
-		"a squash of three commits":  {3, []int{7}, true},
-		"a single-commit rebase":     {1, []int{20}, true},
-		"a multi-commit rebase":      {3, []int{20}, false},
-		"commits unknown, no parent": {0, nil, true},
+		"a squash of three commits":                         {3, []int{7}, true},
+		"a single-commit rebase":                            {1, []int{20}, true},
+		"a multi-commit rebase":                             {3, []int{20}, false},
+		"commits unknown, no parent":                        {0, nil, true},
+		"three commits, parent pulls unknown (GitHub lags)": {3, nil, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := monitorRig(t)

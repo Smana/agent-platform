@@ -300,11 +300,12 @@ type MergedPull struct {
 	ParentPulls []int
 }
 
-// MultiCommitRebase reports a pull request merged by rebasing more than one commit: its merge
-// commit's first parent is a commit of the same pull request. A single-commit rebase has the base
+// MultiCommitRebase reports a pull request that may have been merged by rebasing more than one
+// commit: its merge commit's first parent is a commit of the same pull request, or GitHub has not
+// yet said which pull requests the parent belongs to (a lagging answer must not read as a squash). A single-commit rebase has the base
 // for parent, as a squash does.
 func (p MergedPull) MultiCommitRebase() bool {
-	return p.Commits > 1 && slices.Contains(p.ParentPulls, p.Number)
+	return p.Commits > 1 && (len(p.ParentPulls) == 0 || slices.Contains(p.ParentPulls, p.Number))
 }
 
 // FilePatch is one file a pull request changed: its path, its previous path on a rename, GitHub's

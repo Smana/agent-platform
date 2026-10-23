@@ -1664,10 +1664,11 @@ func TestMultiCommitRebase(t *testing.T) {
 		p    MergedPull
 		want bool
 	}{
-		"squash of three":     {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{4}}, false},
-		"rebase of three":     {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{5}}, true},
-		"rebase of one":       {MergedPull{Number: 5, Commits: 1, ParentPulls: []int{5}}, false},
-		"parent unassociated": {MergedPull{Number: 5, Commits: 3}, false},
+		"squash of three":          {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{4}}, false},
+		"rebase of three":          {MergedPull{Number: 5, Commits: 3, ParentPulls: []int{5}}, true},
+		"rebase of one":            {MergedPull{Number: 5, Commits: 1, ParentPulls: []int{5}}, false},
+		"parent unassociated":      {MergedPull{Number: 5, Commits: 3}, true}, // GitHub may lag: unread, not a squash
+		"one commit, unassociated": {MergedPull{Number: 5, Commits: 1}, false},
 	} {
 		if got := c.p.MultiCommitRebase(); got != c.want {
 			t.Errorf("%s: %v", name, got)
