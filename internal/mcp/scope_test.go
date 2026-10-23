@@ -110,3 +110,13 @@ func TestScopeIsListedToTheTriagerOnly(t *testing.T) {
 		}
 	}
 }
+
+// The 4096-byte bound counts <, > and & as one byte, not the six of HTML escaping.
+func TestTheBoundCountsMarkupAsOneByte(t *testing.T) {
+	s := goodScope()
+	s["task"] = strings.Repeat("<", 1000)
+	log := &memLog{}
+	if _, err := tool(tools(log), "room_handoff").Call(t.Context(), triager, handoff(s)); err != nil || len(log.drafts) != 1 {
+		t.Fatalf("refused (%v)", err)
+	}
+}

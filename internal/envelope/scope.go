@@ -3,6 +3,7 @@
 package envelope
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -84,7 +85,11 @@ func (s Scope) Validate() error {
 	} else {
 		good = good && s.Question == ""
 	}
-	if b, err := json.Marshal(s); !good || err != nil || len(b) > MaxScopeBytes {
+	// Unescaped: HTML escaping would count <, > and & as six bytes each.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); !good || err != nil || buf.Len()-1 > MaxScopeBytes {
 		return ErrScope
 	}
 	return nil
