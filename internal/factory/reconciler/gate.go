@@ -8,6 +8,7 @@ import (
 
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/mdlinks"
 )
 
 // Condition is one condition a class declares in its config (merge gate classes MC1): Declared
@@ -114,7 +115,7 @@ func maxModifiedLines(cl config.Class, in ArmInputs) (string, bool) {
 // yet passes it vacuously (LinksOnly of two empty trees).
 func diffShape(cl config.Class, in ArmInputs) (string, bool) {
 	if cl.DiffShape == "links-only" {
-		if ok, _ := LinksOnly(in.Files.Base, in.Files.Head); !ok {
+		if ok, _ := mdlinks.LinksOnly(in.Files.Base, in.Files.Head); !ok {
 			return "class_mismatch", false
 		}
 	}
