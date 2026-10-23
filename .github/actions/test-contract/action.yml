@@ -1,0 +1,22 @@
+# test-contract in CI (v3 feature 4, TF7): the same script the harness runs for the tester's red
+# check, so the sandbox and the CI agree. Pin it by commit. Needs python3 with PyYAML, git history
+# holding both commits, and the repository's toolchain on PATH.
+name: test-contract
+description: Every test a pull request adds fails on the base plus the tests and passes at the head.
+inputs:
+  base:
+    description: The base branch's commit; the tests' declaration is read there.
+    required: true
+  head:
+    description: The pull request's head commit.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: test-contract ci
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        HEAD_SHA: ${{ inputs.head }}
+        SCRIPT: ${{ github.action_path }}/../../../images/agent-harness/test_contract.py
+      run: python3 "$SCRIPT" --repo "$GITHUB_WORKSPACE" ci --base "$BASE" --head "$HEAD_SHA" --summary "$GITHUB_STEP_SUMMARY"

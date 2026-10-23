@@ -64,13 +64,14 @@ RUN /usr/local/bin/python -m pip install --no-cache-dir --root-user-action=ignor
       -r /tmp/checks-requirements.txt \
  && rm /tmp/checks-requirements.txt
 
-COPY --chmod=0755 agent_run.py agent_checks.py git_credential_agent.py loop_policy.py pr_footer.py /opt/agent/
+COPY --chmod=0755 agent_run.py agent_checks.py test_contract.py git_credential_agent.py loop_policy.py pr_footer.py /opt/agent/
 COPY --chmod=0755 site /opt/agent/site
 COPY --chmod=0755 gh /usr/local/bin/gh
 COPY --chmod=0755 commit-msg /etc/agent/git-hooks/commit-msg
 COPY gitconfig /etc/gitconfig
 RUN ln -s /opt/agent/agent_run.py /usr/local/bin/agent-run \
  && ln -s /opt/agent/agent_checks.py /usr/local/bin/agent-checks \
+ && ln -s /opt/agent/test_contract.py /usr/local/bin/test-contract \
  && ln -s /opt/agent/git_credential_agent.py /usr/local/bin/git-credential-agent
 
 # agent-server otherwise starts openvscode-server on 0.0.0.0:8001, putting a
@@ -86,6 +87,11 @@ FROM harness AS test
 COPY --chown=10001:10001 tests /opt/agent/tests
 # The lock test compares the two requirement files, which the published image does not carry.
 COPY --chown=10001:10001 requirements.txt checks-requirements.txt /opt/agent/
+USER root
+# pytest for test-contract's pytest fixture (v3 feature 4): the test stage only, never the shipped image.
+RUN /usr/local/bin/python -m pip install --no-cache-dir --root-user-action=ignore --require-hashes --only-binary=:all: \
+      -r /opt/agent/tests/contract-requirements.txt
+USER 10001
 RUN cd /opt/agent && /agent-server/.venv/bin/python -m unittest discover -s tests -v
 
 # The default target, and what CI publishes.
