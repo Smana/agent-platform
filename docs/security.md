@@ -213,6 +213,24 @@ since the address they name was never declared.
 Each delivery is signed with HMAC-SHA256 under a key of at least 32 bytes that lives in a mounted
 secret, never in the config. The key file is re-read at each delivery.
 
+## The Slack App
+
+The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is the only component with a public route: `POST /slack/events`, matched exactly. The invariants, each held by a named test:
+
+| # | Invariant | Test |
+|---|---|---|
+| 5 | A bad Slack signature or a stale timestamp is `401` before the body is parsed. The signature is `v0=` + HMAC-SHA256 over `v0:<timestamp>:<raw body>`, compared in constant time, within 5 minutes, on a body capped at 1 MiB | `TestSlackSignature` |
+| 6 | A check mark from an unlinked user or a non-maintainer files nothing | `TestReactionFlow` |
+| 7 | No Slack message carries room text: thread lines are templates of ids, states, closed codes and the room's URL | `TestThreadMessagesCarryNoText` |
+| 8 | No tool or Slack path approves or steers; the App reads no reply in a thread | `TestSponsoredToolList`, `TestSlackNeverDecides` |
+
+- **One workspace.** `teamID` is required; an event from any other workspace is dropped.
+- **A check mark files only when** the reacting user is linked in the factory's `onBehalfOf.slack`, the message is the bot's own draft (its user is the bot's, and its metadata hash matches), and the channel is configured. A second check mark on the same draft is a duplicate and files nothing.
+- **Secrets stay in the App.** The bot token and the client-credentials secret are mounted files, read at use. Neither reaches the broker or a run: the broker gets a ZITADEL access token, never Slack's, and a run never sees either.
+- **The App's token** is a client-credentials grant with the project-audience scope, the same scope `roomctl` uses. The factory proves the principal itself from that token and the `on_behalf_of` it names.
+- **A key problem is not a bad signature.** A webhook key the App cannot read answers `503 no_key`, counted apart from `bad_signature`. It is not a hold: the broker retries after 10s, 1m and 5m, then counts a failure, and three given-up deliveries disable the subscriber until its `generation` is bumped, so events are lost meanwhile ([recovery](slack.md#state)).
+- **Redelivery.** Slack events and broker webhooks are deduplicated in memory (one replica). Two concurrent redeliveries of one id can both pass the check before either finishes; the worst case is one duplicate thread line.
+
 ## Supply chain
 
 | Control | How |

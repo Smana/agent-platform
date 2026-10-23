@@ -11,6 +11,7 @@ The reference for the broker, the bridge, the factory, the CLI and the web UI; t
 | [The factory](factory.md) | What a label starts, the Task lifecycle, triage and budgets, the merge gate, escalation, the kill switch; the Task CRD, the config file, the factory's API |
 | [roomctl](roomctl.md) | Install and verify, configure, every command, the factory-handoff skill |
 | [Web UI](web-ui.md) | The room list, the room page, what each standing may do |
+| [Slack App](slack.md) | The factory's Slack App: manifest, config, the two flows, what it never does |
 | [Event envelope](event-envelope.md) | The C4 envelope, its payloads and limits |
 | [Room log](room-log.md) | The schema, the guarantees the database enforces, sealing, retention, migrations |
 | [API](api.md) | The broker's four listeners, their errors and limits |

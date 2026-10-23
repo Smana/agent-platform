@@ -44,6 +44,7 @@ var (
 const (
 	BrokerBuildInfo  = "rooms_build_info"
 	FactoryBuildInfo = "agent_factory_build_info"
+	SlackBuildInfo   = "factory_slack_build_info"
 )
 
 // Exporter is a MeterProvider whose metrics Handler serves in the Prometheus
@@ -54,9 +55,9 @@ type Exporter struct {
 }
 
 // NewExporter builds a provider on its own registry: no global state, so two
-// in one process (tests) never collide. buildInfo is BrokerBuildInfo or FactoryBuildInfo.
+// in one process (tests) never collide. buildInfo is BrokerBuildInfo, FactoryBuildInfo or SlackBuildInfo.
 func NewExporter(buildInfo, version string) (*Exporter, error) {
-	if buildInfo != BrokerBuildInfo && buildInfo != FactoryBuildInfo {
+	if buildInfo != BrokerBuildInfo && buildInfo != FactoryBuildInfo && buildInfo != SlackBuildInfo {
 		return nil, fmt.Errorf("metrics: %q is no binary's build-info gauge", buildInfo)
 	}
 	reg := prometheus.NewRegistry()
