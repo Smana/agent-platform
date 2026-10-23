@@ -544,14 +544,20 @@ func target(t *v1alpha1.Task) int {
 // task.final line the moment the task first ends. The reservations no claim holds any more are
 // released here (#55): every ending path, and every replay of one, passes through it.
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+	r.finish(ctx, t, phase, reason, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
+	return nil
+}
+
+// finish is the ending every task shares: its unheld reservations released, the move, a terminal
+// approved parent's parts counted (SL14), the narration and the outcome.
+func (r *Reconciler) finish(ctx context.Context, t *v1alpha1.Task, phase, reason string, e narrate.Event) {
 	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
 	if v1alpha1.TerminalPhase(phase) {
 		r.countFamily(ctx, t) // an approved parent stopped or expired: its landed parts count (SL14)
 	}
-	narrateLater(t, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
+	narrateLater(t, e)
 	r.outcome(ctx, t)
-	return nil
 }
 
 // settleWindow bounds how long an ended task keeps refreshing its usage before the total is

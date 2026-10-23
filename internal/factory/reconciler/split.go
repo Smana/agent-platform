@@ -198,25 +198,31 @@ func (r *Reconciler) family(ctx context.Context, p *v1alpha1.Task) (map[int32]*v
 		return nil, nil, err
 	}
 	newest := map[int32]*v1alpha1.Task{}
+	var all []v1alpha1.Task
 	for i := range l.Items {
 		c := &l.Items[i]
 		if c.Spec.Parent == nil || c.Spec.Parent.Task != p.Name {
 			continue // a label anyone could set names no family; the spec, which CEL fixes, does
 		}
+		all = append(all, *c)
 		if o, ok := newest[c.Spec.Parent.Index]; !ok || newer(c, o) {
 			newest[c.Spec.Parent.Index] = c
 		}
 	}
-	return newest, l.Items, nil
+	return newest, all, nil
 }
 
 // newer: a's generation follows b's (SR13). The API server stamps creation to the second; on a tie,
-// a re-labelled generation (an issue key) follows the factory's own (a split key).
+// a re-labelled generation (an issue key) follows the factory's own (a split key); then the name.
 func newer(a, b *v1alpha1.Task) bool {
 	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
 		return b.CreationTimestamp.Before(&a.CreationTimestamp)
 	}
-	return strings.HasPrefix(a.Spec.Source.Key, "github:issue:") && !strings.HasPrefix(b.Spec.Source.Key, "github:issue:")
+	ai, bi := strings.HasPrefix(a.Spec.Source.Key, "github:issue:"), strings.HasPrefix(b.Spec.Source.Key, "github:issue:")
+	if ai != bi {
+		return ai
+	}
+	return a.Name > b.Name // a deterministic last resort, the same whichever list order
 }
 
 // spend is what a task's runs cost, a run the meter could not price at the reference rate the day
@@ -233,8 +239,8 @@ func spend(t *v1alpha1.Task) int64 {
 	return sum
 }
 
-// familyLeft is SL10: the family's cap less what the parent and every child, of every generation,
-// spent. Read when a part opens and at its triage: parts run one at a time, so nothing else spends.
+// familyLeft is SL10: the family's cap less what the parent and every child (the Tasks whose
+// spec.parent names it, as family() reads them), of every generation, spent. Read when a part opens and at its triage: parts run one at a time, so nothing else spends.
 func (r *Reconciler) familyLeft(ctx context.Context, p *v1alpha1.Task) (int64, error) {
 	_, all, err := r.family(ctx, p)
 	if err != nil {
@@ -251,11 +257,20 @@ func (r *Reconciler) familyLeft(ctx context.Context, p *v1alpha1.Task) (int64, e
 func (r *Reconciler) childBudget(p *v1alpha1.Task, left int64) v1alpha1.Budget {
 	b := triage.BudgetFor(r.Cfg, p.Spec.Split.ChildTier)
 	b.TaskMicroUSD = min(b.TaskMicroUSD, left)
+	// A run the meter cannot price holds the part to TaskTokens (usdCapped), and spend() charges
+	// such a run at the reference rate: bound the tokens by what the family has left at that rate,
+	// so the fallback cannot spend past the family's USD cap, and a priced run is still USD-capped.
+	// Chosen over refusing the unpriced part's next run: the part keeps working inside a bound.
+	if lt := int64(float64(max(left, 0)) / config.RefUSDPerMToken); b.TaskTokens <= 0 || lt < b.TaskTokens {
+		b.TaskTokens = lt
+	}
 	return b
 }
 
 // fits: the cap holds one whole run (runFits' rule, owner 2026-10-07).
-func fits(b v1alpha1.Budget) bool { return b.TaskMicroUSD > 0 && b.TaskMicroUSD >= b.RunMicroUSD }
+func fits(b v1alpha1.Budget) bool {
+	return b.TaskMicroUSD > 0 && b.TaskMicroUSD >= b.RunMicroUSD && b.TaskTokens >= b.RunTokens
+}
 
 // childScope is part k of the parent's split: the handoff status.split names, checked again.
 func (r *Reconciler) childScope(ctx context.Context, p *v1alpha1.Task, k int32) (*envelope.Scope, error) {
@@ -474,19 +489,43 @@ func (r *Reconciler) splitting(ctx context.Context, t *v1alpha1.Task) error {
 // endFamily ends the parent (SL12, SR14): one comment listing the parts and their pull requests,
 // each part counted once, the tier unscored.
 func (r *Reconciler) endFamily(ctx context.Context, t *v1alpha1.Task, newest map[int32]*v1alpha1.Task, phase, reason string) error {
+	sp := t.Status.Split
+	if phase == v1alpha1.PhaseClosed { // a part still running must not outlive its family (SL12)
+		if err := r.stopOpenParts(ctx, sp, newest); err != nil {
+			return err
+		}
+	}
 	var parts []narrate.Part
-	for _, c := range t.Status.Split.Children {
+	for _, c := range sp.Children {
 		p := narrate.Part{Index: c.Index, Issue: c.Issue, Outcome: c.Outcome}
 		if n := newest[c.Index]; n != nil && n.Status.PullRequest != nil {
 			p.PR = n.Status.PullRequest.URL
 		}
 		parts = append(parts, p)
 	}
-	r.releaseUnheld(ctx, t)
-	r.to(t, phase, reason)
-	narrateLater(t, narrate.SplitEnded(t, phase, reason, parts, r.repo(t).Maintainers...))
-	r.countFamily(ctx, t)
-	r.outcome(ctx, t)
+	r.finish(ctx, t, phase, reason, narrate.SplitEnded(t, phase, reason, parts, r.repo(t).Maintainers...))
+	return nil
+}
+
+// stopOpenParts annotates the stop on every part whose newest generation has not ended, so a
+// running part never merges on a tree without the part before it; each is recorded dropped.
+func (r *Reconciler) stopOpenParts(ctx context.Context, sp *v1alpha1.SplitStatus, newest map[int32]*v1alpha1.Task) error {
+	for i := range sp.Children {
+		c := &sp.Children[i]
+		n := newest[c.Index]
+		if n == nil || v1alpha1.TerminalPhase(n.Status.Phase) || c.Outcome != "" {
+			continue
+		}
+		patch := client.MergeFrom(n.DeepCopy())
+		if n.Annotations == nil {
+			n.Annotations = map[string]string{}
+		}
+		n.Annotations[v1alpha1.AnnotationStop] = "true"
+		if err := r.Client.Patch(ctx, n, patch); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		c.Outcome = ChildDropped
+	}
 	return nil
 }
 
@@ -505,8 +544,9 @@ func (r *Reconciler) countFamily(ctx context.Context, t *v1alpha1.Task) {
 	}
 }
 
-// tellParent is SP6: a part reverted after its parent closed comments on the parent issue, once.
-// Before the close, the parent's own Split pass ends the family on the revert (SL12).
+// tellParent is SP6: a part reverted after its parent closed, or while it waits Escalated on its
+// family's budget, comments on the parent issue, once. While the parent is in Split, its own pass
+// ends the family on the revert (SL12).
 func (r *Reconciler) tellParent(ctx context.Context, t *v1alpha1.Task, revert int) error {
 	if t.Spec.Parent == nil {
 		return nil
@@ -515,8 +555,21 @@ func (r *Reconciler) tellParent(ctx context.Context, t *v1alpha1.Task, revert in
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Spec.Parent.Task}, &p); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	if p.Status.Phase == v1alpha1.PhaseDone {
-		narrateOn(t, t.Spec.Parent.Issue, narrate.PartReverted(t, revert))
+	switch {
+	case p.Status.Phase == v1alpha1.PhaseDone:
+	case p.Status.Phase == v1alpha1.PhaseEscalated && p.Status.Split != nil && p.Status.Split.State == SplitApproved:
+		// Waiting on budget-family: the part no longer stands, so the parent's expiry must not count it landed.
+		for i := range p.Status.Split.Children {
+			if c := &p.Status.Split.Children[i]; c.Index == t.Spec.Parent.Index {
+				c.Outcome = ChildReverted
+			}
+		}
+		if err := r.Client.Status().Update(ctx, &p); err != nil {
+			return err
+		}
+	default:
+		return nil
 	}
+	narrateOn(t, t.Spec.Parent.Issue, narrate.PartReverted(t, revert))
 	return nil
 }

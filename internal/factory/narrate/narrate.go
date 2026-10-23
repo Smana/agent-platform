@@ -22,6 +22,7 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
 	"github.com/Smana/agent-platform/internal/github"
 	summ "github.com/Smana/agent-platform/internal/summary"
 )
@@ -625,8 +626,8 @@ func ChildIssue(t *v1alpha1.Task, k int32, sc *envelope.Scope, roomsURL string) 
 	title = fmt.Sprintf("Part %d of %d of #%d", k, s.Of, t.Spec.Issue)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Part %d of %d of #%d, opened by agent factory task `%s` once %s approved its split with `/factory split`. "+
-		"Its task runs on branch `agent/<task>`, through the merge gate of #%d's class; the next part opens once this one merges.",
-		k, s.Of, t.Spec.Issue, t.Name, strings.TrimPrefix(s.ApprovedBy, "github:"), t.Spec.Issue)
+		"Its task runs on branch `agent/%s`, through the merge gate of #%d's class; the next part opens once this one merges.",
+		k, s.Of, t.Spec.Issue, t.Name, strings.TrimPrefix(s.ApprovedBy, "github:"), taskid.Name(taskid.SplitKey(t.Name, int(k))), t.Spec.Issue)
 	if t.Spec.DataClass != "public" {
 		fmt.Fprintf(&b, "\n\nThe part's scope is in [the room](%s/r/%s): the task's data class is not public.",
 			strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
