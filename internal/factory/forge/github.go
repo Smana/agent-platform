@@ -531,6 +531,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				Number           int
 				URL              string `graphql:"url"`
 				Title            string
+				Body             string
 				State            string
 				HeadRefName      string
 				HeadRefOid       string
@@ -586,7 +587,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		return PR{}, wrap("read a pull request", err)
 	}
 	p := q.Repository.PullRequest
-	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, State: p.State, Author: p.Author.login(),
+	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, Body: p.Body, State: p.State, Author: p.Author.login(),
 		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
 	if p.MergeCommit != nil {
 		out.MergeCommitSHA = p.MergeCommit.Oid

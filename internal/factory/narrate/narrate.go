@@ -258,6 +258,7 @@ func reasons() map[string]string {
 		"head_moved":                "a new commit landed since the decision, so the merge was refused and it is decided again",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow until the merge wave",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported, so the factory neither fixes nor merges on top of it",
+		"closes_parent":             "its description closes the parent issue (Fixes, Closes or Resolves), which closes only with the last part: edit the description, then merge it yourself",
 		"reentered_policy":          "policy-bot now passes the head it was handed off at",
 		"reentered_head_reported":   "the room now reports its head as a commit of the task's run",
 		"rereview_verdict_stale":    "the factory moved its head after the approval, so it is reviewed again",
@@ -682,10 +683,14 @@ func SplitEnded(t *v1alpha1.Task, phase, reason string, parts []Part, maintainer
 
 // PartReverted says on a closed parent's issue that one of its parts was reverted (SP6): whether the
 // issue is solved is a person's call.
-func PartReverted(t *v1alpha1.Task, revert int) Event {
+func PartReverted(t *v1alpha1.Task, revert int, parentClosed bool) Event {
 	p := t.Spec.Parent
+	tail := "This issue stays closed: reopen it if the work is not done."
+	if !parentClosed {
+		tail = "The parent issue is waiting on its parts: its family no longer counts this part as landed."
+	}
 	return Event{Key: fmt.Sprintf("part-reverted-%d", revert), Body: fmt.Sprintf("Agent factory task `%s`, part %d of %d of this "+
-		"issue (#%d), was reverted by #%d. This issue stays closed: reopen it if the work is not done.", t.Name, p.Index, p.Of, t.Spec.Issue, revert)}
+		"issue (#%d), was reverted by #%d. %s", t.Name, p.Index, p.Of, t.Spec.Issue, revert, tail)}
 }
 
 // USD is a micro-USD amount as people read it, to the cent: $8.50.

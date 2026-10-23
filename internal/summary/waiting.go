@@ -110,6 +110,7 @@ func reasons() map[string]string {
 		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"verdict_stale":             "the reviewer's approval was not for the pull request's current head",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported",
+		"closes_parent":             "it would close the parent issue, which only the last part may",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
 		"stuck":                     "the run showed no activity for 10 minutes",

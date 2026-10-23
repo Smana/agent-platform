@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +123,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		case pushed != pushFactory:
 			d = ArmDecision{Verdict: "human", Reason: "human_commit_in_pr"}
 		}
+	}
+	if d.Verdict == "arm" && closesParent(t, pr.Body) { // a part closes its own issue only: the parent closes with the last part
+		d = ArmDecision{Verdict: "human", Reason: "closes_parent"}
 	}
 	if d.Verdict != "wait" {
 		class, verdict, reason := t.Spec.PredictedClass, d.Verdict, cmp.Or(d.Reason, "armed")
@@ -632,9 +637,7 @@ func (r *Reconciler) revertable(t *v1alpha1.Task) bool {
 func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) error {
 	ref := t.Status.PullRequest
 	if ref.RevertNumber > 0 { // a lost write's replay: the revert exists; end, never open a second
-		if err := r.tellParent(ctx, t, ref.RevertNumber); err != nil {
-			return err
-		}
+		r.tellParent(ctx, t, ref.RevertNumber)
 		return r.end(ctx, t, v1alpha1.PhaseReverted, why)
 	}
 	pr, err := r.gh(ctx).PullRequest(ctx, ref.Number)
@@ -660,9 +663,7 @@ func (r *Reconciler) revert(ctx context.Context, t *v1alpha1.Task, why string) e
 		b := r.repo(t).Merge.Breaker
 		narrateOn(t, n, narrate.ClassDemoted(t, b.Window, b.MaxReverts))
 	}
-	if err := r.tellParent(ctx, t, ref.RevertNumber); err != nil {
-		return err
-	}
+	r.tellParent(ctx, t, ref.RevertNumber)
 	return r.end(ctx, t, v1alpha1.PhaseReverted, why)
 }
 
@@ -801,4 +802,14 @@ func (r *Reconciler) armedTodayOf(ctx context.Context, rc *config.Repository, cl
 		}
 	}
 	return n, nil
+}
+
+// closesParent: a part's pull request body carries a closing keyword for its parent's issue, which
+// GitHub would close when the part merges, whatever the brief asked.
+func closesParent(t *v1alpha1.Task, body string) bool {
+	if t.Spec.Parent == nil {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[: ]+#` + strconv.Itoa(t.Spec.Parent.Issue) + `\b`)
+	return re.MatchString(body)
 }

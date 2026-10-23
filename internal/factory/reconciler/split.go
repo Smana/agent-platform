@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
@@ -432,7 +433,7 @@ func (r *Reconciler) inherit(ctx context.Context, t *v1alpha1.Task) (string, err
 	// SC9: the snapshot a maintainer labelled wins over an agent's reading, so a part keeps it whole.
 	t.Spec.Text, t.Spec.Source.ContentSHA256 = p.Spec.Text, p.Spec.Source.ContentSHA256
 	t.Spec.PredictedClass, t.Spec.DataClass = p.Spec.PredictedClass, p.Spec.DataClass // SL6: the parent's class
-	t.Spec.Steering, t.Spec.ScopeMode, t.Spec.Loop = p.Spec.Steering, p.Spec.ScopeMode, p.Spec.Loop
+	t.Spec.Steering, t.Spec.ScopeMode, t.Spec.Loop, t.Spec.Search = p.Spec.Steering, p.Spec.ScopeMode, p.Spec.Loop, p.Spec.Search
 	t.Spec.Template, t.Spec.Budget = triage.Matrix(p.Spec.PredictedClass, "issue", b.Tier), b
 	if t.Labels == nil {
 		t.Labels = map[string]string{}
@@ -524,13 +525,21 @@ func (r *Reconciler) endFamily(ctx context.Context, t *v1alpha1.Task, newest map
 	return nil
 }
 
+// merged: the part's pull request has landed, so its watch (verify, revert) must finish (SL12).
+func merged(n *v1alpha1.Task) bool {
+	if n.Status.Phase == v1alpha1.PhaseMerged || n.Status.Phase == v1alpha1.PhaseVerifying {
+		return true
+	}
+	return n.Status.PullRequest != nil && n.Status.PullRequest.MergedAt != nil
+}
+
 // stopOpenParts annotates the stop on every part whose newest generation has not ended, so a
 // running part never merges on a tree without the part before it; each is recorded dropped.
 func (r *Reconciler) stopOpenParts(ctx context.Context, sp *v1alpha1.SplitStatus, newest map[int32]*v1alpha1.Task) error {
 	for i := range sp.Children {
 		c := &sp.Children[i]
 		n := newest[c.Index]
-		if n == nil || v1alpha1.TerminalPhase(n.Status.Phase) || c.Outcome != "" {
+		if n == nil || v1alpha1.TerminalPhase(n.Status.Phase) || c.Outcome != "" || merged(n) {
 			continue
 		}
 		patch := client.MergeFrom(n.DeepCopy())
@@ -563,30 +572,39 @@ func (r *Reconciler) countFamily(ctx context.Context, t *v1alpha1.Task) {
 
 // tellParent is SP6: a part reverted after its parent closed, or while it waits Escalated on its
 // family's budget, comments on the parent issue, once. While the parent is in Split, its own pass
-// ends the family on the revert (SL12).
-func (r *Reconciler) tellParent(ctx context.Context, t *v1alpha1.Task, revert int) error {
+// ends the family on the revert (SL12). It is best effort: GitHub's revert is not idempotent, so a
+// failure here must never fail the revert that already opened its pull request.
+func (r *Reconciler) tellParent(ctx context.Context, t *v1alpha1.Task, revert int) {
 	if t.Spec.Parent == nil {
-		return nil
+		return
 	}
-	var p v1alpha1.Task
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Spec.Parent.Task}, &p); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	switch {
-	case p.Status.Phase == v1alpha1.PhaseDone:
-	case p.Status.Phase == v1alpha1.PhaseEscalated && p.Status.Split != nil && p.Status.Split.State == SplitApproved:
-		// Waiting on budget-family: the part no longer stands, so the parent's expiry must not count it landed.
-		for i := range p.Status.Split.Children {
-			if c := &p.Status.Split.Children[i]; c.Index == t.Spec.Parent.Index {
-				c.Outcome = ChildReverted
+	closed, tell := false, false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		var p v1alpha1.Task // fresh on every attempt: the conflict is a newer write
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Spec.Parent.Task}, &p); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		switch {
+		case p.Status.Phase == v1alpha1.PhaseDone:
+			closed, tell = true, true
+		case p.Status.Phase == v1alpha1.PhaseEscalated && p.Status.Split != nil && p.Status.Split.State == SplitApproved:
+			// Waiting on budget-family: the part no longer stands, so the parent's expiry must not count it landed.
+			for i := range p.Status.Split.Children {
+				if c := &p.Status.Split.Children[i]; c.Index == t.Spec.Parent.Index {
+					c.Outcome = ChildReverted
+				}
 			}
+			if err := r.Client.Status().Update(ctx, &p); err != nil {
+				return err
+			}
+			tell = true
 		}
-		if err := r.Client.Status().Update(ctx, &p); err != nil {
-			return err
-		}
-	default:
 		return nil
+	})
+	if err != nil {
+		r.log().Warn("the parent was not told of a reverted part", "task.id", t.Name, "parent", t.Spec.Parent.Task, "err", err)
 	}
-	narrateOn(t, t.Spec.Parent.Issue, narrate.PartReverted(t, revert))
-	return nil
+	if tell {
+		narrateOn(t, t.Spec.Parent.Issue, narrate.PartReverted(t, revert, closed))
+	}
 }

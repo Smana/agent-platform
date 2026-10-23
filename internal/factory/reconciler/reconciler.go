@@ -490,6 +490,15 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 		splitExit = SplitSuperseded // SL4 (c): the author edited, a maintainer re-labelled
 	}
 	r.leaveSplit(ctx, t, splitExit)
+	if sp := t.Status.Split; t.Status.Phase == v1alpha1.PhaseSplit && sp != nil { // its open parts stop with it (SL12)
+		newest, _, err := r.family(ctx, t)
+		if err != nil {
+			return err
+		}
+		if err := r.stopOpenParts(ctx, sp, newest); err != nil {
+			return err
+		}
+	}
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
 

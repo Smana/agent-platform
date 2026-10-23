@@ -118,6 +118,7 @@ type PR struct {
 	NodeID      string
 	URL         string
 	Title       string
+	Body        string // the description: a claim by whoever wrote it
 	State       string // OPEN | CLOSED | MERGED
 	Author      string
 	HeadRef     string
