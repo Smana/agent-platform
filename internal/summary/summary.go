@@ -84,7 +84,8 @@ type Note struct {
 }
 
 // Need is a pending approval the viewer could decide, or a factory task the viewer's hold on the
-// room keeps waiting (N3). It carries a link to the room and never a command: approving is
+// room keeps waiting (N3), or the answer a bounced task waits for from its issue's author (scoper
+// design SC8; the room's owner sees it). It carries a link to the room and never a command: approving is
 // web-only (D4, ruling P18).
 type Need struct {
 	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason) | merge (ID is the PR number) | answer (ID is the issue number)

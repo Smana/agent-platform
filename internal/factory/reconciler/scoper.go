@@ -155,7 +155,7 @@ func (r *Reconciler) taskScope(ctx context.Context, t *v1alpha1.Task) (*Scoped, 
 }
 
 // leaveBounce is a needs_author task leaving Escalated (SC8, SC12): the label goes, and exit, when
-// one of the three, is counted. Called before the transition, while the reason still says so.
+// one of the three, is counted (best effort: a replayed reconcile can count an exit twice). Called before the transition, while the reason still says so.
 func (r *Reconciler) leaveBounce(ctx context.Context, t *v1alpha1.Task, exit string) {
 	if t.Status.Phase != v1alpha1.PhaseEscalated || t.Status.Reason != ReasonNeedsAuthor {
 		return

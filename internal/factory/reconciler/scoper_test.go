@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -311,8 +312,42 @@ func TestTheOtherExitsAreCounted(t *testing.T) {
 	g = bounced(t)
 	g.r.Cfg.Caps.EscalatedHours = new(168)
 	g.r.Now = func() time.Time { return now.Add(200 * time.Hour) }
-	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "escalation_expired" || !slices.Contains(g.metrics.recorded, "bounce review expired") {
-		t.Fatalf("%s %v", got.Status.Reason, g.metrics.recorded)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "escalation_expired" || !slices.Contains(g.metrics.recorded, "bounce review expired") ||
+		!slices.Equal(g.f.Removed(7), []string{"factory/needs-author"}) {
+		t.Fatalf("%s %v removed %v", got.Status.Reason, g.metrics.recorded, g.f.Removed(7))
+	}
+}
+
+// A stop that is no re-label (the annotation, the kill switch) still drops the label, and counts
+// no exit: only the three exits are counted.
+func TestAPlainStopDropsTheLabelAndCountsNothing(t *testing.T) {
+	g := bounced(t)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), taskKey("3buqdlot"), &tk)
+	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "true"}
+	_ = g.c.Update(t.Context(), &tk)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseStopped {
+		t.Fatalf("%s", got.Status.Phase)
+	}
+	if !slices.Equal(g.f.Removed(7), []string{"factory/needs-author"}) {
+		t.Fatalf("removed %v", g.f.Removed(7))
+	}
+	for _, m := range g.metrics.recorded {
+		if strings.HasPrefix(m, "bounce ") {
+			t.Fatalf("an exit was counted: %v", g.metrics.recorded)
+		}
+	}
+}
+
+// A maintainer who cannot write does not end the bounce either.
+func TestAMaintainerWithoutWriteDoesNotEndTheBounce(t *testing.T) {
+	g := bounced(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.r.CanWrite = func(context.Context, string, string) (bool, error) { return false, nil }
+	g.f.SetComments(7, retryBy(77, "smana", -30*time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Scope.State != "question" || len(g.f.Removed(7)) != 0 {
+		t.Fatalf("%s %+v %v", tk.Status.Phase, tk.Status.Scope, g.f.Removed(7))
 	}
 }
 

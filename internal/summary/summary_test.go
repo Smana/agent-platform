@@ -448,4 +448,7 @@ func TestABouncedTaskNeedsAnAnswer(t *testing.T) {
 	if _, ok := summary.Answer(&envelope.TaskFacts{Phase: "Escalated", Reason: "stuck", Issue: f.Issue}, owner()); ok {
 		t.Fatal("only needs_author asks for an answer")
 	}
+	if _, ok := summary.Answer(f, driverWeb()); ok {
+		t.Fatal("only the room's owner is asked to answer")
+	}
 }
