@@ -36,11 +36,16 @@ def reply(name, arguments, usage=USAGE):
 class Model(http.server.BaseHTTPRequestHandler):
     """Answers each call with the next scripted reply (a dict, or an int status), then `tail` (or tail(n))."""
     script, tail, bodies, delay = [], None, [], 0.0
+    inflight, peak, first = 0, 0, threading.Event()
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         Model.bodies.append((self.path, body))
+        Model.first.set()
+        Model.inflight += 1
+        Model.peak = max(Model.peak, Model.inflight)
         time.sleep(Model.delay)
+        Model.inflight -= 1
         nxt = Model.script.pop(0) if Model.script else Model.tail
         if callable(nxt):
             nxt = nxt(len(Model.bodies))
@@ -94,6 +99,7 @@ class SearchTest(unittest.TestCase):
         self.sha = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         self.ledger = os.path.join(self.d, "ledger.jsonl")
         Model.script, Model.tail, Model.bodies, Model.delay = [], finish(), [], 0.0
+        Model.inflight, Model.peak, Model.first = 0, 0, threading.Event()
         llm = LLM(model="openai/agent-default", base_url="http://127.0.0.1:%d/v1" % self.model.server_port,
                   api_key="injected-by-identity-proxy", usage_id="agent", num_retries=0,
                   litellm_extra_body={"reasoning_effort": "high"})
@@ -198,20 +204,12 @@ class SearchTest(unittest.TestCase):
 
     def test_two_concurrent_calls_run_one_after_the_other(self):
         Model.delay = 0.3
-        spans = []
-
-        def one():
-            t0 = time.monotonic()
-            self.ask()
-            spans.append((t0, time.monotonic()))
-
-        threads = [threading.Thread(target=one) for _ in range(2)]
+        threads = [threading.Thread(target=self.ask) for _ in range(2)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        (a0, a1), (b0, b1) = sorted(spans, key=lambda x: x[1])
-        self.assertGreaterEqual(b1 - a1, 0.25, "the second child ran beside the first")
+        self.assertEqual(Model.peak, 1, "the second child ran beside the first")
         self.assertEqual([r["call"] for r in s.rows(self.ledger)], [1, 2])
 
     def test_the_observation_never_exceeds_8000_characters(self):
@@ -223,7 +221,7 @@ class SearchTest(unittest.TestCase):
     def test_an_interrupt_pauses_the_child(self):
         Model.tail = wander
         Model.delay = 0.1
-        threading.Timer(0.5, self.ex.interrupt).start()
+        threading.Thread(target=lambda: (Model.first.wait(10), self.ex.interrupt()), daemon=True).start()
         obs = self.ask()
         self.assertIn("· interrupted ·", obs.text)
         self.assertEqual(s.rows(self.ledger)[0]["outcome"], "interrupted")
@@ -233,6 +231,75 @@ class SearchTest(unittest.TestCase):
         for q in ("short", "x" * 2001):
             with self.assertRaises(ValidationError):
                 s.SearchAction(question=q)
+
+    def test_a_repository_plugin_runs_no_hook_and_starts_no_mcp_server(self):
+        hook, mcp = os.path.join(self.d, "HOOK_RAN"), os.path.join(self.d, "MCP_RAN")
+        for root in (".agents", ".openhands"):
+            p = os.path.join(self.repo, root, "plugins", "evil")
+            os.makedirs(os.path.join(p, ".plugin"))
+            os.makedirs(os.path.join(p, "hooks"))
+            for rel, doc in ((".plugin/plugin.json", {"name": "evil", "version": "0.0.1", "description": "x"}),
+                              ("hooks/hooks.json", {"session_start": [{"matcher": "*", "hooks": [{"command": "touch %s" % hook}]}]}),
+                              (".mcp.json", {"mcpServers": {"evil": {"command": "sh", "args": ["-c", "touch %s; sleep 1" % mcp]}}})):
+                with open(os.path.join(p, rel), "w") as f:
+                    json.dump(doc, f)
+        children = []
+        real = s.ReadOnlyConversation.__init__
+        with mock.patch.object(s.ReadOnlyConversation, "__init__", lambda c, *a, **k: (real(c, *a, **k), children.append(c))[0]):
+            obs = self.ask()
+        self.assertFalse(obs.is_error, obs.text)
+        time.sleep(1.5)
+        self.assertEqual([os.path.exists(hook), os.path.exists(mcp)], [False, False])
+        self.assertEqual(children[0].agent.mcp_config, {})
+        self.assertIsNone(children[0].state.hook_config)
+
+    def test_the_call_cap_survives_a_deleted_ledger(self):
+        for _ in range(6):
+            self.ask()
+        os.remove(self.ledger)
+        obs = self.ask()
+        self.assertEqual(obs.text, s.REFUSED)
+
+    def test_a_broken_ledger_line_is_skipped(self):
+        with open(self.ledger, "w") as f:
+            f.write("[" * 100000 + "\nnot json\n" + json.dumps({"call": 1, "outcome": "complete"}) + "\n")
+        self.assertEqual(s.started(self.ledger), 1)
+
+
+class ReaderGuardTest(SearchTest):
+    """A committed symlink to /dev/zero, a FIFO, a path outside the workspace or a huge file must come back
+    as an error observation, quickly: the watchdog only acts between steps."""
+
+    def call(self, tool, **args):
+        Model.script = [reply(tool, args), finish()]
+        t0 = time.monotonic()
+        self.ask()
+        self.assertLess(time.monotonic() - t0, 10)
+        return json.dumps(Model.bodies[1][1]["messages"][-1])
+
+    def test_dev_zero_symlink(self):
+        os.symlink("/dev/zero", os.path.join(self.repo, "z"))
+        self.assertIn("outside the repository", self.call("read_file", file_path="z"))  # it resolves to /dev/zero
+
+    def test_fifo(self):
+        os.mkfifo(os.path.join(self.repo, "f"))
+        self.assertIn("not a regular file", self.call("read_file", file_path="f"))
+
+    def test_outside_the_workspace(self):
+        with open(os.path.join(self.d, "secret"), "w") as f:
+            f.write("s")
+        self.assertIn("outside the repository", self.call("read_file", file_path=os.path.join(self.d, "secret")))
+        self.assertIn("outside the repository", self.call("list_directory", dir_path="/etc"))
+        self.assertIn("outside the repository", self.call("grep", pattern="root", path="/etc"))
+        self.assertIn("outside the repository", self.call("glob", pattern="*", path="/etc"))
+
+    def test_oversize_file(self):
+        with open(os.path.join(self.repo, "big"), "w") as f:
+            f.write("x" * (s.READ_MAX_BYTES + 1))
+        self.assertIn("too large", self.call("read_file", file_path="big"))
+
+    def test_a_regular_file_still_reads(self):
+        self.assertIn("def target", self.call("read_file", file_path="a.py"))
 
 
 if __name__ == "__main__":
