@@ -36,6 +36,13 @@ comment: the scoper's question. Answer it by editing the issue's title or body (
 reads comments), then re-apply `factory/ready`. To proceed on the assumption the comment names,
 comment `/factory retry` instead.
 
+A hard task of a class whose `loops` row has `split` may come back with the label
+`factory/split-proposed` and one comment: the scoper's plan in parts. Comment `/factory split` to
+approve it: you are charged for every part, and each part opens as a sub-issue `Part k of N of #p`,
+one at a time, the next once the one before merges; the parent closes on the last merge. Comment
+`/factory retry` to run the task whole instead. `factory/stop` on the parent stops every part. A part
+that stopped waits for you: re-apply `factory/ready` on its issue, or close the issue to end the split.
+
 ## Anything waiting on me?
 
 `roomctl rooms --needs-me`, then `roomctl status` on each.

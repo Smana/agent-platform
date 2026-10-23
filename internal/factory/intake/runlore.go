@@ -26,6 +26,7 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
+	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -50,7 +51,7 @@ type Finding struct {
 // runloreForge is the part of the forge the intake uses, as the factory App (issues:write is in
 // its scope).
 type runloreForge interface {
-	CreateIssue(ctx context.Context, title, body string, labels []string) (int, error)
+	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
 }
 
 // RunLore is the intake of §1: RunLore POSTs a finding, and an actionable one becomes a Task and
@@ -248,10 +249,11 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 		"Agent factory task `%s` investigates it. The finding and the work stay in its room: %s/r/%s (tailnet only).\n\n"+
 		"Apply `factory/stop` to stop it.", sev, ref, alert, f.Verdict, f.Confidence,
 		name, strings.TrimSuffix(h.Cfg.RoomsURL, "/"), name)
-	n, err := h.Forge.CreateIssue(ctx, fmt.Sprintf("RunLore: %s on %s", alert, ref), body, []string{"factory/proposed"})
+	iss, err := h.Forge.CreateIssue(ctx, fmt.Sprintf("RunLore: %s on %s", alert, ref), body, []string{"factory/proposed"})
 	if err != nil {
 		return 0, nil, err
 	}
+	n := iss.Number
 	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"issue": n}})
 	if err := h.Client.Patch(ctx, &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: h.Namespace}},
 		client.RawPatch(types.MergePatchType, patch)); err != nil {

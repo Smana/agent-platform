@@ -299,6 +299,10 @@ func (m *fakeMetrics) Revoked(ctx context.Context, reason string) {
 	m.add("revoked " + reason)
 	m.who(ctx, "revoked "+reason)
 }
+func (m *fakeMetrics) AdmissionRefused(ctx context.Context, reason string) {
+	m.add("admission_refused " + reason)
+	m.who(ctx, "admission_refused "+reason)
+}
 func (m *fakeMetrics) PrincipalShadow(_ context.Context, principal string) {
 	m.add("revoked budget-principal-shadow")
 	m.add("shadow " + principal)
@@ -331,6 +335,13 @@ func (m *fakeMetrics) ScoperRun(_ context.Context, class, outcome string) {
 
 func (m *fakeMetrics) ScopeBounce(_ context.Context, class, exit string) {
 	m.add("bounce " + class + " " + exit)
+}
+
+func (m *fakeMetrics) Split(_ context.Context, class, outcome string) {
+	m.add("split " + class + " " + outcome)
+}
+func (m *fakeMetrics) SplitChild(_ context.Context, class, outcome string) {
+	m.add("split_child " + class + " " + outcome)
 }
 
 func (m *fakeMetrics) Resumed(_ context.Context, reason string) { m.add("resumed " + reason) }
@@ -766,7 +777,7 @@ func TestStopObjectStopsEverything(t *testing.T) {
 // A stop annotation stops the task and counts as an intervention; a finished run is deleted but
 // never annotated revoked.
 func TestStopAnnotation(t *testing.T) {
-	for why, want := range map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded", "x": "stopped_by_annotation"} {
+	for why, want := range map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded", "family_dropped": "family_dropped", "x": "stopped_by_annotation"} {
 		t.Run(why, func(t *testing.T) {
 			g := newRig(t, issueTask("3buqdlot", 7, "x"))
 			tk := g.reconcile(t, "3buqdlot", 3)

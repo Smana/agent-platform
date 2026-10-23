@@ -50,6 +50,8 @@ type TaskList struct {
 }
 
 // TaskSpec is what the task was asked to do, fixed at admission.
+// +kubebuilder:validation:XValidation:rule="has(self.parent) == has(oldSelf.parent) && (!has(self.parent) || self.parent == oldSelf.parent)",message="spec.parent is fixed at creation"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
 type TaskSpec struct {
 	Source Source `json:"source"`
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`
@@ -101,6 +103,16 @@ type TaskSpec struct {
 	// implementer claim of the task carries spec.loop.search.
 	// +optional
 	Search bool `json:"search,omitempty"`
+	// The split the scoper may offer (splitter design SL3), recorded at triage when the class's row
+	// has one and C7's own tier is frontier; unset: no split offered.
+	// +optional
+	Split *SplitSpec `json:"split,omitempty"`
+	// The parent this task is a part of (SL5), fixed at creation; unset for any other task.
+	// +optional
+	Parent *Parent `json:"parent,omitempty"`
+	// This child's part of its parent's task (SL5): one scope of the approved split, fixed once set.
+	// +optional
+	Scope *TaskScope `json:"scope,omitempty"`
 }
 
 // Finding is one dead external link two consecutive detector runs on main reported (MC5).
@@ -146,6 +158,73 @@ type Loop struct {
 	// +kubebuilder:validation:Enum=agent-default;tier-light;tier-standard;tier-frontier
 	// +optional
 	JudgeModel string `json:"judgeModel,omitempty"`
+}
+
+// SplitSpec is the split a task's scoper is offered (SL3), resolved at triage.
+type SplitSpec struct {
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=5
+	MaxChildren int32 `json:"maxChildren"`
+	// The family's cap in micro-dollars (SL10): the parent's and every child's runs together.
+	// +kubebuilder:validation:Minimum=1
+	FamilyMicroUSD int64 `json:"familyMicroUSD"`
+	// +kubebuilder:validation:Enum=light;standard;frontier
+	ChildTier string `json:"childTier"`
+}
+
+// Parent names a child's parent task and issue, and which part of how many it is (SL5).
+// +kubebuilder:validation:XValidation:rule="self.index <= self.of",message="a part's index is at most its count"
+type Parent struct {
+	// +kubebuilder:validation:Pattern=`^[a-z2-7]{8}$`
+	// +kubebuilder:validation:MaxLength=8
+	Task string `json:"task"`
+	// +kubebuilder:validation:Minimum=1
+	Issue int `json:"issue"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=5
+	Index int32 `json:"index"`
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=5
+	Of int32 `json:"of"`
+}
+
+// TaskScope mirrors envelope.Scope, with its bounds, in state ready (a part never asks): the CRD
+// cannot import the envelope.
+type TaskScope struct {
+	// +kubebuilder:validation:Enum=ready
+	State string `json:"state"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1000
+	Task string `json:"task"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MaxLength=200
+	Touches []string `json:"touches"`
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MaxLength=200
+	// +optional
+	Leave []string `json:"leave,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=7
+	// +kubebuilder:validation:items:MaxLength=300
+	Plan []string `json:"plan"`
+	// +kubebuilder:validation:MaxItems=5
+	// +kubebuilder:validation:items:MaxLength=300
+	// +optional
+	Assumptions []string `json:"assumptions,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=5
+	Acceptance []TaskAcceptance `json:"acceptance"`
+}
+
+// TaskAcceptance is one acceptance check of a part.
+type TaskAcceptance struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=300
+	Check string `json:"check"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=200
+	Proves string `json:"proves"`
 }
 
 // Source is where the task came from and how far its text is trusted.
@@ -200,7 +279,7 @@ type Budget struct {
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.trace) || has(self.trace)",message="a task's trace is never removed: its runs are parented on it"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.usageSettled) || !oldSelf.usageSettled || (has(self.usageSettled) && self.usageSettled)",message="settled usage stays settled"
 type TaskStatus struct {
-	// +kubebuilder:validation:Enum=Received;Rejected;Triaged;Queued;Implementing;NoOp;Reviewing;AwaitingCI;AutoMerging;AwaitingHuman;Merged;Verifying;Done;Reverted;Escalated;Closed;Stopped
+	// +kubebuilder:validation:Enum=Received;Rejected;Triaged;Queued;Implementing;NoOp;Reviewing;AwaitingCI;AutoMerging;AwaitingHuman;Merged;Verifying;Done;Reverted;Escalated;Closed;Stopped;Split
 	// +optional
 	Phase string `json:"phase,omitempty"`
 	// +kubebuilder:validation:MaxLength=1024
@@ -290,6 +369,9 @@ type TaskStatus struct {
 	// carries the scope (0 for none). Unset: no scoper ran, or it has not ended.
 	// +optional
 	Scope *ScopeStatus `json:"scope,omitempty"`
+	// The split's record on its parent (splitter design SL14): set when the scoper hands one off.
+	// +optional
+	Split *SplitStatus `json:"split,omitempty"`
 	// The verifier the task went back to Queued for (§3): the next reviewer or tester run starts
 	// there, behind the caps and the human-driver rule (C4). Cleared once that run exists.
 	// +kubebuilder:validation:Enum=reviewer;tester
@@ -319,6 +401,43 @@ type ScopeStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	Seq int64 `json:"seq,omitempty"`
+}
+
+// SplitStatus is a split as its parent keeps it (SL14).
+type SplitStatus struct {
+	// +kubebuilder:validation:Enum=proposed;approved;declined;superseded;expired;ignored
+	State string `json:"state"`
+	// The room seq of the handoff that carries the split.
+	// +kubebuilder:validation:Minimum=1
+	Seq int64 `json:"seq"`
+	// How many parts the proposed split holds; 0 for an ignored one.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=5
+	// +optional
+	Of int32 `json:"of,omitempty"`
+	// The maintainer whose /factory split approved it, github:<login>: every child's payer (SL11).
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ApprovedBy string `json:"approvedBy,omitempty"`
+	// The parts opened so far, in order, each with its newest generation's task.
+	// +kubebuilder:validation:MaxItems=5
+	// +optional
+	Children []SplitChild `json:"children,omitempty"`
+}
+
+// SplitChild is one opened part.
+type SplitChild struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=5
+	Index int32 `json:"index"`
+	// +kubebuilder:validation:Minimum=1
+	Issue int `json:"issue"`
+	// +kubebuilder:validation:Pattern=`^[a-z2-7]{8}$`
+	// +kubebuilder:validation:MaxLength=8
+	Task string `json:"task"`
+	// +kubebuilder:validation:Enum=landed;dropped;reverted
+	// +optional
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // FactsLedger is which facts a room seq carries, and whether the broker has them.

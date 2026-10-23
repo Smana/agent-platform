@@ -62,6 +62,9 @@ type Fake struct {
 	labelErr     error
 	files        map[string]string // default-branch files by path; "!" fails the read
 	calls        []string
+	subErr       error
+	createErr    error
+	closeErr     error
 	nextID       int64
 }
 
@@ -263,13 +266,80 @@ func (f *Fake) ClosePR(_ context.Context, n int) error {
 	return nil
 }
 
-// CreateIssue implements the forge's CreateIssue, recording each issue as
-// "title\nbody\nlabels: a,b" and returning the next number from 501.
-func (f *Fake) CreateIssue(_ context.Context, title, body string, labels []string) (int, error) {
+// CreateIssue implements the forge's CreateIssue: it records "title\nbody\nlabels: a,b", stores the
+// issue as the factory App's, open, numbered from 501 with an id 9000 more, and returns it.
+func (f *Fake) CreateIssue(_ context.Context, title, body string, labels []string) (forge.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return forge.Issue{}, f.createErr
+	}
 	f.created = append(f.created, title+"\n"+body+"\nlabels: "+strings.Join(labels, ","))
-	return 500 + len(f.created), nil
+	n := 500 + len(f.created)
+	for k := range f.issues { // above every seeded issue: a number is never reused
+		n = max(n, k+1)
+	}
+	i := forge.Issue{Number: n, ID: int64(9000 + n), Title: title, Body: body, State: "OPEN",
+		Author: "ogenki-agent-factory[bot]", Labels: slices.Clone(labels)}
+	f.issues[n] = i
+	return i, nil
+}
+
+// IssuesLabelled implements the forge's IssuesLabelled: every stored issue carrying label, by number.
+func (f *Fake) IssuesLabelled(_ context.Context, label string) ([]forge.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []forge.Issue
+	for _, n := range slices.Sorted(maps.Keys(f.issues)) {
+		if slices.Contains(f.issues[n].Labels, label) {
+			out = append(out, f.issues[n])
+		}
+	}
+	return out, nil
+}
+
+// AddSubIssue implements the forge's AddSubIssue: "sub-issue <parent> <id>" in Calls, or FailSubIssues' error.
+func (f *Fake) AddSubIssue(_ context.Context, parent int, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("sub-issue %d %d", parent, id))
+	return f.subErr
+}
+
+// FailSubIssues makes every AddSubIssue fail with err.
+func (f *Fake) FailSubIssues(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.subErr = err
+}
+
+// FailCreates makes every CreateIssue fail with err.
+func (f *Fake) FailCreates(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createErr = err
+}
+
+// FailCloses makes every CloseIssue fail with err.
+func (f *Fake) FailCloses(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeErr = err
+}
+
+// CloseIssue implements the forge's CloseIssue: the stored issue reads CLOSED, "close-issue n" in Calls.
+func (f *Fake) CloseIssue(_ context.Context, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	f.calls = append(f.calls, fmt.Sprintf("close-issue %d", n))
+	if i, ok := f.issues[n]; ok {
+		i.State = "CLOSED"
+		f.issues[n] = i
+	}
+	return nil
 }
 
 // Created are the issues CreateIssue recorded, in order, for tests of what the factory proposed.

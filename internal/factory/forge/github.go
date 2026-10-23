@@ -290,16 +290,64 @@ func (g *GitHub) RemoveLabel(ctx context.Context, number int, label string) erro
 	return wrap("remove a label", err)
 }
 
-// CreateIssue opens an issue with these labels and returns its number (FA-8: the RunLore intake
-// proposes one per finding). issues:write is in the factory App's scope already.
-func (g *GitHub) CreateIssue(ctx context.Context, title, body string, labels []string) (int, error) {
+// CreateIssue opens an issue with these labels and returns it, with its number and the numeric id
+// the sub-issues API takes (FA-8: the RunLore intake proposes one per finding; splitter SL8: a split
+// opens its parts). issues:write is in the factory App's scope already.
+func (g *GitHub) CreateIssue(ctx context.Context, title, body string, labels []string) (Issue, error) {
 	iss, _, err := g.rest.Issues.Create(ctx, g.owner, g.name, github.CreateIssueRequest{
 		Title: title, Body: new(body), Labels: labels})
 	g.mark(err)
 	if err != nil {
-		return 0, wrap("create an issue", err)
+		return Issue{}, wrap("create an issue", err)
 	}
-	return iss.GetNumber(), nil
+	return restIssue(iss), nil
+}
+
+// restIssue is a REST issue as the forge reads one.
+func restIssue(i *github.Issue) Issue {
+	out := Issue{Number: i.GetNumber(), ID: i.GetID(), URL: i.GetHTMLURL(), Title: i.GetTitle(), Body: i.GetBody(),
+		State: strings.ToUpper(i.GetState()), Author: i.GetUser().GetLogin()}
+	for _, l := range i.Labels {
+		out.Labels = append(out.Labels, l.GetName())
+	}
+	return out
+}
+
+// IssuesLabelled are the issues carrying label, open or closed: one page of 100, since a split
+// opens at most five parts under one label. Pull requests are left out.
+func (g *GitHub) IssuesLabelled(ctx context.Context, label string) ([]Issue, error) {
+	iss, resp, err := g.rest.Issues.ListByRepo(ctx, g.owner, g.name, &github.IssueListByRepoOptions{
+		State: "all", Labels: []string{label}, ListOptions: github.ListOptions{PerPage: 100}})
+	g.mark(err)
+	if err != nil {
+		return nil, wrap("list labelled issues", err)
+	}
+	if resp.NextPage != 0 { // a short list would read as a missing part, and open a duplicate
+		return nil, fmt.Errorf("forge: more than 100 issues carry %q", label)
+	}
+	var out []Issue
+	for _, i := range iss {
+		if !i.IsPullRequest() {
+			out = append(out, restIssue(i))
+		}
+	}
+	return out, nil
+}
+
+// AddSubIssue shows child under parent as a GitHub sub-issue, by the child's numeric id: a view for
+// people (splitter SL8); the labels are the record.
+func (g *GitHub) AddSubIssue(ctx context.Context, parent int, childID int64) error {
+	_, _, err := g.rest.SubIssue.Add(ctx, g.owner, g.name, int64(parent), github.SubIssueRequest{SubIssueID: childID})
+	g.mark(err)
+	return wrap("add a sub-issue", err)
+}
+
+// CloseIssue closes an issue as completed (splitter SL12: a parent whose parts all merged).
+func (g *GitHub) CloseIssue(ctx context.Context, number int) error {
+	_, _, err := g.rest.Issues.Update(ctx, g.owner, g.name, number,
+		github.UpdateIssueRequest{State: new("closed"), StateReason: new("completed")})
+	g.mark(err)
+	return wrap("close an issue", err)
 }
 
 // ClosePR closes a pull request without merging it (§6.3's stale close).
@@ -483,6 +531,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				Number           int
 				URL              string `graphql:"url"`
 				Title            string
+				Body             string
 				State            string
 				HeadRefName      string
 				HeadRefOid       string
@@ -538,7 +587,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		return PR{}, wrap("read a pull request", err)
 	}
 	p := q.Repository.PullRequest
-	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, State: p.State, Author: p.Author.login(),
+	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, Body: p.Body, State: p.State, Author: p.Author.login(),
 		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
 	if p.MergeCommit != nil {
 		out.MergeCommitSHA = p.MergeCommit.Oid

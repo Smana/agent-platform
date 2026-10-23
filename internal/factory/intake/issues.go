@@ -325,10 +325,54 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 			Repository: p.repo().Name, Issue: n, IssueAuthor: iss.Author, Text: text, DataClass: p.Cfg.Defaults.DataClass,
 		},
 	}
+	parent, err := p.childOf(ctx, n, iss)
+	if err != nil {
+		return err
+	}
+	if parent != nil { // a re-labelled part: its parent's spec comes at its triage (splitter SR11)
+		t.Spec.Parent = parent
+		t.Labels[v1alpha1.LabelParent] = parent.Task
+	}
 	if err := p.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create task %s: %w", name, err) // AlreadyExists is the dedup (S2)
 	}
 	return p.Forge.RemoveLabel(ctx, n, label)
+}
+
+// childOf links a re-labelled part's new generation to its parent (splitter design SL12, SR16): only
+// when the issue's child-of label was last applied by the factory App, and an earlier generation of
+// the issue holds the link, which the API server keeps fixed. Anyone else's child-of label links
+// nothing: the task is an ordinary one.
+func (p *IssuePoller) childOf(ctx context.Context, n int, iss forge.Issue) (*v1alpha1.Parent, error) {
+	label := ""
+	for _, l := range iss.Labels {
+		if _, ok := v1alpha1.ParseChildOf(l); ok {
+			label = l
+			break
+		}
+	}
+	if label == "" {
+		return nil, nil
+	}
+	evs, ok, err := p.labelEvents(ctx, n, label)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if by := evs[len(evs)-1].Actor; !forge.SameLogin(by, p.Cfg.FactoryLogin) {
+		p.log().Info("child-of label not applied by the factory: ignored", "issue", n, "actor", by)
+		return nil, nil
+	}
+	var l v1alpha1.TaskList
+	if err := p.Client.List(ctx, &l, client.InNamespace(p.Namespace), client.MatchingLabels{v1alpha1.LabelIssue: strconv.Itoa(n)}); err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	for i := range l.Items {
+		if par := l.Items[i].Spec.Parent; par != nil && p.owns(&l.Items[i]) {
+			c := *par
+			return &c, nil
+		}
+	}
+	return nil, nil
 }
 
 // personSpent is D4 at intake: with per-person caps on and enforced, a labeller whose day is spent
@@ -459,7 +503,9 @@ func (p *IssuePoller) stops(ctx context.Context) error {
 			if v1alpha1.TerminalPhase(t.Status.Phase) || !p.owns(t) {
 				continue
 			}
-			if t.Spec.Issue == it.Number || (t.Status.PullRequest != nil && t.Status.PullRequest.Number == it.Number) {
+			// SL13: a stop on a parent's issue stops its parts too, found by spec.parent, never by name.
+			if t.Spec.Issue == it.Number || (t.Status.PullRequest != nil && t.Status.PullRequest.Number == it.Number) ||
+				(t.Spec.Parent != nil && t.Spec.Parent.Issue == it.Number) {
 				if err := p.annotateStop(ctx, t, "label"); err != nil {
 					return err
 				}

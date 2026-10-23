@@ -278,6 +278,21 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `[{"number":901,"pull_request":{"url":"x"}}]`)
 			return
 		}
+		if q.Get("labels") == "factory/child-of:#9" { // a list longer than one page
+			w.Header().Set("Link", `<https://api.github.com/repos/Smana/demo/issues?page=2>; rel="next"`)
+			_, _ = io.WriteString(w, `[{"number":41,"id":4101,"state":"open"}]`)
+			return
+		}
+		if q.Get("labels") == "factory/child-of:#7" {
+			if q.Get("state") != "all" {
+				t.Errorf("a split's parts are read open or closed: %v", q)
+			}
+			_, _ = io.WriteString(w, `[{"number":31,"id":3101,"state":"open","title":"Part 1 of 2 of #7",`+
+				`"body":"…\n<!-- agent-factory split=3buqdlot/1 -->","user":{"login":"ogenki-agent-factory[bot]"},`+
+				`"labels":[{"name":"factory/child-of:#7"}],"html_url":"https://github.com/Smana/demo/issues/31"},`+
+				`{"number":12,"pull_request":{"url":"x"}}]`)
+			return
+		}
 		if q.Get("labels") != "factory/ready" || q.Get("state") != "open" {
 			t.Errorf("query %v", q)
 		}
@@ -305,6 +320,51 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	// An issue's comments as GitHub serves them: ascending id, paged, sort and direction ignored
 	// (review R1). Issue 7 has one comment; 9, 10 and 11 have 130, 180 and 60; 13 has two, the
 	// second edited after it was posted.
+	mux.HandleFunc("POST /repos/Smana/demo/issues", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Title, Body string
+			Labels      []string
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Title == "refused" {
+			http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		if in.Title != "Part 1 of 2 of #7" || !slices.Equal(in.Labels, []string{"factory/child-of:#7", "class:docs"}) {
+			t.Errorf("create %+v", in)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 31, "id": 3101, "state": "open", "title": in.Title, "body": in.Body,
+			"user": map[string]any{"login": "ogenki-agent-factory[bot]"}, "html_url": "https://github.com/Smana/demo/issues/31",
+			"labels": []map[string]string{{"name": in.Labels[0]}, {"name": in.Labels[1]}}})
+	}))
+	mux.HandleFunc("POST /repos/Smana/demo/issues/{n}/sub_issues", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			SubIssueID int64 `json:"sub_issue_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if r.PathValue("n") == "8" {
+			http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		if r.PathValue("n") != "7" || in.SubIssueID != 3101 {
+			t.Errorf("sub-issue %s %+v", r.PathValue("n"), in)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":3101,"number":31}`)
+	}))
+	mux.HandleFunc("PATCH /repos/Smana/demo/issues/{n}", g.authed(func(w http.ResponseWriter, r *http.Request) {
+		var in map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if r.PathValue("n") == "8" {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		if r.PathValue("n") != "7" || in["state"] != "closed" || in["state_reason"] != "completed" {
+			t.Errorf("close %s %v", r.PathValue("n"), in)
+		}
+		_, _ = io.WriteString(w, `{"number":7,"state":"closed"}`)
+	}))
 	mux.HandleFunc("GET /repos/Smana/demo/issues/{n}/comments", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		total := map[string]int{"7": 1, "9": 130, "10": 180, "11": 60, "13": 2}[r.PathValue("n")]
 		q := r.URL.Query()
@@ -1394,5 +1454,47 @@ func TestDefaultBranchFileFailsClosed(t *testing.T) {
 				t.Fatalf("found %v err %v, want a retryable error", found, err)
 			}
 		})
+	}
+}
+
+// Splitter design SL8, SL12: a part's issue is created with its labels and read back with the
+// numeric id the sub-issues API takes; the link posts that id; a parent closes as completed; the
+// parts are listed open or closed, pull requests left out.
+func TestIssuesAreOpenedLinkedAndClosed(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	iss, err := r.g.CreateIssue(ctx, "Part 1 of 2 of #7", "body", []string{"factory/child-of:#7", "class:docs"})
+	if err != nil || iss.Number != 31 || iss.ID != 3101 || iss.State != "OPEN" || iss.Author != "ogenki-agent-factory[bot]" ||
+		!slices.Equal(iss.Labels, []string{"factory/child-of:#7", "class:docs"}) {
+		t.Fatalf("%+v %v", iss, err)
+	}
+	if err := r.g.AddSubIssue(ctx, 7, iss.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.g.CloseIssue(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	all, err := r.g.IssuesLabelled(ctx, "factory/child-of:#7")
+	if err != nil || len(all) != 1 || all[0].Number != 31 || all[0].ID != 3101 || !strings.Contains(all[0].Body, "split=3buqdlot/1") {
+		t.Fatalf("%+v %v", all, err)
+	}
+}
+
+// A list that does not fit one page is an error, never a short list read as a missing part (a
+// duplicate child); a refused create, link or close returns the forge's error.
+func TestIssueCallsFailLoudly(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	if _, err := r.g.IssuesLabelled(ctx, "factory/child-of:#9"); err == nil {
+		t.Error("a second page was ignored")
+	}
+	if _, err := r.g.CreateIssue(ctx, "refused", "b", nil); err == nil {
+		t.Error("a 422 on create was swallowed")
+	}
+	if err := r.g.AddSubIssue(ctx, 8, 1); err == nil {
+		t.Error("a 422 on the link was swallowed")
+	}
+	if err := r.g.CloseIssue(ctx, 8); err == nil {
+		t.Error("a 404 on close was swallowed")
 	}
 }

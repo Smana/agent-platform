@@ -174,6 +174,36 @@ spec:
                 - continuations
                 - stallSteps
                 type: object
+              parent:
+                description: The parent this task is a part of (SL5), fixed at creation;
+                  unset for any other task.
+                properties:
+                  index:
+                    format: int32
+                    maximum: 5
+                    minimum: 1
+                    type: integer
+                  issue:
+                    minimum: 1
+                    type: integer
+                  of:
+                    format: int32
+                    maximum: 5
+                    minimum: 2
+                    type: integer
+                  task:
+                    maxLength: 8
+                    pattern: ^[a-z2-7]{8}$
+                    type: string
+                required:
+                - index
+                - issue
+                - of
+                - task
+                type: object
+                x-kubernetes-validations:
+                - message: a part's index is at most its count
+                  rule: self.index <= self.of
               predictedClass:
                 description: 'Intent, not authority: it picks team and budget; only
                   policy-bot merges (§2).'
@@ -183,6 +213,70 @@ spec:
                 maxLength: 140
                 pattern: ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$
                 type: string
+              scope:
+                description: 'This child''s part of its parent''s task (SL5): one
+                  scope of the approved split, fixed once set.'
+                properties:
+                  acceptance:
+                    items:
+                      description: TaskAcceptance is one acceptance check of a part.
+                      properties:
+                        check:
+                          maxLength: 300
+                          minLength: 1
+                          type: string
+                        proves:
+                          maxLength: 200
+                          minLength: 1
+                          type: string
+                      required:
+                      - check
+                      - proves
+                      type: object
+                    maxItems: 5
+                    minItems: 1
+                    type: array
+                  assumptions:
+                    items:
+                      maxLength: 300
+                      type: string
+                    maxItems: 5
+                    type: array
+                  leave:
+                    items:
+                      maxLength: 200
+                      type: string
+                    maxItems: 10
+                    type: array
+                  plan:
+                    items:
+                      maxLength: 300
+                      type: string
+                    maxItems: 7
+                    minItems: 1
+                    type: array
+                  state:
+                    enum:
+                    - ready
+                    type: string
+                  task:
+                    maxLength: 1000
+                    minLength: 1
+                    type: string
+                  touches:
+                    items:
+                      maxLength: 200
+                      type: string
+                    maxItems: 10
+                    minItems: 1
+                    type: array
+                required:
+                - acceptance
+                - plan
+                - state
+                - task
+                - touches
+                type: object
               scopeMode:
                 description: |-
                   The class's scope mode (scoper design SC2), fixed at triage so a config change never moves a
@@ -239,6 +333,33 @@ spec:
                 - requestedBy
                 - trust
                 type: object
+              split:
+                description: |-
+                  The split the scoper may offer (splitter design SL3), recorded at triage when the class's row
+                  has one and C7's own tier is frontier; unset: no split offered.
+                properties:
+                  childTier:
+                    enum:
+                    - light
+                    - standard
+                    - frontier
+                    type: string
+                  familyMicroUSD:
+                    description: 'The family''s cap in micro-dollars (SL10): the parent''s
+                      and every child''s runs together.'
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  maxChildren:
+                    format: int32
+                    maximum: 5
+                    minimum: 2
+                    type: integer
+                required:
+                - childTier
+                - familyMicroUSD
+                - maxChildren
+                type: object
               steering:
                 description: The class's steering note, read on the default branch
                   at triage (SC3); unset for none.
@@ -277,6 +398,12 @@ spec:
             - source
             - text
             type: object
+            x-kubernetes-validations:
+            - message: spec.parent is fixed at creation
+              rule: has(self.parent) == has(oldSelf.parent) && (!has(self.parent)
+                || self.parent == oldSelf.parent)
+            - message: spec.scope never changes once set
+              rule: '!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)'
           status:
             description: |-
               TaskStatus is the task's audit record: the whole §4 record, including the fields later
@@ -470,6 +597,7 @@ spec:
                 - Escalated
                 - Closed
                 - Stopped
+                - Split
                 type: string
               phaseSince:
                 format: date-time
@@ -690,6 +818,71 @@ spec:
                     - failed
                     type: string
                 required:
+                - state
+                type: object
+              split:
+                description: 'The split''s record on its parent (splitter design SL14):
+                  set when the scoper hands one off.'
+                properties:
+                  approvedBy:
+                    description: 'The maintainer whose /factory split approved it,
+                      github:<login>: every child''s payer (SL11).'
+                    maxLength: 64
+                    type: string
+                  children:
+                    description: The parts opened so far, in order, each with its
+                      newest generation's task.
+                    items:
+                      description: SplitChild is one opened part.
+                      properties:
+                        index:
+                          format: int32
+                          maximum: 5
+                          minimum: 1
+                          type: integer
+                        issue:
+                          minimum: 1
+                          type: integer
+                        outcome:
+                          enum:
+                          - landed
+                          - dropped
+                          - reverted
+                          type: string
+                        task:
+                          maxLength: 8
+                          pattern: ^[a-z2-7]{8}$
+                          type: string
+                      required:
+                      - index
+                      - issue
+                      - task
+                      type: object
+                    maxItems: 5
+                    type: array
+                  of:
+                    description: How many parts the proposed split holds; 0 for an
+                      ignored one.
+                    format: int32
+                    maximum: 5
+                    minimum: 0
+                    type: integer
+                  seq:
+                    description: The room seq of the handoff that carries the split.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  state:
+                    enum:
+                    - proposed
+                    - approved
+                    - declined
+                    - superseded
+                    - expired
+                    - ignored
+                    type: string
+                required:
+                - seq
                 - state
                 type: object
               trace:

@@ -110,6 +110,7 @@ func reasons() map[string]string {
 		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"verdict_stale":             "the reviewer's approval was not for the pull request's current head",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported",
+		"closes_parent":             "it would close the parent issue, which only the last part may",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
 		"stuck":                     "the run showed no activity for 10 minutes",
@@ -129,6 +130,13 @@ func reasons() map[string]string {
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
+		"split_proposed":            "the scoper proposes to split the task into parts, and a maintainer decides",
+		"budget-family":             "the cap of the task and its parts has no room left for another part's run",
+		"children_merged":           "every part of the split merged",
+		"child_dropped":             "a part of the split was closed without merging, or its merge was reverted",
+		"family_dropped":            "the split's family was dropped because another part was dropped or reverted",
+		"parent_not_split":          "its parent task is no longer waiting on its parts",
+		"parent_missing":            "its parent task no longer exists",
 		"no_pr":                     "the agent opened no pull request",
 		"loop_unsupported":          "the cluster does not support the loop policy or repository checks yet, so no run started",
 	}
@@ -160,6 +168,10 @@ func nextStep(reason string) string {
 		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
+	case "split_proposed":
+		return "a maintainer comments `/factory split` to approve the parts, or `/factory retry` to run the task whole"
+	case "budget-family":
+		return "the parts that merged stay merged: open the rest of the work as a new issue, or close this one"
 	case "needs_author":
 		return "the issue's author edits the issue to answer and a maintainer re-applies `factory/ready`, or a maintainer comments `/factory retry` to proceed on the scoper's assumption"
 	}

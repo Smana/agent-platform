@@ -71,6 +71,11 @@ type TaskForge interface {
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
+	Issue(ctx context.Context, number int) (forge.Issue, error)
+	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
+	IssuesLabelled(ctx context.Context, label string) ([]forge.Issue, error)
+	AddSubIssue(ctx context.Context, parent int, childID int64) error
+	CloseIssue(ctx context.Context, number int) error
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -83,6 +88,7 @@ type metrics interface {
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
 	Revoked(ctx context.Context, reason string)
+	AdmissionRefused(ctx context.Context, reason string)
 	PrincipalShadow(ctx context.Context, principal string)
 	RunRevoked(ctx context.Context, reason, limit string)
 	RunBudgetFallback(ctx context.Context, scope, why string)
@@ -95,6 +101,8 @@ type metrics interface {
 	SteeringRead(ctx context.Context, class, read string)
 	ScoperRun(ctx context.Context, class, outcome string)
 	ScopeBounce(ctx context.Context, class, exit string)
+	Split(ctx context.Context, class, outcome string)
+	SplitChild(ctx context.Context, class, outcome string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -295,6 +303,8 @@ func (r *Reconciler) step(ctx context.Context, t *v1alpha1.Task) error {
 		return r.triaged(ctx, t)
 	case v1alpha1.PhaseQueued:
 		return r.queued(ctx, t)
+	case v1alpha1.PhaseSplit:
+		return r.splitting(ctx, t)
 	case v1alpha1.PhaseImplementing:
 		return r.implementing(ctx, t)
 	case v1alpha1.PhaseReviewing:
@@ -416,7 +426,7 @@ func (r *Reconciler) onRepo(t *v1alpha1.Task, rc *config.Repository) bool {
 }
 
 func stopReasons() map[string]string {
-	return map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded"}
+	return map[string]string{"true": "stopped_by_annotation", "label": "stopped_by_label", "superseded": "superseded", StopFamilyDropped: "family_dropped"}
 }
 
 func (r *Reconciler) stopRequested(ctx context.Context, t *v1alpha1.Task) (bool, string, error) {
@@ -475,6 +485,20 @@ func (r *Reconciler) stop(ctx context.Context, t *v1alpha1.Task, why string) err
 		exit = "relabel" // SC8 (a): the author edited, a maintainer re-labelled
 	}
 	r.leaveBounce(ctx, t, exit)
+	splitExit := SplitDeclined // a maintainer's stop declines the split
+	if why == "superseded" {
+		splitExit = SplitSuperseded // SL4 (c): the author edited, a maintainer re-labelled
+	}
+	r.leaveSplit(ctx, t, splitExit)
+	if sp := t.Status.Split; t.Status.Phase == v1alpha1.PhaseSplit && sp != nil { // its open parts stop with it (SL12)
+		newest, _, err := r.family(ctx, t)
+		if err != nil {
+			return err
+		}
+		if err := r.stopOpenParts(ctx, sp, newest); err != nil {
+			return err
+		}
+	}
 	return r.end(ctx, t, v1alpha1.PhaseStopped, why)
 }
 
@@ -529,11 +553,20 @@ func target(t *v1alpha1.Task) int {
 // task.final line the moment the task first ends. The reservations no claim holds any more are
 // released here (#55): every ending path, and every replay of one, passes through it.
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
+	r.finish(ctx, t, phase, reason, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
+	return nil
+}
+
+// finish is the ending every task shares: its unheld reservations released, the move, a terminal
+// approved parent's parts counted (SL14), the narration and the outcome.
+func (r *Reconciler) finish(ctx context.Context, t *v1alpha1.Task, phase, reason string, e narrate.Event) {
 	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
-	narrateLater(t, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
+	if v1alpha1.TerminalPhase(phase) {
+		r.countFamily(ctx, t) // an approved parent stopped or expired: its landed parts count (SL14)
+	}
+	narrateLater(t, e)
 	r.outcome(ctx, t)
-	return nil
 }
 
 // settleWindow bounds how long an ended task keeps refreshing its usage before the total is
@@ -667,6 +700,9 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 		tr, sp := tracing.Mint()
 		t.Status.Trace = &v1alpha1.TraceRef{TraceID: tr, SpanID: sp}
 	}
+	if t.Spec.Parent != nil {
+		return r.receivedChild(ctx, t) // a part of a split: its parent's spec, no classifier (SL5)
+	}
 	d, err := r.Triage.Triage(ctx, t)
 	if err != nil {
 		return err
@@ -680,6 +716,7 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if err := r.scopeAtTriage(ctx, t); err != nil {
 		return err // a note that cannot be read is retried, never read as none (SC4)
 	}
+	r.splitAtTriage(t, d.Classification)
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
 		return err

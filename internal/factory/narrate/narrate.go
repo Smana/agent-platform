@@ -7,6 +7,7 @@
 package narrate
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,10 +17,12 @@ import (
 	"time"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
 	"github.com/Smana/agent-platform/internal/github"
 	summ "github.com/Smana/agent-platform/internal/summary"
 )
@@ -173,6 +176,12 @@ func reasons() map[string]string {
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
+		"split_proposed":            "the scoper proposes to split the task into parts, and a maintainer decides",
+		"budget-family":             "the cap of the task and its parts has no room left for another part's run",
+		"children_merged":           "every part of the split merged",
+		"child_dropped":             "a part of the split was closed without merging, or its merge was reverted",
+		"parent_not_split":          "its parent task is no longer waiting on its parts",
+		"parent_missing":            "its parent task no longer exists",
 		"escalation_expired":        "it waited past the escalation time limit for a maintainer",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"deadline":                  "the run hit its wall-clock limit",
@@ -201,6 +210,7 @@ func reasons() map[string]string {
 		"stopped_by_label":          "a maintainer applied factory/stop",
 		"stopped_by_annotation":     "an operator stopped it",
 		"superseded":                "a new factory/ready replaced it",
+		"family_dropped":            "the family was dropped because another part was dropped or reverted",
 		"unauthorised_labeller":     "only a maintainer's factory/ready starts a task",
 		"edited_after_label":        "the issue was edited after it was labelled",
 		"task_active":               "a task for this issue is still running",
@@ -248,6 +258,7 @@ func reasons() map[string]string {
 		"head_moved":                "a new commit landed since the decision, so the merge was refused and it is decided again",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow until the merge wave",
 		"human_commit_in_pr":        "it holds a commit no run of the task reported, so the factory neither fixes nor merges on top of it",
+		"closes_parent":             "its description closes the parent issue (Fixes, Closes or Resolves), which closes only with the last part: edit the description, then merge it yourself",
 		"reentered_policy":          "policy-bot now passes the head it was handed off at",
 		"reentered_head_reported":   "the room now reports its head as a commit of the task's run",
 		"rereview_verdict_stale":    "the factory moved its head after the approval, so it is reviewed again",
@@ -314,6 +325,38 @@ func NeedsAuthor(t *v1alpha1.Task, question, assumption string, maintainers []st
 		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task waits on its author.")
 	}
 	return Event{Key: fmt.Sprintf("needs-author-%d", len(t.Status.Runs)), Body: b.String()}
+}
+
+// SplitProposed is the split's one comment on the parent issue (splitter design SL4): the plan, and
+// how to approve it, run the task whole, or scope it again. A public task's why and each part's task
+// are an agent's text, quoted as inert code blocks within the outbox's bound (ruling TE); an
+// internal task's stay in the room (C7).
+func SplitProposed(t *v1alpha1.Task, why string, parts, maintainers []string, roomsURL string) Event {
+	room := fmt.Sprintf("%s/r/%s", strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
+	head := fmt.Sprintf("Agent factory task `%s` proposes to split this issue into %d parts, each its own sub-issue and "+
+		"pull request, opened one at a time: a part starts once the one before it has merged.", t.Name, len(parts))
+	var tail strings.Builder
+	s := t.Spec.Split
+	fmt.Fprintf(&tail, "\n\n**To approve**, a maintainer comments `/factory split`: the approver is charged for every part, "+
+		"each part runs at tier %s, and the parts together stay within %s. **To run it whole**, a maintainer comments "+
+		"`/factory retry`. **To scope it again**, edit this issue and re-apply `factory/ready`. Without any of these, the task "+
+		"stops when its escalation expires. The whole plan is in [the room](%s).", s.ChildTier, USD(s.FamilyMicroUSD), room)
+	if len(maintainers) > 0 {
+		tail.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this split waits on a maintainer.")
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	if t.Spec.DataClass != "public" {
+		b.WriteString(" Its parts stay in the room: the task's data class is not public.")
+	} else {
+		each := (maxBody - len(head) - tail.Len() - 32*(len(parts)+1)) / (len(parts) + 1)
+		b.WriteString("\n\nWhy:\n\n" + summary(why, each))
+		for i, p := range parts {
+			fmt.Fprintf(&b, "\n\nPart %d:\n\n%s", i+1, summary(p, each))
+		}
+	}
+	b.WriteString(tail.String())
+	return Event{Key: fmt.Sprintf("split-proposed-%d", len(t.Status.Runs)), Body: b.String()}
 }
 
 // Revising says a maintainer's review sent the task back for another run (Δ5), once per round.
@@ -512,7 +555,7 @@ func Ended(t *v1alpha1.Task, phase, reason string, maintainers ...string) Event 
 	if phase == v1alpha1.PhaseEscalated && len(maintainers) > 0 {
 		b.WriteString("\n\n@" + strings.Join(maintainers, " @") + ": this task needs a maintainer.")
 	}
-	if h := hints()[phase]; h != "" {
+	if h := hints()[phase]; h != "" && reason != "budget-family" {
 		b.WriteString("\n\n" + h)
 	}
 	if v1alpha1.TerminalPhase(phase) {
@@ -561,6 +604,93 @@ func PersonOverBudget(number int, person string, capMicroUSD int64, at time.Time
 	return Event{Key: fmt.Sprintf("refused-person_budget_exhausted-%d", at.Unix()),
 		Body: fmt.Sprintf("The agent factory did not start a task for #%d: the daily budget of `%s` (%s) is spent. "+
 			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, USD(capMicroUSD))}
+}
+
+// ApproverOverBudget refuses a `/factory split` whose approver's day is spent (splitter design
+// SL11): the split keeps waiting, and the approver comments again after the reset. Re-labelling
+// would supersede the proposal, so it is not offered.
+func ApproverOverBudget(number int, person string, capMicroUSD int64, at time.Time) Event {
+	return Event{Key: fmt.Sprintf("refused-split_approver_budget-%d", at.Unix()),
+		Body: fmt.Sprintf("The agent factory did not split #%d: the daily budget of `%s` (%s) is spent, and every part is charged to the person who approves. "+
+			"It resets at 00:00 UTC; comment `/factory split` again after that. The proposal stays open.", number, person, USD(capMicroUSD))}
+}
+
+// SplitMarker is the hidden line that finds part k's issue again (splitter design SL8), as Marker
+// finds a comment.
+func SplitMarker(parent string, k int) string {
+	return fmt.Sprintf("<!-- agent-factory split=%s/%d -->", parent, k)
+}
+
+// ChildIssue is part k's issue (SL8): the factory's own title, and a body that quotes the part's
+// scope as an inert block for a public task, or links the room for an internal one, with the marker.
+func ChildIssue(t *v1alpha1.Task, k int32, sc *envelope.Scope, roomsURL string) (title, body string) {
+	s := t.Status.Split
+	title = fmt.Sprintf("Part %d of %d of #%d", k, s.Of, t.Spec.Issue)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Part %d of %d of #%d, opened by agent factory task `%s` once %s approved its split with `/factory split`. "+
+		"Its task runs on branch `agent/%s`, through the merge gate of #%d's class; the next part opens once this one merges.",
+		k, s.Of, t.Spec.Issue, t.Name, strings.TrimPrefix(s.ApprovedBy, "github:"), taskid.Name(taskid.SplitKey(t.Name, int(k))), t.Spec.Issue)
+	if t.Spec.DataClass != "public" {
+		fmt.Fprintf(&b, "\n\nThe part's scope is in [the room](%s/r/%s): the task's data class is not public.",
+			strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
+	} else {
+		var q strings.Builder
+		fmt.Fprintf(&q, "Task: %s\nTouches: %s\n", sc.Task, strings.Join(sc.Touches, ", "))
+		for i, p := range sc.Plan {
+			fmt.Fprintf(&q, "%d. %s\n", i+1, p)
+		}
+		for _, a := range sc.Acceptance {
+			fmt.Fprintf(&q, "Acceptance: %s: proves %s\n", a.Check, a.Proves)
+		}
+		b.WriteString("\n\nThe part, as the scoper wrote it:\n\n" + summary(q.String(), 3*maxBody/2))
+	}
+	b.WriteString("\n\nApply `factory/stop` here to stop this part, or on #" + strconv.Itoa(t.Spec.Issue) + " to stop every part.\n\n" +
+		SplitMarker(t.Name, int(k)))
+	return title, b.String()
+}
+
+// SplitPart says on the parent issue that part k opened (SL7), once.
+func SplitPart(t *v1alpha1.Task, k int32, issue int) Event {
+	return Event{Key: fmt.Sprintf("split-part-%d", k), Body: fmt.Sprintf("Agent factory task `%s`: part %d of %d is #%d.",
+		t.Name, k, t.Status.Split.Of, issue)}
+}
+
+// Part is one part of a split as its parent's end lists it.
+type Part struct {
+	Index   int32
+	Issue   int
+	PR      string
+	Outcome string
+}
+
+// SplitEnded is the parent's ending (SL12): Ended, with its parts and their pull requests before the
+// token line, so the settle's retotal still finds it (#42).
+func SplitEnded(t *v1alpha1.Task, phase, reason string, parts []Part, maintainers ...string) Event {
+	e := Ended(t, phase, reason, maintainers...)
+	var b strings.Builder
+	b.WriteString("\n\nParts:")
+	for _, p := range parts {
+		fmt.Fprintf(&b, "\n- part %d, #%d: %s", p.Index, p.Issue, cmp.Or(p.Outcome, "open"))
+		if p.PR != "" {
+			fmt.Fprintf(&b, " (%s)", p.PR)
+		}
+	}
+	if i := strings.LastIndex(e.Body, usageLine); i >= 0 {
+		e.Body = e.Body[:i] + b.String() + e.Body[i:]
+	}
+	return e
+}
+
+// PartReverted says on a closed parent's issue that one of its parts was reverted (SP6): whether the
+// issue is solved is a person's call.
+func PartReverted(t *v1alpha1.Task, revert int, parentClosed bool) Event {
+	p := t.Spec.Parent
+	tail := "This issue stays closed: reopen it if the work is not done."
+	if !parentClosed {
+		tail = "The parent issue is waiting on its parts: its family no longer counts this part as landed."
+	}
+	return Event{Key: fmt.Sprintf("part-reverted-%d", revert), Body: fmt.Sprintf("Agent factory task `%s`, part %d of %d of this "+
+		"issue (#%d), was reverted by #%d. %s", t.Name, p.Index, p.Of, t.Spec.Issue, revert, tail)}
 }
 
 // USD is a micro-USD amount as people read it, to the cent: $8.50.

@@ -18,7 +18,7 @@ const (
 // verifies the merge before Done.
 func taskStates() map[string]string {
 	return map[string]string{
-		"Received": StateQueued, "Triaged": StateQueued, "Queued": StateQueued,
+		"Split": StateRunning, "Received": StateQueued, "Triaged": StateQueued, "Queued": StateQueued,
 		"Implementing": StateRunning, "Reviewing": StateRunning, "AwaitingCI": StateRunning,
 		"AutoMerging": StateRunning, "Merged": StateRunning, "Verifying": StateRunning,
 		"AwaitingHuman": StateWaiting, "Escalated": StateWaiting,
