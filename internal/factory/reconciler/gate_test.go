@@ -160,3 +160,34 @@ func TestATruncatedRollupRefusesTheHoldout(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 }
+
+// Steering on: no agent pull request changes a steering note (scoper SC3). Any changed path, or
+// its previous one, under the steering directory refuses as steering_path; steering off reads
+// no differently.
+func TestASteeringNotePathRefuses(t *testing.T) {
+	for name, mutate := range map[string]func(*ArmInputs){
+		"a modified note": func(in *ArmInputs) {
+			in.Stats = append(in.Stats, forge.FileStat{Path: ".github/agent-factory/steering/docs.md", Status: "modified"})
+		},
+		"a renamed-away note": func(in *ArmInputs) {
+			in.Stats = append(in.Stats, forge.FileStat{Path: "docs/x.md", Previous: ".github/agent-factory/steering/docs.md", Status: "renamed"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := gateInputs()
+			mutate(&in)
+			if d := DecideArm(in); d.Verdict != "arm" && d.Verdict != "human" {
+				t.Fatalf("steering off: %+v", d)
+			}
+			in.Cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
+			if d := DecideArm(in); d.Verdict != "human" || d.Reason != "steering_path" {
+				t.Fatalf("steering on: %+v", d)
+			}
+			in = gateInputs()
+			in.Cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
+			if d := DecideArm(in); d.Verdict != "arm" {
+				t.Fatalf("a clean diff still arms: %+v", d)
+			}
+		})
+	}
+}

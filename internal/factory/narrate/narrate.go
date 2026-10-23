@@ -223,6 +223,7 @@ func reasons() map[string]string {
 		"revert_requested":          "a maintainer asked for a revert",
 		"merged_verified":           "merged, and main stayed green for 30 minutes",
 		"gate_path":                 "it touches a gate path, so an agent can never merge it; a human must re-author the change",
+		"steering_path":             "it changes a steering note, which only a maintainer on the default branch may do",
 		"class_mismatch":            "the diff is not the class the triage predicted",
 		"file_not_allowed":          "it changes a file outside its class's allowed files",
 		"file_protected":            "it changes a file its class protects",

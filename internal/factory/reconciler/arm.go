@@ -4,10 +4,12 @@ package reconciler
 
 import (
 	"slices"
+	"strings"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/agent-platform/internal/factory/steering"
 )
 
 // ArmInputs is everything §5.1's rule decides on. ReportedHead, Verifiers and Files serve the
@@ -99,6 +101,9 @@ func DecideArm(in ArmInputs) ArmDecision {
 	if reason := agentEvidence(in); reason != "" {
 		return human(reason, class)
 	}
+	if in.DiffRead && in.Cfg.SteeringOn() && touchesSteering(in.Stats) {
+		return human("steering_path", class) // no agent pull request changes a note (scoper SC3)
+	}
 	if reason, wait := declared(cl, in); wait {
 		return ArmDecision{Verdict: "wait", Reason: reason, Matched: class}
 	} else if reason != "" {
@@ -189,4 +194,12 @@ func agentEvidence(in ArmInputs) string {
 		return "foreign_trailer" // SC-14, SP1 R9: another task's run pushed here
 	}
 	return ""
+}
+
+// touchesSteering is true when a changed file, or the path it was renamed from, is under the
+// steering notes' directory.
+func touchesSteering(stats []forge.FileStat) bool {
+	return slices.ContainsFunc(stats, func(f forge.FileStat) bool {
+		return strings.HasPrefix(f.Path, steering.Dir) || strings.HasPrefix(f.Previous, steering.Dir)
+	})
 }

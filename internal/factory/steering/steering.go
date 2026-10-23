@@ -2,7 +2,8 @@
 
 // Package steering is a task class's steering note (scoper design SC3, SC4): a short Markdown file
 // a repository's maintainers keep at .github/agent-factory/steering/<class>.md, read on the default
-// branch at triage. `.github/` is a gate path, so no agent pull request can change one.
+// branch at triage. The factory refuses an agent pull request that changes one while steering is on
+// (reason steering_path); the repository should also make the directory a policy-bot gate path.
 package steering
 
 import (
@@ -21,6 +22,9 @@ const (
 	verify     = "## Verify"
 )
 
+// Dir is the directory the notes live in.
+const Dir = ".github/agent-factory/steering/"
+
 var className = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // Path is class's note in the repository it describes, "" for a class that is not a name
@@ -29,7 +33,7 @@ func Path(class string) string {
 	if !className.MatchString(class) {
 		return ""
 	}
-	return ".github/agent-factory/steering/" + class + ".md"
+	return Dir + class + ".md"
 }
 
 // Validate is SC4's format, the same in ai-native-ref's suite: UTF-8, at most 2048 bytes, no

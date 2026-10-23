@@ -1163,6 +1163,17 @@ func (c *Config) ScopeFor(class string) ScopeMode {
 	return row.Scope
 }
 
+// SteeringOn reports whether any class's scope is not off: the merge gate then reads the diff of
+// every pull request, to refuse one that changes a steering note.
+func (c *Config) SteeringOn() bool {
+	for _, row := range c.Loops {
+		if row.Scope != "" && row.Scope != ScopeOff {
+			return true
+		}
+	}
+	return false
+}
+
 // scopeModes are the modes this release honours: a mode it cannot run must fail the start, never
 // run as another (scoper plan S1).
 func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering} }

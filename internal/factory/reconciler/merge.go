@@ -89,8 +89,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		in.Verifiers = verifiers(t)
 	}
 	d := DecideArm(in)
-	if (d.Verdict == "arm" || d.Verdict == "shadow") && r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) {
-		// The diff is read late: only a decision that would arm or shadow a class with a condition
+	if (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
+		r.Cfg.SteeringOn()) {
+		// The diff is read late (steering on: always, to refuse a changed note): only a decision that would arm or shadow a class with a condition
 		// on its diff pays its 2N+1 API calls. The first pass held those conditions vacuously;
 		// this second pass decides on the real diff.
 		diff, ferr := r.merger(ctx).Diff(ctx, "main", pr.HeadSHA)
