@@ -12,6 +12,7 @@ func TestCoarse(t *testing.T) {
 	}{
 		// A task's phase decides (F7's table).
 		{"Received", "Open", false, StateQueued},
+		{"Split", "Idle", false, StateRunning},
 		{"Triaged", "Idle", false, StateQueued},
 		{"Queued", "Idle", false, StateQueued},
 		{"Implementing", "Active", false, StateRunning},

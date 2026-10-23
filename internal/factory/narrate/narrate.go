@@ -7,6 +7,7 @@
 package narrate
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -649,6 +650,40 @@ func ChildIssue(t *v1alpha1.Task, k int32, sc *envelope.Scope, roomsURL string) 
 func SplitPart(t *v1alpha1.Task, k int32, issue int) Event {
 	return Event{Key: fmt.Sprintf("split-part-%d", k), Body: fmt.Sprintf("Agent factory task `%s`: part %d of %d is #%d.",
 		t.Name, k, t.Status.Split.Of, issue)}
+}
+
+// Part is one part of a split as its parent's end lists it.
+type Part struct {
+	Index   int32
+	Issue   int
+	PR      string
+	Outcome string
+}
+
+// SplitEnded is the parent's ending (SL12): Ended, with its parts and their pull requests before the
+// token line, so the settle's retotal still finds it (#42).
+func SplitEnded(t *v1alpha1.Task, phase, reason string, parts []Part, maintainers ...string) Event {
+	e := Ended(t, phase, reason, maintainers...)
+	var b strings.Builder
+	b.WriteString("\n\nParts:")
+	for _, p := range parts {
+		fmt.Fprintf(&b, "\n- part %d, #%d: %s", p.Index, p.Issue, cmp.Or(p.Outcome, "open"))
+		if p.PR != "" {
+			fmt.Fprintf(&b, " (%s)", p.PR)
+		}
+	}
+	if i := strings.LastIndex(e.Body, usageLine); i >= 0 {
+		e.Body = e.Body[:i] + b.String() + e.Body[i:]
+	}
+	return e
+}
+
+// PartReverted says on a closed parent's issue that one of its parts was reverted (SP6): whether the
+// issue is solved is a person's call.
+func PartReverted(t *v1alpha1.Task, revert int) Event {
+	p := t.Spec.Parent
+	return Event{Key: fmt.Sprintf("part-reverted-%d", revert), Body: fmt.Sprintf("Agent factory task `%s`, part %d of %d of this "+
+		"issue (#%d), was reverted by #%d. This issue stays closed: reopen it if the work is not done.", t.Name, p.Index, p.Of, t.Spec.Issue, revert)}
 }
 
 // USD is a micro-USD amount as people read it, to the cent: $8.50.

@@ -63,6 +63,8 @@ var underReasons = []string{"stuck", "agent_stuck", "review_rounds_exhausted", "
 // capability after a full attempt, over when it succeeded on < 20 % of the tier's task budget.
 func Fit(t *v1alpha1.Task) string {
 	switch {
+	case t.Spec.Parent != nil || (t.Status.Split != nil && t.Status.Split.State == SplitApproved):
+		return "" // SR17: C7 chose neither a part's tier nor the work its parent did
 	case t.Status.Phase == v1alpha1.PhaseEscalated && slices.Contains(underReasons, t.Status.Reason):
 		return "under"
 	case t.Status.Phase == v1alpha1.PhaseDone && t.Spec.Budget.TaskTokens > 0 && t.Status.Usage.Tokens*5 < t.Spec.Budget.TaskTokens:

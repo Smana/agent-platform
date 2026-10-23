@@ -5,6 +5,7 @@ package reconciler
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +126,119 @@ func TestTheApproverPaysForTheParts(t *testing.T) {
 	c := childTask(t, g, 1)
 	if c.Spec.Source.RequestedBy != "github:smana" || c.Payer() != "github:smana" || runs.TaskPayer(c, true) != "github:smana" {
 		t.Fatalf("requestedBy %q payer %q", c.Spec.Source.RequestedBy, c.Payer())
+	}
+}
+
+// setPhase writes a task's phase and reason as its own reconcile would have.
+func setPhase(t *testing.T, g *rig, name, phase, reason string) {
+	t.Helper()
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), taskKey(name), &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status.Phase, tk.Status.Reason = phase, reason
+	tk.Status.PullRequest = &v1alpha1.PullRequestRef{Number: 600 + len(name), URL: "https://github.com/Smana/cloud-native-ref/pull/" + strconv.Itoa(600+len(name))}
+	if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// SL7, SL12, offline proof 5: part 1 Done opens part 2 with min(5.10, left); part 2 Done closes the
+// parent issue and ends the parent Done, children_merged, counting each part once.
+func TestThePartsLandOneByOneAndCloseTheParent(t *testing.T) {
+	g := approved(t)
+	setPhase(t, g, child(1), v1alpha1.PhaseDone, "merged")
+	p := g.reconcile(t, "3buqdlot", 1)
+	if len(p.Status.Split.Children) != 2 || p.Status.Split.Children[0].Outcome != "landed" || len(g.f.Created()) != 2 ||
+		!strings.HasPrefix(g.f.Created()[1], "Part 2 of 2 of #7\n") {
+		t.Fatalf("%+v %q", p.Status.Split, g.f.Created())
+	}
+	g.reconcile(t, child(2), 1)
+	if c := childTask(t, g, 2); c.Spec.Budget.TaskMicroUSD != 5_100_000 {
+		t.Fatalf("part 2's cap %d", c.Spec.Budget.TaskMicroUSD)
+	}
+	setPhase(t, g, child(2), v1alpha1.PhaseDone, "merged")
+	p = g.reconcile(t, "3buqdlot", 1)
+	if p.Status.Phase != v1alpha1.PhaseDone || p.Status.Reason != "children_merged" || !slices.Contains(g.f.Calls(), "close-issue 7") {
+		t.Fatalf("%s %s %v", p.Status.Phase, p.Status.Reason, g.f.Calls())
+	}
+	if n := strings.Count(strings.Join(g.metrics.recorded, "|"), "split_child review landed"); n != 2 || p.Status.Classification.Fit != "" {
+		t.Fatalf("counted %d, fit %q: %v", n, p.Status.Classification.Fit, g.metrics.recorded)
+	}
+	g.r.Now = func() time.Time { return now.Add(time.Hour + g.r.settleWindow()) }
+	g.reconcile(t, "3buqdlot", 1)
+	if last := g.f.Comments(7)[len(g.f.Comments(7))-1]; !strings.Contains(last, "every part of the split merged") || !strings.Contains(last, "#501") {
+		t.Fatalf("the parent's end lists its parts: %q", last)
+	}
+}
+
+// SL12: a part's issue closed with no landed task, or a part reverted, ends the parent Closed,
+// child_dropped, and opens no further part.
+func TestADroppedOrRevertedPartEndsTheFamily(t *testing.T) {
+	g := approved(t)
+	setPhase(t, g, child(1), v1alpha1.PhaseStopped, "stopped_by_label")
+	if p := g.reconcile(t, "3buqdlot", 1); p.Status.Phase != v1alpha1.PhaseSplit {
+		t.Fatalf("a stopped part with its issue open keeps the parent waiting (SL12): %s", p.Status.Phase)
+	}
+	_ = g.f.CloseIssue(t.Context(), 501)
+	p := g.reconcile(t, "3buqdlot", 1)
+	if p.Status.Phase != v1alpha1.PhaseClosed || p.Status.Reason != "child_dropped" || p.Status.Split.Children[0].Outcome != "dropped" ||
+		len(g.f.Created()) != 1 || slices.Contains(g.f.Calls(), "close-issue 7") || !slices.Contains(g.metrics.recorded, "split_child review dropped") {
+		t.Fatalf("%s %s %+v %v", p.Status.Phase, p.Status.Reason, p.Status.Split, g.metrics.recorded)
+	}
+	g = approved(t)
+	setPhase(t, g, child(1), v1alpha1.PhaseDone, "merged")
+	g.reconcile(t, "3buqdlot", 1) // part 2 opens
+	setPhase(t, g, child(1), v1alpha1.PhaseReverted, "main_red")
+	if p := g.reconcile(t, "3buqdlot", 1); p.Status.Phase != v1alpha1.PhaseClosed || p.Status.Split.Children[0].Outcome != "reverted" {
+		t.Fatalf("%s %+v", p.Status.Phase, p.Status.Split)
+	}
+}
+
+// SL12: an escalated part keeps the parent waiting while its issue is open.
+func TestAnEscalatedPartKeepsTheParentWaiting(t *testing.T) {
+	g := approved(t)
+	setPhase(t, g, child(1), v1alpha1.PhaseEscalated, "ci_red")
+	if p := g.reconcile(t, "3buqdlot", 1); p.Status.Phase != v1alpha1.PhaseSplit || len(g.f.Created()) != 1 {
+		t.Fatalf("%s %q", p.Status.Phase, g.f.Created())
+	}
+}
+
+// SL10, offline proofs 5 and 8: a family that cannot hold one more run ends Escalated, budget-family,
+// and a retry never runs the parent whole; the family's selector sums its spend.
+func TestTheFamilysCapHolds(t *testing.T) {
+	g := approved(t)
+	var c v1alpha1.Task
+	_ = g.c.Get(t.Context(), taskKey(child(1)), &c)
+	c.Status.Phase, c.Status.Reason = v1alpha1.PhaseDone, "merged"
+	c.Status.Runs = []v1alpha1.RunRecord{{ID: runID(child(1), 0), Role: "implementer", Trigger: "initial", CostMicroUSD: 18_500_000, Tokens: 1}}
+	_ = g.c.Status().Update(t.Context(), &c)
+	p := g.reconcile(t, "3buqdlot", 1)
+	if p.Status.Phase != v1alpha1.PhaseEscalated || p.Status.Reason != "budget-family" || len(g.f.Created()) != 1 {
+		t.Fatalf("%s %s %q", p.Status.Phase, p.Status.Reason, g.f.Created())
+	}
+	left, err := g.r.familyLeft(t.Context(), p)
+	if err != nil || left != p.Spec.Split.FamilyMicroUSD-spend(p)-18_500_000 {
+		t.Fatalf("left %d (%v)", left, err)
+	}
+	g.r.Now = func() time.Time { return now.Add(2 * time.Hour) }
+	g.f.SetComments(7, retryBy(90, "Smana", -90*time.Minute))
+	if p = g.reconcile(t, "3buqdlot", 1); p.Status.Phase != v1alpha1.PhaseEscalated {
+		t.Fatalf("a retry ran an approved parent (SR9): %s", p.Status.Phase)
+	}
+}
+
+// SP6: a part reverted after its parent closed comments on the parent issue; before, nothing extra.
+func TestARevertAfterTheCloseCommentsOnTheParent(t *testing.T) {
+	g := approved(t)
+	var c v1alpha1.Task
+	_ = g.c.Get(t.Context(), taskKey(child(1)), &c)
+	if err := g.r.tellParent(t.Context(), &c, 640); err != nil || len(c.Status.Outbox) != 0 {
+		t.Fatalf("before the close: %+v %v", c.Status.Outbox, err)
+	}
+	setPhase(t, g, "3buqdlot", v1alpha1.PhaseDone, "children_merged")
+	if err := g.r.tellParent(t.Context(), &c, 640); err != nil || len(c.Status.Outbox) != 1 || c.Status.Outbox[0].Number != 7 ||
+		!strings.Contains(c.Status.Outbox[0].Body, "#640") {
+		t.Fatalf("%+v %v", c.Status.Outbox, err)
 	}
 }

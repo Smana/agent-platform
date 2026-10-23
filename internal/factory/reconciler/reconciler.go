@@ -546,6 +546,9 @@ func target(t *v1alpha1.Task) int {
 func (r *Reconciler) end(ctx context.Context, t *v1alpha1.Task, phase, reason string) error {
 	r.releaseUnheld(ctx, t)
 	r.to(t, phase, reason)
+	if v1alpha1.TerminalPhase(phase) {
+		r.countFamily(ctx, t) // an approved parent stopped or expired: its landed parts count (SL14)
+	}
 	narrateLater(t, narrate.Ended(t, phase, reason, r.repo(t).Maintainers...))
 	r.outcome(ctx, t)
 	return nil

@@ -409,11 +409,114 @@ func (r *Reconciler) inherit(ctx context.Context, t *v1alpha1.Task) (string, err
 	return "", nil
 }
 
-// splitting is the parent's wait in Split (SL7, SL12): it opens the next part once the one before
-// has landed. Task 10 adds the outcomes and the end.
+// splitting is the parent's wait in Split (SL7, SL12, SR13): it records each part's outcome from
+// its newest generation, ends the family on a revert or a drop, opens the next part once the one
+// before has landed within the family's cap, and closes the parent when the last part lands.
 func (r *Reconciler) splitting(ctx context.Context, t *v1alpha1.Task) error {
-	if len(t.Status.Split.Children) == 0 {
-		return r.openChild(ctx, t, 1)
+	if _, _, err := r.observe(ctx, t); err != nil { // the scoper's late readings land (R49)
+		return err
+	}
+	sp := t.Status.Split
+	newest, _, err := r.family(ctx, t)
+	if err != nil {
+		return err
+	}
+	for i := range sp.Children {
+		c := &sp.Children[i]
+		if n := newest[c.Index]; n != nil {
+			c.Task = n.Name
+			if n.Status.Phase == v1alpha1.PhaseReverted {
+				c.Outcome = ChildReverted
+				return r.endFamily(ctx, t, newest, v1alpha1.PhaseClosed, ReasonChildDropped)
+			}
+		}
+	}
+	if k := len(sp.Children); k > 0 {
+		c := &sp.Children[k-1]
+		n := newest[c.Index]
+		switch {
+		case n == nil: // the part's create was lost with its write: open it again, by its marker
+			return r.openChild(ctx, t, c.Index)
+		case n.Status.Phase == v1alpha1.PhaseDone:
+			c.Outcome = ChildLanded
+		case n.Status.Phase == v1alpha1.PhaseRejected && n.Status.Reason == ReasonBudgetFamily:
+			return r.end(ctx, t, v1alpha1.PhaseEscalated, ReasonBudgetFamily)
+		case v1alpha1.TerminalPhase(n.Status.Phase) || n.Status.Phase == v1alpha1.PhaseEscalated:
+			iss, err := r.gh(ctx).Issue(ctx, c.Issue)
+			if err != nil {
+				return err
+			}
+			if iss.State != "CLOSED" {
+				return nil // waits: a maintainer re-labels the part's issue or closes it (SL12)
+			}
+			c.Outcome = ChildDropped
+			return r.endFamily(ctx, t, newest, v1alpha1.PhaseClosed, ReasonChildDropped)
+		default:
+			return nil // the part is running
+		}
+	}
+	if len(sp.Children) == int(sp.Of) {
+		if err := r.gh(ctx).CloseIssue(ctx, t.Spec.Issue); err != nil {
+			return err // closing a closed issue is no error, so a replay closes again harmlessly
+		}
+		return r.endFamily(ctx, t, newest, v1alpha1.PhaseDone, ReasonChildrenMerged)
+	}
+	left, err := r.familyLeft(ctx, t)
+	if err != nil {
+		return err
+	}
+	if !fits(r.childBudget(t, left)) {
+		return r.end(ctx, t, v1alpha1.PhaseEscalated, ReasonBudgetFamily) // SL10
+	}
+	return r.openChild(ctx, t, int32(len(sp.Children))+1) //nolint:gosec // Validate bounds the parts to 2..5
+}
+
+// endFamily ends the parent (SL12, SR14): one comment listing the parts and their pull requests,
+// each part counted once, the tier unscored.
+func (r *Reconciler) endFamily(ctx context.Context, t *v1alpha1.Task, newest map[int32]*v1alpha1.Task, phase, reason string) error {
+	var parts []narrate.Part
+	for _, c := range t.Status.Split.Children {
+		p := narrate.Part{Index: c.Index, Issue: c.Issue, Outcome: c.Outcome}
+		if n := newest[c.Index]; n != nil && n.Status.PullRequest != nil {
+			p.PR = n.Status.PullRequest.URL
+		}
+		parts = append(parts, p)
+	}
+	r.releaseUnheld(ctx, t)
+	r.to(t, phase, reason)
+	narrateLater(t, narrate.SplitEnded(t, phase, reason, parts, r.repo(t).Maintainers...))
+	r.countFamily(ctx, t)
+	r.outcome(ctx, t)
+	return nil
+}
+
+// countFamily counts each opened part once, with its recorded outcome (SL14), when an approved
+// parent ends; a part still running when its parent stops has none and is not counted.
+func (r *Reconciler) countFamily(ctx context.Context, t *v1alpha1.Task) {
+	sp := t.Status.Split
+	if sp == nil || sp.State != SplitApproved {
+		return
+	}
+	class := t.Spec.PredictedClass
+	for _, c := range sp.Children {
+		if o := c.Outcome; o != "" {
+			record(ctx, func(ctx context.Context) { r.Metrics.SplitChild(ctx, class, o) })
+		}
+	}
+}
+
+// tellParent is SP6: a part reverted after its parent closed comments on the parent issue, once.
+// Before the close, the parent's own Split pass ends the family on the revert (SL12).
+func (r *Reconciler) tellParent(ctx context.Context, t *v1alpha1.Task, revert int) error {
+	if t.Spec.Parent == nil {
+		return nil
+	}
+	var p v1alpha1.Task
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Spec.Parent.Task}, &p); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if p.Status.Phase == v1alpha1.PhaseDone {
+		narrateOn(t, t.Spec.Parent.Issue, narrate.PartReverted(t, revert))
 	}
 	return nil
 }
