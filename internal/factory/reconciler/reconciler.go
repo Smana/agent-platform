@@ -894,6 +894,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		s.Role = "triager"
 		return r.startRun(ctx, t, s, nextTrigger(t))
 	}
+	if scoperDue(t) {
+		return r.startScoper(ctx, t)
+	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)
 	if err != nil {
 		return err

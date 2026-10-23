@@ -1204,7 +1204,7 @@ func (c *Config) SteeringOn() bool {
 
 // scopeModes are the modes this release honours: a mode it cannot run must fail the start, never
 // run as another (scoper plan S1).
-func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering} }
+func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering, ScopeScoper} }
 
 // The loop policy's defaults (loops design, "The policy, in the factory config") and the
 // harness's bounds (loop policy harness R16), which the XRD repeats.
@@ -1274,8 +1274,6 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 		}
 		switch m := row.Scope; {
 		case m == "" || slices.Contains(scopeModes(), m):
-		case m == ScopeScoper:
-			bad("loops.%s.scope %q needs the scoper's release", name, m)
 		default:
 			bad("loops.%s.scope %q is off, steering or scoper", name, m)
 		}

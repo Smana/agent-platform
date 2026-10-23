@@ -13,14 +13,14 @@ import (
 func TestScopeFor(t *testing.T) {
 	cfg, err := Parse([]byte(good + `loops:
   default: {scope: steering}
-  docs: {scope: steering}
+  docs: {scope: scoper}
   tests: {stallSteps: 40}
   dashboards: {scope: off}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for class, want := range map[string]ScopeMode{"docs": ScopeSteering, "tests": ScopeOff, "dashboards": ScopeOff,
+	for class, want := range map[string]ScopeMode{"docs": ScopeScoper, "tests": ScopeOff, "dashboards": ScopeOff,
 		"review": ScopeSteering, "docs-links": ScopeSteering} {
 		if got := cfg.ScopeFor(class); got != want {
 			t.Errorf("ScopeFor(%s) = %s, want %s", class, got, want)
@@ -81,7 +81,6 @@ func TestScopesAreRefused(t *testing.T) {
 		"a fourth mode":       {"{docs: {scope: always}}", `loops.docs.scope "always" is off, steering or scoper`},
 		"a bare on":           {"{docs: {scope: on}}", "scope is off, steering or scoper"},
 		"an undeclared class": {"{scripts: {scope: steering}}", `loops.scripts: "scripts" is not default, review or a class`},
-		"scoper, too early":   {"{docs: {scope: scoper}}", `loops.docs.scope "scoper" needs the scoper's release`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(good + "loops: " + c.loops + "\n"))

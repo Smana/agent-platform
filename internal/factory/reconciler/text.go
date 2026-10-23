@@ -164,6 +164,30 @@ func TriagerBrief(t *v1alpha1.Task, nonce string) string {
 		t.Name, t.Spec.Repository, fence, fence, t.Spec.Text, fence)
 }
 
+// ScoperBrief is a scoped task's first run (scoper design SC1, SC7): a triager run that turns the
+// snapshot into a bounded task, or one question, read-only, and hands it to the implementer.
+func ScoperBrief(t *v1alpha1.Task, nonce string) string {
+	fence := "TASK-DATA-" + nonce
+	head := fmt.Sprintf("You are the scoper for agent factory task %s in %s: a read-only run before any code is written. "+
+		"Read the task below and the repository with your read-only tools; change nothing and open nothing.\n%s",
+		t.Name, t.Spec.Repository, scoperHow)
+	return fit(head, steeringBlock(t, nonce), snapshotBlock(t, fence), t)
+}
+
+// scoperHow is SC7's ask-or-assume rule and SC6's hand-off, with one example of each side.
+const scoperHow = "Turn the task into a bounded task: the change, why, and that nothing else changes; the files or " +
+	"components it touches; the paths to leave alone (the steering note's and the task's); an ordered plan of at most " +
+	"7 steps; every assumption you made; and 1 to 5 acceptance checks, each a command (the steering note's ## Verify " +
+	"first) or an observation, with what it proves.\n" +
+	"Ask or assume. Fill every gap a reasonable default fills, and list it as an assumption. Ask only when the answer " +
+	"changes what gets built and no reasonable default exists; then ask exactly one question, answerable in a sentence, " +
+	"and still write the whole scope, the assumption a maintainer may proceed on first. A task naming a link to fix but " +
+	"not its target, where the repository shows one replacement, is an assumption. A task asking to move a panel to " +
+	"\"the other dashboard\", where two dashboards qualify, is a question.\n" +
+	"End with one room_handoff call: toRole implementer, a one-paragraph summary, commit the full sha of the checkout you " +
+	"read (git rev-parse HEAD), and scope {state, task, touches, leave, plan, assumptions, acceptance, question}: state " +
+	"ready, or question with the question. Then finish.\n"
+
 // ResumeNotice opens the brief of a run that resumes one its sandbox lost (disruption design §4):
 // the agent did nothing wrong, so it carries on from the branch and the room instead of starting over.
 func ResumeNotice(t *v1alpha1.Task) string {
