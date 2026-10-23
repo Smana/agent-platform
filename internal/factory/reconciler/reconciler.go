@@ -83,6 +83,7 @@ type metrics interface {
 	Intervention(ctx context.Context, kind string)
 	TierFit(ctx context.Context, classifier, tier, fit string, control bool)
 	Revoked(ctx context.Context, reason string)
+	AdmissionRefused(ctx context.Context, reason string)
 	PrincipalShadow(ctx context.Context, principal string)
 	RunRevoked(ctx context.Context, reason, limit string)
 	RunBudgetFallback(ctx context.Context, scope, why string)

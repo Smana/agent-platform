@@ -331,10 +331,10 @@ func (f *Fake) FailCloses(err error) {
 func (f *Fake) CloseIssue(_ context.Context, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fmt.Sprintf("close-issue %d", n))
 	if f.closeErr != nil {
 		return f.closeErr
 	}
+	f.calls = append(f.calls, fmt.Sprintf("close-issue %d", n))
 	if i, ok := f.issues[n]; ok {
 		i.State = "CLOSED"
 		f.issues[n] = i

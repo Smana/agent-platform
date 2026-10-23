@@ -9,6 +9,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/api"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
 )
@@ -113,18 +114,22 @@ func (r *Reconciler) escalatedSplit(ctx context.Context, t *v1alpha1.Task, pr fo
 }
 
 // approveSplit is SL4 (a) and SL11: the approver pays for every part, so their day is checked first,
-// as intake checks a labeller's (D4); a spent day is said once and the split keeps waiting. The
-// command is handled in the same status write as the move. Approved, the parent waits in Split, and
-// its next pass opens part 1.
+// as intake checks a labeller's (D4). The command is handled only once the ledger has answered, in
+// the same status write as the outcome: a ledger read that fails leaves it for the next pass. A
+// spent day is said once and the split keeps waiting; the approver comments `/factory split` again
+// tomorrow. Approved, the parent waits in Split, and its next pass opens part 1.
 func (r *Reconciler) approveSplit(ctx context.Context, t *v1alpha1.Task, c forge.Comment) error {
-	markHandled(t, c.ID)
 	person := v1alpha1.Person(c.Author)
-	spent, err := r.daySpent(ctx, person)
+	spent, err := r.daySpent(ctx, t, person)
 	if err != nil {
 		return err
 	}
+	markHandled(t, c.ID)
 	if spent {
-		narrateLater(t, narrate.PersonOverBudget(t.Spec.Issue, person, r.Cfg.Budgets.DailyMicroUSD(person), c.At))
+		narrateLater(t, narrate.ApproverOverBudget(t.Spec.Issue, person, r.Cfg.Budgets.DailyMicroUSD(person), c.At))
+		record(ctx, func(ctx context.Context) {
+			r.Metrics.AdmissionRefused(fmetrics.WithPrincipal(ctx, person), "person_budget_exhausted") // the approver (SI4)
+		})
 		return nil
 	}
 	r.leaveSplit(ctx, t, SplitApproved)
@@ -134,18 +139,26 @@ func (r *Reconciler) approveSplit(ctx context.Context, t *v1alpha1.Task, c forge
 	return nil
 }
 
-// daySpent: per-person caps on and enforced, and person's day already spent (D4). Queued's
-// reservation per run stays the exact check (D3).
-func (r *Reconciler) daySpent(ctx context.Context, person string) (bool, error) {
+// daySpent is D4 for an approver: with per-person caps on, person's day already spent. Enforced it
+// refuses; in shadow it only logs. Queued's reservation per run stays the exact check (D3).
+func (r *Reconciler) daySpent(ctx context.Context, t *v1alpha1.Task, person string) (bool, error) {
 	b := r.Cfg.Budgets
-	if !b.PerPerson.Enabled || !b.EnforcePrincipal || r.Ledger == nil {
+	if !b.PerPerson.Enabled || r.Ledger == nil {
 		return false, nil
 	}
 	used, err := api.DayUsed(ctx, r.Ledger, r.Namespace, person, r.Now())
 	if err != nil {
 		return false, err // no answer is no refusal: the command waits for the next pass
 	}
-	return used >= b.DailyMicroUSD(person), nil
+	day := b.DailyMicroUSD(person)
+	if used < day {
+		return false, nil
+	}
+	if !b.EnforcePrincipal {
+		r.log().Info("approver's day is spent (shadow)", "task.id", t.Name, "person", person, "used_micro_usd", used, "cap_micro_usd", day)
+		return false, nil
+	}
+	return true, nil
 }
 
 // leaveSplit is a split_proposed task leaving its wait (SL4, SL14): the label goes, and the split's

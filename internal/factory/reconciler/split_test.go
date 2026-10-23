@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
@@ -270,6 +271,82 @@ func TestAnApproverPastTheirDayIsRefused(t *testing.T) {
 		!strings.Contains(strings.Join(g.f.Comments(7), "\n"), "is spent") {
 		t.Fatalf("%s %+v %v %q", tk.Status.Phase, tk.Status.Split, tk.Status.Handled, g.f.Comments(7))
 	}
+	// Re-labelling would supersede the proposal: the comment says to comment again, never to re-label.
+	said := strings.Join(g.f.Comments(7), "\n")
+	if !strings.Contains(said, "comment `/factory split` again") || strings.Contains(said, "label") ||
+		!slices.Contains(g.metrics.recorded, "admission_refused person_budget_exhausted") {
+		t.Fatalf("%q %v", said, g.metrics.recorded)
+	}
+}
+
+// D4 in shadow: the approver's spent day is logged and refuses nothing.
+func TestASpentApproverInShadowIsApproved(t *testing.T) {
+	g := proposed(t, spentLedger(map[string]int64{"github:smana": 5_000_000}))
+	g.r.Cfg.Budgets = personBudgets(true, false)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, splitBy(81, "Smana"))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseSplit || slices.Contains(g.metrics.recorded, "admission_refused person_budget_exhausted") {
+		t.Fatalf("%s %v", tk.Status.Phase, g.metrics.recorded)
+	}
+}
+
+// A ledger that cannot be read does not consume the command: the next pass sees it again.
+func TestALedgerErrorKeepsTheCommand(t *testing.T) {
+	g := proposed(t)
+	g.r.Cfg.Budgets = personBudgets(true, true)
+	g.r.Ledger = brokenLedger{g.c}
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, splitBy(81, "Smana"))
+	if _, err := g.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: taskKey("3buqdlot")}); err == nil {
+		t.Fatal("a ledger error must be returned")
+	}
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), taskKey("3buqdlot"), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(tk.Status.Handled, 81) || tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Split.State != "proposed" {
+		t.Fatalf("consumed: %s %+v %v", tk.Status.Phase, tk.Status.Split, tk.Status.Handled)
+	}
+	g.r.Ledger = g.c // the ledger answers again
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseSplit || tk.Status.Split.State != "approved" {
+		t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Split)
+	}
+}
+
+// Two /factory split comments approve once and count once.
+func TestTwoSplitCommentsApproveOnce(t *testing.T) {
+	g := proposed(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, splitBy(81, "Smana"), splitBy(82, "Smana"))
+	tk := g.reconcile(t, "3buqdlot", 3)
+	count := func(want string) (n int) {
+		for _, m := range g.metrics.recorded {
+			if m == want {
+				n++
+			}
+		}
+		return n
+	}
+	if tk.Status.Split.State != "approved" || count("split review approved") != 1 || count("intervention split") != 1 {
+		t.Fatalf("%+v %v", tk.Status.Split, g.metrics.recorded)
+	}
+}
+
+// A maintainer's stop declines the proposed split, counted, the label removed.
+func TestAMaintainersStopDeclinesTheSplit(t *testing.T) {
+	g := proposed(t)
+	var tk v1alpha1.Task
+	if err := g.c.Get(t.Context(), taskKey("3buqdlot"), &tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "label"}
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseStopped || got.Status.Split.State != "declined" ||
+		!slices.Contains(g.metrics.recorded, "split review declined") || !slices.Equal(g.f.Removed(7), []string{"factory/split-proposed"}) {
+		t.Fatalf("%s %+v %v", got.Status.Phase, got.Status.Split, g.metrics.recorded)
+	}
 }
 
 // SL4 (b): /factory retry declines the split; the whole task runs on its scope at its own tier,
@@ -293,9 +370,13 @@ func TestARetryRunsTheTaskWhole(t *testing.T) {
 func TestTheOtherSplitExitsAreCounted(t *testing.T) {
 	g := proposed(t)
 	var tk v1alpha1.Task
-	_ = g.c.Get(t.Context(), taskKey("3buqdlot"), &tk)
+	if err := g.c.Get(t.Context(), taskKey("3buqdlot"), &tk); err != nil {
+		t.Fatal(err)
+	}
 	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "superseded"}
-	_ = g.c.Update(t.Context(), &tk)
+	if err := g.c.Update(t.Context(), &tk); err != nil {
+		t.Fatal(err)
+	}
 	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseStopped || got.Status.Split.State != "superseded" ||
 		!slices.Contains(g.metrics.recorded, "split review superseded") || !slices.Equal(g.f.Removed(7), []string{"factory/split-proposed"}) {
 		t.Fatalf("%s %+v %v", got.Status.Phase, got.Status.Split, g.metrics.recorded)

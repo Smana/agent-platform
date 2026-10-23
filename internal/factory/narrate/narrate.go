@@ -601,6 +601,15 @@ func PersonOverBudget(number int, person string, capMicroUSD int64, at time.Time
 			"It resets at 00:00 UTC; re-apply the label after that to start it.", number, person, USD(capMicroUSD))}
 }
 
+// ApproverOverBudget refuses a `/factory split` whose approver's day is spent (splitter design
+// SL11): the split keeps waiting, and the approver comments again after the reset. Re-labelling
+// would supersede the proposal, so it is not offered.
+func ApproverOverBudget(number int, person string, capMicroUSD int64, at time.Time) Event {
+	return Event{Key: fmt.Sprintf("refused-split_approver_budget-%d", at.Unix()),
+		Body: fmt.Sprintf("The agent factory did not split #%d: the daily budget of `%s` (%s) is spent, and every part is charged to the person who approves. "+
+			"It resets at 00:00 UTC; comment `/factory split` again after that. The proposal stays open.", number, person, USD(capMicroUSD))}
+}
+
 // USD is a micro-USD amount as people read it, to the cent: $8.50.
 func USD(micro int64) string { return fmt.Sprintf("$%.2f", float64(micro)/1e6) }
 

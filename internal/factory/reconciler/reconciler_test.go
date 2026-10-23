@@ -299,6 +299,10 @@ func (m *fakeMetrics) Revoked(ctx context.Context, reason string) {
 	m.add("revoked " + reason)
 	m.who(ctx, "revoked "+reason)
 }
+func (m *fakeMetrics) AdmissionRefused(ctx context.Context, reason string) {
+	m.add("admission_refused " + reason)
+	m.who(ctx, "admission_refused "+reason)
+}
 func (m *fakeMetrics) PrincipalShadow(_ context.Context, principal string) {
 	m.add("revoked budget-principal-shadow")
 	m.add("shadow " + principal)
