@@ -88,3 +88,44 @@ func TestAMalformedArtifactStartsNothingAndIsCounted(t *testing.T) {
 		t.Fatalf("counted: %v", c.sources)
 	}
 }
+
+// The same run pair is weighed once, however many ticks; a new run is weighed again. A refusal is
+// counted once per pair.
+func TestTheSameRunPairIsEvaluatedOnce(t *testing.T) {
+	cl := linksClass()
+	cl.Shadow = true
+	sch := deadLinksScheduler(t, cl)
+	f := &countingMerger{Fake: forgetest.NewFake()}
+	runs := func(ids ...int64) {
+		var rs []forge.WorkflowRun
+		arts := map[int64][]byte{}
+		for _, id := range ids {
+			rs = append(rs, forge.WorkflowRun{ID: id, Event: "schedule", Branch: "main", Conclusion: "success"})
+			arts[id] = []byte(`[`) // malformed: refused, so no task ends the loop early
+		}
+		f.SetRuns(rs, arts)
+	}
+	sch.Forge, sch.Merger = f, f
+	runs(2, 1)
+	for range 3 {
+		_ = sch.Tick(t.Context())
+	}
+	if f.artifacts != 1 || len(sch.Errors.(*counter).sources) != 1 {
+		t.Fatalf("one evaluation and one count for three ticks: %d reads, %v", f.artifacts, sch.Errors.(*counter).sources)
+	}
+	runs(3, 2)
+	_ = sch.Tick(t.Context())
+	if f.artifacts != 2 || len(sch.Errors.(*counter).sources) != 2 {
+		t.Fatalf("a new run is weighed again: %d reads, %v", f.artifacts, sch.Errors.(*counter).sources)
+	}
+}
+
+type countingMerger struct {
+	*forgetest.Fake
+	artifacts int
+}
+
+func (c *countingMerger) RunArtifact(ctx context.Context, id int64, name, file string) ([]byte, error) {
+	c.artifacts++
+	return c.Fake.RunArtifact(ctx, id, name, file)
+}

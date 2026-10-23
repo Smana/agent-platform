@@ -103,7 +103,7 @@ func TestParseFindingsIsStrict(t *testing.T) {
 	}
 }
 
-// A run's findings that break a bound are refused whole: over the cap, a missing field, an
+// A run's findings that break a bound are refused whole: a missing field, an
 // archive that is no Wayback snapshot of the URL, a URL carrying whitespace.
 func TestAnUntrustworthyRunFindsNothing(t *testing.T) {
 	good := LinkFinding{File: "docs/a.md", Line: 3, URL: goneURL, Status: "404"}
@@ -111,7 +111,6 @@ func TestAnUntrustworthyRunFindsNothing(t *testing.T) {
 	cl := linksClass()
 	cl.Oracle.MaxFindings = 1
 	for name, bad := range map[string][]LinkFinding{
-		"over the cap":    {good, two},
 		"no URL":          {good, {File: "docs/a.md", Line: 1, Status: "404"}},
 		"no line":         {good, {File: "docs/a.md", URL: "https://example.com/x", Status: "404"}},
 		"foreign archive": {{File: "docs/a.md", Line: 3, URL: "https://example.com/three", Status: "404", Archive: "https://evil.example/web/1/https://example.com/three"}},
@@ -121,16 +120,11 @@ func TestAnUntrustworthyRunFindsNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := cl
-			if name != "over the cap" {
-				c.Oracle = &config.Oracle{Probe: "dead-links", Workflow: "dead-links.yaml", MaxFindings: 10}
-			}
+			c.Oracle = &config.Oracle{Probe: "dead-links", Workflow: "dead-links.yaml", MaxFindings: 10}
 			m := &linksMerger{
 				runs:      []forge.WorkflowRun{{ID: 2, Event: "schedule", Branch: "main", Conclusion: "success"}, {ID: 1, Event: "schedule", Branch: "main", Conclusion: "success"}},
 				artifacts: map[int64][]LinkFinding{2: append([]LinkFinding{good, two}, bad...), 1: append([]LinkFinding{good, two}, bad...)},
 				files:     map[string]string{"docs/a.md": "[a](" + goneURL + ") [b](https://example.com/two) [c](https://example.com/three)"},
-			}
-			if name == "over the cap" {
-				m.artifacts[2], m.artifacts[1] = bad, bad
 			}
 			rc := &config.Repository{Name: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}}
 			got, err := deadLinks(t.Context(), m, rc, c)
@@ -154,5 +148,52 @@ func TestDeadLinksDedupes(t *testing.T) {
 	got, err := deadLinks(t.Context(), m, &config.Repository{Name: "r"}, cl)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("three copies are one, within a cap of one: %+v %v", got, err)
+	}
+}
+
+func runPair(a2, a1 []LinkFinding, file string) *linksMerger {
+	return &linksMerger{
+		runs:      []forge.WorkflowRun{{ID: 2, Event: "schedule", Branch: "main", Conclusion: "success"}, {ID: 1, Event: "schedule", Branch: "main", Conclusion: "success"}},
+		artifacts: map[int64][]LinkFinding{2: a2, 1: a1},
+		files:     map[string]string{"docs/a.md": file},
+	}
+}
+
+// Past the cap the first findings in file-then-URL order are kept, with no error.
+func TestDeadLinksTruncatesAtTheCap(t *testing.T) {
+	var fs []LinkFinding
+	body := ""
+	for _, n := range []string{"c", "a", "b"} {
+		u := "https://example.com/" + n
+		fs = append(fs, LinkFinding{File: "docs/a.md", Line: 1, URL: u, Status: "404"})
+		body += "[" + n + "](" + u + ") "
+	}
+	cl := linksClass()
+	cl.Oracle.MaxFindings = 2
+	got, err := deadLinks(t.Context(), runPair(fs, fs, body), &config.Repository{Name: "r"}, cl)
+	if err != nil || len(got) != 2 || got[0].URL != "https://example.com/a" || got[1].URL != "https://example.com/b" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// MC5: both runs must say gone; a 429 in either run, or a 429 then a 404 in one, decides it.
+func TestAFindingIsGoneInBothRuns(t *testing.T) {
+	at := func(s string) LinkFinding { return LinkFinding{File: "docs/a.md", Line: 1, URL: goneURL, Status: s} }
+	for name, c := range map[string]struct {
+		newest, prev []LinkFinding
+		want         int
+	}{
+		"429 before, 404 now":  {[]LinkFinding{at("404")}, []LinkFinding{at("429")}, 0},
+		"404 before, 503 now":  {[]LinkFinding{at("503")}, []LinkFinding{at("404")}, 0},
+		"404 in both":          {[]LinkFinding{at("404")}, []LinkFinding{at("404")}, 1},
+		"429 then 404 in one":  {[]LinkFinding{at("429"), at("404")}, []LinkFinding{at("410")}, 1},
+		"404 then 429 in prev": {[]LinkFinding{at("404")}, []LinkFinding{at("404"), at("429")}, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := deadLinks(t.Context(), runPair(c.newest, c.prev, "[a]("+goneURL+")"), &config.Repository{Name: "r"}, linksClass())
+			if err != nil || len(got) != c.want {
+				t.Fatalf("%+v %v", got, err)
+			}
+		})
 	}
 }

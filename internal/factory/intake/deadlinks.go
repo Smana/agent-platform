@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path"
 	"regexp"
@@ -60,16 +61,30 @@ func ParseFindings(raw []byte) ([]LinkFinding, error) {
 	return fs, nil
 }
 
-// Agreed are newest's findings that previous reported too, same file and URL (MC5: two
-// consecutive runs on main agree). newest's line and archive are kept.
+func gone(status string) bool { return status == "404" || status == "410" || status == "nxdomain" }
+
+func findingKey(f LinkFinding) string { return f.File + "\x00" + f.URL }
+
+// Agreed are newest's findings that previous reported too, same file and URL, both as a gone
+// status (MC5: a 429, 5xx or timeout in either run is no finding). Only gone entries count, so a
+// pair repeated in a run is gone if any of its entries is. newest's line and archive are kept;
+// the result is in file-then-URL order.
 func Agreed(newest, previous []LinkFinding) []LinkFinding {
+	prev := make(map[string]bool, len(previous))
+	for _, p := range previous {
+		if gone(p.Status) {
+			prev[findingKey(p)] = true
+		}
+	}
+	seen := map[string]bool{}
 	var out []LinkFinding
 	for _, f := range newest {
-		if slices.ContainsFunc(previous, func(p LinkFinding) bool { return p.File == f.File && p.URL == f.URL }) &&
-			!slices.ContainsFunc(out, func(o LinkFinding) bool { return o.File == f.File && o.URL == f.URL }) {
+		if k := findingKey(f); gone(f.Status) && prev[k] && !seen[k] {
+			seen[k] = true
 			out = append(out, f)
 		}
 	}
+	slices.SortFunc(out, func(a, b LinkFinding) int { return strings.Compare(findingKey(a), findingKey(b)) })
 	return out
 }
 
@@ -79,28 +94,25 @@ var archiveRE = regexp.MustCompile(`^https://web\.archive\.org/web/[0-9]{1,14}/h
 // not a gone status, not a clean relative path the class allows and does not protect, not an
 // https target (R52 cannot retarget http). A finding whose URL or archive breaks the Task CRD's
 // shape is an error: the run is not trusted (errFindingsRefused).
-func keepable(f LinkFinding, cl config.Class) (_ LinkFinding, keep bool, err error) {
-	if f.Status != "404" && f.Status != "410" && f.Status != "nxdomain" {
-		return f, false, nil
-	}
+func keepable(f LinkFinding, cl config.Class) (_ LinkFinding, drop string, err error) {
 	if path.Clean(f.File) != f.File || strings.HasPrefix(f.File, "/") || strings.HasPrefix(f.File, "..") ||
 		len(f.File) > 512 || !matches(cl.AllowedFiles, f.File) || matches(cl.ProtectedFiles, f.File) {
-		return f, false, nil
+		return f, "path_not_allowed", nil
 	}
 	u, perr := url.Parse(f.URL)
 	if perr != nil || u.Scheme != "http" && u.Scheme != "https" {
-		return f, false, fmt.Errorf("%w: %q is no URL", errFindingsRefused, f.URL)
+		return f, "", fmt.Errorf("%w: %q is no URL", errFindingsRefused, f.URL)
 	}
 	if u.Scheme == "http" {
-		return f, false, nil
+		return f, "http", nil
 	}
 	if u.Host == "" || u.User != nil || len(f.URL) > 2048 || strings.ContainsAny(f.URL, " \t\r\n<>()") {
-		return f, false, fmt.Errorf("%w: %q is not a link target the task may hold", errFindingsRefused, f.URL)
+		return f, "", fmt.Errorf("%w: %q is not a link target the task may hold", errFindingsRefused, f.URL)
 	}
 	if f.Archive != "" && (!archiveRE.MatchString(f.Archive) || !strings.HasSuffix(f.Archive, "/"+f.URL) || len(f.Archive) > 2048) {
-		return f, false, fmt.Errorf("%w: %q is no Wayback snapshot of %q", errFindingsRefused, f.Archive, f.URL)
+		return f, "", fmt.Errorf("%w: %q is no Wayback snapshot of %q", errFindingsRefused, f.Archive, f.URL)
 	}
-	return f, true, nil
+	return f, "", nil
 }
 
 func matches(pats []string, p string) bool {
@@ -118,10 +130,10 @@ type DeadLinksMerger interface {
 	FileAt(ctx context.Context, path, ref string) (string, error)
 }
 
-// deadLinks is the dead-links probe (MC5, MC6): the findings of the newest two completed runs of
-// the class's workflow on main, kept when both runs report them and the class may fix them, and
-// each still a link target at its file on main. Nothing while either run is missing or failed.
-func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl config.Class) ([]LinkFinding, error) {
+// detectorRuns are the newest two completed runs of the class's workflow that a schedule or a
+// maintainer started on main, newest first; nil while there are fewer than two or either did not
+// succeed.
+func detectorRuns(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl config.Class) ([]forge.WorkflowRun, error) {
 	runs, err := m.WorkflowRuns(ctx, cl.Oracle.Workflow)
 	if err != nil {
 		return nil, err
@@ -138,6 +150,23 @@ func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl
 	if len(two) < 2 || two[0].Conclusion != "success" || two[1].Conclusion != "success" {
 		return nil, nil
 	}
+	return two, nil
+}
+
+// deadLinks is the dead-links probe (MC5, MC6): the findings of the newest two completed runs of
+// the class's workflow on main.
+func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl config.Class) ([]LinkFinding, error) {
+	two, err := detectorRuns(ctx, m, rc, cl)
+	if err != nil || two == nil {
+		return nil, err
+	}
+	return evaluateRuns(ctx, m, two, cl, slog.New(slog.DiscardHandler))
+}
+
+// evaluateRuns keeps what both runs report as gone, the class may fix, and is still a link target
+// at its file on main: the first oracle.maxFindings in file-then-URL order. Malformed or
+// out-of-shape findings refuse the run (errFindingsRefused). It logs one line with what it dropped.
+func evaluateRuns(ctx context.Context, m DeadLinksMerger, two []forge.WorkflowRun, cl config.Class, log *slog.Logger) ([]LinkFinding, error) {
 	var sets [2][]LinkFinding
 	for i, r := range two {
 		raw, err := m.RunArtifact(ctx, r.ID, "findings", "findings.json")
@@ -150,12 +179,25 @@ func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl
 	}
 	var out []LinkFinding
 	files := map[string][]string{}
-	for _, f := range Agreed(sets[0], sets[1]) {
-		k, ok, err := keepable(f, cl)
+	drops := map[string]int{}
+	for _, f := range sets[0] {
+		if !gone(f.Status) {
+			drops["status"]++
+		}
+	}
+	agreed := Agreed(sets[0], sets[1])
+	drops["unagreed"] = len(sets[0]) - drops["status"] - len(agreed)
+	for _, f := range agreed {
+		if len(out) == cl.Oracle.MaxFindings {
+			drops["over_cap"]++
+			continue
+		}
+		k, why, err := keepable(f, cl)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
+		if why != "" {
+			drops[why]++
 			continue
 		}
 		ts, read := files[k.File]
@@ -167,14 +209,13 @@ func deadLinks(ctx context.Context, m DeadLinksMerger, rc *config.Repository, cl
 			_, ts = mdlinks.Targets(text)
 			files[k.File] = ts
 		}
-		if slices.Contains(ts, k.URL) {
-			out = append(out, k)
+		if !slices.Contains(ts, k.URL) {
+			drops["not_a_link_target"]++
+			continue
 		}
+		out = append(out, k)
 	}
-	slices.SortFunc(out, func(a, b LinkFinding) int { return strings.Compare(a.File+"\x00"+a.URL, b.File+"\x00"+b.URL) })
-	if len(out) > cl.Oracle.MaxFindings {
-		return nil, fmt.Errorf("%w: %d findings, over oracle.maxFindings %d", errFindingsRefused, len(out), cl.Oracle.MaxFindings)
-	}
+	log.Info("dead-links evaluated", "runs", []int64{two[0].ID, two[1].ID}, "kept", len(out), "dropped", drops)
 	return out, nil
 }
 

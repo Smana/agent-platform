@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -20,6 +21,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
@@ -78,6 +80,9 @@ type Scheduler struct {
 	Now     func() time.Time
 	Errors  errorCounter
 	Log     *slog.Logger
+
+	seenMu sync.Mutex
+	seen   map[string][2]int64 // schedule -> the detector run pair last evaluated
 }
 
 // NeedLeaderElection is true: two schedulers would race every slot.
@@ -216,11 +221,31 @@ func (s *Scheduler) deadLinksProbe(ctx context.Context, rc *config.Repository, e
 	if err != nil {
 		return false, "", nil, err
 	}
-	fs, err := deadLinks(ctx, merger, rc, cl)
+	two, err := detectorRuns(ctx, merger, rc, cl)
+	if err != nil || two == nil {
+		return false, "", nil, err
+	}
+	// The leader is the only evaluator: a run pair already weighed is not read again each minute.
+	pair, key := [2]int64{two[0].ID, two[1].ID}, rc.Name+"/"+e.Name
+	s.seenMu.Lock()
+	same := s.seen[key] == pair
+	s.seenMu.Unlock()
+	if same {
+		return false, "", nil, nil
+	}
+	fs, err := evaluateRuns(ctx, merger, two, cl, s.log().With("schedule", e.Name))
+	if err == nil || errors.Is(err, errFindingsRefused) {
+		s.seenMu.Lock()
+		if s.seen == nil {
+			s.seen = map[string][2]int64{}
+		}
+		s.seen[key] = pair
+		s.seenMu.Unlock()
+	}
 	if errors.Is(err, errFindingsRefused) {
 		s.log().Warn("dead-links findings refused", "schedule", e.Name, "err", err)
 		if s.Errors != nil {
-			s.Errors.IntakeError(ctx, "dead-links")
+			s.Errors.IntakeError(fmetrics.WithRepository(ctx, rc.Name), "dead-links")
 		}
 		return false, "", nil, nil
 	}
