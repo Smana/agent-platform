@@ -1,0 +1,150 @@
+{
+ "agent": {
+  "condenser": {
+   "hard_context_reset_context_scaling": 0.8,
+   "hard_context_reset_max_retries": 5,
+   "keep_first": 4,
+   "kind": "LLMSummarizingCondenser",
+   "llm": {
+    "api_key": "injected-by-identity-proxy",
+    "api_mode": "auto",
+    "auth_type": "api_key",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "caching_prompt": true,
+    "capability_overrides": {},
+    "disable_stop_word": false,
+    "drop_params": true,
+    "enable_encrypted_reasoning": true,
+    "extended_thinking_budget": 200000,
+    "input_cost_per_token": 1.4e-06,
+    "is_subscription": false,
+    "litellm_extra_body": {
+     "reasoning_effort": "high"
+    },
+    "log_completions": false,
+    "log_completions_folder": "logs/completions",
+    "max_message_chars": 30000,
+    "model": "openai/agent-default",
+    "native_tool_calling": true,
+    "num_retries": 0,
+    "openrouter_app_name": "OpenHands",
+    "openrouter_site_url": "https://docs.all-hands.dev/",
+    "output_cost_per_token": 4.4e-06,
+    "prompt_cache_retention": "24h",
+    "reasoning_effort": "high",
+    "retry_max_wait": 64,
+    "retry_min_wait": 8,
+    "retry_multiplier": 8.0,
+    "stream": false,
+    "stream_idle_timeout": 300.0,
+    "timeout": 300,
+    "usage_id": "condenser"
+   },
+   "max_size": 80,
+   "minimum_progress": 0.1
+  },
+  "include_default_tools": [
+   "FinishTool",
+   "ThinkTool"
+  ],
+  "kind": "Agent",
+  "llm": {
+   "api_key": "injected-by-identity-proxy",
+   "api_mode": "auto",
+   "auth_type": "api_key",
+   "base_url": "http://127.0.0.1:4000/v1",
+   "caching_prompt": true,
+   "capability_overrides": {},
+   "disable_stop_word": false,
+   "drop_params": true,
+   "enable_encrypted_reasoning": true,
+   "extended_thinking_budget": 200000,
+   "input_cost_per_token": 1.4e-06,
+   "is_subscription": false,
+   "litellm_extra_body": {
+    "reasoning_effort": "high"
+   },
+   "log_completions": false,
+   "log_completions_folder": "logs/completions",
+   "max_message_chars": 30000,
+   "model": "openai/agent-default",
+   "native_tool_calling": true,
+   "num_retries": 0,
+   "openrouter_app_name": "OpenHands",
+   "openrouter_site_url": "https://docs.all-hands.dev/",
+   "output_cost_per_token": 4.4e-06,
+   "prompt_cache_retention": "24h",
+   "reasoning_effort": "high",
+   "retry_max_wait": 64,
+   "retry_min_wait": 8,
+   "retry_multiplier": 8.0,
+   "stream": false,
+   "stream_idle_timeout": 300.0,
+   "timeout": 300,
+   "usage_id": "agent"
+  },
+  "mcp_config": {
+   "platform": {
+    "enabled": true,
+    "transport": "http",
+    "url": "http://127.0.0.1:4000/mcp"
+   }
+  },
+  "security_policy_filename": "security_policy.j2",
+  "system_prompt_filename": "system_prompt.j2",
+  "system_prompt_kwargs": {
+   "cli_mode": true,
+   "llm_security_analyzer": true
+  },
+  "tool_concurrency_limit": 1,
+  "tools": [
+   {
+    "name": "terminal",
+    "params": {}
+   },
+   {
+    "name": "file_editor",
+    "params": {}
+   },
+   {
+    "name": "task_tracker",
+    "params": {}
+   }
+  ]
+ },
+ "agent_definitions": [],
+ "agent_launch_additions": {
+  "system_message_suffix_append": "rules text"
+ },
+ "autotitle": false,
+ "client_tools": [],
+ "confirmation_policy": {
+  "kind": "NeverConfirm"
+ },
+ "conversation_id": "0b3c6f0e-5d1a-4b8e-9f41-2a7c3e9d8b10",
+ "initial_message": {
+  "content": [
+   {
+    "cache_prompt": false,
+    "text": "fix the link",
+    "type": "text"
+   }
+  ],
+  "role": "user",
+  "run": true
+ },
+ "max_iterations": 500,
+ "observability_metadata": {},
+ "observability_span_name": "conversation",
+ "observability_tags": [],
+ "secrets": {},
+ "secrets_encrypted": false,
+ "stuck_detection": true,
+ "tags": {},
+ "tool_module_qualnames": {},
+ "workspace": {
+  "kind": "LocalWorkspace",
+  "working_dir": "/workspace/repo"
+ },
+ "worktree": false
+}

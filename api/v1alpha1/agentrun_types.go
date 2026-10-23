@@ -39,7 +39,7 @@ type AgentRunList struct {
 // +kubebuilder:validation:XValidation:rule="has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)",message="queueName is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)",message="suspendable is immutable and cannot be added or removed after creation"
 // +kubebuilder:validation:XValidation:rule="self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks) || !self.loop.checks",message="an internal run runs no repository checks"
-// +kubebuilder:validation:XValidation:rule="has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks) == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks == oldSelf.loop.checks)))",message="loop is immutable and cannot be added or removed after creation"
+// +kubebuilder:validation:XValidation:rule="has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks) == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks == oldSelf.loop.checks) && has(self.loop.search) == has(oldSelf.loop.search) && (!has(self.loop.search) || self.loop.search == oldSelf.loop.search)))",message="loop is immutable and cannot be added or removed after creation"
 type AgentRunSpec struct {
 	// +kubebuilder:validation:Enum=implementer;reviewer;tester;triager
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="role is immutable"
@@ -107,6 +107,10 @@ type AgentRunLoop struct {
 	// AGENT_CHECKS=1 and the pod's deadline as AGENT_RUN_SECONDS. A public run only.
 	// +optional
 	Checks bool `json:"checks,omitempty"`
+	// Search offers the search tool (v3 feature 5) to an implementer only: the harness and the room
+	// bridge both get AGENT_SEARCH=1, the bridge so it classes the harness's own search as plain.
+	// +optional
+	Search bool `json:"search,omitempty"`
 }
 
 // AgentRunTask is exactly one of text or url.

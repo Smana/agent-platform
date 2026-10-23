@@ -202,6 +202,16 @@ func TestBridgeConfigReadsTheClassifierInputs(t *testing.T) {
 	}
 }
 
+// v3 feature 5: only AGENT_SEARCH=1 makes the bridge treat a bare search as the harness's own tool.
+func TestBridgeConfigReadsAgentSearch(t *testing.T) {
+	for v, want := range map[string]bool{"1": true, "": false, "true": false, "0": false} {
+		c, _ := loadBridgeConfig(func(k string) string { return map[string]string{"AGENT_SEARCH": v}[k] })
+		if c.searchBuiltin != want {
+			t.Errorf("AGENT_SEARCH %q: searchBuiltin %v, want %v", v, c.searchBuiltin, want)
+		}
+	}
+}
+
 // v2 suspend: only the composition's exact "true" makes the bridge continue a reloaded conversation.
 func TestBridgeConfigReadsSuspendable(t *testing.T) {
 	for v, want := range map[string]bool{"true": true, "": false, "1": false, "TRUE": false} {

@@ -80,6 +80,15 @@ JUDGE_EFFORT = "low"
 # A stalled run's agent is stopped with /interrupt, which cancels its in-flight model call.
 INTERRUPT_TIMEOUT_S = 10
 
+# v3 feature 5: search as a tool, for an implementer whose claim sets spec.loop.search (AGENT_SEARCH=1, from
+# the composition). The tool is site/agent_search.py, which agent-server imports from the start request's
+# tool_module_qualnames; it appends one row per call to the ledger, which this file reads as a signal.
+SEARCH_TOOL, SEARCH_MODULE = "search", "agent_search"
+SEARCH_LEDGER = "/workspace/.agent-search.jsonl"
+SEARCH_STARTED = ("complete", "budget", "error", "interrupted")
+SEARCH_RULE = ("To find your way in the repository, prefer `search` with one self-contained question over many "
+               "reads; verify what it returns by reading the files it names.")
+
 
 @functools.cache
 def _read_secret(path: str) -> str:
@@ -208,7 +217,63 @@ def _api_key(env: dict) -> str:
         return f.read().strip()
 
 
-def build_request(env: dict, task: str, rules: str, span=None) -> dict:
+def search_on(env: dict) -> bool:
+    """ST9: an implementer with AGENT_SEARCH=1 gets the tool, once agent_search imports in this process:
+    naming a tool agent-server cannot import would fail the conversation's start. Else `search off`."""
+    if env.get("AGENT_SEARCH") != "1":
+        return False
+    if env.get("ROLE") != "implementer":
+        print("agent-run: search off: the %s role has none" % (env.get("ROLE") or "agent"), file=sys.stderr, flush=True)
+        return False
+    if SITE_DIR not in sys.path:
+        sys.path.append(SITE_DIR)
+    try:
+        import agent_search  # noqa: F401 -- the import is the check
+    except Exception as exc:  # noqa: BLE001 -- a run as today, never a failed start
+        print("agent-run: search off: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return False
+    return True
+
+
+def search_rules(on: bool) -> str:
+    return "\nSearch:\n- %s\n" % SEARCH_RULE if on else ""
+
+
+def search_rows(path: str = SEARCH_LEDGER) -> list[dict]:
+    """The calls the ledger records, each as the stall rule may read it: the agent can write the file."""
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except (OSError, ValueError):
+        return []
+    out = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except (ValueError, RecursionError):
+            continue  # a line the agent broke is no call
+        if not isinstance(r, dict) or r.get("outcome") not in SEARCH_STARTED + ("refused",):
+            continue
+        calls = r.get("toolCalls")
+        tokens = r.get("tokens") if isinstance(r.get("tokens"), dict) else {}
+        out.append({"outcome": r["outcome"], "toolCalls": calls if type(calls) is int and calls > 0 else 0,
+                    "tokens": sum(v for k, v in tokens.items() if k in ("input", "output") and type(v) is int and v > 0)})
+    return out
+
+
+def search_summary(path: str = SEARCH_LEDGER) -> str:
+    """ST7, SQ4: the run's searches in one line, from the ledger."""
+    rows = search_rows(path)
+    calls = [r for r in rows if r["outcome"] in SEARCH_STARTED]
+    outcomes = {}
+    for r in rows:
+        outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
+    return "agent-run search: %d calls, %d steps, %d tokens, outcomes %s" % (
+        len(calls), sum(r["toolCalls"] for r in calls), sum(r["tokens"] for r in calls),
+        " ".join("%s=%d" % kv for kv in sorted(outcomes.items())) or "none")
+
+
+def build_request(env: dict, task: str, rules: str, span=None, search: bool = False) -> dict:
     """The StartConversationRequest body, as plain JSON.
 
     The platform MCP entry carries the run span's traceparent (cloud-native-ref#2283), so the
@@ -244,7 +309,11 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
     # without this the key never reaches agent-server and litellm refuses to
     # call. agent-server is on loopback; the key is the placeholder, or the provider key the run was given.
     plain = {"expose_secrets": True}
-    agent = get_default_agent(llm=llm, cli_mode=True).model_dump(mode="json", context=plain)
+    agent = get_default_agent(llm=llm, cli_mode=True)
+    if search:
+        from openhands.sdk.tool import Tool
+        agent = agent.model_copy(update={"tools": [*agent.tools, Tool(name=SEARCH_TOOL)]})
+    agent = agent.model_dump(mode="json", context=plain)
     mcp_url = env.get("MCP_URL")
     if mcp_url:
         platform = {"url": mcp_url, "transport": "http"}
@@ -252,7 +321,9 @@ def build_request(env: dict, task: str, rules: str, span=None) -> dict:
         if tp:
             platform["headers"] = {"traceparent": tp}
         agent["mcp_config"] = {"platform": platform}
+    extra = {"tool_module_qualnames": {SEARCH_TOOL: SEARCH_MODULE}} if search else {}
     request = StartConversationRequest.model_validate({
+        **extra,
         "conversation_id": env.get("CONVERSATION_ID") or str(uuid.uuid4()),
         "workspace": {"working_dir": REPO_DIR},
         "agent": agent,
@@ -853,14 +924,20 @@ class StepLog:
     effort: a failure here is logged and never fails the run. Agent-written
     text is redacted first."""
 
-    def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None):
+    def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None, ledger: str | None = None):
         self.notes = notes
         self.cid = cid
         self.trace_id = trace_id
         self.page = None
         self.seen = set()
-        self.steps = 0
+        self.own = 0
+        # ST7: a search's tool calls are the run's steps, read from its ledger when search is on.
+        self.ledger, self.searched = ledger, 0
         self.last_message = ""
+
+    @property
+    def steps(self) -> int:
+        return self.own + self.searched
 
     def __call__(self) -> None:
         try:
@@ -882,13 +959,15 @@ class StepLog:
                 self.page = page = nxt
         except Exception as exc:  # noqa: BLE001 -- logging must never fail the run
             print("agent-run: step log unavailable: %s" % exc, file=sys.stderr, flush=True)
+        if self.ledger:
+            self.searched = sum(r["toolCalls"] for r in search_rows(self.ledger) if r["outcome"] in SEARCH_STARTED)
         if self.notes:
             self.notes.flush()
 
     def describe(self, event: dict) -> str | None:
         kind = event.get("kind")
         if kind == "ActionEvent":
-            self.steps += 1
+            self.own += 1
             action = event.get("action") or {}
             target = action.get("command") or action.get("path") or ""
             if self.notes:
@@ -1369,7 +1448,8 @@ def main() -> int:
                 print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             task = t.read()
-            request = build_request(env, task, r.read() + checks_rules(env, decl), span)
+            search = search_on(env)
+            request = build_request(env, task, r.read() + checks_rules(env, decl) + search_rules(search), span, search)
         policy = loop_for(env)
         # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
         # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
@@ -1379,7 +1459,7 @@ def main() -> int:
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
-        steps = StepLog(cid, trace_id, notes)
+        steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None)
         if policy:
             code, end, note = drive(env, cid, steps, policy, state, task)
         else:
@@ -1395,6 +1475,8 @@ def main() -> int:
                 print("agent-run: final checks failed: %s" % exc, file=sys.stderr, flush=True)
         if decl and (ledger := checks_ledger()):
             print(ledger, flush=True)
+        if search:
+            print(search_summary(), flush=True)
         if notes:
             if end:
                 notes.final("the run ended %s: %s" % (end, note))

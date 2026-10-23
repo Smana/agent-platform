@@ -12,6 +12,7 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `gh` | gh with that token in `GH_TOKEN`; `gh pr create` (or `new`) then appends the provenance footer (`pr_footer.py`, SP2 design §5) |
 | `commit-msg` | adds `Agent-Run: $RUN_ID`, `Agent-Task: $TASK_ID` when set, and `Agent-Checkpoint: disruption` on agent-run's SIGTERM checkpoint |
 | `site/sitecustomize.py` | agent-server's start-up hook: a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (F29, envoyproxy/ai-gateway#2715); a transient model error is retried (#99, below); an internal run's prompt-cache markers are rewritten as `prompt_cache_breakpoint`, the only one agentgateway 1.6 carries to Anthropic |
+| `site/agent_search.py` | v3 feature 5: the implementer's `search` tool, imported by agent-server from the start request's `tool_module_qualnames`. One question, one child conversation with `grep`, `glob`, `read_file`, `list_directory`, `finish` and `think` only (no terminal, no file editor, no MCP, no plugins or hooks, `NeverConfirm`), a copy of the run's LLM at effort `low`, at most 40 iterations, 300k tokens and 300 s, six calls a run, one at a time. The readers are guarded: a checked absolute path under the repository, regular files of at most 1 MiB, `grep` and `glob` on ripgrep only (the image installs it and the test stage asserts `rg --version`). The answer comes back headed and clipped at 8,000 characters; a failure is an error observation. One row per call in `/workspace/.agent-search.jsonl`, a signal the agent can write |
 
 ## Optional environment
 
@@ -23,6 +24,7 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `AGENT_CHECKS` | `1`: the toolchain installs in the background after the clone, the rules gain the repository-checks rule, and a `finished` implementer run checks its head, notes the result in the room and emits the span `agent-run.checks` | today's run |
 | `AGENT_RUN_SECONDS` | the pod's deadline: the final checks are skipped (`skipped: deadline`) when less than the declaration's budget plus 2 min is left | the final checks always run |
 | `AGENT_LOOP` | an implementer runs under the [loop policy](#loop-policy): a JSON object holding any of `stallSteps`, `continuations` and `judgeModel`; `{}` is 80, 2 and `tier-light` | no judge and no stall rule: the run ends when its conversation does |
+| `AGENT_SEARCH` | `1`: an implementer gets the `search` tool and its rule, once `agent_search` imports (else `agent-run: search off: …` and a run as today); the ledger's tool calls join the step count the loop policy's stall rule reads, and `agent-run search: N calls, S steps, T tokens, outcomes …` closes the log | no search tool |
 
 ## Loop policy
 
