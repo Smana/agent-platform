@@ -3,6 +3,8 @@
 package reconciler
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -79,5 +81,54 @@ func TestAnInvalidStoredScopeReachesNoBrief(t *testing.T) {
 	tk.Status.Scope = &v1alpha1.ScopeStatus{State: "ready", Seq: g.log.evs[len(g.log.evs)-1].Seq}
 	if sc, err := g.r.taskScope(t.Context(), tk); err != nil || sc != nil {
 		t.Fatalf("%+v %v", sc, err)
+	}
+}
+
+// The scope is read only for the briefs that carry it: a resumed replay reads none, so a room
+// that cannot be read cannot block it.
+func TestAResumedReplayNeverReadsTheScope(t *testing.T) {
+	g := scoperRig(t)
+	scopeHandoff(g, 0, readyScope())
+	endScoper(t, g, "Succeeded", "agent_finished")
+	g.reconcile(t, "3buqdlot", 1) // the implementer starts
+	g.runs.lose(rid(1))
+	g.log.end(rid(1), "Failed", "pod_lost")
+	g.reconcile(t, "3buqdlot", 1) // resume decided: Queued
+	g.log.failEvents = errors.New("room unreadable")
+	g.reconcile(t, "3buqdlot", 1)
+	if s, ok := g.runs.specs[rid(2)]; !ok || s.Role != "implementer" || !strings.Contains(s.TaskText, "interrupted by the platform") {
+		t.Fatalf("the replay did not start: %+v", g.runs.specs)
+	}
+}
+
+// A stored scope counts only from a triager's handoff.
+func TestAScopeFromAnotherRoleReachesNoBrief(t *testing.T) {
+	g := scoperRig(t)
+	scopeHandoff(g, 0, readyScope())
+	var p envelope.HandoffPayload
+	last := &g.log.evs[len(g.log.evs)-1]
+	_ = json.Unmarshal(last.Payload, &p)
+	p.FromRole = "implementer"
+	last.Payload = envelope.Must(p)
+	tk := g.reconcile(t, "3buqdlot", 1)
+	tk.Status.Scope = &v1alpha1.ScopeStatus{State: "ready", Seq: last.Seq}
+	if sc, err := g.r.taskScope(t.Context(), tk); err != nil || sc != nil {
+		t.Fatalf("%+v %v", sc, err)
+	}
+}
+
+// Offline proof 5, markup: a <-heavy scope at the bound (one byte each as stored, four as the
+// brief's sanitiser writes them) still fits beside the note and a 14 KiB snapshot.
+func TestAMarkupHeavyScopeFitsTheFirstBrief(t *testing.T) {
+	sc := maxScope(t)
+	sc.Task = strings.Repeat("<", 1000)
+	sc.Plan = []string{strings.Repeat("<", 300), strings.Repeat(">", 300), strings.Repeat("&", 300), strings.Repeat("<", 300), strings.Repeat(">", 300), strings.Repeat("&", 300)}
+	sc.Assumptions = []string{strings.Repeat("<", 300), strings.Repeat("<", 300)}
+	for sc.Validate() != nil {
+		sc.Plan = sc.Plan[:len(sc.Plan)-1]
+	}
+	tk := steered(issueTask("3buqdlot", 7, strings.Repeat("s", 14336)))
+	if b := firstBrief(tk, "n0nce234", &Scoped{Scope: sc, Seq: 9}); len(b) > firstCap || !strings.Contains(b, "SCOPE-DATA-") {
+		t.Fatalf("%d bytes (cap %d)", len(b), firstCap)
 	}
 }

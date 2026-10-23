@@ -148,7 +148,7 @@ func (r *Reconciler) taskScope(ctx context.Context, t *v1alpha1.Task) (*Scoped, 
 	}
 	var p envelope.HandoffPayload
 	// Checked again: the room is the broker's, but this text reaches a prompt.
-	if json.Unmarshal(evs[0].Payload, &p) != nil || p.Scope == nil || p.ToRole != "implementer" || p.Scope.Validate() != nil {
+	if json.Unmarshal(evs[0].Payload, &p) != nil || p.Scope == nil || p.FromRole != "triager" || p.ToRole != "implementer" || p.Scope.Validate() != nil {
 		return nil, nil
 	}
 	return &Scoped{Scope: *p.Scope, Seq: st.Seq, Assumed: st.State == "assumed"}, nil
