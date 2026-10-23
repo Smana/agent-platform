@@ -12,6 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 )
 
@@ -90,5 +91,18 @@ func TestAFullPageDiffRefusesPatchTooLarge(t *testing.T) {
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}}
 	if _, err := g.r.Reconcile(t.Context(), req); err == nil || len(g.f.Armed()) != 0 {
 		t.Fatalf("another Diff error stays an error, failing closed: %v", err)
+	}
+}
+
+// Steering on, a class with no condition on its diff: the second pass still reads it, and a pull
+// request that changes a steering note is handed to a human.
+func TestSteeringReadsTheDiffOfAnyClass(t *testing.T) {
+	g := mergeRig(t, v1alpha1.PhaseAwaitingCI)
+	g.r.Cfg.Loops = map[string]config.Loop{"default": {Scope: config.ScopeSteering}}
+	g.f.SetChecks(12, green("SUCCESS"))
+	g.f.SetFileStats(forge.FileStat{Path: ".github/agent-factory/steering/docs.md", Status: "modified", Additions: 1})
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "steering_path" ||
+		len(g.f.Armed()) != 0 {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
 	}
 }

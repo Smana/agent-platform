@@ -39,6 +39,10 @@ var (
 	ErrNotMergeable = errors.New("forge: GitHub does not allow the merge as it stands")
 )
 
+// ErrNotAFile is DefaultBranchFile at a path that is never a readable file: a directory, a file
+// over the contents API's 1 MB, a symlink or a submodule. It does not heal by retrying.
+var ErrNotAFile = errors.New("forge: the path is not a readable file")
+
 // Item is an open issue or pull request carrying a label.
 type Item struct {
 	Number      int

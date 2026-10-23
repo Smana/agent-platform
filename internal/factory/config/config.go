@@ -579,6 +579,13 @@ var (
 // The vocabularies the config is checked against: SP1's XRD roles and C5's logical model names.
 func roles() []string { return []string{"implementer", "reviewer", "tester", "triager"} }
 
+// Investigates reports whether template is R38's investigate path: its team starts with the
+// triager, which only proposes. A missing template is no team, so it is not one.
+func (c *Config) Investigates(template string) bool {
+	roles := c.Templates[template].Roles
+	return len(roles) > 0 && roles[0] == "triager"
+}
+
 // modelRE is a model name as meter.prices keys it: a C5 logical name or the model a gateway
 // backend pins (glm-5.3, claude-opus-5-5).
 var modelRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -1113,7 +1120,63 @@ type Loop struct {
 	Continuations *int32 `json:"continuations,omitempty"`
 	// Judge is the completion judge's alias, or none for no judge (L2): default tier-light.
 	Judge string `json:"judge,omitempty"`
+	// Scope is the class's scope mode (scoper design SC2): off, steering or scoper; unset is off.
+	// It never switches the loop on: On reads the loop's three keys only.
+	Scope ScopeMode `json:"scope,omitempty"`
 }
+
+// ScopeMode is a row's scope. The config is YAML 1.1, where a bare off is the boolean false: it
+// reads as off, so `scope: off` means what it says. true is refused.
+type ScopeMode string
+
+// The scope modes (SC2).
+const (
+	ScopeOff      ScopeMode = "off"
+	ScopeSteering ScopeMode = "steering"
+	ScopeScoper   ScopeMode = "scoper"
+)
+
+// UnmarshalJSON reads a string, or false as off.
+func (m *ScopeMode) UnmarshalJSON(b []byte) error {
+	if string(b) == "false" {
+		*m = ScopeOff
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("scope is off, steering or scoper: %s", b)
+	}
+	*m = ScopeMode(s)
+	return nil
+}
+
+// ScopeFor is class's scope mode: its row's, else default's, off when that row sets none. A row
+// is whole, as for the loop (part 2 R1): a class row without scope is off, whatever default's says.
+func (c *Config) ScopeFor(class string) ScopeMode {
+	row, ok := c.Loops[class]
+	if !ok {
+		row = c.Loops["default"]
+	}
+	if row.Scope == "" {
+		return ScopeOff
+	}
+	return row.Scope
+}
+
+// SteeringOn reports whether any class's scope is not off: the merge gate then reads the diff of
+// every pull request, to refuse one that changes a steering note.
+func (c *Config) SteeringOn() bool {
+	for _, row := range c.Loops {
+		if row.Scope != "" && row.Scope != ScopeOff {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeModes are the modes this release honours: a mode it cannot run must fail the start, never
+// run as another (scoper plan S1).
+func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering} }
 
 // The loop policy's defaults (loops design, "The policy, in the factory config") and the
 // harness's bounds (loop policy harness R16), which the XRD repeats.
@@ -1180,6 +1243,13 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 		}
 		if j := row.Judge; j != "" && j != NoJudge && !slices.Contains(models(), j) {
 			bad("loops.%s.judge %q is none or one of %v", name, j, models())
+		}
+		switch m := row.Scope; {
+		case m == "" || slices.Contains(scopeModes(), m):
+		case m == ScopeScoper:
+			bad("loops.%s.scope %q needs the scoper's release", name, m)
+		default:
+			bad("loops.%s.scope %q is off, steering or scoper", name, m)
 		}
 		if row.On() && c.Runs.Group != runwatch.DefaultKind.Group {
 			bad("loops.%s: the loop policy needs cloud-native-ref's AgentRun (runs.group %s): this runtime's has no spec.loop", name, runwatch.DefaultKind.Group)

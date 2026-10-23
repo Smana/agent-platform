@@ -13,7 +13,7 @@ import (
 // waitReasons are the reasons a task waits or hands off with (merge gate, run end, queue holds):
 // the summary shows each as prose, never the raw key.
 var waitReasons = []string{
-	"ci_pending", "merge_gate_off", "policy_pending", "policy_absent", "not_mergeable", "gate_path", "verdict_stale",
+	"ci_pending", "merge_gate_off", "policy_pending", "policy_absent", "not_mergeable", "gate_path", "steering_path", "verdict_stale",
 	"human_commit_in_pr", "shadow_would_arm", "auto_merge_cap", "stuck", "ci_red", "secret_scan_red", "review_rounds_exhausted",
 	"no_verdict", "budget-task", "resume_budget", "run_unschedulable", "pod_lost", "deadline", "agent_error", "agent_stuck",
 	"no_pr", "waiting_human_driver", "waiting_room_busy", "waiting_run_slot", "waiting_active_tasks", "waiting_review_wip",

@@ -70,6 +70,7 @@ type TaskForge interface {
 	BranchActivity(ctx context.Context, branch string) ([]forge.Push, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
+	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -91,6 +92,7 @@ type metrics interface {
 	Resumed(ctx context.Context, reason string)
 	LoopRun(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
+	SteeringRead(ctx context.Context, class, read string)
 }
 
 // A task's span unexported at its end is retried every spanRetry, and given up spanGiveUp after
@@ -667,6 +669,9 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if p := r.Cfg.LoopFor(d.PredictedClass); p != nil {
 		t.Spec.Loop = &v1alpha1.Loop{StallSteps: p.StallSteps, Continuations: p.Continuations, JudgeModel: p.JudgeModel}
 	}
+	if err := r.scopeAtTriage(ctx, t); err != nil {
+		return err // a note that cannot be read is retried, never read as none (SC4)
+	}
 	status := t.Status // Update returns the server's status into t; keep ours
 	if err := r.Client.Update(ctx, t); err != nil {
 		return err
@@ -862,6 +867,13 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 		case err != nil:
 			return err
 		}
+		// SC3: the note once, after the snapshot, which stays the room's first task_state.
+		if t.Spec.Steering != nil {
+			if err := narrate.Room(ctx, r.Rooms, t, "steering", SteeringMessage(t),
+				func(ctx context.Context) error { return r.Client.Status().Update(ctx, t) }); err != nil {
+				return err
+			}
+		}
 	}
 	if late && t.Status.NextRole != "" {
 		return r.startVerifier(ctx, t, pr)
@@ -870,7 +882,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	// run ever starts from an internal-origin task. A missing template is no team, so it is not a
 	// triager one either: the config's validation cannot guard a name removed after a task was
 	// triaged.
-	if roles := r.Cfg.Templates[t.Spec.Template].Roles; len(roles) > 0 && roles[0] == "triager" {
+	if r.Cfg.Investigates(t.Spec.Template) {
 		text, ok, err := r.resumeBrief(ctx, t)
 		if err != nil {
 			return err

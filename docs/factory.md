@@ -159,6 +159,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `policy_absent` | policy-bot has not evaluated the pull request, or the status is not from `merge.policyBotLogin` |
 | `maintainer_approved` | A maintainer approved it: a human merges it |
 | `gate_path` | It touches a gate path, so an agent can never merge it; a human re-authors the change |
+| `steering_path` | Steering is on for some class and the pull request changes a [steering note](#steering); a human merges it |
 | `not_mergeable` | GitHub refused the merge as the pull request stands |
 | `not_agent_authored` | The pull request is not from `agentsLogin` |
 | `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or its `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
@@ -591,6 +592,8 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `spec.template` | `solo`, `pair`, `trio` or `investigate` |
 | `spec.budget` | `tier`, `model`, `runTokens` (≤ 5,000,000), `taskTokens`, `runMinutes` (≤ 480), `runMicroUSD`, `taskMicroUSD` (0: the token caps) |
 | `spec.loop` | `stallSteps`, `continuations`, `judgeModel` (empty: no judge): the class's `loops` row, resolved at triage; every implementer run of the task gets it as `spec.loop`. Unset: the loop is off |
+| `spec.scopeMode` | `off`, `steering` or `scoper`: the class's `loops` row, fixed at triage. Empty: triaged before the field existed, read as `off`. An `investigate` task is always `off` |
+| `spec.steering` | `path`, `sha` (the git blob), `text`: the class's steering note on the default branch, read at triage; unset for none |
 | `status.phase`, `status.reason`, `status.phaseSince` | The phase above, why, and since when |
 | `status.classification` | The classifier's `tier`, `confidence`, `classifier`, `fallback` (`none`, `default`, `static`), `shadow` verdicts, `control` (forced to `frontier`) and `fit` (scored at the end) |
 | `status.runs[]` | Each run: `id`, `role`, `trigger` (`initial`, `review`, `human`, `ci`, `retry`, `resume`), `round`, `phase`, `reason`, `verdict`, `tokens`, `costMicroUSD`, `unpriced`, `startSeq`, `headSHA`, `started`, `finished`, and `provenance`, what it ran on: `factoryVersion` (the claim's CREATE-only `agents.ogenki.io/factory-version`), `compositionRevision` (the claim's `spec.crossplane.compositionRevisionRef.name`), `harnessImage` (the claim's `status.harnessImage`, the harness container's `imageID`) and `servedModels` (the meter's `gen_ai_request_model`, at most 8, each at most 64 characters: a longer name is skipped, never truncated). Each is written once, as it becomes known; empty means unknown. A run created before the upgrade (its claim has no factory version) stays empty, and a value over the CRD's bound is not recorded |
@@ -645,7 +648,7 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `api` | `listen` (the chart's `api` port is `:8082`), `humanIssuer`, `humanJWKS`, `clientIDFiles`; `groups: {admin, member}`, the two groups the API admits; `systemIssuer`, `systemJWKS` (both or neither), `systemPrincipals`; `systemRepositories: {<principal>: [owner/name]}`, the listed repositories each system principal may start runs on; `access: {readerFile, ttl}`, the ZITADEL reader that resolves a human caller to their GitHub login (`ttl` at most 5m) | Required but `groups`, `access` and the system keys; `groups` defaults to `agents-admin` and `agents-member`, the broker's values. Without `access` every human run is refused |
 | `runlore` | `listen`, `tokenFile`, `minConfidence` (0–1], `dailyCap`; `repository`, the listed repository its issues and tasks go to | Required but `repository`, which defaults to the first entry |
 | `sandbox` | `suspend: {enabled}`: a run `POST /v1/runs` starts in an attended room gets `spec.suspendable: true`, which lets the room broker suspend it while its approval waits on an idle room (the broker's `suspend` config). Fixed on the claim at create | `enabled` false |
-| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s; it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`. Needs cloud-native-ref's `AgentRun` (`runs` left at its default) | None: every run as before |
+| `loops` | `<class>: {stallSteps (1–500), continuations (0–5), judge (an alias or none)}`, keyed by a declared class, `review` or `default` (every class without a row). A row is read whole, never merged with `default`'s (a row with only `scope` has no loop, even when `default` has one); it switches the class's [loop policy](https://github.com/Smana/ai-native-ref/blob/main/docs/superpowers/specs/2026-10-21-loops-and-teams-design.md) on when it sets any of the three, and an unset one is 80, 2 or `tier-light`; `scope` (`off`, `steering`; unset is `off`, and a bare `off` in YAML reads as `off`) picks the class's [steering](#steering): never part of the loop, so `{scope: steering}` alone switches no loop on. Needs cloud-native-ref's `AgentRun` (`runs` left at its default) for the loop | None: every run as before |
 
 Each `repositories` entry:
 
@@ -706,6 +709,24 @@ link (`api.access.readerFile`), then asks GitHub with the factory App; both answ
 `api.access.ttl`. A caller with no GitHub link, a lookup that fails, or a factory without
 `api.access` is refused `403 repository_permission`. Metrics carry a `repository` label whose
 values are the listed names only, anything else `other`.
+
+### Steering
+
+A repository's maintainers may keep a note per class at `.github/agent-factory/steering/<class>.md`
+(`review.md` for unlabelled issues): at most 2048 bytes, an optional `# ` title, at most three `## `
+modules, one of them `## Verify` listing the checks that prove a change of the class, each with the
+CI check that runs it. `## Leave alone` lists paths not to touch. Under `scope: steering` the factory
+reads it on the default branch at triage, keeps it on `spec.steering`, posts it once in the room after
+the snapshot and puts it, quoted between two fence lines as the maintainers' guidance (not the
+factory's instructions), in every implementer brief. Control and invisible characters are refused. An
+absent note is no steering; an invalid one is not used, counted and logged, and the task proceeds; a
+read that fails is retried. A repository the factory does not own (or whose fence cache is stale) is
+not read: the task proceeds unsteered and the read counts as `unowned`. While any class has steering on, the
+factory reads the diff of every pull request it would arm and refuses one that changes (or renames
+away) a path under `.github/agent-factory/steering/` as `steering_path`, handed to a human; with
+every class `off` there is no extra read. The repository should also make that directory a
+policy-bot gate path. A first brief that cannot hold the note and a 14 KiB snapshot
+points at the snapshot in the room instead.
 
 ### The factory's API
 

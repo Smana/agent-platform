@@ -120,6 +120,7 @@ type fakeGitHub struct {
 	perms     []map[string]string
 	// fence is .github/agent-factory.yaml on the default branch: "" is absent, "!" a 500.
 	fence string
+	steer map[string]string // default-branch steering notes by path; "!" fails the read
 }
 
 func (g *fakeGitHub) setWantPerms(p map[string]string) {
@@ -468,6 +469,32 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
 			default:
 				_ = json.NewEncoder(w).Encode(map[string]any{"name": "agent-factory.yaml", "path": p, "type": "file",
+					"encoding": "base64", "size": len(body), "content": base64.StdEncoding.EncodeToString([]byte(body))})
+			}
+		case strings.HasPrefix(p, ".github/agent-factory/steering/") && ref == "":
+			g.mu.Lock()
+			body, ok := g.steer[p]
+			g.mu.Unlock()
+			switch {
+			case body == "big":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"encoding": "none", "size": 2 << 20, "content": ""})
+			case body == "dir":
+				_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "x.md", "path": p + "/x.md", "type": "file"}})
+			case body == "symlink" || body == "submodule":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": body, "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"size": 12, "target": "../elsewhere.md"})
+			case body == "linked":
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "other.md", "path": "docs/other.md", "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
+					"encoding": "base64", "size": 2, "content": base64.StdEncoding.EncodeToString([]byte("x\n"))})
+			case body == "denied":
+				http.Error(w, `{"message":"Forbidden"}`, http.StatusForbidden)
+			case !ok:
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			case body == "!":
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "x.md", "path": p, "type": "file", "sha": "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f",
 					"encoding": "base64", "size": len(body), "content": base64.StdEncoding.EncodeToString([]byte(body))})
 			}
 		case p == "docs/big.png":
@@ -1311,5 +1338,61 @@ func TestFenceFileReadsTheDefaultBranch(t *testing.T) {
 	r.gh.mu.Unlock()
 	if _, _, err := r.g.FenceFile(t.Context()); err == nil {
 		t.Fatal("a failed read is an error")
+	}
+}
+
+// Scoper design SC3: a steering note on the default branch, with its blob sha; absent is an
+// answer, a failure is not.
+func TestDefaultBranchFileReadsASteeringNote(t *testing.T) {
+	r := newRig(t)
+	const p = ".github/agent-factory/steering/docs.md"
+	if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); found || err != nil {
+		t.Fatalf("absent: %v %v", found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.steer = map[string]string{p: "## Verify\n- x\n"}
+	r.gh.mu.Unlock()
+	text, sha, found, err := r.g.DefaultBranchFile(t.Context(), p)
+	if !found || err != nil || text != "## Verify\n- x\n" || sha != "5e1f0c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f" {
+		t.Fatalf("present: %q %q %v %v", text, sha, found, err)
+	}
+	r.gh.mu.Lock()
+	r.gh.steer[p] = "!"
+	r.gh.mu.Unlock()
+	if _, _, _, err := r.g.DefaultBranchFile(t.Context(), p); err == nil {
+		t.Fatal("a failed read is an error")
+	}
+}
+
+// A path that is never a readable note (a directory, a file over 1 MB, a symlink, a submodule) is
+// ErrNotAFile: retrying cannot change it, so the caller proceeds unsteered.
+func TestDefaultBranchFileNeverReadable(t *testing.T) {
+	const p = ".github/agent-factory/steering/docs.md"
+	for name, body := range map[string]string{"an oversized file": "big", "a directory": "dir", "a symlink": "symlink", "a submodule": "submodule", "a symlink resolved to its target": "linked"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.gh.mu.Lock()
+			r.gh.steer = map[string]string{p: body}
+			r.gh.mu.Unlock()
+			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); !errors.Is(err, ErrNotAFile) || found {
+				t.Fatalf("found %v err %v, want ErrNotAFile", found, err)
+			}
+		})
+	}
+}
+
+// A 403, a 5xx or a network failure is retryable: an error that is not ErrNotAFile, never "no note" (SC4).
+func TestDefaultBranchFileFailsClosed(t *testing.T) {
+	const p = ".github/agent-factory/steering/docs.md"
+	for name, body := range map[string]string{"a 403": "denied", "a 500": "!"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.gh.mu.Lock()
+			r.gh.steer = map[string]string{p: body}
+			r.gh.mu.Unlock()
+			if _, _, found, err := r.g.DefaultBranchFile(t.Context(), p); err == nil || found || errors.Is(err, ErrNotAFile) {
+				t.Fatalf("found %v err %v, want a retryable error", found, err)
+			}
+		})
 	}
 }

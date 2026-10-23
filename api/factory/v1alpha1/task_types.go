@@ -88,6 +88,14 @@ type TaskSpec struct {
 	// +kubebuilder:validation:MaxItems=16
 	// +optional
 	Findings []Finding `json:"findings,omitempty"`
+	// The class's scope mode (scoper design SC2), fixed at triage so a config change never moves a
+	// task already triaged. Empty: triaged before the scoper existed, which reads as off.
+	// +kubebuilder:validation:Enum=off;steering;scoper
+	// +optional
+	ScopeMode string `json:"scopeMode,omitempty"`
+	// The class's steering note, read on the default branch at triage (SC3); unset for none.
+	// +optional
+	Steering *Steering `json:"steering,omitempty"`
 }
 
 // Finding is one dead external link two consecutive detector runs on main reported (MC5).
@@ -107,6 +115,18 @@ type Finding struct {
 	// +kubebuilder:validation:Pattern=`^https://web\.archive\.org/web/`
 	// +optional
 	Archive string `json:"archive,omitempty"`
+}
+
+// Steering is a steering note as triage read it: every run of the task sees these bytes.
+type Steering struct {
+	// +kubebuilder:validation:MaxLength=256
+	Path string `json:"path"`
+	// The note's git blob sha on the default branch.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	// +kubebuilder:validation:MaxLength=40
+	SHA string `json:"sha"`
+	// +kubebuilder:validation:MaxLength=2048
+	Text string `json:"text"`
 }
 
 // Loop is a task's loop policy, every value resolved at triage.
