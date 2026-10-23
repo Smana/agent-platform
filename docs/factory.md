@@ -164,9 +164,9 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `class_mismatch` | The predicted class is neither live nor shadow (such as `review`), or its `diffShape` does not hold (`docs-links` and `revert` diffs change only link targets) |
 | `file_not_allowed` | It changes a file outside its class's allowed files |
 | `file_protected` | It changes a file its class protects |
-| `file_added_or_deleted` | It adds, deletes, renames or copies a file, which its class does not allow |
+| `file_added_or_deleted` | Any change but a content modification: an add, delete, rename, copy or mode-only change, which its class does not allow |
 | `patch_too_large` | It changes more files or lines than its class allows |
-| `holdout_red` | A holdout check its class requires failed, was skipped or neutral, or was not posted by GitHub Actions |
+| `holdout_red` | A holdout check its class requires failed, was cancelled, neutral or skipped, or was not posted by GitHub Actions; also when the pull request has more than 100 checks, since some are unread |
 | `holdout_pending` | A holdout check its class requires has not passed yet |
 | `no_approving_verdict` | The template has a reviewer and its verdict is not approve |
 | `head_unreported` | The room never reported the current head as a commit of the task's run |
@@ -178,6 +178,10 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
 | `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
 | `ci_cancelled` | A required check was cancelled and re-running it did not settle it |
+
+A holdout's workflow file must be a gate path (policy-bot's gate paths cover it), otherwise a pull
+request can edit the workflow and post SUCCESS itself; the host's gate-coverage check enforces it.
+A diff of 100 files or more is `patch_too_large` without being read.
 
 The gate compares GitHub logins (`agentsLogin`, `factoryLogin`, `merge.policyBotLogin`,
 `merge.mergerLogin`) case-insensitively, as GitHub does.

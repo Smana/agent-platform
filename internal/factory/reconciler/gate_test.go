@@ -150,3 +150,12 @@ func TestAllowedFilesAnchorsTheWholePattern(t *testing.T) {
 		}
 	}
 }
+
+// A rollup read in part may hide a failing run of a holdout's name: fail closed.
+func TestATruncatedRollupRefusesTheHoldout(t *testing.T) {
+	in := gateInputs()
+	in.Checks.Truncated = true
+	if d := DecideArm(in); d.Verdict != "human" || d.Reason != "holdout_red" {
+		t.Fatalf("%+v", d)
+	}
+}

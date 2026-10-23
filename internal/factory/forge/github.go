@@ -609,7 +609,8 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 						Commit struct {
 							StatusCheckRollup *struct {
 								Contexts struct {
-									Nodes []struct {
+									PageInfo struct{ HasNextPage bool }
+									Nodes    []struct {
 										Typename string `graphql:"__typename"`
 										CheckRun struct {
 											DatabaseID int64
@@ -651,6 +652,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 	if rollup == nil {
 		return out, nil
 	}
+	out.Truncated = rollup.Contexts.PageInfo.HasNextPage || len(rollup.Contexts.Nodes) >= 100
 	for _, n := range rollup.Contexts.Nodes {
 		switch n.Typename {
 		case "CheckRun":
@@ -853,7 +855,7 @@ func (g *GitHub) Diff(ctx context.Context, base, head string) (Diff, error) {
 		return Diff{}, wrap("compare commits", err)
 	}
 	if len(cmp.Files) == 100 { // one page exactly: unseen files must not let a diff pass as links-only
-		return Diff{}, fmt.Errorf("forge: 100 files differ between %s and %s, a full page: the links-only test cannot see them all", base, head)
+		return Diff{}, fmt.Errorf("%w: 100 files differ between %s and %s, the links-only test cannot see them all", ErrDiffTooLarge, base, head)
 	}
 	// The file list is three-dot: changed since the merge base. Reading the base side at base's
 	// tip instead would fold in whatever landed there since the branch was cut

@@ -124,8 +124,12 @@ func diffShape(cl config.Class, in ArmInputs) (string, bool) {
 // holdoutChecks (loops L7): each named check passed on the head, posted by GitHub Actions, and
 // every run of that name did: the raw conclusion must be SUCCESS, since a skipped or neutral job
 // (an if: or paths filter) reads State SUCCESS and checked nothing. Not reported yet, or still
-// running, waits; any run failed, cancelled, skipped or posted by another App refuses.
+// running, waits; any run failed, cancelled, skipped or posted by another App refuses, and so does
+// a rollup read in part (Checks.Truncated): a run of the name may be unseen.
 func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
+	if in.Checks.Truncated { // fail closed: a run of the name may sit past the page read
+		return "holdout_red", false
+	}
 	wait := false
 	for _, name := range cl.HoldoutChecks {
 		seen := false

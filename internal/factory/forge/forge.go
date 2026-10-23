@@ -22,6 +22,10 @@ var ErrEventsTruncated = errors.New("forge: label events past the page cap are u
 // never listed, so the list read is not known to be the whole pull request.
 var ErrCommitsTruncated = errors.New("forge: a pull request's commits past GitHub's 250 are unread")
 
+// ErrDiffTooLarge is Diff reaching a full page of files: the files past it are unseen, so the
+// diff cannot be judged. The merge path hands such a pull request to a human (patch_too_large).
+var ErrDiffTooLarge = errors.New("forge: a diff of a full page of files, the rest unread")
+
 // ErrActivityTruncated is BranchActivity reaching its page cap before the branch's creation: the
 // pushes before what was read are unknown.
 var ErrActivityTruncated = errors.New("forge: a branch's activity past the page cap is unread")
@@ -221,6 +225,8 @@ type Status struct {
 type Checks struct {
 	Runs     []Check
 	Statuses []Status
+	// Truncated: the rollup has more contexts than the one page read, so a check may be unseen.
+	Truncated bool
 }
 
 // StatusOf is the state and creator of the named commit status; "", "" when it is absent.

@@ -94,11 +94,16 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		// on its diff pays its 2N+1 API calls. The first pass held those conditions vacuously;
 		// this second pass decides on the real diff.
 		diff, ferr := r.merger(ctx).Diff(ctx, "main", pr.HeadSHA)
-		if ferr != nil {
+		switch {
+		case errors.Is(ferr, forge.ErrDiffTooLarge):
+			// A full page of files is over any class's maxPatchFiles: hand it off, as the gate does.
+			d = ArmDecision{Verdict: "human", Reason: "patch_too_large"}
+		case ferr != nil:
 			return ferr
+		default:
+			in.Files.Base, in.Files.Head, in.Stats, in.DiffRead = diff.Base, diff.Head, diff.Files, true
+			d = DecideArm(in)
 		}
-		in.Files.Base, in.Files.Head, in.Stats, in.DiffRead = diff.Base, diff.Head, diff.Files, true
-		d = DecideArm(in)
 	}
 	if d.Verdict == "arm" || d.Verdict == "shadow" {
 		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the

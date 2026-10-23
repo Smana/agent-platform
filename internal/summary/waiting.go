@@ -138,6 +138,8 @@ func nextStep(reason string) string {
 		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
+	case "holdout_pending":
+		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting (agent-platform #182)"
 	case "verdict_stale":
 		return "a maintainer reviews the current head, or the factory asks for a new review"
 	}

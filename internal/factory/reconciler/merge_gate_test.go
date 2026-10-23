@@ -3,8 +3,13 @@
 package reconciler
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/forge"
@@ -69,5 +74,21 @@ func TestAPendingHoldoutWaits(t *testing.T) {
 	g.f.SetChecks(12, checks)
 	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Reason != "holdout_pending" {
 		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+}
+
+// A diff of a full page is unseen files: the task is handed off, not retried in AwaitingCI.
+func TestAFullPageDiffRefusesPatchTooLarge(t *testing.T) {
+	g := declaredRig(t)
+	g.f.SetDiffError(fmt.Errorf("wrapped: %w", forge.ErrDiffTooLarge))
+	if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || tk.Status.Reason != "patch_too_large" ||
+		len(g.f.Armed()) != 0 {
+		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+	}
+	g = declaredRig(t)
+	g.f.SetDiffError(errors.New("boom"))
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "agent-system", Name: "3buqdlot"}}
+	if _, err := g.r.Reconcile(t.Context(), req); err == nil || len(g.f.Armed()) != 0 {
+		t.Fatalf("another Diff error stays an error, failing closed: %v", err)
 	}
 }

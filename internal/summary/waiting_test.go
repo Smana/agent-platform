@@ -44,7 +44,7 @@ func TestEveryGeneratedGhCommandNamesItsRepository(t *testing.T) {
 func TestEveryWaitingPhaseHasAReasonAndANextStep(t *testing.T) {
 	waits := []envelope.TaskFacts{
 		{Phase: "Queued"}, {Phase: "Queued", Reason: "waiting_run_slot"}, {Phase: "Queued", Reason: "waiting_daily_budget"},
-		{Phase: "Queued", Reason: "waiting_human_driver"}, {Phase: "AwaitingCI"}, {Phase: "AwaitingCI", Reason: "ci_pending"},
+		{Phase: "Queued", Reason: "waiting_human_driver"}, {Phase: "AwaitingCI"}, {Phase: "AwaitingCI", Reason: "ci_pending"}, {Phase: "AwaitingCI", Reason: "holdout_pending"},
 		{Phase: "AwaitingHuman"}, {Phase: "AwaitingHuman", Reason: "policy_pending"}, {Phase: "AwaitingHuman", Reason: "not_mergeable"},
 		{Phase: "Escalated", Reason: "stuck"}, {Phase: "Escalated", Reason: "ci_red"}, {Phase: "Escalated", Reason: "never_heard_of_it"},
 	}
@@ -53,6 +53,9 @@ func TestEveryWaitingPhaseHasAReasonAndANextStep(t *testing.T) {
 		if s.Status.Reason == "" || s.Status.Next == "" {
 			t.Errorf("%s/%s: reason %q, next %q", f.Phase, f.Reason, s.Status.Reason, s.Status.Next)
 		}
+	}
+	if s := taskView(envelope.TaskFacts{Phase: "AwaitingCI", Reason: "holdout_pending"}, watcher()); !strings.Contains(s.Status.Next, "holdout checks report") {
+		t.Errorf("holdout_pending has its own next step: %q", s.Status.Next)
 	}
 	if s := taskView(envelope.TaskFacts{Phase: "Implementing"}, watcher()); s.Status.Reason != "" || s.Status.Next != "" {
 		t.Errorf("a running task is not waiting: %+v", s.Status)

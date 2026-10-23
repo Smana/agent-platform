@@ -45,6 +45,7 @@ type Fake struct {
 	filesBase    map[string]string
 	filesHead    map[string]string
 	fileStats    []forge.FileStat
+	diffErr      error
 	open         []forge.PRSummary
 	created      []string
 	armed        []string
@@ -395,6 +396,13 @@ func (f *Fake) SetFiles(base, head map[string]string) {
 	f.filesBase, f.filesHead = maps.Clone(base), maps.Clone(head)
 }
 
+// SetDiffError makes Diff fail with err, such as forge.ErrDiffTooLarge.
+func (f *Fake) SetDiffError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.diffErr = err
+}
+
 // SetFileStats sets the changed-file list Diff returns in place of the one SetFiles implies.
 func (f *Fake) SetFileStats(fs ...forge.FileStat) {
 	f.mu.Lock()
@@ -409,6 +417,9 @@ func (f *Fake) SetFileStats(fs ...forge.FileStat) {
 func (f *Fake) Diff(context.Context, string, string) (forge.Diff, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.diffErr != nil {
+		return forge.Diff{}, f.diffErr
+	}
 	d := forge.Diff{Base: maps.Clone(f.filesBase), Head: maps.Clone(f.filesHead), Files: slices.Clone(f.fileStats)}
 	if d.Files != nil {
 		return d, nil
