@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
@@ -262,5 +264,65 @@ func TestCapacityAndBudgetEndsEscalateTheScoper(t *testing.T) {
 				t.Fatalf("%s %+v", tk.Status.Phase, tk.Status.Scope)
 			}
 		})
+	}
+}
+
+func taskKey(name string) types.NamespacedName {
+	return types.NamespacedName{Namespace: "agent-system", Name: name}
+}
+
+// bounced is a scoper rig whose scoper asked its question.
+func bounced(t *testing.T) *rig {
+	t.Helper()
+	g := scoperRig(t)
+	scopeHandoff(g, 0, questionScope())
+	endScoper(t, g, "Succeeded", "agent_finished")
+	return g
+}
+
+// SC8 (b): /factory retry proceeds on the assumptions, with no second scoper run.
+func TestARetryProceedsOnTheAssumption(t *testing.T) {
+	g := bounced(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) } // the command must postdate the escalation
+	g.f.SetComments(7, retryBy(77, "smana", -30*time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 2)
+	s := g.runs.specs[rid(1)]
+	if tk.Status.Scope.State != "assumed" || s.Role != "implementer" || !strings.Contains(s.TaskText, "first assumption") {
+		t.Fatalf("%+v %+v", tk.Status.Scope, s)
+	}
+	if !slices.Equal(g.f.Removed(7), []string{"factory/needs-author"}) || !slices.Contains(g.metrics.recorded, "bounce review retry") {
+		t.Fatalf("removed %v metrics %v", g.f.Removed(7), g.metrics.recorded)
+	}
+}
+
+// SC8 (a) and (c): a superseding re-label and the expiry each count their exit and drop the label.
+func TestTheOtherExitsAreCounted(t *testing.T) {
+	g := bounced(t)
+	var tk v1alpha1.Task
+	_ = g.c.Get(t.Context(), taskKey("3buqdlot"), &tk)
+	tk.Annotations = map[string]string{v1alpha1.AnnotationStop: "superseded"}
+	_ = g.c.Update(t.Context(), &tk)
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Phase != v1alpha1.PhaseStopped || got.Status.Scope.State != "question" {
+		t.Fatalf("%s %+v", got.Status.Phase, got.Status.Scope)
+	}
+	if !slices.Contains(g.metrics.recorded, "bounce review relabel") || !slices.Equal(g.f.Removed(7), []string{"factory/needs-author"}) {
+		t.Fatalf("metrics %v removed %v", g.metrics.recorded, g.f.Removed(7))
+	}
+	g = bounced(t)
+	g.r.Cfg.Caps.EscalatedHours = new(168)
+	g.r.Now = func() time.Time { return now.Add(200 * time.Hour) }
+	if got := g.reconcile(t, "3buqdlot", 1); got.Status.Reason != "escalation_expired" || !slices.Contains(g.metrics.recorded, "bounce review expired") {
+		t.Fatalf("%s %v", got.Status.Reason, g.metrics.recorded)
+	}
+}
+
+// An answer from anyone else does nothing: a retry by a non-maintainer leaves the bounce as it is.
+func TestOnlyAMaintainersRetryProceeds(t *testing.T) {
+	g := bounced(t)
+	g.r.Now = func() time.Time { return now.Add(time.Hour) }
+	g.f.SetComments(7, retryBy(77, "octocat", -30*time.Minute))
+	tk := g.reconcile(t, "3buqdlot", 1)
+	if tk.Status.Phase != v1alpha1.PhaseEscalated || tk.Status.Scope.State != "question" || len(g.f.Removed(7)) != 0 {
+		t.Fatalf("%s %+v %v", tk.Status.Phase, tk.Status.Scope, g.f.Removed(7))
 	}
 }

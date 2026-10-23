@@ -87,7 +87,7 @@ type Note struct {
 // room keeps waiting (N3). It carries a link to the room and never a command: approving is
 // web-only (D4, ruling P18).
 type Need struct {
-	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason) | merge (ID is the PR number)
+	Kind     string    `json:"kind"` // approval | hold (ID is then the task's wait reason) | merge (ID is the PR number) | answer (ID is the issue number)
 	ID       string    `json:"id"`
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
@@ -278,6 +278,9 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		s.NeedsYou = append(s.NeedsYou, n)
 	}
 	if n, ok := Merge(st.Facts, sub); ok {
+		s.NeedsYou = append(s.NeedsYou, n)
+	}
+	if n, ok := Answer(st.Facts, sub); ok {
 		s.NeedsYou = append(s.NeedsYou, n)
 	}
 	// Review requests are not needs here: GitHub already notifies them (spec D6).

@@ -341,6 +341,10 @@ func (r *Reconciler) escalated(ctx context.Context, t *v1alpha1.Task) error {
 		return r.expireEscalation(ctx, t)
 	}
 	markHandled(t, c.ID)
+	if t.Status.Reason == ReasonNeedsAuthor && t.Status.Scope != nil {
+		r.leaveBounce(ctx, t, "retry")
+		t.Status.Scope.State = "assumed" // SC8 (b): no second scoper run
+	}
 	after := t.Status.Reason
 	t.Status.Retries++
 	t.Status.RetriedBy = v1alpha1.Person(c.Author) // D2: the retrier pays for the runs the retry causes
@@ -373,6 +377,7 @@ func (r *Reconciler) expireEscalation(ctx context.Context, t *v1alpha1.Task) err
 			return nil
 		}
 	}
+	r.leaveBounce(ctx, t, "expired")
 	return r.end(ctx, t, v1alpha1.PhaseStopped, "escalation_expired")
 }
 
