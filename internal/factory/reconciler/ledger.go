@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -33,6 +34,43 @@ func FollowUpOfLabel(n int) string { return fmt.Sprintf("factory/follow-up-of:#%
 // RegressionLabel marks a merged pull request the monitor found regressed (MC7).
 const RegressionLabel = "factory/monitor:regression"
 
+// ledgerPage is how many pull requests one labelled read returns (forge.GitHub.PullsWithLabel).
+const ledgerPage = 100
+
+// errLedgerTruncated: a labelled read filled its page and the oldest pull request on it is still
+// inside what the ledger counts, so older ones may be missing. An incomplete ledger must never
+// under-count: the class does not arm (ledger_truncated). Not paginated.
+var errLedgerTruncated = errors.New("ledger_truncated: a labelled read filled its page of 100 and the oldest is still inside the window")
+
+// pageTruncated reports whether a full page's oldest merged pull request is still inside the
+// breaker's window (among the page's newest window merges) or merged today, for the caps.
+func (r *Reconciler) pageTruncated(ps []forge.LabelledPull, window int) bool {
+	if len(ps) < ledgerPage {
+		return false
+	}
+	var merged []time.Time
+	oldest := time.Time{}
+	for _, p := range ps { // newest created first: the last merged one is the oldest
+		if p.State == "MERGED" && !p.MergedAt.IsZero() {
+			merged = append(merged, p.MergedAt)
+			oldest = p.MergedAt
+		}
+	}
+	if len(merged) == 0 {
+		return false
+	}
+	if sameUTCDay(oldest, r.Now()) {
+		return true
+	}
+	newer := 0
+	for _, at := range merged {
+		if at.After(oldest) {
+			newer++
+		}
+	}
+	return newer < window
+}
+
 // Merge is one merged pull request of a class as the breaker counts it: when it merged, and
 // whether a revert of it was opened.
 //
@@ -56,8 +94,10 @@ type mergeLedger struct {
 }
 
 // githubLedger reads the ledger at the first decision and keeps it. A class's newest
-// merge.breaker.window merges are each asked for a revert: the window never reaches older ones,
-// since a Task's merge only pushes them further out.
+// merge.breaker.window merges are each asked for a revert and for a merged follow-up: the window
+// never reaches older ones, since a Task's merge only pushes them further out. The newest 100
+// pull requests of each label are all a read sees: a full page that may hide a merge the ledger
+// counts is errLedgerTruncated, not a short count.
 func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (map[string][]Merge, error) {
 	r.ledger.mu.Lock()
 	defer r.ledger.mu.Unlock()
@@ -68,9 +108,12 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 	if err != nil {
 		return nil, fmt.Errorf("read the merge ledger: %w", err)
 	}
-	regressed := make(map[int]bool, len(rg))
+	regressed, oldestRegressed := make(map[int]bool, len(rg)), 0
 	for _, p := range rg {
 		regressed[p.Number] = true
+		if oldestRegressed == 0 || p.Number < oldestRegressed {
+			oldestRegressed = p.Number
+		}
 	}
 	byClass := make(map[string][]Merge, len(rc.Classes))
 	for _, class := range slices.Sorted(maps.Keys(rc.Classes)) {
@@ -81,6 +124,9 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 		all, err := r.merger(ctx).PullsWithLabel(ctx, MergedLabel(class))
 		if err != nil {
 			return nil, fmt.Errorf("read the merge ledger: %w", err)
+		}
+		if r.pageTruncated(auto, rc.Merge.Breaker.Window) || r.pageTruncated(all, rc.Merge.Breaker.Window) {
+			return nil, errLedgerTruncated
 		}
 		var ms []Merge
 		at := map[int]int{}
@@ -100,6 +146,9 @@ func (r *Reconciler) githubLedger(ctx context.Context, rc *config.Repository) (m
 		}
 		newestFirst(ms)
 		for i := range ms[:min(len(ms), rc.Merge.Breaker.Window)] {
+			if len(rg) >= ledgerPage && ms[i].Number < oldestRegressed {
+				return nil, errLedgerTruncated // its regression label may be past the page
+			}
 			// Any revert PR counts, as a Task counts from the revert's opening: a rebuild must not
 			// change the breaker's verdict.
 			rv, err := r.merger(ctx).PullsWithLabel(ctx, RevertOfLabel(ms[i].Number))

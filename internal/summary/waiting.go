@@ -114,6 +114,7 @@ func reasons() map[string]string {
 		"closes_parent":             "it would close the parent issue, which only the last part may",
 		"shadow_would_arm":          "it would auto-merge, and the merge gate is in shadow",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
+		"ledger_truncated":          "the merge ledger read is incomplete (a full page of 100 labelled pull requests), so the factory does not arm",
 		"stuck":                     "the run showed no activity for 10 minutes",
 		"ci_red":                    "CI stayed red after the fix runs",
 		"ci_cancelled":              "a required check was cancelled and re-running it did not settle it",

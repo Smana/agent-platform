@@ -249,6 +249,7 @@ func reasons() map[string]string {
 		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"foreign_trailer":           "its head commit comes from another task's run",
 		"class_paused":              "auto-merge of this class is paused after a revert",
+		"ledger_truncated":          "the merge ledger read is incomplete (a full page of 100 labelled pull requests), so the factory does not arm",
 		"head_unreported":           "the room never reported its current head as a commit one of the task's runs pushed",
 		"auto_merge_cap":            "today's auto-merge cap is reached",
 		"not_owned":                 "this repository's .github/agent-factory.yaml does not name this factory",

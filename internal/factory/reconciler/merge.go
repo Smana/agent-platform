@@ -68,6 +68,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return err
 	}
 	paused, err := r.paused(ctx, r.repo(t), t.Spec.PredictedClass)
+	if errors.Is(err, errLedgerTruncated) {
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "ledger_truncated")
+		narrateLater(t, narrate.WaitingForHuman(t, "ledger_truncated"))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -781,8 +786,9 @@ func Demoted(merges []Merge, b config.Breaker) (bool, int) {
 }
 
 // armedToday counts the merges the factory issued today: Arming is recorded whichever way the
-// merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's labelled
-// merges of today, of every class, count too (v2 D1), once per pull request.
+// merge itself went, and §5.1's cap counts the decisions, not their outcomes. GitHub's merges of
+// today the merger made (AutoMergedLabel), of every class, count too (v2 D1), once per pull
+// request; a maintainer's or Renovate's (factory/merged alone) do not (M1).
 func (r *Reconciler) armedToday(ctx context.Context, rc *config.Repository) (int, error) {
 	return r.armedTodayOf(ctx, rc, "")
 }

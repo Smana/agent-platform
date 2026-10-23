@@ -60,6 +60,7 @@ type Fake struct {
 	reverts      []string
 	refused      map[string]error
 	labelErr     error
+	labelErrFor  map[string]error
 	files        map[string]string // default-branch files by path; "!" fails the read
 	calls        []string
 	subErr       error
@@ -709,6 +710,16 @@ func (f *Fake) FailLabelReads(err error) {
 	f.labelErr = err
 }
 
+// FailLabelReadsFor makes PullsWithLabel answer err for label alone; nil clears it.
+func (f *Fake) FailLabelReadsFor(label string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.labelErrFor == nil {
+		f.labelErrFor = map[string]error{}
+	}
+	f.labelErrFor[label] = err
+}
+
 // PullsWithLabel implements the Merger's PullsWithLabel over the stored pull requests, newest
 // number first.
 func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.LabelledPull, error) {
@@ -716,6 +727,9 @@ func (f *Fake) PullsWithLabel(_ context.Context, label string) ([]forge.Labelled
 	defer f.mu.Unlock()
 	if f.labelErr != nil {
 		return nil, f.labelErr
+	}
+	if err := f.labelErrFor[label]; err != nil {
+		return nil, err
 	}
 	var out []forge.LabelledPull
 	for _, n := range slices.Sorted(maps.Keys(f.prs)) {
