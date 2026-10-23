@@ -8,6 +8,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1154,6 +1155,9 @@ type Loop struct {
 	// Search offers the class's implementer runs the search tool (v3 feature 5, ST9); absent is off.
 	// It never switches the loop on: On reads the loop's three keys only.
 	Search bool `json:"search,omitempty"`
+	// Split offers the scoper a split of the class's hard tasks (splitter design SL3): absent, off.
+	// It needs scope: scoper on the same row, and never switches the loop on.
+	Split *SplitPolicy `json:"split,omitempty"`
 }
 
 // ScopeMode is a row's scope. The config is YAML 1.1, where a bare off is the boolean false: it
@@ -1218,6 +1222,51 @@ func (c *Config) SteeringOn() bool {
 // scopeModes are the modes this release honours: a mode it cannot run must fail the start, never
 // run as another (scoper plan S1).
 func scopeModes() []ScopeMode { return []ScopeMode{ScopeOff, ScopeSteering, ScopeScoper} }
+
+// SplitPolicy is a row's split (splitter design SL3, SL9, SL10).
+type SplitPolicy struct {
+	// MaxChildren is the most parts a split may hold: 2 to 5, required.
+	MaxChildren int32 `json:"maxChildren"`
+	// FamilyUSD caps the parent's and every child's runs together; omitted, four of the child
+	// tier's tasks (SP3: $20.40 on standard's $5.10).
+	FamilyUSD float64 `json:"familyUSD,omitempty"`
+	// ChildTier is every child's tier (SP5): omitted, standard.
+	ChildTier string `json:"childTier,omitempty"`
+}
+
+// DefaultChildTier is a child's tier when the row names none (SP5).
+const DefaultChildTier = "standard"
+
+// neverSplit: docs-links, revert and an oracle class's tasks are never split (SL3), whatever row
+// reaches them.
+func (c *Config) neverSplit(class string) bool {
+	return class == "docs-links" || class == "revert" || slices.ContainsFunc(c.Repos(), func(r Repository) bool {
+		return r.Classes[class].Oracle != nil
+	})
+}
+
+// SplitFor is class's split on repository, every value resolved, nil when none is offered: its row,
+// else default's, read whole as for the loop, and only beside scope: scoper.
+func (c *Config) SplitFor(repository, class string) *SplitPolicy {
+	if c.neverSplit(class) || c.RepositoryFor(repository).Classes[class].Oracle != nil {
+		return nil
+	}
+	row, ok := c.Loops[class]
+	if !ok {
+		row = c.Loops["default"]
+	}
+	if row.Split == nil || row.Scope != ScopeScoper {
+		return nil
+	}
+	p := *row.Split
+	if p.ChildTier == "" {
+		p.ChildTier = DefaultChildTier
+	}
+	if p.FamilyUSD == 0 {
+		p.FamilyUSD = 4 * c.Tiers[p.ChildTier].TaskUSD
+	}
+	return &p
+}
 
 // The loop policy's defaults (loops design, "The policy, in the factory config") and the
 // harness's bounds (loop policy harness R16), which the XRD repeats.
@@ -1294,6 +1343,25 @@ func (c *Config) validateLoops(bad func(string, ...any)) {
 			// The scoper is read-only because cloud-native-ref maps the triager role to an octo-sts
 			// token with contents: read; this runtime gives every role the same token.
 			bad("loops.%s: scope: scoper needs cloud-native-ref's AgentRun (runs.group %s): this runtime gives every role one token, so a scoper would not be read-only", name, runwatch.DefaultKind.Group)
+		}
+		if s := row.Split; s != nil {
+			tier := cmp.Or(s.ChildTier, DefaultChildTier)
+			switch {
+			case row.Scope != ScopeScoper:
+				bad("loops.%s.split needs scope: scoper on the same row: a split is the scoper's second answer", name)
+			case c.neverSplit(name):
+				bad("loops.%s.split: %s tasks are never split", name, name)
+			case s.MaxChildren < 2 || s.MaxChildren > 5:
+				bad("loops.%s.split.maxChildren must be 2..5", name)
+			case !slices.Contains(tiers(), tier):
+				bad("loops.%s.split.childTier %q is light, standard or frontier", name, s.ChildTier)
+			case len(c.Meter.Prices) == 0:
+				bad("loops.%s.split needs meter.prices: a family's cap is in USD", name)
+			case math.IsNaN(s.FamilyUSD) || math.IsInf(s.FamilyUSD, 0) || s.FamilyUSD < 0:
+				bad("loops.%s.split.familyUSD must be a positive number", name)
+			case s.FamilyUSD != 0 && s.FamilyUSD < c.Tiers[tier].TaskUSD:
+				bad("loops.%s.split.familyUSD %.2f is below the %s tier's taskUSD %.2f: no part would fit", name, s.FamilyUSD, tier, c.Tiers[tier].TaskUSD)
+			}
 		}
 		if row.On() && c.Runs.Group != runwatch.DefaultKind.Group {
 			bad("loops.%s: the loop policy needs cloud-native-ref's AgentRun (runs.group %s): this runtime's has no spec.loop", name, runwatch.DefaultKind.Group)
