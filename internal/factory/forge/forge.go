@@ -179,7 +179,8 @@ type Check struct {
 	Name  string
 	State string // SUCCESS | FAILURE | CANCELLED | PENDING
 	// App is the database id of the GitHub App whose check suite holds the run: GitHub Actions
-	// is ActionsApp. 0 when GitHub did not say.
+	// is ActionsApp. 0 when GitHub did not say, and always 0 on the checks CommitChecks reads (main's
+	// CI), which carry no App.
 	App int64
 }
 

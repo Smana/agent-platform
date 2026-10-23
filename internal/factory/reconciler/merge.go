@@ -86,7 +86,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	d := DecideArm(in)
 	if (d.Verdict == "arm" || d.Verdict == "shadow") && (t.Spec.PredictedClass == "docs-links" || t.Spec.PredictedClass == "revert") {
-		// forge.Files is read late: only a decision that would reach the LinksOnly gate of an
+		// forge.Diff is read late: only a decision that would reach the LinksOnly gate of an
 		// entry class pays its 2N+1 API calls. The first pass passed that gate vacuously; this
 		// second pass decides on the real diff.
 		diff, ferr := r.merger(ctx).Diff(ctx, "main", pr.HeadSHA)

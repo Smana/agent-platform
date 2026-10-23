@@ -404,7 +404,8 @@ func (f *Fake) SetFileStats(fs ...forge.FileStat) {
 
 // Diff implements the Merger's Diff: SetFiles' two sides, and SetFileStats' list, or else the
 // one they imply: a side "" is an added or removed file, and each line that differs at its
-// position counts as one addition and one deletion.
+// position counts as one addition and one deletion. These stats are approximate: tests that
+// depend on exact counts set them with SetFileStats.
 func (f *Fake) Diff(context.Context, string, string) (forge.Diff, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -418,6 +419,7 @@ func (f *Fake) Diff(context.Context, string, string) (forge.Diff, error) {
 			paths = append(paths, p)
 		}
 	}
+	slices.Sort(paths)
 	for _, p := range paths {
 		b, h := d.Base[p], d.Head[p]
 		st := forge.FileStat{Path: p, Status: "modified"}
