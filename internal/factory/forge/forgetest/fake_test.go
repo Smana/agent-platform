@@ -132,26 +132,65 @@ func TestFakeIssuesNeverCollideAndCanFail(t *testing.T) {
 	}
 }
 
-// The follow-up reads return what was set, and BlameAtParent counts its calls.
+// The follow-up reads return what was set, MergedSince keeps what merged at or after since (to the
+// second, as the search does), and BlameAtParent counts its calls.
 func TestFakeFollowUpReads(t *testing.T) {
 	ctx := t.Context()
+	at := time.Date(2026, 10, 16, 10, 0, 0, 500, time.UTC)
 	f := NewFake()
-	f.SetMerged(forge.MergedPull{Number: 5, MergeCommitSHA: "m5"})
+	f.SetMerged(forge.MergedPull{Number: 4, MergedAt: at.Add(-time.Minute)}, forge.MergedPull{Number: 5, MergeCommitSHA: "m5", MergedAt: at})
 	f.SetPullFiles(5, forge.FilePatch{Path: "a.yaml", Patch: "@@ -1 +1 @@"})
 	f.SetBlame("m5", "a.yaml", forge.BlameRange{Start: 1, End: 3, Commit: "c"})
-	if ps, err := f.MergedSince(ctx, time.Time{}); err != nil || len(ps) != 1 || ps[0].Number != 5 {
+	if ps, err := f.MergedSince(ctx, at); err != nil || len(ps) != 1 || ps[0].Number != 5 {
 		t.Errorf("merged %+v %v", ps, err)
+	}
+	if ps, _ := f.MergedSince(ctx, at.Add(-time.Hour)); len(ps) != 2 {
+		t.Errorf("an earlier since keeps both: %+v", ps)
 	}
 	if fs, err := f.PullFiles(ctx, 5); err != nil || len(fs) != 1 || fs[0].Path != "a.yaml" {
 		t.Errorf("files %+v %v", fs, err)
 	}
+	if _, err := f.PullFiles(ctx, 6); err == nil {
+		t.Error("a pull request never set is an error, as PullRequest's is")
+	}
 	if rs, err := f.BlameAtParent(ctx, "m5", "a.yaml"); err != nil || len(rs) != 1 || rs[0].Commit != "c" {
 		t.Errorf("blame %+v %v", rs, err)
 	}
-	if rs, _ := f.BlameAtParent(ctx, "m5", "other.yaml"); len(rs) != 0 {
-		t.Errorf("an unset file has no range: %+v", rs)
+	if _, err := f.BlameAtParent(ctx, "m5", "other.yaml"); !errors.Is(err, forge.ErrNoBlame) {
+		t.Errorf("an unset file has nothing to blame: %v", err)
 	}
 	if f.BlameCalls() != 2 {
 		t.Errorf("calls %d", f.BlameCalls())
+	}
+}
+
+func TestFakeFollowUpReadFailures(t *testing.T) {
+	ctx := t.Context()
+	f := NewFake()
+	f.SetPullFiles(5)
+	f.SetBlame("m5", "a.yaml")
+	f.FailMergedSince(forge.ErrMergedTruncated)
+	f.FailPullFiles(5, forge.ErrNoPatch)
+	f.FailBlame("m5", "a.yaml", forge.ErrNoBlame)
+	if _, err := f.MergedSince(ctx, time.Time{}); !errors.Is(err, forge.ErrMergedTruncated) {
+		t.Error(err)
+	}
+	if _, err := f.PullFiles(ctx, 5); !errors.Is(err, forge.ErrNoPatch) {
+		t.Error(err)
+	}
+	if _, err := f.BlameAtParent(ctx, "m5", "a.yaml"); !errors.Is(err, forge.ErrNoBlame) || f.BlameCalls() != 1 {
+		t.Error(err)
+	}
+	f.FailMergedSince(nil)
+	f.FailPullFiles(5, nil)
+	f.FailBlame("m5", "a.yaml", nil)
+	if _, err := f.MergedSince(ctx, time.Time{}); err != nil {
+		t.Error(err)
+	}
+	if _, err := f.PullFiles(ctx, 5); err != nil {
+		t.Error(err)
+	}
+	if _, err := f.BlameAtParent(ctx, "m5", "a.yaml"); err != nil {
+		t.Error(err)
 	}
 }

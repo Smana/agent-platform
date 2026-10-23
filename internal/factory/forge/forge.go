@@ -11,6 +11,8 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -300,6 +302,9 @@ type FilePatch struct {
 	Previous string
 	Status   string
 	Patch    string
+	// PatchMissing: GitHub omitted the patch although the file changed (a large or binary diff),
+	// so BaseLines is unknown.
+	PatchMissing bool
 }
 
 // BlameRange is a run of lines, Start to End inclusive, last changed by Commit.
@@ -308,19 +313,37 @@ type BlameRange struct {
 	Commit     string
 }
 
+// ErrNoPatch is the base lines of a file whose patch GitHub omitted (a large or binary diff): which
+// lines changed is unknown, never "none".
+var ErrNoPatch = errors.New("forge: GitHub omitted the file's patch, the lines it changed are unknown")
+
+// ErrNoBlame is BlameAtParent finding nothing to blame: the path is not in the parent, or GitHub
+// returned no blame for it. It is not "no overlap": the caller treats it as inconclusive.
+var ErrNoBlame = errors.New("forge: nothing to blame at the parent for the path")
+
+var hunkRE = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@`)
+
 // BaseLines are the base-side line numbers a unified patch removes or rewrites: the lines of the
 // file as it was that the pull request changed (merge gate R35). A pure addition changes none.
-// The result is sorted and deduplicated, nil when there is none.
-func BaseLines(patch string) []int {
+// The result is sorted and deduplicated, nil when there is none. A hunk header that does not parse
+// is an error: dropping the hunk would read as "no change".
+func BaseLines(patch string) ([]int, error) {
 	var out []int
 	base := 0
 	for line := range strings.SplitSeq(patch, "\n") {
-		if rest, ok := strings.CutPrefix(line, "@@ -"); ok {
-			start, _, _ := strings.Cut(strings.Fields(rest + " ")[0], ",")
-			base, _ = strconv.Atoi(start)
+		if strings.HasPrefix(line, "@@") {
+			m := hunkRE.FindStringSubmatch(line)
+			if m == nil {
+				return nil, fmt.Errorf("forge: malformed hunk header %q", line)
+			}
+			base, _ = strconv.Atoi(m[1])
+			if count := m[2]; base == 0 && count != "0" { // only a new file starts at line 0
+				return nil, fmt.Errorf("forge: malformed hunk header %q", line)
+			}
 			continue
 		}
-		if base == 0 || line == "" {
+		if line == "" { // a context line stripped of its leading space
+			base++
 			continue
 		}
 		switch line[0] {
@@ -332,10 +355,26 @@ func BaseLines(patch string) []int {
 		}
 	}
 	if out == nil {
-		return nil
+		return nil, nil
 	}
 	slices.Sort(out)
-	return slices.Compact(out)
+	return slices.Compact(out), nil
+}
+
+// BaseLines is BaseLines of the file's patch, or ErrNoPatch when GitHub omitted it.
+func (f FilePatch) BaseLines() ([]int, error) {
+	if f.PatchMissing {
+		return nil, ErrNoPatch
+	}
+	return BaseLines(f.Patch)
+}
+
+// BlamePath is the name to blame the file under at the parent: its previous name on a rename.
+func (f FilePatch) BlamePath() string {
+	if f.Previous != "" {
+		return f.Previous
+	}
+	return f.Path
 }
 
 // PRSummary is one open pull request: enough to find the live ones without reading each in full.
@@ -381,6 +420,11 @@ type Merger interface {
 	// MergedSince, PullFiles and BlameAtParent are the monitor's follow-up reads: the pull
 	// requests merged since a time, one pull request's patches, and who last changed a file's
 	// lines before a merge. All three fail closed: an incomplete answer is an error.
+	//
+	// BlameAtParent blames at mergeSHA's first parent, which is the base only for a squash merge
+	// (the factory's); a rebase merge's first parent is the previous rebased commit. The caller
+	// blames at the follow-up's own merge commit, with FilePatch.BlamePath, so a file the original
+	// pull request created is blamed where it exists. ErrNoBlame means nothing could be blamed.
 	MergedSince(ctx context.Context, since time.Time) ([]MergedPull, error)
 	PullFiles(ctx context.Context, number int) ([]FilePatch, error)
 	BlameAtParent(ctx context.Context, mergeSHA, path string) ([]BlameRange, error)

@@ -455,8 +455,10 @@ func (g *GitHub) PullsWithLabel(ctx context.Context, label string) ([]LabelledPu
 // mergedWindow is MergedSince's one page: a result of this size may be the first of more.
 const mergedWindow = 100
 
-// MergedSince lists the pull requests merged at or after since, the newest window of 100. A full
-// window returns ErrMergedTruncated: the caller narrows since and reads again.
+// MergedSince lists the pull requests merged at or after since, in the order GitHub's search gives
+// (it has no sort). A full window of 100, or a pull request with more labels than were read,
+// returns ErrMergedTruncated: the caller narrows since and reads again. The search is eventually
+// consistent, so a pull request merged moments ago may be missing: callers overlap their windows.
 func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull, error) {
 	var q struct {
 		Search struct {
@@ -468,7 +470,10 @@ func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull
 					Title       string
 					MergedAt    *githubv4.DateTime
 					MergeCommit *struct{ Oid string }
-					Labels      struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 20)"`
+					Labels      struct {
+						Nodes    []struct{ Name string }
+						PageInfo struct{ HasNextPage bool }
+					} `graphql:"labels(first: 20)"`
 				} `graphql:"... on PullRequest"`
 			}
 		} `graphql:"search(type: ISSUE, first: 100, query: $q)"`
@@ -482,6 +487,9 @@ func (g *GitHub) MergedSince(ctx context.Context, since time.Time) ([]MergedPull
 	out := make([]MergedPull, 0, len(q.Search.Nodes))
 	for _, n := range q.Search.Nodes {
 		p := n.PullRequest
+		if p.Labels.PageInfo.HasNextPage {
+			return nil, ErrMergedTruncated
+		}
 		mp := MergedPull{Number: p.Number, Author: p.Author.login(), HeadRef: p.HeadRefName, Title: p.Title}
 		if p.MergedAt != nil {
 			mp.MergedAt = p.MergedAt.Time
@@ -518,7 +526,8 @@ func (g *GitHub) PullFiles(ctx context.Context, number int) ([]FilePatch, error)
 			return nil, wrap("list pull request files", err)
 		}
 		for _, f := range fs {
-			out = append(out, FilePatch{Path: f.GetFilename(), Previous: f.GetPreviousFilename(), Status: f.GetStatus(), Patch: f.GetPatch()})
+			out = append(out, FilePatch{Path: f.GetFilename(), Previous: f.GetPreviousFilename(), Status: f.GetStatus(), Patch: f.GetPatch(),
+				PatchMissing: patchMissing(f)})
 		}
 		if len(out) >= filesCap {
 			break
@@ -531,9 +540,24 @@ func (g *GitHub) PullFiles(ctx context.Context, number int) ([]FilePatch, error)
 	return nil, fmt.Errorf("forge: pull request #%d lists %d files, GitHub's cap: files past it are unread", number, filesCap)
 }
 
+// patchMissing: GitHub gave no patch for a file whose lines may have changed. A rename, a copy or
+// an added file with no changed lines legitimately has none; a binary or oversized modification
+// (changes 0 or huge, status modified) cannot be told apart, so it counts as missing.
+func patchMissing(f *github.CommitFile) bool {
+	if f.GetPatch() != "" {
+		return false
+	}
+	switch f.GetStatus() {
+	case "renamed", "copied", "added":
+		return f.GetChanges() > 0
+	}
+	return true
+}
+
 // BlameAtParent is who last changed each line of path as the first parent of mergeSHA had it:
-// the file as the merged pull request found it. A file the parent does not have has no range, not
-// an error; a commit without a parent, or any other failure, is an error.
+// the file as the merged pull request found it (a squash merge's parent is the base; see Merger).
+// A file the parent does not have, or a null blame, is ErrNoBlame; a commit without a parent, or
+// any other failure, is an error too.
 func (g *GitHub) BlameAtParent(ctx context.Context, mergeSHA, path string) ([]BlameRange, error) {
 	var q struct {
 		Repository struct {
@@ -561,7 +585,7 @@ func (g *GitHub) BlameAtParent(ctx context.Context, mergeSHA, path string) ([]Bl
 	if err != nil {
 		// A GraphQL error naming a missing path is a file the parent lacks; an HTTP failure is not.
 		if msg := err.Error(); !strings.Contains(msg, "non-200") && strings.Contains(strings.ToLower(msg), "no such path") {
-			return nil, nil
+			return nil, fmt.Errorf("%w: %s", ErrNoBlame, path)
 		}
 		return nil, wrap("blame at the parent", err)
 	}
@@ -570,7 +594,7 @@ func (g *GitHub) BlameAtParent(ctx context.Context, mergeSHA, path string) ([]Bl
 		return nil, fmt.Errorf("forge: %s has no first parent to blame at", mergeSHA)
 	}
 	if ps[0].Blame == nil {
-		return nil, nil
+		return nil, fmt.Errorf("%w: %s", ErrNoBlame, path)
 	}
 	out := make([]BlameRange, 0, len(ps[0].Blame.Ranges))
 	for _, r := range ps[0].Blame.Ranges {

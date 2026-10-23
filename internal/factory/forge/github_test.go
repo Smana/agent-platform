@@ -240,13 +240,18 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				_, _ = io.WriteString(w, `{"data":{"search":{"nodes":[`+strings.Join(ns, ",")+`]}}}`)
 				return
 			}
+			if strings.Contains(q, "merged:>=2021-01-01") { // a pull request with more labels than were read
+				_, _ = io.WriteString(w, `{"data":{"search":{"nodes":[{"number":9,"headRefName":"x","title":"t",`+
+					`"labels":{"nodes":[{"name":"a"}],"pageInfo":{"hasNextPage":true}}}]}}}`)
+				return
+			}
 			_, _ = io.WriteString(w, mergedJSON)
 			return
 		case strings.Contains(string(b), "blame(path:"):
 			var in struct{ Variables map[string]any }
 			_ = json.Unmarshal(b, &in)
 			switch in.Variables["path"] {
-			case "gone.yaml": // the file does not exist at the parent
+			case "gone.yaml": // blame null
 				_, _ = io.WriteString(w, `{"data":{"repository":{"object":{"parents":{"nodes":[{"blame":null}]}}}}}`)
 			case "boom.yaml":
 				_, _ = io.WriteString(w, `{"errors":[{"message":"Something went wrong"}]}`)
@@ -527,8 +532,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 	// A pull request's files, 100 a page: #20 has two, #21 has GitHub's 3,000 and more unlisted.
 	mux.HandleFunc("GET /repos/Smana/demo/pulls/{n}/files", g.authed(func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("n") == "20" {
-			_, _ = io.WriteString(w, `[{"filename":"a.yaml","status":"modified","patch":"@@ -1 +1 @@\n-a\n+b"},`+
-				`{"filename":"new.yaml","previous_filename":"old.yaml","status":"renamed"}]`)
+			_, _ = io.WriteString(w, `[{"filename":"a.yaml","status":"modified","changes":2,"patch":"@@ -1 +1 @@\n-a\n+b"},`+
+				`{"filename":"new.yaml","previous_filename":"old.yaml","status":"renamed"},`+
+				`{"filename":"big.yaml","status":"modified","changes":9000},{"filename":"img.png","status":"modified"},`+
+				`{"filename":"empty.yaml","status":"added"}]`)
 			return
 		}
 		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
@@ -1598,7 +1605,9 @@ func TestPullFilesMapsThePatchAndTheRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []FilePatch{{Path: "a.yaml", Status: "modified", Patch: "@@ -1 +1 @@\n-a\n+b"},
-		{Path: "new.yaml", Previous: "old.yaml", Status: "renamed"}}
+		{Path: "new.yaml", Previous: "old.yaml", Status: "renamed"},
+		{Path: "big.yaml", Status: "modified", PatchMissing: true}, {Path: "img.png", Status: "modified", PatchMissing: true},
+		{Path: "empty.yaml", Status: "added"}}
 	if !reflect.DeepEqual(fs, want) {
 		t.Fatalf("%+v", fs)
 	}
@@ -1627,16 +1636,24 @@ func TestBlameAtParentMapsTheRanges(t *testing.T) {
 	}
 }
 
-// A file the parent does not have has nothing to blame: no range, not an error. Any other failure
-// is an error, never an empty answer.
-func TestBlameAtParentOfAMissingFileIsEmptyAndOtherFailuresAreErrors(t *testing.T) {
+// A file the parent does not have, and a null blame, are ErrNoBlame: "nothing blamed" is never
+// told apart from "no overlap" by an empty answer. Any other failure is a plain error.
+func TestBlameAtParentOfAMissingFileIsErrNoBlameAndOtherFailuresAreErrors(t *testing.T) {
 	r := newRig(t)
 	for _, p := range []string{"gone.yaml", "missing.yaml"} {
-		if rs, err := r.g.BlameAtParent(t.Context(), "m51", p); err != nil || len(rs) != 0 {
+		if rs, err := r.g.BlameAtParent(t.Context(), "m51", p); !errors.Is(err, ErrNoBlame) || rs != nil {
 			t.Fatalf("%s: %+v %v", p, rs, err)
 		}
 	}
-	if rs, err := r.g.BlameAtParent(t.Context(), "m51", "boom.yaml"); err == nil || rs != nil {
+	if rs, err := r.g.BlameAtParent(t.Context(), "m51", "boom.yaml"); err == nil || errors.Is(err, ErrNoBlame) || rs != nil {
 		t.Fatalf("%+v %v", rs, err)
+	}
+}
+
+// More labels than the 20 read: a label may be unseen, so the read is truncated.
+func TestMergedSinceWithUnreadLabelsIsTruncated(t *testing.T) {
+	r := newRig(t)
+	if ps, err := r.g.MergedSince(t.Context(), time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)); !errors.Is(err, ErrMergedTruncated) || ps != nil {
+		t.Fatalf("%+v %v", ps, err)
 	}
 }

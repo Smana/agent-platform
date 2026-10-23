@@ -67,6 +67,9 @@ type Fake struct {
 	pullFiles    map[int][]forge.FilePatch
 	blame        map[string][]forge.BlameRange
 	blameCalls   int
+	mergedErr    error
+	filesErr     map[int]error
+	blameErr     map[string]error
 	subErr       error
 	createErr    error
 	closeErr     error
@@ -781,18 +784,36 @@ func (f *Fake) DefaultBranchFile(_ context.Context, path string) (string, string
 	return text, fmt.Sprintf("%x", sha256.Sum256([]byte(text)))[:40], true, nil
 }
 
-// SetMerged sets what MergedSince returns, as given: it does not filter by time.
+// SetMerged sets the pull requests MergedSince filters by time.
 func (f *Fake) SetMerged(ps ...forge.MergedPull) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.merged = ps
 }
 
-// MergedSince implements the Merger's MergedSince.
-func (f *Fake) MergedSince(context.Context, time.Time) ([]forge.MergedPull, error) {
+// FailMergedSince makes MergedSince answer err (forge.ErrMergedTruncated, say); nil clears it.
+func (f *Fake) FailMergedSince(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.merged), nil
+	f.mergedErr = err
+}
+
+// MergedSince implements the Merger's MergedSince: the set pull requests merged at or after since,
+// which the search takes to the second.
+func (f *Fake) MergedSince(_ context.Context, since time.Time) ([]forge.MergedPull, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mergedErr != nil {
+		return nil, f.mergedErr
+	}
+	since = since.Truncate(time.Second)
+	var out []forge.MergedPull
+	for _, p := range f.merged {
+		if !p.MergedAt.Before(since) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // SetPullFiles sets the files of pull request n.
@@ -805,11 +826,29 @@ func (f *Fake) SetPullFiles(n int, fs ...forge.FilePatch) {
 	f.pullFiles[n] = fs
 }
 
-// PullFiles implements the Merger's PullFiles.
+// FailPullFiles makes PullFiles of pull request n answer err; nil clears it.
+func (f *Fake) FailPullFiles(n int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.filesErr == nil {
+		f.filesErr = map[int]error{}
+	}
+	f.filesErr[n] = err
+}
+
+// PullFiles implements the Merger's PullFiles; a pull request never set is an error, as
+// PullRequest's is.
 func (f *Fake) PullFiles(_ context.Context, n int) ([]forge.FilePatch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.Clone(f.pullFiles[n]), nil
+	if err := f.filesErr[n]; err != nil {
+		return nil, err
+	}
+	fs, ok := f.pullFiles[n]
+	if !ok {
+		return nil, fmt.Errorf("pull request %d files not set", n)
+	}
+	return slices.Clone(fs), nil
 }
 
 // SetBlame sets the blame ranges of path at the parent of mergeSHA.
@@ -822,13 +861,31 @@ func (f *Fake) SetBlame(mergeSHA, path string, rs ...forge.BlameRange) {
 	f.blame[mergeSHA+"\x00"+path] = rs
 }
 
+// FailBlame makes BlameAtParent of path at mergeSHA answer err (forge.ErrNoBlame, say); nil clears it.
+func (f *Fake) FailBlame(mergeSHA, path string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blameErr == nil {
+		f.blameErr = map[string]error{}
+	}
+	f.blameErr[mergeSHA+"\x00"+path] = err
+}
+
 // BlameAtParent implements the Merger's BlameAtParent and counts the call; a file never set has
-// no range.
+// nothing to blame: forge.ErrNoBlame.
 func (f *Fake) BlameAtParent(_ context.Context, mergeSHA, path string) ([]forge.BlameRange, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.blameCalls++
-	return slices.Clone(f.blame[mergeSHA+"\x00"+path]), nil
+	k := mergeSHA + "\x00" + path
+	if err := f.blameErr[k]; err != nil {
+		return nil, err
+	}
+	rs, ok := f.blame[k]
+	if !ok {
+		return nil, forge.ErrNoBlame
+	}
+	return slices.Clone(rs), nil
 }
 
 // BlameCalls is how many times BlameAtParent was called.
