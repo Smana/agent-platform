@@ -88,6 +88,10 @@ const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-sr
 // Server is the :8080 API. Humans, Groups, WebClient, Rooms, Namespace, Log, Hub
 // and Runs are required; the rest is optional.
 type Server struct {
+	// Sponsored authenticates a sponsored principal's bearer on /mcp (factory interfaces F4, R13);
+	// nil while human.mcp.sponsored is empty, and then every sponsored token is refused.
+	Sponsored SponsoredAuthenticator
+
 	Humans Authenticator
 	Groups policy.Groups
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
@@ -362,4 +366,9 @@ func (s *Server) lag(ctx context.Context, ev envelope.Event) {
 	if s.Metrics != nil {
 		s.Metrics.FanoutLag.Record(ctx, s.now().Sub(ev.TS).Seconds())
 	}
+}
+
+// SponsoredAuthenticator maps a bearer to its sponsored principal; *authn.Sponsored is the broker's.
+type SponsoredAuthenticator interface {
+	Authenticate(ctx context.Context, raw string) (authn.Principal, error)
 }

@@ -191,6 +191,9 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	if a.sponsored != nil { // only a non-nil value: the interface is never a typed nil
+		humans.Sponsored = a.sponsored
+	}
 	key := mcpKey(getenv)
 	if key == "" {
 		log.Warn("ROOMS_MCP_KEY is not set: :8090 refuses every room tool call")

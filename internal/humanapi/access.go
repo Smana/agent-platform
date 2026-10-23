@@ -5,6 +5,7 @@ package humanapi
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
@@ -40,6 +41,12 @@ func (s *Server) admits(ctx context.Context, room *v1alpha1.Room, p authn.Princi
 
 // gate is admits, saying also when the caller is denied for having no GitHub link.
 func (s *Server) gate(ctx context.Context, room *v1alpha1.Room, p authn.Principal) (verdict, error) {
+	if p.Sponsored { // R13: only the rooms of its own tasks, by membership, never through GitHub
+		if slices.ContainsFunc(room.Spec.Members, func(m v1alpha1.Member) bool { return m.Principal == p.ID }) {
+			return admitted, nil
+		}
+		return denied, nil
+	}
 	if s.Groups.IsAdmin(p) {
 		return admitted, nil
 	}

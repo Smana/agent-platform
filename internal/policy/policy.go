@@ -157,6 +157,14 @@ func (g Groups) IsAdmin(p authn.Principal) bool {
 // is the current driver-token holder; webUI is whether p came through the web client.
 func (g Groups) Resolve(room *v1alpha1.Room, p authn.Principal, driver string, webUI bool) Subject {
 	s := Subject{Kind: p.Kind, ID: p.ID, Driver: p.ID == driver, WebUI: webUI}
+	if p.Sponsored { // R13: a watcher of the rooms it is a member of, as wire.You shows it
+		for _, m := range room.Spec.Members {
+			if m.Principal == p.ID && ParseRole(m.Role) >= Watcher {
+				s.Role = Watcher
+			}
+		}
+		return s
+	}
 	if p.Kind != envelope.ActorHuman {
 		return s
 	}

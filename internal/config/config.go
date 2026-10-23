@@ -57,7 +57,19 @@ type HumanConfig struct {
 // MCPConfig switches the human listener's MCP server.
 type MCPConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
+	// Sponsored are the service accounts that may call run_create (factory interfaces F4, R13);
+	// each is also declared in the factory's api.sponsored, which decides everything else.
+	Sponsored []SponsoredConfig `json:"sponsored,omitempty"`
 }
+
+// SponsoredConfig is one sponsored principal the broker admits on /mcp.
+type SponsoredConfig struct {
+	Name         string `json:"name"`
+	ClientIDFile string `json:"clientIDFile"`
+}
+
+// sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
+var sponsoredNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // AccessConfig is D7's GitHub check. ReaderFile is the ZITADEL link reader's mounted
 // secret, JSON {"pat", "tokenId", "githubIdpId"}, read at use: ZITADEL at the human
@@ -191,6 +203,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	errs = append(errs, c.Human.validate()...)
+	if len(c.Human.MCP.Sponsored) > 0 && c.FactoryURL == "" {
+		errs = append(errs, errors.New("human.mcp.sponsored needs factoryURL: run_create posts to the factory's POST /v1/tasks"))
+	}
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
 	}
@@ -237,6 +252,21 @@ func (h HumanConfig) validate() []error {
 	}
 	if h.MCP.Enabled && h.RoomctlClientIDFile == "" {
 		errs = append(errs, errors.New("human.mcp.enabled: needs human.roomctlClientIDFile, since /mcp takes roomctl's tokens only"))
+	}
+	if len(h.MCP.Sponsored) > 0 && !h.MCP.Enabled {
+		errs = append(errs, errors.New("human.mcp.sponsored needs human.mcp.enabled"))
+	}
+	seen := map[string]bool{}
+	for _, sp := range h.MCP.Sponsored {
+		switch {
+		case !sponsoredNameRE.MatchString(sp.Name):
+			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is not a DNS label", sp.Name))
+		case seen[sp.Name]:
+			errs = append(errs, fmt.Errorf("human.mcp.sponsored: %q is declared twice", sp.Name))
+		case sp.ClientIDFile == "":
+			errs = append(errs, fmt.Errorf("human.mcp.sponsored.%s: clientIDFile is required", sp.Name))
+		}
+		seen[sp.Name] = true
 	}
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {

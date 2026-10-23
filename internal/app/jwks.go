@@ -49,6 +49,7 @@ type auth struct {
 	runs      *authn.Runs
 	systems   *authn.Systems
 	humans    *authn.Humans
+	sponsored *authn.Sponsored // nil while human.mcp.sponsored is empty
 	verifiers []*authn.Verifier
 }
 
@@ -109,7 +110,17 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 		return auth{}, err
 	}
 	humans := authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
-	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all}, nil
+	var sponsored *authn.Sponsored
+	if len(h.MCP.Sponsored) > 0 {
+		clients := make([]authn.SponsoredClient, 0, len(h.MCP.Sponsored))
+		for _, sp := range h.MCP.Sponsored {
+			clients = append(clients, authn.SponsoredClient{Name: sp.Name, ClientID: idFile(sp.ClientIDFile)})
+		}
+		web, roomctl := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile)
+		sponsored = &authn.Sponsored{V: hv, Clients: clients, Exclude: func() []string { return []string{web(), roomctl()} }}
+	}
+	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all,
+		sponsored: sponsored}, nil
 }
 
 // idFile reads an id from a mounted file on every call, so an id the IdP mints
