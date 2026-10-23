@@ -16,6 +16,7 @@ import (
 	"time"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -608,6 +609,46 @@ func ApproverOverBudget(number int, person string, capMicroUSD int64, at time.Ti
 	return Event{Key: fmt.Sprintf("refused-split_approver_budget-%d", at.Unix()),
 		Body: fmt.Sprintf("The agent factory did not split #%d: the daily budget of `%s` (%s) is spent, and every part is charged to the person who approves. "+
 			"It resets at 00:00 UTC; comment `/factory split` again after that. The proposal stays open.", number, person, USD(capMicroUSD))}
+}
+
+// SplitMarker is the hidden line that finds part k's issue again (splitter design SL8), as Marker
+// finds a comment.
+func SplitMarker(parent string, k int) string {
+	return fmt.Sprintf("<!-- agent-factory split=%s/%d -->", parent, k)
+}
+
+// ChildIssue is part k's issue (SL8): the factory's own title, and a body that quotes the part's
+// scope as an inert block for a public task, or links the room for an internal one, with the marker.
+func ChildIssue(t *v1alpha1.Task, k int32, sc *envelope.Scope, roomsURL string) (title, body string) {
+	s := t.Status.Split
+	title = fmt.Sprintf("Part %d of %d of #%d", k, s.Of, t.Spec.Issue)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Part %d of %d of #%d, opened by agent factory task `%s` once %s approved its split with `/factory split`. "+
+		"Its task runs on branch `agent/<task>`, through the merge gate of #%d's class; the next part opens once this one merges.",
+		k, s.Of, t.Spec.Issue, t.Name, strings.TrimPrefix(s.ApprovedBy, "github:"), t.Spec.Issue)
+	if t.Spec.DataClass != "public" {
+		fmt.Fprintf(&b, "\n\nThe part's scope is in [the room](%s/r/%s): the task's data class is not public.",
+			strings.TrimSuffix(roomsURL, "/"), t.Status.RoomRef)
+	} else {
+		var q strings.Builder
+		fmt.Fprintf(&q, "Task: %s\nTouches: %s\n", sc.Task, strings.Join(sc.Touches, ", "))
+		for i, p := range sc.Plan {
+			fmt.Fprintf(&q, "%d. %s\n", i+1, p)
+		}
+		for _, a := range sc.Acceptance {
+			fmt.Fprintf(&q, "Acceptance: %s: proves %s\n", a.Check, a.Proves)
+		}
+		b.WriteString("\n\nThe part, as the scoper wrote it:\n\n" + summary(q.String(), 3*maxBody/2))
+	}
+	b.WriteString("\n\nApply `factory/stop` here to stop this part, or on #" + strconv.Itoa(t.Spec.Issue) + " to stop every part.\n\n" +
+		SplitMarker(t.Name, int(k)))
+	return title, b.String()
+}
+
+// SplitPart says on the parent issue that part k opened (SL7), once.
+func SplitPart(t *v1alpha1.Task, k int32, issue int) Event {
+	return Event{Key: fmt.Sprintf("split-part-%d", k), Body: fmt.Sprintf("Agent factory task `%s`: part %d of %d is #%d.",
+		t.Name, k, t.Status.Split.Of, issue)}
 }
 
 // USD is a micro-USD amount as people read it, to the cent: $8.50.

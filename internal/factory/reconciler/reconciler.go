@@ -71,6 +71,11 @@ type TaskForge interface {
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
+	Issue(ctx context.Context, number int) (forge.Issue, error)
+	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
+	IssuesLabelled(ctx context.Context, label string) ([]forge.Issue, error)
+	AddSubIssue(ctx context.Context, parent int, childID int64) error
+	CloseIssue(ctx context.Context, number int) error
 }
 
 // metrics is the part of fmetrics.Set the reconciler records.
@@ -676,6 +681,9 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if r.Trace != nil && t.Status.Trace == nil { // R46: the task's root span, minted once at acceptance
 		tr, sp := tracing.Mint()
 		t.Status.Trace = &v1alpha1.TraceRef{TraceID: tr, SpanID: sp}
+	}
+	if t.Spec.Parent != nil {
+		return r.receivedChild(ctx, t) // a part of a split: its parent's spec, no classifier (SL5)
 	}
 	d, err := r.Triage.Triage(ctx, t)
 	if err != nil {

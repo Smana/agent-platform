@@ -4,6 +4,16 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -12,6 +22,8 @@ import (
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
+	"github.com/Smana/agent-platform/internal/factory/taskid"
+	"github.com/Smana/agent-platform/internal/factory/triage"
 )
 
 // splitAtTriage offers the scoper a split (splitter design SL3, SP1, plan SR5): a task with an issue,
@@ -178,5 +190,230 @@ func (r *Reconciler) leaveSplit(ctx context.Context, t *v1alpha1.Task, state str
 	})
 }
 
-// splitting is the parent's wait in Split (SL7, SL12): Task 9 fills it.
-func (r *Reconciler) splitting(context.Context, *v1alpha1.Task) error { return nil }
+// family is the parent's children (SL14, SR4): the newest generation of each part by index, and
+// every generation for the family's spend, read through the label the factory and the intake set.
+func (r *Reconciler) family(ctx context.Context, p *v1alpha1.Task) (map[int32]*v1alpha1.Task, []v1alpha1.Task, error) {
+	var l v1alpha1.TaskList
+	if err := r.Client.List(ctx, &l, client.InNamespace(r.Namespace), client.MatchingLabels{v1alpha1.LabelParent: p.Name}); err != nil {
+		return nil, nil, err
+	}
+	newest := map[int32]*v1alpha1.Task{}
+	for i := range l.Items {
+		c := &l.Items[i]
+		if c.Spec.Parent == nil || c.Spec.Parent.Task != p.Name {
+			continue // a label anyone could set names no family; the spec, which CEL fixes, does
+		}
+		if o, ok := newest[c.Spec.Parent.Index]; !ok || newer(c, o) {
+			newest[c.Spec.Parent.Index] = c
+		}
+	}
+	return newest, l.Items, nil
+}
+
+// newer: a's generation follows b's (SR13). The API server stamps creation to the second; on a tie,
+// a re-labelled generation (an issue key) follows the factory's own (a split key).
+func newer(a, b *v1alpha1.Task) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return b.CreationTimestamp.Before(&a.CreationTimestamp)
+	}
+	return strings.HasPrefix(a.Spec.Source.Key, "github:issue:") && !strings.HasPrefix(b.Spec.Source.Key, "github:issue:")
+}
+
+// spend is what a task's runs cost, a run the meter could not price at the reference rate the day
+// ledger charges it (TC7): a family's cap never counts an unpriced run as $0.
+func spend(t *v1alpha1.Task) int64 {
+	var sum int64
+	for _, rec := range t.Status.Runs {
+		if rec.Unpriced != "" || (rec.Tokens > 0 && rec.CostMicroUSD == 0) {
+			sum += config.RefMicroUSD(rec.Tokens)
+		} else {
+			sum += rec.CostMicroUSD
+		}
+	}
+	return sum
+}
+
+// familyLeft is SL10: the family's cap less what the parent and every child, of every generation,
+// spent. Read when a part opens and at its triage: parts run one at a time, so nothing else spends.
+func (r *Reconciler) familyLeft(ctx context.Context, p *v1alpha1.Task) (int64, error) {
+	_, all, err := r.family(ctx, p)
+	if err != nil {
+		return 0, err
+	}
+	left := p.Spec.Split.FamilyMicroUSD - spend(p)
+	for i := range all {
+		left -= spend(&all[i])
+	}
+	return left, nil
+}
+
+// childBudget is a part's caps (SL9, SL10): its tier's, its task cap no more than the family has left.
+func (r *Reconciler) childBudget(p *v1alpha1.Task, left int64) v1alpha1.Budget {
+	b := triage.BudgetFor(r.Cfg, p.Spec.Split.ChildTier)
+	b.TaskMicroUSD = min(b.TaskMicroUSD, left)
+	return b
+}
+
+// fits: the cap holds one whole run (runFits' rule, owner 2026-10-07).
+func fits(b v1alpha1.Budget) bool { return b.TaskMicroUSD > 0 && b.TaskMicroUSD >= b.RunMicroUSD }
+
+// childScope is part k of the parent's split: the handoff status.split names, checked again.
+func (r *Reconciler) childScope(ctx context.Context, p *v1alpha1.Task, k int32) (*envelope.Scope, error) {
+	seq := p.Status.Split.Seq
+	evs, _, err := r.Rooms.EventsSince(ctx, p.Status.RoomRef, seq-1, func(e envelope.Event) bool {
+		return e.Seq == seq && e.Type == envelope.Handoff
+	})
+	if err != nil {
+		return nil, err
+	}
+	var h envelope.HandoffPayload
+	if len(evs) == 0 || json.Unmarshal(evs[0].Payload, &h) != nil || h.FromRole != "triager" || h.Split == nil ||
+		h.Split.Validate() != nil || int(k) > len(h.Split.Children) {
+		return nil, fmt.Errorf("task %s: the handoff at seq %d holds no part %d", p.Name, seq, k)
+	}
+	return &h.Split.Children[k-1], nil
+}
+
+// taskScopeOf is a part's scope as the Task keeps it.
+func taskScopeOf(s *envelope.Scope) *v1alpha1.TaskScope {
+	out := &v1alpha1.TaskScope{State: s.State, Task: s.Task, Touches: s.Touches, Leave: s.Leave, Plan: s.Plan, Assumptions: s.Assumptions}
+	for _, a := range s.Acceptance {
+		out.Acceptance = append(out.Acceptance, v1alpha1.TaskAcceptance{Check: a.Check, Proves: a.Proves})
+	}
+	return out
+}
+
+// openChild opens part k (SL7, SL8, SR10): its issue, found by its marker or created, and its Task,
+// recorded on the parent in this pass. Each step is idempotent, so a replay after a lost status
+// write opens no second issue and creates no second Task.
+func (r *Reconciler) openChild(ctx context.Context, t *v1alpha1.Task, k int32) error {
+	sp := t.Status.Split
+	sc, err := r.childScope(ctx, t, k)
+	if err != nil {
+		return err
+	}
+	iss, err := r.childIssue(ctx, t, k, sc)
+	if err != nil {
+		return err
+	}
+	key := taskid.SplitKey(t.Name, int(k))
+	name := taskid.Name(key)
+	c := &v1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Namespace,
+			Labels: map[string]string{v1alpha1.LabelIssue: strconv.Itoa(iss.Number), v1alpha1.LabelParent: t.Name}},
+		Spec: v1alpha1.TaskSpec{
+			Source: v1alpha1.Source{Kind: "issue", Ref: fmt.Sprintf("%s#%d", t.Spec.Repository, iss.Number), Key: key,
+				RequestedBy: sp.ApprovedBy, Trust: t.Spec.Source.Trust, ContentSHA256: t.Spec.Source.ContentSHA256},
+			Repository: t.Spec.Repository, Issue: iss.Number, IssueAuthor: t.Spec.IssueAuthor, Text: t.Spec.Text, DataClass: t.Spec.DataClass,
+			Parent: &v1alpha1.Parent{Task: t.Name, Issue: t.Spec.Issue, Index: k, Of: sp.Of},
+			Scope:  taskScopeOf(sc),
+		},
+	}
+	if err := r.Client.Create(ctx, c); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("open part %d of %s: %w", k, t.Name, err)
+	}
+	if !slices.ContainsFunc(sp.Children, func(c v1alpha1.SplitChild) bool { return c.Index == k }) {
+		sp.Children = append(sp.Children, v1alpha1.SplitChild{Index: k, Issue: iss.Number, Task: name})
+	}
+	narrateLater(t, narrate.SplitPart(t, k, iss.Number))
+	return nil
+}
+
+// childIssue is part k's issue (SL8): the one the factory opened already, by its marker among the
+// issues labelled child-of the parent, open or closed; else a new one, whose sub-issue link is a
+// view for people and never blocks.
+func (r *Reconciler) childIssue(ctx context.Context, t *v1alpha1.Task, k int32, sc *envelope.Scope) (forge.Issue, error) {
+	label, marker := v1alpha1.ChildOfLabel(t.Spec.Issue), narrate.SplitMarker(t.Name, int(k))
+	found, err := r.gh(ctx).IssuesLabelled(ctx, label)
+	if err != nil {
+		return forge.Issue{}, err
+	}
+	for _, i := range found {
+		if forge.SameLogin(i.Author, r.Cfg.FactoryLogin) && strings.Contains(i.Body, marker) {
+			return i, nil // a replay: the issue exists, its record was lost
+		}
+	}
+	labels := []string{label}
+	if c := t.Spec.PredictedClass; c != "" && c != "review" {
+		labels = append(labels, "class:"+c) // the parent's class (SL6), applied by the factory: never read as a prediction (T3)
+	}
+	title, body := narrate.ChildIssue(t, k, sc, r.Cfg.RoomsURL)
+	iss, err := r.gh(ctx).CreateIssue(ctx, title, body, labels)
+	if err != nil {
+		return forge.Issue{}, err
+	}
+	if err := r.gh(ctx).AddSubIssue(ctx, t.Spec.Issue, iss.ID); err != nil {
+		r.log().Warn("sub-issue link not added", "task.id", t.Name, "issue", iss.Number, "err", err)
+	}
+	return iss, nil
+}
+
+// receivedChild is a part's triage (SL5, SL9, SL10, SR11): its parent's spec but for its part, its
+// tier and its cap; C7 is never asked. Every generation passes here, the factory's and a re-labelled
+// one, so they are built alike.
+func (r *Reconciler) receivedChild(ctx context.Context, t *v1alpha1.Task) error {
+	reason, err := r.inherit(ctx, t)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		return r.end(ctx, t, v1alpha1.PhaseRejected, reason)
+	}
+	status := t.Status // Update returns the server's status into t; keep ours
+	if err := r.Client.Update(ctx, t); err != nil {
+		return err
+	}
+	t.Status = status
+	t.Status.Classification = &v1alpha1.Classification{Tier: t.Spec.Budget.Tier, Classifier: "split", Fallback: "static"}
+	t.Status.ConfigHash = r.Cfg.Hash
+	r.to(t, v1alpha1.PhaseTriaged, "")
+	return nil
+}
+
+// inherit fills a part's spec from its parent; reason is why it cannot run.
+func (r *Reconciler) inherit(ctx context.Context, t *v1alpha1.Task) (string, error) {
+	var p v1alpha1.Task
+	switch err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.Namespace, Name: t.Spec.Parent.Task}, &p); {
+	case apierrors.IsNotFound(err):
+		return "parent_missing", nil
+	case err != nil:
+		return "", err
+	}
+	if p.Status.Phase != v1alpha1.PhaseSplit || p.Spec.Split == nil || p.Status.Split == nil {
+		return "parent_not_split", nil
+	}
+	left, err := r.familyLeft(ctx, &p)
+	if err != nil {
+		return "", err
+	}
+	b := r.childBudget(&p, left)
+	if !fits(b) {
+		return ReasonBudgetFamily, nil
+	}
+	if t.Spec.Scope == nil { // a re-labelled generation: the part's scope from the parent's split
+		sc, err := r.childScope(ctx, &p, t.Spec.Parent.Index)
+		if err != nil {
+			return "", err
+		}
+		t.Spec.Scope = taskScopeOf(sc)
+	}
+	// SC9: the snapshot a maintainer labelled wins over an agent's reading, so a part keeps it whole.
+	t.Spec.Text, t.Spec.Source.ContentSHA256 = p.Spec.Text, p.Spec.Source.ContentSHA256
+	t.Spec.PredictedClass, t.Spec.DataClass = p.Spec.PredictedClass, p.Spec.DataClass // SL6: the parent's class
+	t.Spec.Steering, t.Spec.ScopeMode, t.Spec.Loop = p.Spec.Steering, p.Spec.ScopeMode, p.Spec.Loop
+	t.Spec.Template, t.Spec.Budget = triage.Matrix(p.Spec.PredictedClass, "issue", b.Tier), b
+	if t.Labels == nil {
+		t.Labels = map[string]string{}
+	}
+	t.Labels[v1alpha1.LabelParent] = p.Name
+	return "", nil
+}
+
+// splitting is the parent's wait in Split (SL7, SL12): it opens the next part once the one before
+// has landed. Task 10 adds the outcomes and the end.
+func (r *Reconciler) splitting(ctx context.Context, t *v1alpha1.Task) error {
+	if len(t.Status.Split.Children) == 0 {
+		return r.openChild(ctx, t, 1)
+	}
+	return nil
+}

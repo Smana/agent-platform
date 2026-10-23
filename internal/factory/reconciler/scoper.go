@@ -17,7 +17,8 @@ import (
 // scoperDue: the task's mode is scoper and its scoper has not ended (scoper plan S13). A resumed or
 // retried scoper is due again; once status.scope is set, every later run is an implementer's.
 func scoperDue(t *v1alpha1.Task) bool {
-	return t.Spec.ScopeMode == string(config.ScopeScoper) && t.Status.Scope == nil
+	// A part of a split carries its scope in its spec: it never runs a scoper (splitter design SL5).
+	return t.Spec.ScopeMode == string(config.ScopeScoper) && t.Status.Scope == nil && t.Spec.Scope == nil
 }
 
 // scoperSpec is the scoper's claim: a triager run at the light tier's run caps whatever the task's
