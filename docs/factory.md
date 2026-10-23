@@ -487,10 +487,16 @@ ceiling too.
 **An api task is never split.** The scoper offers no split to a task with a ceiling: its children
 would each carry their own and escape it.
 
+**A titled task waits for its issue.** The factory detects a titled api task by its text starting with
+`# `, and waits up to 2 minutes for the issue the intake files just after creating the Task. An
+untitled text that itself starts with `# ` is mistaken for one and waits the same 2 minutes before
+it proceeds. Known; nothing is lost but the wait.
+
 **Who pays.** An api task's runs are charged to `system:<name>` beside the fleet, whether
 `budgets.perPerson` is on or off, and the principal's day is `dailyUSD`. A maintainer's
 `/factory retry` moves the payer to the retrier, as for any task: they pay as the retrier, with
-their own day.
+their own day. With per-person caps off (`budgets.perPerson`), a retried api task's runs are
+charged to the fleet only: nobody's day applies, but the task's ceiling still holds.
 
 **What bounds the day.** The intake checks the principal's day (spent plus reserved, plus the
 request's whole `max_cost`) and answers `429 principal_budget_exhausted`, but that check is

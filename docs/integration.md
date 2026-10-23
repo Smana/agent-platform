@@ -198,8 +198,10 @@ annotation `agents.ogenki.io/revoked`, and `metadata.uid`. The run's CNP already
 
 A machine that starts factory work, such as a CI job or the Slack App, is a sponsored principal.
 It needs a ZITADEL machine user with a client-credentials client, whose token carries the project
-audience. In-cluster only today: the broker's network policy admits it on `:8080`, and the tailnet
-proxy is unchanged.
+audience. No in-cluster path to the broker's `/mcp` exists yet: it needs a network rule for
+in-cluster clients, which ai-native-ref adds with `human.mcp.sponsored`, and until then nothing
+reaches `/mcp` from inside the cluster. The factory's `:8082` is reachable from the tailnet, so a
+sponsored token is accepted there by `POST /v1/tasks` (and refused on `/v1/runs`, below).
 
 ```mermaid
 sequenceDiagram
@@ -223,7 +225,9 @@ sequenceDiagram
 
 1. Get a token with the client-credentials grant, `scope` including the project audience scope. Its
    `client_id` must be the principal's `clientIDFile`; the sponsor, the day and the ceiling come from
-   the factory's config, never from the token.
+   the factory's config, never from the token. A name maps to the **same** client-id file in the
+   broker's `human.mcp.sponsored[]` and the factory's `api.sponsored[]`: if they differ, one client
+   reads another's rooms.
 2. `initialize` on `/mcp`, then `tools/call` `run_create` with `task: {ttl?}`. Send an
    `idempotency_key` (the same key makes the same task).
 3. Poll `tasks/get` until `completed`. `input_required` names the room page: a human answers there,
