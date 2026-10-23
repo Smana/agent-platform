@@ -34,11 +34,11 @@ func TestLoopSearchReachesTheHarnessAndTheBridge(t *testing.T) {
 		t.Fatalf("bridge AGENT_SEARCH %q, want 1", env["AGENT_SEARCH"])
 	}
 	off := run("run-abcdefgh")
-	reviewer := run("run-abcdefgh", func(r *v1alpha1.AgentRun) {
+	tester := run("run-abcdefgh", func(r *v1alpha1.AgentRun) {
 		r.Spec.Loop.Search = true
 		r.Spec.Role = "tester"
 	})
-	for name, r := range map[string]*v1alpha1.AgentRun{"no search": off, "tester": reviewer} {
+	for name, r := range map[string]*v1alpha1.AgentRun{"no search": off, "tester": tester} {
 		if _, ok := harnessEnv(Pod(r, testConfig(t), testModel, "abcdefgh"))["AGENT_SEARCH"]; ok {
 			t.Fatalf("%s: AGENT_SEARCH on the harness", name)
 		}

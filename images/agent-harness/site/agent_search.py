@@ -41,8 +41,9 @@ MAX_ITERATIONS = 40
 MAX_TOKENS = 300_000
 MAX_SECONDS = 300
 EFFORT = "low"
-# A model call the watchdog cannot cut short: its bound keeps a full search, a last call and its
-# retries' 30 s inside the factory's 10 minutes without a room event (R4).
+# A model call the watchdog cannot cut short. With the run's retry patch a call that times out late
+# can be retried twice, so the worst case is about 3 x 120 s + 30 s on top of MAX_SECONDS: rare (a 503
+# after a two-minute hang), and the factory's 10 minutes without a room event (R4) is its bound.
 LLM_TIMEOUT_S = 120
 ANSWER_MAX = 8000
 QUESTION_MIN, QUESTION_MAX = 20, 2000

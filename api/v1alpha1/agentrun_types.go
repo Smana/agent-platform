@@ -107,7 +107,8 @@ type AgentRunLoop struct {
 	// AGENT_CHECKS=1 and the pod's deadline as AGENT_RUN_SECONDS. A public run only.
 	// +optional
 	Checks bool `json:"checks,omitempty"`
-	// Search offers an implementer the search tool (v3 feature 5): the harness gets AGENT_SEARCH=1.
+	// Search offers the search tool (v3 feature 5) to an implementer only: the harness and the room
+	// bridge both get AGENT_SEARCH=1, the bridge so it classes the harness's own search as plain.
 	// +optional
 	Search bool `json:"search,omitempty"`
 }

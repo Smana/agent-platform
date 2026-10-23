@@ -82,6 +82,9 @@ type Classifier struct {
 	ReadOnlyMCP map[string]bool
 	// SearchBuiltin is AGENT_SEARCH=1: the run was given the harness's search tool, so a bare
 	// "search" is that tool and plain. Without it a bare "search" is an MCP tool like any other.
+	// It assumes MCP tools reach the bridge prefixed (server_tool): an unprefixed MCP "search" on a
+	// run given search would also class plain, and makes the SDK refuse the run at start anyway
+	// (duplicate tool names).
 	SearchBuiltin bool
 }
 
