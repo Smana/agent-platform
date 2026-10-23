@@ -54,6 +54,7 @@ func otherTier(tier string) string {
 func (r *Reconciler) verifierSpec(t *v1alpha1.Task, role string) runs.Spec {
 	s := r.implementerSpec(t, "")
 	s.Role, s.TaskText, s.TaskURL, s.BaseRef = role, "", t.Status.PullRequest.URL, "agent/"+t.Name
+	r.withChecks(&s, t)
 	if role == "reviewer" { // "on a different tier from the implementer where possible" (§3); R47
 		s.Tier = otherTier(t.Spec.Budget.Tier)
 		s.Model = r.Cfg.Tiers[s.Tier].Model

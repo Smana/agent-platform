@@ -108,8 +108,7 @@ var (
 	roles  = []string{"implementer", "reviewer", "tester", "triager"}
 	models = []string{"agent-default", "tier-light", "tier-standard", "tier-frontier"}
 
-	profiles = []string{"pypi", "npm", "golang", "crates"}
-	prURL    = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`)
+	prURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`)
 )
 
 // Ledger layout (R50). One ConfigMap per UTC day, agent-factory-ledger-usd-<YYYYMMDD>, in the
@@ -430,7 +429,7 @@ func validate(in RunRequest) string {
 		return "internal_runs_take_no_egress_profiles"
 	}
 	for _, e := range in.EgressProfiles {
-		if !slices.Contains(profiles, e) {
+		if !slices.Contains(config.EgressProfiles, e) {
 			return "bad_egress_profile"
 		}
 	}
