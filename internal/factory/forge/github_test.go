@@ -564,6 +564,12 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"fork"},"files":[{"filename":"docs/b.md","status":"modified"}]}`)
 		case "anc...ahead", "anc...identical", "anc...behind", "anc...diverged": // IsAncestor reads only the status.
 			_, _ = io.WriteString(w, `{"status":"`+strings.TrimPrefix(r.PathValue("basehead"), "anc...")+`","files":[]}`)
+		case "anc...boom":
+			http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+		case "anc...weird":
+			_, _ = io.WriteString(w, `{"status":"weird","files":[]}`)
+		case "anc...empty":
+			_, _ = io.WriteString(w, `{"files":[]}`)
 		case "main...nobase": // a compare without a merge base cannot say which side is the PR's.
 			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/b.md","status":"modified"}]}`)
 		default: // mid...new: exactly one page, so more changed files are unread.
@@ -1078,6 +1084,12 @@ func TestIsAncestor(t *testing.T) {
 		got, err := r.g.IsAncestor(t.Context(), "anc", sha)
 		if err != nil || got != want {
 			t.Errorf("%s: %v %v, want %v", sha, got, err, want)
+		}
+	}
+	// An API error, an unknown status and an absent one are errors, never "not an ancestor".
+	for _, sha := range []string{"boom", "weird", "empty"} {
+		if got, err := r.g.IsAncestor(t.Context(), "anc", sha); err == nil || got {
+			t.Errorf("%s: %v %v, want an error", sha, got, err)
 		}
 	}
 }

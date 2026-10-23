@@ -89,3 +89,75 @@ func TestSource(t *testing.T) {
 		t.Fatalf("%+v %v", s, err)
 	}
 }
+
+// The edges of L7 and of "after": an omitted sourceRef.namespace is the Kustomization's own, one
+// owner label is not ownership, and a transition at exactly since is not after it.
+func TestNotReadySinceEdges(t *testing.T) {
+	noNS := obj(ksV1, "Kustomization", "flux-system", "tooling", "False", at.Add(time.Minute))
+	_ = unstructured.SetNestedMap(noNS.Object, map[string]any{"kind": "GitRepository", "name": "flux-system"}, "spec", "sourceRef")
+	oneLabel := obj(hrV2, "HelmRelease", "tooling", "half", "False", at.Add(time.Minute))
+	oneLabel.SetLabels(map[string]string{"kustomize.toolkit.fluxcd.io/name": "tooling"})
+	c := fluxClient(
+		noNS,
+		oneLabel,
+		ownedBy(obj(hrV2, "HelmRelease", "tooling", "equal", "False", at), "tooling"),
+		ownedBy(obj(hrV2, "HelmRelease", "tooling", "before", "False", at.Add(-time.Minute)), "tooling"),
+	)
+	got, err := Reader{C: c}.NotReadySince(t.Context(), "flux-system", "flux-system", at)
+	if err != nil || !slices.Equal(got, []string{"Kustomization/flux-system/tooling"}) {
+		t.Fatalf("%v %v", got, err)
+	}
+}
+
+// A Ready=False object whose time cannot be read is an error, never "not blamed".
+func TestNotReadySinceUnreadableTime(t *testing.T) {
+	for name, ts := range map[string]string{"unparsable": "yesterday", "missing": ""} {
+		u := sourced(obj(ksV1, "Kustomization", "flux-system", "tooling", "False", at), "GitRepository", "flux-system")
+		conds := map[string]any{"type": "Ready", "status": "False"}
+		if ts != "" {
+			conds["lastTransitionTime"] = ts
+		}
+		_ = unstructured.SetNestedSlice(u.Object, []any{conds}, "status", "conditions")
+		if got, err := (Reader{C: fluxClient(u)}).NotReadySince(t.Context(), "flux-system", "flux-system", at); err == nil {
+			t.Errorf("%s: %v, want an error", name, got)
+		}
+	}
+}
+
+func gitRepo(mut func(u *unstructured.Unstructured)) client.Object {
+	u := obj(srcV1, "GitRepository", "flux-system", "flux-system", "True", at)
+	_ = unstructured.SetNestedField(u.Object, "main@sha1:abc", "status", "artifact", "revision")
+	_ = unstructured.SetNestedField(u.Object, at.Format(time.RFC3339), "status", "artifact", "lastUpdateTime")
+	mut(u)
+	return u
+}
+
+// Source fails closed on what it cannot read: a mistyped suspend, no artifact, a revision that is
+// not a sha1 (sha256 object format), an unparsable time, and an absent object.
+func TestSourceFailsClosed(t *testing.T) {
+	for name, mut := range map[string]func(*unstructured.Unstructured){
+		"suspend type": func(u *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(u.Object, "yes", "spec", "suspend")
+		},
+		"no artifact": func(u *unstructured.Unstructured) { unstructured.RemoveNestedField(u.Object, "status", "artifact") },
+		"sha256": func(u *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(u.Object, "main@sha256:abc", "status", "artifact", "revision")
+		},
+		"no sha1": func(u *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(u.Object, "abc", "status", "artifact", "revision")
+		},
+		"bad time": func(u *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(u.Object, "soon", "status", "artifact", "lastUpdateTime")
+		},
+	} {
+		if s, err := (Reader{C: fluxClient(gitRepo(mut))}).Source(t.Context(), "flux-system", "flux-system"); err == nil {
+			t.Errorf("%s: %+v, want an error", name, s)
+		}
+	}
+	if _, err := (Reader{C: fluxClient()}).Source(t.Context(), "flux-system", "flux-system"); err == nil {
+		t.Error("an absent GitRepository must be an error")
+	}
+	if _, err := (Reader{C: fluxClient(gitRepo(func(*unstructured.Unstructured) {}))}).Source(t.Context(), "flux-system", "flux-system"); err != nil {
+		t.Errorf("a well-formed source: %v", err)
+	}
+}

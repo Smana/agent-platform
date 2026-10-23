@@ -902,14 +902,21 @@ func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) 
 
 // IsAncestor reports whether ancestor is sha or one of its ancestors: GitHub's compare of
 // ancestor...sha is "ahead" when sha descends from it and "identical" when they are one commit.
-// One file per page, since only the status is read.
+// One file per page, since only the status is read; any other status is an error.
 func (g *GitHub) IsAncestor(ctx context.Context, ancestor, sha string) (bool, error) {
 	cmp, _, err := g.rest.Repositories.CompareCommits(ctx, g.owner, g.name, ancestor, sha, &github.ListOptions{PerPage: 1})
 	g.mark(err)
 	if err != nil {
 		return false, wrap("compare commits", err)
 	}
-	return cmp.GetStatus() == "ahead" || cmp.GetStatus() == "identical", nil
+	switch st := cmp.GetStatus(); st {
+	case "ahead", "identical":
+		return true, nil
+	case "behind", "diverged":
+		return false, nil
+	default:
+		return false, fmt.Errorf("forge: compare %s...%s has status %q", ancestor, sha, st)
+	}
 }
 
 // Merge merges the pull request now, at the decided head (external review R02, ruling R52):

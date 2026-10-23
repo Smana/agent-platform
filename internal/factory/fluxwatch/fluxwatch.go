@@ -7,6 +7,7 @@ package fluxwatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -31,6 +32,13 @@ const (
 // Reader reads Flux's objects through a client that need not know Flux's types.
 type Reader struct{ C client.Reader }
 
+// ErrNoArtifact is a GitRepository that has fetched nothing yet: no revision to compare a merge to.
+var ErrNoArtifact = errors.New("fluxwatch: the GitRepository has no artifact")
+
+// ErrRevision is an artifact revision that is not `<ref>@sha1:<commit>`, such as a sha256 one: it
+// cannot be matched to a merge commit, so it is refused rather than returned whole.
+var ErrRevision = errors.New("fluxwatch: the artifact revision is not a sha1 commit")
+
 // Source is a GitRepository as the monitor needs it: whether it is suspended, the commit it
 // delivers and when it last fetched it.
 type Source struct {
@@ -40,7 +48,7 @@ type Source struct {
 }
 
 // Source reads the GitRepository ns/name. Its revision is the commit after `@sha1:`, or the whole
-// value when there is none.
+// value never: anything else (no artifact, no `@sha1:`) is an error.
 func (r Reader) Source(ctx context.Context, ns, name string) (Source, error) {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gitRepository)
@@ -48,12 +56,22 @@ func (r Reader) Source(ctx context.Context, ns, name string) (Source, error) {
 		return Source{}, fmt.Errorf("fluxwatch: get GitRepository %s/%s: %w", ns, name, err)
 	}
 	var s Source
-	s.Suspended, _, _ = unstructured.NestedBool(u.Object, "spec", "suspend")
-	rev, _, _ := unstructured.NestedString(u.Object, "status", "artifact", "revision")
-	if _, after, ok := strings.Cut(rev, "@sha1:"); ok {
-		rev = after
+	var err error
+	if s.Suspended, _, err = unstructured.NestedBool(u.Object, "spec", "suspend"); err != nil {
+		return Source{}, fmt.Errorf("fluxwatch: GitRepository %s/%s spec.suspend: %w", ns, name, err)
 	}
-	s.Revision = rev
+	rev, _, err := unstructured.NestedString(u.Object, "status", "artifact", "revision")
+	if err != nil {
+		return Source{}, fmt.Errorf("fluxwatch: GitRepository %s/%s artifact revision: %w", ns, name, err)
+	}
+	if rev == "" {
+		return Source{}, fmt.Errorf("%w: %s/%s", ErrNoArtifact, ns, name)
+	}
+	_, commit, ok := strings.Cut(rev, "@sha1:")
+	if !ok || commit == "" {
+		return Source{}, fmt.Errorf("%w: %s/%s has %q", ErrRevision, ns, name, rev)
+	}
+	s.Revision = commit
 	if ts, _, _ := unstructured.NestedString(u.Object, "status", "artifact", "lastUpdateTime"); ts != "" {
 		t, err := time.Parse(time.RFC3339, ts)
 		if err != nil {
@@ -89,7 +107,11 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 			continue
 		}
 		delivered[[2]string{k.GetNamespace(), k.GetName()}] = true
-		if notReadySince(k, since) {
+		bad, err := notReadySince(k, since)
+		if err != nil {
+			return nil, err
+		}
+		if bad {
 			out = append(out, "Kustomization/"+k.GetNamespace()+"/"+k.GetName())
 		}
 	}
@@ -101,7 +123,14 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 	for i := range hr.Items {
 		h := &hr.Items[i]
 		l := h.GetLabels()
-		if delivered[[2]string{l[ownerNamespace], l[ownerName]}] && notReadySince(h, since) {
+		if !delivered[[2]string{l[ownerNamespace], l[ownerName]}] {
+			continue
+		}
+		bad, err := notReadySince(h, since)
+		if err != nil {
+			return nil, err
+		}
+		if bad {
 			out = append(out, "HelmRelease/"+h.GetNamespace()+"/"+h.GetName())
 		}
 	}
@@ -109,8 +138,13 @@ func (r Reader) NotReadySince(ctx context.Context, ns, name string, since time.T
 	return out, nil
 }
 
-// notReadySince: the object's Ready condition is False and turned so after since.
-func notReadySince(u *unstructured.Unstructured, since time.Time) bool {
+// notReadySince: the object's Ready condition is False and turned so after since. A False one whose
+// time is missing or unparsable is an error: it cannot be told apart from a fresh failure.
+//
+// Only Ready=False counts: an object that has not yet picked up the merge still reads its old
+// Ready=True, and a stuck Unknown is never blamed, so an empty list alone is not "healthy" — the
+// caller also checks the Source's revision and settle time.
+func notReadySince(u *unstructured.Unstructured, since time.Time) (bool, error) {
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conds {
 		m, ok := c.(map[string]any)
@@ -119,7 +153,10 @@ func notReadySince(u *unstructured.Unstructured, since time.Time) bool {
 		}
 		ts, _ := m["lastTransitionTime"].(string)
 		t, err := time.Parse(time.RFC3339, ts)
-		return err == nil && t.After(since)
+		if err != nil {
+			return false, fmt.Errorf("fluxwatch: %s %s/%s is not Ready with lastTransitionTime %q: %w", u.GetKind(), u.GetNamespace(), u.GetName(), ts, err)
+		}
+		return t.After(since), nil
 	}
-	return false
+	return false, nil
 }
