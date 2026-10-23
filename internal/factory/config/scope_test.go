@@ -38,6 +38,27 @@ func TestScopeFor(t *testing.T) {
 	}
 }
 
+// A class row is read whole: a row with only scope has no loop, even when default has one (the
+// scope row does not inherit default's loop, nor does default's scope reach a row that sets none).
+func TestAScopeOnlyRowDropsDefaultsLoop(t *testing.T) {
+	cfg, err := Parse([]byte(good + `loops:
+  default: {stallSteps: 40}
+  docs: {scope: steering}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LoopFor("docs") != nil {
+		t.Error("docs inherited default's loop")
+	}
+	if cfg.LoopFor("tests") == nil {
+		t.Error("a class without a row gets default's loop")
+	}
+	if cfg.ScopeFor("docs") != ScopeSteering || cfg.ScopeFor("tests") != ScopeOff || !cfg.SteeringOn() {
+		t.Error("scope follows the row")
+	}
+}
+
 // YAML 1.1 reads bare false and no as the boolean false: both are off. yes is true, which is refused.
 func TestYAML11BooleansInScope(t *testing.T) {
 	for _, v := range []string{"false", "no", "off"} {
