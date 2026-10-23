@@ -52,12 +52,14 @@ type Images struct {
 	Bridge  string `json:"bridge"`
 }
 
-// defaultProfiles are the composition's _EGRESS_PROFILES (crossplane-configuration v0.9.15).
+// defaultProfiles are the composition's _EGRESS_PROFILES (crossplane-configuration v0.9.17) plus
+// RC7's two hosts, until PR 5 brings them into the composition: GitHub's release host, where a
+// release download lands (302), and Go's archive host.
 var defaultProfiles = map[string][]string{
-	"github": {"github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com"},
+	"github": {"github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "release-assets.githubusercontent.com"},
 	"pypi":   {"pypi.org", "files.pythonhosted.org"},
 	"npm":    {"registry.npmjs.org"},
-	"golang": {"proxy.golang.org", "sum.golang.org"},
+	"golang": {"proxy.golang.org", "sum.golang.org", "dl.google.com"},
 	"crates": {"index.crates.io", "static.crates.io"},
 }
 

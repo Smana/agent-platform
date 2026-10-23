@@ -413,7 +413,8 @@ def milestones(command: str) -> set[str]:
         elif (prog in ("pytest", "py.test") or (prog.startswith("python") and rest[:2] == ["-m", "pytest"])
               or (prog in ("go", "cargo", "make") and rest[:1] == ["test"])
               or (prog == "npm" and (rest[:1] == ["test"] or rest[:2] == ["run", "test"]))
-              or (prog == "task" and rest[:1] and CHECK_TARGET.fullmatch(rest[0]))):
+              or (prog == "task" and rest[:1] and CHECK_TARGET.fullmatch(rest[0]))
+              or prog == "agent-checks"):
             found.add("checks")
     return found
 
@@ -567,6 +568,269 @@ class ProgressNotes:
                 return False
             raise RuntimeError(message[:200])
         return True
+
+
+# v3 feature 3: the repository's checks in the sandbox, on a check-enabled run only (AGENT_CHECKS=1,
+# set by the composition from the claim's spec.loop.checks). agent-checks sits beside this file.
+CHECKS_TOOL = "/usr/local/bin/agent-checks"
+CHECKS_DIR = "/workspace/.agent-checks"
+CHECKS_RULES = {
+    "implementer": "Before every push, run `agent-checks` and fix what it reports. It runs the CI's fast subset; the "
+                   "CI stays the judge. If a failure is not your change's, say so in the pull request.",
+    "reviewer": "Before your verdict, run `agent-checks` on the pull request's head and cite its first line as your "
+                "evidence. It runs the CI's fast subset; the CI stays the judge.",
+}
+# RC9: the final run is skipped when the pod has less than the declaration's budget plus this left.
+CHECKS_MARGIN_S = 120
+KILL_WAIT_S = 5
+NOTE_MAX = 280
+CHECKS_SKIPS = {"deadline", "no result", "unreadable result"}
+CHECKS_RESULTS = {"pass", "fail", "timeout", "skip"}
+CHECKS_SPAN, INSTALL_SPAN = "agent-run.checks", "agent-run.checks.install"
+
+
+def checks_module():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import agent_checks
+
+    return agent_checks
+
+
+def declared(env: dict):
+    """The checks the clone's default branch declares, on a check-enabled run; None otherwise."""
+    if env.get("AGENT_CHECKS") != "1":
+        return None
+    try:
+        ac = checks_module()
+        try:
+            # Read once, before the conversation: the base and the blob stay the run's, whatever the
+            # agent does to refs afterwards (RC2).
+            base, blob, decl = ac.declaration()
+            return {**decl, "pin": (base, blob)}
+        except ac.Undeclared as exc:
+            print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
+    except Exception as exc:  # noqa: BLE001 -- the checks never fail the run
+        print("agent-run: no repository checks: %s" % exc, file=sys.stderr, flush=True)
+    return None
+
+
+def checks_rules(env: dict, decl) -> str:
+    """The rule appended to the platform rules (RC4), for the roles that run the checks."""
+    rule = CHECKS_RULES.get(env.get("ROLE", "")) if decl else None
+    return "\nRepository checks:\n- %s\n" % rule if rule else ""
+
+
+def _end(span, error: str | None) -> None:
+    if not span:
+        return
+    if error:
+        from opentelemetry.trace import Status, StatusCode
+
+        span.set_attribute("error.type", error)  # the collector keeps error.type and drops the rest
+        span.set_status(Status(StatusCode.ERROR))
+    span.end()
+
+
+def prefetch(start_span=None):
+    """agent-checks --install in the background, right after the clone, so the toolchain installs
+    while the model reads the task (RC1). A waiter thread ends its span when it exits."""
+    os.makedirs(CHECKS_DIR, exist_ok=True)
+    with open(os.path.join(CHECKS_DIR, "prefetch.log"), "a") as log:
+        proc = subprocess.Popen([CHECKS_TOOL, "--install"], stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    span = start_span(INSTALL_SPAN) if start_span else None
+
+    def wait():
+        error = "install_incomplete"
+        try:
+            error = "install_incomplete" if proc.wait() else None
+        finally:
+            _end(span, error)
+
+    threading.Thread(target=wait, daemon=True).start()
+    return proc
+
+
+def _git_out(*args: str) -> str:
+    # The repository's config is the agent's: nothing it names (fsmonitor, hooks, diff drivers) runs here.
+    ac = checks_module()
+    return subprocess.run(["git", "-C", REPO_DIR, *ac.guards(REPO_DIR), *args], capture_output=True, text=True,
+                          env=ac.git_env()).stdout.strip()
+
+
+def _load(path: str) -> dict | None:
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def checks_note(role: str, res: dict, by_agent: bool) -> str:
+    """The room note's fixed text (RC6): the head, the counts and the failed steps' names, which come
+    from the base's declaration. Nothing the agent wrote."""
+    lead = "Harness (%s): checks on %s" % (role, res["head"][:12])
+    if res.get("skipped"):
+        return "%s skipped: %s." % (lead, res["skipped"])
+    counts = {}
+    for s in res.get("steps", []):
+        counts[s["result"]] = counts.get(s["result"], 0) + 1
+    text = "%s: %s%s." % (lead, ", ".join("%d %s" % (counts[r], r) for r in ("pass", "fail", "timeout", "skip") if r in counts),
+                          " (the agent's own run)" if by_agent else "")
+    failed = [s["name"] for s in res.get("steps", []) if s["result"] in ("fail", "timeout")]
+    for i in range(len(failed), 0, -1):
+        more = " Failed: %s%s." % (", ".join(failed[:i]), ", …" if i < len(failed) else "")
+        if len(text + more) <= NOTE_MAX:
+            return text + more
+    return text[:NOTE_MAX]
+
+
+def _clean(res, decl, head: str):
+    """The result as the note may read it: the right head, a known shape, and only the steps the base
+    declares (the file is agent-writable). None when it cannot be read."""
+    if not isinstance(res, dict) or res.get("head") != head:
+        return None
+    skipped = res.get("skipped")
+    if skipped is not None:
+        return {"version": 1, "head": head, "skipped": skipped} if isinstance(skipped, str) and skipped in CHECKS_SKIPS else None
+    pin = decl.get("pin")
+    if pin and (res.get("base"), res.get("declaration")) != tuple(pin):
+        return None
+    names = {s.get("name") for s in decl.get("steps", []) if isinstance(s, dict)}
+    steps = res.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(s, dict) and isinstance(s.get("result"), str)
+                                           and s["result"] in CHECKS_RESULTS and isinstance(s.get("name"), str) for s in steps):
+        return None
+    kept = [s for s in steps if s.get("name") in names]
+    if len({s["name"] for s in kept}) != len(kept):
+        return None
+    return {**res, "steps": kept}
+
+
+def _run_tool(decl, head: str, timeout: float):
+    """The cleaned result agent-checks prints on stdout, or None: a timeout, an exit other than 0 or 1
+    (1 is failing steps), no JSON object on the last line, or one _clean refuses."""
+    tool_env = {**os.environ, **({"AGENT_CHECKS_BASE": decl["pin"][0]} if decl.get("pin") else {})}
+    # Before the pipe exists: a same-uid process of the agent's can then open neither its read end
+    # through /proc/<agent-run>/fd nor ptrace this process. A refusal means no run.
+    if not checks_module().undumpable():
+        return None
+    try:
+        proc = subprocess.Popen([CHECKS_TOOL, "--json"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=tool_env, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(timeout=max(timeout, 0))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        try:
+            proc.communicate(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            # A process in another session still holds the pipe: give up on it.
+            proc.stdout.close()
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    lines = out.decode("utf-8", "replace").strip().splitlines()
+    try:
+        raw = json.loads(lines[-1]) if lines else None
+    except (ValueError, RecursionError):
+        return None
+    return _clean(raw, decl, head)
+
+
+def _publish(path: str, res: dict) -> None:
+    """The harness's own result, for the judge and the reviewer: replaces whatever the agent left."""
+    try:
+        os.makedirs(CHECKS_DIR, exist_ok=True)
+        tmp = path + ".harness"
+        with open(tmp, "w") as f:
+            json.dump(res, f)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print("agent-run: checks result not kept: %s" % exc, file=sys.stderr, flush=True)
+
+
+def final_checks(env: dict, decl, notes=None, start_span=None, started: float = 0.0, clock=time.monotonic):
+    """RC6: when an implementer's conversation ends finished, its head's checks are the evidence the
+    judge and the reviewer read. A full result the agent left for this head on a clean tree stands;
+    otherwise agent-checks runs, unless the pod lacks the budget plus CHECKS_MARGIN_S and the note's
+    wait. The run never outlasts AGENT_RUN_SECONDS. Writes CHECKS_DIR/<head>.json, posts the note,
+    emits the span; returns the result, or None when off."""
+    if not decl or env.get("ROLE") != "implementer":
+        return None
+    head = _git_out("rev-parse", "HEAD")
+    path = os.path.join(CHECKS_DIR, head + ".json")
+    clean = not _git_out("diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD")
+    raw = _load(path)
+    res, by_agent = _clean(raw, decl, head), True
+    if not (res and clean and not raw.get("dirty") and not raw.get("partial") and not res.get("skipped")):
+        res, by_agent = None, False
+    budget = decl["minutes"] * 60
+    limit = env.get("AGENT_RUN_SECONDS", "")
+    timeout = budget + checks_module().INSTALL_S + 60
+    if res is None and limit.isdigit():
+        # This note alone can wait out the broker's minute: on the code == 0 path nothing posts after
+        # the loop policy's judge, and a run that ends with `end` set never gets here.
+        room = int(limit) - (clock() - started) - CHECKS_MARGIN_S - MIN_NOTE_GAP_S
+        if room < budget:
+            res = {"version": 1, "head": head, "skipped": "deadline"}
+            _publish(path, res)
+        timeout = min(timeout, room)
+    span = start_span(CHECKS_SPAN) if start_span and not by_agent else None
+    error = None
+    try:
+        if res is None:
+            # The agent wrote this file: it is never the harness's result, so it moves aside first. The
+            # harness's result is what the tool prints to the pipe only agent-run holds, and agent-run
+            # writes the file itself.
+            if os.path.lexists(path):
+                try:
+                    os.replace(path, os.path.join(CHECKS_DIR, head + ".agent.json"))
+                except OSError:
+                    pass
+            res = _run_tool(decl, head, timeout) or {"version": 1, "head": head, "skipped": "unreadable result"}
+            if not res.get("skipped"):
+                _publish(path, res)
+        failed = any(s["result"] in ("fail", "timeout") for s in res.get("steps", []))
+        error = "checks_" + res["skipped"].replace(" ", "_") if res.get("skipped") else "checks_failed" if failed else None
+    except BaseException:
+        error = "checks_error"
+        raise
+    finally:
+        _end(span, error)
+    text = checks_note(env.get("ROLE"), res, by_agent)
+    print("agent-run " + text.split(": ", 1)[1], flush=True)
+    if notes:
+        post_once(notes, text)
+    return res
+
+
+def post_once(notes, text: str, sleep=time.sleep) -> None:
+    """The final note, outside the milestone cap: on the broker's one-a-minute limit, it waits out
+    the rest of the minute once."""
+    try:
+        if not notes.send(text):
+            left = MIN_NOTE_GAP_S - (notes.clock() - notes.last) if notes.last is not None else MIN_NOTE_GAP_S
+            sleep(max(0.0, min(MIN_NOTE_GAP_S, left)))
+            notes.send(text)
+    except Exception as exc:  # noqa: BLE001 -- a note must never fail the run
+        print("agent-run: checks note not posted: %s" % exc, file=sys.stderr, flush=True)
+
+
+def checks_ledger() -> str:
+    """How often the agent ran agent-checks itself, from its ledger: a signal, the agent can write it."""
+    try:
+        with open(os.path.join(CHECKS_DIR, "runs.jsonl")) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError):
+        return ""
+    return "agent-run checks ledger: %d runs, %d of one step, %.0fs" % (
+        len(rows), sum(1 for r in rows if r.get("partial")), sum(r.get("seconds", 0) for r in rows))
 
 
 def model_retries() -> int:
@@ -1076,6 +1340,7 @@ def server_env(env: dict) -> dict:
 
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_sigterm)
+    started = time.monotonic()
     env = dict(os.environ)
     # agent-server's conversations_path and bash_events_dir are relative to
     # its cwd; pin it to "/" so its state lands in the intended paths
@@ -1092,9 +1357,15 @@ def main() -> int:
         # either: it waits on a call's approval, a new message would reject that call, and a bare
         # run would execute it unconfirmed. The bridge answers it from the room's decision.
         resumed = persisted(env) or clone(env)
+        decl = declared(env)
+        if decl:
+            try:
+                prefetch(child_spans(provider, span))
+            except Exception as exc:  # noqa: BLE001 -- the run goes on without the prefetch
+                print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             task = t.read()
-            request = build_request(env, task, r.read(), span)
+            request = build_request(env, task, r.read() + checks_rules(env, decl), span)
         policy = loop_for(env)
         # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
         # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
@@ -1113,6 +1384,13 @@ def main() -> int:
         steps.summary()
         if policy:
             print("agent-run loop end: %s after %d steps and %d continuations" % (end or "finished", steps.steps, state.sent), flush=True)
+        if code == 0:
+            try:
+                final_checks(env, decl, notes, child_spans(provider, span) if decl else None, started)
+            except Exception as exc:  # noqa: BLE001 -- the checks never fail a finished run
+                print("agent-run: final checks failed: %s" % exc, file=sys.stderr, flush=True)
+        if decl and (ledger := checks_ledger()):
+            print(ledger, flush=True)
         if notes:
             if end:
                 notes.final("the run ended %s: %s" % (end, note))
@@ -1141,8 +1419,8 @@ def main() -> int:
             # room's last. Nothing is paused or checkpointed on this path, which leaves it time.
             timed("final-read", FINAL_READ_S, lambda: final_read(env, end=end))
         if signalled:
-            started = time.monotonic()
-            report("stop", "done: " + stop(server, STOP_S), started, STOP_S)
+            stop_started = time.monotonic()
+            report("stop", "done: " + stop(server, STOP_S), stop_started, STOP_S)
             timed("revoke", REVOKE_S, revoke)
         else:
             stop(server, 10)

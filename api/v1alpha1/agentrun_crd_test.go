@@ -41,20 +41,22 @@ func TestAgentRunCRDKeepsTheXRDContract(t *testing.T) {
 		got[r.Rule] = r.Message
 	}
 	for rule, msg := range map[string]string{
-		"self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))": "a reviewer run needs a pull request URL as its task",
-		"!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')":                               "task.url must point into spec.repository",
-		"self.dataClass != 'internal' || !has(self.egress) || !has(self.egress.profiles) || size(self.egress.profiles) == 0":           "an internal run takes no egress profiles",
-		"has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)":                              "branch is immutable and cannot be added or removed after creation",
-		"has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)":                         "roomRef is immutable and cannot be added or removed after creation",
-		"has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)":               "queueName is immutable and cannot be added or removed after creation",
-		"has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)":     "suspendable is immutable and cannot be added or removed after creation",
+		"self.role != 'reviewer' || (has(self.task.url) && self.task.url.matches('^https://github\\\\.com/[^/]+/[^/]+/pull/[0-9]+$'))":                                                           "a reviewer run needs a pull request URL as its task",
+		"!has(self.task.url) || self.task.url.startsWith('https://github.com/' + self.repository + '/')":                                                                                         "task.url must point into spec.repository",
+		"self.dataClass != 'internal' || !has(self.egress) || !has(self.egress.profiles) || size(self.egress.profiles) == 0":                                                                     "an internal run takes no egress profiles",
+		"has(self.branch) == has(oldSelf.branch) && (!has(self.branch) || self.branch == oldSelf.branch)":                                                                                        "branch is immutable and cannot be added or removed after creation",
+		"has(self.roomRef) == has(oldSelf.roomRef) && (!has(self.roomRef) || self.roomRef == oldSelf.roomRef)":                                                                                   "roomRef is immutable and cannot be added or removed after creation",
+		"has(self.queueName) == has(oldSelf.queueName) && (!has(self.queueName) || self.queueName == oldSelf.queueName)":                                                                         "queueName is immutable and cannot be added or removed after creation",
+		"has(self.suspendable) == has(oldSelf.suspendable) && (!has(self.suspendable) || self.suspendable == oldSelf.suspendable)":                                                               "suspendable is immutable and cannot be added or removed after creation",
+		"self.dataClass != 'internal' || !has(self.loop) || !has(self.loop.checks) || !self.loop.checks":                                                                                         "an internal run runs no repository checks",
+		"has(self.loop) == has(oldSelf.loop) && (!has(self.loop) || (has(self.loop.checks) == has(oldSelf.loop.checks) && (!has(self.loop.checks) || self.loop.checks == oldSelf.loop.checks)))": "loop is immutable and cannot be added or removed after creation",
 	} {
 		if m, ok := got[rule]; !ok || m != msg {
 			t.Errorf("spec rule %q: message %q, want %q", rule, m, msg)
 		}
 	}
-	if len(spec.XValidations) != 7 {
-		t.Errorf("spec has %d rules, want 7", len(spec.XValidations))
+	if len(spec.XValidations) != 9 {
+		t.Errorf("spec has %d rules, want 9", len(spec.XValidations))
 	}
 	immutable := func(name string, p apiextensionsv1.JSONSchemaProps) {
 		for _, r := range p.XValidations {
