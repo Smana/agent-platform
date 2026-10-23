@@ -8,20 +8,86 @@
 #   scripts/shadow-merge-tally.sh --class docs-links [--repo Smana/cloud-native-ref]
 #
 # Prints one line per judged pull request, then the totals. Needs gh, authenticated, and jq.
+#
+#   scripts/shadow-merge-tally.sh --class dead-links --outcomes --since 2026-08-01 [--window 168h] [--budget 0.10]
+#
+# --outcomes reads what became of the merges of a class instead: the pull requests labelled
+# factory/merged:<class> or factory/auto-merged:<class> since a date, each one's revert, the merged
+# follow-up fixes labelled factory/follow-up-of:#<n>, its factory/monitor:regression label and its
+# newest monitor verdict. A merge is mature once --window has passed (the class's followUpWindow),
+# conclusive when it holds a healthy or regression verdict, or a bad outcome of its own. The
+# Clopper-Pearson upper bound (95%) on the bad outcomes of the mature, conclusive merges is
+# compared with --budget: widen=yes only below it. NOW overrides the clock.
 set -euo pipefail
 
-class="" repo="${GH_REPO:-Smana/cloud-native-ref}" limit=500
+class="" outcomes="" since="" window="168h" budget="0.10" repo="${GH_REPO:-Smana/cloud-native-ref}" limit=500
+usage() { echo "usage: $0 --class <class> [--repo owner/name] [--limit n] [--outcomes --since <date> [--window 168h] [--budget 0.10]]" >&2; }
 author="app/ogenki-agents" factory="ogenki-agent-factory" merger="ogenki-agent-merger"
 while [ $# -gt 0 ]; do
   case "$1" in
     --class) class="$2"; shift 2 ;;
     --repo) repo="$2"; shift 2 ;;
     --limit) limit="$2"; shift 2 ;;
-    *) echo "usage: $0 --class <class> [--repo owner/name] [--limit n]" >&2; exit 2 ;;
+    --outcomes) outcomes=1; shift ;;
+    --since) since="$2"; shift 2 ;;
+    --window) window="$2"; shift 2 ;;
+    --budget) budget="$2"; shift 2 ;;
+    *) usage; exit 2 ;;
   esac
 done
-[ -n "$class" ] || { echo "usage: $0 --class <class> [--repo owner/name] [--limit n]" >&2; exit 2; }
+[ -n "$class" ] || { usage; exit 2; }
+[ -z "$outcomes" ] || [ -n "$since" ] || { echo "--outcomes needs --since <date>" >&2; exit 2; }
 gh="${GH:-gh}"
+
+# A revert of any merged PR: GitHub's revert body, or the merger's revert-of label (D1).
+reverts_of() {
+  "$gh" pr list -R "$repo" --state all --search 'Revert in:title' --limit "$limit" --json body,labels,state
+}
+
+if [ -n "$outcomes" ]; then
+  # The label is quoted inside the search (L11): unquoted, the ":" and "/" split it and nothing comes back.
+  merged_with() {
+    "$gh" pr list -R "$repo" --state merged --limit "$limit" --json number,mergedAt,labels,comments \
+      --search "label:\"$1:$class\" merged:>=$since"
+  }
+  prs=$(jq -s 'add | unique_by(.number)' <(merged_with factory/merged) <(merged_with factory/auto-merged))
+  now="${NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+  jq -r --arg repo "$repo" --arg factory "$factory" --arg now "$now" --arg window "${window%h}" \
+    --argjson reverts "$(reverts_of)" '
+    def login: ascii_downcase | sub("^app/"; "") | sub("\\[bot\\]$"; "");
+    ([$reverts[] | select(.state != "CLOSED")
+      | ((.body // "") | [scan("Reverts \($repo)#([0-9]+)") | .[0] | tonumber]),
+        ([.labels[].name | select(startswith("factory/revert-of:#")) | ltrimstr("factory/revert-of:#") | tonumber])
+      | .[]] | unique) as $reverted
+    | ([.[].labels[].name | select(startswith("factory/follow-up-of:#")) | ltrimstr("factory/follow-up-of:#") | tonumber]
+       | unique) as $followed
+    | (($now | fromdateiso8601) - ($window | tonumber) * 3600) as $cutoff
+    | [ .[] | . as $pr
+        | ([.comments[] | select((.author.login | login) == $factory)
+            | select(.body | test("event=monitor-[0-9]+ verdict=[a-z]+"))] | sort_by(.createdAt) | last) as $c
+        | (if $c == null then "none" else ($c.body | capture("event=monitor-[0-9]+ verdict=(?<v>[a-z]+)").v) end) as $verdict
+        | [ (select($reverted | index($pr.number)) | "reverted"),
+            (select($followed | index($pr.number)) | "follow_up"),
+            (select([$pr.labels[].name] | index("factory/monitor:regression")) | "regression") ] as $bad
+        | { n: .number, mature: ((.mergedAt | fromdateiso8601) <= $cutoff), verdict: $verdict, bad: $bad,
+            conclusive: ($verdict == "healthy" or $verdict == "regression" or ($bad | length) > 0) } ]
+    | sort_by(.n)
+    | (.[] | "#\(.n) \(if .mature then "mature" else "immature" end) \(.verdict) \(if (.bad | length) > 0 then (.bad | join(",")) else "-" end)"),
+      ([.[] | select(.mature)] as $m
+       | ($m | map(select(.conclusive))) as $k
+       | "merges=\(length) mature=\($m | length) conclusive=\($k | length) inconclusive=\(($m | length) - ($k | length)) "
+         + "bad=\([$k[] | select(.bad | length > 0)] | length) reverted=\([$k[] | select(.bad | index("reverted"))] | length) "
+         + "follow_up=\([$k[] | select(.bad | index("follow_up"))] | length) regression=\([$k[] | select(.bad | index("regression"))] | length)")
+  ' <<<"$prs" > "$tmp"
+  head -n -1 "$tmp"
+  totals=$(tail -1 "$tmp")
+  nk=$(grep -o ' conclusive=[0-9]*' <<<"$totals" | cut -d= -f2) nb=$(grep -o ' bad=[0-9]*' <<<"$totals" | cut -d= -f2)
+  bound=$(python3 -I "$(dirname "$0")/clopper-pearson.py" "$nb" "$nk")
+  widen=$(awk -v b="$bound" -v m="$budget" 'BEGIN { print (b < m) ? "yes" : "no" }')
+  echo "$totals bound=$bound budget=$budget widen=$widen"
+  exit 0
+fi
 
 prs=$("$gh" pr list -R "$repo" --state merged --author "$author" --limit "$limit" \
   --json number,headRefOid,mergedBy,comments)

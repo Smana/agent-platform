@@ -189,6 +189,7 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `closes_parent` | A part's pull request body closes its parent issue; the parent closes with its last part, so edit the body and merge it yourself |
 | `class_paused` | The class's breaker tripped after reverts |
 | `ledger_truncated` | A merge-ledger read filled its page of 100 and its oldest pull request is still inside the breaker window or today, so the ledger may under-count; nothing arms. A maintainer decides |
+| `ci_wait_expired` | The pull request waited `merge.awaitingCIFor` in `AwaitingCI` and a required check never reported. The message names the checks. A maintainer decides |
 | `auto_merge_cap` | `merge.autoMergesPerDay` is reached |
 | `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
 | `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
@@ -588,7 +589,85 @@ not. Comments from before the head was recorded never count.
 
 ### The post-merge monitor
 
-A class that declares `monitor` keeps its merged tasks on the reconciler's books until the verdict is posted. Each watched task is read at most once per 10 minutes: `PullRequest`, `CommitChecks` until main's signal is final, and one `MergedSince` per repository (shared by every task of it). Each later pull request is read once per process (`PullFiles`, plus one blame per file both changed), so a steady state costs about 2 GitHub calls per watched task per 10 minutes. A factory restart forgets those caches and re-reads up to 100 pull requests and their blames in one burst per repository. A follow-up read that fails or cannot say (no blame, an omitted patch, a truncated search, a rebase merge of several commits) ends the watch `inconclusive`, never `healthy`. The full description comes with the merge gate follow-ups docs.
+A class that declares `monitor` keeps every merge of its tasks under watch, whoever merged it:
+the factory's own auto-merge, and a Renovate or maintainer merge made before the factory decided
+(a merge made before the factory decides still ends the task `Done "merged"` and is monitored, so
+the breaker counts outcomes of merges the factory never decided: a demotion can follow from one). Nothing
+here ever reverts: main red within `verifyFor` still opens the revert (see above); the monitor only
+records a verdict, labels, narrates and feeds the breaker.
+
+```yaml
+classes:
+  dead-links:
+    monitor:
+      oracleRuns: 2          # scheduled detector runs that must not report the merged targets; needs an oracle
+      flux: {source: flux-system/ai-native-ref, within: 15m}   # a GitRepository, and how long after it holds the merge
+      followUpWindow: 72h    # how long later merges are read for a fix of this one; the verdict is final after it
+merge:
+  awaitingCIFor: 6h          # bound AwaitingCI on a wait verdict; 0, the default, is no bound
+  breaker: {window: 10, maxReverts: 1, maxFollowUps: 1}   # maxFollowUps 0, the default, counts none
+```
+
+`oracleRuns` and `flux` are read by the signals that follow this change; this one reads main's CI
+and the follow-ups. `merge.breaker.maxFollowUps` must be between 0 and `window`.
+
+**The signals.**
+
+| Signal | Reads | Regression | Healthy |
+|---|---|---|---|
+| Main's CI | The `merge.verifyChecks` on the merge commit. An auto-merge's was already watched by the task, so it counts healthy | Red | Green once `verifyFor` has passed. Still pending after twice that: `inconclusive` |
+| Follow-ups | Pull requests merged after this one, within `followUpWindow`, that change lines this one introduced: GitHub's blame at the later pull request's own parent, overlapped with its patch | None: a follow-up is never a verdict, it is a bad outcome counted by the breaker | |
+
+A follow-up read that fails or cannot say makes the verdict `inconclusive`, never `healthy`
+(`followUpsUnread`): no blame for a file, an omitted patch, a truncated search or merged list
+(`ErrMergedTruncated`), and a rebase merge of several commits, whose parent is not the base the
+patch was written against. The factory reads a window's merges at most once per 10 minutes.
+
+**The verdict** is the worst signal: `regression`, then `inconclusive`, then `healthy`. A signal
+still open when the window ends counts `inconclusive`. A `regression` is posted at once and the
+watch goes on to the end of the window to count follow-ups; any other verdict is posted when the
+window ends. The comment ends `<!-- agent-factory … event=monitor-<n> verdict=<v> -->` and lists
+what it read, with `follow_ups=N`. A regression is also posted on the control issue.
+`agent_factory_monitor_verdicts_total{class,verdict}` counts each verdict once.
+
+**The labels** the merger writes (it asks for `issues: write` while any class is `live` or has a
+`monitor`):
+
+| Label | On | Meaning |
+|---|---|---|
+| `factory/merged:<class>` | Every monitored merge, auto or not | The merge is in the class's ledger |
+| `factory/follow-up-of:#<n>` | A later merged pull request | It fixed lines of #n: one bad outcome of #n (`outcome=follow_up`) |
+| `factory/monitor:regression` | The monitored pull request | Its verdict was `regression`: a bad outcome |
+
+**What demotes.** The breaker counts, among a class's newest `window` merges, reverts, follow-ups
+and regressions: `maxReverts` of the first, or `maxFollowUps` of the others, send the class back
+to human review (`class_paused`). A ledger read that fills its page of 100 with its oldest pull
+request still inside the window or the day fails closed (`ledger_truncated`). Only auto-merges
+count toward `merge.autoMergesPerDay` and the class's `maxPerDay`; a maintainer's or Renovate's merge
+is in the ledger for the breaker, not for the caps.
+
+**Load and bounds.** Each watched task is read at most once per 10 minutes: `PullRequest`,
+`CommitChecks` until main's signal is final, and one `MergedSince` per repository (shared by
+every task of it). Each later pull request is read once per process (`PullFiles`, plus one blame
+per file both changed), so a steady state costs about 2 GitHub calls per watched task per
+10 minutes. A restart forgets the throttle and the caches and re-reads up to 100 pull requests and
+their blames in one burst per repository. The caches hold derived line sets, never patches, and
+drop an entry when the pull request it describes leaves the longest window.
+
+### Calibration
+
+Widen a class one step only when the evidence allows it. `scripts/shadow-merge-tally.sh --class
+<class> --outcomes --since <date> --window <followUpWindow>` lists the class's merged pull requests
+and their outcomes (reverted, follow-up fix, regression), leaves out the immature (merged less than
+the window ago) and the inconclusive, and prints the Clopper-Pearson 95% upper bound on the rest:
+
+```
+merges=31 mature=30 conclusive=29 inconclusive=1 bad=0 reverted=0 follow_up=0 regression=0 bound=0.098… budget=0.10 widen=yes
+```
+
+The rule: widen one step only when `bound < budget` (0.10 by default; `--budget` changes it), by
+the owner's config pull request citing the tally's output. Zero bad merges need 29 conclusive
+ones, one needs 46, two need 61.
 
 ## Oracle classes
 
@@ -766,9 +845,9 @@ Each `repositories` entry:
 | `name` | `owner/name` | Required |
 | `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
 | `triggerLabel` | The start label, `factory/ready` | Required |
-| `classes` | `<name>: {live, shadow, checks, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
+| `classes` | `<name>: {live, shadow, checks, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `checks` | `{egress: [profiles]}`: what a check-enabled run requests beyond `github`, at most 4 of `pypi`, `npm`, `golang`, `crates`. The repository's `.github/agent-checks.yaml` never names egress | None: github only |
-| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `breaker: {window, maxReverts}` | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off) | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
 `api.repositories`, the run-request API's allowlist, is the entries' names.
