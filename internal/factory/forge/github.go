@@ -654,7 +654,7 @@ func (g *GitHub) PullRequestChecks(ctx context.Context, number int) (Checks, err
 	for _, n := range rollup.Contexts.Nodes {
 		switch n.Typename {
 		case "CheckRun":
-			c := Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion)}
+			c := Check{ID: n.CheckRun.DatabaseID, Name: n.CheckRun.Name, State: checkState(n.CheckRun.Status, n.CheckRun.Conclusion), Conclusion: n.CheckRun.Conclusion}
 			if a := n.CheckRun.CheckSuite.App; a != nil {
 				c.App = a.DatabaseID
 			}
@@ -676,7 +676,8 @@ func (g *GitHub) CommitChecks(ctx context.Context, sha string) ([]Check, error) 
 	}
 	out := make([]Check, 0, len(res.CheckRuns))
 	for _, cr := range res.CheckRuns {
-		out = append(out, Check{ID: cr.GetID(), Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion()))})
+		out = append(out, Check{ID: cr.GetID(), Name: cr.GetName(), State: checkState(strings.ToUpper(cr.GetStatus()), strings.ToUpper(cr.GetConclusion())),
+			Conclusion: strings.ToUpper(cr.GetConclusion())})
 	}
 	return out, nil
 }

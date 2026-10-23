@@ -106,18 +106,27 @@ func diffShape(cl config.Class, in ArmInputs) (string, bool) {
 	return "", false
 }
 
-// holdoutChecks (loops L7): each named check passed on the head, posted by GitHub Actions. Not
-// reported yet waits; failed, cancelled or posted by another App refuses.
+// holdoutChecks (loops L7): each named check passed on the head, posted by GitHub Actions, and
+// every run of that name did: the raw conclusion must be SUCCESS, since a skipped or neutral job
+// (an if: or paths filter) reads State SUCCESS and checked nothing. Not reported yet, or still
+// running, waits; any run failed, cancelled, skipped or posted by another App refuses.
 func holdoutChecks(cl config.Class, in ArmInputs) (string, bool) {
 	wait := false
 	for _, name := range cl.HoldoutChecks {
-		i := slices.IndexFunc(in.Checks.Runs, func(x forge.Check) bool { return x.Name == name })
-		switch {
-		case i < 0 || in.Checks.Runs[i].State == "PENDING":
-			wait = true
-		case in.Checks.Runs[i].App != forge.ActionsApp || in.Checks.Runs[i].State != "SUCCESS":
-			return "holdout_red", false
+		seen := false
+		for _, run := range in.Checks.Runs {
+			if run.Name != name {
+				continue
+			}
+			seen = true
+			switch {
+			case run.State == "PENDING":
+				wait = true
+			case run.App != forge.ActionsApp || run.State != "SUCCESS" || run.Conclusion != "SUCCESS":
+				return "holdout_red", false
+			}
 		}
+		wait = wait || !seen
 	}
 	if wait {
 		return "holdout_pending", true

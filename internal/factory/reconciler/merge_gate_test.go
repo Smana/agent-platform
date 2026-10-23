@@ -24,7 +24,7 @@ func declaredRig(t *testing.T) *rig {
 	}
 	g.r.Cfg.Classes["dead-links"] = declaredClass()
 	checks := green("SUCCESS")
-	checks.Runs = append(checks.Runs, forge.Check{Name: "External links 🔗", State: "SUCCESS", App: forge.ActionsApp})
+	checks.Runs = append(checks.Runs, forge.Check{Name: "External links 🔗", State: "SUCCESS", App: forge.ActionsApp, Conclusion: "SUCCESS"})
 	g.f.SetChecks(12, checks)
 	g.f.SetFiles(map[string]string{testFile: "[x](https://example.com/old)"}, map[string]string{testFile: "[x](https://example.com/new)"})
 	return g

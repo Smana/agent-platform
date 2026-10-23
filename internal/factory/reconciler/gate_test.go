@@ -20,7 +20,7 @@ func declaredClass() config.Class {
 // one-line retarget, its diff read.
 func gateInputs() ArmInputs {
 	checks := green("SUCCESS")
-	checks.Runs = append(checks.Runs, forge.Check{Name: "External links 🔗", State: "SUCCESS", App: forge.ActionsApp})
+	checks.Runs = append(checks.Runs, forge.Check{Name: "External links 🔗", State: "SUCCESS", App: forge.ActionsApp, Conclusion: "SUCCESS"})
 	in := ArmInputs{PR: agentPR(), Checks: checks, Task: armTask("dead-links", "solo", ""), ReportedHead: head,
 		Files: changed("[x](https://example.com/old)", "[x](https://example.com/new)"), DiffRead: true,
 		Stats: []forge.FileStat{{Path: testFile, Status: "modified", Additions: 1, Deletions: 1}}}
@@ -50,9 +50,18 @@ func TestEachDeclaredConditionRefusesAlone(t *testing.T) {
 				in.Stats = append(in.Stats, forge.FileStat{Path: p, Status: "modified"})
 			}
 		}, "human", "patch_too_large"},
-		"21 lines":             {func(in *ArmInputs) { in.Stats[0].Additions = 20 }, "human", "patch_too_large"},
-		"beyond link targets":  {func(in *ArmInputs) { in.Files = changed("text.", "text, reworded.") }, "human", "class_mismatch"},
-		"the holdout red":      {func(in *ArmInputs) { in.Checks.Runs[2].State = "FAILURE" }, "human", "holdout_red"},
+		"21 lines":            {func(in *ArmInputs) { in.Stats[0].Additions = 20 }, "human", "patch_too_large"},
+		"beyond link targets": {func(in *ArmInputs) { in.Files = changed("text.", "text, reworded.") }, "human", "class_mismatch"},
+		"the holdout red":     {func(in *ArmInputs) { in.Checks.Runs[2].State = "FAILURE" }, "human", "holdout_red"},
+		"the holdout skipped": {func(in *ArmInputs) { in.Checks.Runs[2].Conclusion = "SKIPPED" }, "human", "holdout_red"},
+		"the holdout neutral": {func(in *ArmInputs) { in.Checks.Runs[2].Conclusion = "NEUTRAL" }, "human", "holdout_red"},
+		"the holdout twice, the second red": {func(in *ArmInputs) {
+			in.Checks.Runs = append(in.Checks.Runs, forge.Check{Name: "External links 🔗", State: "FAILURE", App: forge.ActionsApp, Conclusion: "FAILURE"})
+		}, "human", "holdout_red"},
+		"a rename from a protected file": {func(in *ArmInputs) {
+			in.Stats[0].Status, in.Stats[0].Previous = "renamed", "docs/specs/x.md"
+			in.Cfg.Classes["dead-links"] = withoutModifyOnly(in.Cfg.Classes["dead-links"])
+		}, "human", "file_protected"},
 		"the holdout foreign":  {func(in *ArmInputs) { in.Checks.Runs[2].App = 1 }, "human", "holdout_red"},
 		"the holdout running":  {func(in *ArmInputs) { in.Checks.Runs[2].State = "PENDING" }, "wait", "holdout_pending"},
 		"the holdout not seen": {func(in *ArmInputs) { in.Checks.Runs = in.Checks.Runs[:2] }, "wait", "holdout_pending"},
@@ -94,5 +103,31 @@ func TestTheBaseHoldsForAClassThatDeclaresNothing(t *testing.T) {
 	in.Checks.Runs[1].State = "FAILURE"
 	if d := DecideArm(in); d.Verdict != "ci_red" {
 		t.Fatalf("the base still refuses: %+v", d)
+	}
+}
+
+func withoutModifyOnly(cl config.Class) config.Class {
+	cl.ModifyOnly = false
+	return cl
+}
+
+// ReadsDiff and the conditions held until the diff is read are one list: a class declaring any
+// condition on the diff must get its second pass, or the condition passes vacuously for ever.
+func TestEveryConditionOnTheDiffMakesTheClassReadIt(t *testing.T) {
+	declare := map[string]config.Class{
+		"allowedFiles":     {AllowedFiles: []string{"^a$"}},
+		"protectedFiles":   {ProtectedFiles: []string{"a"}},
+		"modifyOnly":       {ModifyOnly: true},
+		"maxPatchFiles":    {MaxPatchFiles: 1},
+		"maxModifiedLines": {MaxModifiedLines: 1},
+	}
+	for _, key := range onDiff {
+		cl, ok := declare[key]
+		if !ok {
+			t.Fatalf("%s is held until the diff is read: add it here", key)
+		}
+		if !cl.ReadsDiff("x") {
+			t.Errorf("%s declared, and ReadsDiff is false: the diff would never be read", key)
+		}
 	}
 }

@@ -95,6 +95,7 @@ const rollupJSON = `{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"
    {"__typename":"CheckRun","name":"Pre-commit checks","status":"COMPLETED","conclusion":"SUCCESS","checkSuite":{"app":{"databaseId":15368}}},
    {"__typename":"CheckRun","name":"Kubernetes validation","status":"IN_PROGRESS","conclusion":null},
    {"__typename":"CheckRun","name":"Security scanning","status":"COMPLETED","conclusion":"FAILURE"},
+   {"__typename":"CheckRun","name":"External links","status":"COMPLETED","conclusion":"SKIPPED","checkSuite":{"app":{"databaseId":15368}}},
    {"__typename":"StatusContext","context":"policy-bot: main","state":"PENDING","creator":{"__typename":"Bot","login":"ogenki-merge-gate"}}
  ]}}}}]}}}}}`
 
@@ -818,8 +819,10 @@ func TestChecksAndMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS", App: ActionsApp}, {Name: "Kubernetes validation", State: "PENDING"}, {Name: "Security scanning", State: "FAILURE"}}
-	if len(c.Runs) != 3 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] {
+	// Conclusion is the raw word: a skipped job reads State SUCCESS but is not a pass (holdoutChecks).
+	want := []Check{{Name: "Pre-commit checks", State: "SUCCESS", App: ActionsApp, Conclusion: "SUCCESS"}, {Name: "Kubernetes validation", State: "PENDING"},
+		{Name: "Security scanning", State: "FAILURE", Conclusion: "FAILURE"}, {Name: "External links", State: "SUCCESS", App: ActionsApp, Conclusion: "SKIPPED"}}
+	if len(c.Runs) != 4 || c.Runs[0] != want[0] || c.Runs[1] != want[1] || c.Runs[2] != want[2] || c.Runs[3] != want[3] {
 		t.Fatalf("%+v", c.Runs)
 	}
 	if st, by := c.StatusOf("policy-bot: main"); st != "PENDING" || by != "ogenki-merge-gate[bot]" {

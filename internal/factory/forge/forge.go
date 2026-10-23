@@ -182,6 +182,10 @@ type Check struct {
 	// is ActionsApp. 0 when GitHub did not say, and always 0 on the checks CommitChecks reads (main's
 	// CI), which carry no App.
 	App int64
+	// Conclusion is the check run's raw conclusion (SUCCESS, NEUTRAL, SKIPPED, FAILURE…), "" while
+	// it runs. State folds NEUTRAL and SKIPPED into SUCCESS, as classic protection does; a gate
+	// that needs the job to have run reads this.
+	Conclusion string
 }
 
 // ActionsApp is GitHub Actions' App id on github.com, the one classic protection pins required
