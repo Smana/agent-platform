@@ -218,10 +218,28 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	groups := policy.Groups{Admin: cfg.API.Groups.Admin, Member: cfg.API.Groups.Member}
 	access := conns.access(log, cfg, perms)
 	people, _ := access.(api.PersonResolver) // D1: the login the write check reads is the person charged
-	apiSrv := &api.Server{Auth: &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
-		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals},
+	auth := &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
+		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals}
+	if len(cfg.API.Sponsored) > 0 { // F4: the third branch, only while a principal is declared
+		clients := make([]authn.SponsoredClient, 0, len(cfg.API.Sponsored))
+		for _, sp := range cfg.API.Sponsored {
+			clients = append(clients, authn.SponsoredClient{Name: sp.Name, ClientID: func() string {
+				b, _ := os.ReadFile(filepath.Clean(sp.ClientIDFile)) // re-read, as clientIDs: a rebuilt client rotates
+				return strings.TrimSpace(string(b))
+			}})
+		}
+		auth.Sponsored = &authn.Sponsored{V: humansV, Clients: clients, Exclude: clientIDs}
+	}
+	apiSrv := &api.Server{Auth: auth,
 		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
-		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned}
+		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned,
+		Forges: func(repo string) api.IssueFiler {
+			c, ok := conns.get(repo)
+			if !ok || c.gh == nil {
+				return nil // a nil interface, never a typed-nil *forge.GitHub (C24)
+			}
+			return c.gh
+		}}
 	runlore, ok := conns.get(cfg.RunLoreRepository())
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())

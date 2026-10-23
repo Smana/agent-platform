@@ -90,6 +90,9 @@ type Server struct {
 	// People is D1's identity link, read only while budgets.perPerson is on: the person a human
 	// token is charged as. nil charges every human as their own principal.
 	People PersonResolver
+	// Forges files an api task's issue as the factory App on its repository (R10): nil files none;
+	// a nil filer for a repository refuses a titled request.
+	Forges func(repository string) IssueFiler
 }
 
 // PersonResolver names the person a human principal is charged as (v2 per-person caps D1):
@@ -156,10 +159,14 @@ type Reservation struct {
 // NeedLeaderElection is false: every replica serves intake.
 func (s *Server) NeedLeaderElection() bool { return false }
 
-// Handler is the API's mux: today only POST /v1/runs, admission in §4's order.
+// Handler is the API's mux: POST /v1/runs, admission in §4's order, and POST /v1/tasks while a
+// sponsored principal is declared.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/runs", s.createRun)
+	if len(s.Cfg.API.Sponsored) > 0 { // F4, D4: off until a principal is declared
+		mux.HandleFunc("POST /v1/tasks", s.createTask)
+	}
 	return mux
 }
 
