@@ -562,6 +562,8 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"old"},"files":[{"filename":"docs/big.png","status":"modified"}]}`)
 		case "main...behind": // a branch cut at "fork", before main moved on: three-dot lists its own change.
 			_, _ = io.WriteString(w, `{"merge_base_commit":{"sha":"fork"},"files":[{"filename":"docs/b.md","status":"modified"}]}`)
+		case "anc...ahead", "anc...identical", "anc...behind", "anc...diverged": // IsAncestor reads only the status.
+			_, _ = io.WriteString(w, `{"status":"`+strings.TrimPrefix(r.PathValue("basehead"), "anc...")+`","files":[]}`)
 		case "main...nobase": // a compare without a merge base cannot say which side is the PR's.
 			_, _ = io.WriteString(w, `{"files":[{"filename":"docs/b.md","status":"modified"}]}`)
 		default: // mid...new: exactly one page, so more changed files are unread.
@@ -1065,6 +1067,18 @@ func TestFilesReadsBothSidesOfADiff(t *testing.T) {
 	}
 	if _, err := r.g.Diff(ctx, "mid", "new"); err == nil || !strings.Contains(err.Error(), "page") {
 		t.Errorf("a truncated compare must be an error: %v", err)
+	}
+}
+
+// IsAncestor: the merge commit is a descendant of the ancestor (ahead) or the same commit
+// (identical); behind and diverged are not.
+func TestIsAncestor(t *testing.T) {
+	r := newRig(t)
+	for sha, want := range map[string]bool{"ahead": true, "identical": true, "behind": false, "diverged": false} {
+		got, err := r.g.IsAncestor(t.Context(), "anc", sha)
+		if err != nil || got != want {
+			t.Errorf("%s: %v %v, want %v", sha, got, err, want)
+		}
 	}
 }
 

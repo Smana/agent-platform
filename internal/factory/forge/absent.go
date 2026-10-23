@@ -24,6 +24,9 @@ func (Absent) PullRequestChecks(context.Context, int) (Checks, error) { return C
 // CommitChecks implements the Merger's CommitChecks and fails closed.
 func (Absent) CommitChecks(context.Context, string) ([]Check, error) { return nil, ErrNoMerger }
 
+// IsAncestor implements the Merger's IsAncestor and fails closed.
+func (Absent) IsAncestor(context.Context, string, string) (bool, error) { return false, ErrNoMerger }
+
 // RerunCheck implements Merger.
 func (Absent) RerunCheck(context.Context, int64) error { return ErrNoMerger }
 
