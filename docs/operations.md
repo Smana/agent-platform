@@ -365,6 +365,53 @@ possibly with a pull request open. A maintainer's `/factory retry` is paid by th
 A `run.` task that stays `failed` with `no such room` was never triaged (the grace is two minutes:
 see [the API](api.md#sponsored-principals-on-mcp)); check `agent_factory_api_intake_total` and the Task.
 
+### Webhooks
+
+The broker's `webhooks` list declares the subscribers of [room events](api.md#webhooks). Each entry:
+
+| Key | Meaning |
+|---|---|
+| `name` | A DNS label: the `subscriber` label of the series below |
+| `network` | `cluster` (`http(s)://<svc>.<ns>.svc.cluster.local:<port>/…`) or `internet` (`https`, a public DNS name, never an address) |
+| `url` | Where the broker posts |
+| `events` | The event types wanted: see [the list](api.md#webhooks) |
+| `secretFile` | One or two base64 keys of at least 32 bytes, one per line; re-read at each delivery |
+| `repositories` | The repositories whose rooms are sent |
+| `generation` | Bump it to re-enable a disabled subscriber |
+
+The broker's egress for the internet subscribers is generated from this list in ai-native-ref.
+
+**Rotating the key.** Deliveries are signed with every key in the file, so a subscriber that accepts
+either never sees a gap: (1) add the new key as a second line and let the file reach the pod; (2)
+configure the subscriber to accept the new key; (3) remove the old line from the file; (4) drop the old
+key from the subscriber.
+
+**Disabled subscribers.** Three deliveries in a row given up (one try and three retries each) disable a
+subscriber. To re-enable it, fix the cause and bump its `generation` in the config: a reviewed change.
+
+Mind what a disabled subscriber misses. Its cursor keeps advancing while it is disabled, so
+re-enabling it resumes at the events of that moment, and the events sent during the outage are not
+replayed. A subscriber that needs that history fetches the room through the MCP server or the human API.
+
+Other things to know:
+
+- A re-added subscriber (removed from the config, then declared again) keeps its old cursors and
+  replays from them; the rooms created while it was gone start at 0.
+- A room whose `Room` is not in the broker's cache yet holds its events until it is.
+- Catch-up after a listener drop may not finish while at least 1,000 rooms stay held.
+- A run ended by its budget followed by a budget escalation can send two `room.budget_reached`. A
+  budget reason added on a rewrite of the same phase is not re-sent.
+- A sealed room with no repository anywhere is counted `unresolved`; its events are not delivered.
+- The cursors are purged with their room.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `rooms_webhook_deliveries_total` | counter | `subscriber`, `outcome` | Attempts: `delivered`, `retried`, `failed` (given up), `no_key` (the key file is unreadable), `unresolved`, `mismatch` (the log and the Room name different repositories) |
+| `rooms_webhook_disabled` | gauge | `subscriber` | 1 while the subscriber is disabled |
+
+`RoomWebhookDisabled` fires on `max by (subscriber) (rooms_webhook_disabled) == 1`. The rule lives in
+ai-native-ref's `vmrule-agent-factory.yaml`.
+
 ### Finished rooms close
 
 A finished task's room closes once its outbox, settle, facts and revert window are done, and while
