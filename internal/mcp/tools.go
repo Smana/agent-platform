@@ -172,8 +172,14 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				if a.Split != nil && (a.Scope == nil || a.Scope.State != envelope.ScopeReady || a.Split.Validate() != nil) {
 					return nil, argError(envelope.ErrSplit.Error())
 				}
-				return appendAs(ctx, c, envelope.Handoff, envelope.HandoffPayload{FromRole: c.Run.Role, ToRole: a.ToRole,
-					Summary: a.Summary, Commit: a.Commit, Branch: c.Run.Branch, Scope: a.Scope, Split: a.Split})
+				p := envelope.HandoffPayload{FromRole: c.Run.Role, ToRole: a.ToRole,
+					Summary: a.Summary, Commit: a.Commit, Branch: c.Run.Branch, Scope: a.Scope, Split: a.Split}
+				// Stored as json.Marshal writes it, where <, > and & cost six bytes: a payload over the limit
+				// would be replaced by the oversize stub, silently dropping the scope and the split.
+				if len(envelope.Must(p)) > envelope.MaxPayload {
+					return nil, argError("the handoff is over 65536 bytes as stored (< > & count six each): shorten the summary, scope or split")
+				}
+				return appendAs(ctx, c, envelope.Handoff, p)
 			}},
 		{Name: "room_verdict", Roles: []string{"reviewer", "tester"}, Action: policy.Chat,
 			Description: "Record your review: approve or changes, a summary, and the commit you reviewed as its full 40-hex sha (git rev-parse HEAD, never an abbreviation). A verdict is not a merge.",

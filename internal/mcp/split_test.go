@@ -92,14 +92,15 @@ func TestABadSplitIsAnArgumentError(t *testing.T) {
 		caller Caller
 		args   json.RawMessage
 	}{
-		"without a scope":          {triager, splitHandoff(nil, goodSplit())},
-		"beside a question":        {triager, splitHandoff(asked, goodSplit())},
-		"one part":                 {triager, splitHandoff(goodScope(), parts(1))},
-		"six parts":                {triager, splitHandoff(goodScope(), parts(6))},
-		"a part in state question": {triager, splitHandoff(goodScope(), withQuestion)},
-		"a part of 4097 bytes":     {triager, splitHandoff(goodScope(), oversized)},
-		"no why":                   {triager, splitHandoff(goodScope(), map[string]any{"children": goodSplit()["children"]})},
-		"from an implementer":      {impl, splitHandoff(goodScope(), goodSplit())},
+		"without a scope":              {triager, splitHandoff(nil, goodSplit())},
+		"beside a question":            {triager, splitHandoff(asked, goodSplit())},
+		"one part":                     {triager, splitHandoff(goodScope(), parts(1))},
+		"six parts":                    {triager, splitHandoff(goodScope(), parts(6))},
+		"a part in state question":     {triager, splitHandoff(goodScope(), withQuestion)},
+		"a part of 4097 bytes":         {triager, splitHandoff(goodScope(), oversized)},
+		"no why":                       {triager, splitHandoff(goodScope(), map[string]any{"children": goodSplit()["children"]})},
+		"from an implementer":          {impl, splitHandoff(nil, goodSplit())},
+		"markup past the stored limit": {triager, splitHandoff(markup(), markupSplit())},
 	} {
 		t.Run(name, func(t *testing.T) {
 			log := &memLog{}
@@ -136,5 +137,34 @@ func TestSplitIsListedToTheTriagerOnly(t *testing.T) {
 				t.Errorf("%s: scope listed %v", role, has)
 			}
 		}
+	}
+}
+
+// markup is a valid scope of '<' runes: small unescaped, six times that as stored.
+func markup() map[string]any {
+	s := goodScope()
+	s["task"] = strings.Repeat("<", 1000)
+	s["plan"] = slices.Repeat([]string{strings.Repeat("<", 300)}, 7)
+	return s
+}
+
+func markupSplit() map[string]any {
+	s := goodSplit()
+	s["children"] = slices.Repeat([]any{markup()}, 5)
+	return s
+}
+
+func TestFiveParts(t *testing.T) {
+	s := goodSplit()
+	s["children"] = slices.Repeat([]any{goodScope()}, envelope.MaxChildren)
+	log := &memLog{}
+	if _, err := tool(tools(log), "room_handoff").Call(t.Context(), triager, splitHandoff(goodScope(), s)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSplitSchemaNarrowsTheStateToReady(t *testing.T) {
+	if !strings.Contains(envelope.SplitSchema, `"enum":["ready"]`) || strings.Contains(envelope.SplitSchema, `"enum":["ready","question"]`) {
+		t.Fatal("the split schema's parts must allow state ready only")
 	}
 }
