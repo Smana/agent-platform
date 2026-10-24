@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 )
 
@@ -89,4 +90,11 @@ func membersReviews(reviews []forge.Review) []forge.Review {
 		out = append(out, rv)
 	}
 	return out
+}
+
+// undecidedAdoptedMerge: an adopted Task merged by someone other than the merger at a head the gate
+// did not decide (shadow_would_arm or arm). Such a merge is neither watched nor counted.
+func undecidedAdoptedMerge(t *v1alpha1.Task, rc *config.Repository) bool {
+	ref := t.Status.PullRequest
+	return adoptedTask(t) && ref != nil && !forge.SameLogin(ref.MergedBy, rc.Merge.MergerLogin) && ref.DecidedHeadSHA != ref.HeadSHA
 }

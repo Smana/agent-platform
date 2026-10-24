@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
@@ -18,8 +21,6 @@ func handedOff(t *testing.T, g *rig, reason string) {
 	t.Helper()
 	tk := g.reconcile(t, adoptTask, 0)
 	tk.Status.Phase, tk.Status.Reason = v1alpha1.PhaseAwaitingHuman, reason
-	since := tk.Status.PhaseSince
-	_ = since
 	if err := g.c.Status().Update(t.Context(), tk); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestAnAdoptedTransientHandOffReturnsOnANewHead(t *testing.T) {
 	}{
 		{"policy_pending", false, true}, {"policy_absent", false, true}, {"ci_cancelled", false, true},
 		{"ci_wait_expired", false, true}, {"auto_merge_cap", true, true}, {"class_paused", true, true},
-		{"auto_merge_cap", false, false}, {"class_paused", false, false}, {"changes_requested", false, false},
+		{"auto_merge_cap", false, true}, {"class_paused", false, true}, {"changes_requested", false, false},
 		{"file_not_allowed", false, false},
 	} {
 		t.Run(c.reason, func(t *testing.T) {
@@ -69,6 +70,36 @@ func TestAnAdoptedTransientHandOffReturnsOnANewHead(t *testing.T) {
 	g.cleanHead(newHead)
 	if tk = g.reconcile(t, adoptTask, 1); tk.Status.Phase != v1alpha1.PhaseAwaitingHuman {
 		t.Fatalf("past the cap: %s", tk.Status.Phase)
+	}
+}
+
+// N3: the in-process breaker window matches the label ledger: an adopted merge of a head the gate
+// never decided (Renovate's automerge) is not counted, whatever its monitor says.
+func TestPausedIgnoresAnUndecidedAdoptedMerge(t *testing.T) {
+	for name, decided := range map[string]string{"decided": "9999999999999999999999999999999999999999", "undecided": adoptHead} {
+		t.Run(name, func(t *testing.T) {
+			g := adoptRig(t)
+			g.r.Cfg.Merge.Breaker = config.Breaker{Window: 10, MaxReverts: 1, MaxFollowUps: 1}
+			var tk v1alpha1.Task
+			if err := g.c.Get(t.Context(), client.ObjectKey{Namespace: "agent-system", Name: adoptTask}, &tk); err != nil {
+				t.Fatal(err)
+			}
+			at := metav1.NewTime(now.Add(-time.Hour))
+			tk.Status.Phase, tk.Status.Reason = v1alpha1.PhaseDone, "merged"
+			tk.Status.PullRequest.MergedAt, tk.Status.PullRequest.MergedBy = &at, bot
+			tk.Status.PullRequest.HeadSHA, tk.Status.PullRequest.DecidedHeadSHA = "9999999999999999999999999999999999999999", decided
+			tk.Status.Monitor = &v1alpha1.MonitorStatus{Verdict: "regression"}
+			if err := g.c.Status().Update(t.Context(), &tk); err != nil {
+				t.Fatal(err)
+			}
+			paused, err := g.r.paused(t.Context(), g.r.repo(&tk), "deps-patch")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := name == "decided"; paused != want {
+				t.Fatalf("paused %v, want %v", paused, want)
+			}
+		})
 	}
 }
 

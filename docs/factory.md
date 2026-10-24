@@ -661,7 +661,12 @@ when the review list was cut at GitHub's page, on a review whose author GitHub n
 "ghost") or whose association it did not say, and on a dismissed `CHANGES_REQUESTED` whose author's
 association qualifies. Only the same reviewer's later `APPROVED` lifts it. On a host that dismisses
 stale approvals on push, a member's approval that gets dismissed therefore becomes a permanent veto
-of that pull request; it fails closed, and a maintainer takes the pull request. An
+of that pull request; it fails closed, and a maintainer takes the pull request.
+A review list cut by more than 20 reviews (the page read) still vetoes, so 21 stranger reviews park
+the pull request: fail-closed, and a maintainer takes it. The filter relies on `authorAssociation`:
+on an organisation-owned repository, a token that cannot see a private member's membership may read
+them as `CONTRIBUTOR`, which drops their veto. An adopted class is meant for a user-owned repository,
+or for a token that can read organisation membership. An
 adopted pull request has no agent run, so `changes_requested` is never a revision brief. There is no
 reviewer verdict, room report or `Agent-Run` trailer to check (the agents author mode's rows); an
 approval by a maintainer is `maintainer_approved`, as for any class.
@@ -674,7 +679,7 @@ GitHub refuses it if Renovate pushed since. A read error of the commit authors o
 | Reason | What happens |
 |---|---|
 | `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded`, `policy_pending`, `policy_absent`, `ci_cancelled`, `ci_wait_expired` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is decided again whole, up to 3 times (`maxGateReentries`, counted) |
-| `auto_merge_cap`, `class_paused` (a `live` class only) | Same: re-enters on a new head, counted. A `shadow` class never meets them |
+| `auto_merge_cap`, `class_paused` | Same: re-enters on a new head, counted. A `shadow` class meets them too (the cap and the pause bound its would-arm decisions as a live class's merges) and re-enters the same way |
 | `shadow_would_arm` | The shadow decision: returns to `AwaitingCI` on Renovate's next head (`adopted_head_moved`), not counted, since it is no hand-off |
 | Every other reason: `class_mismatch`, `fork_pull_request`, `changes_requested`, `not_adopted_author`, `branch_not_allowed`, `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `not_mergeable`, a class that no longer adopts, and the like | Terminal: the Task stays handed off. A new head does not revive them. A closed or merged pull request ends the Task |
 

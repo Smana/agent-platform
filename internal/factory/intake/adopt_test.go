@@ -370,3 +370,46 @@ func TestAdopterBoundIsPerClass(t *testing.T) {
 		t.Fatalf("a patch is adopted past ten open minors: %d", n)
 	}
 }
+
+// N1: the class is chosen over every eligible class first, as the gate would. When it is full the
+// pull request waits for a place; it is never bound to another class that also fits (a patch fits
+// deps-minor too).
+func TestAFullClassPushesNoPullRequestIntoAnother(t *testing.T) {
+	var seed []client.Object
+	for i := 1; i <= maxOpenAdopted; i++ {
+		seed = append(seed, adoptedTask(i, v1alpha1.PhaseAwaitingHuman)) // deps-patch
+	}
+	f := forgetest.NewFake()
+	f.SetOpenPRs(renovatePR(30, "renovate/kyverno-3.x"))
+	f.SetFiles(map[string]string{"a.yaml": "version: 3.9.1\n"}, map[string]string{"a.yaml": "version: 3.9.2\n"})
+	a := adopter(f, fake.NewClientBuilder().WithScheme(adoptScheme()).WithStatusSubresource(&v1alpha1.Task{}).WithObjects(seed...).Build(), adoptCfg(true))
+	for range 2 {
+		if err := a.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(adoptedTasks(t, a.Client)); n != maxOpenAdopted {
+		t.Fatalf("the patch waits for deps-patch, it is not bound to deps-minor: %d", n)
+	}
+	if len(a.judged) != 0 {
+		t.Fatalf("a full class is not a verdict: %v", a.judged)
+	}
+	// a place frees up: the next tick adopts it into deps-patch.
+	var tk v1alpha1.Task
+	_ = a.Client.Get(context.Background(), client.ObjectKey{Namespace: "agent-system", Name: taskid.Name(adoptKey(1))}, &tk)
+	tk.Status.Phase = v1alpha1.PhaseClosed
+	if err := a.Client.Status().Update(context.Background(), &tk); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range adoptedTasks(t, a.Client) {
+		if it.Spec.Source.Key == adoptKey(30) && it.Spec.PredictedClass != "deps-patch" {
+			t.Fatalf("class %s", it.Spec.PredictedClass)
+		}
+	}
+	if n := len(adoptedTasks(t, a.Client)); n != maxOpenAdopted+1 {
+		t.Fatalf("%d", n)
+	}
+}

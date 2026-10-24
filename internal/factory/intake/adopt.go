@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -194,12 +195,9 @@ func (a *Adopter) tick(ctx context.Context, rc *config.Repository) error {
 }
 
 // candidates are the classes whose author and branch rules the pull request meets, by shape.
-func candidates(rc *config.Repository, p forge.PRSummary, full func(string) bool) map[string]string {
+func candidates(rc *config.Repository, p forge.PRSummary) map[string]string {
 	out := map[string]string{} // shape -> class
 	for _, name := range adoptedClasses(rc) {
-		if full(name) {
-			continue // ten open Tasks of this class: the others' places are not its
-		}
 		cl := rc.Classes[name]
 		ad := cl.Author.Adopt
 		if p.CrossRepository || p.BaseRef != adoptBase { // a fork's names are its own; the diff is read against main
@@ -224,9 +222,12 @@ func branchAdopted(ad *config.Adopt, ref string) bool {
 // classOf is the class the pull request's diff names: the first shape that holds, among the
 // classes it is eligible for. A diff too large to read names none.
 func (a *Adopter) classOf(ctx context.Context, rc *config.Repository, m ScheduleMerger, p forge.PRSummary, full func(string) bool) (string, bool, error) {
-	cands := candidates(rc, p, full)
+	cands := candidates(rc, p)
 	if len(cands) == 0 || p.HeadSHA == "" {
 		return "", false, nil
+	}
+	if !slices.ContainsFunc(slices.Collect(maps.Values(cands)), func(c string) bool { return !full(c) }) {
+		return "", false, nil // every class it could join is full: it waits, and no verdict is cached
 	}
 	seen := fmt.Sprintf("%s#%d@%s", rc.Name, p.Number, p.HeadSHA)
 	a.mu.Lock()
@@ -251,7 +252,9 @@ func (a *Adopter) classOf(ctx context.Context, rc *config.Repository, m Schedule
 		// The shape and the class's file conditions, which are the gate's own functions: a pull
 		// request outside the fence is not this class's, whatever its shape.
 		if held, _ := s.ok(d.Base, d.Head); held && filefence.Refusal(rc.Classes[class], d.Files) == "" {
-			return class, true, nil
+			// The class is the one the gate would pick among all eligible ones. When it is full the
+			// pull request waits for a place: a full class never pushes it into another.
+			return class, !full(class), nil
 		}
 	}
 	a.judge(seen)

@@ -259,15 +259,10 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		// An adopted hand-off the author's next push can clear returns on that new head (the whole
 		// gate decides it again, a veto and the push chain included); a diff, a fork or a veto
 		// never comes back. The cap bounds the returns.
-		// The cap and the pause are a live class's: a shadow class never meets them.
-		live := gateOf(r.repo(t), t.Spec.PredictedClass).Live
 		switch why {
 		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded",
-			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired":
-		case "auto_merge_cap", "class_paused":
-			if !live {
-				return false, nil
-			}
+			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired",
+			"auto_merge_cap", "class_paused": // a shadow decision meets the cap and the pause too
 		default:
 			return false, nil
 		}
@@ -873,7 +868,8 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	var tasks []Merge
 	for i := range l.Items {
 		o := &l.Items[i]
-		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
+		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) &&
+			!undecidedAdoptedMerge(o, rc) { // as the label ledger: Renovate's merge of an undecided head is not the class's
 			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
 				Auto: ref.ArmedAt != nil}
 			// The running process's own monitor outcomes: the GitHub ledger is read once per process,
