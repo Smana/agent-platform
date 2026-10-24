@@ -10,6 +10,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/filefence"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/mdlinks"
 	"github.com/Smana/agent-platform/internal/factory/semverdiff"
@@ -40,81 +41,31 @@ func Conditions() []Condition {
 	}
 }
 
-// changedPaths are every path the diff touches, a rename's two names included.
-func changedPaths(in ArmInputs) []string {
-	var out []string
-	for _, f := range in.Stats {
-		out = append(out, f.Path)
-		if f.Previous != "" {
-			out = append(out, f.Previous)
-		}
-	}
-	return out
-}
+// compile and matchesAny are filefence's, shared with the adopt poller.
+func compile(pats []string, anchored bool) []*regexp.Regexp { return filefence.Compile(pats, anchored) }
 
-// compile builds a class's patterns once per decision. A pattern that does not compile is
-// dropped, so an allow list fails closed and a protect list is caught by Validate before it runs.
-// anchored wraps each as ^(?:p)$, so an alternation cannot leave one branch unanchored.
-func compile(pats []string, anchored bool) []*regexp.Regexp {
-	var out []*regexp.Regexp
-	for _, p := range pats {
-		if anchored {
-			p = "^(?:" + p + ")$"
-		}
-		if re, err := regexp.Compile(p); err == nil {
-			out = append(out, re)
-		}
-	}
-	return out
-}
+func matchesAny(res []*regexp.Regexp, path string) bool { return filefence.MatchesAny(res, path) }
 
-func matchesAny(res []*regexp.Regexp, path string) bool {
-	return slices.ContainsFunc(res, func(re *regexp.Regexp) bool { return re.MatchString(path) })
-}
-
-// allowedFiles matches whole paths: policy-bot's match is unanchored, so the gate anchors the
-// whole pattern itself.
+// The file conditions are filefence's: the poller binds a pull request to a class by the
+// same functions.
 func allowedFiles(cl config.Class, in ArmInputs) (string, bool) {
-	res := compile(cl.AllowedFiles, true)
-	for _, p := range changedPaths(in) {
-		if !matchesAny(res, p) {
-			return "file_not_allowed", false
-		}
-	}
-	return "", false
+	return filefence.AllowedFiles(cl, in.Stats), false
 }
 
 func protectedFiles(cl config.Class, in ArmInputs) (string, bool) {
-	res := compile(cl.ProtectedFiles, false)
-	if slices.ContainsFunc(changedPaths(in), func(p string) bool { return matchesAny(res, p) }) {
-		return "file_protected", false
-	}
-	return "", false
+	return filefence.ProtectedFiles(cl, in.Stats), false
 }
 
 func modifyOnly(_ config.Class, in ArmInputs) (string, bool) {
-	if slices.ContainsFunc(in.Stats, func(f forge.FileStat) bool { return f.Status != "modified" }) {
-		return "file_added_or_deleted", false
-	}
-	return "", false
+	return filefence.ModifyOnly(in.Stats), false
 }
 
 func maxPatchFiles(cl config.Class, in ArmInputs) (string, bool) {
-	if len(in.Stats) > cl.MaxPatchFiles {
-		return "patch_too_large", false
-	}
-	return "", false
+	return filefence.MaxPatchFiles(cl, in.Stats), false
 }
 
 func maxModifiedLines(cl config.Class, in ArmInputs) (string, bool) {
-	n := 0
-	for _, f := range in.Stats {
-		n += f.Additions + f.Deletions
-	}
-	if n > cl.MaxModifiedLines {
-		return "patch_too_large", false
-	}
-	return "", false
+	return filefence.MaxModifiedLines(cl, in.Stats), false
 }
 
 // diffShape: links-only is R52's promise, read on in.Files as it always was, so a diff not read

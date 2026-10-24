@@ -34,6 +34,7 @@ func renovatePR(n int, ref string) forge.PRSummary {
 
 func adoptClass(shape string, live bool) config.Class {
 	return config.Class{Live: live, Shadow: !live, DiffShape: shape, ModifyOnly: true, MaxPatchFiles: 3, MaxModifiedLines: 10,
+		AllowedFiles: []string{`^.+\.yaml$`}, ProtectedFiles: []string{`^secret/`},
 		Author: &config.Author{Adopt: &config.Adopt{Logins: []string{"renovate[bot]"}, Branches: []string{"^renovate/"}}}}
 }
 
@@ -310,5 +311,62 @@ func TestBranchAdoptedMatchesTheGatesRule(t *testing.T) {
 				t.Errorf("%q on %q: %v, the gate says %v", b, ref, got, want)
 			}
 		}
+	}
+}
+
+// The poller binds a pull request to a class only when its files keep the class's fence as well as
+// its shape: a patch outside allowedFiles, in a protected path, adding a file or over the sizes is
+// no adopted Task (the gate's own functions decide it).
+func TestAdopterAppliesTheClassFence(t *testing.T) {
+	stat := func(path, status string, add int) forge.FileStat {
+		return forge.FileStat{Path: path, Status: status, Additions: add, Deletions: add}
+	}
+	for name, c := range map[string]struct {
+		path  string
+		stats []forge.FileStat
+		want  int
+	}{
+		"in the fence":         {"a.yaml", []forge.FileStat{stat("a.yaml", "modified", 1)}, 1},
+		"outside allowedFiles": {"mise.toml", []forge.FileStat{stat("mise.toml", "modified", 1)}, 0},
+		"a protected path":     {"secret/a.yaml", []forge.FileStat{stat("secret/a.yaml", "modified", 1)}, 0},
+		"an added file":        {"a.yaml", []forge.FileStat{stat("a.yaml", "added", 1)}, 0},
+		"too many files": {"a.yaml", []forge.FileStat{stat("a.yaml", "modified", 1), stat("b.yaml", "modified", 1),
+			stat("c.yaml", "modified", 1), stat("d.yaml", "modified", 1)}, 0},
+		"too many lines": {"a.yaml", []forge.FileStat{stat("a.yaml", "modified", 6)}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := forgetest.NewFake()
+			f.SetOpenPRs(renovatePR(30, "renovate/kyverno-3.x"))
+			f.SetFiles(map[string]string{c.path: "version: 3.9.1\n"}, map[string]string{c.path: "version: 3.9.2\n"})
+			f.SetFileStats(c.stats...)
+			a := adopter(f, fake.NewClientBuilder().WithScheme(adoptScheme()).Build(), adoptCfg(false))
+			if err := a.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(adoptedTasks(t, a.Client)); n != c.want {
+				t.Fatalf("%d tasks, want %d", n, c.want)
+			}
+		})
+	}
+}
+
+// The bound of ten open Tasks is per repository and class: ten open deps-minor Tasks leave
+// deps-patch its place.
+func TestAdopterBoundIsPerClass(t *testing.T) {
+	var seed []client.Object
+	for i := 1; i <= maxOpenAdopted; i++ {
+		tk := adoptedTask(i, v1alpha1.PhaseAwaitingHuman)
+		tk.Spec.PredictedClass = "deps-minor"
+		seed = append(seed, tk)
+	}
+	f := forgetest.NewFake()
+	f.SetOpenPRs(renovatePR(30, "renovate/kyverno-3.x"))
+	f.SetFiles(map[string]string{"a.yaml": "version: 3.9.1\n"}, map[string]string{"a.yaml": "version: 3.9.2\n"})
+	a := adopter(f, fake.NewClientBuilder().WithScheme(adoptScheme()).WithObjects(seed...).Build(), adoptCfg(true))
+	if err := a.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(adoptedTasks(t, a.Client)); n != maxOpenAdopted+1 {
+		t.Fatalf("a patch is adopted past ten open minors: %d", n)
 	}
 }

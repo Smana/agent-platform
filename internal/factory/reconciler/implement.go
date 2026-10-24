@@ -716,6 +716,7 @@ func (r *Reconciler) prEnded(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 	switch pr.State {
 	case "MERGED":
 		t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+		noteMergedHead(t, pr)
 		// R41: like the CI gate's bypass record, the timestamp is what puts the merge in the
 		// class's breaker window — without it a demoted class' human merges never refill it.
 		now := r.mergedAt(pr)

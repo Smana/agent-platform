@@ -37,6 +37,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	case "MERGED": // a maintainer merged it through the bypass…
 		if !forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+			noteMergedHead(t, pr)
 			// R41: a human merge records when, so it counts in the class's breaker window.
 			now := r.mergedAt(pr)
 			t.Status.PullRequest.MergedAt = &now
@@ -57,6 +58,13 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	// hand-off, never a revision run.
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 && !adoptedTask(t) {
 		return r.revise(ctx, t, pr, rvs)
+	}
+	if adoptedTask(t) && !gateOf(r.repo(t), t.Spec.PredictedClass).Adopted() {
+		// The class was removed, renamed or lost its author: there is no gate to decide this pull
+		// request by, and no room to ask (an adopted Task never had one).
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "class_mismatch")
+		narrateLater(t, narrate.WaitingForHuman(t, "class_mismatch"))
+		return nil
 	}
 	if !r.Cfg.NeedsMerger() {
 		// No class is live or in shadow, so the factory may hold no merger key: there is no gate to
@@ -201,8 +209,8 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
 		if adoptedTask(t) {
 			// R46: the head decided is the head awaitingHuman compares with Renovate's next push.
-			t.Status.PullRequest.HeadSHA = pr.HeadSHA
-			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, d.Matched, pr.HeadSHA))
+			t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
 			return nil
 		}
 		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
@@ -225,7 +233,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	armed := metav1.NewTime(r.Now())
-	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA = &armed, pr.HeadSHA
+	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = &armed, pr.HeadSHA, pr.HeadSHA
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
@@ -251,8 +259,15 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		// An adopted hand-off the author's next push can clear returns on that new head (the whole
 		// gate decides it again, a veto and the push chain included); a diff, a fork or a veto
 		// never comes back. The cap bounds the returns.
+		// The cap and the pause are a live class's: a shadow class never meets them.
+		live := gateOf(r.repo(t), t.Spec.PredictedClass).Live
 		switch why {
-		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded":
+		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded",
+			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired":
+		case "auto_merge_cap", "class_paused":
+			if !live {
+				return false, nil
+			}
 		default:
 			return false, nil
 		}

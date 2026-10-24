@@ -103,6 +103,8 @@ func reasons() map[string]string {
 		"changes_requested":         "a reviewer requested changes, and the factory does not merge over them",
 		"fork_pull_request":         "it comes from a fork, which the factory never adopts",
 		"push_unrecorded":           "GitHub has not recorded the push of its head",
+		"adopted_head_moved":        "its author pushed a new head after the shadow decision, so it is decided again",
+		"adopt_ref_invalid":         "the adopted pull request's reference could not be read, so it was not adopted",
 		"adoption_unread":           "who authored its commits and pushed its branch could not be read",
 		"not_adopted_author":        "it is not authored by a login the class adopts",
 		"branch_not_allowed":        "its branch is not one the class adopts",

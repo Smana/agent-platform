@@ -677,6 +677,11 @@ type PullRequestRef struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	HeadSHA string `json:"headSHA,omitempty"`
+	// The head the merge gate last decided "arm" or "shadow" on. An adopted merge of any other
+	// head (Renovate's automerge of a head the gate refused or never read) is not watched.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	DecidedHeadSHA string `json:"decidedHeadSHA,omitempty"`
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	MergeCommitSHA string `json:"mergeCommitSHA,omitempty"`

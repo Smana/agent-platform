@@ -12,6 +12,8 @@
 # --author names who opened the pull requests (default app/ogenki-agents, the factory's agents App).
 # An adopted class's are Renovate's: scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate.
 # Its would-arm comments (WouldArmAdopted) carry the same head= marker, so the count is the same.
+# For an adopted class merged_unchanged is Renovate's own automerge of the judged head, not a
+# maintainer's judgement: the evidence for going live is --outcomes.
 #
 #   scripts/shadow-merge-tally.sh --class dead-links --outcomes --since 2026-08-01 [--window 168h] [--budget 0.10]
 #

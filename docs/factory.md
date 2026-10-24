@@ -600,7 +600,7 @@ Renovate keeps merging, the factory records its decision and monitors the merge.
 classes:
   deps-patch:
     shadow: true
-    author: {adopt: {logins: ["renovate[bot]"], branches: ["renovate/"]}}
+    author: {adopt: {logins: ["renovate[bot]"], branches: ["^renovate/"]}}
     diffShape: semver-patch
     releaseAgeCheck: renovate/stability-days
     modifyOnly: true
@@ -608,22 +608,22 @@ classes:
     maxPatchFiles: 3
     maxModifiedLines: 10
     maxPerDay: 2
-  deps-minor: {shadow: true, author: {adopt: {logins: ["renovate[bot]"], branches: ["renovate/"]}}, diffShape: semver-minor, modifyOnly: true, allowedFiles: ['…']}
+  deps-minor: {shadow: true, author: {adopt: {logins: ["renovate[bot]"], branches: ["^renovate/"]}}, diffShape: semver-minor, modifyOnly: true, allowedFiles: ['…']}
 ```
 
 | Key | Holds |
 |---|---|
 | `author.adopt.logins` | The adopted authors. Each ends in `[bot]` (a human login is refused at start) |
-| `author.adopt.branches` | Head branch prefixes, literal: `renovate/` (a leading `^` is accepted, any other regexp character is refused) |
+| `author.adopt.branches` | Head branch prefixes: `^` and a literal prefix, as `^renovate/`. The leading `^` is required, and any other regexp character is refused (the prefix is matched as written) |
 | `diffShape` | `semver-patch` or `semver-minor`, required with `author.adopt` and with `modifyOnly: true`. `semver-minor` is `shadow` only: the config refuses it `live` |
 | `releaseAgeCheck` | The commit status that holds the release age, posted by an adopted login (Renovate's `renovate/stability-days`). Needs `author.adopt` |
 
 **The poller.** A leader-only loop, once a minute, off unless a class adopts and is `shadow` or
 `live` (a class that is off adopts nothing). On a repository the factory owns, it lists the open
 pull requests and adopts one only when it is into `main`, from the same repository (never a fork),
-by an adopted login on an adopted branch, and its diff, computed by the factory, matches the shape of a class. A list that
+by an adopted login on an adopted branch, and its diff, computed by the factory, matches the shape of a class and keeps that class's file conditions (`allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines`: the gate's own functions), so a pull request outside the fence is never bound to the class, whatever its shape. A list that
 fails or fills its page, or a diff that cannot be read, adopts nothing and is retried. At most 10
-adopted Tasks are open per repository, the rest wait for one to end. The Task is named from its key,
+adopted Tasks are open per repository and class, the rest wait for one to end. The Task is named from its key,
 `adopt:<repository>#<number>`, so there is never a second Task for one key, across a restart or after
 the first ended. Adopted Tasks fill none of the factory's caps (`caps.tasksPerDay`, `caps.activeTasks`,
 `caps.awaitingHumanWIP`), and their `Payer()` is empty: they run no agent and cost nothing.
@@ -634,7 +634,7 @@ labels or title. `semver-patch` and `semver-minor` (package `semverdiff`) are st
 - every changed file is modified and has as many lines on both sides; only version tokens change,
   and the text between them is byte-identical;
 - a version token is any `v?MAJOR.MINOR.PATCH`, optionally `-pre` or `+build`: so the class's
-  `allowedFiles` is what bounds what is adopted (any three-number token in an allowed file counts);
+  `allowedFiles` is what bounds what is adopted and passed (any three-number token in an allowed file counts);
 - at least one version moves. `semver-patch`: each moved version keeps MAJOR.MINOR and raises PATCH.
   `semver-minor`: each keeps MAJOR and raises MINOR, or keeps MINOR and raises PATCH;
 - a digest may change only when attached to the moved version (`<ver>@sha256:`); any other digest on
@@ -649,29 +649,34 @@ labels or title. `semver-patch` and `semver-minor` (package `semverdiff`) are st
 |---|---|
 | The pull request is from the repository itself | `fork_pull_request` |
 | Its author is an adopted login, on an adopted branch | `not_adopted_author`, `branch_not_allowed` |
-| No maintainer's `CHANGES_REQUESTED` stands | `changes_requested` |
-| Every commit's author is an adopted login, and every push to the branch was one's | `human_commit_in_pr`, `push_unrecorded`, `adoption_unread` |
+| No repository member's `CHANGES_REQUESTED` stands | `changes_requested` |
+| Every commit's author is an adopted login, and every push to the branch was one's | `human_commit_in_pr`, `push_unrecorded` (`adoption_unread`: the decision ran without the read) |
 | `diffShape` holds on the diff the factory computed at the pinned head | `class_mismatch` |
 | `releaseAgeCheck` is `SUCCESS`, posted by an adopted login | `release_age_pending` waits; `release_age_red` |
 
-The veto is a maintainer's, and fail-closed: it also holds when the review list was cut at GitHub's
-page, on any dismissed `CHANGES_REQUESTED` of an adopted pull request, and on a review whose author
-GitHub no longer shows (a "ghost"). Only the same reviewer's later `APPROVED` lifts it. On a host
-that dismisses stale approvals on push, a stranger's approval that gets dismissed therefore becomes a
-permanent veto of that pull request; it fails closed, and a maintainer takes the pull request. An
+The veto is a repository member's or collaborator's: a review counts only when GitHub's
+`authorAssociation` is `OWNER`, `MEMBER` or `COLLABORATOR`, so a stranger's review (anyone can submit
+one on a public repository) parks nothing. It is fail-closed on what it cannot place: it also holds
+when the review list was cut at GitHub's page, on a review whose author GitHub no longer shows (a
+"ghost") or whose association it did not say, and on a dismissed `CHANGES_REQUESTED` whose author's
+association qualifies. Only the same reviewer's later `APPROVED` lifts it. On a host that dismisses
+stale approvals on push, a member's approval that gets dismissed therefore becomes a permanent veto
+of that pull request; it fails closed, and a maintainer takes the pull request. An
 adopted pull request has no agent run, so `changes_requested` is never a revision brief. There is no
 reviewer verdict, room report or `Agent-Run` trailer to check (the agents author mode's rows); an
 approval by a maintainer is `maintainer_approved`, as for any class.
 
 The decision is made on the head the factory read, and the merge is pinned to it (`ExpectedHeadOid`):
-GitHub refuses it if Renovate pushed since. `adoption_unread` (the commit authors or the push record could not be read) never passes: the gate fails closed.
+GitHub refuses it if Renovate pushed since. A read error of the commit authors or the push record is retried on the next pass; a commit list cut at its page reads as `human_commit_in_pr`. `adoption_unread` only means the decision ran without the read, and it never passes: the gate fails closed.
 
 **The lifecycle.** An adopted Task starts in `AwaitingCI` and never runs an agent. When the gate says no:
 
 | Reason | What happens |
 |---|---|
-| `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is read again, up to 3 times (`maxGateReentries`) |
-| `class_mismatch`, `fork_pull_request`, `changes_requested`, a closed pull request | Terminal: the Task stays handed off (a closed pull request ends it). A new head does not revive them |
+| `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded`, `policy_pending`, `policy_absent`, `ci_cancelled`, `ci_wait_expired` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is decided again whole, up to 3 times (`maxGateReentries`, counted) |
+| `auto_merge_cap`, `class_paused` (a `live` class only) | Same: re-enters on a new head, counted. A `shadow` class never meets them |
+| `shadow_would_arm` | The shadow decision: returns to `AwaitingCI` on Renovate's next head (`adopted_head_moved`), not counted, since it is no hand-off |
+| Every other reason: `class_mismatch`, `fork_pull_request`, `changes_requested`, `not_adopted_author`, `branch_not_allowed`, `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `not_mergeable`, a class that no longer adopts, and the like | Terminal: the Task stays handed off. A new head does not revive them. A closed or merged pull request ends the Task |
 
 `push_unrecorded` is GitHub not having recorded the push of the head yet (its events lag a push):
 the Task waits for it at most 10 minutes, then hands off. A push made during a long CI wait gets no
@@ -683,14 +688,19 @@ a maintainer and never stale-closes Renovate's pull request, which would fight R
 **The tally.** `scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate` counts, as
 for any class, the pull requests merged at the head a would-arm comment judged
 (`merged_unchanged`) against those merged after a push (`changed`). `--author` is who opened the
-pull requests and defaults to `app/ogenki-agents`.
+pull requests and defaults to `app/ogenki-agents`. For an adopted class `merged_unchanged` is
+Renovate's own automerge of the judged head, not a maintainer's judgement, so what the tally shows
+is how often the gate agreed with Renovate; the evidence for going live is `--outcomes`.
 
 ### The post-merge monitor
 
 A class that declares `monitor` keeps every merge of its tasks under watch, whoever merged it:
 the factory's own auto-merge, and a Renovate or maintainer merge made before the factory decided
 (a merge made before the factory decides still ends the task `Done "merged"` and is monitored, so
-the breaker counts outcomes of merges the factory never decided: a demotion can follow from one). Nothing
+the breaker counts outcomes of merges the factory never decided: a demotion can follow from one).
+An adopted class is the exception: its merge is watched only when the gate recorded `shadow_would_arm`
+or `arm` for the head that was merged. Renovate's automerge of a pull request the gate refused, or
+never decided, is not labelled `factory/merged:<class>` and feeds neither the breaker nor the tally. Nothing
 here ever reverts: main red within `verifyFor` still opens the revert (see above); the monitor only
 records a verdict, labels, narrates and feeds the breaker.
 

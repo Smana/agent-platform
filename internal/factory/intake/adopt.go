@@ -20,13 +20,14 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/filefence"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/semverdiff"
 	"github.com/Smana/agent-platform/internal/factory/taskid"
 )
 
-// maxOpenAdopted bounds the adopted Tasks a repository holds open at once: a Renovate backlog is
+// maxOpenAdopted bounds the adopted Tasks a repository holds, per class, open at once: a Renovate backlog is
 // adopted ten at a time, as each ends.
 const maxOpenAdopted = 10
 
@@ -139,7 +140,7 @@ func (a *Adopter) tick(ctx context.Context, rc *config.Repository) error {
 	if err := a.Client.List(ctx, &l, client.InNamespace(a.Namespace)); err != nil {
 		return err
 	}
-	known, open := map[string]bool{}, 0
+	known, open := map[string]bool{}, map[string]int{} // open: per class
 	for i := range l.Items {
 		t := &l.Items[i]
 		if t.Spec.Source.Kind != "adopt" || !strings.EqualFold(t.Spec.Repository, rc.Name) {
@@ -147,10 +148,11 @@ func (a *Adopter) tick(ctx context.Context, rc *config.Repository) error {
 		}
 		known[t.Spec.Source.Key] = true
 		if !v1alpha1.TerminalPhase(t.Status.Phase) {
-			open++
+			open[t.Spec.PredictedClass]++
 		}
 	}
-	if open >= maxOpenAdopted {
+	full := func(class string) bool { return open[class] >= maxOpenAdopted }
+	if !slices.ContainsFunc(adoptedClasses(rc), func(c string) bool { return !full(c) }) {
 		return nil
 	}
 	gh, merger, ok := a.Clients(rc.Name)
@@ -168,13 +170,10 @@ func (a *Adopter) tick(ctx context.Context, rc *config.Repository) error {
 	var errs []error
 	for _, p := range prs {
 		key := fmt.Sprintf("adopt:%s#%d", rc.Name, p.Number)
-		if open >= maxOpenAdopted {
-			break
-		}
 		if known[key] {
 			continue
 		}
-		class, ok, err := a.classOf(ctx, rc, merger, p)
+		class, ok, err := a.classOf(ctx, rc, merger, p, full)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("#%d: %w", p.Number, err))
 			continue
@@ -188,16 +187,19 @@ func (a *Adopter) tick(ctx context.Context, rc *config.Repository) error {
 			continue
 		}
 		if created {
-			open++
+			open[class]++
 		}
 	}
 	return errors.Join(errs...)
 }
 
 // candidates are the classes whose author and branch rules the pull request meets, by shape.
-func candidates(rc *config.Repository, p forge.PRSummary) map[string]string {
+func candidates(rc *config.Repository, p forge.PRSummary, full func(string) bool) map[string]string {
 	out := map[string]string{} // shape -> class
 	for _, name := range adoptedClasses(rc) {
+		if full(name) {
+			continue // ten open Tasks of this class: the others' places are not its
+		}
 		cl := rc.Classes[name]
 		ad := cl.Author.Adopt
 		if p.CrossRepository || p.BaseRef != adoptBase { // a fork's names are its own; the diff is read against main
@@ -221,8 +223,8 @@ func branchAdopted(ad *config.Adopt, ref string) bool {
 
 // classOf is the class the pull request's diff names: the first shape that holds, among the
 // classes it is eligible for. A diff too large to read names none.
-func (a *Adopter) classOf(ctx context.Context, rc *config.Repository, m ScheduleMerger, p forge.PRSummary) (string, bool, error) {
-	cands := candidates(rc, p)
+func (a *Adopter) classOf(ctx context.Context, rc *config.Repository, m ScheduleMerger, p forge.PRSummary, full func(string) bool) (string, bool, error) {
+	cands := candidates(rc, p, full)
 	if len(cands) == 0 || p.HeadSHA == "" {
 		return "", false, nil
 	}
@@ -246,7 +248,9 @@ func (a *Adopter) classOf(ctx context.Context, rc *config.Repository, m Schedule
 		if !ok {
 			continue
 		}
-		if held, _ := s.ok(d.Base, d.Head); held {
+		// The shape and the class's file conditions, which are the gate's own functions: a pull
+		// request outside the fence is not this class's, whatever its shape.
+		if held, _ := s.ok(d.Base, d.Head); held && filefence.Refusal(rc.Classes[class], d.Files) == "" {
 			return class, true, nil
 		}
 	}

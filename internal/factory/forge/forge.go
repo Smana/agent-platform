@@ -111,12 +111,16 @@ type ReviewComment struct {
 
 // Review is a pull request review.
 type Review struct {
-	ID       int64
-	Author   string
-	State    string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
-	Body     string
-	At       time.Time
-	Comments []ReviewComment
+	ID     int64
+	Author string
+	State  string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
+	// Association is the author's relation to the repository (GitHub's authorAssociation: OWNER,
+	// MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE); ""
+	// when GitHub did not say.
+	Association string
+	Body        string
+	At          time.Time
+	Comments    []ReviewComment
 }
 
 // PR is one GraphQL snapshot of a pull request. Checks and statuses are a separate query on the

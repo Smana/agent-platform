@@ -18,6 +18,7 @@ import (
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -236,6 +237,8 @@ func reasons() map[string]string {
 		"push_unrecorded":           "GitHub has not recorded the push of its head, so who made it cannot be shown",
 		"adoption_unread":           "who authored its commits and pushed its branch could not be read",
 		"reentered_new_head":        "its author pushed a new head, which is decided from the start",
+		"adopted_head_moved":        "its author pushed a new head after the shadow decision, so it is decided again",
+		"adopt_ref_invalid":         "the adopted pull request's reference could not be read, so it was not adopted",
 		"not_adopted_author":        "it is not authored by a login this class adopts",
 		"branch_not_allowed":        "its branch is not one this class adopts",
 		"release_age_pending":       "the release age check has not passed yet",
@@ -471,11 +474,20 @@ func WouldArm(t *v1alpha1.Task, class, head string) Event {
 }
 
 // WouldArmAdopted is WouldArm for an adopted pull request (R46): the same key, so the same marker
-// the shadow tally reads, and no claim of a verdict, since no agent reviewed Renovate's change.
-func WouldArmAdopted(t *v1alpha1.Task, class, head string) Event {
+// the shadow tally reads, and no claim of a verdict, since no agent reviewed Renovate's change. It
+// names a file fence, sizes and a release age only when the class declares them.
+func WouldArmAdopted(t *v1alpha1.Task, cl config.Class, class, head string) Event {
 	e := WouldArm(t, class, head)
-	e.Body = fmt.Sprintf("Agent factory: would auto-merge: `%s`, checks green, the diff a semver bump within the class's files and sizes, "+
-		"released long enough ago for the class's release-age check. The class is in shadow: nothing is merged by the factory.", class)
+	what := "the diff a semver bump"
+	if len(cl.AllowedFiles) > 0 || len(cl.ProtectedFiles) > 0 || cl.ModifyOnly || cl.MaxPatchFiles > 0 || cl.MaxModifiedLines > 0 {
+		what += " within the class's files and sizes"
+	}
+	age := ""
+	if cl.ReleaseAgeCheck != "" {
+		age = ", released long enough ago for the class's release-age check"
+	}
+	e.Body = fmt.Sprintf("Agent factory: would auto-merge: `%s`, checks green, %s%s. The class is in shadow: nothing is merged by the factory.",
+		class, what, age)
 	return e
 }
 

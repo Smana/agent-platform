@@ -4,6 +4,7 @@ package reconciler
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -62,4 +63,30 @@ func (r *Reconciler) awaitingHumanAdopted(ctx context.Context, t *v1alpha1.Task,
 		return nil
 	}
 	return nil
+}
+
+// noteMergedHead records the head an adopted pull request was merged at, which the monitor weighs
+// against the head the gate decided: the "last acted on" head, once the merge is read.
+func noteMergedHead(t *v1alpha1.Task, pr forge.PR) {
+	if adoptedTask(t) && pr.HeadSHA != "" {
+		t.Status.PullRequest.HeadSHA = pr.HeadSHA
+	}
+}
+
+// strangers are the authorAssociations of a reviewer with no standing in the repository: anyone can
+// submit a review on a public one. A ghost (no login) and an association GitHub did not say are
+// not here: the veto fails closed on what it cannot place.
+var strangers = []string{"NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN"}
+
+// membersReviews drops the reviews of a known stranger: only an owner's, a member's or a
+// collaborator's review counts toward an adopted pull request's veto.
+func membersReviews(reviews []forge.Review) []forge.Review {
+	out := make([]forge.Review, 0, len(reviews))
+	for _, rv := range reviews {
+		if rv.Author != "" && slices.Contains(strangers, rv.Association) {
+			continue
+		}
+		out = append(out, rv)
+	}
+	return out
 }

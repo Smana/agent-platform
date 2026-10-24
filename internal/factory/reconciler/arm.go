@@ -113,7 +113,7 @@ func DecideArm(in ArmInputs) ArmDecision {
 	// An agents pull request answers a veto with a revision run (watch.go). An adopted one has no
 	// run, so the veto is the gate's: nothing merges, or is counted as would-merge, over it.
 	// A review list cut at GitHub's page may hide a veto: it is one.
-	if cl.Adopted() && (in.PR.ReviewsTruncated || len(openChangeRequests(in.PR.Reviews, true)) > 0) {
+	if cl.Adopted() && (in.PR.ReviewsTruncated || len(openChangeRequests(membersReviews(in.PR.Reviews), true)) > 0) {
 		return human("changes_requested", class)
 	}
 	if !cl.Live && !cl.Shadow {

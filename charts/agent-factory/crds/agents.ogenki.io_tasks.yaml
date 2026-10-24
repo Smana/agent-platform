@@ -746,6 +746,12 @@ spec:
                     type: string
                   autoMerged:
                     type: boolean
+                  decidedHeadSHA:
+                    description: |-
+                      The head the merge gate last decided "arm" or "shadow" on. An adopted merge of any other
+                      head (Renovate's automerge of a head the gate refused or never read) is not watched.
+                    maxLength: 64
+                    type: string
                   headSHA:
                     description: |-
                       The head when the pull request was found, then the head the merge gate last acted on: merged,

@@ -83,6 +83,9 @@ func (r *Reconciler) monitorDue(t *v1alpha1.Task) bool {
 		return false
 	}
 	cl, ok := r.repo(t).Classes[t.Spec.PredictedClass]
+	if adoptedTask(t) && !forge.SameLogin(ref.MergedBy, r.repo(t).Merge.MergerLogin) && ref.DecidedHeadSHA != ref.HeadSHA {
+		return false // Renovate's automerge of a head the gate never decided is not the class's merge
+	}
 	if !ok || cl.Monitor == nil || (t.Status.Monitor != nil && t.Status.Monitor.Posted) {
 		return false
 	}
