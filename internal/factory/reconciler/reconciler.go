@@ -700,7 +700,7 @@ func (r *Reconciler) admit(ctx context.Context, t *v1alpha1.Task) (string, error
 		return "", nil // R39: Renovate's own pull request starts no run: the daily task cap is not its to spend
 	}
 	today, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool {
-		return o.Name != t.Name && o.Status.Phase != "" && o.Status.Phase != v1alpha1.PhaseRejected &&
+		return o.Name != t.Name && o.Spec.Source.Kind != "adopt" && o.Status.Phase != "" && o.Status.Phase != v1alpha1.PhaseRejected &&
 			sameUTCDay(o.CreationTimestamp.Time, r.Now())
 	})
 	if err != nil {

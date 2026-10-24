@@ -35,7 +35,9 @@ const runEndGrace = time.Minute
 
 // slotFree: the active-task and concurrent-run caps (§6.2), and never while a human drives (C4).
 func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, string, error) {
-	active, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool { return o.Name != t.Name && v1alpha1.ActivePhase(o.Status.Phase) })
+	active, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool {
+		return o.Name != t.Name && o.Spec.Source.Kind != "adopt" && v1alpha1.ActivePhase(o.Status.Phase)
+	})
 	if err != nil {
 		return false, "", err
 	}
@@ -45,7 +47,9 @@ func (r *Reconciler) slotFree(ctx context.Context, t *v1alpha1.Task) (bool, stri
 	// A live class may auto-merge its PR, so human review WIP is not its bottleneck; the shadow
 	// and unclassified work is exactly what lands on the review queue.
 	if len(t.Status.Runs) == 0 && !r.repo(t).Classes[t.Spec.PredictedClass].Live {
-		wip, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool { return o.Status.Phase == v1alpha1.PhaseAwaitingHuman })
+		wip, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool {
+			return o.Spec.Source.Kind != "adopt" && o.Status.Phase == v1alpha1.PhaseAwaitingHuman
+		})
 		if err != nil {
 			return false, "", err
 		}

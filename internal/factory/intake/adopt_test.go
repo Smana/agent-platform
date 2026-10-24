@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +29,7 @@ const (
 )
 
 func renovatePR(n int, ref string) forge.PRSummary {
-	return forge.PRSummary{Number: n, Author: "renovate[bot]", HeadRef: ref, HeadSHA: "h" + fmt.Sprint(n)}
+	return forge.PRSummary{Number: n, Author: "renovate[bot]", HeadRef: ref, HeadSHA: "h" + fmt.Sprint(n), BaseRef: "main"}
 }
 
 func adoptClass(shape string, live bool) config.Class {
@@ -83,6 +85,10 @@ func TestAdopter(t *testing.T) {
 		"a digest":       {renovatePR(32, "renovate/x-digest"), "x@" + digA + "\n", "x@" + digB + "\n", false, ""},
 		"a human's PR":   {forge.PRSummary{Number: 33, Author: "Smana", HeadRef: "renovate/x", HeadSHA: "h"}, "v: 1.2.3\n", "v: 1.2.4\n", false, ""},
 		"another branch": {forge.PRSummary{Number: 34, Author: "renovate[bot]", HeadRef: "main-x", HeadSHA: "h"}, "v: 1.2.3\n", "v: 1.2.4\n", false, ""},
+		"another base": {forge.PRSummary{Number: 36, Author: "renovate[bot]", HeadRef: "renovate/x", HeadSHA: "h", BaseRef: "release"},
+			"v: 1.2.3\n", "v: 1.2.4\n", false, ""},
+		"a fork": {forge.PRSummary{Number: 37, Author: "renovate[bot]", HeadRef: "renovate/x", HeadSHA: "h", BaseRef: "main", CrossRepository: true},
+			"v: 1.2.3\n", "v: 1.2.4\n", false, ""},
 		"a prefix is literal": {forge.PRSummary{Number: 35, Author: "renovate[bot]", HeadRef: "xrenovate/x", HeadSHA: "h"},
 			"v: 1.2.3\n", "v: 1.2.4\n", false, ""},
 	} {
@@ -117,6 +123,39 @@ func TestAdopter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A failed open-PR list and a failed Task List both create nothing and report the error.
+func TestAdopterFailedReadsCreateNothing(t *testing.T) {
+	f := forgetest.NewFake()
+	f.SetOpenPRs(renovatePR(30, "renovate/kyverno-3.x"))
+	f.SetFiles(map[string]string{"a.yaml": "version: 3.9.1\n"}, map[string]string{"a.yaml": "version: 3.9.2\n"})
+	c := fake.NewClientBuilder().WithScheme(adoptScheme()).Build()
+	a := adopter(f, c, adoptCfg(false))
+	a.Clients = func(string) (ScheduleForge, ScheduleMerger, bool) { return failingList{f}, f, true }
+	if err := a.Tick(context.Background()); err == nil {
+		t.Fatal("a failed PR list is an error")
+	}
+	b := adopter(f, interceptList{c}, adoptCfg(false))
+	if err := b.Tick(context.Background()); err == nil {
+		t.Fatal("a failed Task list is an error")
+	}
+	if n := len(adoptedTasks(t, c)); n != 0 {
+		t.Fatalf("%d tasks", n)
+	}
+}
+
+type failingList struct{ *forgetest.Fake }
+
+func (failingList) OpenPullRequests(context.Context) ([]forge.PRSummary, error) {
+	return nil, errors.New("boom")
+}
+
+// interceptList fails every Task List.
+type interceptList struct{ client.Client }
+
+func (interceptList) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return errors.New("boom")
 }
 
 func TestAdopterOffAndStopped(t *testing.T) {
@@ -259,5 +298,17 @@ func TestAdopterFailsClosed(t *testing.T) {
 func TestAdopterIsLeaderOnly(t *testing.T) {
 	if !(&Adopter{}).NeedLeaderElection() {
 		t.Fatal("two adopters would race")
+	}
+}
+
+// The poller's prefix rule gives the gate's answer (arm.go: "^" + QuoteMeta(prefix)).
+func TestBranchAdoptedMatchesTheGatesRule(t *testing.T) {
+	for _, b := range []string{"^renovate/", "^.", "^a.b", "^x+", "^"} {
+		for _, ref := range []string{"renovate/x", ".x", "ax", "a.b/c", "aXb", "x+y", "xxy", "", "xrenovate/"} {
+			want := regexp.MustCompile("^" + regexp.QuoteMeta(strings.TrimPrefix(b, "^"))).MatchString(ref)
+			if got := branchAdopted(&config.Adopt{Branches: []string{b}}, ref); got != want {
+				t.Errorf("%q on %q: %v, the gate says %v", b, ref, got, want)
+			}
+		}
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -42,7 +41,10 @@ const adoptBase = "main"
 // class's author (Renovate) into a Task with no run, in AwaitingCI once the reconciler receives it.
 // It decides membership only: the merge gate decides everything again on the head it reads.
 // The Task's name is its key's, `adopt:<repository>#<number>`, so a pull request is adopted once,
-// whatever happens to its Task and across a restart: the API server is the memory.
+// whatever happens to its Task and across a restart. Reads come from the manager's informer cache, so
+// a stale one can briefly undercount the open Tasks; a duplicate is impossible all the same, because
+// the name is deterministic and a second Create conflicts. Only pull requests into main, from the
+// repository itself, are adopted (a fork is refused here and again by the gate).
 type Adopter struct {
 	// Clients is a repository's factory App and merger connections (v2 D8), as the Scheduler's.
 	Clients   func(repository string) (ScheduleForge, ScheduleMerger, bool)
@@ -58,7 +60,7 @@ type Adopter struct {
 
 	// judged is an optimisation only (a restart re-reads): the heads whose diff named no class, so
 	// a pull request that is not adopted is not diffed again every minute (the rate limit). A new
-	// head is a new read. It never stands for "adopted": that is the API server's.
+	// head is a new read. It never stands for "adopted": that is the Task's name.
 	mu     sync.Mutex
 	judged map[string]bool
 }
@@ -198,6 +200,9 @@ func candidates(rc *config.Repository, p forge.PRSummary) map[string]string {
 	for _, name := range adoptedClasses(rc) {
 		cl := rc.Classes[name]
 		ad := cl.Author.Adopt
+		if p.CrossRepository || p.BaseRef != adoptBase { // a fork's names are its own; the diff is read against main
+			continue
+		}
 		if !slices.ContainsFunc(ad.Logins, func(l string) bool { return forge.SameLogin(p.Author, l) }) || !branchAdopted(ad, p.HeadRef) {
 			continue
 		}
@@ -209,11 +214,9 @@ func candidates(rc *config.Repository, p forge.PRSummary) map[string]string {
 }
 
 // branchAdopted: the head branch starts with one of the literal prefixes (Validate: ^ and a
-// literal), quoted so no character widens it.
+// literal): the same result as the gate's QuoteMeta'd pattern, with no pattern to compile.
 func branchAdopted(ad *config.Adopt, ref string) bool {
-	return slices.ContainsFunc(ad.Branches, func(b string) bool {
-		return regexp.MustCompile("^" + regexp.QuoteMeta(strings.TrimPrefix(b, "^"))).MatchString(ref)
-	})
+	return slices.ContainsFunc(ad.Branches, func(b string) bool { return strings.HasPrefix(ref, strings.TrimPrefix(b, "^")) })
 }
 
 // classOf is the class the pull request's diff names: the first shape that holds, among the

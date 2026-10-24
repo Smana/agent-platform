@@ -83,8 +83,9 @@ func TestAnAdoptedTaskKeepsTheTextCap(t *testing.T) {
 	}
 }
 
-// A pull request closed before the first read ends the Task, rather than handing a dead PR to the gate.
-func TestAnAdoptedTaskWhosePRIsGoneIsNotAdmitted(t *testing.T) {
+// A pull request closed before the first read is still recorded and sent to the gate, which reads
+// CLOSED and closes the Task on the next pass.
+func TestAnAdoptedTaskWhosePRClosedBeforeTheFirstReadGoesToTheGateThenCloses(t *testing.T) {
 	g := receivedRig(t)
 	g.editPR(func(p *forge.PR) { p.State = "CLOSED" })
 	tk := g.reconcile(t, adoptTask, 1)
@@ -110,7 +111,7 @@ func TestTheAdoptedLifecycle(t *testing.T) {
 			g.reconcile(t, adoptTask, 1)
 		}
 		tk := g.reconcile(t, adoptTask, 1)
-		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.f.Comments(30)) > 1 {
+		if tk.Status.Phase != v1alpha1.PhaseAwaitingHuman || len(g.f.Comments(30)) != 1 || !strings.Contains(g.f.Comments(30)[0], "event=would-arm-0 head="+adoptHead) {
 			t.Fatalf("%s %s comments %q", tk.Status.Phase, tk.Status.Reason, g.f.Comments(30))
 		}
 		if p, _ := g.f.PullRequest(t.Context(), 30); p.State != "OPEN" || len(p.Labels) != 0 {
@@ -166,4 +167,42 @@ func TestWouldArmAdopted(t *testing.T) {
 		strings.Contains(c, "verdict approve") || !strings.Contains(c, "The class is in shadow: nothing is merged by the factory.") {
 		t.Fatalf("%q", c)
 	}
+}
+
+// adoptedCrowd is n adopted Tasks of Renovate's in the given phase, created today.
+func adoptedCrowd(n int, phase string) []client.Object {
+	var out []client.Object
+	for i := range n {
+		o := issueTask("7adopt"+string(rune('a'+i))+"z", 0, "x")
+		o.Spec.Template, o.Spec.Source.Kind, o.Spec.Source.RequestedBy = "", "adopt", "github:renovate[bot]"
+		o.Status.Phase = phase
+		out = append(out, o)
+	}
+	return out
+}
+
+// R39: an adopted Task counts toward none of the factory's caps: ten of them, in each phase that
+// counts, still leave an issue Task its place in tasksPerDay, activeTasks and awaitingHumanWIP.
+func TestAdoptedTasksFillNoCap(t *testing.T) {
+	t.Run("tasksPerDay", func(t *testing.T) {
+		g := newRig(t, append(adoptedCrowd(10, v1alpha1.PhaseAwaitingCI), issueTask("3buqdlot", 7, "x"))...)
+		g.r.Cfg.Caps.TasksPerDay = 1
+		if tk := g.reconcile(t, "3buqdlot", 1); tk.Status.Phase != v1alpha1.PhaseTriaged {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("activeTasks", func(t *testing.T) {
+		g := newRig(t, append(adoptedCrowd(10, v1alpha1.PhaseAwaitingCI), issueTask("3buqdlot", 7, "x"))...)
+		g.r.Cfg.Caps.ActiveTasks = 1
+		if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
+	t.Run("awaitingHumanWIP", func(t *testing.T) {
+		g := newRig(t, append(adoptedCrowd(10, v1alpha1.PhaseAwaitingHuman), issueTask("3buqdlot", 7, "x"))...)
+		g.r.Cfg.Caps.AwaitingHumanWIP = 1
+		if tk := g.reconcile(t, "3buqdlot", 3); tk.Status.Phase != v1alpha1.PhaseImplementing {
+			t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Reason)
+		}
+	})
 }

@@ -403,6 +403,10 @@ type PRSummary struct {
 	// poller's membership read; the merge gate reads the pull request again).
 	HeadRef string
 	HeadSHA string
+	// BaseRef is the branch the pull request targets; CrossRepository: its head is a fork's (or a
+	// deleted one's), read from the head's repository against the base's.
+	BaseRef         string
+	CrossRepository bool
 }
 
 // Merger is GitHub through the merger App (owner, 2026-09-27; R16): the only identity that reads
