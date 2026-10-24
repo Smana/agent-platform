@@ -709,7 +709,8 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				AutoMergeRequest *struct{ EnabledAt githubv4.DateTime }
 				Labels           struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 30)"`
 				Reviews          struct {
-					Nodes []struct {
+					PageInfo struct{ HasPreviousPage bool }
+					Nodes    []struct {
 						DatabaseID  int64 `graphql:"databaseId"`
 						State       string
 						Body        string
@@ -755,7 +756,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	}
 	p := q.Repository.PullRequest
 	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, Body: p.Body, State: p.State, Author: p.Author.login(),
-		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, CrossRepository: p.IsCrossRepo, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
+		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, CrossRepository: p.IsCrossRepo, ReviewsTruncated: p.Reviews.PageInfo.HasPreviousPage, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
 	if p.MergeCommit != nil {
 		out.MergeCommitSHA = p.MergeCommit.Oid
 	}

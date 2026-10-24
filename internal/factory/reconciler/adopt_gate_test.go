@@ -193,7 +193,35 @@ func TestAdoptedGate(t *testing.T) {
 		"a push GitHub has not recorded, within its wait": {func(g *rig) {
 			g.f.SetActivity("renovate/kyverno-3.x")
 			g.editPR(func(p *forge.PR) { p.HeadCommittedAt = now.Add(-2 * time.Minute) })
+			g.setPhaseSince(t, adoptTask, now.Add(-time.Minute))
 		}, v1alpha1.PhaseAwaitingCI, "push_unrecorded"},
+		"a push not recorded, a committer date in the future": {func(g *rig) {
+			g.f.SetActivity("renovate/kyverno-3.x")
+			g.editPR(func(p *forge.PR) { p.HeadCommittedAt = now.Add(time.Hour) })
+			g.setPhaseSince(t, adoptTask, now.Add(-11*time.Minute))
+		}, v1alpha1.PhaseAwaitingHuman, "push_unrecorded"},
+		"a dismissed review, nobody approved over it": {func(g *rig) { g.review(30, 7, "someone", "DISMISSED") },
+			v1alpha1.PhaseAwaitingHuman, "changes_requested"},
+		"a dismissed request, a lift by the same reviewer": {func(g *rig) {
+			g.review(30, 7, "someone", "DISMISSED")
+			g.review(30, 8, "someone", "APPROVED")
+		}, v1alpha1.PhaseAwaitingHuman, "shadow_would_arm"},
+		"a request lifted by the same reviewer": {func(g *rig) {
+			g.review(30, 7, "someone", "CHANGES_REQUESTED")
+			g.review(30, 8, "someone", "APPROVED")
+		}, v1alpha1.PhaseAwaitingHuman, "shadow_would_arm"},
+		"a ghost's request, a ghost's approval": {func(g *rig) {
+			g.review(30, 7, "", "CHANGES_REQUESTED")
+			g.review(30, 8, "", "APPROVED")
+		}, v1alpha1.PhaseAwaitingHuman, "changes_requested"},
+		"21 reviews, the maintainer's request outside the page": {func(g *rig) {
+			for i := range 21 {
+				g.review(30, int64(100+i), "stranger", "COMMENTED")
+			}
+			g.editPR(func(p *forge.PR) { p.ReviewsTruncated = true }) // GitHub read the last page only
+		}, v1alpha1.PhaseAwaitingHuman, "changes_requested"},
+		"the review list was cut": {func(g *rig) { g.editPR(func(p *forge.PR) { p.ReviewsTruncated = true }) },
+			v1alpha1.PhaseAwaitingHuman, "changes_requested"},
 		"a maintainer approved": {func(g *rig) { g.approve(30, "Smana") }, v1alpha1.PhaseAwaitingHuman, "maintainer_approved"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -402,5 +430,17 @@ func TestAnAdoptedTerminalReasonStaysPut(t *testing.T) {
 				t.Fatalf("stays: %s %s %d", tk.Status.Phase, tk.Status.Reason, tk.Status.GateReentries)
 			}
 		})
+	}
+}
+
+// N3: a branch prefix is literal: "^." adopts a branch starting with a dot and no other.
+func TestAnAdoptedBranchPrefixIsLiteral(t *testing.T) {
+	cl := depsPatchClass()
+	cl.Author.Adopt.Branches = []string{"^."}
+	for ref, want := range map[string]string{".x": "", "renovate/x": "branch_not_allowed", "ax": "branch_not_allowed"} {
+		in := ArmInputs{PR: forge.PR{Author: bot, HeadRef: ref}}
+		if got := adoptAuthor(in, cl); got != want {
+			t.Errorf("%q: %q, want %q", ref, got, want)
+		}
 	}
 }

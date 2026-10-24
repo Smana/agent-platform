@@ -279,6 +279,10 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, now func() time.Time) *fake
 				_, _ = io.WriteString(w, strings.Replace(prJSON, `"isCrossRepository":false`, `"isCrossRepository":true`, 1))
 				return
 			}
+			if strings.Contains(string(b), `"number":14`) {
+				_, _ = io.WriteString(w, strings.Replace(prJSON, `"reviews":{"nodes"`, `"reviews":{"pageInfo":{"hasPreviousPage":true},"nodes"`, 1))
+				return
+			}
 			_, _ = io.WriteString(w, prJSON)
 			return
 		}
@@ -762,6 +766,18 @@ func TestPullRequestReadsAFork(t *testing.T) {
 	}
 	if pr, err = r.g.PullRequest(t.Context(), 13); err != nil || !pr.CrossRepository {
 		t.Fatalf("a fork's: %+v %v", pr, err)
+	}
+}
+
+// N1: a review list GitHub cut at its page is reported, so a veto outside it is not read as none.
+func TestPullRequestReportsACutReviewList(t *testing.T) {
+	r := newRig(t)
+	pr, err := r.g.PullRequest(t.Context(), 12)
+	if err != nil || pr.ReviewsTruncated {
+		t.Fatalf("whole: %+v %v", pr.ReviewsTruncated, err)
+	}
+	if pr, err = r.g.PullRequest(t.Context(), 14); err != nil || !pr.ReviewsTruncated {
+		t.Fatalf("cut: %+v %v", pr.ReviewsTruncated, err)
 	}
 }
 

@@ -197,7 +197,7 @@ func (r *Reconciler) changesRequested(t *v1alpha1.Task, pr forge.PR) []forge.Rev
 	}
 	since := current(t).Started
 	var out []forge.Review
-	for _, rv := range openChangeRequests(pr.Reviews) {
+	for _, rv := range openChangeRequests(pr.Reviews, false) {
 		if r.repo(t).IsMaintainer(rv.Author) && !slices.Contains(t.Status.Handled, rv.ID) && (since == nil || rv.At.After(since.Time)) {
 			out = append(out, rv)
 		}
@@ -208,16 +208,20 @@ func (r *Reconciler) changesRequested(t *v1alpha1.Task, pr forge.PR) []forge.Rev
 
 // openChangeRequests are the CHANGES_REQUESTED reviews their author has not approved over since,
 // oldest first as GitHub lists them: a login's later APPROVED review lifts its earlier requests.
-func openChangeRequests(reviews []forge.Review) []forge.Review {
+// A ghost's (login "") are never lifted: two deleted accounts are not one reviewer. With
+// dismissed, a DISMISSED review counts as a request too: GitHub does not say what it was before,
+// and anyone with write access can dismiss, so only the reviewer's own approval lifts it.
+func openChangeRequests(reviews []forge.Review, dismissed bool) []forge.Review {
 	approvedAt := map[string]int{} // a login's latest approval, by index; logins fold case
 	for i, rv := range reviews {
-		if rv.State == "APPROVED" {
+		if rv.State == "APPROVED" && rv.Author != "" {
 			approvedAt[strings.ToLower(rv.Author)] = i
 		}
 	}
 	var out []forge.Review
 	for i, rv := range reviews {
-		if last, approved := approvedAt[strings.ToLower(rv.Author)]; rv.State == "CHANGES_REQUESTED" && (!approved || last < i) {
+		last, approved := approvedAt[strings.ToLower(rv.Author)]
+		if (rv.State == "CHANGES_REQUESTED" || dismissed && rv.State == "DISMISSED") && (!approved || last < i) {
 			out = append(out, rv)
 		}
 	}

@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -111,7 +112,8 @@ func DecideArm(in ArmInputs) ArmDecision {
 	}
 	// An agents pull request answers a veto with a revision run (watch.go). An adopted one has no
 	// run, so the veto is the gate's: nothing merges, or is counted as would-merge, over it.
-	if cl.Adopted() && len(openChangeRequests(in.PR.Reviews)) > 0 {
+	// A review list cut at GitHub's page may hide a veto: it is one.
+	if cl.Adopted() && (in.PR.ReviewsTruncated || len(openChangeRequests(in.PR.Reviews, true)) > 0) {
 		return human("changes_requested", class)
 	}
 	if !cl.Live && !cl.Shadow {
@@ -230,9 +232,12 @@ func adoptAuthor(in ArmInputs, cl config.Class) string {
 	if !slices.ContainsFunc(a.Logins, func(l string) bool { return forge.SameLogin(in.PR.Author, l) }) {
 		return "not_adopted_author"
 	}
-	// Validate made every pattern start with ^, and a branch pattern is a prefix: it is not
-	// wrapped in ^(?:p)$ as allowedFiles is.
-	if !matchesAny(compile(a.Branches, false), in.PR.HeadRef) {
+	// A branch pattern is ^ and a literal prefix (Validate): quoted, so no character widens it.
+	prefixes := make([]string, len(a.Branches))
+	for i, b := range a.Branches {
+		prefixes[i] = "^" + regexp.QuoteMeta(strings.TrimPrefix(b, "^"))
+	}
+	if !matchesAny(compile(prefixes, false), in.PR.HeadRef) {
 		return "branch_not_allowed"
 	}
 	return ""

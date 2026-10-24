@@ -122,7 +122,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			d = DecideArm(in)
 		}
 	}
-	if adopted && d.Reason == "push_unrecorded" && r.Now().Before(pr.HeadCommittedAt.Add(pushRecordWaitAdopted)) {
+	if adopted && d.Reason == "push_unrecorded" && r.pushRecordWait(t, pr) {
 		// GitHub records a push a little after it lands: wait for the head's, then hand off.
 		d = ArmDecision{Verdict: "wait", Reason: "push_unrecorded", Matched: d.Matched}
 	}
@@ -488,6 +488,20 @@ func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR
 // pushRecordWaitAdopted is how long, from the head's commit time, an adopted head's push is waited
 // for in GitHub's activity before the task hands off: there is no run whose finish could date it.
 const pushRecordWaitAdopted = 10 * time.Minute
+
+// pushRecordWait: still within the wait, which ends pushRecordWaitAdopted after the head's commit
+// time or after the task entered AwaitingCI, whichever comes first: the committer's date is its
+// own claim, and a future one must not extend the wait. No phase time, no wait.
+func (r *Reconciler) pushRecordWait(t *v1alpha1.Task, pr forge.PR) bool {
+	if t.Status.PhaseSince == nil {
+		return false
+	}
+	end := pr.HeadCommittedAt.Add(pushRecordWaitAdopted)
+	if since := t.Status.PhaseSince.Add(pushRecordWaitAdopted); since.Before(end) {
+		end = since
+	}
+	return r.Now().Before(end)
+}
 
 // pushedBy is factoryPushed over any branch and any set of logins.
 func (r *Reconciler) pushedBy(ctx context.Context, branch string, logins []string, head string) (pushCheck, error) {
