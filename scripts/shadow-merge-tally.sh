@@ -9,6 +9,10 @@
 #
 # Prints one line per judged pull request, then the totals. Needs gh, authenticated, and jq.
 #
+# --author names who opened the pull requests (default app/ogenki-agents, the factory's agents App).
+# An adopted class's are Renovate's: scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate.
+# Its would-arm comments (WouldArmAdopted) carry the same head= marker, so the count is the same.
+#
 #   scripts/shadow-merge-tally.sh --class dead-links --outcomes --since 2026-08-01 [--window 168h] [--budget 0.10]
 #
 # --outcomes reads what became of the merges of a class instead: the pull requests labelled
@@ -22,13 +26,14 @@
 set -euo pipefail
 
 class="" outcomes="" since="" window="168h" budget="0.10" repo="${GH_REPO:-Smana/cloud-native-ref}" limit=500
-usage() { echo "usage: $0 --class <class> [--repo owner/name] [--limit n] [--outcomes --since <date> [--window 168h] [--budget 0.10]]" >&2; }
+usage() { echo "usage: $0 --class <class> [--repo owner/name] [--limit n] [--author login] [--outcomes --since <date> [--window 168h] [--budget 0.10]]" >&2; }
 author="app/ogenki-agents" factory="ogenki-agent-factory" merger="ogenki-agent-merger"
 while [ $# -gt 0 ]; do
   case "$1" in
     --class) class="$2"; shift 2 ;;
     --repo) repo="$2"; shift 2 ;;
     --limit) limit="$2"; shift 2 ;;
+    --author) author="$2"; shift 2 ;;
     --outcomes) outcomes=1; shift ;;
     --since) since="$2"; shift 2 ;;
     --window) window="$2"; shift 2 ;;

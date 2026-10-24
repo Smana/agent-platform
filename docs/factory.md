@@ -534,7 +534,7 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 5 | The class is `live` or `shadow` | `class_mismatch` |
 | 6 | The template's reviewer approved, the room reported the head, and every approval is of that head | `no_approving_verdict`, `head_unreported`, `verdict_stale` |
 | 7 | The head's `Agent-Run` trailer names one of the task's runs | `foreign_trailer` |
-| 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and every finding was a link target on the base and none is on the head, and no target moved but to the exact snapshot its finding gave) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
+| 8 | The class's declared conditions, in this order: `allowedFiles`, `protectedFiles`, `modifyOnly`, `maxPatchFiles`, `maxModifiedLines` (GitHub's counts), `diffShape` (`links-only`: link targets only, each staying relative, on its https host, or moving to web.archive.org; built into `docs-links` and `revert`), or `semver-patch` and `semver-minor` for an [adopted class](#adopted-classes) (computed from the diff), `holdoutChecks` (SUCCESS from GitHub Actions), `oracle` (the task's `spec.findings` no longer link targets in the head, and every finding was a link target on the base and none is on the head, and no target moved but to the exact snapshot its finding gave) | `file_not_allowed`, `file_protected`, `file_added_or_deleted`, `patch_too_large`, `class_mismatch`, `holdout_red`, `oracle_finding_open`, `oracle_unrequested`; a pending holdout waits as `holdout_pending` |
 | 9 | The class's breaker has not tripped | `class_paused` |
 | 10 | Under `merge.autoMergesPerDay` today, and under the class's `maxPerDay` | `auto_merge_cap` |
 | 11 | The class is `live` | `shadow_would_arm`: the decision is posted, nothing is merged |
@@ -587,6 +587,104 @@ A shadow decision's comment carries the head it judged (`event=would-arm-<n> hea
 merged at that head: the gate's evidence that the class would have merged nothing a human would
 not. Comments from before the head was recorded never count.
 
+### Adopted classes
+
+A class that declares `author.adopt` takes another author's pull requests, Renovate's, instead of
+the agents App's. The factory authors no bump: an adopt poller turns an eligible open pull request
+into a Task with no run, and the same [merge gate](#the-merge-gate) decides and merges it like any
+class. Everything here is off by default: a class that declares no `author.adopt` behaves as before,
+and an adopted class adopts nothing until it is `shadow` or `live`. The first state is `shadow`:
+Renovate keeps merging, the factory records its decision and monitors the merge.
+
+```yaml
+classes:
+  deps-patch:
+    shadow: true
+    author: {adopt: {logins: ["renovate[bot]"], branches: ["renovate/"]}}
+    diffShape: semver-patch
+    releaseAgeCheck: renovate/stability-days
+    modifyOnly: true
+    allowedFiles: ['^(apps|flux|infrastructure|observability|security|tooling)/.+\.ya?ml$']
+    maxPatchFiles: 3
+    maxModifiedLines: 10
+    maxPerDay: 2
+  deps-minor: {shadow: true, author: {adopt: {logins: ["renovate[bot]"], branches: ["renovate/"]}}, diffShape: semver-minor, modifyOnly: true, allowedFiles: ['…']}
+```
+
+| Key | Holds |
+|---|---|
+| `author.adopt.logins` | The adopted authors. Each ends in `[bot]` (a human login is refused at start) |
+| `author.adopt.branches` | Head branch prefixes, literal: `renovate/` (a leading `^` is accepted, any other regexp character is refused) |
+| `diffShape` | `semver-patch` or `semver-minor`, required with `author.adopt` and with `modifyOnly: true`. `semver-minor` is `shadow` only: the config refuses it `live` |
+| `releaseAgeCheck` | The commit status that holds the release age, posted by an adopted login (Renovate's `renovate/stability-days`). Needs `author.adopt` |
+
+**The poller.** A leader-only loop, once a minute, off unless a class adopts and is `shadow` or
+`live` (a class that is off adopts nothing). On a repository the factory owns, it lists the open
+pull requests and adopts one only when it is into `main`, from the same repository (never a fork),
+by an adopted login on an adopted branch, and its diff, computed by the factory, matches the shape of a class. A list that
+fails or fills its page, or a diff that cannot be read, adopts nothing and is retried. At most 10
+adopted Tasks are open per repository, the rest wait for one to end. The Task is named from its key,
+`adopt:<repository>#<number>`, so there is never a second Task for one key, across a restart or after
+the first ended. Adopted Tasks fill none of the factory's caps (`caps.tasksPerDay`, `caps.activeTasks`,
+`caps.awaitingHumanWIP`), and their `Payer()` is empty: they run no agent and cost nothing.
+
+**The shapes.** The diff is judged on the files' contents at the pinned head, never on Renovate's
+labels or title. `semver-patch` and `semver-minor` (package `semverdiff`) are strict:
+
+- every changed file is modified and has as many lines on both sides; only version tokens change,
+  and the text between them is byte-identical;
+- a version token is any `v?MAJOR.MINOR.PATCH`, optionally `-pre` or `+build`: so the class's
+  `allowedFiles` is what bounds what is adopted (any three-number token in an allowed file counts);
+- at least one version moves. `semver-patch`: each moved version keeps MAJOR.MINOR and raises PATCH.
+  `semver-minor`: each keeps MAJOR and raises MINOR, or keeps MINOR and raises PATCH;
+- a digest may change only when attached to the moved version (`<ver>@sha256:`); any other digest on
+  the line is byte-identical. A digest-only update is refused;
+- refused as well: control characters (C0, DEL, C1; a tab is fine), leading zeros, a `v` prefix that
+  appears or disappears, a pre-release or build suffix, a changed trailing newline, an unchanged file.
+  A lockfile fails by construction.
+
+**The gate in author mode.** Rows 4 to 7 change for an adopted class, the rest read as for any class:
+
+| Check | If it fails |
+|---|---|
+| The pull request is from the repository itself | `fork_pull_request` |
+| Its author is an adopted login, on an adopted branch | `not_adopted_author`, `branch_not_allowed` |
+| No maintainer's `CHANGES_REQUESTED` stands | `changes_requested` |
+| Every commit's author is an adopted login, and every push to the branch was one's | `human_commit_in_pr`, `push_unrecorded`, `adoption_unread` |
+| `diffShape` holds on the diff the factory computed at the pinned head | `class_mismatch` |
+| `releaseAgeCheck` is `SUCCESS`, posted by an adopted login | `release_age_pending` waits; `release_age_red` |
+
+The veto is a maintainer's, and fail-closed: it also holds when the review list was cut at GitHub's
+page, on any dismissed `CHANGES_REQUESTED` of an adopted pull request, and on a review whose author
+GitHub no longer shows (a "ghost"). Only the same reviewer's later `APPROVED` lifts it. On a host
+that dismisses stale approvals on push, a stranger's approval that gets dismissed therefore becomes a
+permanent veto of that pull request; it fails closed, and a maintainer takes the pull request. An
+adopted pull request has no agent run, so `changes_requested` is never a revision brief. There is no
+reviewer verdict, room report or `Agent-Run` trailer to check (the agents author mode's rows); an
+approval by a maintainer is `maintainer_approved`, as for any class.
+
+The decision is made on the head the factory read, and the merge is pinned to it (`ExpectedHeadOid`):
+GitHub refuses it if Renovate pushed since. `adoption_unread` (the commit authors or the push record could not be read) never passes: the gate fails closed.
+
+**The lifecycle.** An adopted Task starts in `AwaitingCI` and never runs an agent. When the gate says no:
+
+| Reason | What happens |
+|---|---|
+| `human_commit_in_pr`, `ci_red`, `release_age_red`, `push_unrecorded` | Hands off to `AwaitingHuman`, and **re-enters on a new head**: Renovate's rebase or a fresh push is read again, up to 3 times (`maxGateReentries`) |
+| `class_mismatch`, `fork_pull_request`, `changes_requested`, a closed pull request | Terminal: the Task stays handed off (a closed pull request ends it). A new head does not revive them |
+
+`push_unrecorded` is GitHub not having recorded the push of the head yet (its events lag a push):
+the Task waits for it at most 10 minutes, then hands off. A push made during a long CI wait gets no
+such grace. `ci_red` hands off instead of starting a fix run: a red Renovate branch is the
+`renovate-red` schedule's job, not an agent's here. An adopted Task in `AwaitingHuman` never reminds
+a maintainer and never stale-closes Renovate's pull request, which would fight Renovate. A shadow decision is narrated `would auto-merge:
+`<class>`` with `head=<sha>` and no claim of a verdict: no agent reviewed the change.
+
+**The tally.** `scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate` counts, as
+for any class, the pull requests merged at the head a would-arm comment judged
+(`merged_unchanged`) against those merged after a push (`changed`). `--author` is who opened the
+pull requests and defaults to `app/ogenki-agents`.
+
 ### The post-merge monitor
 
 A class that declares `monitor` keeps every merge of its tasks under watch, whoever merged it:
@@ -595,6 +693,10 @@ the factory's own auto-merge, and a Renovate or maintainer merge made before the
 the breaker counts outcomes of merges the factory never decided: a demotion can follow from one). Nothing
 here ever reverts: main red within `verifyFor` still opens the revert (see above); the monitor only
 records a verdict, labels, narrates and feeds the breaker.
+
+An adopted class's own next bump is not a follow-up: a later merged pull request by one of the
+class's adopted logins (Renovate's) is skipped when the monitor looks for fixes of a merge, since
+Renovate keeps moving the same files.
 
 ```yaml
 classes:
@@ -873,7 +975,7 @@ Each `repositories` entry:
 | `name` | `owner/name` | Required |
 | `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
 | `triggerLabel` | The start label, `factory/ready` | Required |
-| `classes` | `<name>: {live, shadow, checks, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
+| `classes` | `<name>: {live, shadow, checks, author: {adopt: {logins, branches}}, releaseAgeCheck, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `author.adopt` and the semver shapes: see [adopted classes](#adopted-classes); `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `checks` | `{egress: [profiles]}`: what a check-enabled run requests beyond `github`, at most 4 of `pypi`, `npm`, `golang`, `crates`. The repository's `.github/agent-checks.yaml` never names egress | None: github only |
 | `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off) | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |

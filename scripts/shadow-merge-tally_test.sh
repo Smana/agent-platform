@@ -37,6 +37,20 @@ merged_unchanged=2 changed=1 reverted=1 auto_merged=1'
 if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
 if scripts/shadow-merge-tally.sh 2>/dev/null; then echo "--class is required"; exit 1; fi
 
+# --author reads another opener's pull requests: Renovate's, judged by WouldArmAdopted comments.
+cat > "$tmp/gh-adopted" <<EOF3
+#!/usr/bin/env bash
+echo "\$*" >> "$tmp/adopted.log"
+case "\$*" in *"Revert in:title"*) echo '[]' ;; *) cat scripts/testdata/tally/prs-adopted.json ;; esac
+EOF3
+chmod +x "$tmp/gh-adopted"
+out=$(GH="$tmp/gh-adopted" scripts/shadow-merge-tally.sh --class deps-patch --author app/renovate)
+want='#10 merged_unchanged
+#11 changed
+merged_unchanged=1 changed=1 reverted=0 auto_merged=0'
+if [ "$out" != "$want" ]; then printf 'got:\n%s\nwant:\n%s\n' "$out" "$want"; exit 1; fi
+grep -qF -- '--author app/renovate' "$tmp/adopted.log" || { echo "FAIL: --author reaches the pull request list" >&2; exit 1; }
+
 # Offline proof 7: the bound on fixtures. 0 bad in 28 fails 10%, 0 in 29 passes; 1 in 46 passes;
 # immature (merged under followUpWindow ago) and inconclusive merges are left out of the bound. A
 # stub gh serves scripts/testdata/tally/, so nothing reaches GitHub.
