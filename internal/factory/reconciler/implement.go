@@ -678,6 +678,9 @@ func (r *Reconciler) awaitingHuman(ctx context.Context, t *v1alpha1.Task) error 
 		return nil
 	}
 	r.countApproves(ctx, t, pr)
+	if adoptedTask(t) {
+		return r.awaitingHumanAdopted(ctx, t, pr)
+	}
 	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
 		return r.revise(ctx, t, pr, rvs)
 	}

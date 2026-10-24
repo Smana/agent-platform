@@ -399,6 +399,10 @@ type PRSummary struct {
 	Number  int
 	Author  string
 	Created time.Time
+	// HeadRef and HeadSHA are the head branch and commit as the list read them (the adopt
+	// poller's membership read; the merge gate reads the pull request again).
+	HeadRef string
+	HeadSHA string
 }
 
 // Merger is GitHub through the merger App (owner, 2026-09-27; R16): the only identity that reads

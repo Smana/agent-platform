@@ -545,6 +545,9 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 			slices.Contains(m.FollowUps, p.Number) || slices.Contains(p.Labels, RevertOfLabel(ref.Number)) {
 			continue
 		}
+		if cl.Adopted() && slices.ContainsFunc(cl.Author.Adopt.Logins, func(l string) bool { return forge.SameLogin(p.Author, l) }) {
+			continue // R35, M3: the lane's own next bump is not a follow-up of the merge it follows
+		}
 		found := slices.Contains(p.Labels, FollowUpOfLabel(ref.Number))
 		if !found {
 			if mine == nil {

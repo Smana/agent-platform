@@ -1075,7 +1075,8 @@ func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
 	}
 	out := make([]PRSummary, 0, len(prs))
 	for _, p := range prs {
-		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time})
+		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time,
+			HeadRef: p.GetHead().GetRef(), HeadSHA: p.GetHead().GetSHA()})
 	}
 	return out, nil
 }

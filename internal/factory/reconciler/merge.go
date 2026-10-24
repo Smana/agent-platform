@@ -53,7 +53,9 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	}
 	r.countApproves(ctx, t, pr)
-	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
+	// An adopted pull request is Renovate's: a maintainer's veto is the gate's changes_requested
+	// hand-off, never a revision run.
+	if rvs := r.changesRequested(t, pr); len(rvs) > 0 && !adoptedTask(t) {
 		return r.revise(ctx, t, pr, rvs)
 	}
 	if !r.Cfg.NeedsMerger() {
@@ -197,6 +199,12 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+		if adoptedTask(t) {
+			// R46: the head decided is the head awaitingHuman compares with Renovate's next push.
+			t.Status.PullRequest.HeadSHA = pr.HeadSHA
+			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, d.Matched, pr.HeadSHA))
+			return nil
+		}
 		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
 		return nil
 	}

@@ -470,6 +470,15 @@ func WouldArm(t *v1alpha1.Task, class, head string) Event {
 		"merge wave, so nothing is armed: a maintainer merges or closes this pull request.", t.Name, class)}
 }
 
+// WouldArmAdopted is WouldArm for an adopted pull request (R46): the same key, so the same marker
+// the shadow tally reads, and no claim of a verdict, since no agent reviewed Renovate's change.
+func WouldArmAdopted(t *v1alpha1.Task, class, head string) Event {
+	e := WouldArm(t, class, head)
+	e.Body = fmt.Sprintf("Agent factory: would auto-merge: `%s`, checks green, the diff a semver bump within the class's files and sizes, "+
+		"released long enough ago for the class's release-age check. The class is in shadow: nothing is merged by the factory.", class)
+	return e
+}
+
 // WaitingForHuman says the gate stopped deciding and a maintainer's review is what remains.
 func WaitingForHuman(t *v1alpha1.Task, reason string) Event {
 	body := fmt.Sprintf("Agent factory task `%s` waits for a maintainer's review: %s.", t.Name, Reason(reason))

@@ -21,6 +21,10 @@ func (t *Task) Sponsored() string {
 // whose /factory retry sent it back, else an api task's sponsored principal (R7), else the
 // labeller; "" for a task no person or principal started.
 func (t *Task) Payer() string {
+	if t.Spec.Source.Kind == "adopt" {
+		// L15: Renovate's pull request is no person's task: it has no run, no spend and no series.
+		return ""
+	}
 	if t.Status.RetriedBy != "" {
 		return t.Status.RetriedBy
 	}
