@@ -37,6 +37,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	case "MERGED": // a maintainer merged it through the bypass…
 		if !forge.SameLogin(pr.MergedBy, r.repo(t).Merge.MergerLogin) {
 			t.Status.PullRequest.MergedBy, t.Status.PullRequest.MergeCommitSHA = pr.MergedBy, pr.MergeCommitSHA
+			noteMergedHead(t, pr)
 			// R41: a human merge records when, so it counts in the class's breaker window.
 			now := r.mergedAt(pr)
 			t.Status.PullRequest.MergedAt = &now
@@ -53,8 +54,17 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return r.end(ctx, t, v1alpha1.PhaseClosed, "pr_closed")
 	}
 	r.countApproves(ctx, t, pr)
-	if rvs := r.changesRequested(t, pr); len(rvs) > 0 {
+	// An adopted pull request is Renovate's: a maintainer's veto is the gate's changes_requested
+	// hand-off, never a revision run.
+	if rvs := r.changesRequested(t, pr); len(rvs) > 0 && !adoptedTask(t) {
 		return r.revise(ctx, t, pr, rvs)
+	}
+	if adoptedTask(t) && !gateOf(r.repo(t), t.Spec.PredictedClass).Adopted() {
+		// The class was removed, renamed or lost its author: there is no gate to decide this pull
+		// request by, and no room to ask (an adopted Task never had one).
+		r.to(t, v1alpha1.PhaseAwaitingHuman, "class_mismatch")
+		narrateLater(t, narrate.WaitingForHuman(t, "class_mismatch"))
+		return nil
 	}
 	if !r.Cfg.NeedsMerger() {
 		// No class is live or in shadow, so the factory may hold no merger key: there is no gate to
@@ -86,7 +96,16 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	in := ArmInputs{PR: pr, Checks: checks, Task: t, Cfg: r.Cfg, ArmedToday: today, ClassArmedToday: classToday, Paused: paused,
 		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
-	if CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+	cl := gateOf(r.repo(t), t.Spec.PredictedClass)
+	adopted := cl.Adopted()
+	if adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+		// Read once, before any decision that could arm or shadow: the evidence never passes unread.
+		if in.Adoption, err = r.adoption(ctx, t, pr, cl); err != nil {
+			return err
+		}
+	}
+	if !adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+		// An adopted task has no room and no run (M12): the head is the pull request's, as read.
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
 		// approved. Neither read matters while CI decides on its own, so they wait for green.
 		in.ReportedHead, err = r.reportedHead(ctx, t)
@@ -113,7 +132,11 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			d = DecideArm(in)
 		}
 	}
-	if d.Verdict == "arm" || d.Verdict == "shadow" {
+	if adopted && d.Reason == "push_unrecorded" && r.pushRecordWait(t, pr) {
+		// GitHub records a push a little after it lands: wait for the head's, then hand off.
+		d = ArmDecision{Verdict: "wait", Reason: "push_unrecorded", Matched: d.Matched}
+	}
+	if !adopted && (d.Verdict == "arm" || d.Verdict == "shadow") {
 		// #82: R02 and R03 pass on a human's push the agent pulled and pushed on top of, before the
 		// first gate or during a revision run. Only who moved the branch tells it apart, as on a CI
 		// fix (humanCommit), so every path into a merge reads it.
@@ -150,9 +173,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 		t.Status.Reason = d.Reason
 		return nil
-	case "ci_red":
-		return r.fixCI(ctx, t, pr, checks)
-	case "ci_cancelled":
+	case "ci_red", "ci_cancelled":
+		if adopted {
+			// R45, L15: the pull request is another author's and nothing of the factory's runs on
+			// it: no fix run, no re-run of its CI. A maintainer or its author takes it from here.
+			t.Status.PullRequest.HeadSHA = pr.HeadSHA
+			r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+			narrateLater(t, narrate.WaitingForHuman(t, d.Reason))
+			return nil
+		}
+		if d.Verdict == "ci_red" {
+			return r.fixCI(ctx, t, pr, checks)
+		}
 		return r.rerunCancelled(ctx, t, pr, checks)
 	case "escalate": // R42: nothing the factory may fix
 		narrateOn(t, pr.Number, narrate.WaitingForHuman(t, d.Reason))
@@ -175,6 +207,12 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		return nil
 	case "shadow": // R32: the decision is recorded and narrated; a maintainer merges or closes
 		r.to(t, v1alpha1.PhaseAwaitingHuman, d.Reason)
+		if adoptedTask(t) {
+			// R46: the head decided is the head awaitingHuman compares with Renovate's next push.
+			t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = pr.HeadSHA, pr.HeadSHA
+			narrateOn(t, pr.Number, narrate.WouldArmAdopted(t, cl, d.Matched, pr.HeadSHA))
+			return nil
+		}
 		narrateOn(t, pr.Number, narrate.WouldArm(t, d.Matched, pr.HeadSHA))
 		return nil
 	}
@@ -195,7 +233,7 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		}
 	}
 	armed := metav1.NewTime(r.Now())
-	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA = &armed, pr.HeadSHA
+	t.Status.PullRequest.ArmedAt, t.Status.PullRequest.HeadSHA, t.Status.PullRequest.DecidedHeadSHA = &armed, pr.HeadSHA, pr.HeadSHA
 	r.to(t, v1alpha1.PhaseAutoMerging, "")
 	narrateOn(t, pr.Number, narrate.Armed(t))
 	return nil
@@ -217,6 +255,23 @@ const maxGateReentries = 3
 // re-reviews it itself.
 func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR) (bool, error) {
 	why := t.Status.Reason
+	if gateOf(r.repo(t), t.Spec.PredictedClass).Adopted() {
+		// An adopted hand-off the author's next push can clear returns on that new head (the whole
+		// gate decides it again, a veto and the push chain included); a diff, a fork or a veto
+		// never comes back. The cap bounds the returns.
+		switch why {
+		case "human_commit_in_pr", "ci_red", "release_age_red", "push_unrecorded",
+			"policy_pending", "policy_absent", "ci_cancelled", "ci_wait_expired",
+			"auto_merge_cap", "class_paused": // a shadow decision meets the cap and the pause too
+		default:
+			return false, nil
+		}
+		if t.Status.GateReentries >= maxGateReentries || pr.HeadSHA == "" || pr.HeadSHA == t.Status.PullRequest.HeadSHA {
+			return false, nil
+		}
+		r.backToGate(t, why, "reentered_new_head", pr.HeadSHA)
+		return true, nil
+	}
 	switch why {
 	case "policy_pending", "policy_absent", "head_unreported", "ci_cancelled":
 	default:
@@ -422,7 +477,53 @@ func pushDeadline(t *v1alpha1.Task) time.Time {
 // one wholly the App's whose newest move is not yet the head — GitHub records a push a little
 // after it lands. A read error is returned, as factoryCommits's is: the caller retries.
 func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head string) (pushCheck, error) {
-	ps, err := r.gh(ctx).BranchActivity(ctx, "agent/"+t.Name)
+	return r.pushedBy(ctx, "agent/"+t.Name, []string{r.Cfg.AgentsLogin}, head)
+}
+
+// adoption reads what an adopted class's author mode decides on: every commit's author, the head
+// among them, and who pushed the branch. A list past GitHub's cap, or one without the head, is a
+// stranger's. An adopted task never waits for a push to be recorded: there is no run to finish.
+func (r *Reconciler) adoption(ctx context.Context, t *v1alpha1.Task, pr forge.PR, cl config.Class) (a Adoption, err error) {
+	a.Read = true
+	cs, err := r.gh(ctx).PullRequestCommits(ctx, t.Status.PullRequest.Number)
+	switch {
+	case errors.Is(err, forge.ErrCommitsTruncated):
+		a.CommitAuthors = []string{""}
+		return a, nil
+	case err != nil:
+		return a, err
+	}
+	for _, c := range cs {
+		a.CommitAuthors = append(a.CommitAuthors, c.Author)
+	}
+	if !slices.ContainsFunc(cs, func(c forge.Commit) bool { return c.SHA == pr.HeadSHA }) {
+		a.CommitAuthors = append(a.CommitAuthors, "") // the head is not among them: a push since
+	}
+	a.Pushed, err = r.pushedBy(ctx, pr.HeadRef, cl.Author.Adopt.Logins, pr.HeadSHA)
+	return a, err
+}
+
+// pushRecordWaitAdopted is how long, from the head's commit time, an adopted head's push is waited
+// for in GitHub's activity before the task hands off: there is no run whose finish could date it.
+const pushRecordWaitAdopted = 10 * time.Minute
+
+// pushRecordWait: still within the wait, which ends pushRecordWaitAdopted after the head's commit
+// time or after the task entered AwaitingCI, whichever comes first: the committer's date is its
+// own claim, and a future one must not extend the wait. No phase time, no wait.
+func (r *Reconciler) pushRecordWait(t *v1alpha1.Task, pr forge.PR) bool {
+	if t.Status.PhaseSince == nil {
+		return false
+	}
+	end := pr.HeadCommittedAt.Add(pushRecordWaitAdopted)
+	if since := t.Status.PhaseSince.Add(pushRecordWaitAdopted); since.Before(end) {
+		end = since
+	}
+	return r.Now().Before(end)
+}
+
+// pushedBy is factoryPushed over any branch and any set of logins.
+func (r *Reconciler) pushedBy(ctx context.Context, branch string, logins []string, head string) (pushCheck, error) {
+	ps, err := r.gh(ctx).BranchActivity(ctx, branch)
 	if errors.Is(err, forge.ErrActivityTruncated) {
 		return pushStranger, nil
 	}
@@ -434,7 +535,7 @@ func (r *Reconciler) factoryPushed(ctx context.Context, t *v1alpha1.Task, head s
 	}
 	want := ps[0].After // newest first
 	for _, p := range ps {
-		if p.Actor == "" || !forge.SameLogin(p.Actor, r.Cfg.AgentsLogin) || p.After != want {
+		if p.Actor == "" || !slices.ContainsFunc(logins, func(l string) bool { return forge.SameLogin(p.Actor, l) }) || p.After != want {
 			return pushStranger, nil
 		}
 		if p.Type == "branch_creation" {
@@ -767,7 +868,8 @@ func (r *Reconciler) paused(ctx context.Context, rc *config.Repository, class st
 	var tasks []Merge
 	for i := range l.Items {
 		o := &l.Items[i]
-		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) {
+		if ref := o.Status.PullRequest; o.Spec.PredictedClass == class && ref != nil && ref.MergedAt != nil && r.onRepo(o, rc) &&
+			!undecidedAdoptedMerge(o, rc) { // as the label ledger: Renovate's merge of an undecided head is not the class's
 			mg := Merge{Number: ref.Number, At: ref.MergedAt.Time, Reverted: o.Status.Phase == v1alpha1.PhaseReverted,
 				Auto: ref.ArmedAt != nil}
 			// The running process's own monitor outcomes: the GitHub ledger is read once per process,

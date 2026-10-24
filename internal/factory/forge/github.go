@@ -701,6 +701,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				State            string
 				HeadRefName      string
 				HeadRefOid       string
+				IsCrossRepo      bool `graphql:"isCrossRepository"`
 				Author           *actor
 				MergedBy         *actor
 				MergedAt         *githubv4.DateTime
@@ -708,13 +709,16 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 				AutoMergeRequest *struct{ EnabledAt githubv4.DateTime }
 				Labels           struct{ Nodes []struct{ Name string } } `graphql:"labels(first: 30)"`
 				Reviews          struct {
-					Nodes []struct {
+					PageInfo struct{ HasPreviousPage bool }
+					Nodes    []struct {
 						DatabaseID  int64 `graphql:"databaseId"`
 						State       string
 						Body        string
 						SubmittedAt *githubv4.DateTime
 						Author      *actor
-						Comments    struct {
+						// authorAssociation scopes an adopted pull request's veto to the repository's own.
+						AuthorAssociation string `graphql:"authorAssociation"`
+						Comments          struct {
 							Nodes []struct {
 								Path string
 								Line *int
@@ -754,7 +758,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 	}
 	p := q.Repository.PullRequest
 	out := PR{Number: p.Number, NodeID: p.ID, URL: p.URL, Title: p.Title, Body: p.Body, State: p.State, Author: p.Author.login(),
-		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
+		HeadRef: p.HeadRefName, HeadSHA: p.HeadRefOid, CrossRepository: p.IsCrossRepo, ReviewsTruncated: p.Reviews.PageInfo.HasPreviousPage, MergedBy: p.MergedBy.login(), AutoMerge: p.AutoMergeRequest != nil}
 	if p.MergeCommit != nil {
 		out.MergeCommitSHA = p.MergeCommit.Oid
 	}
@@ -765,7 +769,7 @@ func (g *GitHub) PullRequest(ctx context.Context, number int) (PR, error) {
 		out.Labels = append(out.Labels, l.Name)
 	}
 	for _, r := range p.Reviews.Nodes {
-		rv := Review{ID: r.DatabaseID, Author: r.Author.login(), State: r.State, Body: r.Body}
+		rv := Review{ID: r.DatabaseID, Author: r.Author.login(), State: r.State, Body: r.Body, Association: r.AuthorAssociation}
 		if r.SubmittedAt != nil {
 			rv.At = r.SubmittedAt.Time
 		}
@@ -1073,7 +1077,9 @@ func (g *GitHub) OpenPullRequests(ctx context.Context) ([]PRSummary, error) {
 	}
 	out := make([]PRSummary, 0, len(prs))
 	for _, p := range prs {
-		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time})
+		out = append(out, PRSummary{Number: p.GetNumber(), Author: p.GetUser().GetLogin(), Created: p.GetCreatedAt().Time,
+			HeadRef: p.GetHead().GetRef(), HeadSHA: p.GetHead().GetSHA(), BaseRef: p.GetBase().GetRef(),
+			CrossRepository: p.GetHead().GetRepo() == nil || !strings.EqualFold(p.GetHead().GetRepo().GetFullName(), p.GetBase().GetRepo().GetFullName())})
 	}
 	return out, nil
 }

@@ -111,12 +111,16 @@ type ReviewComment struct {
 
 // Review is a pull request review.
 type Review struct {
-	ID       int64
-	Author   string
-	State    string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
-	Body     string
-	At       time.Time
-	Comments []ReviewComment
+	ID     int64
+	Author string
+	State  string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
+	// Association is the author's relation to the repository (GitHub's authorAssociation: OWNER,
+	// MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN, NONE); ""
+	// when GitHub did not say.
+	Association string
+	Body        string
+	At          time.Time
+	Comments    []ReviewComment
 }
 
 // PR is one GraphQL snapshot of a pull request. Checks and statuses are a separate query on the
@@ -132,6 +136,10 @@ type PR struct {
 	HeadRef     string
 	HeadSHA     string
 	HeadMessage string
+	// ReviewsTruncated: GitHub has more reviews than the page read, so one may be unseen.
+	ReviewsTruncated bool
+	// CrossRepository: the head is a branch of a fork, not of this repository.
+	CrossRepository bool
 	// The head commit's committer date: set by whoever committed, so a claim like Trailer's.
 	HeadCommittedAt time.Time
 	MergedBy        string
@@ -395,6 +403,14 @@ type PRSummary struct {
 	Number  int
 	Author  string
 	Created time.Time
+	// HeadRef and HeadSHA are the head branch and commit as the list read them (the adopt
+	// poller's membership read; the merge gate reads the pull request again).
+	HeadRef string
+	HeadSHA string
+	// BaseRef is the branch the pull request targets; CrossRepository: its head is a fork's (or a
+	// deleted one's), read from the head's repository against the base's.
+	BaseRef         string
+	CrossRepository bool
 }
 
 // Merger is GitHub through the merger App (owner, 2026-09-27; R16): the only identity that reads

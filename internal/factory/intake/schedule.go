@@ -57,6 +57,8 @@ type ScheduleForge interface {
 // probe is a merger-side read, so checks:read never joins the factory App's scope.
 type ScheduleMerger interface {
 	PullRequestChecks(ctx context.Context, number int) (forge.Checks, error)
+	// Diff is the adopt poller's read of a pull request's change (L9): the same connection.
+	Diff(ctx context.Context, base, head string) (forge.Diff, error)
 	DeadLinksMerger
 }
 

@@ -83,6 +83,9 @@ func (r *Reconciler) monitorDue(t *v1alpha1.Task) bool {
 		return false
 	}
 	cl, ok := r.repo(t).Classes[t.Spec.PredictedClass]
+	if undecidedAdoptedMerge(t, r.repo(t)) {
+		return false // Renovate's automerge of a head the gate never decided is not the class's merge
+	}
 	if !ok || cl.Monitor == nil || (t.Status.Monitor != nil && t.Status.Monitor.Posted) {
 		return false
 	}
@@ -544,6 +547,9 @@ func (r *Reconciler) followUps(ctx context.Context, t *v1alpha1.Task, cl config.
 		if p.Number == ref.Number || !p.MergedAt.After(m.Since.Time) || p.MergedAt.After(end) ||
 			slices.Contains(m.FollowUps, p.Number) || slices.Contains(p.Labels, RevertOfLabel(ref.Number)) {
 			continue
+		}
+		if cl.Adopted() && slices.ContainsFunc(cl.Author.Adopt.Logins, func(l string) bool { return forge.SameLogin(p.Author, l) }) {
+			continue // R35, M3: the lane's own next bump is not a follow-up of the merge it follows
 		}
 		found := slices.Contains(p.Labels, FollowUpOfLabel(ref.Number))
 		if !found {

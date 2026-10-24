@@ -1,0 +1,10 @@
+{
+  "number": 2530,
+  "update": "patch",
+  "base": {
+    "flux/sources/gitrepo-tailscale.yaml": "apiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: tailscale\n  namespace: tailscale\nspec:\n  interval: 5m0s\n  url: https://github.com/tailscale/tailscale\n  ref:\n    tag: v1.104.1\n"
+  },
+  "head": {
+    "flux/sources/gitrepo-tailscale.yaml": "apiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: tailscale\n  namespace: tailscale\nspec:\n  interval: 5m0s\n  url: https://github.com/tailscale/tailscale\n  ref:\n    tag: v1.104.2\n"
+  }
+}

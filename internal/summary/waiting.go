@@ -100,6 +100,16 @@ func reasons() map[string]string {
 		"waiting_room_log":          "the room's log is not open on the broker yet",
 		"waiting_broker_permission": "the broker does not let the factory write to rooms yet",
 		"ci_pending":                "CI has not finished",
+		"changes_requested":         "a reviewer requested changes, and the factory does not merge over them",
+		"fork_pull_request":         "it comes from a fork, which the factory never adopts",
+		"push_unrecorded":           "GitHub has not recorded the push of its head",
+		"adopted_head_moved":        "its author pushed a new head after the shadow decision, so it is decided again",
+		"adopt_ref_invalid":         "the adopted pull request's reference could not be read, so it was not adopted",
+		"adoption_unread":           "who authored its commits and pushed its branch could not be read",
+		"not_adopted_author":        "it is not authored by a login the class adopts",
+		"branch_not_allowed":        "its branch is not one the class adopts",
+		"release_age_pending":       "the release age check has not passed yet",
+		"release_age_red":           "the release age check failed, or was not posted by the adopted login",
 		"holdout_pending":           "a holdout check has not passed yet",
 		"ci_wait_expired":           "a check it waits on never reported within merge.awaitingCIFor",
 		"merge_gate_off":            "no merge class is live, so the factory does not gate this pull request",
@@ -166,6 +176,10 @@ func nextStep(reason string) string {
 		return "a maintainer revokes the leaked key and closes the pull request; the factory does not retry"
 	case "ci_pending":
 		return "nothing to do: the task goes on when CI finishes"
+	case "push_unrecorded":
+		return "nothing to do: the task goes on when GitHub records the push, or hands off after 10 minutes"
+	case "release_age_pending":
+		return "nothing to do: the task goes on when the release age check passes"
 	case "holdout_pending":
 		return "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting until merge.awaitingCIFor, if set (agent-platform #182)"
 	case "ci_wait_expired":

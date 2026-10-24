@@ -696,8 +696,11 @@ func (r *Reconciler) admit(ctx context.Context, t *v1alpha1.Task) (string, error
 	if len(t.Spec.Text) > r.Cfg.Caps.MaxTextBytes {
 		return "text_too_long", nil
 	}
+	if t.Spec.Source.Kind == "adopt" {
+		return "", nil // R39: Renovate's own pull request starts no run: the daily task cap is not its to spend
+	}
 	today, err := r.countTasks(ctx, func(o *v1alpha1.Task) bool {
-		return o.Name != t.Name && o.Status.Phase != "" && o.Status.Phase != v1alpha1.PhaseRejected &&
+		return o.Name != t.Name && o.Spec.Source.Kind != "adopt" && o.Status.Phase != "" && o.Status.Phase != v1alpha1.PhaseRejected &&
 			sameUTCDay(o.CreationTimestamp.Time, r.Now())
 	})
 	if err != nil {
@@ -727,6 +730,9 @@ func (r *Reconciler) received(ctx context.Context, t *v1alpha1.Task) error {
 	if r.Trace != nil && t.Status.Trace == nil { // R46: the task's root span, minted once at acceptance
 		tr, sp := tracing.Mint()
 		t.Status.Trace = &v1alpha1.TraceRef{TraceID: tr, SpanID: sp}
+	}
+	if t.Spec.Source.Kind == "adopt" {
+		return r.receivedAdopted(ctx, t)
 	}
 	if t.Spec.Parent != nil {
 		return r.receivedChild(ctx, t) // a part of a split: its parent's spec, no classifier (SL5)

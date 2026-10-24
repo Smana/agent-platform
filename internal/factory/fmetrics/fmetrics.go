@@ -55,7 +55,7 @@ func revocationLimits() []string {
 func budgetFallbacks() []string { return []string{"unpriced", "untyped"} }
 func budgetScopes() []string    { return []string{"run", "task"} }
 func tiers() []string           { return []string{"light", "standard", "frontier"} }
-func intakeSources() []string   { return []string{"issue", "runlore", "schedule", "api"} }
+func intakeSources() []string   { return []string{"issue", "runlore", "schedule", "api", "adopt"} }
 func resumeReasons() []string   { return []string{"Disrupted", "PodLost"} }
 func roomCapReasons() []string  { return []string{"human_driver", "facts_due"} }
 func admissionReasons() []string {

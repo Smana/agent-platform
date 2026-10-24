@@ -245,14 +245,15 @@ type TaskAcceptance struct {
 // +kubebuilder:validation:XValidation:rule="has(self.sponsor) == has(oldSelf.sponsor) && (!has(self.sponsor) || self.sponsor == oldSelf.sponsor)",message="source.sponsor never changes"
 // +kubebuilder:validation:XValidation:rule="has(self.onBehalfOf) == has(oldSelf.onBehalfOf) && (!has(self.onBehalfOf) || self.onBehalfOf == oldSelf.onBehalfOf)",message="source.onBehalfOf never changes"
 type Source struct {
-	// +kubebuilder:validation:Enum=issue;runlore;schedule;api
+	// adopt: another author's pull request the factory decides (merge gate MC10).
+	// +kubebuilder:validation:Enum=issue;runlore;schedule;api;adopt
 	Kind string `json:"kind"`
-	// Smana/cloud-native-ref#2112, runlore:<alert>/<resource>, or the schedule name.
+	// Smana/cloud-native-ref#2112 (owner/name#<n>), runlore:<alert>/<resource>, or the schedule name.
 	// +kubebuilder:validation:MaxLength=512
 	Ref string `json:"ref"`
 	// +kubebuilder:validation:MaxLength=512
 	Key string `json:"key"`
-	// github:<login>, system:runlore or system:scheduler.
+	// github:<login> (an adopted pull request's author too), system:runlore or system:scheduler.
 	// +kubebuilder:validation:MaxLength=128
 	RequestedBy string `json:"requestedBy"`
 	// untrusted text is fenced as data for the harness (T1).
@@ -676,6 +677,11 @@ type PullRequestRef struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	HeadSHA string `json:"headSHA,omitempty"`
+	// The head the merge gate last decided "arm" or "shadow" on. An adopted merge of any other
+	// head (Renovate's automerge of a head the gate refused or never read) is not watched.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	DecidedHeadSHA string `json:"decidedHeadSHA,omitempty"`
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	MergeCommitSHA string `json:"mergeCommitSHA,omitempty"`

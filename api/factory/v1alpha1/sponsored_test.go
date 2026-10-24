@@ -22,3 +22,15 @@ func TestPayerOfAnAPITask(t *testing.T) {
 		t.Fatal("an issue's payer is unchanged")
 	}
 }
+
+// L15: Renovate's adopted pull request is no person's: it is charged to nobody, even retried.
+func TestPayerOfAnAdoptedTask(t *testing.T) {
+	task := &Task{Spec: TaskSpec{Source: Source{Kind: "adopt", RequestedBy: "github:renovate[bot]"}}}
+	if got := task.Payer(); got != "" {
+		t.Fatalf("payer %q", got)
+	}
+	task.Status.RetriedBy = "github:alice"
+	if got := task.Payer(); got != "" {
+		t.Fatalf("after a retry %q", got)
+	}
+}

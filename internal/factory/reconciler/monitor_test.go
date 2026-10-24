@@ -94,9 +94,15 @@ func TestFollowUps(t *testing.T) {
 		"a maintainer's label": {later(24, "Smana", "x", FollowUpOfLabel(12)), nil, nil, true},
 		"m's revert": {later(25, "ogenki-agent-merger[bot]", "revert-12", RevertOfLabel(12)), []forge.FilePatch{{Path: testFile,
 			Status: "modified", Patch: "@@ -7 +7 @@\n-b\n+a\n"}}, []forge.BlameRange{{Start: 7, End: 7, Commit: mSHA}}, false},
+		// R35, M3: the lane's own next bump rewrites the line the adopted merge wrote, and is no follow-up.
+		"the lane's next bump": {later(26, "renovate[bot]", "renovate/foo-2.x"), []forge.FilePatch{overlapping}, mBlame, false},
+		"another bot's bump":   {later(27, "dependabot[bot]", "dependabot/foo"), []forge.FilePatch{overlapping}, mBlame, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := monitorRig(t)
+			cl := g.r.Cfg.Classes["dead-links"]
+			cl.Author = &config.Author{Adopt: &config.Adopt{Logins: []string{"renovate[bot]"}, Branches: []string{"^renovate/"}}}
+			g.r.Cfg.Classes["dead-links"] = cl
 			g.f.SetMerged(c.pr)
 			g.f.SetPullFiles(c.pr.Number, c.files...)
 			g.f.SetBlame(c.pr.MergeCommitSHA, testFile, c.blame...)

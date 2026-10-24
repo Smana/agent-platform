@@ -273,6 +273,9 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	for _, r := range append(runnables,
 		&intake.Scheduler{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
+		// MC10: off unless a class adopts; leader-only, through the Scheduler's connections.
+		&intake.Adopter{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
 		// so the ExternalSecret's rotations need no restart (AGENTS.md).
 		&intake.RunLore{Forge: runlore.gh, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,

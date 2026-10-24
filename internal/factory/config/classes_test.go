@@ -50,7 +50,7 @@ func TestBadConditionsFail(t *testing.T) {
 		"a bad pattern":       {"docs-links: {}\n  revert: {}\n  x: {allowedFiles: ['(']}", `class x: allowedFiles "(" is not a regular expression`},
 		"an empty pattern":    {"docs-links: {}\n  revert: {}\n  x: {protectedFiles: ['']}", `class x: protectedFiles "" is not a regular expression`},
 		"a negative cap":      {"docs-links: {}\n  revert: {}\n  x: {maxModifiedLines: -1}", "class x: maxModifiedLines must be 0 (no cap) or more"},
-		"an unknown shape":    {"docs-links: {}\n  revert: {}\n  x: {diffShape: semver-patch}", `class x: diffShape "semver-patch" is not one of [links-only]`},
+		"an unknown shape":    {"docs-links: {}\n  revert: {}\n  x: {diffShape: semver-major}", `class x: diffShape "semver-major" is not one of [links-only semver-patch semver-minor]`},
 		"a holdout twice":     {"docs-links: {}\n  revert: {}\n  x: {holdoutChecks: [a, a]}", `class x: holdoutChecks names "a" empty or twice`},
 		"live and shadow":     {"docs-links: {live: true, shadow: true}\n  revert: {}", "class docs-links: live and shadow never together (R32)"},
 		"a negative per day":  {"docs-links: {}\n  revert: {}\n  x: {maxPerDay: -2}", "class x: maxPerDay must be 0 (no cap) or more"},
@@ -140,5 +140,47 @@ func TestAnyFlux(t *testing.T) {
 	}
 	if c, err = Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  x: {monitor: {followUpWindow: 168h}}"))); err != nil || c.AnyFlux() {
 		t.Fatalf("monitor without flux: %v %v", c.AnyFlux(), err)
+	}
+}
+
+const depsPatch = `deps-patch: {author: {adopt: {logins: ["renovate[bot]"], branches: ['^renovate/']}}, diffShape: semver-patch,
+    allowedFiles: ['^(apps|flux|infrastructure|observability|security|tooling)/.+\.ya?ml$'], protectedFiles: ['^security/base/zitadel/'],
+    modifyOnly: true, maxPatchFiles: 3, maxModifiedLines: 10, releaseAgeCheck: renovate/stability-days, maxPerDay: 2}`
+
+// MC10, MC11: an adopted class parses; author absent is the agents mode.
+func TestAdoptedClassParses(t *testing.T) {
+	c, err := Parse([]byte(withClasses(t, "docs-links: {}\n  revert: {}\n  "+depsPatch)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := c.RepositoryFor("Smana/cloud-native-ref").Classes["deps-patch"]
+	if !cl.Adopted() || cl.Author.Adopt.Logins[0] != "renovate[bot]" || cl.ReleaseAgeCheck != "renovate/stability-days" || cl.DiffShape != "semver-patch" {
+		t.Fatalf("%+v", cl)
+	}
+	if (Class{}).Adopted() {
+		t.Fatal("no author is the agents mode")
+	}
+}
+
+func TestBadAdoptionFails(t *testing.T) {
+	base := "docs-links: {}\n  revert: {}\n  "
+	for name, c := range map[string]struct{ classes, err string }{
+		"semver without adopt":      {base + "x: {diffShape: semver-patch, modifyOnly: true}", "class x: diffShape semver-patch needs author.adopt (MC10)"},
+		"adopt without semver":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}}", "class x: author.adopt needs diffShape semver-patch or semver-minor"},
+		"no logins":                 {base + "x: {author: {adopt: {logins: [], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true}", "class x: author.adopt needs logins and branches"},
+		"an unanchored branch":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['renovate/']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "renovate/" must be ^ and a literal prefix`},
+		"semver without modifyOnly": {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-patch}", "class x: a semver shape needs modifyOnly: true"},
+		"a minor class live":        {base + "x: {live: true, author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-minor, modifyOnly: true}", "class x: semver-minor is shadow only (M2)"},
+		"a login with no [bot]":     {base + "x: {author: {adopt: {logins: ['renovate'], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.logins "renovate" must end in [bot]`},
+		"a branch alternation":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^renovate/|.*']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "^renovate/|.*" must be ^ and a literal prefix`},
+		"a branch wildcard":         {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^renovate/.*']}}, diffShape: semver-patch, modifyOnly: true}", `class x: author.adopt.branches "^renovate/.*" must be ^ and a literal prefix`},
+		"release age, agents":       {base + "x: {releaseAgeCheck: renovate/stability-days}", "class x: releaseAgeCheck needs author.adopt"},
+		"adopt with an oracle":      {base + "x: {author: {adopt: {logins: ['a[bot]'], branches: ['^r/']}}, diffShape: semver-patch, modifyOnly: true, holdoutChecks: [h], oracle: {probe: dead-links, workflow: d.yaml, maxFindings: 1}}", "class x: an oracle reads link targets: diffShape must be links-only"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(withClasses(t, c.classes))); err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Fatalf("got %v, want %q", err, c.err)
+			}
+		})
 	}
 }

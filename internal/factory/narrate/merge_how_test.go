@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	"github.com/Smana/agent-platform/internal/factory/config"
 	summ "github.com/Smana/agent-platform/internal/summary"
 )
 
@@ -17,6 +18,8 @@ var waitReasons = []string{
 	"human_commit_in_pr", "shadow_would_arm", "auto_merge_cap", "stuck", "ci_red", "secret_scan_red", "review_rounds_exhausted",
 	"no_verdict", "budget-task", "resume_budget", "run_unschedulable", "pod_lost", "deadline", "agent_error", "agent_stuck",
 	"no_pr", "waiting_human_driver", "waiting_room_busy", "waiting_run_slot", "waiting_active_tasks", "waiting_review_wip",
+	"release_age_pending", "release_age_red", "push_unrecorded", "changes_requested", "fork_pull_request",
+	"not_adopted_author", "branch_not_allowed", "adoption_unread", "ci_cancelled", "adopted_head_moved", "adopt_ref_invalid",
 	"waiting_daily_budget", "waiting_room_log", "waiting_broker_permission", "holdout_pending", "split_proposed", "budget-family",
 }
 
@@ -53,5 +56,16 @@ func TestWaitingForHumanSaysHowToMerge(t *testing.T) {
 	tk.Status.PullRequest = nil
 	if body := WaitingForHuman(tk, "policy_pending").Body; strings.Contains(body, "gh pr merge") {
 		t.Fatalf("no PR, no merge instruction: %s", body)
+	}
+}
+
+// WouldArmAdopted names a fence, sizes and a release age only when the class declares them.
+func TestWouldArmAdoptedNamesWhatIsDeclared(t *testing.T) {
+	tk := &v1alpha1.Task{}
+	bare := WouldArmAdopted(tk, config.Class{}, "deps-patch", "h").Body
+	full := WouldArmAdopted(tk, config.Class{AllowedFiles: []string{"x"}, ReleaseAgeCheck: "age"}, "deps-patch", "h").Body
+	if strings.Contains(bare, "files and sizes") || strings.Contains(bare, "release-age") ||
+		!strings.Contains(full, "files and sizes") || !strings.Contains(full, "release-age check") {
+		t.Fatalf("bare %q full %q", bare, full)
 	}
 }
