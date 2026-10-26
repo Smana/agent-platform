@@ -169,8 +169,6 @@ func stamp(t, now time.Time) string {
 	return t.Format("2006-01-02 15:04 UTC")
 }
 
-// TODO(PR 4): delete roomctl's copy of tokens (internal/roomctl/status.go).
-//
 // tokens reads a token count at a glance, as the page does: 189093 -> "189 k", 1500000 -> "1.5 M".
 // A count that would round to "1000 k" reads "1 M".
 func tokens(n int64) string {

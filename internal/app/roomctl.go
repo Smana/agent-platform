@@ -22,6 +22,8 @@ import (
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl"
 	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/version"
 )
 
@@ -367,7 +369,28 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 		_, err = fmt.Fprintln(r.Out, string(raw))
 		return err
 	}
-	return roomctl.RenderSummary(r.Out, raw, time.Now())
+	var sum summary.Summary
+	if err := json.Unmarshal(raw, &sum); err != nil {
+		return fmt.Errorf("status: the broker's answer: %w", err)
+	}
+	if err := roomview.Card(r.Out, sum, roomview.Options{Format: textFormat(r.Out), Now: time.Now(), Rooms: c.URL}); err != nil {
+		return err
+	}
+	// The card has no cursor: status prints it last, so --after can take it back.
+	_, err = fmt.Fprintf(r.Out, "cursor: %s\n", strings.Join(strings.Fields(roomctl.SafeText(sum.Cursor)), " "))
+	return err
+}
+
+// textFormat is TextColor when w is a terminal and NO_COLOR is unset, else Text.
+func textFormat(w io.Writer) roomview.Format {
+	f, ok := w.(*os.File)
+	if !ok || os.Getenv("NO_COLOR") != "" {
+		return roomview.Text
+	}
+	if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return roomview.Text
+	}
+	return roomview.TextColor
 }
 
 // post chats, or queues a message for the next run's brief: never steering.
