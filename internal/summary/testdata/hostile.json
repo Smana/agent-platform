@@ -63,6 +63,18 @@
           "trigger": "human",
           "startedAt": "2026-10-07T19:11:42Z"
         },
+        "runs": [
+          {
+            "id": "c1",
+            "role": "impl`[x](https://evil.example)\u202e\u200b <b>",
+            "trigger": "initial",
+            "startedAt": "2026-10-07T17:00:00Z",
+            "endedAt": "2026-10-07T17:40:00Z",
+            "outcome": "succeeded",
+            "verdict": "a\\|b [x](https://e.io) # <b>",
+            "microUSD": 180000
+          }
+        ],
         "budget": {
           "usedTokens": 189093,
           "limitTokens": 1500000
@@ -244,6 +256,18 @@
         "at": "2026-10-07T18:49:00Z"
       }
     },
+    "runs": [
+      {
+        "id": "c1",
+        "role": "impl`[x](https://evil.example)\u202e\u200b <b>",
+        "trigger": "initial",
+        "startedAt": "2026-10-07T17:00:00Z",
+        "endedAt": "2026-10-07T17:40:00Z",
+        "outcome": "succeeded",
+        "verdict": "a\\|b [x](https://e.io) # <b>",
+        "microUSD": 180000
+      }
+    ],
     "needsYou": [
       {
         "kind": "approval",
