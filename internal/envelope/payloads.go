@@ -217,12 +217,16 @@ type PRFact struct {
 }
 
 // githubLogin is GitHub's rule for a user name: 1 to 39 letters and digits, single hyphens between
-// them, none at either end.
-var githubLogin = regexp.MustCompile(`^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`)
+// them, none at either end. A GitHub App authors as its slug plus the literal suffix "[bot]".
+var githubLogin = regexp.MustCompile(`^([A-Za-z0-9]+(-[A-Za-z0-9]+)*)(\[bot\])?$`)
 
-// ValidLogin reports whether s is a GitHub login in that rule's shape. A view that names a person
-// in a sentence of its own checks it again, as facts stored before the rule may hold anything.
-func ValidLogin(s string) bool { return len(s) <= 39 && githubLogin.MatchString(s) }
+// ValidLogin reports whether s is a GitHub login in that rule's shape: a user, or an App's
+// "<slug>[bot]". A view that names a person in a sentence of its own checks it again, as facts
+// stored before the rule may hold anything.
+func ValidLogin(s string) bool {
+	m := githubLogin.FindStringSubmatch(s)
+	return m != nil && len(m[1]) <= 39
+}
 
 var githubURL = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$`)
 

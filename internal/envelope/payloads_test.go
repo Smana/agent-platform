@@ -149,9 +149,18 @@ func TestIssueAuthorIsAGitHubLogin(t *testing.T) {
 			t.Errorf("%q refused: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"-a", "a-", "a--b", strings.Repeat("a", 40), "a_b", "_x_", "a b", "a.b", "a@b", "a*", "a\u200b", "a\n", "é", "bot[bot]"} {
+	for _, bad := range []string{"-a", "a-", "a--b", strings.Repeat("a", 40), "a_b", "_x_", "a b", "a.b", "a@b", "a*", "a\u200b", "a\n", "é", "x[bot]x", "[bot]", "a[Bot]", "a[bot][bot]", "-a[bot]"} {
 		if err := facts(bad).Validate(); err == nil || !strings.Contains(err.Error(), "author") {
 			t.Errorf("%q accepted: %v", bad, err)
+		}
+	}
+}
+
+// GitHub Apps author issues as <slug>[bot]: the factory's own App, Renovate, Dependabot.
+func TestValidLoginAcceptsAnAppLogin(t *testing.T) {
+	for _, good := range []string{"dependabot[bot]", "ogenki-agent-factory[bot]", "renovate[bot]", "smana"} {
+		if !ValidLogin(good) {
+			t.Errorf("ValidLogin(%q) = false, want true", good)
 		}
 	}
 }
