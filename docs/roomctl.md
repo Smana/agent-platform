@@ -100,9 +100,10 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 ```
 
 - The broker's operator turns `/mcp` on (`human.mcp.enabled`). Off, every call answers `mcp_off`.
-- The tools: `rooms_list`, `room_summary`, `room_tail`, `room_queue`, `room_fork` and `issue_draft`
-  from the broker, and `issue_file`, roomctl's own. `room_tail` also runs as an MCP Task that waits
-  for the room's next events; `roomctl mcp` polls it for your agent.
+- The tools: `rooms_list`, `room_summary`, `room_tail`, `room_changes`, `room_queue`, `room_fork` and
+  `issue_draft` from the broker, and `issue_file`, roomctl's own. `room_tail` also runs as an MCP Task that waits
+  for the room's next events; `roomctl mcp` polls it for your agent. The broker also serves the
+  prompts `handoff` (`what`), `status` (`room`) and `inbox`, which your agent offers as slash commands.
 - `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
   shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
   shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself

@@ -117,7 +117,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 | `human` | `{issuer, jwksURL, clientIDFile, roomctlClientIDFile, projectIDFile, origin, groups: {admin, member}}`. The ids are files read at use, because ZITADEL mints new ones on every build; the group names are literals |
 | `human.access` | `{readerFile, ttl}`: room visibility follows GitHub ([room access](security.md#identities)). `readerFile` is the ZITADEL link reader's mounted secret, JSON `{"pat", "tokenId", "githubIdpId"}`, read at use; the PAT goes to `human.issuer`, which must then be `https://`. `ttl` caches each answer, default and maximum `5m`. Needs `ROOMS_GITHUB_APP_DIR`, or the broker refuses to start. Unset: only `agents-admin` sees rooms |
 | `human.mcp` | `{enabled}`: serve [`POST /mcp`](api.md#post-mcp), the MCP server `roomctl mcp` relays. Off by default. On, it needs `human.roomctlClientIDFile`, since `/mcp` takes roomctl's tokens only, or the broker refuses to start |
-| `human.mcp.sessionStart[]` | `owner/name` repositories whose `issue_draft` answers `canStart` (the caller writes to them on GitHub), so the `handoff` prompt may start the factory there. Empty by default: none does. Needs `human.mcp.enabled`; each entry is `owner/name`, matched case-insensitively, and listed once |
+| `human.mcp.sessionStart[]` | `owner/name` repositories whose `issue_draft` answers `canStart` (the caller writes to them on GitHub), so the `handoff` prompt may start the factory there. Empty by default: none does. Needs `human.mcp.enabled` and `human.access` (without the GitHub check `canStart` is always off); each entry is `owner/name`, matched case-insensitively, and listed once |
 | `human.mcp.sponsored[]` | `{name, clientIDFile}`: the service accounts that may call `run_create` ([sponsored principals](factory.md#sponsored-principals)); each is also declared in the factory's `api.sponsored`, which decides everything else. Needs `human.mcp.enabled` and `factoryURL`. The name is a DNS label, not reserved (`factory`, `runlore`, `scheduler`, `room-broker`, `policy`) and unique |
 | `factoryURL` | The factory's run API, plaintext on the factory Service's `api` port: `http://agent-factory.agent-system.svc:8082`. It moves with the factory chart's port and its `api.listen`. Unset: `start_run` returns a manifest for the owner to apply |
 | `tls` | `{certFile, keyFile}` of `:8443`; default `/etc/room-broker/tls/tls.{crt,key}`. Re-read when they change |
@@ -212,7 +212,7 @@ sequenceDiagram
   participant F as factory :8082
   C->>Z: client credentials (project audience)
   Z-->>C: access token
-  C->>B: initialize, tools/list (four tools)
+  C->>B: initialize, tools/list (five tools)
   C->>B: tools/call run_create {repo, text, dataClass, max_cost, task}
   B->>F: POST /v1/tasks, the same token, Idempotency-Key
   F-->>B: 201 {task, room}
@@ -221,7 +221,7 @@ sequenceDiagram
     C->>B: tasks/get
     B-->>C: working, input_required, completed, failed or cancelled
   end
-  C->>B: tasks/result, or room_summary / room_tail
+  C->>B: tasks/result, or room_summary / room_tail / room_changes
 ```
 
 1. Get a token with the client-credentials grant, `scope` including the project audience scope. Its
@@ -232,8 +232,9 @@ sequenceDiagram
 2. `initialize` on `/mcp`, then `tools/call` `run_create` with `task: {ttl?}`. Send an
    `idempotency_key` (the same key makes the same task).
 3. Poll `tasks/get` until `completed`. `input_required` names the room page: a human answers there,
-   never through the client. Read the room with `room_summary` and `room_tail`: a sponsored
-   principal reads the rooms of its own tasks only, as a `watcher`.
+   never through the client. Read the room with `room_summary`, `room_tail` and `room_changes`: a sponsored
+   principal reads the rooms of its own tasks only, as a `watcher`. `room_summary` and `room_changes`
+   return a Markdown view as `content` text, to display: parse `structuredContent`, never the text.
 
 [`run_create`](api.md#sponsored-principals-on-mcp) and the factory's
 [`POST /v1/tasks`](api.md#post-v1tasks) give the arguments and the refusals.

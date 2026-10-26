@@ -505,18 +505,20 @@ notification is `202`. Each person makes 10 requests a second, burst 20, per rep
 
 | Tool | Standing | Arguments | Result |
 |---|---|---|---|
-| `rooms_list` | any member | `repo?`, `mine?`, `needsMe?` | `{rooms, access}`: `GET /api/rooms`'s rows and its `X-Rooms-Access` |
-| `room_summary` | a reader of the room | `room`, `after?` (`seq:N`) | The room's [`summary/v1`](#get-apiroomsidsummary) |
+| `rooms_list` | any member | `repo?`, `mine?`, `needsMe?`, `all?` | The overview table as the text (Markdown, to show as it is), and `{rooms, access}` as `structuredContent`: `GET /api/rooms`'s rows and its `X-Rooms-Access`. `all` adds to the text the rooms that ended over a week ago; `structuredContent` always has every row |
+| `room_summary` | a reader of the room | `room`, `after?` (`seq:N`) | The room's card as the text (Markdown), and its [`summary/v1`](#get-apiroomsidsummary) as `structuredContent` |
 | `room_tail` | a reader of the room | `room`, `cursor?` (`seq:N`), `kinds?` (at most 10 event types) | `{room, state, events: {untrusted: true, items}, cursor, more}`: at most 100 events and 256 KiB of payload past the first, at most 2,000 scanned for `kinds`; without a cursor, the last 50. Pass `cursor` back; `more` says the log held more when it was read |
+| `room_changes` | a reader of the room | `room`, `cursor?` (`seq:N`) | What changed since a cursor, as a list of milestones (run started and ended, notes, handoffs, approvals asked and decided, verdicts, the PR opened or merged, holds, the budget) in the text, and `{room, url, since, items, more, cursor, untrusted: true}` as `structuredContent`. Without a cursor, the last 24 hours. A call scans at most 2,000 events: `more > 0` says there is more to read (milestones left out, or events past that bound), and `cursor` is the last event it covered: pass it back. A cursor past the room's last event is clamped to it, so the cursor returned can be lower. A fork's copied events are not its own milestones |
 | `room_queue` | collaborator | `room`, `text` | `{room, queued}`: the message's `seq`. Its text is machine-sent |
 | `room_fork` | as the `fork` action | `room`, `at`, `role?`, `prUrl?`, `egress?`, `note?` | `{room, url, run?, runError?}`. The note is machine-sent |
 | `issue_draft` | any member | `repo`, `title`, `body` | `{repo, title, body, stripped, canStart, canStartWhy?}`: the draft with hidden and control characters stripped (`stripped` counts them). `canStart` is true when `repo` is in `human.mcp.sessionStart` and the caller writes to it on GitHub; else `canStartWhy` is `off` (not listed, no GitHub check wired, or a sponsored caller), `not_linked`, `no_write` (read only, or the GitHub App cannot see the repository) or `unverified` (the check failed). Refused unless the title reads `<area>: <what is wrong>` (at most 256 characters), the body holds `## What is wrong`, `## What it should be` and `## Acceptance check` in that order (at most 16 KiB), and the redactor finds no secret. It files nothing: `roomctl mcp`'s `issue_file` does |
 
-`prompts/list` and `prompts/get` serve the prompts `handoff` (`what`), `status` (`room`) and `inbox`: canned
-messages the client offers as slash commands. A sponsored principal's list is empty. The handoff
-prompt starts the factory only where `issue_draft` says `canStart`, and never applies a label.
+The view tools (`rooms_list`, `room_summary`, `room_changes`) return their text as `content` and their JSON as `structuredContent`, with an `outputSchema`; the JSON is not repeated in the text. `run_create`'s and `room_tail`'s task results stay JSON text, as `tasks/result` returns them.
 
-No tool labels, approves, steers, stops or starts factory work. The two write tools are acts through
+`prompts/list` and `prompts/get` serve the prompts `handoff` (`what`), `status` (`room`) and `inbox`: canned
+messages the client offers as slash commands. A sponsored principal's list is empty. The prompts start nothing: the `handoff` prompt only drafts an issue.
+
+No tool approves, steers or stops, and none labels or starts factory work by itself: only the developer's answer to `issue_file`'s form, which `roomctl` serves where `issue_draft` says `canStart`, can apply `factory/ready` with the developer's own `gh`. The two write tools are acts through
 the `roomctl` client: the [actions](#actions)' rules, limits and rejections apply. Arguments are
 strict: an unknown field is refused. Every string an agent wrote comes back under `untrusted: true`,
 as the summary's notes do. A refused call is a tool result with `isError: true` whose text starts
@@ -547,8 +549,8 @@ is `input_required`: that state belongs to [`run_create`](#sponsored-principals-
 A sponsored principal (a ZITADEL machine user declared in the broker's `human.mcp.sponsored` and the
 factory's `api.sponsored`, [factory](factory.md#sponsored-principals)) reaches `/mcp` with its own
 client-credentials token, whose audience must hold the project (`human.projectIDFile`). Nothing
-else serves it: every other route refuses it, and it never reaches `/v1/runs`. It sees four tools:
-`run_create`, `issue_draft`, `room_summary` and `room_tail`; `room_queue`, `room_fork` and
+else serves it: every other route refuses it, and it never reaches `/v1/runs`. It sees five tools:
+`run_create`, `issue_draft`, `room_summary`, `room_tail` and `room_changes`; `room_queue`, `room_fork` and
 `rooms_list` are unknown tools to it. It reads a room only as one of its `watcher` members, which
 the factory adds when it creates its task's room, with no GitHub check.
 
