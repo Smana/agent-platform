@@ -4,11 +4,14 @@ package humanapi
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/roomctrl"
 )
 
 // changesPage is room_changes' structuredContent, as far as its contract goes.
@@ -19,6 +22,7 @@ type changesPage struct {
 		Kind, Text string
 	}
 	Cursor    string
+	More      int
 	Untrusted bool
 }
 
@@ -135,5 +139,87 @@ func TestSponsoredSeesRoomChanges(t *testing.T) {
 	e := setup(t, mcpOn, withSponsored(sponsoredP))
 	if got := toolNames(t, e, bearer("slack-app")); !strings.Contains(","+got+",", ",room_changes,") {
 		t.Fatalf("%s", got)
+	}
+}
+
+// The scan reads at most tailScan events a call: when it stops before the end of the log it says
+// so with more > 0, and the cursor it returns carries on from there until the log is read.
+func TestMCPRoomChangesScanBound(t *testing.T) {
+	e := setup(t, mcpOn)
+	e.log.add(tailScan + 490) // chat messages: no milestone, so only the scan's bound ends the page
+	last := int64(len(e.log.evs))
+	p, _ := changesOf(t, e, map[string]any{"room": roomID, "cursor": "seq:0"})
+	if p.Cursor != "seq:"+strconv.Itoa(tailScan) || p.More == 0 || len(p.Items) != 0 {
+		t.Fatalf("a stop at the bound: %+v", p)
+	}
+	p, _ = changesOf(t, e, map[string]any{"room": roomID, "cursor": p.Cursor})
+	if p.Cursor != "seq:"+strconv.FormatInt(last, 10) || p.More != 0 {
+		t.Fatalf("the rest: %+v", p)
+	}
+	// A cursor past the end is clamped to the last seq.
+	if p, _ = changesOf(t, e, map[string]any{"room": roomID, "cursor": "seq:99999"}); p.Cursor != "seq:"+strconv.FormatInt(last, 10) || p.More != 0 {
+		t.Fatalf("clamped: %+v", p)
+	}
+}
+
+// Without a cursor the facts older than the window are the baseline of what follows.
+func TestMCPRoomChangesBaselineAfterTheTrim(t *testing.T) {
+	pr := &envelope.PRFact{Number: 7, URL: "https://github.com/Smana/a/pull/7"}
+	has := func(p changesPage, kind string) bool {
+		for _, it := range p.Items {
+			if it.Kind == kind {
+				return true
+			}
+		}
+		return false
+	}
+	e := setup(t, mcpOn)
+	e.log.evs = []envelope.Event{
+		aged(taskFacts(1, envelope.TaskFacts{Phase: "Implementing"}), 48*time.Hour),
+		aged(taskFacts(2, envelope.TaskFacts{Phase: "AwaitingHuman", PR: pr}), 47*time.Hour),
+		taskFacts(3, envelope.TaskFacts{Phase: "AwaitingCI", PR: pr}),
+	}
+	if p, _ := changesOf(t, e, map[string]any{"room": roomID}); has(p, "pr_opened") {
+		t.Fatalf("the PR was open before the window: %+v", p)
+	}
+	e.log.evs[1] = aged(taskFacts(2, envelope.TaskFacts{Phase: "Implementing"}), 47*time.Hour)
+	if p, _ := changesOf(t, e, map[string]any{"room": roomID}); !has(p, "pr_opened") {
+		t.Fatalf("the PR opened inside the window: %+v", p)
+	}
+}
+
+// A fork's log begins with its source's prefix: those events are not the fork's milestones.
+func TestMCPRoomChangesSkipsAForksPrefix(t *testing.T) {
+	forked := repoRoom(roomID, "Smana/a")
+	forked.Annotations = map[string]string{roomctrl.ForkedFrom: "3kq7x2md@3"}
+	pr := &envelope.PRFact{Number: 7, URL: "https://github.com/Smana/a/pull/7"}
+	e := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Rooms = roomClient(t, forked) })
+	e.log.evs = []envelope.Event{
+		taskFacts(1, envelope.TaskFacts{Phase: "Implementing"}),
+		progress(2, "the source's note"),
+		taskFacts(3, envelope.TaskFacts{Phase: "AwaitingHuman", PR: pr}),
+		progress(4, "the fork's note"),
+	}
+	for _, args := range []map[string]any{{"room": roomID}, {"room": roomID, "cursor": "seq:0"}, {"room": roomID, "cursor": "seq:1"}} {
+		p, _ := changesOf(t, e, args)
+		for _, it := range p.Items {
+			if it.Seq <= 3 {
+				t.Errorf("%v: the source's seq %d shows as the fork's: %+v", args, it.Seq, it)
+			}
+		}
+		if len(p.Items) == 0 {
+			t.Errorf("%v: the fork's own note is missing", args)
+		}
+	}
+}
+
+// A sponsored principal reads a room's changes only as its member.
+func TestSponsoredRoomChangesStaysInItsRooms(t *testing.T) {
+	e := setup(t, mcpOn, withSponsored(sponsoredP), sponsoredRooms(t, world(nil)))
+	if got := call(t, e, bearer("slack-app"), "room_changes", map[string]any{"room": roomID}); got.isError {
+		t.Fatalf("its own room: %s", got.text)
+	}
+	if got := call(t, e, bearer("slack-app"), "room_changes", map[string]any{"room": roomB}); !got.isError || got.text != "no such room" {
+		t.Fatalf("another room: %+v", got)
 	}
 }

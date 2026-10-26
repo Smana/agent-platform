@@ -25,6 +25,12 @@ type changesArgs struct {
 }
 
 // room_changes is view 4: the room's milestones after a cursor, the last 24 hours without one.
+//
+// A call scans at most tailScan events. When that ends it before the log's end, more is at least 1
+// and the cursor is the last event scanned, to pass back. Without a cursor the scan starts at the
+// last tailScan events, then drops those older than the window. A cursor past the room's last
+// event is clamped to it, so the cursor returned can be lower than the one passed. A fork's
+// events at or below its fork point are its source's: the scan starts above them.
 func (s *Server) roomChanges(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a changesArgs
 	if mcpwire.DecodeArgs(args, &a) != nil || a.Room == "" {
@@ -44,7 +50,8 @@ func (s *Server) roomChanges(ctx context.Context, p authn.Principal, args json.R
 	if !hasCursor {
 		after = max(st.LastSeq-tailScan, 0)
 	}
-	after = min(after, st.LastSeq)
+	fork := roomctrl.ForkSeq(room)
+	after = min(max(after, fork), st.LastSeq)
 	cursor := after
 	var events []envelope.Event
 	cutoff := s.now().Add(-changesWindow)
@@ -69,7 +76,7 @@ func (s *Server) roomChanges(ctx context.Context, p authn.Principal, args json.R
 		}
 	}
 	var base *envelope.TaskFacts
-	raw, err := s.Log.TaskStateAt(ctx, a.Room, roomctrl.ForkSeq(room), after)
+	raw, err := s.Log.TaskStateAt(ctx, a.Room, fork, after)
 	if err != nil {
 		s.log().Warn("changes: task facts unreadable", "room", a.Room, "err", err)
 		return nil, errLogUnreadable
@@ -81,6 +88,9 @@ func (s *Server) roomChanges(ctx context.Context, p authn.Principal, args json.R
 		}
 	}
 	set := roomview.Milestones(roomview.MilestoneInput{Room: a.Room, URL: s.PublicURL + "/r/" + a.Room, Base: base, Events: events})
+	if cursor < st.LastSeq && set.More == 0 {
+		set.More = 1 // the scan stopped at its bound: there is more to read, not how much
+	}
 	if set.Cursor == "" {
 		set.Cursor = "seq:" + strconv.FormatInt(cursor, 10)
 	}
