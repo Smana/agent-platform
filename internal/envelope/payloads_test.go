@@ -41,6 +41,7 @@ func TestTaskFactsValidate(t *testing.T) {
 		want string // "" means any error
 	}{
 		"no phase":        {TaskFacts{}, ""},
+		"author with _":   {TaskFacts{Phase: "Queued", Issue: &IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: "_www.evil.example"}}, "author"},
 		"negative usage":  {TaskFacts{Phase: "Implementing", Budget: &BudgetFact{UsedTokens: -1}}, ""},
 		"non-github pr":   {TaskFacts{Phase: "AwaitingHuman", PR: &PRFact{Number: 1, URL: "https://evil.example/pull/1"}}, ""},
 		"negative used":   {TaskFacts{Phase: "Queued", Spend: &SpendFact{UsedMicroUSD: -1}}, "usedMicroUSD"},
@@ -134,5 +135,23 @@ func TestOldTaskFactsStillDecodeAndValidate(t *testing.T) {
 	}
 	if err := f.Validate(); err != nil || f.Runs != nil || f.Spend != nil {
 		t.Fatalf("old facts: %v %+v", err, f)
+	}
+}
+
+// IssueFact.Author reaches a sentence of the broker's, so it must be a GitHub login: 1 to 39 of
+// letters, digits and single inner hyphens.
+func TestIssueAuthorIsAGitHubLogin(t *testing.T) {
+	facts := func(author string) TaskFacts {
+		return TaskFacts{Phase: "Escalated", Issue: &IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: author}}
+	}
+	for _, ok := range []string{"", "a", "alice", "alice-b", "A1-b2-c3", strings.Repeat("a", 39)} {
+		if err := facts(ok).Validate(); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"-a", "a-", "a--b", strings.Repeat("a", 40), "a_b", "_x_", "a b", "a.b", "a@b", "a*", "a\u200b", "a\n", "é", "bot[bot]"} {
+		if err := facts(bad).Validate(); err == nil || !strings.Contains(err.Error(), "author") {
+			t.Errorf("%q accepted: %v", bad, err)
+		}
 	}
 }

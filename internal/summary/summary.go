@@ -99,6 +99,9 @@ type Need struct {
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
 	URL      string    `json:"url"`
+	// Author is an answer need's issue author, a validated GitHub login: the part views build their
+	// own sentence from. Absent for every other kind.
+	Author string `json:"author,omitempty"`
 }
 
 // Action is something the viewer can do now.

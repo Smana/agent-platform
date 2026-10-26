@@ -85,7 +85,7 @@ func Answer(f *envelope.TaskFacts, sub policy.Subject) (Need, bool) {
 	if f.Issue.Author != "" {
 		who = "@" + f.Issue.Author
 	}
-	return Need{Kind: "answer", ID: fmt.Sprint(f.Issue.Number), URL: f.Issue.URL,
+	return Need{Kind: "answer", ID: fmt.Sprint(f.Issue.Number), URL: f.Issue.URL, Author: f.Issue.Author,
 		What: fmt.Sprintf("%s answers the scoper's question by editing issue #%d, then a maintainer re-applies `factory/ready`; or a maintainer comments `/factory retry` to proceed on its assumption", who, f.Issue.Number)}, true
 }
 

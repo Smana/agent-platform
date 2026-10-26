@@ -216,6 +216,14 @@ type PRFact struct {
 	Reviewers []string `json:"reviewers,omitempty"`
 }
 
+// githubLogin is GitHub's rule for a user name: 1 to 39 letters and digits, single hyphens between
+// them, none at either end.
+var githubLogin = regexp.MustCompile(`^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`)
+
+// ValidLogin reports whether s is a GitHub login in that rule's shape. A view that names a person
+// in a sentence of its own checks it again, as facts stored before the rule may hold anything.
+func ValidLogin(s string) bool { return len(s) <= 39 && githubLogin.MatchString(s) }
+
 var githubURL = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$`)
 
 // GitHubURL reports whether s is the URL of a github.com issue or pull request.
@@ -255,6 +263,8 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
+	case f.Issue != nil && f.Issue.Author != "" && !ValidLogin(f.Issue.Author):
+		return errors.New("task facts: the issue author is a GitHub login (1 to 39 letters, digits and single hyphens)")
 	}
 	if f.Run != nil {
 		if err := f.Run.validate(); err != nil {
