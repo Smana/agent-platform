@@ -101,6 +101,26 @@ func (s *Store) LastTaskState(ctx context.Context, roomID string, after int64) (
 	return p, nil
 }
 
+// taskStateAtSQL is lastTaskStateSQL's predicate, bounded above as well.
+const taskStateAtSQL = `SELECT payload FROM events
+	WHERE room_id = $1 AND type = 'state_changed' AND payload->>'kind' = 'task' AND seq > $2 AND seq <= $3
+	ORDER BY seq DESC LIMIT 1`
+
+// TaskStateAt is the payload of the room's highest-seq state_changed{kind:task} with
+// after < seq <= upTo, or nil when there is none: the task facts as they stood at upTo. after is
+// a fork's fork point, as in LastTaskState.
+func (s *Store) TaskStateAt(ctx context.Context, roomID string, after, upTo int64) (json.RawMessage, error) {
+	var p json.RawMessage
+	err := s.pool.QueryRow(ctx, taskStateAtSQL, roomID, after, upTo).Scan(&p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: task state of room %s at %d: %w", roomID, upTo, err)
+	}
+	return p, nil
+}
+
 // LastEventAt is when each room's log last moved, for the rooms in ids that exist. One query:
 // the room list reads it for every row it shows.
 func (s *Store) LastEventAt(ctx context.Context, ids []string) (map[string]time.Time, error) {

@@ -80,8 +80,8 @@ func TestRoomctlMCPAgainstTheBroker(t *testing.T) {
 		t.Fatalf("initialize: %v", res)
 	}
 	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	if tools := ask(2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any); len(tools) != 7 {
-		t.Fatalf("six broker tools and issue_file: %v", tools)
+	if tools := ask(2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any); len(tools) != 8 {
+		t.Fatalf("seven broker tools and issue_file: %v", tools)
 	}
 	if res := ask(3, "tools/call", map[string]any{"name": "room_queue", "arguments": map[string]any{"room": roomID, "text": "use v2"}}); strings.Contains(fmt.Sprint(res), "isError:true") {
 		t.Fatalf("queue: %v", res)

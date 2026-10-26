@@ -460,6 +460,10 @@ func (fakeRoomLog) LastTaskState(context.Context, string, int64) (json.RawMessag
 	return nil, nil
 }
 
+func (fakeRoomLog) TaskStateAt(context.Context, string, int64, int64) (json.RawMessage, error) {
+	return nil, nil
+}
+
 type fakeRuns struct{}
 
 func (fakeRuns) InRoom(string) []runwatch.Run { return nil }

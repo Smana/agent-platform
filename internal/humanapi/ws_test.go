@@ -110,6 +110,22 @@ func (m *memLog) LastTaskState(_ context.Context, _ string, after int64) (json.R
 	return nil, nil
 }
 
+// TaskStateAt is the log's last task facts with after < seq <= upTo, as the store's query reads them.
+func (m *memLog) TaskStateAt(_ context.Context, _ string, after, upTo int64) (json.RawMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := len(m.evs) - 1; i >= 0; i-- {
+		e := m.evs[i]
+		var p struct {
+			Kind string `json:"kind"`
+		}
+		if e.Seq > after && e.Seq <= upTo && e.Type == envelope.StateChanged && json.Unmarshal(e.Payload, &p) == nil && p.Kind == "task" {
+			return e.Payload, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *memLog) add(n int) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()

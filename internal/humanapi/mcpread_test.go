@@ -158,6 +158,7 @@ func TestViewToolsDeclareOutputSchema(t *testing.T) {
 	calls := map[string]toolCall{
 		"rooms_list":   call(t, e, viaRoomctl("dev"), "rooms_list", map[string]any{}),
 		"room_summary": call(t, e, viaRoomctl("dev"), "room_summary", map[string]any{"room": roomID}),
+		"room_changes": call(t, e, viaRoomctl("dev"), "room_changes", map[string]any{"room": roomID}),
 	}
 	seen := 0
 	for _, tool := range r.Tools {
@@ -182,7 +183,7 @@ func TestViewToolsDeclareOutputSchema(t *testing.T) {
 			}
 		}
 	}
-	if seen != 2 {
+	if seen != 3 {
 		t.Fatalf("saw %d view tools", seen)
 	}
 }

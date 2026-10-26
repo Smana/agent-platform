@@ -112,6 +112,12 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
 				"As a task, it waits for the next events (ttl: the wait, 10 s to 15 min, default 5 min).",
 			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"},"kinds":{"type":"array","maxItems":10,"items":{"enum":["message","turn","tool_call","tool_result","approval_requested","approval_decided","participant","driver","handoff","state_changed"]}}}}`)},
+		{name: mcpwire.RoomChanges, call: s.roomChanges,
+			description: "What changed in a room since a cursor, as a short list of milestones to show as it is (text), and the same as structuredContent under untrusted: true: " +
+				"runs started and ended, notes, handoffs, approvals asked and decided, verdicts, the PR opened or merged, holds, the budget. " +
+				"Without a cursor, the last 24 hours. Pass the returned cursor back for what came after; more counts the milestones the page left out.",
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"}}}`),
+			output: json.RawMessage(`{"type":"object","required":["room","items","cursor","untrusted"],"properties":{"room":{"type":"string"},"items":{"type":"array","items":{"type":"object"}},"more":{"type":"integer"},"cursor":{"type":"string"},"untrusted":{"type":"boolean"}}}`)},
 		{name: "room_queue", call: s.roomQueue,
 			description: "Queue a note for the room's next run, with the developer's words only. It is stored labelled as machine-sent, and its run reads it as data.",
 			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","text"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"text":{"type":"string","minLength":1,"maxLength":16384}}}`)},
@@ -144,7 +150,7 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 
 // sponsoredTools are a sponsored principal's tools besides run_create (R13, which mcpTools lists first), in tools/list order:
 // the draft check and the reads of its own tasks' rooms.
-var sponsoredTools = []string{"issue_draft", "room_summary", "room_tail"}
+var sponsoredTools = []string{"issue_draft", "room_summary", "room_tail", mcpwire.RoomChanges}
 
 // sponsoredPrincipal is the request's sponsored principal (R13), when the broker declares any and
 // the bearer is one of theirs. Its expiry is checked as a human's is.
