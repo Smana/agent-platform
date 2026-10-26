@@ -97,7 +97,7 @@ func TestTitleWithAutolinkingWordsRendersNoLink(t *testing.T) {
 	assertInert(t, md, rooms, nil)
 	root, _ := parse(md)
 	links := 0
-	_ = ast.Walk(root, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
+	_ = ast.Walk(root, func(n ast.Node, _ bool) (ast.WalkStatus, error) {
 		switch n.(type) {
 		case *ast.Link, *ast.AutoLink:
 			links++

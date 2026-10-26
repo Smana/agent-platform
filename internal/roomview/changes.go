@@ -237,7 +237,9 @@ func Milestones(in MilestoneInput) ChangeSet {
 			cut--
 		}
 		if cut == 0 {
-			for cut = limit; cut < len(ms) && ms[cut].Seq == ms[cut-1].Seq; cut++ {
+			cut = limit
+			for cut < len(ms) && ms[cut].Seq == ms[cut-1].Seq {
+				cut++
 			}
 		}
 		c.More = len(ms) - cut
