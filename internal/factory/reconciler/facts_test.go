@@ -10,13 +10,16 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // stored is the rig's task as its client has it, so postFacts can write its status.
@@ -264,5 +267,207 @@ func TestAnEndedTaskWritesItsLastFacts(t *testing.T) {
 	g.reconcile(t, "3buqdlot", 2)
 	if got := g.log.factsSeqs; !slices.Equal(got, []int64{1, 2, 2}) || g.log.facts[2].Phase != "Stopped" {
 		t.Fatalf("seqs %v, last %+v", got, g.log.facts[2])
+	}
+}
+
+func TestOutcomeOf(t *testing.T) {
+	fin := metav1.NewTime(now)
+	tests := []struct {
+		name string
+		r    v1alpha1.RunRecord
+		want string
+	}{
+		{"succeeded", v1alpha1.RunRecord{Finished: &fin, Phase: "Succeeded"}, envelope.OutcomeSucceeded},
+		{"failed", v1alpha1.RunRecord{Finished: &fin, Phase: "Failed"}, envelope.OutcomeFailed},
+		{"budget", v1alpha1.RunRecord{Finished: &fin, Phase: "BudgetExhausted"}, envelope.OutcomeBudgetExhausted},
+		{"revoked", v1alpha1.RunRecord{Finished: &fin, Phase: "Revoked"}, envelope.OutcomeRevoked},
+		{"Disrupted", v1alpha1.RunRecord{Finished: &fin, Phase: "Failed", Reason: "Disrupted"}, envelope.OutcomeLost},
+		{"PodLost", v1alpha1.RunRecord{Finished: &fin, Phase: "Failed", Reason: "PodLost"}, envelope.OutcomeLost},
+		{"pod_lost", v1alpha1.RunRecord{Finished: &fin, Phase: "Failed", Reason: "pod_lost"}, envelope.OutcomeLost},
+		{"run_lost", v1alpha1.RunRecord{Finished: &fin, Phase: "Revoked", Reason: "run_lost"}, envelope.OutcomeLost},
+		{"PodFailed is failed", v1alpha1.RunRecord{Finished: &fin, Phase: "Failed", Reason: "PodFailed"}, envelope.OutcomeFailed},
+		{"no phase", v1alpha1.RunRecord{Finished: &fin}, envelope.OutcomeEnded},
+		{"unfinished", v1alpha1.RunRecord{Phase: "Succeeded", Reason: "PodLost"}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outcomeOf(tc.r); got != tc.want {
+				t.Fatalf("outcome %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func runsOf(n int) []v1alpha1.RunRecord {
+	var out []v1alpha1.RunRecord
+	for i := range n {
+		started := metav1.NewTime(now.Add(time.Duration(i) * time.Hour).Add(123 * time.Millisecond))
+		out = append(out, v1alpha1.RunRecord{ID: rid(i), Role: "implementer", Trigger: "initial", Started: &started})
+	}
+	return out
+}
+
+func finish(r *v1alpha1.RunRecord, phase string, usd int64, verdict string) {
+	end := metav1.NewTime(r.Started.Add(20*time.Minute + 456*time.Millisecond))
+	r.Finished, r.Phase, r.CostMicroUSD, r.Verdict = &end, phase, usd, verdict
+}
+
+func TestFactsOfCarriesRuns(t *testing.T) {
+	task := awaiting()
+	task.Status.Runs = runsOf(3)
+	finish(&task.Status.Runs[0], "Succeeded", 120_000, "approve")
+	finish(&task.Status.Runs[1], "Failed", 80_000, "")
+	task.Status.Runs[2].CostMicroUSD = 5_000
+	f := factsOf(task)
+	if len(f.Runs) != 3 || f.Runs[0].ID != rid(0) || f.Runs[2].ID != rid(2) {
+		t.Fatalf("runs %+v", f.Runs)
+	}
+	r0 := f.Runs[0]
+	if r0.MicroUSD != 120_000 || r0.Verdict != "approve" || r0.Outcome != envelope.OutcomeSucceeded ||
+		!r0.EndedAt.Equal(task.Status.Runs[0].Finished.UTC().Truncate(time.Second)) || r0.EndedAt.Nanosecond() != 0 {
+		t.Fatalf("run 0 %+v", r0)
+	}
+	if f.Runs[1].Outcome != envelope.OutcomeFailed || f.Runs[2].Outcome != "" || !f.Runs[2].EndedAt.IsZero() || f.Runs[2].MicroUSD != 5_000 {
+		t.Fatalf("runs %+v", f.Runs[1:])
+	}
+	for i, r := range f.Runs {
+		if r.Provenance != nil {
+			t.Fatalf("run %d carries provenance", i)
+		}
+	}
+	if err := f.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// M4: a task that ended without finished() leaves its last run unfinished; its facts say it ended, as
+// the task did, rather than that it runs on.
+func TestFactsOfEndedTaskEndsItsUnfinishedRun(t *testing.T) {
+	for _, phase := range []string{v1alpha1.PhaseStopped, v1alpha1.PhaseEscalated, v1alpha1.PhaseClosed} {
+		t.Run(phase, func(t *testing.T) {
+			task := awaiting()
+			task.Status.Runs = runsOf(2)
+			finish(&task.Status.Runs[0], "Succeeded", 1, "")
+			task.Status.Phase = phase
+			since := metav1.NewTime(task.Status.Runs[1].Started.Add(10 * time.Minute))
+			task.Status.PhaseSince = &since
+			f := factsOf(task)
+			if r := f.Runs[1]; r.Outcome != envelope.OutcomeEnded || !r.EndedAt.Equal(since.UTC().Truncate(time.Second)) {
+				t.Fatalf("unfinished run %+v", r)
+			}
+			if f.Run.Outcome != envelope.OutcomeEnded {
+				t.Fatalf("current run %+v", f.Run)
+			}
+			if f.Runs[0].Outcome != envelope.OutcomeSucceeded {
+				t.Fatalf("finished run changed: %+v", f.Runs[0])
+			}
+			if err := f.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			task.Status.Phase = v1alpha1.PhaseReviewing
+			if f := factsOf(task); f.Runs[1].Outcome != "" {
+				t.Fatalf("a live task's run ended: %+v", f.Runs[1])
+			}
+		})
+	}
+}
+
+func TestFactsOfKeepsTheLast20Runs(t *testing.T) {
+	task := awaiting()
+	task.Status.Runs = runsOf(25)
+	f := factsOf(task)
+	if len(f.Runs) != envelope.MaxRuns || f.Runs[0].ID != rid(5) || f.Runs[19].ID != rid(24) {
+		t.Fatalf("%d runs, first %s last %s", len(f.Runs), f.Runs[0].ID, f.Runs[19].ID)
+	}
+	if err := f.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFactsOfSpend(t *testing.T) {
+	task := awaiting()
+	if f := factsOf(task); f.Spend != nil {
+		t.Fatalf("spend %+v with neither cap nor usage", f.Spend)
+	}
+	task.Spec.Budget.TaskMicroUSD, task.Status.Usage.CostMicroUSD = 1_500_000, 310_000
+	if f := factsOf(task); f.Spend == nil || *f.Spend != (envelope.SpendFact{UsedMicroUSD: 310_000, LimitMicroUSD: 1_500_000}) {
+		t.Fatalf("spend %+v", f.Spend)
+	}
+	task.Spec.Budget.TaskMicroUSD = 0
+	if f := factsOf(task); f.Spend == nil || *f.Spend != (envelope.SpendFact{UsedMicroUSD: 310_000}) {
+		t.Fatalf("uncapped spend %+v", f.Spend)
+	}
+	task.Spec.Budget.TaskMicroUSD, task.Status.Usage.CostMicroUSD = 1_500_000, 0
+	if f := factsOf(task); f.Spend == nil || f.Spend.UsedMicroUSD != 0 || f.Spend.LimitMicroUSD != 1_500_000 {
+		t.Fatalf("a cap alone: %+v", f.Spend)
+	}
+	task.Spec.Budget.TaskTokens = 0
+	if f := factsOf(task); f.Budget != nil {
+		t.Fatalf("budget %+v without a token cap", f.Budget)
+	}
+}
+
+func TestFactsKeyStepsDollars(t *testing.T) {
+	key := func(used, limit int64) string {
+		f := factsOf(awaiting())
+		f.Spend = &envelope.SpendFact{UsedMicroUSD: used, LimitMicroUSD: limit}
+		return factsKey(f)
+	}
+	if key(310_000, 1_500_000) != key(340_000, 1_500_000) {
+		t.Fatal("a tick inside a 10% step changed the key")
+	}
+	if key(310_000, 1_500_000) == key(460_000, 1_500_000) {
+		t.Fatal("crossing a step kept the key")
+	}
+	if key(10_000, 0) != key(90_000, 0) {
+		t.Fatal("an uncapped tick inside $0.10 changed the key")
+	}
+	if key(10_000, 0) == key(110_000, 0) {
+		t.Fatal("crossing $0.10 kept the key")
+	}
+	runKey := func(usd int64, ended bool) string {
+		f := factsOf(awaiting())
+		f.Runs = []envelope.RunFact{{ID: rid(0), Role: "implementer", MicroUSD: usd}}
+		if ended {
+			f.Runs[0].EndedAt = now
+		}
+		return factsKey(f)
+	}
+	if runKey(10_000, false) != runKey(80_000, false) {
+		t.Fatal("a running run's dollars moved the key")
+	}
+	if runKey(10_000, true) == runKey(80_000, true) {
+		t.Fatal("an ended run's dollars are not in the key")
+	}
+}
+
+// A broker older than the factory refuses the new fields with a 400 (its decoder is strict): the
+// facts stay due under their seq, and go through once the broker is rolled.
+func TestFactsRefusedByAnOlderBrokerStayDue(t *testing.T) {
+	g := newRig(t, awaiting())
+	tk := stored(t, g.c)
+	g.log.failFacts = &rooms.APIError{Status: 400, Reason: wire.ReasonBadMessage}
+	if err := g.r.postFacts(t.Context(), tk); err == nil {
+		t.Fatal("the refusal is swallowed")
+	}
+	if !g.r.factsDue(tk) {
+		t.Fatal("refused facts are no longer due")
+	}
+	g.log.failFacts = nil
+	if err := g.r.postFacts(t.Context(), tk); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.log.factsSeqs; !slices.Equal(got, []int64{1, 1}) {
+		t.Fatalf("seqs %v, want [1 1]", got)
+	}
+}
+
+// An adopted Task has no room: no facts are ever due.
+func TestAnAdoptedTaskHasNoFactsDue(t *testing.T) {
+	task := awaiting()
+	task.Spec.Source.Kind, task.Status.RoomRef = "adopt", ""
+	g := newRig(t, task)
+	if g.r.factsDue(stored(t, g.c)) {
+		t.Fatal("an adopted task has facts due")
 	}
 }

@@ -16,22 +16,39 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
+	"github.com/Smana/agent-platform/internal/factory/runs"
 )
 
 // factsOf is what the room's summary shows of a task: phase, current run, budget, issue, PR.
 func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	f := envelope.TaskFacts{Phase: t.Status.Phase, Reason: t.Status.Reason}
+	// A task that ended, or escalated as stuck, without finished() leaves its last run unfinished (M4):
+	// say it ended with the task, so a view never reads it as running.
+	over := v1alpha1.TerminalPhase(t.Status.Phase) || t.Status.Phase == v1alpha1.PhaseEscalated
+	fact := func(r v1alpha1.RunRecord) envelope.RunFact {
+		rf := runFact(r)
+		if over && r.Finished == nil {
+			rf.Outcome = envelope.OutcomeEnded
+			if p := t.Status.PhaseSince; p != nil && !p.UTC().Truncate(time.Second).Before(rf.StartedAt) {
+				rf.EndedAt = p.UTC().Truncate(time.Second)
+			}
+		}
+		return rf
+	}
 	if len(t.Status.Runs) > 0 {
+		rf := fact(*current(t))
 		run := current(t)
-		f.Run = &envelope.RunFact{ID: run.ID, Role: run.Role, Trigger: run.Trigger}
 		if p := run.Provenance; !p.IsZero() {
-			f.Run.Provenance = &envelope.ProvenanceFact{FactoryVersion: p.FactoryVersion, CompositionRevision: p.CompositionRevision,
+			rf.Provenance = &envelope.ProvenanceFact{FactoryVersion: p.FactoryVersion, CompositionRevision: p.CompositionRevision,
 				HarnessImage: p.HarnessImage, ServedModels: slices.Clone(p.ServedModels)}
 		}
-		if run.Started != nil {
-			// As the CRD stores it, so the hash of a task read back matches the one posted.
-			f.Run.StartedAt = run.Started.UTC().Truncate(time.Second)
+		f.Run = &rf
+		for _, r := range t.Status.Runs[max(0, len(t.Status.Runs)-envelope.MaxRuns):] {
+			f.Runs = append(f.Runs, fact(r))
 		}
+	}
+	if u, limit := t.Status.Usage.CostMicroUSD, t.Spec.Budget.TaskMicroUSD; u > 0 || limit > 0 {
+		f.Spend = &envelope.SpendFact{UsedMicroUSD: u, LimitMicroUSD: limit}
 	}
 	if t.Spec.Budget.TaskTokens > 0 {
 		f.Budget = &envelope.BudgetFact{UsedTokens: t.Status.Usage.Tokens, LimitTokens: t.Spec.Budget.TaskTokens}
@@ -48,6 +65,42 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 		f.PR = &envelope.PRFact{Number: pr.Number, URL: pr.URL, Author: pr.Author, Reviewers: pr.Reviewers}
 	}
 	return f
+}
+
+// runFact is a run record as the room's facts carry it, without provenance (only the current run has it).
+// Times are as the CRD stores them, so the hash of a task read back matches the one posted.
+func runFact(r v1alpha1.RunRecord) envelope.RunFact {
+	f := envelope.RunFact{ID: r.ID, Role: r.Role, Trigger: r.Trigger, Verdict: r.Verdict, MicroUSD: r.CostMicroUSD, Outcome: outcomeOf(r)}
+	if r.Started != nil {
+		f.StartedAt = r.Started.UTC().Truncate(time.Second)
+	}
+	if r.Finished != nil {
+		f.EndedAt = r.Finished.UTC().Truncate(time.Second)
+	}
+	return f
+}
+
+// outcomeOf is how a run ended (R3), empty while it has not (no Finished). A lost run is lost under
+// any phase; otherwise the AgentRun's phase decides, so PodFailed under Failed is failed.
+func outcomeOf(r v1alpha1.RunRecord) string {
+	if r.Finished == nil {
+		return ""
+	}
+	switch r.Reason {
+	case runs.ReasonDisrupted, runs.ReasonPodLost, "pod_lost", "run_lost":
+		return envelope.OutcomeLost
+	}
+	switch r.Phase {
+	case "Succeeded":
+		return envelope.OutcomeSucceeded
+	case "Failed":
+		return envelope.OutcomeFailed
+	case "BudgetExhausted":
+		return envelope.OutcomeBudgetExhausted
+	case "Revoked":
+		return envelope.OutcomeRevoked
+	}
+	return envelope.OutcomeEnded
 }
 
 // maxTitle bounds the title the facts carry, in runes.
@@ -69,7 +122,7 @@ func issueTitle(text string) string {
 }
 
 // factsKey is what decides that the room's facts changed. Token usage counts in steps (R12): 10% of
-// the cap, an overrun one step, or 100 k tokens without a cap. Every meter tick would otherwise post
+// the cap, an overrun one step, or 100 k tokens without a cap; dollars step the same way, $0.10 without one. Every meter tick would otherwise post
 // facts and write status twice, and a room seals at its event limit. Facts posted carry the exact
 // count.
 func factsKey(f envelope.TaskFacts) string {
@@ -82,9 +135,34 @@ func factsKey(f envelope.TaskFacts) string {
 		}
 		f.Budget = &step
 	}
+	if sp := f.Spend; sp != nil {
+		step := *sp
+		if step.LimitMicroUSD > 0 {
+			step.UsedMicroUSD = min(step.UsedMicroUSD*10/step.LimitMicroUSD, 10)
+		} else {
+			step.UsedMicroUSD /= 100_000
+		}
+		f.Spend = &step
+	}
+	// A run's dollars count once it has ended: a running run's tick never posts (R4).
+	f.Run = settled(f.Run)
+	f.Runs = slices.Clone(f.Runs)
+	for i := range f.Runs {
+		f.Runs[i] = *settled(&f.Runs[i])
+	}
 	b, _ := json.Marshal(f) // strings, ints, a time and slices: Marshal cannot fail
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
+}
+
+// settled is the run with its dollars left out while it has not ended.
+func settled(r *envelope.RunFact) *envelope.RunFact {
+	if r == nil || !r.EndedAt.IsZero() || r.Outcome != "" {
+		return r
+	}
+	c := *r
+	c.MicroUSD = 0
+	return &c
 }
 
 // factsDue reports facts the room does not have yet.

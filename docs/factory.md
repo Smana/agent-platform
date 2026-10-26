@@ -257,8 +257,13 @@ and resume, each hand-off with its reason and the merge command, and the end wit
 Each comment carries a hidden marker and is posted at least once and never twice, from an outbox
 written with the transition that caused it. Comments hold the factory's own words and ids, never
 text a user wrote. The task's room gets the issue snapshot as its first `task_state` message, then
-the task's facts (phase, reason, current run, budget, issue and pull request), which the room page
-and `roomctl status` show.
+the task's facts (phase, reason, current run, the run history with each run's outcome, end and
+dollars, token budget, dollar spend, issue and pull request), which the room page and `roomctl status`
+show. The history keeps the last 20 runs, oldest first. A run's outcome is `succeeded`, `failed`,
+`budget_exhausted`, `revoked`, `lost` (a disruption, a lost pod or a vanished claim) or `ended` (the
+task ended or escalated with the run unfinished); it is empty while the run goes on. A run's dollars
+and the task's spend are exact in the facts posted, but a tick of a running run never posts: the
+spend steps by 10% of its cap, or $0.10 without one. A run the meter could not price reads $0.
 
 ## Triage: tiers, templates, classes
 
