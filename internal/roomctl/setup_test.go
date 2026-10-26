@@ -196,3 +196,72 @@ func TestSetupCmdPrefersPATH(t *testing.T) {
 		t.Errorf("off PATH: %q, want the absolute executable", got)
 	}
 }
+
+func TestSetupCopilotProjectIsWhatTheCLIReads(t *testing.T) {
+	a := Agents["copilot"]
+	if a.SnippetProjectPath != ".github/mcp.json" {
+		t.Errorf("project path %q, want .github/mcp.json", a.SnippetProjectPath)
+	}
+	if a.SnippetProject != a.Snippet || !strings.Contains(a.SnippetProject, `"mcpServers"`) {
+		t.Errorf("project snippet is not the CLI's mcpServers shape:\n%s", a.SnippetProject)
+	}
+}
+
+func TestSetupCursorSnippetIsStdio(t *testing.T) {
+	if !strings.Contains(Agents["cursor"].Snippet, `"type": "stdio"`) {
+		t.Errorf("cursor snippet lacks type stdio:\n%s", Agents["cursor"].Snippet)
+	}
+}
+
+func TestSetupSkillDirsOfCodex(t *testing.T) {
+	a := Agents["codex"]
+	if a.SkillDir != "~/.agents/skills" || a.SkillProjectDir != ".agents/skills" {
+		t.Errorf("codex skill dirs %q, %q", a.SkillDir, a.SkillProjectDir)
+	}
+}
+
+func TestSetupGeminiHintsAtTrust(t *testing.T) {
+	var out bytes.Buffer
+	s := Setup{Agent: Agents["gemini"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", LookPath: absent, Run: noRun(t), Out: &out}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "trusted folder") {
+		t.Errorf("no trust hint in:\n%s", out.String())
+	}
+}
+
+func TestSetupWarnsOnAnAbsolutePathInAProjectSnippet(t *testing.T) {
+	for _, tc := range []struct {
+		cmd     string
+		project bool
+		warn    bool
+	}{{"/opt/bin/roomctl", true, true}, {"/opt/bin/roomctl", false, false}, {"roomctl", true, false}} {
+		var out bytes.Buffer
+		s := Setup{Agent: Agents["cursor"], Project: tc.project, Home: t.TempDir(), Dir: t.TempDir(), Cmd: tc.cmd, LookPath: absent, Run: noRun(t), Out: &out}
+		if err := s.Do(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(out.String(), "teammates"); got != tc.warn {
+			t.Errorf("%+v: warning = %v in:\n%s", tc, got, out.String())
+		}
+	}
+}
+
+func TestSetupRefusesASymlinkedSkillDir(t *testing.T) {
+	home, dir, elsewhere := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(home, ".cursor", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	s := Setup{Agent: Agents["cursor"], Home: home, Dir: dir, Cmd: "roomctl", LookPath: absent, Run: noRun(t), Out: &bytes.Buffer{}}
+	err := s.Do(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want a symlink refusal", err)
+	}
+	if got := filesUnder(t, elsewhere); len(got) != 0 {
+		t.Errorf("wrote through the symlink: %v", got)
+	}
+}

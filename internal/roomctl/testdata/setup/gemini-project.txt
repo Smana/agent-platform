@@ -13,3 +13,4 @@ otherwise: add this to .gemini/settings.json (roomctl setup never edits a config
 }
 
 setup installs the factory-handoff skill in .gemini/skills
+gemini connects a stdio server only in a trusted folder: accept its trust dialog the first time you run gemini there (saved in ~/.gemini/trustedFolders.json).

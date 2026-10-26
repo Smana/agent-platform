@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -27,12 +28,13 @@ type Agent struct {
 	Snippet, SnippetProject         string
 	SnippetPath, SnippetProjectPath string
 	SkillDir, SkillProjectDir       string
+	Note                            string // printed after setup: what the agent still needs
 }
 
 const (
 	mcpServersJSON = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
 	copilotJSON    = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"],\n      \"tools\": [\"*\"]\n    }\n  }\n}\n"
-	vscodeJSON     = "{\n  \"servers\": {\n    \"factory\": {\n      \"type\": \"stdio\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
+	cursorJSON     = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"stdio\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
 	opencodeJSON   = "{\n  \"mcp\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": [\"{CMD}\", \"mcp\"]\n    }\n  }\n}\n"
 	codexTOML      = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
 )
@@ -41,17 +43,18 @@ const (
 //   - claude: https://code.claude.com/docs/en/mcp (scopes, ~/.claude.json, .mcp.json) and
 //     https://code.claude.com/docs/en/skills (~/.claude/skills, .claude/skills); `claude mcp add --help`
 //   - opencode: https://opencode.ai/docs/mcp-servers/ and https://opencode.ai/docs/skills/;
-//     `opencode mcp add --help` (2.0.22) takes `--global` and `-- cmd args`, so it never prompts
-//   - codex: https://developers.openai.com/codex/mcp (`codex mcp add NAME -- CMD`, user config only;
+//     `opencode mcp add --help` (2.0.22) takes `--global` and `-- cmd args`, so it never prompts; without
+//     --global it writes ./opencode.json in the working directory (run in a temp dir)
+//   - codex: https://learn.chatgpt.com/docs/extend/mcp?surface=cli (`codex mcp add NAME -- CMD`, user config only;
 //     the project's .codex/config.toml is read for trusted projects) and
-//     https://developers.openai.com/codex/skills (.agents/skills)
+//     https://learn.chatgpt.com/docs/build-skills (~/.agents/skills, .agents/skills)
 //   - gemini: https://geminicli.com/docs/tools/mcp-server/ (`gemini mcp add --scope user|project`)
 //     and https://geminicli.com/docs/cli/skills/ (~/.gemini/skills, .gemini/skills)
 //   - cursor: https://cursor.com/docs/context/mcp (~/.cursor/mcp.json, .cursor/mcp.json) and
 //     https://cursor.com/docs/context/skills (.cursor/skills, ~/.cursor/skills)
 //   - copilot: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
-//     (~/.copilot/mcp-config.json), https://code.visualstudio.com/docs/copilot/customization/mcp-servers
-//     (.vscode/mcp.json, key "servers") and https://docs.github.com/en/copilot/concepts/agents/about-agent-skills
+//     (~/.copilot/mcp-config.json; the CLI reads .github/mcp.json in a project, not VS Code's
+//     .vscode/mcp.json, whose key is "servers") and https://docs.github.com/en/copilot/concepts/agents/about-agent-skills
 //     (.github/skills, ~/.copilot/skills)
 var Agents = map[string]Agent{
 	"claude": {Name: "claude",
@@ -76,14 +79,15 @@ var Agents = map[string]Agent{
 		AddProject: []string{"gemini", "mcp", "add", "--scope", "project", "factory", "{CMD}", "mcp"},
 		Snippet:    mcpServersJSON, SnippetProject: mcpServersJSON,
 		SnippetPath: "~/.gemini/settings.json", SnippetProjectPath: ".gemini/settings.json",
-		SkillDir: "~/.gemini/skills", SkillProjectDir: ".gemini/skills"},
+		SkillDir: "~/.gemini/skills", SkillProjectDir: ".gemini/skills",
+		Note: "gemini connects a stdio server only in a trusted folder: accept its trust dialog the first time you run gemini there (saved in ~/.gemini/trustedFolders.json)."},
 	"cursor": {Name: "cursor",
-		Snippet: mcpServersJSON, SnippetProject: mcpServersJSON,
+		Snippet: cursorJSON, SnippetProject: cursorJSON,
 		SnippetPath: "~/.cursor/mcp.json", SnippetProjectPath: ".cursor/mcp.json",
 		SkillDir: "~/.cursor/skills", SkillProjectDir: ".cursor/skills"},
 	"copilot": {Name: "copilot",
-		Snippet: copilotJSON, SnippetProject: vscodeJSON,
-		SnippetPath: "~/.copilot/mcp-config.json", SnippetProjectPath: ".vscode/mcp.json",
+		Snippet: copilotJSON, SnippetProject: copilotJSON,
+		SnippetPath: "~/.copilot/mcp-config.json", SnippetProjectPath: ".github/mcp.json",
 		SkillDir: "~/.copilot/skills", SkillProjectDir: ".github/skills"},
 }
 
@@ -171,8 +175,12 @@ func (s Setup) Do(ctx context.Context) error {
 		}
 	}
 	skillDir := a.skillDir(s.Project)
+	warn := s.warning(path)
 	if s.Print {
-		return s.print(argv, snippet, path, skillDir)
+		return s.print(argv, snippet, path, skillDir, warn)
+	}
+	if fi, err := os.Lstat(s.resolve(skillDir)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink: refusing to install the skill through it", s.resolve(skillDir))
 	}
 	if len(argv) > 0 {
 		if _, err := s.LookPath(argv[0]); err != nil {
@@ -196,10 +204,24 @@ func (s Setup) Do(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n", s.resolve(skillDir), len(paths)); err != nil {
-		return err
+	_, err = fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n%s", s.resolve(skillDir), len(paths), s.notes(warn))
+	return err
+}
+
+// warning is set when the snippet to commit names this machine's executable.
+func (s Setup) warning(path string) string {
+	if !s.Project || !filepath.IsAbs(s.Cmd) {
+		return ""
 	}
-	return nil
+	return fmt.Sprintf("warning: %s names %s, which your teammates' checkouts will not have: put roomctl on the PATH and run setup again, or keep this file out of git.\n", path, s.Cmd)
+}
+
+// notes is what follows the setup: the warning, then the agent's own note.
+func (s Setup) notes(warn string) string {
+	if s.Agent.Note == "" {
+		return warn
+	}
+	return warn + s.Agent.Note + "\n"
 }
 
 func (s Setup) printSnippet(snippet, path string) error {
@@ -207,13 +229,13 @@ func (s Setup) printSnippet(snippet, path string) error {
 	return err
 }
 
-func (s Setup) print(argv []string, snippet, path, skillDir string) error {
+func (s Setup) print(argv []string, snippet, path, skillDir, warn string) error {
 	var errs []error
 	if len(argv) > 0 {
 		_, err := fmt.Fprintf(s.Out, "with %s on the PATH, setup runs:\n  %s\n\notherwise: ", argv[0], strings.Join(argv, " "))
 		errs = append(errs, err)
 	}
 	errs = append(errs, s.printSnippet(snippet, path))
-	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n", skillDir)
+	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s", skillDir, s.notes(warn))
 	return errors.Join(append(errs, err)...)
 }

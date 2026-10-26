@@ -1,11 +1,12 @@
-add this to .vscode/mcp.json (roomctl setup never edits a config):
+add this to .github/mcp.json (roomctl setup never edits a config):
 
 {
-  "servers": {
+  "mcpServers": {
     "factory": {
-      "type": "stdio",
+      "type": "local",
       "command": "roomctl",
-      "args": ["mcp"]
+      "args": ["mcp"],
+      "tools": ["*"]
     }
   }
 }

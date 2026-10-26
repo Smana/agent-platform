@@ -3,6 +3,7 @@ add this to ~/.cursor/mcp.json (roomctl setup never edits a config):
 {
   "mcpServers": {
     "factory": {
+      "type": "stdio",
       "command": "roomctl",
       "args": ["mcp"]
     }
