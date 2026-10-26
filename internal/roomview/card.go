@@ -142,7 +142,7 @@ func (c *card) stateLine(s summary.Summary, needs bool) {
 	}
 	parts := []string{word}
 	if p := clean(s.Status.Phase); p != "" {
-		parts = append(parts, c.text(p, false))
+		parts = append(parts, c.text(phaseWords(p), false))
 	}
 	if r := repoOf(urlOf(s.Status.Issue), prURL(s.Status.PR)); r != "" {
 		parts = append(parts, c.token(r, false))

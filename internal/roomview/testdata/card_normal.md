@@ -1,5 +1,5 @@
 ### 26zfnuxm · #42
-**needs you** · Implementing · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
+**needs you** · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
 
 | | |
 |---|---|

@@ -38,9 +38,15 @@ func TestCodeSpanOutrunsBackticks(t *testing.T) {
 	if got := code("`x", false); !strings.Contains(got, " `x") {
 		t.Fatalf("code = %q, want a space before `x", got)
 	}
-	for _, in := range []string{"a``b", "`x", "x`", "a `b` c", "plain", "```z"} {
+	// clean() leaves no space at either edge, so code() never meets the one case where CommonMark
+	// strips a space the span meant: these round trips are the whole contract.
+	for _, in := range []string{"a``b", "`x", "x`", "a `b` c", "plain", "```z", "`", "``", "", "`a`"} {
 		got := codeSpans("x " + code(in, false) + " y")
-		if len(got) != 1 || got[0] != in {
+		want := in
+		if in == "" {
+			want = "  " // a space-only span is not stripped, and "``" alone would be no span at all
+		}
+		if len(got) != 1 || got[0] != want {
 			t.Errorf("%q reads back as %q", in, got)
 		}
 	}

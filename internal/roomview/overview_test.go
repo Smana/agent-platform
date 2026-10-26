@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/yuin/goldmark/ast"
 	extast "github.com/yuin/goldmark/extension/ast"
 
+	"github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/summary"
 )
 
@@ -26,13 +29,13 @@ var now = time.Date(2026, 10, 7, 19, 20, 0, 0, time.UTC)
 func overviewRows() []Row {
 	const repo = "Smana/cloud-native-ref"
 	return []Row{
-		{ID: "huwttc64", URL: rooms + "/r/huwttc64", State: summary.StateDone, Repository: repo, Issue: 2230, Title: "docs: wrong port in guide", Task: "merged", PR: 2239, LastEventAt: now.Add(-2 * time.Hour)},
-		{ID: "tvcpihkr", URL: rooms + "/r/tvcpihkr", State: summary.StateQueued, Repository: repo, Issue: 2244, Title: "links: dead link in runbook 04", Task: "Queued", Reason: "waiting_run_slot", LastEventAt: now.Add(-6 * time.Minute)},
-		{ID: "k3vlmkwq", URL: rooms + "/r/k3vlmkwq", State: summary.StateRunning, Repository: repo, Issue: 2241, Title: "deps: bump renovate preset", Task: "implementing", LastEventAt: now.Add(-1 * time.Minute)},
-		{ID: "26zfnuxm", URL: rooms + "/r/26zfnuxm", State: summary.StateWaiting, Repository: repo, Issue: 2238, Title: "docs: chart version is wrong", Task: "AwaitingHuman", NeedsYou: 1, NeedsMe: true,
+		{ID: "huwttc64", URL: rooms + "/r/huwttc64", State: summary.StateDone, Repository: repo, Issue: 2230, Title: "docs: wrong port in guide", Task: v1alpha1.PhaseDone, PR: 2239, LastEventAt: now.Add(-2 * time.Hour)},
+		{ID: "tvcpihkr", URL: rooms + "/r/tvcpihkr", State: summary.StateQueued, Repository: repo, Issue: 2244, Title: "links: dead link in runbook 04", Task: v1alpha1.PhaseQueued, Reason: "waiting_run_slot", LastEventAt: now.Add(-6 * time.Minute)},
+		{ID: "k3vlmkwq", URL: rooms + "/r/k3vlmkwq", State: summary.StateRunning, Repository: repo, Issue: 2241, Title: "deps: bump renovate preset", Task: v1alpha1.PhaseImplementing, LastEventAt: now.Add(-1 * time.Minute)},
+		{ID: "26zfnuxm", URL: rooms + "/r/26zfnuxm", State: summary.StateWaiting, Repository: repo, Issue: 2238, Title: "docs: chart version is wrong", Task: v1alpha1.PhaseAwaitingHuman, NeedsYou: 1, NeedsMe: true,
 			Need:        &summary.Need{Kind: "approval", ID: "a1", What: "git push to agent/26zfnuxm", Deadline: now.Add(10 * time.Minute), URL: rooms + "/r/26zfnuxm#approval-a1"},
 			LastEventAt: now.Add(-3 * time.Minute)},
-		{ID: "oldroom1", URL: rooms + "/r/oldroom1", State: summary.StateDone, Repository: repo, Issue: 2100, Title: "docs: old", Task: "Done", LastEventAt: now.Add(-8 * 24 * time.Hour)},
+		{ID: "oldroom1", URL: rooms + "/r/oldroom1", State: summary.StateDone, Repository: repo, Issue: 2100, Title: "docs: old", Task: v1alpha1.PhaseDone, LastEventAt: now.Add(-8 * 24 * time.Hour)},
 	}
 }
 
@@ -169,7 +172,7 @@ func TestOverviewHostile(t *testing.T) {
 	rows := []Row{{ID: "26zfnuxm", URL: rooms + "/r/26zfnuxm", State: summary.StateWaiting, Issue: 42, Title: title, Task: "<b>x</b> | y", Reason: "evil|reason",
 		Repository: "Smana/cloud-native-ref", NeedsYou: 1, Need: &hostile, LastEventAt: now}}
 	for i := range pipes {
-		rows = append(rows, Row{ID: "pipe" + string(rune('a'+i)), URL: rooms + "/r/pipe" + string(rune('a'+i)), State: summary.StateWaiting, Issue: i + 1, Title: "t|" + title,
+		rows = append(rows, Row{ID: "pipe" + string(rune('a'+i)), URL: rooms + "/r/pipe" + string(rune('a'+i)), State: summary.StateWaiting, Issue: i + 1, Repository: "Smana/other", Title: "t|" + title,
 			NeedsYou: 1, Need: &pipes[i], LastEventAt: now.Add(-time.Duration(i+1) * time.Minute)})
 	}
 	// Titles and reasons are escaped plain text, so only the needs must stay in code spans.
@@ -206,10 +209,10 @@ func TestOverviewHostile(t *testing.T) {
 }
 
 func TestOverviewNoIssue(t *testing.T) {
-	rows := []Row{{ID: "apiroom1", URL: rooms + "/r/apiroom1", State: summary.StateRunning, Task: "implementing", LastEventAt: now}}
+	rows := []Row{{ID: "apiroom1", URL: rooms + "/r/apiroom1", State: summary.StateRunning, Task: v1alpha1.PhaseImplementing, LastEventAt: now}}
 	md := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
-	if strings.Contains(md, "#0") || !strings.Contains(md, "| — |") {
-		t.Errorf("Markdown: want an em dash for the task, never #0:\n%s", md)
+	if cells := strings.Split(strings.Split(md, "\n")[4], " | "); strings.Contains(md, "#0") || len(cells) < 2 || cells[1] != "—" {
+		t.Errorf("Markdown: want an em dash in the Task cell, never #0:\n%s", md)
 	}
 	txt := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms})
 	if strings.Contains(txt, "#0") {
@@ -222,11 +225,63 @@ func TestOverviewNoIssue(t *testing.T) {
 }
 
 func TestOverviewNeedsYouOnlyForTheCaller(t *testing.T) {
-	rows := []Row{{ID: "someone1", URL: rooms + "/r/someone1", State: summary.StateWaiting, NeedsMe: true, Issue: 7, Title: "t", Task: "AwaitingHuman", LastEventAt: now}}
+	rows := []Row{{ID: "someone1", URL: rooms + "/r/someone1", State: summary.StateWaiting, NeedsMe: true, Issue: 7, Title: "t", Task: v1alpha1.PhaseAwaitingHuman, LastEventAt: now}}
 	for _, f := range []Format{Markdown, Text} {
 		out := render(t, rows, Options{Format: f, Now: now, Rooms: rooms})
 		if !strings.Contains(out, "waiting for a human") || strings.Contains(out, "needs you") {
 			t.Errorf("format %d: %s", f, out)
+		}
+	}
+}
+
+// Every phase the factory emits reads as words, never as its raw value.
+func TestOverviewEveryPhaseHasWords(t *testing.T) {
+	for _, p := range []string{
+		v1alpha1.PhaseReceived, v1alpha1.PhaseRejected, v1alpha1.PhaseTriaged, v1alpha1.PhaseQueued, v1alpha1.PhaseImplementing,
+		v1alpha1.PhaseNoOp, v1alpha1.PhaseReviewing, v1alpha1.PhaseAwaitingCI, v1alpha1.PhaseAutoMerging, v1alpha1.PhaseAwaitingHuman,
+		v1alpha1.PhaseMerged, v1alpha1.PhaseVerifying, v1alpha1.PhaseDone, v1alpha1.PhaseReverted, v1alpha1.PhaseEscalated,
+		v1alpha1.PhaseClosed, v1alpha1.PhaseStopped, v1alpha1.PhaseSplit,
+	} {
+		if got := phaseWords(p); got == p || got == "" {
+			t.Errorf("phaseWords(%q) = %q, want words", p, got)
+		}
+	}
+}
+
+// An empty Repository is no second repository: one real repo and one empty makes no Repo column.
+func TestOverviewEmptyRepositoryIsNotMixed(t *testing.T) {
+	rows := overviewRows()[:2]
+	rows[1].Repository = ""
+	for _, f := range []Format{Markdown, Text} {
+		if out := render(t, rows, Options{Format: f, Now: now, Rooms: rooms}); strings.Contains(out, "Repo") || strings.Contains(out, "REPO") {
+			t.Errorf("format %d: a Repo column for one repository:\n%s", f, out)
+		}
+	}
+}
+
+// Terminal columns line up by display width: a CJK rune and an emoji take two cells.
+func TestOverviewTerminalWidth(t *testing.T) {
+	rows := overviewRows()[:3]
+	rows[0].Title = "日本語のタイトル"
+	rows[1].Title = "party 🎉 time"
+	out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms})
+	lines := strings.Split(strings.TrimSpace(out), "\n")[3:]
+	col := -1
+	for _, l := range lines {
+		i := strings.Index(l, "running")
+		if i < 0 {
+			i = strings.Index(l, "queued")
+		}
+		if i < 0 {
+			i = strings.Index(l, "done")
+		}
+		if i < 0 {
+			t.Fatalf("no state in %q", l)
+		}
+		if w := runewidth.StringWidth(l[:i]); col >= 0 && w != col {
+			t.Errorf("state column at width %d, want %d:\n%s", w, col, out)
+		} else {
+			col = w
 		}
 	}
 }

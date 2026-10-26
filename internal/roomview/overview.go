@@ -9,7 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 
 	"github.com/Smana/agent-platform/internal/summary"
 )
@@ -90,7 +91,9 @@ func Overview(w io.Writer, rows []Row, o Options) error {
 		if r.needsYou() {
 			needs++
 		}
-		repos[r.Repository] = true
+		if clean(r.Repository) != "" {
+			repos[r.Repository] = true
+		}
 	}
 	mixed := len(repos) > 1
 
@@ -267,7 +270,7 @@ func writeTable(b *strings.Builder, cols []string, rows [][]string) {
 	}
 }
 
-// writeColumns writes aligned columns, two spaces apart. It pads by hand rather than with
+// writeColumns writes aligned columns, two spaces apart. It pads by hand, by display width (wide runes take two cells), rather than with
 // text/tabwriter: colour codes would count as width there, and a padded cell keeps its colour.
 func writeColumns(b *strings.Builder, cols []string, rows [][]string, color bool) {
 	header := make([]string, len(cols))
@@ -278,7 +281,7 @@ func writeColumns(b *strings.Builder, cols []string, rows [][]string, color bool
 	width := make([]int, len(cols))
 	for _, r := range all {
 		for i, c := range r {
-			width[i] = max(width[i], utf8.RuneCountInString(c))
+			width[i] = max(width[i], runewidth.StringWidth(c))
 		}
 	}
 	for n, r := range all {
@@ -290,7 +293,7 @@ func writeColumns(b *strings.Builder, cols []string, rows [][]string, color bool
 			}
 			line.WriteString(cell)
 			if i < len(r)-1 {
-				line.WriteString(strings.Repeat(" ", width[i]-utf8.RuneCountInString(c)+2))
+				line.WriteString(strings.Repeat(" ", width[i]-runewidth.StringWidth(c)+2))
 			}
 		}
 		b.WriteString(line.String() + "\n")

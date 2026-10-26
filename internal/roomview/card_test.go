@@ -82,7 +82,7 @@ func TestCardMatchesTheSpec(t *testing.T) {
 	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
 	want := []string{
 		"### 26zfnuxm · #42\n",
-		"\n**needs you** · Implementing · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)\n",
+		"\n**needs you** · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)\n",
 		"\n| | |\n|---|---|\n| Run | implementer c3 (human review) · started 19:11 UTC, 18 min ago |\n",
 		"| Spend | $0.31 of $1.50 (21 %) · 189 k tokens |\n",
 		"| PR | [#2239](https://github.com/Smana/cloud-native-ref/pull/2239) · reviewer approved at 18:49 UTC |\n",
@@ -264,14 +264,14 @@ func TestCardSize(t *testing.T) {
 	}
 }
 
-// The factory's phases are capitalised ("Implementing"), and the card takes them as they are.
+// The factory's phases are capitalised ("Implementing"), and the card reads them in words.
 func TestCardRealPhases(t *testing.T) {
 	for _, phase := range summary.TaskPhases() {
 		s := summary.Summary{Room: "r", URL: rooms + "/r/r"}
 		s.Status.Phase = phase
 		got := strings.Split(card1(t, s, textOpts(now)), "\n")[1]
 		state := summary.Coarse(phase, phase, false)
-		if want := stateWord(state, false) + " · " + phase + " · open the room (" + rooms + "/r/r)"; got != want {
+		if want := stateWord(state, false) + " · " + phaseWords(phase) + " · open the room (" + rooms + "/r/r)"; got != want {
 			t.Errorf("%s: state line %q, want %q", phase, got, want)
 		}
 	}
@@ -297,7 +297,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 		not  []string
 	}{
 		{"escape and no approve command", summaryBody, cardNow,
-			[]string{"needs you · Implementing · Smana/a · open the room (https://rooms.example/r/26zfnuxm)",
+			[]string{"needs you · an agent is coding · Smana/a · open the room (https://rooms.example/r/26zfnuxm)",
 				`approve "git push to agent/26zfnuxm" by 14:00 UTC → https://rooms.example/r/26zfnuxm#01M4`,
 				`19:14 UTC cf4ato2x "found both versions[2J on line 12-13, fixing"`,
 				"PR    #2239 (https://github.com/Smana/a/pull/2239) · reviewer changes_requested[31m at 19:00 UTC"},
@@ -308,7 +308,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 			[]string{"r · #74 Chat view: pair tool calls\n", "Spend 189 k of 1.5 M tokens (13 %)\n", "o/r"}, nil},
 		{"a queued room with an issue and no needs",
 			`{"room":"26zfnuxm","url":"u","status":{"phase":"Queued","issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],"notes":{"items":[]}}`, cardNow,
-			[]string{"26zfnuxm · #42\nqueued · Queued · Smana/a\n"}, []string{"Needs you", "needs you"}},
+			[]string{"26zfnuxm · #42\nqueued · queued for a run · Smana/a\n"}, []string{"Needs you", "needs you"}},
 		{"a hold is what releases it, with the room's link, and no approval",
 			`{"room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm","status":{"phase":"Queued"},` +
 				`"needsYou":[{"kind":"hold","id":"waiting_human_driver","what":"hand the driver back","url":"https://rooms.example/r/26zfnuxm"}],"notes":{"items":[]}}`, cardNow,

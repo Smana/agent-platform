@@ -1,5 +1,5 @@
 ### 26zfnuxm · #42
-stopped · Closed · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
+stopped · closed · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
 
 | | |
 |---|---|

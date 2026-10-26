@@ -247,7 +247,7 @@ func TestRoomctlStatus(t *testing.T) {
 	if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--after", "5"}); err != nil {
 		t.Fatal(err)
 	}
-	if b.query != "/api/rooms/26zfnuxm/summary?after=5" || !strings.Contains(out.String(), "running · Implementing") ||
+	if b.query != "/api/rooms/26zfnuxm/summary?after=5" || !strings.Contains(out.String(), "running · an agent is coding") ||
 		!strings.Contains(out.String(), "hi[2J") || strings.ContainsRune(out.String(), 0x1b) || !strings.Contains(out.String(), "cursor: seq:142") {
 		t.Fatalf("%q\n%q", b.query, out)
 	}
