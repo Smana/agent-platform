@@ -90,7 +90,7 @@ func TestPromptsGetFillsArguments(t *testing.T) {
 		t.Errorf("status: %v", o)
 	}
 	_, o = rpc(t, e, h, "prompts/get", map[string]any{"name": "inbox"})
-	if txt := fmt.Sprint(o["result"]); !strings.Contains(txt, "needsMe") {
+	if txt := fmt.Sprint(o["result"]); !strings.Contains(txt, "needsMe") || !strings.Contains(txt, "mine") {
 		t.Errorf("inbox: %v", o)
 	}
 }
@@ -116,7 +116,7 @@ func TestInstructionsFirst512(t *testing.T) {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	for _, w := range []string{"as it is", "untrusted", "never apply a label", "room page", "room_wait", "if `room_wait` is listed"} {
+	for _, w := range []string{"as it is", "untrusted", "never apply a label", "Approvals stay on the room page", "room_wait", "if `room_wait` is listed"} {
 		if !strings.Contains(head, w) {
 			t.Errorf("the first 512 bytes lack %q:\n%s", w, head)
 		}

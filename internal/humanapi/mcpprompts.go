@@ -56,9 +56,9 @@ var mcpPrompts = []mcpPrompt{
 		},
 	},
 	{
-		name: "inbox", description: "Show the rooms that need you, then all of them.",
+		name: "inbox", description: "Show the rooms that need you, then your other rooms.",
 		text: func(map[string]string) string {
-			return "Call `rooms_list` with `needsMe`, then without it, and show each text as it is."
+			return "Call `rooms_list` with `needsMe`, then with `mine`, and show each text as it is."
 		},
 	},
 }
