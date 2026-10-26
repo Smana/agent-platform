@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +25,7 @@ import (
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
+	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/version"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -181,9 +184,11 @@ type roomRow struct {
 	Task  string `json:"task,omitempty"`
 	PR    int    `json:"pr,omitempty"`
 	// Reason is why the task waits, from its last facts: only while it waits, as the summary's.
-	Reason   string   `json:"reason,omitempty"`
-	NeedsYou int      `json:"needsYou"` // how many things wait for this caller
-	You      wire.You `json:"you"`
+	Reason   string `json:"reason,omitempty"`
+	NeedsYou int    `json:"needsYou"` // how many things wait for this caller
+	// Need is the first of them, in the summary's order: absent when none waits.
+	Need *summary.Need `json:"need,omitempty"`
+	You  wire.You      `json:"you"`
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
@@ -220,25 +225,65 @@ func (f *roomFilter) isMine(ctx context.Context, s *Server, p authn.Principal, r
 		func(u string) bool { return strings.EqualFold(u, f.login) })
 }
 
+// factsMemo is one room's last task facts, read at most once per list row: the hold, the wait
+// reason and the first need all want them.
+type factsMemo struct {
+	once  sync.Once
+	facts *envelope.TaskFacts
+}
+
+type factsKey struct{}
+
+// withFacts returns ctx carrying a fresh memo, for one row.
+func withFacts(ctx context.Context) context.Context {
+	return context.WithValue(ctx, factsKey{}, &factsMemo{})
+}
+
+// taskFacts is room's last task facts: one indexed read, which carries what the Room status does
+// not project (the wait reason). nil when they cannot be read: the room's summary still says it.
+func (s *Server) taskFacts(ctx context.Context, room *v1alpha1.Room) *envelope.TaskFacts {
+	read := func() *envelope.TaskFacts {
+		raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
+		if err != nil {
+			s.log().Warn("room row: task facts unread", "room", room.Name, "err", err)
+			return nil
+		}
+		var f envelope.TaskFacts
+		if raw == nil || json.Unmarshal(raw, &f) != nil {
+			return nil
+		}
+		return &f
+	}
+	m, ok := ctx.Value(factsKey{}).(*factsMemo)
+	if !ok {
+		return read()
+	}
+	m.once.Do(func() { m.facts = read() })
+	return m.facts
+}
+
 // held reports the summary's hold need for sub (N3, #78). The projected task phase screens out
-// every room but a Queued one sub could release, so only those read the room's last task facts —
-// one indexed row, which carries the wait reason the Room status does not. An unreadable row is
-// no need: the room's summary still says it.
-func (s *Server) held(ctx context.Context, room *v1alpha1.Room, sub policy.Subject) bool {
+// every room but a Queued one sub could release, so only those read the room's last task facts.
+// An unreadable row is no need: the room's summary still says it.
+func (s *Server) held(ctx context.Context, room *v1alpha1.Room, sub policy.Subject, url string) (summary.Need, bool) {
 	if t := room.Status.Task; t == nil || t.Phase != "Queued" || !policy.Allowed(sub, policy.StartRun) {
-		return false
+		return summary.Need{}, false
 	}
-	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
-	if err != nil {
-		s.log().Warn("needsMe: task facts unread", "room", room.Name, "err", err)
-		return false
+	return summary.Hold(s.taskFacts(ctx, room), sub, url)
+}
+
+// prNeed is the summary's merge need for sub, from the projected task: the Room status holds the
+// PR's number, not its facts, so the URL is built from the room's repository.
+func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
+	t := room.Status.Task
+	if t == nil || t.PR <= 0 {
+		return summary.Need{}, false
 	}
-	var f envelope.TaskFacts
-	if raw == nil || json.Unmarshal(raw, &f) != nil {
-		return false
+	pr := &envelope.PRFact{Number: int(t.PR)}
+	if repo := room.Spec.Repository; repo != "" {
+		pr.URL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, t.PR)
 	}
-	_, ok := summary.Hold(&f, sub, "")
-	return ok
+	return summary.Merge(&envelope.TaskFacts{Phase: t.Phase, PR: pr}, sub)
 }
 
 // needs counts what waits for sub in room, as the room's summary lists it: approvals sub could
@@ -248,16 +293,48 @@ func (s *Server) needs(ctx context.Context, room *v1alpha1.Room, sub, web policy
 	if policy.Allowed(web, policy.Decide) {
 		n += int(room.Status.PendingApprovals)
 	}
-	if s.held(ctx, room, sub) {
+	if _, ok := s.held(ctx, room, sub, ""); ok {
 		n++
 	}
-	if t := room.Status.Task; t != nil && t.PR > 0 {
-		f := envelope.TaskFacts{Phase: t.Phase, PR: &envelope.PRFact{Number: int(t.PR)}}
-		if _, ok := summary.Merge(&f, sub); ok {
-			n++
-		}
+	if _, ok := prNeed(room, sub); ok {
+		n++
 	}
 	return n
+}
+
+// firstNeed is the first thing that waits for the caller, in the summary's order: an approval
+// (the lowest id, ULIDs sorting by time, as the summary's sorted keys), a hold, a merge. The
+// approvals table is read only for a room with one pending that web could decide. nil when
+// nothing waits.
+func (s *Server) firstNeed(ctx context.Context, room *v1alpha1.Room, sub, web policy.Subject, url string) *summary.Need {
+	if room.Status.PendingApprovals > 0 && policy.Allowed(web, policy.Decide) {
+		open, err := s.Log.OpenApprovals(ctx, room.Name)
+		if err != nil {
+			s.log().Warn("room row: approvals unread", "room", room.Name, "err", err)
+		}
+		now := s.now()
+		var first *store.Approval
+		for i := range open {
+			a := &open[i]
+			if !a.ExpiresAt.IsZero() && now.After(a.ExpiresAt) {
+				continue // the sweep's approval_decided{expired} has not landed yet
+			}
+			if first == nil || a.ID < first.ID {
+				first = a
+			}
+		}
+		if first != nil {
+			return &summary.Need{Kind: "approval", ID: first.ID, What: summary.DescribeApproval(first.Class, first.Action),
+				Deadline: first.ExpiresAt, URL: url + "#" + first.ID}
+		}
+	}
+	if n, ok := s.held(ctx, room, sub, url); ok {
+		return &n
+	}
+	if n, ok := prNeed(room, sub); ok {
+		return &n
+	}
+	return nil
 }
 
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
@@ -334,7 +411,8 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			continue
 		}
 		// After mine: a row filtered out never costs held's store read.
-		needs := s.needs(ctx, room, sub, web)
+		rctx := withFacts(ctx) // one facts read serves the count, the reason and the need
+		needs := s.needs(rctx, room, sub, web)
 		if f.needsMe && needs == 0 {
 			continue
 		}
@@ -346,8 +424,9 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		}
 		row.State = summary.Coarse(row.Task, row.Phase, s.nextRun(room.Name))
 		if waits[row.Task] {
-			row.Reason = s.waitReason(ctx, room)
+			row.Reason = s.waitReason(rctx, room)
 		}
+		row.Need = s.firstNeed(rctx, room, sub, web, row.URL)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
@@ -360,12 +439,10 @@ var waits = map[string]bool{"Queued": true, "AwaitingCI": true, "AwaitingHuman":
 // maxRowReason bounds a row's reason, in runes: the factory writes a code.
 const maxRowReason = 64
 
-// waitReason is the reason in room's last task facts, which the Room's status does not project:
-// one indexed read. "" when it cannot be read: the room's summary still says it.
+// waitReason is the reason in room's last task facts, "" when they cannot be read.
 func (s *Server) waitReason(ctx context.Context, room *v1alpha1.Room) string {
-	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
-	var f envelope.TaskFacts
-	if err != nil || raw == nil || json.Unmarshal(raw, &f) != nil {
+	f := s.taskFacts(ctx, room)
+	if f == nil {
 		return ""
 	}
 	if r := []rune(f.Reason); len(r) > maxRowReason {

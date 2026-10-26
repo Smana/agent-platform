@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/agent-platform/internal/summary"
 )
 
 // #50: the list carries what a person needs to tell the rows apart — the issue, its title, the
@@ -76,5 +80,99 @@ func TestRoomListCarriesLastEventAt(t *testing.T) {
 	log.lastEventAtErr = errors.New("db down")
 	if got := rows()[0].LastEventAt; !got.IsZero() {
 		t.Fatalf("a failed read must leave lastEventAt zero, got %v", got)
+	}
+}
+
+// The row names the first need of the caller, in the summary's order: approvals (lowest id), then
+// a hold, then a merge. Nothing that waits for the caller means no `need` key.
+func TestRoomRowNeedIsTheFirstNeed(t *testing.T) {
+	future, past := time.Now().Add(time.Hour).UTC().Truncate(time.Second), time.Now().Add(-time.Hour).UTC()
+	approval := func(id, cmd string, exp time.Time) store.Approval {
+		return store.Approval{ID: id, RoomID: roomID, Class: "shell", Action: json.RawMessage(`{"command":"` + cmd + `"}`), State: "pending", ExpiresAt: exp}
+	}
+	for _, tc := range []struct {
+		name      string
+		task      *v1alpha1.TaskStatus
+		pending   int32
+		approvals []store.Approval
+		facts     *envelope.TaskFacts
+		h         http.Header
+		want      *summary.Need
+	}{
+		{name: "two approvals: the lowest id", pending: 2, h: admin("boss"),
+			approvals: []store.Approval{approval("01J9B", "rm -rf b", future), approval("01J9A", "make test", future)},
+			want:      &summary.Need{Kind: "approval", ID: "01J9A", What: "make test", Deadline: future, URL: "https://rooms.test/r/" + roomID + "#01J9A"}},
+		{name: "an expired approval gives way to the hold", pending: 1, h: admin("boss"),
+			task:      &v1alpha1.TaskStatus{Phase: "Queued"},
+			approvals: []store.Approval{approval("01J9A", "make test", past)},
+			facts:     &envelope.TaskFacts{Phase: "Queued", Reason: "waiting_human_driver"},
+			want:      &summary.Need{Kind: "hold", ID: "waiting_human_driver", What: "", URL: "https://rooms.test/r/" + roomID}},
+		{name: "held for the caller", h: admin("boss"),
+			task:  &v1alpha1.TaskStatus{Phase: "Queued"},
+			facts: &envelope.TaskFacts{Phase: "Queued", Reason: "waiting_human_driver"},
+			want:  &summary.Need{Kind: "hold", ID: "waiting_human_driver", URL: "https://rooms.test/r/" + roomID}},
+		{name: "a PR waits for the caller's merge", h: admin("boss"),
+			task: &v1alpha1.TaskStatus{Phase: "AwaitingHuman", PR: 7},
+			want: &summary.Need{Kind: "merge", ID: "7", URL: "https://github.com/Smana/a/pull/7"}},
+		{name: "an approval the caller may not decide", pending: 1, h: header("dev1"),
+			approvals: []store.Approval{approval("01J9A", "make test", future)}},
+		{name: "nothing waits", h: admin("boss")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+				a := repoRoom(roomID, "Smana/a")
+				a.Status.PendingApprovals, a.Status.Task = tc.pending, tc.task
+				s.Rooms = roomClient(t, a)
+				s.PublicURL = "https://rooms.test"
+				v.approvals = tc.approvals
+				if tc.facts != nil {
+					v.evs = append(v.evs, envelope.Event{V: 1, Seq: int64(len(v.evs) + 1), RoomID: roomID, Type: envelope.StateChanged,
+						TS: time.Now(), Payload: envelope.TaskStatePayload(*tc.facts)})
+				}
+			})
+			code, body := get(t, e, "/api/rooms", tc.h)
+			var rows []roomRow
+			if code != http.StatusOK || json.Unmarshal([]byte(body), &rows) != nil || len(rows) != 1 {
+				t.Fatalf("%d %s", code, body)
+			}
+			got := rows[0].Need
+			switch {
+			case tc.want == nil:
+				if got != nil || strings.Contains(body, `"need"`) {
+					t.Fatalf("no need expected: %s", body)
+				}
+			case got == nil:
+				t.Fatalf("need missing: %s", body)
+			default:
+				w := *tc.want
+				if w.Kind == "hold" || w.Kind == "merge" {
+					w.What = got.What // the wording is the summary's, tested there
+					if got.What == "" {
+						t.Fatalf("a %s need says nothing: %+v", w.Kind, got)
+					}
+				}
+				if got.Kind != w.Kind || got.ID != w.ID || got.What != w.What || got.URL != w.URL || !got.Deadline.Equal(w.Deadline) {
+					t.Fatalf("need = %+v, want %+v", *got, w)
+				}
+			}
+		})
+	}
+}
+
+// A room row reads the approvals table only for a room that has one pending.
+func TestRoomRowsReadApprovalsOnlyWhenPending(t *testing.T) {
+	var log *memLog
+	e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		log = v.memLog
+		a := repoRoom(roomID, "Smana/a")
+		a.Status.PendingApprovals = 1
+		s.Rooms = roomClient(t, a, repoRoom(roomB, "Smana/a"), repoRoom(roomC, "Smana/a"))
+		log.approvals = []store.Approval{{ID: "01J9A", RoomID: roomID, Class: "shell", ExpiresAt: time.Now().Add(time.Hour)}}
+	})
+	if code, body := get(t, e, "/api/rooms", admin("boss")); code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	if log.approvalReads != 1 {
+		t.Fatalf("OpenApprovals called %d times for 3 rooms, one pending, want 1", log.approvalReads)
 	}
 }
