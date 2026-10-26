@@ -61,7 +61,7 @@ var ErrScope = errors.New("scope: state ready or question; task 1-1000 bytes; to
 // brief's, which is bytes.
 func (s Scope) Validate() error {
 	ok := func(v string, limit int) bool {
-		return strings.TrimSpace(v) != "" && len(v) <= limit && utf8.ValidString(v) && !strings.ContainsFunc(v, control)
+		return strings.TrimSpace(v) != "" && len(v) <= limit && utf8.ValidString(v) && !strings.ContainsFunc(v, Control)
 	}
 	list := func(vs []string, lo, hi, each int) bool {
 		if len(vs) < lo || len(vs) > hi {
@@ -95,9 +95,9 @@ func (s Scope) Validate() error {
 	return nil
 }
 
-// control is a control character other than tab and newline, or a Unicode format character
+// Control is a control character other than tab and newline, or a Unicode format character
 // (zero-width, bidi): the same runes steering.Validate refuses, since a scope is agent-influencing
 // text in later implementer briefs.
-func control(r rune) bool {
+func Control(r rune) bool {
 	return (unicode.IsControl(r) && r != '\n' && r != '\t') || unicode.Is(unicode.Cf, r)
 }

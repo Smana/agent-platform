@@ -230,7 +230,7 @@ func (r RunFact) validate() error {
 	case !validOutcome(r.Outcome):
 		return fmt.Errorf("outcome %q is not one of the run outcomes", r.Outcome)
 	case len(r.Verdict) > MaxVerdict || !utf8.ValidString(r.Verdict) ||
-		strings.ContainsFunc(r.Verdict, func(c rune) bool { return control(c) || c == '\n' || c == '\t' }):
+		strings.ContainsFunc(r.Verdict, func(c rune) bool { return Control(c) || c == '\n' || c == '\t' }):
 		return fmt.Errorf("verdict is at most %d bytes of plain text, with no control, bidi or zero-width characters", MaxVerdict)
 	case !r.EndedAt.IsZero() && r.EndedAt.Before(r.StartedAt):
 		return errors.New("endedAt is before startedAt")
