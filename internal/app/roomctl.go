@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -47,6 +48,9 @@ const roomctlUsage = `usage: roomctl <command>
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
   mcp                             the factory's MCP tools on stdio, for a local coding agent:
                                   claude mcp add factory -- roomctl mcp
+  setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]
+                                  register roomctl mcp with that agent (through its own CLI, else the
+                                  snippet to paste) and install the factory-handoff skill; --print writes nothing
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
                                   a room of your own from events 1..SEQ, with an optional run
 roomctl never steers, interrupts, moves the driver token or decides (ruling P18): use the web UI`
@@ -59,6 +63,11 @@ type Roomctl struct {
 	In     io.Reader    // mcp's messages; nil is stdin
 	Out    io.Writer
 	Err    io.Writer // hints; nil is stderr
+
+	// setup's seams; the zero values are the real home, working directory, PATH and exec.
+	Home, Cwd string
+	LookPath  func(string) (string, error)
+	RunCmd    func(ctx context.Context, argv []string) error
 }
 
 // RunRoomctl runs one roomctl command (SP2 §8), its files under roomctl.Dir and
@@ -104,6 +113,8 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return r.configure(ctx, cfgPath, args)
 	case "skill":
 		return r.skill(args)
+	case "setup":
+		return r.setup(ctx, args)
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
@@ -248,6 +259,48 @@ func (r Roomctl) skill(args []string) error {
 		}
 	}
 	return nil
+}
+
+// setup registers roomctl mcp with a coding agent and installs the skill; it needs no configuration.
+func (r Roomctl) setup(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	project := fs.Bool("project", false, "register and install in this repository, not for the user")
+	dry := fs.Bool("print", false, "print what setup would do, and write nothing")
+	pos, err := flags(fs, args)
+	if err != nil || len(pos) != 1 {
+		return fmt.Errorf("setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]: %w", errors.Join(err, errors.New("one client")))
+	}
+	agent, err := roomctl.LookupAgent(pos[0])
+	if err != nil {
+		return err
+	}
+	s := roomctl.Setup{Agent: agent, Project: *project, Print: *dry, Home: r.Home, Dir: r.Cwd, Version: version.Version,
+		LookPath: r.LookPath, Run: r.RunCmd, Out: r.Out}
+	if s.LookPath == nil {
+		s.LookPath = exec.LookPath
+	}
+	if s.Run == nil {
+		s.Run = func(ctx context.Context, argv []string) error {
+			cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv[0] is one of six fixed CLI names
+			cmd.Stdout, cmd.Stderr = r.Out, r.Err
+			if r.Err == nil {
+				cmd.Stderr = os.Stderr
+			}
+			return cmd.Run()
+		}
+	}
+	if s.Home == "" {
+		if s.Home, err = os.UserHomeDir(); err != nil {
+			return err
+		}
+	}
+	if s.Dir == "" {
+		if s.Dir, err = os.Getwd(); err != nil {
+			return err
+		}
+	}
+	s.Cmd = roomctl.SetupCmd(s.LookPath, os.Executable)
+	return s.Do(ctx)
 }
 
 // status prints where a room stands; --json is the broker's body unchanged.

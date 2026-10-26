@@ -4,7 +4,9 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -332,5 +334,37 @@ func TestRoomctlMCP(t *testing.T) {
 	}
 	if err := r.Run(t.Context(), []string{"mcp", "extra"}); err == nil {
 		t.Fatal("mcp takes no arguments")
+	}
+}
+
+func TestRoomctlSetup(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	run := func(args ...string) (string, error) {
+		out := &strings.Builder{}
+		r := Roomctl{Dir: t.TempDir(), Out: out, Home: home, Cwd: cwd,
+			LookPath: func(string) (string, error) { return "", errors.New("absent") },
+			RunCmd:   func(context.Context, []string) error { t.Error("ran a command"); return nil }}
+		err := r.Run(context.Background(), args)
+		return out.String(), err
+	}
+	if _, err := run("setup", "vim"); err == nil || !strings.Contains(err.Error(), "copilot") {
+		t.Errorf("setup vim: %v, want the six clients named", err)
+	}
+	if _, err := run("setup"); err == nil {
+		t.Error("setup with no client: want usage")
+	}
+	out, err := run("setup", "cursor", "--print")
+	if err != nil || !strings.Contains(out, "~/.cursor/mcp.json") {
+		t.Errorf("setup cursor --print: %q, %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cursor")); err == nil {
+		t.Error("--print wrote")
+	}
+	// No configure needed: the config is absent in Dir, and the skill still lands.
+	if _, err := run("setup", "cursor", "--project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".cursor", "skills", "factory-handoff", "SKILL.md")); err != nil {
+		t.Error(err)
 	}
 }

@@ -1,0 +1,7 @@
+add this to .codex/config.toml (roomctl setup never edits a config):
+
+[mcp_servers.factory]
+command = "roomctl"
+args = ["mcp"]
+
+setup installs the factory-handoff skill in .agents/skills
