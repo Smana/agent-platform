@@ -44,10 +44,8 @@ func buildHandlers() map[string]localTool {
 		return mcpwire.ToolError("unavailable: " + c.Name + " is not served by this roomctl yet")
 	}
 	return map[string]localTool{
-		issueFileTool: func(ctx context.Context, r *Relay, c localCall) any { return r.issueFile(ctx, c.Args) },
-		// Task 16 must bound a blocking room_wait: each local call holds one of the maxInFlight
-		// slots, and eight waits would starve every other request with "busy".
-		toolRoomWait:     unavailable,
+		issueFileTool:    func(ctx context.Context, r *Relay, c localCall) any { return r.issueFile(ctx, c.Args) },
+		toolRoomWait:     func(ctx context.Context, r *Relay, c localCall) any { return r.roomWait(ctx, c) },
 		toolRoomCheckout: unavailable, // Task 17
 	}
 }
@@ -55,11 +53,7 @@ func buildHandlers() map[string]localTool {
 // localEntries are the local tools' tools/list entries, in the order they are appended.
 var localEntries = []any{
 	issueFileEntry,
-	map[string]any{
-		"name":        toolRoomWait,
-		"description": "Not yet available in this roomctl: wait, without polling, until a room has something new for the developer: a need, a milestone, or its end.",
-		"inputSchema": json.RawMessage(`{"type":"object","properties":{"room":{"type":"string"},"after":{"type":"string"}}}`),
-	},
+	roomWaitEntry,
 	map[string]any{
 		"name":        toolRoomCheckout,
 		"description": "Not yet available in this roomctl: check out the pull request a room opened into the developer's workspace.",
@@ -193,7 +187,7 @@ func (r *Relay) release(e *localEntry) {
 func (r *Relay) callLocal(m message, e *localEntry) {
 	res := e.tool(e.ctx, r, e.call)
 	r.mu.Lock()
-	live := !e.cancelled
+	live := !e.cancelled && e.ctx.Err() == nil // a session that ended is not written to
 	if r.local[e.key] == e {
 		delete(r.local, e.key)
 	}

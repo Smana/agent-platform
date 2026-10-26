@@ -59,6 +59,7 @@ type Relay struct {
 	mu      sync.Mutex
 	version string                          // the revision initialize settled on
 	forms   bool                            // the client can ask its human in a form (elicitation)
+	urls    bool                            // the client can open a URL for its human (elicitation, URL mode)
 	roots   bool                            // the client answers roots/list
 	local   map[string]*localEntry          // the local tool calls in flight, by request id (idKey)
 	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
@@ -84,6 +85,10 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	defer cancel()
 	g := &errgroup.Group{}
 	g.SetLimit(maxInFlight)
+	// A room_wait sleeps for minutes: it has a pool of its own, so waits never take the slots of
+	// the requests that answer at once, and no more than maxWaits are ever watching.
+	gw := &errgroup.Group{}
+	gw.SetLimit(maxWaits)
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), maxLine)
 	for sc.Scan() {
@@ -111,13 +116,18 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		// A local call is registered here, before its goroutine starts: the client's cancellation
 		// is handled inline, and may be the very next line.
 		pre := r.reserve(ctx, m)
-		if !g.TryGo(func() error { r.handle(ctx, m, raw, pre); return nil }) {
+		pool, busy := g, "busy: 8 requests in flight"
+		if pre != nil && pre.call.Name == toolRoomWait {
+			pool, busy = gw, "busy: 8 room_wait calls in flight"
+		}
+		if !pool.TryGo(func() error { r.handle(ctx, m, raw, pre); return nil }) {
 			r.release(pre)
-			r.write(mcpwire.Response(m.ID, nil, &mcpwire.Error{Code: mcpwire.InternalError, Message: "busy: 8 requests in flight"}))
+			r.write(mcpwire.Response(m.ID, nil, &mcpwire.Error{Code: mcpwire.InternalError, Message: busy}))
 		}
 	}
 	cancel() // stdin closed: the client is gone, so are the answers it waited for
 	_ = g.Wait()
+	_ = gw.Wait()
 	return sc.Err()
 }
 
@@ -139,9 +149,9 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte, pre *localEnt
 			} `json:"capabilities"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		forms, _ := elicitationModes(p.Capabilities.Elicitation) // URL mode is not used yet
+		forms, urls := elicitationModes(p.Capabilities.Elicitation)
 		r.mu.Lock()
-		r.forms = forms
+		r.forms, r.urls = forms, urls
 		r.roots = present(p.Capabilities.Roots)
 		r.mu.Unlock()
 		res, err := r.relay(ctx, raw)

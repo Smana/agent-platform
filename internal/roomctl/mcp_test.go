@@ -40,6 +40,11 @@ type mcpBroker struct {
 	canStartWhy string
 	// rooms is rooms_list's structuredContent rows; nil answers an empty list.
 	rooms []map[string]any
+	// roomsFn, when set, answers rooms_list: it gets the call's number (1 first) and its arguments.
+	roomsFn func(n int, args map[string]any) []map[string]any
+	listed  int
+	// card, when set, is room_summary's structuredContent.
+	card map[string]any
 }
 
 func newMCPBroker(t *testing.T) *mcpBroker {
@@ -73,9 +78,17 @@ func newMCPBroker(t *testing.T) *mcpBroker {
 		case "tools/list":
 			res = map[string]any{"tools": []any{map[string]any{"name": "rooms_list"}}}
 		case "tools/call":
-			var c struct{ Name string }
+			var c struct {
+				Name      string
+				Arguments map[string]any
+			}
 			_ = json.Unmarshal(m.Params, &c)
 			switch {
+			case c.Name == "room_summary" && b.card != nil:
+				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": b.roomText}}, "structuredContent": b.card}
+			case c.Name == "rooms_list" && b.roomsFn != nil:
+				b.listed++
+				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": "rooms"}}, "structuredContent": map[string]any{"rooms": b.roomsFn(b.listed, c.Arguments)}}
 			case c.Name == "issue_draft" && b.draftErr != "":
 				res = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": b.draftErr}}}
 			case c.Name == "room_summary" && b.roomText != "":
@@ -402,7 +415,7 @@ func TestRelayListsLocalTools(t *testing.T) {
 // Until the tools are wired, they answer unavailable, never a hang.
 func TestRelayLocalToolsAreUnavailableUntilWired(t *testing.T) {
 	s := relayTo(t, newMCPBroker(t), tok)
-	for _, name := range []string{toolRoomWait, toolRoomCheckout} {
+	for _, name := range []string{toolRoomCheckout} {
 		res := s.request(t, 1, "tools/call", map[string]any{"name": name})["result"].(map[string]any)
 		if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "unavailable") {
 			t.Fatalf("%s: %v", name, res)
@@ -611,7 +624,7 @@ func TestRelayUnavailableToolsSayTheyAre(t *testing.T) {
 	s := relayTo(t, newMCPBroker(t), tok)
 	for _, tl := range s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
 		m := tl.(map[string]any)
-		if (m["name"] == toolRoomWait || m["name"] == toolRoomCheckout) && !strings.HasPrefix(m["description"].(string), "Not yet available in this roomctl:") {
+		if m["name"] == toolRoomCheckout && !strings.HasPrefix(m["description"].(string), "Not yet available in this roomctl:") {
 			t.Fatalf("%v", m)
 		}
 	}
