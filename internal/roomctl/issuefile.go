@@ -29,17 +29,6 @@ var issueFileEntry = map[string]any{
 	"inputSchema": json.RawMessage(`{"type":"object","additionalProperties":false,"required":["repo","title","body"],"properties":{"repo":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}}}`),
 }
 
-// withIssueFile adds issue_file to the broker's tools/list result.
-func withIssueFile(res json.RawMessage) (json.RawMessage, error) {
-	var list map[string]any
-	if err := json.Unmarshal(res, &list); err != nil {
-		return nil, fmt.Errorf("tools/list: %w", err)
-	}
-	tools, _ := list["tools"].([]any)
-	list["tools"] = append(tools, issueFileEntry)
-	return json.Marshal(list)
-}
-
 // draftShape is the broker's issue_draft result, which issue_file files as is.
 type draftShape struct {
 	Repo  string `json:"repo"`
@@ -58,7 +47,7 @@ var (
 // is refused: nothing else stands for the developer's yes.
 func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 	r.mu.Lock()
-	elicit := r.elicit
+	elicit := r.forms
 	r.mu.Unlock()
 	if !elicit || r.File == nil {
 		return mcpwire.ToolError("needs_confirmation: issue_file asks the developer to confirm, and this client cannot ask (no elicitation); " +

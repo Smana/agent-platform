@@ -30,6 +30,7 @@ const (
 	defaultPoll = 5 * time.Second
 	maxPoll     = 30 * time.Second
 	elicitWait  = 10 * time.Minute // how long issue_file waits for the developer's answer
+	rootsWait   = 5 * time.Second  // how long the relay waits for the client's roots
 )
 
 // Relay is roomctl mcp: an MCP server on stdio for a local coding agent. It relays each message to
@@ -43,12 +44,19 @@ type Relay struct {
 	File  IssueFiler                            // files an accepted draft; nil refuses issue_file
 	// After waits d; nil is time.After. Tests step their own.
 	After func(d time.Duration) <-chan time.Time
+	// RootsWait bounds the client's answer to roots/list; zero is rootsWait.
+	RootsWait time.Duration
+	// handlers are the local tools; nil is the relay's own (localHandlers). Tests replace them.
+	handlers map[string]localTool
 
 	out     io.Writer
 	outMu   sync.Mutex
 	mu      sync.Mutex
 	version string                          // the revision initialize settled on
-	elicit  bool                            // the client can ask its human (elicitation)
+	forms   bool                            // the client can ask its human in a form (elicitation)
+	urls    bool                            // ... or send them to a URL (elicitation, url mode)
+	roots   bool                            // the client answers roots/list
+	local   map[string]context.CancelFunc   // the local tool calls in flight, by request id
 	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
 	nextID  int
 }
@@ -67,7 +75,7 @@ type message struct {
 // or ctx does. Requests run concurrently, at most maxInFlight; the client's answers to the relay's
 // own requests are read at once, so a request waiting on one never blocks the line.
 func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	r.out, r.waiting = out, map[string]chan json.RawMessage{}
+	r.out, r.waiting, r.local = out, map[string]chan json.RawMessage{}, map[string]context.CancelFunc{}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g := &errgroup.Group{}
@@ -108,6 +116,9 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 // handle serves one request or notification.
 func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 	if len(m.ID) == 0 { // a notification: relayed, never answered
+		if m.Method == "notifications/cancelled" && r.cancelLocal(m.Params) {
+			return // the client's cancellation of a call only the relay serves
+		}
 		_, _ = r.forward(ctx, raw)
 		return
 	}
@@ -116,11 +127,14 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 		var p struct {
 			Capabilities struct {
 				Elicitation json.RawMessage `json:"elicitation"`
+				Roots       json.RawMessage `json:"roots"`
 			} `json:"capabilities"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
+		forms, urls := elicitationModes(p.Capabilities.Elicitation)
 		r.mu.Lock()
-		r.elicit = len(p.Capabilities.Elicitation) > 0 && string(p.Capabilities.Elicitation) != "null"
+		r.forms, r.urls = forms, urls
+		r.roots = present(p.Capabilities.Roots)
 		r.mu.Unlock()
 		res, err := r.relay(ctx, raw)
 		if err == nil {
@@ -137,19 +151,27 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 	case "tools/list":
 		res, err := r.relay(ctx, raw)
 		if err == nil {
-			res, err = withIssueFile(res)
+			res, err = withLocalTools(res)
 		}
 		r.reply(m, res, err)
 	case "tools/call":
 		var c struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
+			Meta      struct {
+				ProgressToken json.RawMessage `json:"progressToken"`
+			} `json:"_meta"`
 		}
-		if json.Unmarshal(m.Params, &c) == nil && c.Name == issueFileTool {
-			r.write(mcpwire.Response(m.ID, r.issueFile(ctx, c.Arguments), nil))
-			return
+		if json.Unmarshal(m.Params, &c) == nil {
+			if tool, ok := r.handler(c.Name); ok {
+				r.callLocal(ctx, m, tool, localCall{Name: c.Name, Args: c.Arguments, Progress: c.Meta.ProgressToken})
+				return
+			}
 		}
 		res, err := r.relay(ctx, raw)
+		if err == nil {
+			res = viewed(c.Name, res, r.URL, time.Now())
+		}
 		r.reply(m, res, err)
 	case "tasks/result":
 		res, err := r.taskResult(ctx, m, raw)

@@ -28,14 +28,6 @@ func (f *filing) file(_ context.Context, repo, title, body string) (string, erro
 	return "https://github.com/Smana/a/issues/7", nil
 }
 
-func TestRelayListsIssueFile(t *testing.T) {
-	s := relayTo(t, newMCPBroker(t), tok)
-	tools := s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 2 || tools[1].(map[string]any)["name"] != "issue_file" {
-		t.Fatalf("%v", tools)
-	}
-}
-
 // F3: issue_file files only what the developer accepted in the client's prompt, as the broker
 // checked it, with no label; a client that cannot ask files nothing.
 func TestIssueFile(t *testing.T) {

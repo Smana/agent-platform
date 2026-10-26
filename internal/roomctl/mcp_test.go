@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/Smana/agent-platform/internal/mcpwire"
 )
 
 // mcpBroker is a fake broker /mcp: it records each request and answers by method.
@@ -30,6 +33,8 @@ type mcpBroker struct {
 	status   int           // when set, every request is refused with it
 	draftErr string        // when set, issue_draft refuses with it
 	noteWait time.Duration // a notification is recorded this long after it arrives
+	// roomText is room_summary's text; its structuredContent is a card for room r1.
+	roomText string
 }
 
 func newMCPBroker(t *testing.T) *mcpBroker {
@@ -68,6 +73,8 @@ func newMCPBroker(t *testing.T) *mcpBroker {
 			switch {
 			case c.Name == "issue_draft" && b.draftErr != "":
 				res = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": b.draftErr}}}
+			case c.Name == "room_summary" && b.roomText != "":
+				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": b.roomText}}, "structuredContent": map[string]any{"room": "r1", "url": "https://rooms.example/r/r1"}}
 			case c.Name == "issue_draft":
 				res = map[string]any{"content": []any{}, "structuredContent": map[string]any{"repo": "Smana/a", "title": "docs: a dead link", "body": "## What is wrong\nstripped"}}
 			default:
@@ -281,5 +288,167 @@ func TestSharedTokenRefreshesOnce(t *testing.T) {
 	}
 	if refreshes != 1 {
 		t.Fatalf("%d refreshes", refreshes)
+	}
+}
+
+// locals starts a relay whose Relay value the test can read.
+func locals(t *testing.T, b *mcpBroker, opts ...func(*Relay)) (session, *Relay) {
+	t.Helper()
+	var rel *Relay
+	return relayTo(t, b, tok, append([]func(*Relay){func(r *Relay) { rel = r }}, opts...)...), rel
+}
+
+// The client's elicitation modes (R12): the empty object is form mode, as the spec says.
+func TestRelayReadsElicitationModes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		caps        map[string]any
+		forms, urls bool
+	}{
+		"empty":      {map[string]any{"elicitation": map[string]any{}}, true, false},
+		"form":       {map[string]any{"elicitation": map[string]any{"form": map[string]any{}}}, true, false},
+		"url":        {map[string]any{"elicitation": map[string]any{"url": map[string]any{}}}, false, true},
+		"both":       {map[string]any{"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}}}, true, true},
+		"absent":     {map[string]any{}, false, false},
+		"null":       {map[string]any{"elicitation": nil}, false, false},
+		"with roots": {map[string]any{"roots": map[string]any{}}, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, r := locals(t, newMCPBroker(t))
+			s.request(t, 1, "initialize", map[string]any{"capabilities": tc.caps})
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.forms != tc.forms || r.urls != tc.urls || r.roots != (name == "with roots") {
+				t.Fatalf("forms=%v urls=%v roots=%v", r.forms, r.urls, r.roots)
+			}
+		})
+	}
+}
+
+// A local tool blocked on its context ends on the client's cancellation: no reply, and the broker
+// never hears of it; the notifications around it are still relayed.
+func TestRelayCancelsALocalTool(t *testing.T) {
+	b := newMCPBroker(t)
+	started, ended := make(chan struct{}), make(chan struct{})
+	s, _ := locals(t, b, func(r *Relay) {
+		r.handlers = map[string]localTool{toolRoomWait: func(ctx context.Context, _ *Relay, _ localCall) any {
+			close(started)
+			<-ctx.Done()
+			close(ended)
+			return mcpwire.ToolError("cancelled")
+		}}
+	})
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": toolRoomWait}})
+	<-started
+	s.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": 7}})
+	<-ended
+	s.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 {
+		t.Fatalf("the cancelled call must not be answered: %v", res)
+	}
+	methods, _ := b.seen()
+	if strings.Join(methods, ",") != "notifications/initialized,tools/list" {
+		t.Fatalf("the broker saw %v", methods)
+	}
+}
+
+func TestRelayRendersForAnOlderBroker(t *testing.T) {
+	b := newMCPBroker(t)
+	b.roomText = `{"room":"r1","url":"https://rooms.example/r/r1"}`
+	s := relayTo(t, b, tok)
+	res := s.request(t, 1, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": "r1"}})["result"].(map[string]any)
+	text := res["content"].([]any)[0].(map[string]any)["text"].(string)
+	if strings.HasPrefix(text, "{") || !strings.Contains(text, "r1") {
+		t.Fatalf("the card, not the JSON: %q", text)
+	}
+	if sc := fmt.Sprint(res["structuredContent"]); sc != "map[room:r1 url:https://rooms.example/r/r1]" {
+		t.Fatalf("structuredContent is the broker's: %s", sc)
+	}
+}
+
+func TestRelayPassesANewBrokersView(t *testing.T) {
+	b := newMCPBroker(t)
+	b.roomText = "# r1 <b>card</b>\n\n| x |"
+	s := relayTo(t, b, tok)
+	res := s.request(t, 1, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": "r1"}})["result"].(map[string]any)
+	if text := res["content"].([]any)[0].(map[string]any)["text"]; text != b.roomText {
+		t.Fatalf("%q", text)
+	}
+}
+
+func TestRelayListsLocalTools(t *testing.T) {
+	s := relayTo(t, newMCPBroker(t), tok)
+	var names []string
+	for _, tl := range s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
+		names = append(names, tl.(map[string]any)["name"].(string))
+	}
+	if got := strings.Join(names, ","); got != "rooms_list,issue_file,room_wait,room_checkout" {
+		t.Fatalf("%s", got)
+	}
+}
+
+// Until the tools are wired, they answer unavailable, never a hang.
+func TestRelayLocalToolsAreUnavailableUntilWired(t *testing.T) {
+	s := relayTo(t, newMCPBroker(t), tok)
+	for _, name := range []string{toolRoomWait, toolRoomCheckout} {
+		res := s.request(t, 1, "tools/call", map[string]any{"name": name})["result"].(map[string]any)
+		if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "unavailable") {
+			t.Fatalf("%s: %v", name, res)
+		}
+	}
+}
+
+func TestRelayProgressNeedsAToken(t *testing.T) {
+	var out strings.Builder
+	r := &Relay{out: &out}
+	r.progress(nil, 1, 2, "no token")
+	if out.Len() != 0 {
+		t.Fatalf("%q", out.String())
+	}
+	r.progress(json.RawMessage(`"p1"`), 1, 2, "half")
+	if !strings.Contains(out.String(), `"notifications/progress"`) || !strings.Contains(out.String(), `"progressToken":"p1"`) {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestRelayWorkspaceFromRoots(t *testing.T) {
+	cwd, _ := os.Getwd()
+	t.Run("the first root", func(t *testing.T) {
+		s, r := locals(t, newMCPBroker(t))
+		s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"roots": map[string]any{}}})
+		got := make(chan string, 1)
+		go func() { p, _ := r.workspace(t.Context()); got <- p }()
+		ask := s.next(t)
+		if ask["method"] != "roots/list" {
+			t.Fatalf("%v", ask)
+		}
+		s.send(t, map[string]any{"jsonrpc": "2.0", "id": ask["id"], "result": map[string]any{"roots": []any{map[string]any{"uri": "file:///tmp/x"}}}})
+		if p := <-got; p != "/tmp/x" {
+			t.Fatalf("%q", p)
+		}
+	})
+	t.Run("a client that never answers", func(t *testing.T) {
+		s, r := locals(t, newMCPBroker(t), func(r *Relay) { r.RootsWait = 20 * time.Millisecond })
+		s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"roots": map[string]any{}}})
+		if p, err := r.workspace(t.Context()); err != nil || p != cwd {
+			t.Fatalf("%q %v", p, err)
+		}
+	})
+	t.Run("a client without roots", func(t *testing.T) {
+		s, r := locals(t, newMCPBroker(t))
+		s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{}})
+		if p, err := r.workspace(t.Context()); err != nil || p != cwd {
+			t.Fatalf("%q %v", p, err)
+		}
+	})
+}
+
+// A local tool reaches the broker as the developer: its text and structuredContent come back whole.
+func TestRelayCallsTheBroker(t *testing.T) {
+	b := newMCPBroker(t)
+	b.roomText = "the card"
+	_, r := locals(t, b)
+	text, structured, isErr, err := r.callBroker(t.Context(), "room_summary", map[string]any{"room": "r1"})
+	if err != nil || isErr || text != "the card" || !strings.Contains(string(structured), `"room":"r1"`) {
+		t.Fatalf("%q %s %v %v", text, structured, isErr, err)
 	}
 }
