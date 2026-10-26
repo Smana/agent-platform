@@ -249,6 +249,9 @@ text and a branch can try to steer ([roomctl](roomctl.md#the-mcp-server)).
   (no hook runs during the fetch or the worktree creation), confine the new worktree beside the
   repository, refuse an existing path, and confirm the changed files that run code, in a form that
   defaults to no or with `y/N` on a terminal. Without either they refuse, naming the files.
+  `roomctl checkout` asks on a terminal only. An agent whose shell runs in a pseudo-terminal can
+  answer `y` itself; that agent can also run `git worktree add` directly, so the question is
+  advice, not a control.
   The residual: a developer who confirms, then opens the folder or commits there, runs what the
   agent wrote. Read the listed files first.
 

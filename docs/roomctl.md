@@ -138,7 +138,8 @@ So the checkout works like this:
 
 - It fetches only `agent/<room>` from your `origin`, after checking that `origin` is the room's
   repository (`git@github.com:o/n` or `https://github.com/o/n`, with or without `.git`, in any case).
-- It runs git with an argument list, never a shell, and with `core.hooksPath=/dev/null`, so no hook
+- It runs git with an argument list, never a shell, with `core.hooksPath=/dev/null` and no Git LFS
+  smudge filter, so no hook
   of your repository or of the branch runs during the fetch or the checkout. It runs nothing in the
   new worktree.
 - The worktree path is `<repository>.<room>` in the repository's own parent directory. A path that
@@ -146,14 +147,20 @@ So the checkout works like this:
 - It lists what the branch changed against its merge base with your `HEAD`. If a changed file is one
   of the paths below, or is under your repository's in-tree `core.hooksPath`, it asks first: a form
   whose `create` field defaults to no (`room_checkout`), or `y/N` on a terminal (`roomctl checkout`).
+  `core.hooksPath` is read from your effective git config, and an `origin` with several URLs is refused.
   A client with no forms, or a command with no terminal, is refused and told the files.
 
-The paths: `.claude/settings.json`, `.claude/settings.local.json`, `.opencode/plugins/`, `.mcp.json`,
-`.vscode/tasks.json`, `.envrc`, `mise.toml`, `.mise.toml`, `mise.local.toml`, `opencode.json`,
-`opencode.jsonc`, `.codex/config.toml`, `.gemini/settings.json`, `.cursor/mcp.json`,
-`.github/mcp.json`, `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `lefthook.yml` and
-`.lefthook.yml`, in the repository root or any folder of it. The list is `flagged` in
-`internal/roomctl/checkout.go`; the tests hold a fixture per entry.
+The paths: `.claude/settings.json`, `.claude/settings.local.json`, `.claude/skills/`,
+`.claude/agents/`, `.opencode/plugins/`, `.mcp.json`, `.vscode/tasks.json`, `.vscode/settings.json`,
+`.vscode/mcp.json`, `.devcontainer/`, `.envrc`, `mise.toml`, `.mise.toml`, `mise.local.toml`,
+`opencode.json`, `opencode.jsonc`, `.codex/config.toml`, `.gemini/settings.json`,
+`.cursor/mcp.json`, `.github/mcp.json`, `.husky/`, `.githooks/`, `.pre-commit-config.yaml`,
+`lefthook.yml` and `.lefthook.yml`, in the repository root or any folder of it, in any case.
+A changed path that is a folder of one of them counts too (a file named `.claude`), and so does
+every symlink the branch adds or changes, whatever its name: a link `.claude -> x` with
+`x/settings.json` would otherwise hide the file. A symlink the repository already has at one of
+these places is asked about as well. Flagging more is safe, since a flag only means "ask first".
+The list is `flagged` in `internal/roomctl/checkout.go`; the tests hold a fixture per entry.
 
 ## The factory-handoff skill
 
