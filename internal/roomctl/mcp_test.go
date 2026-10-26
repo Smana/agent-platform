@@ -412,17 +412,6 @@ func TestRelayListsLocalTools(t *testing.T) {
 	}
 }
 
-// Until the tools are wired, they answer unavailable, never a hang.
-func TestRelayLocalToolsAreUnavailableUntilWired(t *testing.T) {
-	s := relayTo(t, newMCPBroker(t), tok)
-	for _, name := range []string{toolRoomCheckout} {
-		res := s.request(t, 1, "tools/call", map[string]any{"name": name})["result"].(map[string]any)
-		if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "unavailable") {
-			t.Fatalf("%s: %v", name, res)
-		}
-	}
-}
-
 func TestRelayProgressNeedsAToken(t *testing.T) {
 	var out strings.Builder
 	r := &Relay{out: &out}
@@ -620,11 +609,11 @@ func TestRelayProgressOmitsAnUnknownTotal(t *testing.T) {
 	}
 }
 
-func TestRelayUnavailableToolsSayTheyAre(t *testing.T) {
+func TestRelayCheckoutToolIsDescribed(t *testing.T) {
 	s := relayTo(t, newMCPBroker(t), tok)
 	for _, tl := range s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
 		m := tl.(map[string]any)
-		if m["name"] == toolRoomCheckout && !strings.HasPrefix(m["description"].(string), "Not yet available in this roomctl:") {
+		if m["name"] == toolRoomCheckout && (strings.Contains(m["description"].(string), "Not yet") || !strings.Contains(fmt.Sprint(m["inputSchema"]), "required")) {
 			t.Fatalf("%v", m)
 		}
 	}

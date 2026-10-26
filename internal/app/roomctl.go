@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +50,8 @@ const roomctlUsage = `usage: roomctl <command>
                                   issues you filed or labelled, PRs you authored or review.
                                   --needs-me: an approval you could decide, a task held on your room,
                                   or a PR waiting for your merge. --all: the rooms that ended over a week ago too
+  checkout <room>                 check the room's agent/<room> branch out into a new worktree beside this repository,
+                                  never touching your checkout; it asks (y/N) before files that run code, and needs a terminal for that
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
@@ -123,7 +127,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "changes", "watch", "post", "fork", "doctor", "mcp":
+	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "doctor", "mcp":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -188,6 +192,8 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return r.status(ctx, c, args)
 	case "changes":
 		return r.changes(ctx, c, filepath.Join(r.Dir, "cursors.json"), args)
+	case "checkout":
+		return r.checkout(ctx, c, args)
 	case "watch":
 		fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 		tail := fs.Int("tail", 50, "events to show first")
@@ -489,5 +495,64 @@ func (r Roomctl) fork(ctx context.Context, c roomctl.Client, base string, args [
 		out += "# Before SP3 the owner creates the run (C3): kubectl create -f - with\n" + string(claim) + "\n"
 	}
 	_, err = io.WriteString(r.Out, roomctl.SafeText(out))
+	return err
+}
+
+// checkout makes the worktree of a room's branch. The repository and the pull request come from the
+// room's row. The files that run code are confirmed with y/N on a terminal, and refused without one.
+func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) error {
+	pos, err := flags(flag.NewFlagSet("checkout", flag.ContinueOnError), args)
+	if err != nil || len(pos) != 1 {
+		return fmt.Errorf("checkout <room>: %w", errors.Join(err, errors.New("one room")))
+	}
+	rows, _, err := c.RoomRows(ctx, roomctl.RoomFilter{All: true})
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(rows, func(row roomview.Row) bool { return row.ID == pos[0] })
+	if i < 0 {
+		return fmt.Errorf("checkout: %s is not one of the rooms you can read: roomctl rooms --all", roomctl.SafeText(pos[0]))
+	}
+	dir := r.Cwd
+	if dir == "" {
+		if dir, err = os.Getwd(); err != nil {
+			return err
+		}
+	}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	co := roomctl.Checkout{Workspace: dir, Room: pos[0], Repository: rows[i].Repository, PR: rows[i].PR}
+	if f, ok := in.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			co.Confirm = func(_ context.Context, files []string) (bool, error) {
+				_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(files, "\n  "))
+				line, err := bufio.NewReader(f).ReadString('\n')
+				if err != nil && line == "" {
+					return false, err
+				}
+				return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+			}
+		}
+	}
+	got, err := co.Run(ctx)
+	var refusal *roomctl.CheckoutRefusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("checkout: %s", roomctl.SafeText(refusal.Error()))
+	}
+	if err != nil {
+		return err
+	}
+	note := "created"
+	if got.Reused {
+		note = "already there"
+	}
+	_, _ = fmt.Fprintf(hints, "%s: %s%s\n", got.Branch, note, map[bool]string{true: ", " + got.PR, false: ""}[got.PR != ""])
+	_, err = fmt.Fprintln(r.Out, got.Path)
 	return err
 }

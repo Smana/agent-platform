@@ -74,7 +74,7 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 		props["start"] = map[string]any{"type": "boolean", "title": "Start the factory now", "default": false,
 			"description": "Also labels it " + readyLabel + " with your gh, which starts the factory"}
 		tail = "Choose \"start\" to also label it " + readyLabel + " with your gh, which starts the factory."
-	} else if why := oneLine(draft.CanStartWhy); why != "" {
+	} else if why := OneLine(draft.CanStartWhy); why != "" {
 		tail = "The factory cannot be started from here (" + why + "). It gets no label: label it " + readyLabel + " yourself to start the factory."
 	}
 	ans, err := r.ask(ctx, "elicitation/create", map[string]any{
@@ -118,7 +118,7 @@ func (r *Relay) start(ctx context.Context, repo, url string) any {
 		err = r.Label(ctx, repo, n, readyLabel)
 	}
 	if err != nil {
-		result["why"] = "filed without the label, so not started: " + oneLine(err.Error()) + "; label it " + readyLabel + " yourself"
+		result["why"] = "filed without the label, so not started: " + OneLine(err.Error()) + "; label it " + readyLabel + " yourself"
 		out, _ := mcpwire.ToolResult(result)
 		return out
 	}
@@ -197,7 +197,7 @@ var issueURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-
 func issueNumber(url, repo string) (int, error) {
 	m := issueURL.FindStringSubmatch(strings.TrimSpace(url))
 	if m == nil || m[1] != repo {
-		return 0, fmt.Errorf("gh printed %q, not an issue of %s", oneLine(url), repo)
+		return 0, fmt.Errorf("gh printed %q, not an issue of %s", OneLine(url), repo)
 	}
 	return strconv.Atoi(m[2])
 }
@@ -208,7 +208,7 @@ func GHLabel(ctx context.Context, repo string, issue int, label string) error {
 	var errOut bytes.Buffer
 	cmd.Stderr = &capped{b: &errOut}
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh issue edit: %w: %s", err, oneLine(errOut.String()))
+		return fmt.Errorf("gh issue edit: %w: %s", err, OneLine(errOut.String()))
 	}
 	return nil
 }

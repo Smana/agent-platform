@@ -51,6 +51,8 @@ type Relay struct {
 	After func(d time.Duration) <-chan time.Time
 	// RootsWait bounds the client's answer to roots/list; zero is rootsWait.
 	RootsWait time.Duration
+	// Git runs room_checkout's git; nil is RunGit. Tests replace it.
+	Git Git
 	// handlers are the local tools; nil is the relay's own (localHandlers). Tests replace them.
 	handlers map[string]localTool
 

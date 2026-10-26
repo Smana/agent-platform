@@ -40,13 +40,10 @@ type localTool func(ctx context.Context, r *Relay, c localCall) any
 var localHandlers = buildHandlers()
 
 func buildHandlers() map[string]localTool {
-	unavailable := func(_ context.Context, _ *Relay, c localCall) any {
-		return mcpwire.ToolError("unavailable: " + c.Name + " is not served by this roomctl yet")
-	}
 	return map[string]localTool{
 		issueFileTool:    func(ctx context.Context, r *Relay, c localCall) any { return r.issueFile(ctx, c.Args) },
 		toolRoomWait:     func(ctx context.Context, r *Relay, c localCall) any { return r.roomWait(ctx, c) },
-		toolRoomCheckout: unavailable, // Task 17
+		toolRoomCheckout: func(ctx context.Context, r *Relay, c localCall) any { return r.roomCheckout(ctx, c) },
 	}
 }
 
@@ -54,11 +51,7 @@ func buildHandlers() map[string]localTool {
 var localEntries = []any{
 	issueFileEntry,
 	roomWaitEntry,
-	map[string]any{
-		"name":        toolRoomCheckout,
-		"description": "Not yet available in this roomctl: check out the pull request a room opened into the developer's workspace.",
-		"inputSchema": json.RawMessage(`{"type":"object","properties":{"room":{"type":"string"}}}`),
-	},
+	roomCheckoutEntry,
 }
 
 // withLocalTools adds the local tools to the broker's tools/list result.
