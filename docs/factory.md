@@ -263,7 +263,8 @@ show. The history keeps the last 20 runs, oldest first. A run's outcome is `succ
 `budget_exhausted`, `revoked`, `lost` (a disruption, a lost pod or a vanished claim) or `ended` (the
 task ended or escalated with the run unfinished); it is empty while the run goes on. A run's dollars
 and the task's spend are exact in the facts posted, but a tick of a running run never posts: the
-spend steps by 10% of its cap, or $0.10 without one. A run the meter could not price reads $0.
+spend steps by 10% of its cap, or $0.10 without one. A run the meter could not price reads $0, so a task mixing priced and unpriced runs shows a partial
+dollar figure while its token cap binds: a known limit.
 
 ## Triage: tiers, templates, classes
 

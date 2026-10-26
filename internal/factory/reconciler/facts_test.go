@@ -471,3 +471,24 @@ func TestAnAdoptedTaskHasNoFactsDue(t *testing.T) {
 		t.Fatal("an adopted task has facts due")
 	}
 }
+
+// A run superseded by a later one is over, whatever the task's phase (a retry from Escalated leaves
+// the stuck run's record unfinished): it ended when the next began. The last run is live.
+func TestFactsOfEndsASupersededUnfinishedRun(t *testing.T) {
+	task := awaiting()
+	task.Status.Runs = runsOf(3)
+	task.Status.Phase = v1alpha1.PhaseImplementing
+	f := factsOf(task)
+	for i := range 2 {
+		next := task.Status.Runs[i+1].Started.UTC().Truncate(time.Second)
+		if r := f.Runs[i]; r.Outcome != envelope.OutcomeEnded || !r.EndedAt.Equal(next) {
+			t.Fatalf("run %d %+v, want ended at %v", i, r, next)
+		}
+	}
+	if r := f.Runs[2]; r.Outcome != "" || !r.EndedAt.IsZero() {
+		t.Fatalf("the last run is not live: %+v", r)
+	}
+	if err := f.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

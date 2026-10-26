@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
@@ -22,31 +24,44 @@ import (
 // factsOf is what the room's summary shows of a task: phase, current run, budget, issue, PR.
 func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	f := envelope.TaskFacts{Phase: t.Status.Phase, Reason: t.Status.Reason}
-	// A task that ended, or escalated as stuck, without finished() leaves its last run unfinished (M4):
-	// say it ended with the task, so a view never reads it as running.
+	// An unfinished record is over (M4) when a later run superseded it (a retry from Escalated), ended
+	// at the next run's start; or, for the last one, when the task ended or escalated as stuck, at its
+	// phase's start. Otherwise a view would read a dead run as running.
 	over := v1alpha1.TerminalPhase(t.Status.Phase) || t.Status.Phase == v1alpha1.PhaseEscalated
-	fact := func(r v1alpha1.RunRecord) envelope.RunFact {
+	fact := func(i int) envelope.RunFact {
+		r := t.Status.Runs[i]
 		rf := runFact(r)
-		if over && r.Finished == nil {
-			rf.Outcome = envelope.OutcomeEnded
-			if p := t.Status.PhaseSince; p != nil && !p.UTC().Truncate(time.Second).Before(rf.StartedAt) {
-				rf.EndedAt = p.UTC().Truncate(time.Second)
-			}
+		if r.Finished != nil {
+			return rf
+		}
+		var end *metav1.Time
+		switch {
+		case i < len(t.Status.Runs)-1:
+			end = t.Status.Runs[i+1].Started
+		case over:
+			end = t.Status.PhaseSince
+		default:
+			return rf
+		}
+		rf.Outcome = envelope.OutcomeEnded
+		if end != nil && !end.UTC().Truncate(time.Second).Before(rf.StartedAt) {
+			rf.EndedAt = end.UTC().Truncate(time.Second)
 		}
 		return rf
 	}
 	if len(t.Status.Runs) > 0 {
-		rf := fact(*current(t))
+		rf := fact(len(t.Status.Runs) - 1)
 		run := current(t)
 		if p := run.Provenance; !p.IsZero() {
 			rf.Provenance = &envelope.ProvenanceFact{FactoryVersion: p.FactoryVersion, CompositionRevision: p.CompositionRevision,
 				HarnessImage: p.HarnessImage, ServedModels: slices.Clone(p.ServedModels)}
 		}
 		f.Run = &rf
-		for _, r := range t.Status.Runs[max(0, len(t.Status.Runs)-envelope.MaxRuns):] {
-			f.Runs = append(f.Runs, fact(r))
+		for i := max(0, len(t.Status.Runs)-envelope.MaxRuns); i < len(t.Status.Runs); i++ {
+			f.Runs = append(f.Runs, fact(i))
 		}
 	}
+	// Known limit: a task mixing priced and unpriced runs shows the priced dollars only, while its token cap binds.
 	if u, limit := t.Status.Usage.CostMicroUSD, t.Spec.Budget.TaskMicroUSD; u > 0 || limit > 0 {
 		f.Spend = &envelope.SpendFact{UsedMicroUSD: u, LimitMicroUSD: limit}
 	}
