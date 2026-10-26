@@ -14,13 +14,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/agent-platform/internal/roomview"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -48,7 +49,9 @@ type Client struct {
 type RoomFilter struct {
 	Repo          string // owner/name
 	Mine, NeedsMe bool
-	JSON          bool // print the broker's rows unchanged; not part of the query
+	All           bool            // list the rooms that ended more than a week ago too; the overview filters, not the query
+	Format        roomview.Format // how the overview is written; the zero value is Markdown
+	JSON          bool            // print the broker's rows unchanged; not part of the query
 }
 
 func (f RoomFilter) query() string {
@@ -117,91 +120,68 @@ func (c Client) header(ctx context.Context) (http.Header, error) {
 	return h, nil
 }
 
-// Rooms prints one row per room the developer may read, then a hint on stderr
-// when the broker says why the list may be short (X-Rooms-Access, ruling R21).
-func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
+// roomsBody is GET /api/rooms as the broker sent it, with its X-Rooms-Access (ruling R21).
+func (c Client) roomsBody(ctx context.Context, f RoomFilter) (body []byte, access string, err error) {
 	h, err := c.header(ctx)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+"/api/rooms"+withQuery(f.query()), nil)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	req.Header = h
 	resp, err := c.HC.Do(req)
 	if err != nil {
-		return fmt.Errorf("rooms: %w", err)
+		return nil, "", fmt.Errorf("rooms: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return refusal("rooms", resp)
+		return nil, "", refusal("rooms", resp)
 	}
-	body, err := httpx.ReadBody(resp.Body, maxRoomsBody)
+	body, err = httpx.ReadBody(resp.Body, maxRoomsBody)
 	if err != nil {
-		return fmt.Errorf("rooms: %w", err)
+		return nil, "", fmt.Errorf("rooms: %w", err)
 	}
-	var rows []struct {
-		ID, Repository, Phase, Title, Task string
-		Issue, PR, NeedsYou                int
-		You                                struct{ Role string }
+	return body, resp.Header.Get("X-Rooms-Access"), nil
+}
+
+// RoomRows is the rooms the developer may read, and X-Rooms-Access, which says why the list may be short.
+func (c Client) RoomRows(ctx context.Context, f RoomFilter) ([]roomview.Row, string, error) {
+	body, access, err := c.roomsBody(ctx, f)
+	if err != nil {
+		return nil, "", err
 	}
+	var rows []roomview.Row
 	if err := json.Unmarshal(body, &rows); err != nil {
-		return fmt.Errorf("rooms: %w", err)
+		return nil, "", fmt.Errorf("rooms: %w", err)
+	}
+	return rows, access, nil
+}
+
+// Rooms prints the overview, or with f.JSON the broker's rows as sent, then a hint on stderr
+// when the broker says why the list may be short.
+func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
+	body, access, err := c.roomsBody(ctx, f)
+	if err != nil {
+		return err
 	}
 	if f.JSON { // the broker's rows as sent: today's fields and the task's
 		if _, err := fmt.Fprintln(out, string(body)); err != nil {
 			return err
 		}
-		c.hint(resp.Header.Get("X-Rooms-Access"))
+		c.hint(access)
 		return nil
 	}
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ROOM\tREPO\tISSUE\tTITLE\tTASK\tPR\tNEEDS-YOU\tROLE")
-	for _, r := range rows {
-		task := r.Task
-		if task == "" { // a room with no factory task: its own phase, marked as not the task's
-			task = "(" + r.Phase + ")"
-		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", printable(r.ID), printable(r.Repository), number(r.Issue),
-			dash(clip(OneLine(r.Title), maxTitle)), printable(task), number(r.PR), count(r.NeedsYou), printable(r.You.Role))
+	var rows []roomview.Row
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return fmt.Errorf("rooms: %w", err)
 	}
-	if err := tw.Flush(); err != nil {
+	if err := roomview.Overview(out, rows, roomview.Options{Format: f.Format, Now: time.Now(), All: f.All, Rooms: c.URL}); err != nil {
 		return err
 	}
-	c.hint(resp.Header.Get("X-Rooms-Access"))
+	c.hint(access)
 	return nil
-}
-
-// maxTitle bounds a title in the room table, in runes.
-const maxTitle = 50
-
-func clip(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n-1]) + "…"
-	}
-	return s
-}
-
-func dash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
-func number(n int) string {
-	if n <= 0 {
-		return "-"
-	}
-	return fmt.Sprintf("#%d", n)
-}
-
-func count(n int) string {
-	if n <= 0 {
-		return "-"
-	}
-	return strconv.Itoa(n)
 }
 
 func withQuery(q string) string {
@@ -269,6 +249,63 @@ func (c Client) Summary(ctx context.Context, room string, after int64) (json.Raw
 		return nil, fmt.Errorf("status: %w", err)
 	}
 	return body, nil
+}
+
+// toolProtocol is the MCP revision a stateless tools/call names.
+const toolProtocol = "2025-06-18"
+
+// ErrUnknownTool is the broker answering -32602 to a tool it does not serve: an older broker.
+var ErrUnknownTool = errors.New("the broker serves no such tool")
+
+// Tool calls one tool of the broker's /mcp, statelessly (no initialize), as the developer. It
+// returns the result's text and structuredContent. A broker with no /mcp is mcp_off, an isError
+// result an error carrying its text, and -32602 an ErrUnknownTool.
+func (c Client) Tool(ctx context.Context, name string, args any) (text string, structured json.RawMessage, err error) {
+	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args}})
+	if err != nil {
+		return "", nil, err
+	}
+	r := &Relay{URL: c.URL, Token: c.Token, HC: c.HC, version: toolProtocol}
+	res, err := r.relay(ctx, raw)
+	var rel relayed
+	var refused *Refusal
+	switch {
+	case errors.As(err, &rel):
+		var e struct {
+			Code    int
+			Message string
+		}
+		_ = json.Unmarshal(rel.e, &e)
+		if e.Code == mcpwire.InvalidParams {
+			return "", nil, fmt.Errorf("%w: %s", ErrUnknownTool, OneLine(e.Message))
+		}
+		return "", nil, fmt.Errorf("%s: %s", name, OneLine(e.Message))
+	case errors.Is(err, errToken), errors.As(err, &refused):
+		return "", nil, errors.New(explainRelay(err))
+	case err != nil:
+		return "", nil, err
+	}
+	var out struct {
+		Content []struct {
+			Type, Text string
+		}
+		Structured json.RawMessage `json:"structuredContent"`
+		IsError    bool            `json:"isError"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return "", nil, fmt.Errorf("%s: the broker's answer: %w", name, err)
+	}
+	var b strings.Builder
+	for _, p := range out.Content {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	if out.IsError {
+		return "", nil, fmt.Errorf("%s: %s", name, OneLine(b.String()))
+	}
+	return b.String(), out.Structured, nil
 }
 
 // dial opens the room's WebSocket and says hello.

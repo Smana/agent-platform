@@ -38,6 +38,11 @@ type roomctlBroker struct {
 	bearer []string
 	query  string // the last REST query
 	access string // the X-Rooms-Access the room list sends
+	// tool answers a tools/call to /mcp: the tool's name, its arguments, and the answer's JSON-RPC
+	// body after the id; nil answers every call with an empty result.
+	tool  func(name string, args map[string]any) string
+	calls []map[string]any // the arguments of each tools/call, in order
+	proto []string         // the MCP-Protocol-Version header of each /mcp request
 }
 
 func newRoomctlBroker(t *testing.T) *roomctlBroker {
@@ -50,13 +55,26 @@ func newRoomctlBroker(t *testing.T) *roomctlBroker {
 		}
 		if r.URL.Path == "/mcp" {
 			var m struct {
-				ID json.RawMessage `json:"id"`
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"params"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&m)
 			b.mu.Lock()
 			b.bearer = append(b.bearer, r.Header.Get("Authorization"))
+			b.proto = append(b.proto, r.Header.Get("MCP-Protocol-Version"))
+			if m.Method == "tools/call" {
+				b.calls = append(b.calls, m.Params.Arguments)
+			}
 			b.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
+			if m.Method == "tools/call" && b.tool != nil {
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,` + b.tool(m.Params.Name, m.Params.Arguments) + `}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{}}`))
 			return
 		}
@@ -306,7 +324,7 @@ func TestRoomctlRoomsFiltersAndHint(t *testing.T) {
 	if err := r.Run(t.Context(), []string{"rooms", "--repo", "Smana/a", "--mine", "--needs-me"}); err != nil {
 		t.Fatal(err)
 	}
-	if b.query != "/api/rooms?mine=1&needs_me=1&repo=Smana%2Fa" || !strings.Contains(out.String(), "REPO") {
+	if b.query != "/api/rooms?mine=1&needs_me=1&repo=Smana%2Fa" || !strings.Contains(out.String(), "ROOM") {
 		t.Fatalf("%q %q", b.query, out)
 	}
 	if got := r.Err.(*strings.Builder).String(); !strings.Contains(got, "https://auth.example") {
@@ -479,5 +497,101 @@ func TestTextFormat(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	if got := textFormat(tty); got != roomview.Text {
 		t.Errorf("NO_COLOR set: format %d", got)
+	}
+}
+
+// changesAnswer is room_changes' structuredContent for a page of two milestones, next its cursor.
+func changesAnswer(cursor string) string {
+	sc := `{"room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm","since":"2026-10-08T09:00:00Z","items":[` +
+		`{"seq":5,"at":"2026-10-08T09:10:00Z","kind":"run_started","run":"cf4ato2x","role":"implementer"},` +
+		`{"seq":9,"at":"2026-10-08T09:40:00Z","kind":"note","run":"cf4ato2x","text":"hi\u001b[2J"}],` +
+		`"more":0,"cursor":"` + cursor + `","untrusted":true}`
+	return `"result":{"content":[{"type":"text","text":"**26zfnuxm**"}],"structuredContent":` + sc + `}`
+}
+
+func TestRoomctlRoomsRendersTheOverview(t *testing.T) {
+	b := newRoomctlBroker(t)
+	r, out := configured(t, b)
+	if err := r.Run(t.Context(), []string{"rooms", "--format", "text"}); err != nil {
+		t.Fatal(err)
+	}
+	if h := strings.Fields(strings.Split(out.String(), "\n")[2]); !slices.Equal(h, []string{"ROOM", "TASK", "STATE", "WHERE", "IT", "IS", "PR", "UPDATED"}) {
+		t.Fatalf("the terminal overview's header: %q", out)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"rooms", "--format", "md"}); err != nil || !strings.Contains(out.String(), "**Factory rooms**") {
+		t.Fatalf("--format md: %q %v", out, err)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"rooms", "--json"}); err != nil || !strings.HasPrefix(out.String(), `[{"id":"3kq7x2ma"`) {
+		t.Fatalf("--json is the body as received: %q %v", out, err)
+	}
+	if err := r.Run(t.Context(), []string{"rooms", "--all", "--format", "text"}); err != nil {
+		t.Fatalf("--all: %v", err)
+	}
+	if err := r.Run(t.Context(), []string{"rooms", "--format", "html"}); err == nil {
+		t.Fatal("an unknown --format is refused")
+	}
+}
+
+func TestRoomctlChanges(t *testing.T) {
+	b := newRoomctlBroker(t)
+	b.tool = func(name string, _ map[string]any) string {
+		if name != "room_changes" {
+			t.Errorf("tool %q", name)
+		}
+		return changesAnswer("seq:9")
+	}
+	r, out := configured(t, b)
+	if err := r.Run(t.Context(), []string{"changes", "26zfnuxm", "--format", "text"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.calls) != 1 || b.calls[0]["room"] != "26zfnuxm" || b.calls[0]["cursor"] != nil || b.proto[0] != "2025-06-18" ||
+		!strings.Contains(out.String(), "26zfnuxm") || strings.ContainsRune(out.String(), 0x1b) {
+		t.Fatalf("first run: %v %v\n%q", b.calls, b.proto, out)
+	}
+	if err := r.Run(t.Context(), []string{"changes", "26zfnuxm"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.calls[1]["cursor"] != "seq:9" {
+		t.Fatalf("the second run sends the cursor the first returned: %v", b.calls)
+	}
+	if _, err := os.Stat(filepath.Join(r.Dir, "cursors.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(t.Context(), []string{"changes", "26zfnuxm", "--cursor", "seq:2"}); err != nil || b.calls[2]["cursor"] != "seq:2" {
+		t.Fatalf("--cursor overrides: %v %v", b.calls, err)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"changes", "26zfnuxm", "--json"}); err != nil || !strings.HasPrefix(out.String(), `{"room":"26zfnuxm"`) || !strings.Contains(out.String(), `\u001b`) {
+		t.Fatalf("--json is the structured content as received: %q %v", out, err)
+	}
+	if err := r.Run(t.Context(), []string{"changes"}); err == nil {
+		t.Fatal("a room is required")
+	}
+	if err := r.Run(t.Context(), []string{"changes", "26zfnuxm", "--cursor", "x"}); err == nil {
+		t.Fatal("a cursor is seq:N")
+	}
+}
+
+func TestRoomctlChangesOldBroker(t *testing.T) {
+	b := newRoomctlBroker(t)
+	b.tool = func(string, map[string]any) string {
+		return `"error":{"code":-32602,"message":"unknown tool room_changes"}`
+	}
+	r, _ := configured(t, b)
+	err := r.Run(t.Context(), []string{"changes", "26zfnuxm"})
+	if err == nil || !strings.Contains(err.Error(), "roomctl changes needs a broker with room_changes (agent-platform v0.23.0 or later)") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRoomctlHelpNamesTheNewCommands(t *testing.T) {
+	var out strings.Builder
+	if err := (Roomctl{Dir: t.TempDir(), Out: &out}).Run(t.Context(), []string{"help"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "changes <room>") || !strings.Contains(s, "rooms [--repo owner/name]") || !strings.Contains(s, "--all") {
+		t.Fatalf("help:\n%s", s)
 	}
 }

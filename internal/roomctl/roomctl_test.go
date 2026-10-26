@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +23,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/agent-platform/internal/roomview"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -299,13 +299,12 @@ func fixed(context.Context) (string, error) { return "tok", nil }
 func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 	b := newBroker(t)
 	var out strings.Builder
-	if err := b.client(fixed).Rooms(t.Context(), &out, RoomFilter{}); err != nil {
+	if err := b.client(fixed).Rooms(t.Context(), &out, RoomFilter{Format: roomview.Text}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !slices.Equal(strings.Fields(lines[0]), []string{"ROOM", "REPO", "ISSUE", "TITLE", "TASK", "PR", "NEEDS-YOU", "ROLE"}) ||
-		!slices.Equal(strings.Fields(lines[1]), []string{"3kq7x2ma", "Smana/a", "#2266", "fix[2J", "the", "CA", "Reviewing", "#2267", "1", "watcher"}) ||
-		!slices.Equal(strings.Fields(lines[2]), []string{"d66mo4b4", "Smana/a", "-", "-", "(Idle)", "-", "-", "owner"}) {
+	if len(lines) != 5 || !strings.HasPrefix(lines[2], "ROOM") || !strings.Contains(lines[3], "3kq7x2ma") ||
+		!strings.Contains(lines[3], "fix[2J the CA") || strings.ContainsRune(out.String(), 0x1b) {
 		t.Fatalf("%q", lines)
 	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })
@@ -488,13 +487,13 @@ func TestRoomsFilterAndAccessHint(t *testing.T) {
 		b.access = tc.access
 		var out, errOut strings.Builder
 		c.Err = &errOut
-		if err := c.Rooms(t.Context(), &out, RoomFilter{Repo: "Smana/a", NeedsMe: true}); err != nil {
+		if err := c.Rooms(t.Context(), &out, RoomFilter{Repo: "Smana/a", NeedsMe: true, Format: roomview.Text}); err != nil {
 			t.Fatal(err)
 		}
 		if got := b.query[len(b.query)-1]; got != "needs_me=1&repo=Smana%2Fa" {
 			t.Fatalf("query %q", got)
 		}
-		if !strings.Contains(out.String(), "REPO") || strings.Contains(out.String(), "verified") {
+		if !strings.Contains(out.String(), "ROOM") || strings.Contains(out.String(), "verified") {
 			t.Fatalf("stdout %q", out.String())
 		}
 		if tc.hint == "" && errOut.Len() != 0 || !strings.Contains(errOut.String(), tc.hint) {
@@ -527,5 +526,96 @@ func TestAnInactiveUserIsToldSo(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "user_inactive") || strings.Contains(err.Error(), "roomctl login") {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestCursorsKeep200(t *testing.T) {
+	c := Cursors{Path: filepath.Join(t.TempDir(), "cursors.json")}
+	if got := c.Get("none"); got != "" {
+		t.Fatalf("no cursor yet: %q", got)
+	}
+	for i := range 201 {
+		if err := c.Put(fmt.Sprintf("room%03d", i), fmt.Sprintf("seq:%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := c.Get("room000"); got != "" {
+		t.Fatalf("the oldest is dropped: %q", got)
+	}
+	if c.Get("room001") != "seq:1" || c.Get("room200") != "seq:200" {
+		t.Fatalf("the 200 most recent are kept: %q %q", c.Get("room001"), c.Get("room200"))
+	}
+	if err := c.Put("room001", "seq:999"); err != nil || c.Get("room001") != "seq:999" {
+		t.Fatalf("a put replaces: %v", err)
+	}
+	if err := os.WriteFile(c.Path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c.Get("room001") != "" {
+		t.Fatal("a corrupt file reads as empty")
+	}
+	if err := c.Put("a", "seq:1"); err != nil || c.Get("a") != "seq:1" {
+		t.Fatalf("a corrupt file is overwritten: %v", err)
+	}
+}
+
+func TestRoomRowsReturnsRowsAndAccess(t *testing.T) {
+	b := newBroker(t)
+	b.access = "unverified"
+	rows, access, err := b.client(fixed).RoomRows(t.Context(), RoomFilter{})
+	if err != nil || access != "unverified" || len(rows) != 2 || rows[0].ID != "3kq7x2ma" || rows[0].PR != 2267 {
+		t.Fatalf("%+v %q %v", rows, access, err)
+	}
+}
+
+// toolBroker answers /mcp with fn's body, recording the request's protocol header and body.
+func toolBroker(t *testing.T, status int, fn func(req map[string]any) string) (c Client, proto *string) {
+	t.Helper()
+	proto = new(string)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*proto = r.Header.Get("MCP-Protocol-Version")
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fn(req)))
+	}))
+	t.Cleanup(srv.Close)
+	return Client{URL: srv.URL, Token: fixed, HC: srv.Client()}, proto
+}
+
+func TestToolCallsOneStatelessTool(t *testing.T) {
+	c, proto := toolBroker(t, http.StatusOK, func(req map[string]any) string {
+		p := req["params"].(map[string]any)
+		if req["method"] != "tools/call" || p["name"] != "room_summary" {
+			t.Errorf("request %v", req)
+		}
+		return `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hello"}],"structuredContent":{"a":1}}}`
+	})
+	text, sc, err := c.Tool(t.Context(), "room_summary", map[string]string{"room": "x"})
+	if err != nil || text != "hello" || string(sc) != `{"a":1}` || *proto != "2025-06-18" {
+		t.Fatalf("%q %s %v %q", text, sc, err, *proto)
+	}
+}
+
+func TestToolErrors(t *testing.T) {
+	c, _ := toolBroker(t, http.StatusNotFound, nil)
+	if _, _, err := c.Tool(t.Context(), "x", nil); err == nil || !strings.Contains(err.Error(), "mcp_off") {
+		t.Fatalf("404 is mcp_off: %v", err)
+	}
+	c, _ = toolBroker(t, http.StatusOK, func(map[string]any) string {
+		return `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"no_room: no such room"}]}}`
+	})
+	if _, _, err := c.Tool(t.Context(), "x", nil); err == nil || !strings.Contains(err.Error(), "no_room: no such room") || errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("an isError result carries its text: %v", err)
+	}
+	c, _ = toolBroker(t, http.StatusOK, func(map[string]any) string {
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool"}}`
+	})
+	if _, _, err := c.Tool(t.Context(), "x", nil); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("-32602 is ErrUnknownTool: %v", err)
 	}
 }
