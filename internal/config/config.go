@@ -76,10 +76,10 @@ type SponsoredConfig struct {
 	ClientIDFile string `json:"clientIDFile"`
 }
 
-// sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
 // repositoryRE is an owner/name, as humanapi's.
 var repositoryRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 
+// sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
 var sponsoredNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // AccessConfig is D7's GitHub check. ReaderFile is the ZITADEL link reader's mounted

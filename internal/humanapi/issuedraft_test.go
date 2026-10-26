@@ -3,13 +3,16 @@
 package humanapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
 func TestMCPIssueDraft(t *testing.T) {
@@ -57,6 +60,15 @@ func TestIssueDraftCanStart(t *testing.T) {
 		{"listed, read only", &gitHubWorld{}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
 		{"listed, the App cannot see it", &gitHubWorld{unseen: map[string]bool{"Smana/a": true}}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
 		{"listed, the lookup fails", &gitHubWorld{down: true}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "unverified"},
+		{"nil Access", &gitHubWorld{}, []option{listed, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Access = nil }}, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"empty SessionStart", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, []option{func(s *Server, _ *fanout.Hub, _ *hubView) { s.SessionStart = map[string]bool{} }}, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"nil SessionStart", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, nil, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"the write check itself says no repository", &gitHubWorld{}, []option{listed, func(s *Server, _ *fanout.Hub, _ *hubView) {
+			s.Access.Perm = func(context.Context, string, string, string) (string, error) {
+				return "", fmt.Errorf("installation: %w", repoaccess.ErrNoRepository)
+			}
+		}}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
+		{"the list is matched case-insensitively", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, []option{func(s *Server, _ *fanout.Hub, _ *hubView) { s.SessionStart = map[string]bool{"smana/a": true} }}, viaRoomctl("dev"), "Smana/a", true, ""},
 		{"a sponsored caller", &gitHubWorld{writes: map[string][]string{"Smana/a": {"slack-app"}}}, []option{listed, withSponsored(sponsoredP)}, bearer("slack-app"), "Smana/a", false, "off"},
 	}
 	body := "## What is wrong\nx\n\n## What it should be\ny\n\n## Acceptance check\nz\n"
