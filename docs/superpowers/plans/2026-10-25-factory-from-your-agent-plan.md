@@ -39,7 +39,7 @@ flowchart LR
   V --> B
   V --> R
   B -.->|"older broker: roomctl renders (FA14)"| R
-  R --> U
+  R -.->|"text-only conflicts"| U
 ```
 
 **Tech Stack:** Go 1.27.3 (stdlib `net/http`, `encoding/json`, `os/exec`, `text/tabwriter`),
@@ -56,7 +56,10 @@ pins the release and turns `/mcp` on with `sessionStart: []`.
 
 **Out of PRs 1–5:** the ai-native-ref and cloud-native-ref changes (PRs 6, 7), the live proofs, MCP
 Apps, MCP Tasks for `room_wait`, and the web UI. The new summary fields are additive and the web
-ignores them.
+ignores them. Also out: the post-merge monitor's verdict (`status.monitor`) never reaches the facts,
+so the card says nothing about a regression after merge (L17); and `run_create`'s and `room_tail`'s
+MCP Task results stay JSON text (`mcptasks.go:153`, `:349`), so a sponsored caller gets the views
+from `room_summary` only (L7).
 
 ### This plan's rulings
 
@@ -64,11 +67,11 @@ ignores them.
 |---|---|---|
 | R1 | **`internal/roomview` is the one renderer.** It holds one model per view and writes three encodings: Markdown, terminal text, and terminal text with colour. The broker and `roomctl` both call it, and nothing else formats a view. `roomctl`'s `RenderSummary`, `stamp`, `tokens` and `budgetText` move into it | FA2, FA14. A package by domain (AGENTS.md); `roomctl` already imports `summary` and `envelope`, and the view needs nothing else |
 | R2 | **The factory posts the task's runs**: `TaskFacts.Runs`, the last 20, oldest first, without provenance, each with its verdict (`RunRecord.Verdict`: `approve`, `changes` or `none`). The fold keeps the last fact, as it does for every other field | Facts post once per reconcile, after the phase step (`reconciler.go:252`), so a run's end and the next run's start can share one post. A run map in the fold would then never see the ended run. Last-fact-wins keeps `TestAddingPagesIsFoldingTheLog` true with no new fold state. The runs line's "reviewer approved" is per run, which the room's `lastVerdict` is not |
-| R3 | **A run's outcome** is one of `succeeded`, `failed`, `budget_exhausted`, `revoked`, `lost`, `ended`. It is set once `RunRecord.Finished` is set. A `Reason` of `Disrupted`, `PodLost`, `pod_lost` or `run_lost` is `lost`; otherwise the phase decides (`Succeeded`, `Failed`, `BudgetExhausted`, `Revoked`), so `PodFailed` under `Failed` is `failed`; anything else is `ended` | The factory has no stalled outcome. The record holds the AgentRun's phase (`implement.go:301`) and the end reason (`implement.go:469`, `team.go:134`). `PodFailed` is the pod failing on its own, which the factory never resumes (`runs.go:66`) |
+| R3 | **A run's outcome** is one of `succeeded`, `failed`, `budget_exhausted`, `revoked`, `lost`, `ended`. It is set once `RunRecord.Finished` is set. A `Reason` of `Disrupted`, `PodLost`, `pod_lost` or `run_lost` is `lost`; otherwise the phase decides (`Succeeded`, `Failed`, `BudgetExhausted`, `Revoked`), so `PodFailed` under `Failed` is `failed`; anything else is `ended`. A run whose record never got `Finished`, on a task in a `TerminalPhase`, is `ended`, with `EndedAt` the task's `PhaseSince` (M4) | The factory has no stalled outcome. The record holds the AgentRun's phase (`implement.go:301`) and the end reason (`implement.go:469`, `team.go:134`). `PodFailed` is the pod failing on its own, which the factory never resumes (`factory/runs/runs.go:66-71`). `Finished` is set only in `finished()` (`implement.go:405-410`): a stop or a Closed task leaves the last record unfinished |
 | R4 | **Dollars are their own fact, `TaskFacts.Spend`**, set when `Spec.Budget.TaskMicroUSD` or `Status.Usage.CostMicroUSD` is above 0. `Budget` keeps today's rule (set when `TaskTokens > 0`). The facts key steps `Spend.UsedMicroUSD` as it steps tokens: 10 % of the cap, or $0.10 without one. A run without `EndedAt` leaves its micro-USD out of the key. Facts posted carry exact values | Every meter tick would otherwise post facts (`facts.go:75`). A budget fact with no token limit would make the room page read `182 k / 0` (`web/src/strip.ts:91`). The spec has spend "with each budget fact"; the owner chose the separate fact, 2026-10-25 |
 | R5 | **Untrusted text is made inert in one place.** `clean` first folds each run of `unicode.IsSpace` runes to one space, then strips every rune `unicode.IsPrint` refuses (control, bidi, zero-width), then cuts at 160 runes plus `…`. In Markdown, agents' text goes in a code span whose backtick fence is longer than the text's longest backtick run. A title has every ASCII punctuation character backslash-escaped, which covers `<` (raw HTML), `[`, `*`, `#` and `` ` ``. Any title word GFM could autolink (containing `://`, `www.` or `@`) goes in its own code span instead. In a table cell, every `\|` is written `\\|`, even inside a code span: GFM splits cells before inline parsing. The terminal gets `clean` text, with agents' words in double quotes | FA10, T10. Folding first keeps `a\nb` two words. Backslash escapes don't stop GFM's extended autolinks, which run on text nodes after inline parsing |
 | R6 | **The golden link check parses with goldmark and its GFM extension** (Table, Linkify, Strikethrough), a test-only dependency. Every link node and autolink must be on the allowlist; there is no raw HTML node; and no heading, table, list or emphasis may come from a fixture's untrusted string | An independent parser. A hand-written checker would share the escaper's blind spots |
-| R7 | **A room row's `need`** is the caller's first need, in the summary's order: approval, hold, merge. Answers are left out, as in today's count. Approvals read `Log.OpenApprovals` only for a room whose CR shows a pending approval the caller could decide | FA11. The CR projects a count, not ids or deadlines (`rooms.go:246`) |
+| R7 | **A room row's `need`** is the caller's first need, in the summary's order: approval, hold, merge. Answers are left out, as in today's count. Approvals read `Log.OpenApprovals` only for a room whose CR shows a pending approval the caller could decide | FA11. The CR projects a count, not ids or deadlines (`rooms.go:249`) |
 | R8 | **A view tool's result is the Markdown view in `content[0].text`**, with the JSON as before in `structuredContent`, declared by an `outputSchema`: a root object whose properties stay open. This is a deviation: the MCP spec says a tool SHOULD also put the serialised JSON in a text block | FA2. Every in-repository reader (`roomctl/issuefile.go:111`, `slackapp/broker.go:179`) reads `structuredContent` |
 | R9 | **`room_changes` reads the facts at the cursor** through a new store method, `TaskStateAt`, on the `events_task_facts` partial index (no migration). Without a cursor it starts at `max(forkSeq, LastSeq − 2000)` and drops events older than 24 h. A page shows at most 30 milestones; past that, `more` counts the rest, and the cursor is the last shown milestone's seq. Turns, tool calls and pushes (class `forge.push`) collapse into counts per run | View 4. Without the facts at the cursor, a PR that opened in a page's first fact would never show |
 | R10 | **Prompts go to roomctl's principals only.** A sponsored principal sees neither the `prompts` capability nor any prompt | FA12. Prompts are slash commands for a person; the Slack App has none |
@@ -83,13 +86,54 @@ ignores them.
 | R19 | **Where the spec's examples need data no fact carries, the view says less, and the goldens follow the view.** Trigger `human` reads "human review", not "your review", and view 4's "you requested changes on #2239" reads "changes were requested on #2239": no fact names the reviewer. A lost run reads "the sandbox was lost", without "(spot reclaim)": runs carry an outcome, not a reason. A resume reads "(resume N)", with N counted from `runs`, not "(1 of 2)": no fact carries `resume.maxPerTask`. Every other line of the spec's four examples is reproduced | Each phrase would need its own fact field. The owner kept the plan's wording, 2026-10-25 |
 | R20 | **The repository on the card** is the `owner/name` of `status.issue.url`, else of `status.pr.url`; the line leaves it out when neither is set | `summary/v1` has no repository field, and both URLs pass `GitHubURL` |
 
+
+### Amendments (pre-flight 2026-10-26)
+
+The pre-flight scan of this plan against agent-platform `origin/main` `2b082e2` (v0.22.0 plus this
+plan) found 1 B, 7 M and 18 L; every proposed ruling is adopted. Each landed here:
+
+| Finding | Ruling, in short | Landed in |
+|---|---|---|
+| B1 | `roomctl.Client` is the broker client: setup's type is `Agent`, the table `Agents`, `Setup.Agent` | Tasks 18, 19 |
+| M1 | Port all eight `RenderSummary`/`budgetText` tests; `roomctl status` prints `cursor: seq:N` after the card, so `TestRoomctlStatus` keeps it | Task 5 |
+| M2 | `TaskStateAt` in `internal/app`'s `fakeActLog` and `fakeRoomLog` too | Task 10 |
+| M3 | `mcprelay_test.go:83`: Task 10 makes it 8, Task 14 asserts names, not a count; the second PR to merge rebases it | Tasks 10, 14; Execution order |
+| M4 | An unfinished run of a task in a `TerminalPhase` is `ended`, at `PhaseSince` | R3; Tasks 5, 8 |
+| M5 | ai-native-ref pins v0.22.0 (#116); this plan's release is v0.23.0; the adopt plan diffs from the pinned tag | Tasks 13, 19; Execution order; the adopt plan |
+| M6 | The doctor's `skill` check FAILs in cloud-native-ref until adopt PR 7; PR 7 merges before runbook 19 | Task 19; Execution order; the adopt plan |
+| M7 | Show the pipe test red first; a cmark-gfm style `gfmCells` if goldmark can't; two hostile approval commands, a bare pipe and a pipe after a backslash | Tasks 2, 3, 4 |
+| L1 | Anchors refreshed against `origin/main`: `summary.go:270`, `rooms.go:249`, `rooms.go:343`, `mcp.go:98` (roomctl), `factory/runs/runs.go:66-71`. `mcp.go:109` (`handle`) and `implement.go:469` still hold | R3, R7; Tasks 7, 16 |
+| L2 | `roomview.repoOf` keeps R20's order, issue first, pinned in `TestRepoOf` | Task 3 |
+| L3 | A golden with no issue: heading `### <room>`, Task column `—` | Tasks 2, 4, 5 |
+| L4 | The card falls back to tokens when the spend is 0 and a budget exists | Task 5 |
+| L5 | `docs/operations.md`: every task with a room posts its facts once at upgrade; sealed rooms answer 410 | Task 8 |
+| L6 | The adopt PR's body notes the rollout window | Not in the adopt amendment (outside M5, M6, L16); this plan's release notes say "roll the broker first" (Task 19) |
+| L7 | `run_create`'s and `room_tail`'s Task results stay JSON text | Out of PRs 1–5; Task 12 (`docs/api.md`) |
+| L8 | Live proof 3 checks the text view in both clients | Task 9 (a note); runbook 19's per-client columns |
+| L9 | Pin the goldmark version Step 3 resolves, and quote it in the commit | Task 3 |
+| L10 | Instructions say "if `room_wait` is listed" | Task 11 |
+| L11 | Keep PR 2 stacked on Task 1 | No change; Execution order |
+| L12 | `ErrNoRepository` reads `no_write` | Task 12 |
+| L13 | `until` defaults to `needs_you`, `pr_opened`, `ended` | Task 16 |
+| L14 | Task 16 wires `room_wait` into `localtools.go` | Task 16 |
+| L15 | `TestFlaggedCoversEveryProjectSnippet` | Task 18 |
+| L16 | Each new tool name is a Go `const` in `internal/` | Tasks 10, 14; the adopt plan |
+| L17 | `status.monitor` is not in the facts | Out of PRs 1–5 |
+| L18 | The checkout's origin check takes SSH and HTTPS forms, case-insensitively | Task 17 |
+
+**Tasks 1 and 11 were already being implemented from the earlier text.** Check them against this:
+- **Task 1:** no finding changes it. The pre-flight found its interfaces consistent with Tasks 2 and 8
+  and with `bridgeapi`'s strict ingest (P1–P3); `OutcomeEnded` already covers M4.
+- **Task 11:** L10 (the instructions read "if `room_wait` is listed", and `TestInstructionsFirst512`
+  looks for it), and R10's `prompts` capability branches on `p.Sponsored` as `mcpInstructionsFor`
+  does (`mcp.go:54`).
+
 ## Global Constraints
 
 - **Worktrees:** each PR is a worktree beside this repository, from a freshly fetched `origin/main`,
   rebased onto it before every push. Branches: `feat/roomview` (PR 1), `feat/factory-run-facts`
   (PR 2), `feat/broker-views` (PR 3), `feat/roomctl-views` (PR 4), `feat/roomctl-setup` (PR 5).
-  PR 2 branches from PR 1's merge (it needs Task 1's fields), PR 3 and PR 4 from PR 1's, and PR 5
-  from PR 4's.
+  Where each branches from is in "Execution order and parallelism" below.
 - **`task check` is the evidence** (AGENTS.md): exit 0, with Docker running for the store tests.
   Each task's own steps run `go test -race -count=1` on the packages they touch.
 - **Every `.go` file** starts with `// SPDX-License-Identifier: Apache-2.0`. Lint only through
@@ -116,6 +160,46 @@ ignores them.
   - sizes: "Overview: one row per room, at most 7 columns. Card: about 25 lines. Changes: 30 lines,
     then "N more"".
 - **Commits:** conventional, in English, no trailers. One concern per commit.
+
+## Execution order and parallelism
+
+"Parallel" means separate worktrees that land in any order. The standing cap of one background
+agent at a time still holds.
+
+```mermaid
+flowchart LR
+  T1 --> T2 --> T3 --> T4 & T5 & T6
+  T2 --> T7
+  T1 -.->|"branch from T1's commit"| PR2["PR 2 (T8)"]
+  M0[main] --> T11 & T12 & PR5["PR 5 (T18, T19)"]
+  PR1["PR 1 merged"] --> T9 & T10 & PR4["PR 4 (T13–T17)"]
+  T9 & T10 & T11 & T12 --> PR3[PR 3]
+  PR3 & PR4 & PR5 & PR2 --> REL[(v0.23.0)]
+  REL --> A6["adopt PR 6"] & A7["adopt PR 7"]
+  A7 --> RB19["runbook 19"]
+```
+
+- **PR 1 goes first:** T1 → T2 → T3 → {T4, T5, T6}. T4, T5 and T6 are separate files, but they
+  share `internal/roomview/testdata/` and T3's `goldmark_test.go`. T7 needs only T2's
+  `DescribeApproval`, so it runs beside T3–T6.
+- **PR 2** branches from T1's commit: it needs only Task 1's fields and outcome constants, and shares
+  no file with the rest of PR 1. It merges after PR 1 (strict ingest).
+- **PR 3:** Tasks 11 and 12 start from `main`; they need nothing from PR 1. Tasks 9 and 10 need PR 1's
+  `roomview`, so PR 3 rebases onto PR 1's merge before Task 9.
+- **PRs 3 and 4 run side by side after PR 1.** They share one line: the tool count in
+  `internal/humanapi/mcprelay_test.go` (`TestRoomctlMCPAgainstTheBroker`, l.83, `len(tools) != 7`).
+  Task 10 makes it 8 while the line still counts. Task 14 replaces the count with names: the list
+  ends with `issue_file`, `room_wait` and `room_checkout`, and holds `rooms_list` and
+  `room_summary`. Whichever PR merges second rebases that line (M3): PR 4 second replaces the 8 with
+  the names; PR 3 second adds `room_changes` to the names. PR 4 meets PR 3 only through wire names
+  (`canStart`, `room_changes`), which its tests fake.
+- **PR 5** starts from `main`: `skill.Install` exists, and nothing in it needs PR 4's code. Its
+  conflicts with PR 4 are text only: `internal/app/roomctl.go` (usage, whitelist, dispatch) and
+  `docs/roomctl.md`. The second to merge rebases.
+- **Then the release `v0.23.0`** (Task 19 Step 6), once PRs 1–5 are on `main`. Then ai-native-ref's
+  adopt PR 6 (pins from v0.22.0, which ai-native-ref's #116 pinned) and cloud-native-ref's adopt PR 7.
+  **PR 7 merges before runbook 19** (M6): until it does, `roomctl doctor`'s `skill` check FAILs in
+  every cloud-native-ref checkout.
 
 ## Review Focus
 
@@ -155,15 +239,15 @@ ignores them.
 | `internal/factory/reconciler/facts.go` (+ test) | modify (Task 8) | Runs, outcomes, dollars, the key |
 | `internal/mcpwire/mcpwire.go` (+ test) | modify (Task 9) | `ToolResultText` |
 | `internal/humanapi/mcp.go`, `mcpread.go` (+ tests) | modify (Tasks 9–11) | `outputSchema`, text views, `room_changes`, prompts, instructions |
-| `internal/humanapi/mcpchanges.go` (+ test), `server.go`, `internal/store/rooms.go` (+ test) | create, modify (Task 10) | `room_changes`; `Log.TaskStateAt` |
+| `internal/humanapi/mcpchanges.go` (+ test), `server.go`, `internal/store/rooms.go` (+ test), the `Log` fakes in `internal/humanapi` and `internal/app`, `mcprelay_test.go` | create, modify (Task 10) | `room_changes`; `Log.TaskStateAt` |
 | `internal/humanapi/mcpprompts.go` (+ test) | create (Task 11) | `prompts/list`, `prompts/get` |
 | `internal/config/config.go` (+ `mcp_test.go`), `internal/app/broker.go`, `internal/humanapi/issuedraft.go` (+ test) | modify (Task 12) | `sessionStart`, `canStart` |
 | `internal/roomctl/client.go`, `cursors.go`, `internal/app/roomctl.go` (+ tests) | modify, create (Task 13) | Views in the CLI, `changes` |
 | `internal/roomctl/mcp.go`, `localtools.go` (+ tests) | modify, create (Task 14) | Capabilities, cancellation, progress, the views for an older broker |
 | `internal/roomctl/issuefile.go` (+ test) | modify (Task 15) | The start field |
-| `internal/roomctl/roomwait.go` (+ test) | create (Task 16) | `room_wait` |
+| `internal/roomctl/roomwait.go` (+ test), `localtools.go` | create, modify (Task 16) | `room_wait` |
 | `internal/roomctl/checkout.go`, `git.go` (+ tests) | create (Task 17) | `room_checkout`, `roomctl checkout` |
-| `internal/roomctl/setup.go` (+ test, goldens) | create (Task 18) | `roomctl setup` |
+| `internal/roomctl/setup.go` (+ test, goldens) | create (Task 18) | `roomctl setup`, the `Agents` table |
 | `internal/roomctl/skill/factory-handoff/SKILL.md`, `skill.go`, `doctor.go` (+ tests) | modify (Task 19) | Skill v2, `skill.Version`, the `skill` check |
 | `docs/api.md`, `docs/roomctl.md`, `docs/security.md`, `docs/event-envelope.md`, `docs/operations.md`, `docs/architecture.md` | modify (Tasks 7, 8, 12, 17, 19) | The reader's contract |
 
@@ -235,7 +319,8 @@ git commit -m "feat(envelope): a task's runs, each run's outcome, end and dollar
 
 **Files:**
 - Modify: `internal/summary/summary.go`, `internal/summary/state.go`
-- Create: `internal/summary/testdata/runs_and_spend.json`, `internal/summary/testdata/hostile.json`
+- Create: `internal/summary/testdata/runs_and_spend.json`, `internal/summary/testdata/hostile.json`,
+  `internal/summary/testdata/no_issue.json`
 - Test: `internal/summary/summary_test.go`, `internal/summary/state_test.go`
 
 **Interfaces:**
@@ -264,9 +349,14 @@ git commit -m "feat(envelope): a task's runs, each run's outcome, end and dollar
 | a note | `"\n# heading\n[x](https://evil.example)"` |
 | a note | `**bold** _it_ ~~gone~~ <img src=x onerror=alert(1)>` |
 | an approval command | `"\u001b[2Jrm -rf / \u202e\u200b"` |
+| an approval command | `"a\u007cb"`: `a`, a bare pipe, `b` (M7) |
+| an approval command | `"a\\\u007cb"`: `a`, a backslash, a bare pipe, `b` (M7) |
 | the issue title | `docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>` |
 
-Add both to `goldens`, and fill their `want` with `go test ./internal/summary -run TestFoldGolden
+- `no_issue.json`: an `api` task started by `run_create` without a `title` has no issue (`facts.go:39`).
+  It is `runs_and_spend` with no `issue` in any task fact, and a PR (L3).
+
+Add the three to `goldens`, and fill their `want` with `go test ./internal/summary -run TestFoldGolden
 -update-golden`. Review the diff by hand: `runs` has three entries and `status.spend` is
 `{usedMicroUSD, limitMicroUSD}`. Then add `TestTaskPhasesCoverCoarse`: every phase in `TaskPhases()`
 gives a non-empty `Coarse(p, "Open", false)`. Also add `TestIsHold`: `waiting_human_driver` and
@@ -332,7 +422,12 @@ git commit -m "feat(summary): summary/v1 carries the task's runs and its spend i
     It parses `md` with goldmark and `extension.GFM`, and fails on four things: a link or autolink
     node whose destination isn't `allowed`; any raw HTML node, inline or block; a heading, list,
     table, emphasis, strikethrough or link node whose text holds one of `untrusted`; and any byte
-    below `0x20` other than `\n`.
+    below `0x20` other than `\n`. When Step 2 shows goldmark can't fail on a pipe (M7), it also
+    fails on a table row whose `gfmCells` count differs from the header's.
+  - In `goldmark_test.go`, only if Step 2 needs it: `func gfmCells(row string) int`, a cmark-gfm
+    style row splitter. It counts the cells a GFM row splits into, code spans included, since GFM
+    splits a row before inline parsing. Its scanning rule is cmark-gfm's `table_cell` rule from
+    `extensions/ext_scanners.re`, quoted in a comment above it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -348,7 +443,8 @@ git commit -m "feat(summary): summary/v1 carries the task's runs and its spend i
 - `TestCodeSpanOutrunsBackticks`: `code("a``b", false)` is ``"``` a``b ```"``; `code("`x", false)`
   has a space before `` `x ``; goldmark reads back each one's text as the input.
 - `TestTableCellEscapesPipes`: `code("a|b", true)` contains `\|`; a one-row table holding it parses
-  to exactly 2 cells.
+  to exactly 2 cells. Also `code("a\\|b", true)` (a backslash, then a pipe), in a one-row table, is
+  2 cells (M7).
 - `TestTitleWordsThatAutolinkGoInCodeSpans`: each of `https://evil.example`, `www.evil.example`
   and `a@evil.example` in a title renders with no link node (`assertInert`).
 - `TestTitleEscapesMarkdown`: `# x *y* [z](w) <b>v</b>` renders as one paragraph whose text equals
@@ -363,7 +459,9 @@ git commit -m "feat(summary): summary/v1 carries the task's runs and its spend i
   `human`, `ci`, `retry` and `resume` (the CRD's enum, `task_types.go:547`); `outcomeWords` for the
   six outcomes; `verdictWords` for `approve`, `changes` and `none`. `triggerWords("human")` is
   `human review` (R19).
-- `TestRepoOf`: an issue URL gives `Smana/a`; no URL, or one off `GitHubURL`, gives `""`.
+- `TestRepoOf`: an issue URL gives `Smana/a`; no URL, or one off `GitHubURL`, gives `""`. With an
+  issue URL in `Smana/a` and a PR URL in `Smana/b`, `repoOf(issueURL, prURL)` gives `Smana/a`: R20's
+  order, issue first, which `summary.Repo` (PR first, `waiting.go:28-38`) does not follow (L2).
 - `TestDollars`: `0` → `$0.00`, `4999` → `$0.00`, `5000` → `$0.01`, `1_500_000` → `$1.50`.
 - `TestAgo` and `TestStamp`: 3 minutes, 2 hours, 25 hours; and a stamp today and yesterday.
 
@@ -372,10 +470,20 @@ git commit -m "feat(summary): summary/v1 carries the task's runs and its spend i
 Run: `go test -race -count=1 ./internal/roomview`
 Expected: FAIL to compile.
 
+Once `code` exists, prove the pipe test can fail (M7): remove the pipe escape from `code`, run
+`go test -race -count=1 ./internal/roomview -run TestTableCellEscapesPipes`, and see it FAIL. If it
+passes, goldmark doesn't split cells inside a code span: add `gfmCells`, make
+`TestTableCellEscapesPipes` and `assertInert` count cells with it, and see the test FAIL. Put the
+escape back.
+
 - [ ] **Step 3: Implement `inert.go` and `words.go`**
 
-`go get github.com/yuin/goldmark@latest`. It is imported only from `_test.go` files, which `go mod
-tidy` keeps. The state words come from the spec's list: `waiting_for_human` reads `waiting for a
+`go get github.com/yuin/goldmark@latest`, then pin the version it resolved: `go.mod` names it
+exactly, and the commit message's body quotes it (L9). It is imported only from `_test.go` files,
+which `go mod tidy` keeps. If `a\|b` splits under `gfmCells`, `code` with `cell` also escapes a
+backslash that precedes a pipe.
+
+The state words come from the spec's list: `waiting_for_human` reads `waiting for a
 human`. The short reason phrases are `words.go`'s own: the spec's view 1 says
 `waiting for a run slot` where `summary`'s sentence is longer.
 
@@ -388,7 +496,8 @@ Expected: PASS; no vulnerability reached.
 
 ```bash
 git add go.mod go.sum internal/roomview
-git commit -m "feat(roomview): inert untrusted text, the link allowlist and the views' words"
+git commit -m "feat(roomview): inert untrusted text, the link allowlist and the views' words" \
+  -m "github.com/yuin/goldmark <the version Step 3 resolved>, test-only"
 ```
 
 ### Task 4: View 1, the rooms overview
@@ -417,7 +526,10 @@ git commit -m "feat(roomview): inert untrusted text, the link allowlist and the 
 - `TestOverviewRepoColumnOnlyWhenMixed`: a Repo column appears only when the rows span two
   repositories, and the column count stays at most 7.
 - `TestOverviewHostile`: titles and need descriptions from `hostile.json` pass `assertInert`, and the
-  `Text` rendering holds no byte below `0x20` other than `\n`.
+  `Text` rendering holds no byte below `0x20` other than `\n`. The approval needs `a|b` and `a\|b`
+  in "Where it is" leave every row with the header's cell count (M7).
+- `TestOverviewNoIssue`: a row with `issue: 0` (an `api` task without a title) reads `—` in the Task
+  column in Markdown, and `-` in the terminal; never `#0` (L3).
 - `TestOverviewNeedsYouOnlyForTheCaller`: a row with `state: waiting_for_human` and no `need` reads
   `waiting for a human`, never `needs you`.
 
@@ -453,7 +565,7 @@ git commit -m "feat(roomview): the rooms overview, in Markdown and for a termina
 
 **Files:**
 - Create: `internal/roomview/card.go`, `internal/roomview/card_test.go`, `internal/roomview/testdata/card_<golden>.{md,txt}` for each summary golden
-- Modify: `internal/roomctl/status.go` (`RenderSummary` and its helpers removed), `internal/roomctl/roomctl_test.go`, `internal/app/roomctl.go:272`, `internal/app/roomctl_test.go`
+- Modify: `internal/roomctl/status.go` (`RenderSummary`, `stamp`, `tokens`, `budgetText` removed), `internal/roomctl/roomctl_test.go` (six tests removed; `summaryBody` stays, since the fake broker reads it at l.250 and l.462, and the ported cases copy it into `card_test.go`), `internal/app/roomctl.go:272`, `internal/app/roomctl_test.go` (`TestRoomctlStatus`, l.241-248)
 - Delete: `internal/roomctl/render_waiting_test.go` (ported)
 
 **Interfaces:**
@@ -472,26 +584,40 @@ git commit -m "feat(roomview): the rooms overview, in Markdown and for a termina
   shape.
 - `TestCardOmitsAbsentLines`: `no_facts` has no `Run`, `Spend`, `PR` or `Runs` line; `sealed` has no
   `Needs you` or `You can`.
-- `TestCardFallsBackToTokens`: a budget with no spend reads `182 k of 1.5 M tokens (12 %)`.
+- `TestCardNoIssue`: `no_issue`'s heading is `### <room>`, with no `#0` and no title (L3).
+- `TestCardFallsBackToTokens`: a budget with no spend reads `182 k of 1.5 M tokens (12 %)`. So does a
+  budget with a spend of `usedMicroUSD: 0` and a cap: an unpriced run (`RunRecord.Unpriced`,
+  `task_types.go:569`) costs 0, and the card never reads `$0.00 of $1.50` (L4).
 - `TestRunsLine`: the three runs of `runs_and_spend` read `implementer (initial) succeeded · 4 min ·
   $0.08 → reviewer approved · 3 min · $0.04 → implementer (human review) **running** · 8 min · $0.08`.
   An implementer shows `(<triggerWords>)` and its outcome. A reviewer or tester shows no trigger
   (always `review`), and shows `verdictWords(verdict)` in place of `succeeded` when it has a
-  verdict. A running run's time counts to `Now`.
+  verdict. A run without `endedAt` reads `**running**`, and its time counts to `Now`. A run with
+  outcome `ended` reads `ended`, never `**running**`: that is how Task 8 reports a stopped task's
+  unfinished run (M4).
 - `TestCardHostile`: `hostile` passes `assertInert`; every note sits in a code span.
 - `TestCardSize`: no golden's card is longer than 30 lines.
 
-Port the four tests that call `RenderSummary` to `internal/roomview/card_test.go` as `Text`-format
-cases, keeping each one's point with the card's new lines:
+Port all eight tests that call `RenderSummary` or `budgetText` to `internal/roomview/card_test.go` as
+`Text`-format cases, keeping each one's point with the card's new lines (M1). Deleting
+`RenderSummary` and `budgetText` breaks the compile of any one left behind:
 
-- `TestRenderSummary` (`roomctl_test.go:479`): no ESC byte, and no `roomctl approve`;
-- `TestStatusLeadsWithTheTaskAndReadsTheBudget`: the issue's title leads, and the budget reads as on
-  the page;
-- `TestRenderSummaryPrintsTheReasonAndNextStep` and `TestRenderSummaryPrintsAMerge`
-  (`render_waiting_test.go`): why and next are printed, and a merge carries its PR link.
+| Test today | Its point, as a card case |
+|---|---|
+| `TestRenderSummary` (`roomctl_test.go:479`) | no ESC byte, no `roomctl approve`; the note's `[2J` arrives cleaned, in quotes |
+| `TestStatusLeadsWithTheTaskAndReadsTheBudget` (l.504) | the heading carries `#74` and the issue's title; the tokens line reads `189 k of 1.5 M tokens (13 %)` |
+| `TestBudgetTextBoundaries` (l.523) | becomes `TestCardSpendLine`, a table over the card's spend and tokens line: `999`, `1 k`, `999 k`, `999_500` → `1 M`, `1 M`, `1.5 M of 1.5 M tokens (100 %)`; tokens with no limit read `5 k tokens`, never `/ 0`; and the dollar cases `$0.31 of $1.50 (21 %)` and, with no cap, `$0.31` |
+| `TestRenderSummaryPrintsTheIssueAndNoNeeds` (l.547) | a Queued room with issue #42 and no needs: the heading carries `#42`, the state reads `queued`, and no `**Needs you**` block appears |
+| `TestRenderSummaryPrintsAHold` (l.562) | a hold is printed as what releases it, with the room's link, and is no approval |
+| `TestRenderSummaryDatesAnotherDay` (l.577) | read the next morning, the deadline and the note carry their date (`stamp`) |
+| `TestRenderSummaryPrintsTheReasonAndNextStep` (`render_waiting_test.go:21`) | why and next are printed |
+| `TestRenderSummaryPrintsAMerge` (`render_waiting_test.go:37`) | a merge carries its PR link |
 
-Then delete `render_waiting_test.go`. In `internal/app/roomctl_test.go`, change `TestRoomctlStatus`'s
-`phase: Implementing` to the card's terminal state line, and keep its ESC assertions.
+Then delete `render_waiting_test.go` and the six tests from `roomctl_test.go`. The card has no
+cursor line (view 2): `roomctl status` prints `cursor: seq:N` (`oneLine(s.Cursor)`) on its own last
+line after the card, under `Text` and `TextColor` only, so `status --after` keeps its cursor. In
+`internal/app/roomctl_test.go`, change `TestRoomctlStatus`'s `phase: Implementing` (l.247) to the
+card's terminal state line; keep its ESC assertions and its `cursor: seq:142` (l.248).
 
 - [ ] **Step 2: Run them, and see them fail**
 
@@ -502,7 +628,8 @@ Expected: FAIL.
 
 `roomctl status` decodes the body into `summary.Summary`, as `RenderSummary` did, and calls
 `roomview.Card` with `Format: Text`, or `TextColor` when stdout is a character device and `NO_COLOR`
-is unset, and `Rooms: cfg.URL`. Delete `RenderSummary`, `stamp`, `tokens` and `budgetText` from
+is unset, and `Rooms: cfg.URL`, then prints `cursor: seq:N`. Delete `RenderSummary`, `stamp`,
+`tokens` and `budgetText` from
 `roomctl/status.go`. Keep `oneLine`, which `client.go`, `doctor.go` and `issuefile.go` use.
 
 - [ ] **Step 4: Run them, and see them pass**
@@ -606,7 +733,7 @@ git commit -m "feat(roomview): what changed since a cursor, milestones only"
 
 | Room | Expected `need` |
 |---|---|
-| 2 pending approvals the caller may decide | kind `approval`: the lowest id (the summary's order, `summary.go:266`; ids are ULIDs), `DescribeApproval` text, its deadline, `url#id` |
+| 2 pending approvals the caller may decide | kind `approval`: the lowest id (the summary's order, `summary.go:270`; ids are ULIDs), `DescribeApproval` text, its deadline, `url#id` |
 | an approval already expired, and a hold | the hold |
 | Queued, held for the caller | kind `hold`, the wait reason as `id` |
 | a PR waiting for the caller's merge | kind `merge`, URL `https://github.com/<repo>/pull/<n>` |
@@ -621,7 +748,7 @@ git commit -m "feat(roomview): what changed since a cursor, milestones only"
 Run: `go test -race -count=1 ./internal/humanapi -run 'TestRoomRow'`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement `firstNeed`, and set `row.Need` beside `NeedsYou` (`rooms.go:341`)**
+- [ ] **Step 3: Implement `firstNeed`, and set `row.Need` beside `NeedsYou` (`rooms.go:343`)**
 
 - [ ] **Step 4: Run the package, then the gate**
 
@@ -652,18 +779,28 @@ Write the body from Tasks 1–7, linking the spec. Expected: `check` and `analyz
 
 **Interfaces:**
 - Consumes: Task 1's fields and outcomes; `RunRecord.{Phase, Reason, Verdict, Finished, CostMicroUSD}`,
-  `Spec.Budget.TaskMicroUSD` and `Status.Usage.CostMicroUSD` (`api/factory/v1alpha1/task_types.go`).
-- Produces: `func outcomeOf(r v1alpha1.RunRecord) string`, and `runFact(r v1alpha1.RunRecord) envelope.RunFact`,
-  shared by `Run` and `Runs`.
+  `Spec.Budget.TaskMicroUSD`, `Status.Usage.CostMicroUSD` and `Status.PhaseSince`
+  (`api/factory/v1alpha1/task_types.go:316`); `v1alpha1.TerminalPhase` (`task_phases.go:68`).
+- Produces: `func outcomeOf(r v1alpha1.RunRecord, terminal bool) string`, and
+  `func runFact(t *v1alpha1.Task, r v1alpha1.RunRecord) envelope.RunFact`, shared by `Run` and `Runs`.
+  `terminal` is `v1alpha1.TerminalPhase(t.Status.Phase)`. A run without `Finished` on a terminal task
+  gets `OutcomeEnded`, with `EndedAt` the task's `PhaseSince` truncated to the second (zero when
+  `PhaseSince` is nil) (M4): `Finished` is set only in `finished()` (`implement.go:405-410`), so a
+  stop or a Closed task leaves the last record unfinished, and its card would read **running**
+  forever. `Escalated` is not a `TerminalPhase` (`task_phases.go:68`): an escalated task's last
+  unfinished run (`r.end(…, "stuck")`, `implement.go:455`) keeps no outcome.
 
 - [ ] **Step 1: Write the failing tests**
 
 - `TestOutcomeOf`, a table over R3: each of the four phases; `Disrupted`, `PodLost`, `pod_lost` and
   `run_lost` → `lost`, even with phase `Failed`; `PodFailed` with phase `Failed` → `failed`;
-  `Finished` with phase `""` → `ended`; no `Finished` → `""`.
-- `TestFactsOfCarriesRuns`: a task with 3 runs (two finished) gives `Runs` of 3, oldest first. Each
-  run has its `MicroUSD` and `Verdict`. The finished ones have `EndedAt` truncated to the second and
-  an `Outcome`; only `Run` has provenance.
+  `Finished` with phase `""` → `ended`; no `Finished` → `""`; no `Finished` with `terminal` true →
+  `ended` (M4).
+- `TestFactsOfCarriesRuns`, a table. `running`: a task with 3 runs (two finished) gives `Runs` of 3,
+  oldest first. Each run has its `MicroUSD` and `Verdict`. The finished ones have `EndedAt` truncated
+  to the second and an `Outcome`; the third has neither; only `Run` has provenance. `stopped`: the
+  same task in phase `Stopped` with `PhaseSince` set: the third run has `Outcome: ended` and
+  `EndedAt` equal to `PhaseSince` truncated to the second (M4).
 - `TestFactsOfKeepsTheLast20Runs`: 25 runs give the last 20.
 - `TestFactsOfSpend`: `TaskMicroUSD: 1_500_000` and usage `310_000` give `Spend{310_000, 1_500_000}`.
   With no cap and usage `310_000`, `Spend{310_000, 0}`. With neither, no `Spend`. With
@@ -693,7 +830,10 @@ new `EndedAt`.
 - [ ] **Step 5: Document, run the gate, commit and open PR 2**
 
 `docs/operations.md`, under upgrades: "roll the broker before the factory: a broker older than its
-factory refuses the new task facts with a 400, and the factory retries them". Then:
+factory refuses the new task facts with a 400, and the factory retries them". Beside it (L5): the
+facts key changes for every task at this upgrade, so every task with a `RoomRef`, terminal ones
+included, posts its facts once. A sealed room answers 410 and its facts stay due, as for any post
+after the seal (`roomclose.go:36-41`): expect a one-time burst of posts and Info logs. Then:
 
 ```bash
 task check
@@ -752,7 +892,9 @@ Expected: FAIL.
 - [ ] **Step 3: Implement it**
 
 Each schema is an inline `json.RawMessage` beside its tool, as `schema` is. A row converts to
-`roomview.Row` by field, in `mcpread.go`.
+`roomview.Row` by field, in `mcpread.go`. R8 drops the JSON text, so a client that shows
+`structuredContent` before `content` would hide the view: ai-native-ref's runbook 19 checks live
+proof 3 in both clients (L8).
 
 - [ ] **Step 4: Run them, and see them pass**
 
@@ -769,7 +911,13 @@ git commit -m "feat(humanapi): rooms_list and room_summary return their view as 
 ### Task 10: `room_changes`
 
 **Files:**
-- Modify: `internal/store/rooms.go`, `internal/humanapi/server.go` (`Log`), the `humanapi` test fake `memLog`
+- Modify: `internal/store/rooms.go`, `internal/humanapi/server.go` (`Log`), `internal/humanapi/mcp.go`
+  (tools list, `sponsoredTools`)
+- Modify, the `Log` fakes: `internal/humanapi/ws_test.go` (`memLog`, beside `LastTaskState` at l.94),
+  whose `TaskStateAt` scans its events as the SQL does; and, returning `nil, nil` (M2),
+  `internal/app/rooms_test.go` (`fakeActLog`, beside l.62) and `internal/app/broker_test.go`
+  (`fakeRoomLog`, beside l.459)
+- Modify: `internal/humanapi/mcprelay_test.go` (`TestRoomctlMCPAgainstTheBroker`'s tool count, l.83, M3)
 - Create: `internal/humanapi/mcpchanges.go`, `internal/humanapi/mcpchanges_test.go`
 - Test: `internal/store/task_state_test.go`
 
@@ -781,7 +929,10 @@ git commit -m "feat(humanapi): rooms_list and room_summary return their view as 
   - `func (s *Server) roomChanges(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error)`,
     with input `{room, cursor?}` (the same patterns as `room_tail`). It returns a `viewResult` with
     the `ChangeSet`.
-  - The tool `room_changes`, listed for humans after `room_tail` and added to `sponsoredTools`.
+  - The tool `room_changes`, listed for humans after `room_tail` and added to `sponsoredTools`. Its
+    name is a constant, `const toolRoomChanges = "room_changes"`, used by the tools list and
+    `sponsoredTools`: ai-native-ref's adopt plan greps the release's `internal/` for the string
+    literal `"room_changes"` (L16).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -796,6 +947,10 @@ git commit -m "feat(humanapi): rooms_list and room_summary return their view as 
 - `TestMCPRoomChangesRefusals`: `aaaaaaaa` gives `no such room`; a room the caller can't read gives
   the same refusal as `room_summary`.
 - `TestSponsoredSeesRoomChanges`: a sponsored principal's `tools/list` has `room_changes`.
+- `TestRoomctlMCPAgainstTheBroker` (`mcprelay_test.go:83`): the relay now lists 8 tools, so
+  `len(tools) != 7` becomes `!= 8`, with the message `seven broker tools and issue_file`. If PR 4
+  merged first, the line names tools instead of counting them (Task 14): add `room_changes` to the
+  names it requires (M3).
 
 - [ ] **Step 2: Run them, and see them fail**
 
@@ -810,13 +965,13 @@ baseline is `TaskStateAt(room, roomctrl.ForkSeq(room), cursor)`. Events are read
 
 - [ ] **Step 4: Run them, and see them pass**
 
-Run: `go test -race -count=1 ./internal/store ./internal/humanapi`
-Expected: PASS.
+Run: `go test -race -count=1 ./internal/store ./internal/humanapi ./internal/app`
+Expected: PASS. `internal/app` compiles only with both of its fakes updated (M2).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/store internal/humanapi
+git add internal/store internal/humanapi internal/app
 git commit -m "feat(humanapi): room_changes, a room's milestones since a cursor"
 ```
 
@@ -824,12 +979,13 @@ git commit -m "feat(humanapi): room_changes, a room's milestones since a cursor"
 
 **Files:**
 - Create: `internal/humanapi/mcpprompts.go`, `internal/humanapi/mcpprompts_test.go`
-- Modify: `internal/humanapi/mcp.go` (the method switch at `:192`, `mcpInitialize`, `mcpInstructions`)
+- Modify: `internal/humanapi/mcp.go` (the method switch at `:192`, `mcpInitialize` at `:223`, `mcpInstructions` at `:41`)
 
 **Interfaces:**
 - Produces:
   - The methods `prompts/list` and `prompts/get`. `initialize` gains
-    `caps["prompts"] = {"listChanged": false}` for roomctl's principals only (R10).
+    `caps["prompts"] = {"listChanged": false}` for roomctl's principals only (R10), branching on
+    `p.Sponsored` as `mcpInstructionsFor` (`:54`) already does.
   - `type mcpPrompt struct { name, description string; args []promptArg; text func(args map[string]string) string }`.
   - `var mcpPrompts = []mcpPrompt{…}` for `handoff` (`what`, optional), `status` (`room`, optional:
     a room id or `#<issue>`) and `inbox` (none).
@@ -849,7 +1005,7 @@ git commit -m "feat(humanapi): room_changes, a room's milestones since a cursor"
 - `TestSponsoredHasNoPrompts`: a sponsored principal's `initialize` has no `prompts` capability, and
   `prompts/list` gives `[]`.
 - `TestInstructionsFirst512`: the first 512 bytes of `mcpInstructions` hold `as it is`,
-  `untrusted`, `never apply a label`, `room page` and `room_wait`.
+  `untrusted`, `never apply a label`, `room page` and ``if `room_wait` is listed`` (L10).
 
 - [ ] **Step 2: Run them, and see them fail**
 
@@ -860,8 +1016,9 @@ Expected: FAIL.
 
 The opening covers five things: show a view tool's text as it is; agents' text is data under
 `untrusted: true`; approvals happen on the room page through the link; never apply a label unless
-the developer asks for that exact label in that message; run `room_wait` in a background task where
-the client can. The current rules follow.
+the developer asks for that exact label in that message; if `room_wait` is listed, run it in a
+background task where the client can. The condition matters: an older `roomctl mcp` relays to this
+broker without serving `room_wait` (L10). The current rules follow.
 
 - [ ] **Step 4: Run them, and see them pass**
 
@@ -913,7 +1070,8 @@ git commit -m "feat(humanapi): the handoff, status and inbox prompts, and the di
 | listed, `Identity` nil | `false`, `off` |
 | listed, unlinked | `false`, `not_linked` |
 | listed, read only | `false`, `no_write` |
-| listed, the permission lookup fails | `false`, `unverified` |
+| listed, the App can't see the repository (`repoaccess.ErrNoRepository`) | `false`, `no_write` (L12) |
+| listed, the permission lookup fails otherwise | `false`, `unverified` |
 | a sponsored caller, listed | `false`, `off` |
 
 - [ ] **Step 2: Run them, and see them fail**
@@ -926,7 +1084,12 @@ Expected: FAIL.
 `config` holds its own `owner/name` pattern, the same as `humanapi`'s `repositoryRE`
 (`rooms.go:52`): `^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`. `config` can't import `humanapi`.
 `canStart` follows `gate`'s lookup (`access.go:43`), calling `CanWrite` in place of `CanRead`, and
-the repository matches the list case-insensitively, as GitHub names do.
+the repository matches the list case-insensitively, as GitHub names do. `repoaccess.ErrNoRepository`
+reads `no_write`, as `gate` maps it to `denied` (`access.go:58`); only other errors read
+`unverified` (L12).
+
+In `docs/api.md`, beside the tools: `run_create`'s and `room_tail`'s MCP Task results stay JSON text
+(`mcptasks.go:153`, `:349`), so a sponsored caller gets a view from `room_summary` only (L7).
 
 - [ ] **Step 4: Run the packages, then the gate**
 
@@ -975,7 +1138,7 @@ gh pr create --title "feat(humanapi): the views on /mcp, room_changes, prompts a
   cursor; the second sends the cursor the first returned, read from `cursors.json`. `--cursor`
   overrides it.
 - `TestRoomctlChangesOldBroker`: a `-32602` unknown tool answers `roomctl changes needs a broker
-  with room_changes (agent-platform vX.Y.Z or later)`, with X.Y.Z the version this PR ships.
+  with room_changes (agent-platform v0.23.0 or later)`: v0.23.0 is the release these PRs ship (M5).
 - `TestCursorsKeep200`: 201 puts keep the 200 most recent.
 - `TestRoomctlHelpNamesTheNewCommands`: the usage has `changes <room>` and `rooms … --all`.
 
@@ -1005,7 +1168,7 @@ git commit -m "feat(roomctl): status and rooms render the views; roomctl changes
 **Files:**
 - Modify: `internal/roomctl/mcp.go` (`Relay` `:39`, `handle` `:109`)
 - Create: `internal/roomctl/localtools.go`
-- Test: `internal/roomctl/mcp_test.go`
+- Test: `internal/roomctl/mcp_test.go`, `internal/humanapi/mcprelay_test.go` (the tool count at l.83, M3)
 
 **Interfaces:**
 - Consumes: `roomview.Overview`, `roomview.Card`.
@@ -1020,6 +1183,9 @@ git commit -m "feat(roomctl): status and rooms render the views; roomctl changes
     path (5 s), else the process's working directory;
   - `func withLocalTools(res json.RawMessage) (json.RawMessage, error)`, which replaces
     `withIssueFile` and appends `issue_file`, `room_wait` and `room_checkout`;
+  - the constants `toolRoomWait = "room_wait"` and `toolRoomCheckout = "room_checkout"` in
+    `localtools.go`, used wherever the relay names them: ai-native-ref's adopt plan greps the
+    release's `internal/` for both string literals (L16);
   - `func viewed(tool string, res json.RawMessage, rooms string, now time.Time) json.RawMessage`.
     For `rooms_list` and `room_summary` results whose text is valid JSON (an older broker, FA14), it
     replaces the text with the Markdown view of their `structuredContent`.
@@ -1035,6 +1201,11 @@ git commit -m "feat(roomctl): status and rooms render the views; roomctl changes
   receives the card's Markdown, and `structuredContent` is unchanged.
 - `TestRelayPassesANewBrokersView`: a text that isn't JSON is passed through byte for byte.
 - `TestRelayListsLocalTools`: `tools/list` ends with `issue_file`, `room_wait` and `room_checkout`.
+- `TestRoomctlMCPAgainstTheBroker` (`mcprelay_test.go:83`): replace the count, `len(tools) != 7` (or
+  `!= 8` if PR 3 merged first), with names: the list ends with `issue_file`, `room_wait` and
+  `room_checkout`, and holds `rooms_list` and `room_summary`, each once (plus `room_changes` if PR 3
+  merged first). No count, so the order of PR 3's and PR 4's merges doesn't matter; the second to
+  merge rebases this line (M3).
 - `TestRelayWorkspaceFromRoots`: a client declaring `roots` answers `roots/list` with
   `file:///tmp/x`, which gives `/tmp/x`; a client that doesn't answer within 5 s gives the working
   directory.
@@ -1126,12 +1297,15 @@ git commit -m "feat(roomctl): issue_file's form can start the factory, with your
 
 **Files:**
 - Create: `internal/roomctl/roomwait.go`, `internal/roomctl/roomwait_test.go`
+- Modify: `internal/roomctl/localtools.go` (`room_wait` dispatches to it, in place of Task 14's
+  `unavailable`, L14)
 
 **Interfaces:**
 - Consumes: Task 14's `callBroker`, `progress` and `local`; `roomview.Row`.
 - Produces:
   - The local tool `room_wait`, with input
     `{"rooms":{"type":"array","maxItems":20,"items":{"pattern":"^[a-z2-7]{8}$"}},"until":{"type":"array","items":{"enum":["needs_you","pr_opened","ended","any_change"]}},"timeout":{"type":"integer","minimum":1,"maximum":1800}}`.
+    Without `until`, it is `["needs_you","pr_opened","ended"]`, the spec's "the first three" (L13).
   - `type waitHit struct { Room, Condition string }`, and
     `func hit(base, now map[string]roomview.Row, until []string) (waitHit, bool)`, pure (R13).
   - The result. On a hit, the text is the room's card and `structuredContent` is
@@ -1141,7 +1315,8 @@ git commit -m "feat(roomctl): issue_file's form can start the factory, with your
 - [ ] **Step 1: Write the failing tests**
 
 - `TestHit`, a table over R13's four conditions, each newly true and each already true at the
-  start (the latter no hit).
+  start (the latter no hit). With `until` unset, a `lastSeq` move alone is no hit, and a newly true
+  `needs_you` is (L13).
 - `TestRoomWaitDefaultsToMyOpenRooms`: without `rooms`, it watches the `mine: true` rows that haven't
   ended, the 20 most recently updated.
 - `TestRoomWaitReturnsTheCard`: the fake broker turns `needsMe` true on the third poll. The result's
@@ -1171,7 +1346,8 @@ One `rooms_list` call per tick covers every watched room. The URL form goes out 
 and its answer doesn't change the result. A waiting `room_wait` holds one of the relay's
 `maxInFlight` slots (`mcp.go:29`) until it returns: requests run in `Serve`'s errgroup, and a ninth
 is refused with `busy`, never queued. Keep the limit at 8. Cancellation still reaches the wait,
-because notifications are handled inline on the read loop (`mcp.go:92`) and never wait for a slot.
+because notifications are handled inline on the read loop (`mcp.go:98`) and never wait for a slot.
+In `localtools.go`, `room_wait` now dispatches here (L14).
 
 - [ ] **Step 4: Run them, and see them pass**
 
@@ -1227,7 +1403,9 @@ All against real `git` in `t.TempDir()`: an origin bare repository with `main` a
   `.husky/post-checkout`. After a confirmed checkout, neither marker exists, and `Confirm` listed
   `.husky/post-checkout`.
 - `TestCheckoutRefusesAnotherRepository`: a workspace whose origin is `Smana/b` gives `Fix: "gh repo
-  clone Smana/a"`.
+  clone Smana/a"`. The origin check accepts, case-insensitively, `git@github.com:Smana/a`,
+  `git@github.com:Smana/a.git`, `https://github.com/Smana/a` and `https://github.com/smana/A.git`
+  for `Smana/a`; each is a table row that checks out (L18).
 - `TestCheckoutBranchGone`: no `agent/26zfnuxm` on origin gives `Why` naming the PR's URL.
 - `TestCheckoutHostileFileNames`: a flagged path holding a newline and `\u202e` reaches `Confirm`
   cleaned.
@@ -1276,10 +1454,12 @@ gh pr create --title "feat(roomctl): views, the start field, room_wait and room_
 **Interfaces:**
 - Consumes: `skill.Install(dir, version string) ([]string, error)`.
 - Produces:
-  - `type Client struct { Name string; Add, AddProject []string; Snippet, SnippetProject, SnippetPath, SnippetProjectPath string; SkillDir, SkillProjectDir string }`.
-    `Add` is an argv whose `{CMD}` is the roomctl command; nil means print the snippet.
-  - `var Clients = map[string]Client{…}`, with the values below.
-  - `type Setup struct { Client Client; Project, Print bool; Home, Dir, Cmd, Version string; LookPath func(string) (string, error); Run func(ctx context.Context, argv []string) error; Out io.Writer }`.
+  - `type Agent struct { Name string; Add, AddProject []string; Snippet, SnippetProject, SnippetPath, SnippetProjectPath string; SkillDir, SkillProjectDir string }`.
+    `Add` is an argv whose `{CMD}` is the roomctl command; nil means print the snippet. The name is
+    `Agent`, not `Client`: package `roomctl` already has `type Client struct`, the broker client
+    (`client.go:37`), which Task 13 grows (B1).
+  - `var Agents = map[string]Agent{…}`, keyed by the `setup` argument, with the values below.
+  - `type Setup struct { Agent Agent; Project, Print bool; Home, Dir, Cmd, Version string; LookPath func(string) (string, error); Run func(ctx context.Context, argv []string) error; Out io.Writer }`.
   - `func (s Setup) Do(ctx context.Context) error`.
 
 | Client | `Add` (user / `--project`) | Snippet when no CLI | Skill dir (user / project) |
@@ -1304,7 +1484,7 @@ project level only and says so.
 
 Run `<cli> mcp add --help` where installed, and read each client's MCP and skills docs. Correct
 `Add`, the snippet paths and the skill directories, the three guesses above first. Set `Add` to nil
-for any CLI that prompts or is absent. Record each source URL in a comment on its `Clients` entry.
+for any CLI that prompts or is absent. Record each source URL in a comment on its `Agents` entry.
 The spec leaves these to build time ("Left to the builder").
 
 - [ ] **Step 2: Write the failing tests**
@@ -1322,6 +1502,11 @@ The spec leaves these to build time ("Left to the builder").
 - `TestSetupUnknownClient`: `roomctl setup vim` names the six clients.
 - `TestSetupCmdPrefersPATH`: `LookPath("roomctl")` found gives `roomctl`, and not found gives the
   absolute executable path.
+- `TestFlaggedCoversEveryProjectSnippet`: for every entry of `Agents`, its `SnippetProjectPath`, and
+  the project config its `AddProject` writes, is matched by Task 17's `flagged` (equal, or under a
+  `/` prefix). Step 1 may correct a path; a planted project config must never open unflagged (L15).
+  When PR 4 hasn't merged yet, `flagged` isn't on this branch: the test lands with whichever of PR 4
+  and PR 5 merges second.
 
 - [ ] **Step 3: Run them, and see them fail**
 
@@ -1349,11 +1534,11 @@ git commit -m "feat(roomctl): roomctl setup <client> registers the MCP server an
 - Modify: `docs/roomctl.md` (`## The factory-handoff skill`, `## Troubleshooting`), `docs/architecture.md` (`internal/roomview`)
 
 **Interfaces:**
-- Consumes: `Clients` (Task 18).
+- Consumes: `Agents` (Task 18, B1).
 - Produces:
-  - `Doctor.SkillDirs []string` and `Doctor.Version string`, wired by `app` from every client's
-    `SkillDir` under the home directory and `SkillProjectDir` under the working directory, each
-    directory once.
+  - `Doctor.SkillDirs []string` and `Doctor.Version string`, wired by `app` from every `Agents`
+    entry's `SkillDir` under the home directory and `SkillProjectDir` under the working directory,
+    each directory once.
   - `func skill.Version(dir string) (string, bool, error)` in `internal/roomctl/skill/skill.go`: the
     `metadata.roomctl-version` of `dir/factory-handoff/SKILL.md`, read with `sigs.k8s.io/yaml` as
     `skill_test.go`'s `frontMatter` reads it. It returns `false` when the file is absent, and an error
@@ -1387,6 +1572,12 @@ background, bringing a branch back, the untrusted text rule, setup through `room
 shell fallback: the current commands for an agent without the MCP server. Add `skill.Version`,
 and have the doctor's `skill` check call it for each of `SkillDirs`.
 
+Expect it to FAIL in every cloud-native-ref checkout until that repository's drifted copy
+(`.agents/skills/factory-handoff`, `roomctl-version: "v0.11.0"`) goes: the adopt plan's PR 7 deletes
+it, and merges before runbook 19, whose step 2 needs every check `ok` (M6). In `docs/roomctl.md`'s
+`## Troubleshooting`, name the fix: delete the repository's copy, or run `roomctl setup <client>
+--project`.
+
 - [ ] **Step 4: Run them, then the gate**
 
 Run: `go test -race -count=1 ./internal/roomctl/... ./internal/app`, then `task check`
@@ -1401,9 +1592,12 @@ git push -u origin feat/roomctl-setup
 gh pr create --title "feat(roomctl): roomctl setup, skill v2, the doctor's skill check" --body-file -
 ```
 
-- [ ] **Step 6: The release, once PRs 1–5 are on `main`**
+- [ ] **Step 6: The release `v0.23.0`, once PRs 1–5 are on `main`**
 
-Ask the owner before tagging. Then, on the merge commit CI passed (CONTRIBUTING, Releases):
-`git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`. Expected: `release.yaml` green. The release
-lists the images, the chart and `roomctl-*`, and its notes name `room_wait`, `room_checkout`,
-`roomctl setup` and `human.mcp.sessionStart`, which the adopt plan's Task 1 looks for.
+`v0.23.0` is the next tag after `v0.22.0`, which ai-native-ref pins since its #116 (M5). Ask the owner
+before tagging. Then, on the merge commit CI passed (CONTRIBUTING, Releases):
+`git tag -a v0.23.0 -m v0.23.0 && git push origin v0.23.0`. Expected: `release.yaml` green. The
+release lists the images, the chart and `roomctl-*`, and its notes name `room_wait`, `room_checkout`,
+`roomctl setup` and `human.mcp.sessionStart`, which the adopt plan's Task 1 looks for. They also say
+to roll the broker before the factory (Task 8). Don't announce the release to developers before the
+adopt plan's PR 7 merges (M6).
