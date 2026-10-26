@@ -265,3 +265,44 @@ func TestSetupRefusesASymlinkedSkillDir(t *testing.T) {
 		t.Errorf("wrote through the symlink: %v", got)
 	}
 }
+
+func TestSetupTwiceSucceedsAndRefreshesTheSkill(t *testing.T) {
+	home, dir := t.TempDir(), t.TempDir()
+	adds := 0
+	run := func(context.Context, []string) error {
+		if adds++; adds > 1 {
+			return errors.New("exit status 1: MCP server factory already exists in user config")
+		}
+		return nil
+	}
+	s := Setup{Agent: Agents["claude"], Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: found, Out: &bytes.Buffer{}, Run: run}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	skillMD := filepath.Join(home, ".claude", "skills", "factory-handoff", "SKILL.md")
+	if err := os.WriteFile(skillMD, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	s.Out = &out
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if b, _ := os.ReadFile(skillMD); string(b) == "stale" {
+		t.Error("the second run did not refresh the skill")
+	}
+	if !strings.Contains(out.String(), "already registered") {
+		t.Errorf("no already-registered line in:\n%s", out.String())
+	}
+}
+
+func TestSetupInstallsTheSkillBeforeRegistering(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude"), []byte("a file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Setup{Agent: Agents["claude"], Home: home, Dir: t.TempDir(), Cmd: "roomctl", LookPath: found, Out: &bytes.Buffer{}, Run: noRun(t)}
+	if err := s.Do(context.Background()); err == nil {
+		t.Error("want the install to fail")
+	}
+}

@@ -35,8 +35,10 @@ const (
 	mcpServersJSON = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
 	copilotJSON    = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"],\n      \"tools\": [\"*\"]\n    }\n  }\n}\n"
 	cursorJSON     = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"stdio\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
-	opencodeJSON   = "{\n  \"mcp\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": [\"{CMD}\", \"mcp\"]\n    }\n  }\n}\n"
-	codexTOML      = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
+	// opencodeJSON is the documented shape (mcp.<name>). opencode 2.0.22's own `mcp add` wrote
+	// mcp.servers.<name> instead: a live check settles which one opencode reads.
+	opencodeJSON = "{\n  \"mcp\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": [\"{CMD}\", \"mcp\"]\n    }\n  }\n}\n"
+	codexTOML    = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
 )
 
 // Agents is keyed by the roomctl setup argument. Sources, read at build time:
@@ -182,6 +184,14 @@ func (s Setup) Do(ctx context.Context) error {
 	if fi, err := os.Lstat(s.resolve(skillDir)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symlink: refusing to install the skill through it", s.resolve(skillDir))
 	}
+	// The skill first: a failed install leaves nothing half set up, and a second run refreshes it.
+	paths, err := skill.Install(s.resolve(skillDir), s.Version)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n", s.resolve(skillDir), len(paths)); err != nil {
+		return err
+	}
 	if len(argv) > 0 {
 		if _, err := s.LookPath(argv[0]); err != nil {
 			if _, err := fmt.Fprintf(s.Out, "%s is not on the PATH, so nothing registered the server.\n", argv[0]); err != nil {
@@ -191,21 +201,28 @@ func (s Setup) Do(ctx context.Context) error {
 		}
 	}
 	if len(argv) > 0 {
+		line := "registered the factory MCP server: " + strings.Join(argv, " ")
 		if err := s.Run(ctx, argv); err != nil {
-			return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+			if !alreadyRegistered(err) {
+				return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
+			}
+			line = "the factory MCP server is already registered: " + strings.Join(argv, " ") + " refused a duplicate, which is fine"
 		}
-		if _, err := fmt.Fprintf(s.Out, "registered the factory MCP server: %s\n", strings.Join(argv, " ")); err != nil {
+		if _, err := fmt.Fprintln(s.Out, line); err != nil {
 			return err
 		}
 	} else if err := s.printSnippet(snippet, path); err != nil {
 		return err
 	}
-	paths, err := skill.Install(s.resolve(skillDir), s.Version)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n%s", s.resolve(skillDir), len(paths), s.notes(warn))
+	_, err = io.WriteString(s.Out, s.notes(warn))
 	return err
+}
+
+// alreadyRegistered reads the CLI's refusal of a duplicate name. The CLIs have no scope-exact
+// "is it there" query (claude mcp get ignores the scope), so the add's own answer decides.
+func alreadyRegistered(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "already exists") || strings.Contains(m, "already configured")
 }
 
 // warning is set when the snippet to commit names this machine's executable.

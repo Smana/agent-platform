@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -361,10 +362,46 @@ func TestRoomctlSetup(t *testing.T) {
 		t.Error("--print wrote")
 	}
 	// No configure needed: the config is absent in Dir, and the skill still lands.
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", cwd, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
 	if _, err := run("setup", "cursor", "--project"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".cursor", "skills", "factory-handoff", "SKILL.md")); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestRoomctlSetupProjectIsRootedAtTheRepository(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	sub := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(cwd string) error {
+		r := Roomctl{Dir: t.TempDir(), Out: &strings.Builder{}, Home: t.TempDir(), Cwd: cwd,
+			LookPath: func(string) (string, error) { return "", errors.New("absent") }}
+		return r.Run(context.Background(), []string{"setup", "cursor", "--project"})
+	}
+	if err := run(sub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".cursor", "skills", "factory-handoff", "SKILL.md")); err != nil {
+		t.Errorf("not at the repository top: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, ".cursor")); err == nil {
+		t.Error("wrote under the subdirectory")
+	}
+	// Not a repository: a clear refusal, and nothing written.
+	plain := t.TempDir()
+	if err := run(plain); err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Errorf("outside a repository: %v, want a refusal naming the repository", err)
+	}
+	if _, err := os.Stat(filepath.Join(plain, ".cursor")); err == nil {
+		t.Error("wrote outside a repository")
 	}
 }

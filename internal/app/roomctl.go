@@ -281,6 +281,18 @@ func (r Roomctl) homeAndCwd() (home, cwd string, err error) {
 	return home, cwd, nil
 }
 
+// repoTop is the top of the repository holding dir: --project files belong to the repository,
+// whatever subdirectory the developer is in.
+func repoTop(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("--project needs a git repository: %s is not inside one (run setup from the repository, or drop --project for a user-level setup)", dir)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // setup registers roomctl mcp with a coding agent and installs the skill; it needs no configuration.
 func (r Roomctl) setup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
@@ -302,15 +314,21 @@ func (r Roomctl) setup(ctx context.Context, args []string) error {
 	if s.Run == nil {
 		s.Run = func(ctx context.Context, argv []string) error {
 			cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv[0] is one of six fixed CLI names
-			cmd.Stdout, cmd.Stderr = r.Out, r.Err
-			if r.Err == nil {
-				cmd.Stderr = os.Stderr
+			// The output rides in the error: setup reads "already exists" from it.
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 			}
-			return cmd.Run()
+			return nil
 		}
 	}
 	if s.Home, s.Dir, err = r.homeAndCwd(); err != nil {
 		return err
+	}
+	if s.Project {
+		if s.Dir, err = repoTop(ctx, s.Dir); err != nil {
+			return err
+		}
 	}
 	s.Cmd = roomctl.SetupCmd(s.LookPath, os.Executable)
 	return s.Do(ctx)
