@@ -90,3 +90,30 @@ func TestIssueDraftCanStart(t *testing.T) {
 		})
 	}
 }
+
+// A lookup that never answers is cut at accessWait, as the gate's is: the draft comes back
+// unverified, not after mcpTimeout.
+func TestIssueDraftCanStartLookupIsBounded(t *testing.T) {
+	old := accessWait
+	accessWait = 200 * time.Millisecond
+	t.Cleanup(func() { accessWait = old })
+	w := &gitHubWorld{now: time.Now(), unlinked: map[string]bool{}, inactive: map[string]bool{}}
+	hung := func(s *Server, _ *fanout.Hub, _ *hubView) {
+		s.SessionStart = map[string]bool{"smana/a": true}
+		s.Access.Perm = func(ctx context.Context, _, _, _ string) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+	}
+	e := setup(t, mcpOn, actorOn(&actLog{}), w.option(), hung)
+	body := "## What is wrong\nx\n\n## What it should be\ny\n\n## Acceptance check\nz\n"
+	start := time.Now()
+	got := call(t, e, viaRoomctl("dev"), "issue_draft", map[string]any{"repo": "Smana/a", "title": "docs(agents): a dead link", "body": body})
+	var d issueDraft
+	if got.isError || json.Unmarshal(got.structured, &d) != nil || d.CanStart || d.CanStartWhy != "unverified" {
+		t.Fatalf("%+v: %+v", got, d)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the draft took %v with a hung lookup", took)
+	}
+}

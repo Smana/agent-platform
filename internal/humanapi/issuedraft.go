@@ -63,6 +63,8 @@ func (s *Server) canStart(ctx context.Context, p authn.Principal, repo string) (
 	if p.Sponsored || !s.SessionStart[strings.ToLower(repo)] || s.Identity == nil || s.Access == nil {
 		return false, startOff
 	}
+	ctx, cancel := context.WithTimeout(ctx, accessWait) // as the gate's lookup is: a hung one is unverified
+	defer cancel()
 	login, err := s.Identity.Login(ctx, p.Sub, repo)
 	switch {
 	case errors.Is(err, repoaccess.ErrNoRepository):
