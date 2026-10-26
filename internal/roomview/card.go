@@ -47,7 +47,7 @@ func (c *card) quoted(s string, cell bool) string {
 
 // plainToken is a value from the broker's own vocabulary: as is when it is made of nothing but
 // identifier characters (a run id, a version), quoted otherwise.
-var plainToken = regexp.MustCompile(`^[A-Za-z0-9._+/-]{1,64}$`)
+var plainToken = regexp.MustCompile(`^[A-Za-z0-9.+/-]{1,64}$`)
 
 func (c *card) token(s string, cell bool) string {
 	if plainToken.MatchString(s) && !autolinkish(s) {
@@ -215,8 +215,58 @@ func (c *card) facts(s summary.Summary) {
 // cut, as it may end in the command, and without a pipe in a table cell. It may hold code spans of
 // its own, so it is never put inside another.
 func (c *card) broker(s string) string {
-	return strings.ReplaceAll(strip(s), "|", cellPipe)
+	s = strings.ReplaceAll(strip(s), "|", cellPipe)
+	if !c.md() {
+		s = strings.ReplaceAll(s, "`", "") // a terminal shows no code spans
+	}
+	return s
 }
+
+// span is a value in a code span in Markdown, plain on a terminal.
+func (c *card) span(s string) string {
+	if c.md() {
+		return code(s, false)
+	}
+	return clean(s)
+}
+
+// mergeLine is the merge need as a sentence built here, from its parts: the repository is read from
+// the pull request's URL (a GitHub one), the number from the need's id. Summary's own text
+// interpolates both unescaped, and a repository may be named "_www.x" or "_x_", so it is not used.
+// ok is false for a need whose parts are not what they should be.
+func (c *card) mergeLine(n summary.Need) (string, bool) {
+	if !digits(n.ID) {
+		return "", false
+	}
+	repo := repoOf(n.URL)
+	s := "a maintainer with admin on "
+	if repo != "" {
+		s += c.span(repo) + " "
+	} else {
+		s = "a maintainer with admin on the repository "
+	}
+	s += "merges PR #" + n.ID + `: the ruleset blocks a plain merge, so tick "bypass rules" on the PR page`
+	if repo != "" {
+		s += ", or run " + c.span("gh pr merge "+n.ID+" --squash --admin --repo "+repo)
+	}
+	return s, true
+}
+
+// answerLine is the answer need as a sentence built here: the author is named only when it is a
+// GitHub login, in a code span.
+func (c *card) answerLine(n summary.Need) (string, bool) {
+	if !digits(n.ID) {
+		return "", false
+	}
+	who := "the issue's author"
+	if n.Author != "" && envelope.ValidLogin(n.Author) {
+		who = c.span("@" + n.Author)
+	}
+	return who + " answers the scoper's question by editing issue #" + n.ID + ", then a maintainer re-applies " +
+		c.span("factory/ready") + "; or a maintainer comments " + c.span("/factory retry") + " to proceed on its assumption", true
+}
+
+func digits(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 
 func (c *card) runFact(r envelope.RunFact) string {
 	s := c.text(r.Role, c.md()) + " " + c.token(r.ID, c.md())
@@ -282,6 +332,15 @@ func (c *card) prFact(s summary.Summary) string {
 	return strings.Join(parts, " · ")
 }
 
+// needLine is the sentence build makes for n, else the need's untrusted-looking text in a span: a
+// need whose parts are off is not rendered as the broker's prose.
+func (c *card) needLine(n summary.Need, build func(summary.Need) (string, bool)) string {
+	if s, ok := build(n); ok {
+		return s
+	}
+	return c.quoted(n.What, false)
+}
+
 func (c *card) needs(s summary.Summary) {
 	if len(s.NeedsYou) == 0 {
 		return
@@ -297,9 +356,9 @@ func (c *card) needs(s summary.Summary) {
 				item += " by " + stamp(n.Deadline, c.o.Now)
 			}
 		case "merge":
-			item, label = c.broker(n.What), "open the pull request"
+			item, label = c.needLine(n, c.mergeLine), "open the pull request"
 		case "answer":
-			item, label = c.broker(n.What), "answer on the issue"
+			item, label = c.needLine(n, c.answerLine), "answer on the issue"
 		case "hold":
 			item, label = c.broker(n.What), "open the room"
 		default:

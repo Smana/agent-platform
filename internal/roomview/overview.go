@@ -207,7 +207,6 @@ func markdownWhere(r Row, o Options) string {
 // needPhrase is a need of the broker's own kinds as a short phrase for a row's cell, "" for a need
 // it does not know. The need's full text is the card's: a cell stays one short line.
 func needPhrase(n *summary.Need) string {
-	digits := func(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 	switch {
 	case n.Kind == "merge" && digits(n.ID):
 		return "merge #" + n.ID

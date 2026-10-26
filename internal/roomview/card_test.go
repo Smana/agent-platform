@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuin/goldmark/ast"
 
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/policy"
@@ -319,12 +322,12 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 			`{"room":"r","url":"u","status":{"phase":"Escalated\u001b[2J","reason":"CI stayed red after the fix runs",` +
 				"\"next\":\"a maintainer comments `/factory retry` on the issue\"," +
 				`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42","title":"fix the CA"}},"notes":{"items":[]}}`, cardNow,
-			[]string{"r · #42 fix the CA\n", "Escalated[2J", "Next  a maintainer comments `/factory retry` on the issue\n", "Why   CI stayed red after the fix runs\n"},
+			[]string{"r · #42 fix the CA\n", "Escalated[2J", "Next  a maintainer comments /factory retry on the issue\n", "Why   CI stayed red after the fix runs\n"},
 			[]string{"\x1b"}},
 		{"a merge carries its PR link",
 			`{"room":"r","url":"u","status":{"phase":"AwaitingHuman"},` +
 				`"needsYou":[{"kind":"merge","id":"2267","what":"merge PR #2267: tick bypass","url":"https://github.com/Smana/a/pull/2267"}],"notes":{"items":[]}}`, cardNow,
-			[]string{`1. merge PR #2267: tick bypass → https://github.com/Smana/a/pull/2267`}, nil},
+			[]string{`1. a maintainer with admin on Smana/a merges PR #2267: the ruleset blocks a plain merge, so tick "bypass rules" on the PR page, or run gh pr merge 2267 --squash --admin --repo Smana/a → https://github.com/Smana/a/pull/2267`}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := card1(t, body(t, tc.body), textOpts(tc.now))
@@ -373,12 +376,17 @@ func TestCardKeepsTheBrokersTextWhole(t *testing.T) {
 		{Kind: "merge", ID: "2239", What: merge, URL: "https://github.com/Smana/a/pull/2239"},
 		{Kind: "answer", ID: "42", What: answer, URL: "https://github.com/Smana/a/issues/42"},
 	}
+	// The merge and answer lines are built from their parts, with the repository, the author and
+	// the commands in code spans; a terminal shows the same words without the backticks.
+	mergeMD := "a maintainer with admin on `Smana/a` merges PR #2239: the ruleset blocks a plain merge, so tick \"bypass rules\" on the PR page, or run `gh pr merge 2239 --squash --admin --repo Smana/a`"
+	answerMD := "`@alice` answers the scoper's question by editing issue #42, then a maintainer re-applies `factory/ready`; or a maintainer comments `/factory retry` to proceed on its assumption"
+	sum.NeedsYou[1].Author = "alice"
 	for _, f := range []Format{Markdown, Text} {
 		got := card1(t, sum, Options{Format: f, Now: now, Rooms: rooms})
-		for _, s := range []string{merge, answer, next} {
+		for _, s := range []string{mergeMD, answerMD, next} {
 			want := s
-			if f == Text {
-				want = s // a terminal keeps the broker's backticks
+			if f == Text && s != next {
+				want = strings.ReplaceAll(s, "`", "")
 			}
 			if !strings.Contains(got, want) {
 				t.Errorf("format %d: %q is cut or rewritten in\n%s", f, s, got)
@@ -390,7 +398,7 @@ func TestCardKeepsTheBrokersTextWhole(t *testing.T) {
 	}
 	md := card1(t, sum, Options{Format: Markdown, Now: now, Rooms: rooms})
 	assertInert(t, md, rooms, nil)
-	if spans := strings.Join(codeSpans(md), "\n"); !strings.Contains(spans, "gh pr merge 2239 --squash --admin --repo Smana/a") || strings.Contains(spans, "a maintainer with admin") {
+	if spans := strings.Join(codeSpans(md), "\n"); !strings.Contains(spans, "gh pr merge 2239 --squash --admin --repo Smana/a") || !strings.Contains(spans, "Smana/a\n") || strings.Contains(spans, "a maintainer with admin") {
 		t.Errorf("the merge command is its own code span, not nested in another:\n%v", codeSpans(md))
 	}
 	// An approval's text is the agent's: cut.
@@ -467,5 +475,81 @@ func TestCardTextColorBoldsTheStateWord(t *testing.T) {
 	}
 	if plain := card1(t, s, textOpts(n)); strings.Contains(plain, "\x1b") {
 		t.Errorf("Text has an escape: %q", plain)
+	}
+}
+
+// noEmphasis fails when the numbered need lines of md render emphasis (the state word is bold on
+// purpose, so only those lines are read). Links are assertInert's: any off the allowlist fails.
+func noEmphasis(t *testing.T, md string) {
+	t.Helper()
+	var lines []string
+	for _, l := range strings.Split(md, "\n") {
+		if strings.HasPrefix(l, "1. ") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatalf("no need line in\n%s", md)
+	}
+	root, _ := parse(strings.Join(lines, "\n"))
+	_ = ast.Walk(root, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
+		if _, ok := n.(*ast.Emphasis); ok && enter {
+			t.Errorf("emphasis renders from\n%s", strings.Join(lines, "\n"))
+		}
+		return ast.WalkContinue, nil
+	})
+}
+
+// The merge need names a repository GitHub's naming rules let start with "_" and hold ".": the
+// card builds the line from its parts, so neither a link nor emphasis can render.
+func TestCardMergeNeedIsInertForAHostileRepository(t *testing.T) {
+	for _, repo := range []string{"o/_www.evil.example", "o/_x_", "o/a.b"} {
+		sum := summary.Summary{Room: "r", URL: rooms + "/r/r"}
+		sum.Status.Phase = "AwaitingHuman"
+		sum.NeedsYou = []summary.Need{{Kind: "merge", ID: "1", What: summary.MergeHow(repo, 1), URL: "https://github.com/" + repo + "/pull/1"}}
+		md := card1(t, sum, Options{Format: Markdown, Now: now, Rooms: rooms})
+		assertInert(t, md, rooms, nil)
+		noEmphasis(t, md)
+		spans := codeSpans(md)
+		if !slices.Contains(spans, repo) || !slices.Contains(spans, "gh pr merge 1 --squash --admin --repo "+repo) {
+			t.Errorf("%s: the repository and the command are code spans, got %q in\n%s", repo, spans, md)
+		}
+		txt := card1(t, sum, textOpts(now))
+		if strings.Contains(txt, "`") || !strings.Contains(txt, "admin on "+repo+" merges PR #1") {
+			t.Errorf("%s: terminal:\n%s", repo, txt)
+		}
+	}
+	// With no repository the line says so and offers no gh command.
+	sum := summary.Summary{Room: "r", URL: rooms + "/r/r"}
+	sum.NeedsYou = []summary.Need{{Kind: "merge", ID: "1", What: summary.MergeHow("", 1), URL: "https://evil.example/x"}}
+	if got := card1(t, sum, textOpts(now)); strings.Contains(got, "gh pr merge") || !strings.Contains(got, "bypass rules") {
+		t.Errorf("no repository:\n%s", got)
+	}
+}
+
+// The answer need names the issue's author: only a GitHub login is shown, in a code span.
+func TestCardAnswerNeedIsInertForAHostileAuthor(t *testing.T) {
+	for author, want := range map[string]string{"alice-b": "`@alice-b`", "_www.evil.example": "the issue's author", "x`y": "the issue's author", "": "the issue's author"} {
+		sum := summary.Summary{Room: "r", URL: rooms + "/r/r"}
+		sum.NeedsYou = []summary.Need{{Kind: "answer", ID: "42", Author: author, URL: "https://github.com/o/r/issues/42",
+			What: "<b>evil</b> _www.evil.example answers"}}
+		md := card1(t, sum, Options{Format: Markdown, Now: now, Rooms: rooms})
+		assertInert(t, md, rooms, []string{"evil"})
+		noEmphasis(t, md)
+		if !strings.Contains(md, "1. "+want+" answers the scoper's question by editing issue #42, then a maintainer re-applies `factory/ready`") {
+			t.Errorf("author %q:\n%s", author, md)
+		}
+	}
+}
+
+func TestCardTokenNeutralisesEmphasis(t *testing.T) {
+	c := &card{o: Options{Format: Markdown, Rooms: rooms}}
+	for _, w := range []string{"_x_", "a_b_", "*x*", "~x~"} {
+		if got := c.token(w, false); got != "`"+w+"`" {
+			t.Errorf("token(%q) = %q", w, got)
+		}
+	}
+	if got := c.token("glm-5.3", false); got != "glm-5.3" {
+		t.Errorf("token = %q", got)
 	}
 }
