@@ -364,6 +364,9 @@ func (h HumanConfig) validate(system []string) []error {
 	if len(h.MCP.SessionStart) > 0 && !h.MCP.Enabled {
 		errs = append(errs, errors.New("human.mcp.sessionStart needs human.mcp.enabled"))
 	}
+	if len(h.MCP.SessionStart) > 0 && h.Access == nil {
+		errs = append(errs, errors.New("human.mcp.sessionStart needs human.access: without the GitHub check canStart is always off"))
+	}
 	listed := map[string]bool{}
 	for i, r := range h.MCP.SessionStart {
 		key := strings.ToLower(r)

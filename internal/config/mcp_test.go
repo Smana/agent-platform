@@ -31,10 +31,11 @@ func TestLoadMCPSessionStart(t *testing.T) {
 	tests := []struct {
 		name, doc, err string
 	}{
-		{"listed", roomctl + "  mcp:\n    enabled: true\n    sessionStart: [Smana/a]\n", ""},
+		{"listed", roomctl + access + "  mcp:\n    enabled: true\n    sessionStart: [Smana/a]\n", ""},
+		{"without human.access", roomctl + "  mcp:\n    enabled: true\n    sessionStart: [Smana/a]\n", "human.mcp.sessionStart needs human.access"},
 		{"without enabled", roomctl + "  mcp:\n    sessionStart: [Smana/a]\n", "human.mcp.sessionStart needs human.mcp.enabled"},
-		{"not a repository", roomctl + "  mcp:\n    enabled: true\n    sessionStart: [not-a-repo]\n", "human.mcp.sessionStart[0]"},
-		{"twice", roomctl + "  mcp:\n    enabled: true\n    sessionStart: [Smana/a, Smana/a]\n", "declared twice"},
+		{"not a repository", roomctl + access + "  mcp:\n    enabled: true\n    sessionStart: [not-a-repo]\n", "human.mcp.sessionStart[0]"},
+		{"twice", roomctl + access + "  mcp:\n    enabled: true\n    sessionStart: [Smana/a, Smana/a]\n", "declared twice"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,7 +51,7 @@ func TestLoadMCPSessionStart(t *testing.T) {
 			}
 		})
 	}
-	if _, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n    sessionStart: [not-a-repo]\n")); err == nil || !strings.Contains(err.Error(), "owner/name") {
+	if _, err := Load(write(t, roomctl+access+"  mcp:\n    enabled: true\n    sessionStart: [not-a-repo]\n")); err == nil || !strings.Contains(err.Error(), "owner/name") {
 		t.Fatalf("the message names owner/name: %v", err)
 	}
 	if c, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n")); err != nil || len(c.Human.MCP.SessionStart) != 0 {
