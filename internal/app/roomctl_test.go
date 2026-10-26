@@ -405,3 +405,33 @@ func TestRoomctlSetupProjectIsRootedAtTheRepository(t *testing.T) {
 		t.Error("wrote outside a repository")
 	}
 }
+
+func TestRoomctlDoctorReadsTheRepositorySkillDirs(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	sub := filepath.Join(repo, "a")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	r := Roomctl{Home: home, Cwd: sub}
+	dirs, err := r.skillDirs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(dirs, filepath.Join(repo, ".claude", "skills")) || slices.Contains(dirs, filepath.Join(sub, ".claude", "skills")) {
+		t.Errorf("dirs %v: want the repository top, not the subdirectory", dirs)
+	}
+	r.Cwd = t.TempDir()
+	dirs, err = r.skillDirs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if !strings.HasPrefix(d, home) {
+			t.Errorf("outside a repository the project scope is skipped, got %s", d)
+		}
+	}
+}

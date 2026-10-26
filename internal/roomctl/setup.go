@@ -35,9 +35,10 @@ const (
 	mcpServersJSON = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
 	copilotJSON    = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"],\n      \"tools\": [\"*\"]\n    }\n  }\n}\n"
 	cursorJSON     = "{\n  \"mcpServers\": {\n    \"factory\": {\n      \"type\": \"stdio\",\n      \"command\": \"{CMD}\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}\n"
-	// opencodeJSON is the documented shape (mcp.<name>). opencode 2.0.22's own `mcp add` wrote
-	// mcp.servers.<name> instead: a live check settles which one opencode reads.
-	opencodeJSON = "{\n  \"mcp\": {\n    \"factory\": {\n      \"type\": \"local\",\n      \"command\": [\"{CMD}\", \"mcp\"]\n    }\n  }\n}\n"
+	// opencodeJSON is what opencode 2.0.22's own `mcp add` writes to ./opencode.json (observed):
+	// mcp.servers.<name>, not the mcp.<name> its docs show. The CLI is the authority for the version
+	// we target.
+	opencodeJSON = "{\n  \"mcp\": {\n    \"servers\": {\n      \"factory\": {\n        \"type\": \"local\",\n        \"command\": [\"{CMD}\", \"mcp\"]\n      }\n    }\n  }\n}\n"
 	codexTOML    = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
 )
 
@@ -109,11 +110,14 @@ func (a Agent) skillDir(project bool) string {
 }
 
 // SkillDirs is every directory an agent reads skills from, each once: every agent's SkillDir under
-// home and SkillProjectDir under dir.
+// home and SkillProjectDir under dir; an empty dir (no repository) has no project scope.
 func SkillDirs(home, dir string) []string {
 	var out []string
 	for _, k := range slices.Sorted(maps.Keys(Agents)) {
 		for _, p := range []string{Agents[k].SkillDir, Agents[k].SkillProjectDir} {
+			if dir == "" && !strings.HasPrefix(p, "~/") {
+				continue
+			}
 			s := Setup{Home: home, Dir: dir}.resolve(p)
 			if !slices.Contains(out, s) {
 				out = append(out, s)

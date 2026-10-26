@@ -271,7 +271,7 @@ func TestSetupTwiceSucceedsAndRefreshesTheSkill(t *testing.T) {
 	adds := 0
 	run := func(context.Context, []string) error {
 		if adds++; adds > 1 {
-			return errors.New("exit status 1: MCP server factory already exists in user config")
+			return errors.New("exit status 1: MCP server factory already exists in user config") // claude, verbatim
 		}
 		return nil
 	}
@@ -304,5 +304,24 @@ func TestSetupInstallsTheSkillBeforeRegistering(t *testing.T) {
 	s := Setup{Agent: Agents["claude"], Home: home, Dir: t.TempDir(), Cmd: "roomctl", LookPath: found, Out: &bytes.Buffer{}, Run: noRun(t)}
 	if err := s.Do(context.Background()); err == nil {
 		t.Error("want the install to fail")
+	}
+}
+
+func TestSetupOpencodeSnippetIsWhatTheCLIWrites(t *testing.T) {
+	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"]}}}}`
+	got := strings.NewReplacer(" ", "", "\n", "").Replace(strings.ReplaceAll(Agents["opencode"].Snippet, "{CMD}", "roomctl"))
+	if got != want {
+		t.Errorf("opencode snippet %s, want %s", got, want)
+	}
+}
+
+func TestSkillDirsWithoutARepositorySkipsTheProjectScope(t *testing.T) {
+	for _, d := range SkillDirs("/home/dev", "") {
+		if !strings.HasPrefix(d, "/home/dev/") {
+			t.Errorf("%s is not under home", d)
+		}
+	}
+	if len(SkillDirs("/home/dev", "/repo")) <= len(SkillDirs("/home/dev", "")) {
+		t.Error("a repository adds no project dirs")
 	}
 }

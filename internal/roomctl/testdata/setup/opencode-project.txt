@@ -5,9 +5,11 @@ otherwise: add this to opencode.json (roomctl setup never edits a config):
 
 {
   "mcp": {
-    "factory": {
-      "type": "local",
-      "command": ["roomctl", "mcp"]
+    "servers": {
+      "factory": {
+        "type": "local",
+        "command": ["roomctl", "mcp"]
+      }
     }
   }
 }

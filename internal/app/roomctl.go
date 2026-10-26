@@ -141,12 +141,12 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cmd == "doctor" {
-		home, cwd, err := r.homeAndCwd()
+		dirs, err := r.skillDirs(ctx)
 		if err != nil {
 			return err
 		}
 		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath,
-			SkillDirs: roomctl.SkillDirs(home, cwd), Version: version.Version}.Run(ctx, r.Out)
+			SkillDirs: dirs, Version: version.Version}.Run(ctx, r.Out)
 	}
 	if cmd == "mcp" {
 		return r.mcp(ctx, cfg, tokPath, args)
@@ -279,6 +279,20 @@ func (r Roomctl) homeAndCwd() (home, cwd string, err error) {
 		}
 	}
 	return home, cwd, nil
+}
+
+// skillDirs is where the doctor looks: under home, and under the repository top, as setup writes
+// them. Outside a repository the project scope is skipped.
+func (r Roomctl) skillDirs(ctx context.Context) ([]string, error) {
+	home, cwd, err := r.homeAndCwd()
+	if err != nil {
+		return nil, err
+	}
+	top, err := repoTop(ctx, cwd)
+	if err != nil {
+		top = ""
+	}
+	return roomctl.SkillDirs(home, top), nil
 }
 
 // repoTop is the top of the repository holding dir: --project files belong to the repository,

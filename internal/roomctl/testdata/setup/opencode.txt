@@ -5,9 +5,11 @@ otherwise: add this to ~/.config/opencode/opencode.json (roomctl setup never edi
 
 {
   "mcp": {
-    "factory": {
-      "type": "local",
-      "command": ["roomctl", "mcp"]
+    "servers": {
+      "factory": {
+        "type": "local",
+        "command": ["roomctl", "mcp"]
+      }
     }
   }
 }
