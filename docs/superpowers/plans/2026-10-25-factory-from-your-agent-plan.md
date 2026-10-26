@@ -98,7 +98,7 @@ plan) found 1 B, 7 M and 18 L; every proposed ruling is adopted. Each landed her
 | M1 | Port all eight `RenderSummary`/`budgetText` tests; `roomctl status` prints `cursor: seq:N` after the card, so `TestRoomctlStatus` keeps it | Task 5 |
 | M2 | `TaskStateAt` in `internal/app`'s `fakeActLog` and `fakeRoomLog` too | Task 10 |
 | M3 | `mcprelay_test.go:83`: Task 10 makes it 8, Task 14 asserts names, not a count; the second PR to merge rebases it | Tasks 10, 14; Execution order |
-| M4 | An unfinished run of a task in a `TerminalPhase` is `ended`, at `PhaseSince` | R3; Tasks 5, 8 |
+| M4 | An unfinished run of a task in a `TerminalPhase`, or `Escalated`, is `ended`, at `PhaseSince` | R3; Tasks 5, 8 |
 | M5 | ai-native-ref pins v0.22.0 (#116); this plan's release is v0.23.0; the adopt plan diffs from the pinned tag | Tasks 13, 19; Execution order; the adopt plan |
 | M6 | The doctor's `skill` check FAILs in cloud-native-ref until adopt PR 7; PR 7 merges before runbook 19 | Task 19; Execution order; the adopt plan |
 | M7 | Show the pipe test red first; a cmark-gfm style `gfmCells` if goldmark can't; two hostile approval commands, a bare pipe and a pipe after a backslash | Tasks 2, 3, 4 |
@@ -783,12 +783,12 @@ Write the body from Tasks 1–7, linking the spec. Expected: `check` and `analyz
   (`api/factory/v1alpha1/task_types.go:316`); `v1alpha1.TerminalPhase` (`task_phases.go:68`).
 - Produces: `func outcomeOf(r v1alpha1.RunRecord, terminal bool) string`, and
   `func runFact(t *v1alpha1.Task, r v1alpha1.RunRecord) envelope.RunFact`, shared by `Run` and `Runs`.
-  `terminal` is `v1alpha1.TerminalPhase(t.Status.Phase)`. A run without `Finished` on a terminal task
+  `terminal` is `v1alpha1.TerminalPhase(t.Status.Phase) || t.Status.Phase == v1alpha1.PhaseEscalated` (M4, widened at implementation: a stuck task's runs must not read **running** forever; facts are recomputed on every post, so a resumed task corrects itself). A run without `Finished` on a terminal task
   gets `OutcomeEnded`, with `EndedAt` the task's `PhaseSince` truncated to the second (zero when
   `PhaseSince` is nil) (M4): `Finished` is set only in `finished()` (`implement.go:405-410`), so a
   stop or a Closed task leaves the last record unfinished, and its card would read **running**
-  forever. `Escalated` is not a `TerminalPhase` (`task_phases.go:68`): an escalated task's last
-  unfinished run (`r.end(…, "stuck")`, `implement.go:455`) keeps no outcome.
+  forever. `Escalated` is not a `TerminalPhase` (`task_phases.go:68`), so it is named here: an
+  escalated task's last unfinished run (`r.end(…, "stuck")`, `implement.go:455`) is `ended` too.
 
 - [ ] **Step 1: Write the failing tests**
 
