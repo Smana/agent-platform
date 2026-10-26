@@ -12,10 +12,6 @@ import (
 	"github.com/Smana/agent-platform/internal/mcpwire"
 )
 
-// toolRoomWait names roomctl mcp's blocking wait. The instructions say "if it is listed": an older
-// roomctl mcp does not serve it.
-const toolRoomWait = "room_wait"
-
 // promptArg is one optional prompt argument.
 type promptArg struct{ name, description string }
 
