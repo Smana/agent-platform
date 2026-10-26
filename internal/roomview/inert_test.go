@@ -19,6 +19,8 @@ func TestClean(t *testing.T) {
 		"hidden characters": {"a\u200bb\u202ec\x1b[2J", "abc[2J"},
 		"whitespace":        {"one\n\n two\t three", "one two three"},
 		"newline":           {"a\nb", "a b"},
+		"hidden token":      {"a \u200b b", "a b"},
+		"hidden only":       {"\u200b \u202e", ""},
 		"long":              {strings.Repeat("é", 200), strings.Repeat("é", 160) + "…"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -44,11 +46,11 @@ func TestCodeSpanOutrunsBackticks(t *testing.T) {
 	}
 }
 
-func TestTableCellEscapesPipes(t *testing.T) {
-	for _, in := range []string{"a|b", `a\|b`, "|", "x|`y`|z"} {
+func TestTableCellHasNoPipe(t *testing.T) {
+	for _, in := range []string{"a|b", `a\|b`, `a\\|b`, "|", "x|`y`|z", `x\|[y](https://evil)`} {
 		c := code(in, true)
-		if !strings.Contains(c, `\|`) || strings.Contains(strings.ReplaceAll(c, `\|`, ""), "|") {
-			t.Errorf("code(%q, true) = %q: every pipe must be escaped", in, c)
+		if strings.Contains(c, "|") {
+			t.Errorf("code(%q, true) = %q: no pipe may reach a cell, whatever precedes it", in, c)
 		}
 		md := "| h1 | h2 |\n|---|---|\n| " + c + " | y |\n"
 		root, _ := parse(md)
@@ -62,10 +64,13 @@ func TestTableCellEscapesPipes(t *testing.T) {
 		if cells != 4 { // 2 header cells, 2 body cells
 			t.Errorf("%q: %d cells, want 4", c, cells)
 		}
-		// Unescaped, goldmark ends the cell at the pipe and the code span never closes.
-		if got := codeSpans(md); len(got) != 1 || got[0] != in {
-			t.Errorf("%q: the cell's code span reads %q, want %q", c, got, in)
+		if want := strings.ReplaceAll(in, "|", "\u2223"); len(codeSpans(md)) != 1 || codeSpans(md)[0] != want {
+			t.Errorf("%q: the cell's code span reads %q, want %q", c, codeSpans(md), want)
 		}
+		assertInert(t, md, rooms, []string{"evil"})
+	}
+	if got := escapeTitle(`a|b`, true); strings.Contains(got, "|") {
+		t.Errorf("escapeTitle in a cell kept a pipe: %q", got)
 	}
 }
 
@@ -108,6 +113,12 @@ func TestEscapedTitleInACellKeepsItsColumns(t *testing.T) {
 	})
 	if cells != 4 {
 		t.Fatalf("%d cells, want 4", cells)
+	}
+}
+
+func TestRoomsBaseTrailingSlash(t *testing.T) {
+	if !allowed("https://rooms.example/r/26zfnuxm", Options{Rooms: rooms + "/"}) {
+		t.Fatal("a rooms base with a trailing slash refuses every room link")
 	}
 }
 
@@ -207,10 +218,10 @@ func TestHostileFixtureIsInert(t *testing.T) {
 		for _, in := range []string{r.Role, r.Verdict} {
 			found := false
 			for _, got := range codeSpans(md.String()) {
-				found = found || got == clean(in)
+				found = found || got == strings.ReplaceAll(clean(in), "|", cellPipe)
 			}
 			if !found {
-				t.Errorf("%q does not read back from a code span", clean(in))
+				t.Errorf("%q does not read back from a code span (pipes as %s)", clean(in), cellPipe)
 			}
 		}
 	}

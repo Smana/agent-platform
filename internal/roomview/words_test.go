@@ -32,7 +32,7 @@ func TestEveryPhaseAndReasonHasWords(t *testing.T) {
 	}
 	for _, r := range summary.Reasons() {
 		w := reasonWords(r)
-		if w == "" || utf8.RuneCountInString(w) > 40 {
+		if w == "" || w == r || utf8.RuneCountInString(w) > 40 {
 			t.Errorf("reasonWords(%q) = %q, want 1 to 40 runes", r, w)
 		}
 	}

@@ -18,13 +18,13 @@ const maxText = 160
 // clean is untrusted text made safe to put on one line: whitespace collapsed to single spaces,
 // hidden characters (control, zero-width, bidi) gone, and at most maxText runes.
 func clean(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
 	s = strings.Map(func(r rune) rune {
 		if envelope.Control(r) {
 			return -1
 		}
 		return r
 	}, s)
+	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > maxText {
 		return string(r[:maxText]) + "…"
 	}
@@ -33,7 +33,9 @@ func clean(s string) string {
 
 // code is s in a code span, the one place untrusted text can sit: the fence is longer than any run
 // of backticks in s, and the spaces inside keep a leading or trailing backtick from joining it. In
-// a table cell every pipe is escaped, or it would end the cell.
+// a table cell every pipe becomes U+2223 (a divides sign), never a backslash escape: parsers
+// disagree on what a backslash before a pipe means (cmark-gfm, goldmark, pandoc), so no pipe may
+// reach a cell at all.
 func code(s string, cell bool) string {
 	s = clean(s)
 	longest, run := 0, 0
@@ -46,11 +48,14 @@ func code(s string, cell bool) string {
 		}
 	}
 	if cell {
-		s = strings.ReplaceAll(s, "|", `\|`)
+		s = strings.ReplaceAll(s, "|", cellPipe)
 	}
 	fence := strings.Repeat("`", longest+1)
 	return fence + " " + s + " " + fence
 }
+
+// cellPipe stands for a pipe inside a table cell.
+const cellPipe = "\u2223"
 
 // punct is what escapeTitle escapes with a backslash: every character Markdown can read as syntax
 // in the middle of a line, a pipe included for a table cell.
@@ -64,6 +69,9 @@ func escapeTitle(s string, cell bool) string {
 		if strings.Contains(w, "://") || strings.HasPrefix(strings.ToLower(w), "www.") || strings.Contains(w, "@") {
 			words[i] = code(w, cell)
 			continue
+		}
+		if cell {
+			w = strings.ReplaceAll(w, "|", cellPipe)
 		}
 		var b strings.Builder
 		for _, r := range w {
@@ -92,10 +100,11 @@ func allowed(url string, o Options) bool {
 	if envelope.GitHubURL(url) {
 		return true
 	}
-	if o.Rooms == "" || !strings.HasPrefix(url, o.Rooms) {
+	base := strings.TrimRight(o.Rooms, "/")
+	if base == "" || !strings.HasPrefix(url, base) {
 		return false
 	}
-	return roomPath.MatchString(strings.TrimPrefix(url, o.Rooms))
+	return roomPath.MatchString(strings.TrimPrefix(url, base))
 }
 
 // link is text linking to url in Markdown, text (url) otherwise, and the text alone when url is
@@ -156,6 +165,8 @@ func stamp(t, now time.Time) string {
 	return t.Format("2006-01-02 15:04 UTC")
 }
 
+// TODO(PR 4): delete roomctl's copy of tokens (internal/roomctl/status.go).
+//
 // tokens reads a token count at a glance, as the page does: 189093 -> "189 k", 1500000 -> "1.5 M".
 // A count that would round to "1000 k" reads "1 M".
 func tokens(n int64) string {
