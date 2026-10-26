@@ -21,12 +21,15 @@ import (
 // flagged are the paths whose content a developer's tools run on open or on the next commit: a
 // branch that changes one gets a confirmation first (R15). An entry ending in "/" is a prefix.
 // The repository's own in-tree core.hooksPath is added at run time. It covers every project MCP
-// snippet roomctl setup writes.
+// snippet roomctl setup writes. Flagging more is safe: a flag only means "ask first". A changed
+// symlink is flagged whatever its name, and so is a changed path that is a directory of an entry,
+// since a link or a file there redirects what the entry's tools read.
 var flagged = []string{
 	".claude/settings.json", ".claude/settings.local.json", ".opencode/plugins/", ".mcp.json",
 	".vscode/tasks.json", ".envrc", "mise.toml", ".mise.toml", "mise.local.toml",
 	"opencode.json", "opencode.jsonc", ".codex/config.toml", ".gemini/settings.json",
-	".cursor/mcp.json", ".github/mcp.json",
+	".cursor/mcp.json", ".github/mcp.json", ".vscode/mcp.json", ".vscode/settings.json",
+	".devcontainer/", ".claude/skills/", ".claude/agents/",
 	".husky/", ".githooks/", ".pre-commit-config.yaml", "lefthook.yml", ".lefthook.yml",
 }
 
@@ -89,8 +92,15 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 		return out, clone
 	}
 	top = strings.TrimRight(top, "\n")
-	origin, err := git(ctx, top, "config", "--get", "remote.origin.url")
-	if err != nil || !originRE(c.Repository).MatchString(strings.TrimSpace(origin)) {
+	origin, err := git(ctx, top, "config", "--get-all", "remote.origin.url")
+	urls := strings.Fields(origin)
+	if err != nil || len(urls) == 0 {
+		return out, clone
+	}
+	if len(urls) > 1 { // fetch uses the first, config --get the last: refuse the ambiguity
+		return out, refuse("origin of "+OneLine(c.Workspace)+" has more than one URL", "gh repo clone "+c.Repository)
+	}
+	if !originRE(c.Repository).MatchString(urls[0]) {
 		return out, clone
 	}
 	remote := "refs/heads/" + branch
@@ -105,24 +115,35 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 		}
 		return out, refuse(why+", and the room opened no pull request", "")
 	}
-	if path, err := checkedOutAt(ctx, git, top, remote); err != nil {
+	path, err := checkedOutAt(ctx, git, top, remote)
+	if err != nil {
 		return out, err
-	} else if path != "" {
-		out.Path, out.Reused = path, true
-		return out, nil
+	}
+	if path != "" {
+		if _, err := os.Stat(path); err == nil {
+			out.Path, out.Reused = path, true
+			return out, nil
+		}
+		// its directory was deleted: forget it, and make it again
+		if _, err := git(ctx, top, "worktree", "prune"); err != nil {
+			return out, fmt.Errorf("checkout: %w", err)
+		}
+		if again, err := checkedOutAt(ctx, git, top, remote); err != nil {
+			return out, err
+		} else if again != "" {
+			return out, refuse(OneLine(again)+" is a worktree of "+branch+" whose folder is gone and cannot be pruned", "git worktree prune")
+		}
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(top))
 	if err != nil {
 		return out, fmt.Errorf("checkout: %w", err)
 	}
-	path := filepath.Join(parent, filepath.Base(top)+"."+c.Room)
+	path = filepath.Join(parent, filepath.Base(top)+"."+c.Room)
 	if filepath.Dir(path) != parent || strings.Contains(filepath.Base(path), "..") {
 		return out, errors.New("checkout: the worktree path leaves the repository's directory")
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return out, refuse(OneLine(path)+" already exists and is not a worktree of "+branch, "move it away, or check "+branch+" out yourself")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return out, fmt.Errorf("checkout: %w", err)
+	if err := freePath(path, branch); err != nil {
+		return out, err
 	}
 	if _, err := git(ctx, top, "fetch", "--no-tags", "origin", "+"+remote+":refs/remotes/origin/"+branch); err != nil {
 		return out, fmt.Errorf("checkout: fetching %s: %w", branch, err)
@@ -151,6 +172,9 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 			return out, refuse("not created: the developer did not confirm the files that run code ("+strings.Join(shown, ", ")+")", "")
 		}
 	}
+	if err := freePath(path, branch); err != nil { // the form can take minutes
+		return out, err
+	}
 	args := []string{"worktree", "add", "--track", "-b", branch, path, remoteRef}
 	if noLocal == nil {
 		args = []string{"worktree", "add", path, branch}
@@ -158,8 +182,23 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 	if _, err := git(ctx, top, args...); err != nil {
 		return out, fmt.Errorf("checkout: %w", err)
 	}
+	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path || filepath.Dir(resolved) != parent {
+		return out, fmt.Errorf("checkout: %s is not where the worktree was meant to be: check it before you use it", OneLine(path))
+	}
 	out.Path = path
 	return out, nil
+}
+
+// freePath refuses a path that exists, a link included: nothing is overwritten or written through.
+func freePath(path, branch string) error {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return refuse(OneLine(path)+" already exists and is not a worktree of "+branch, "move it away, or check "+branch+" out yourself")
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("checkout: %w", err)
+	}
+	return nil
 }
 
 // checkedOutAt is the path of the worktree that has ref checked out, "" when none has.
@@ -180,35 +219,89 @@ func checkedOutAt(ctx context.Context, git Git, top, ref string) (string, error)
 	return "", nil
 }
 
-// flaggedFiles are the files each ref changes against its merge base with HEAD (R15) that match
-// flagged or the repository's in-tree hooks path: all its files when it shares no history.
+// symlinkMode is git's mode for a symbolic link.
+const symlinkMode = "120000"
+
+// flaggedFiles are what each ref changes against its merge base with HEAD (R15) that is flagged:
+// a file that matches the entries or the repository's in-tree hooks path, a changed path that is a
+// directory of one, and any changed symlink. A symlink the ref already has at an entry's place is
+// flagged too, since the branch can change what it points to. With no shared history it is all of
+// the ref's files.
 func (c Checkout) flaggedFiles(ctx context.Context, git Git, top string, refs []string) ([]string, error) {
-	prefixes := slices.Clone(flagged)
-	if hp, err := git(ctx, top, "config", "--local", "--get", "core.hooksPath"); err == nil {
-		if p := inTreeHooks(top, strings.TrimSpace(hp)); p != "" {
-			prefixes = append(prefixes, p)
+	entries := slices.Clone(flagged)
+	if hp, err := git(ctx, top, "config", "--show-scope", "--get-all", "core.hooksPath"); err == nil {
+		if p := inTreeHooks(top, effectiveValue(hp)); p != "" {
+			entries = append(entries, p)
 		}
 	}
 	var all []string
+	add := func(mode, file string) {
+		if file != "" && (mode == symlinkMode || isFlagged(file, entries)) {
+			all = append(all, OneLine(file))
+		}
+	}
 	for _, ref := range refs {
-		var names string
-		var err error
-		if base, mbErr := git(ctx, top, "merge-base", "HEAD", ref); mbErr == nil {
-			names, err = git(ctx, top, "diff", "--name-only", "--no-renames", "-z", strings.TrimSpace(base), ref)
+		if base, err := git(ctx, top, "merge-base", "HEAD", ref); err == nil {
+			raw, err := git(ctx, top, "diff", "--raw", "--no-abbrev", "--no-renames", "-z", strings.TrimSpace(base), ref)
+			if err != nil {
+				return nil, fmt.Errorf("checkout: listing the branch's changes: %w", err)
+			}
+			fields := strings.Split(raw, "\x00")
+			for i := 0; i+1 < len(fields); i += 2 { // ":<old mode> <new mode> <old> <new> <status>", then the path
+				meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+				if len(meta) < 2 {
+					return nil, errors.New("checkout: git diff printed something unexpected")
+				}
+				mode := ""
+				if slices.Contains(meta[:2], symlinkMode) {
+					mode = symlinkMode
+				}
+				add(mode, fields[i+1])
+			}
 		} else {
-			names, err = git(ctx, top, "ls-tree", "-r", "--name-only", "-z", ref)
+			tree, err := git(ctx, top, "ls-tree", "-r", "-z", ref)
+			if err != nil {
+				return nil, fmt.Errorf("checkout: listing the branch's files: %w", err)
+			}
+			for _, rec := range strings.Split(tree, "\x00") {
+				add(lsTreeEntry(rec))
+			}
 		}
+		args := append([]string{"ls-tree", "-z", ref, "--"}, dirNames(entries)...)
+		tree, err := git(ctx, top, args...)
 		if err != nil {
-			return nil, fmt.Errorf("checkout: listing the branch's changes: %w", err)
+			return nil, fmt.Errorf("checkout: looking for links: %w", err)
 		}
-		for _, f := range strings.Split(names, "\x00") {
-			if f != "" && isFlagged(f, prefixes) {
-				all = append(all, OneLine(f))
+		for _, rec := range strings.Split(tree, "\x00") {
+			if mode, file := lsTreeEntry(rec); mode == symlinkMode {
+				add(mode, file)
 			}
 		}
 	}
 	slices.Sort(all)
 	return slices.Compact(all), nil
+}
+
+// lsTreeEntry is the mode and the path of one "<mode> <type> <sha>\t<path>" record.
+func lsTreeEntry(rec string) (mode, path string) {
+	meta, path, ok := strings.Cut(rec, "\t")
+	if !ok {
+		return "", ""
+	}
+	mode, _, _ = strings.Cut(meta, " ")
+	return mode, path
+}
+
+// effectiveValue is the last value of `git config --show-scope --get-all` that is not the
+// command line's: RunGit sets core.hooksPath there, over the repository's own.
+func effectiveValue(out string) string {
+	val := ""
+	for _, line := range strings.Split(out, "\n") {
+		if scope, v, ok := strings.Cut(line, "\t"); ok && scope != "command" {
+			val = strings.TrimSpace(v)
+		}
+	}
+	return val
 }
 
 // inTreeHooks is core.hooksPath as a prefix of the repository's files, "" when it points outside.
@@ -233,8 +326,26 @@ func inTreeHooks(top, hp string) string {
 	return hp + "/"
 }
 
-// isFlagged is whether file is under a flagged entry: at the root, or in a subdirectory (a tool
-// started there reads its own folder), in any case. The hooks path entry "/" matches every file.
+// dirNames are the entries without their trailing "/" and each directory above them: the names
+// at which a link or a file redirects what an entry's tools read. The hooks entry "/" has none.
+func dirNames(entries []string) []string {
+	var names []string
+	for _, e := range entries {
+		if e == "/" {
+			continue
+		}
+		parts := strings.Split(strings.TrimSuffix(e, "/"), "/")
+		for i := range parts {
+			names = append(names, strings.Join(parts[:i+1], "/"))
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// isFlagged is whether file is under a flagged entry, or is a directory of one: at the root or in
+// a subdirectory (a tool started there reads its own folder), in any case. The hooks path entry
+// "/" matches every file.
 func isFlagged(file string, entries []string) bool {
 	lf := strings.ToLower(file)
 	for _, e := range entries {
@@ -247,6 +358,11 @@ func isFlagged(file string, entries []string) bool {
 				return true
 			}
 		case lf == le || strings.HasSuffix(lf, "/"+le):
+			return true
+		}
+	}
+	for _, n := range dirNames(entries) {
+		if ln := strings.ToLower(n); lf == ln || strings.HasSuffix(lf, "/"+ln) {
 			return true
 		}
 	}
@@ -276,19 +392,24 @@ var roomCheckoutEntry = map[string]any{
 
 // roomRow is the room's row, which gives its repository and pull request: the open rooms first,
 // then the ones that ended over a week ago.
-func (r *Relay) roomRow(ctx context.Context, room string) (roomview.Row, bool) {
-	for _, args := range []map[string]any{{}, {"all": true}} {
+// A broker that cannot answer is an error, not a miss; the second list is best effort, since an
+// older broker may not know "all".
+func (r *Relay) roomRow(ctx context.Context, room string) (roomview.Row, bool, error) {
+	for i, args := range []map[string]any{{}, {"all": true}} {
 		rows, err := r.listRows(ctx, args)
 		if err != nil {
-			return roomview.Row{}, false
+			if i == 0 {
+				return roomview.Row{}, false, err
+			}
+			break
 		}
 		for _, row := range rows {
 			if row.ID == room {
-				return row, true
+				return row, true, nil
 			}
 		}
 	}
-	return roomview.Row{}, false
+	return roomview.Row{}, false, nil
 }
 
 // roomCheckout is room_checkout. The repository and the pull request come from the broker's row
@@ -300,7 +421,10 @@ func (r *Relay) roomCheckout(ctx context.Context, c localCall) any {
 	if mcpwire.DecodeArgs(c.Args, &a) != nil || !roomIDRE.MatchString(a.Room) {
 		return mcpwire.ToolError("invalid_arguments: room is a room id")
 	}
-	row, ok := r.roomRow(ctx, a.Room)
+	row, ok, err := r.roomRow(ctx, a.Room)
+	if err != nil {
+		return mcpwire.ToolError("not_checked_out: " + OneLine(explainRelay(err)))
+	}
 	if !ok {
 		return mcpwire.ToolError("unknown_room: " + a.Room + " is not one of the rooms you can see")
 	}

@@ -152,9 +152,12 @@ func parseWaitArgs(raw json.RawMessage) (waitArgs, time.Duration, string) {
 
 // listRows is one rooms_list call: the rows of the broker's structuredContent.
 func (r *Relay) listRows(ctx context.Context, args map[string]any) ([]roomview.Row, error) {
-	_, sc, isErr, err := r.callBroker(ctx, "rooms_list", args)
+	text, sc, isErr, err := r.callBroker(ctx, "rooms_list", args)
 	if err != nil {
 		return nil, err
+	}
+	if isErr {
+		return nil, errors.New("rooms_list: " + OneLine(text))
 	}
 	var list struct {
 		Rooms []roomview.Row `json:"rooms"`

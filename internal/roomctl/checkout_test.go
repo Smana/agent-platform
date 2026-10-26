@@ -39,6 +39,13 @@ func put(t *testing.T, root, rel, body string, mode os.FileMode) {
 	}
 }
 
+func link(t *testing.T, root, rel, target string) {
+	t.Helper()
+	if err := os.Symlink(target, filepath.Join(root, rel)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type fixture struct {
 	origin, ws, parent string
 	marker             string // the file the clone's hooks touch
@@ -46,6 +53,9 @@ type fixture struct {
 
 type fixtureOpts struct {
 	branch   map[string]string // files the agent branch adds, nil: no agent branch
+	links    map[string]string // symlinks the agent branch adds: path -> target
+	main     map[string]string // files main carries
+	mainLink map[string]string // symlinks main carries
 	url      string            // the origin URL the clone records; default git@github.com:Smana/a.git
 	hooks    bool              // main carries .husky hooks, and the clone sets core.hooksPath=.husky
 	hooksDir string            // an in-tree core.hooksPath other than .husky
@@ -72,6 +82,12 @@ func newFixture(t *testing.T, o fixtureOpts) fixture {
 			put(t, seed, ".husky/"+h, "#!/bin/sh\ntouch '"+f.marker+"."+h+"'\n", 0o755)
 		}
 	}
+	for rel, body := range o.main {
+		put(t, seed, rel, body, 0o644)
+	}
+	for rel, target := range o.mainLink {
+		link(t, seed, rel, target)
+	}
 	gitIn(t, seed, "add", "-A")
 	gitIn(t, seed, "commit", "-q", "-m", "init")
 	gitIn(t, seed, "remote", "add", "origin", f.origin)
@@ -80,6 +96,9 @@ func newFixture(t *testing.T, o fixtureOpts) fixture {
 		gitIn(t, seed, "checkout", "-q", "-b", "agent/26zfnuxm")
 		for rel, body := range o.branch {
 			put(t, seed, rel, body, 0o755)
+		}
+		for rel, target := range o.links {
+			link(t, seed, rel, target)
 		}
 		gitIn(t, seed, "add", "-A")
 		gitIn(t, seed, "commit", "-q", "-m", "agent work")
@@ -160,7 +179,7 @@ func TestCheckoutReusesItsWorktree(t *testing.T) {
 	}
 	var calls []string
 	rec := func(ctx context.Context, dir string, args ...string) (string, error) {
-		calls = append(calls, args[0])
+		calls = append(calls, strings.Join(args, " "))
 		return RunGit(ctx, dir, args...)
 	}
 	second, err := f.checkout(rec).Run(t.Context())
@@ -170,8 +189,13 @@ func TestCheckoutReusesItsWorktree(t *testing.T) {
 	if second.Path != first.Path || !second.Reused {
 		t.Fatalf("%+v", second)
 	}
-	if slices.Contains(calls, "fetch") || slices.Contains(calls, "worktree") && slices.Contains(calls, "add") {
-		t.Fatalf("a reuse fetched or added: %v", calls)
+	for _, c := range calls {
+		if strings.HasPrefix(c, "fetch") || strings.HasPrefix(c, "worktree add") {
+			t.Fatalf("a reuse fetched or added: %v", calls)
+		}
+	}
+	if len(calls) == 0 {
+		t.Fatal("the recorder saw nothing")
 	}
 }
 
@@ -294,7 +318,8 @@ func TestCheckoutOriginForms(t *testing.T) {
 		})
 	}
 	for _, url := range []string{
-		"https://evil.example/Smana/a", "git@github.com:Smana/a/extra", "https://github.com/Smana/ab",
+		"https://evil.example/Smana/a", "git@github.com:Smana/a/extra", "user@github.com:Smana/a", "https://user@github.com/Smana/a",
+		"file:///srv/Smana/a", "ext::sh -c true", "git@github.com:Smana/a/../x", "https://github.com/Smana/ab",
 		"https://github.com.evil.example/Smana/a", "ssh://git@github.com/Smana/a.git",
 	} {
 		t.Run("refuses "+url, func(t *testing.T) {
@@ -361,8 +386,8 @@ func TestCheckoutRefusesAHostileRoomOrRepository(t *testing.T) {
 
 // sync with roomctl.Agents (PR 5): every project MCP snippet path `roomctl setup` writes.
 func TestFlaggedCoversEveryProjectSnippet(t *testing.T) {
-	for _, p := range []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".github/mcp.json"} {
-		if !slices.Contains(flagged, p) {
+	for _, p := range []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".vscode/mcp.json", ".github/mcp.json"} {
+		if !isFlagged(p, flagged) {
 			t.Errorf("%s is not flagged", p)
 		}
 	}
@@ -432,4 +457,127 @@ func TestRelayRoomCheckout(t *testing.T) {
 			t.Fatalf("%v", sc)
 		}
 	})
+}
+
+// A symlink redirects a config directory: git checks it out as a link, so the path strings the
+// diff lists name neither the directory nor the file the tool reads.
+func TestCheckoutFlagsSymlinks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts fixtureOpts
+		want string
+	}{
+		"a directory link the branch adds": {fixtureOpts{
+			branch: map[string]string{"x/settings.json": "{}\n"}, links: map[string]string{".claude": "x"}}, ".claude"},
+		"a link anywhere": {fixtureOpts{
+			branch: map[string]string{"x/tasks.json": "{}\n"}, links: map[string]string{"sub-link": "x"}}, "sub-link"},
+		"a link main already has, whose target the branch changes": {fixtureOpts{
+			main: map[string]string{"x/settings.json": "{}\n"}, mainLink: map[string]string{".claude": "x"},
+			branch: map[string]string{"x/settings.json": "{\"hooks\":1}\n"}}, ".claude"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, tc.opts)
+			c := &confirmer{answer: false}
+			co := f.checkout(RunGit)
+			co.Confirm = c.confirm
+			_, err := co.Run(t.Context())
+			_ = asRefusal(t, err)
+			if len(c.asked) != 1 || !slices.Contains(c.asked[0], tc.want) {
+				t.Fatalf("asked %q, want %q among them", c.asked, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsFlagged(t *testing.T) {
+	for p, want := range map[string]bool{
+		".claude": true, "sub/.claude": true, ".vscode": true, ".github": true, ".claude/skills/a.md": true,
+		".claude/agents/a.md": true, ".devcontainer/devcontainer.json": true, ".vscode/settings.json": true,
+		".vscode/mcp.json": true, ".github/mcp.json": true, "sub/.MCP.json": true,
+		".github/workflows/ci.yml": false, "src/claude.go": false, "README.md": false, ".claudex": false,
+	} {
+		if got := isFlagged(p, flagged); got != want {
+			t.Errorf("isFlagged(%q) = %v", p, got)
+		}
+	}
+}
+
+func TestCheckoutRefusesSeveralOriginURLs(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	gitIn(t, f.ws, "config", "--add", "remote.origin.url", "git@github.com:Smana/a")
+	_, err := f.checkout(RunGit).Run(t.Context())
+	_ = asRefusal(t, err)
+}
+
+// A content filter the developer has (Git LFS) runs on checkout and may reach a host the branch's
+// .lfsconfig names: it does not run.
+func TestCheckoutRunsNoSmudgeFilter(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{".gitattributes": "*.bin filter=lfs\n", "a.bin": "x\n"}})
+	gitIn(t, f.ws, "config", "filter.lfs.smudge", "touch '"+f.marker+".smudge'; cat")
+	if _, err := f.checkout(RunGit).Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(f.marker + ".smudge"); err == nil {
+		t.Fatal("the smudge filter ran")
+	}
+}
+
+func TestCheckoutReadsTheEffectiveHooksPath(t *testing.T) {
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	put(t, filepath.Dir(global), "gitconfig", "[core]\n\thooksPath = ci/h\n", 0o644)
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"ci/h/pre-commit": "#!/bin/sh\n"}})
+	c := &confirmer{answer: false}
+	co := f.checkout(RunGit)
+	co.Confirm = c.confirm
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	if len(c.asked) != 1 || !slices.Equal(c.asked[0], []string{"ci/h/pre-commit"}) {
+		t.Fatalf("%v", c.asked)
+	}
+}
+
+func TestCheckoutRecreatesADeletedWorktree(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	first, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(first.Path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(got.Path); err != nil || !st.IsDir() || got.Reused {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// The path is checked again just before the add: one that appears while the developer decides is
+// refused, and the add never runs.
+func TestCheckoutChecksThePathAgainBeforeTheAdd(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
+	target := t.TempDir()
+	co := f.checkout(RunGit)
+	co.Confirm = func(context.Context, []string) (bool, error) {
+		return true, os.Symlink(target, filepath.Join(f.parent, "a.26zfnuxm")) // during the form
+	}
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	if es, _ := os.ReadDir(target); len(es) != 0 {
+		t.Fatal("wrote through the link")
+	}
+}
+
+// Only a real miss is unknown_room: a broker that cannot answer says so.
+func TestRelayRoomCheckoutReportsBrokerErrors(t *testing.T) {
+	b := newMCPBroker(t)
+	b.status = 500
+	s := relayTo(t, b, tok)
+	s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{}})
+	text, _, isErr := resultOf(first(checkoutCall(t, s, "26zfnuxm", t.TempDir(), nil)))
+	if !isErr || strings.Contains(text, "unknown_room") || !strings.Contains(text, "not_checked_out") {
+		t.Fatalf("%q", text)
+	}
 }

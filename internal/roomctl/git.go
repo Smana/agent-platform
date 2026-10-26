@@ -35,13 +35,15 @@ func (w *capWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-// RunGit runs git -c core.hooksPath=/dev/null -C dir args, with an argv and never a shell (R15):
+// RunGit runs git -c core.hooksPath=/dev/null -C dir args (and no LFS smudge), with an argv and never a shell (R15):
 // no hook of the repository runs, a branch's included, and git never prompts. Its stdout is
 // capped at 1 MiB, and an error carries the first line of stderr.
 func RunGit(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := append([]string{"-c", "core.hooksPath=/dev/null", "-C", dir}, args...)
+	// No hook, and no content filter: Git LFS's smudge would reach the host a branch's .lfsconfig names.
+	argv := append([]string{"-c", "core.hooksPath=/dev/null", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=",
+		"-c", "filter.lfs.required=false", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", argv...) //nolint:gosec // git, with an argument list and never a shell; the callers validate the room, the repository and the path
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
 	out := &capWriter{max: maxGitOut}
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = out, &stderr

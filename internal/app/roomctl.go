@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl"
 	"github.com/Smana/agent-platform/internal/roomctl/skill"
@@ -528,16 +530,14 @@ func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) 
 		in = os.Stdin
 	}
 	co := roomctl.Checkout{Workspace: dir, Room: pos[0], Repository: rows[i].Repository, PR: rows[i].PR}
-	if f, ok := in.(*os.File); ok {
-		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			co.Confirm = func(_ context.Context, files []string) (bool, error) {
-				_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(files, "\n  "))
-				line, err := bufio.NewReader(f).ReadString('\n')
-				if err != nil && line == "" {
-					return false, err
-				}
-				return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
+		co.Confirm = func(_ context.Context, files []string) (bool, error) {
+			_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(files, "\n  "))
+			line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
+			if err != nil && line == "" {
+				return false, err
 			}
+			return strings.EqualFold(strings.TrimSpace(line), "y"), nil
 		}
 	}
 	got, err := co.Run(ctx)
