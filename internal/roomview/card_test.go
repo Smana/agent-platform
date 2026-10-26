@@ -341,3 +341,16 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 		})
 	}
 }
+
+// A served model or a version the factory writes is as inert as any other word.
+func TestCardTokenAutolink(t *testing.T) {
+	c := &card{o: Options{Format: Markdown, Rooms: rooms}}
+	for _, w := range []string{"www.x.y/z", "a-www.x"} {
+		if got := c.token(w, false); got != "`"+w+"`" {
+			t.Errorf("token(%q) = %q, want a code span", w, got)
+		}
+	}
+	if got := c.token("glm-5.3", false); got != "glm-5.3" {
+		t.Errorf("token(glm-5.3) = %q", got)
+	}
+}

@@ -48,7 +48,7 @@ func (c *card) quoted(s string, cell bool) string {
 var plainToken = regexp.MustCompile(`^[A-Za-z0-9._+/-]{1,64}$`)
 
 func (c *card) token(s string, cell bool) string {
-	if plainToken.MatchString(s) {
+	if plainToken.MatchString(s) && !autolinkish(s) {
 		if c.md() && strings.HasPrefix(s, "-") {
 			return code(s, cell)
 		}

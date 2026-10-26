@@ -15,20 +15,47 @@ import (
 // maxText bounds the text a view quotes, in runes.
 const maxText = 160
 
-// clean is untrusted text made safe to put on one line: whitespace collapsed to single spaces,
-// hidden characters (control, zero-width, bidi) gone, and at most maxText runes.
-func clean(s string) string {
+// strip is s on one line: whitespace collapsed to single spaces, hidden characters (control,
+// zero-width, bidi) gone. It never cuts: it is for text the broker wrote, whose end matters (a
+// command), and for the first step of clean.
+func strip(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if envelope.Control(r) {
 			return -1
 		}
 		return r
 	}, s)
-	s = strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// clean is untrusted text made safe to put on one line: strip, then at most maxText runes. Only
+// untrusted text is cut; the broker's own sentences go through strip.
+func clean(s string) string {
+	s = strip(s)
 	if r := []rune(s); len(r) > maxText {
 		return string(r[:maxText]) + "…"
 	}
 	return s
+}
+
+// autolinkish reports whether the word w holds something a Markdown renderer would link on its
+// own: a scheme (://), a www. host anywhere in it (GFM accepts www. after "(", "*", "_" or "~", and
+// reads the raw character, so a backslash escape does not stop it), or an email address.
+func autolinkish(w string) bool {
+	return strings.Contains(w, "://") || strings.Contains(strings.ToLower(w), "www.") || strings.Contains(w, "@")
+}
+
+// inertWord is a phrase of a vocabulary, got, for the raw value: a phrase the vocabulary knows is
+// as is, and a fallback (got is raw, cleaned) that holds markup or an autolink goes in a code span.
+// It is for a sentence of the broker's that is built before any view exists.
+func inertWord(raw, got string) string {
+	if got != clean(raw) {
+		return got
+	}
+	if autolinkish(got) || strings.ContainsAny(got, "\\`*_{}[]<>#+!|~&") {
+		return code(got, false)
+	}
+	return got
 }
 
 // code is s in a code span, the one place untrusted text can sit: the fence is longer than any run
@@ -70,7 +97,7 @@ const punct = "\\`*_{}[]<>()#+-.!|~&"
 func escapeTitle(s string, cell bool) string {
 	words := strings.Fields(clean(s))
 	for i, w := range words {
-		if strings.Contains(w, "://") || strings.HasPrefix(strings.ToLower(w), "www.") || strings.Contains(w, "@") {
+		if autolinkish(w) {
 			words[i] = code(w, cell)
 			continue
 		}

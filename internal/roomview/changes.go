@@ -86,15 +86,6 @@ func safeRole(r string) string {
 	return "agent"
 }
 
-// wrd is a phrase from the broker's vocabulary made safe to sit in Markdown: a fallback value the
-// vocabulary lacks (cleaned, but not escaped) goes in a code span.
-func wrd(s string) string {
-	if strings.ContainsAny(s, "\\`*_{}[]<>#+!|~&") {
-		return code(s, false)
-	}
-	return s
-}
-
 // idSpan is a run id in a code span.
 func idSpan(id string) string { return code(id, false) }
 
@@ -163,7 +154,7 @@ func Milestones(in MilestoneInput) ChangeSet {
 			case envelope.KindProgress:
 				ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindNote, Run: e.RunID, Role: clean(e.Actor.Role), Text: clean(p.Text)})
 			case envelope.KindReviewVerdict:
-				m := Milestone{Seq: e.Seq, At: e.TS, Kind: kindVerdict, Run: e.RunID, Role: clean(e.Actor.Role), Text: wrd(verdictWords(p.Verdict))}
+				m := Milestone{Seq: e.Seq, At: e.TS, Kind: kindVerdict, Run: e.RunID, Role: clean(e.Actor.Role), Text: inertWord(p.Verdict, verdictWords(p.Verdict))}
 				if envelope.GitHubURL(p.PullRequest) {
 					m.URL = p.PullRequest
 				}
@@ -185,7 +176,7 @@ func Milestones(in MilestoneInput) ChangeSet {
 			if json.Unmarshal(e.Payload, &p) != nil {
 				continue
 			}
-			ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindApprovalDecided, Text: wrd(word(map[string]string{
+			ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindApprovalDecided, Text: inertWord(p.Decision, word(map[string]string{
 				"approved": "approved", "denied": "denied", "expired": "expired"}, p.Decision))})
 		case envelope.Handoff:
 			var p envelope.HandoffPayload
@@ -284,9 +275,9 @@ func diffFacts(prev, cur *envelope.TaskFacts, e envelope.Event) []Milestone {
 		before[r.ID] = r
 	}
 	end := func(r envelope.RunFact) {
-		text := "run " + idSpan(r.ID) + " " + wrd(outcomeWords(r.Outcome))
+		text := "run " + idSpan(r.ID) + " " + inertWord(r.Outcome, outcomeWords(r.Outcome))
 		if r.Outcome == envelope.OutcomeLost {
-			text = wrd(reasonWords("pod_lost"))
+			text = reasonWords("pod_lost")
 		}
 		add(Milestone{At: r.EndedAt, Kind: kindRunEnded, Run: r.ID, Role: safeRole(r.Role), Text: text})
 	}
@@ -305,7 +296,7 @@ func diffFacts(prev, cur *envelope.TaskFacts, e envelope.Event) []Milestone {
 		}
 		text := "the factory started " + safeRole(r.Role) + " " + idSpan(r.ID)
 		if r.Trigger != "" {
-			how := wrd(triggerWords(r.Trigger))
+			how := inertWord(r.Trigger, triggerWords(r.Trigger))
 			if r.Trigger == "resume" {
 				how += " " + strconv.Itoa(resumes)
 			}
@@ -324,9 +315,9 @@ func diffFacts(prev, cur *envelope.TaskFacts, e envelope.Event) []Milestone {
 
 	switch {
 	case prev.Phase != cur.Phase && cur.Phase == "Merged":
-		add(Milestone{Kind: kindMerged, Text: subject + " " + wrd(phaseWords(cur.Phase)), URL: prURL})
+		add(Milestone{Kind: kindMerged, Text: subject + " " + inertWord(cur.Phase, phaseWords(cur.Phase)), URL: prURL})
 	case prev.Phase != cur.Phase && cur.Phase == "Reverted":
-		add(Milestone{Kind: kindReverted, Text: subject + " " + wrd(phaseWords(cur.Phase)), URL: prURL})
+		add(Milestone{Kind: kindReverted, Text: subject + " " + inertWord(cur.Phase, phaseWords(cur.Phase)), URL: prURL})
 	}
 	switch {
 	case !held(prev) && held(cur):
@@ -335,7 +326,7 @@ func diffFacts(prev, cur *envelope.TaskFacts, e envelope.Event) []Milestone {
 			"waiting_room_busy":    "held while another run uses the room",
 		}, cur.Reason)})
 	case held(prev) && !held(cur):
-		add(Milestone{Kind: kindResumed, Text: "the hold ended: " + wrd(phaseWords(cur.Phase))})
+		add(Milestone{Kind: kindResumed, Text: "the hold ended: " + inertWord(cur.Phase, phaseWords(cur.Phase))})
 	}
 	if what, now := budgetReached(cur); now {
 		if _, before := budgetReached(prev); !before {

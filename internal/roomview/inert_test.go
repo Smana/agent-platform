@@ -81,12 +81,31 @@ func TestTableCellHasNoPipe(t *testing.T) {
 }
 
 func TestTitleWordsThatAutolinkGoInCodeSpans(t *testing.T) {
-	for _, w := range []string{"https://evil.example", "www.evil.example", "a@evil.example", "mailto:a@evil.example"} {
+	for _, w := range []string{"https://evil.example", "www.evil.example", "a@evil.example", "mailto:a@evil.example",
+		"(www.evil.example)", "*www.evil.example*", "_www.evil.example_", "~www.evil.example~", "see:www.evil.example", "https://evil", "a@b.c"} {
 		md := "a title with " + escapeTitle(w, false) + " in it\n"
 		assertInert(t, md, rooms, nil)
 		if got := codeSpans(md); len(got) != 1 || got[0] != w {
 			t.Errorf("%q: code spans %q, want the word alone", w, got)
 		}
+	}
+}
+
+// A title with several words keeps only the dangerous one in a code span, and no link node renders.
+func TestTitleWithAutolinkingWordsRendersNoLink(t *testing.T) {
+	md := "see " + escapeTitle("see https://evil (www.evil.example) a@b.c *www.evil.example*", false) + " end\n"
+	assertInert(t, md, rooms, nil)
+	root, _ := parse(md)
+	links := 0
+	_ = ast.Walk(root, func(n ast.Node, enter bool) (ast.WalkStatus, error) {
+		switch n.(type) {
+		case *ast.Link, *ast.AutoLink:
+			links++
+		}
+		return ast.WalkContinue, nil
+	})
+	if links != 0 {
+		t.Errorf("%d link nodes in %q", links, md)
 	}
 }
 

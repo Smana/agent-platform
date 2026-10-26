@@ -342,3 +342,18 @@ func TestChangesHostileFacts(t *testing.T) {
 		t.Errorf("bidi in %q", md)
 	}
 }
+
+// A fallback value the vocabulary lacks is untrusted: an autolinking word never renders as a link.
+func TestChangesHostileFactsAutolink(t *testing.T) {
+	for _, h := range []string{"https://evil.example", "www.evil.example", "a@b.example", "(www.evil.example)", "*www.evil.example*"} {
+		c := milestones(&envelope.TaskFacts{Phase: "Implementing"},
+			factEv(2, at(1, 0), envelope.TaskFacts{Phase: "Implementing", Runs: []envelope.RunFact{
+				{ID: "r1", Role: "implementer", Trigger: h, StartedAt: at(1, 0), EndedAt: at(2, 0), Outcome: h},
+			}}))
+		md := changes1(t, c, Options{Format: Markdown, Now: at(3, 0), Rooms: rooms})
+		assertInert(t, md, rooms, nil)
+		if !strings.Contains(strings.Join(codeSpans(md), "\n"), h) {
+			t.Errorf("%q is not in a code span:\n%s", h, md)
+		}
+	}
+}
