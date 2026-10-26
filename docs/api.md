@@ -510,7 +510,11 @@ notification is `202`. Each person makes 10 requests a second, burst 20, per rep
 | `room_tail` | a reader of the room | `room`, `cursor?` (`seq:N`), `kinds?` (at most 10 event types) | `{room, state, events: {untrusted: true, items}, cursor, more}`: at most 100 events and 256 KiB of payload past the first, at most 2,000 scanned for `kinds`; without a cursor, the last 50. Pass `cursor` back; `more` says the log held more when it was read |
 | `room_queue` | collaborator | `room`, `text` | `{room, queued}`: the message's `seq`. Its text is machine-sent |
 | `room_fork` | as the `fork` action | `room`, `at`, `role?`, `prUrl?`, `egress?`, `note?` | `{room, url, run?, runError?}`. The note is machine-sent |
-| `issue_draft` | any member | `repo`, `title`, `body` | `{repo, title, body, stripped}`: the draft with hidden and control characters stripped (`stripped` counts them). Refused unless the title reads `<area>: <what is wrong>` (at most 256 characters), the body holds `## What is wrong`, `## What it should be` and `## Acceptance check` in that order (at most 16 KiB), and the redactor finds no secret. It files nothing: `roomctl mcp`'s `issue_file` does |
+| `issue_draft` | any member | `repo`, `title`, `body` | `{repo, title, body, stripped, canStart, canStartWhy?}`: the draft with hidden and control characters stripped (`stripped` counts them). `canStart` is true when `repo` is in `human.mcp.sessionStart` and the caller writes to it on GitHub; else `canStartWhy` is `off` (not listed, no GitHub check wired, or a sponsored caller), `not_linked`, `no_write` (read only, or the GitHub App cannot see the repository) or `unverified` (the check failed). Refused unless the title reads `<area>: <what is wrong>` (at most 256 characters), the body holds `## What is wrong`, `## What it should be` and `## Acceptance check` in that order (at most 16 KiB), and the redactor finds no secret. It files nothing: `roomctl mcp`'s `issue_file` does |
+
+`prompts/list` and `prompts/get` serve the prompts `handoff` (`what`), `status` (`room`) and `inbox`: canned
+messages the client offers as slash commands. A sponsored principal's list is empty. The handoff
+prompt starts the factory only where `issue_draft` says `canStart`, and never applies a label.
 
 No tool labels, approves, steers, stops or starts factory work. The two write tools are acts through
 the `roomctl` client: the [actions](#actions)' rules, limits and rejections apply. Arguments are

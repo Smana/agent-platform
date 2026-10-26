@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -288,11 +289,15 @@ func humanServer(cfg config.Config, humans *authn.Humans, rooms client.Reader, n
 	hub humanapi.Hub, runs humanapi.Runs, actor *humanapi.Actor, m *metrics.Set, log *slog.Logger,
 ) *humanapi.Server {
 	h := cfg.Human
+	start := make(map[string]bool, len(h.MCP.SessionStart))
+	for _, r := range h.MCP.SessionStart {
+		start[strings.ToLower(r)] = true
+	}
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
 		WebClient: idFile(h.ClientIDFile), PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: idFile(h.RoomctlClientIDFile),
 		ProjectID: idFile(h.ProjectIDFile),
 		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log,
-		MCP: h.MCP.Enabled}
+		MCP: h.MCP.Enabled, SessionStart: start}
 }
 
 // roomRuns is the one watch method roomObserver reads; *runwatch.Watcher has it.

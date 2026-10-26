@@ -115,9 +115,12 @@ type Server struct {
 	Actor         *Actor // serves act frames (phase 4); nil refuses every one
 	// Identity and Access are D7's GitHub check: who the caller is on GitHub, and
 	// whether they may read a room's repository. Either nil shows rooms to admins only.
-	Identity *ghidentity.Resolver
-	Access   *repoaccess.Checker
-	Logger   *slog.Logger
+	// SessionStart holds the repositories, lowercased owner/name, whose issue_draft says canStart
+	// (human.mcp.sessionStart). Empty: none does.
+	SessionStart map[string]bool
+	Identity     *ghidentity.Resolver
+	Access       *repoaccess.Checker
+	Logger       *slog.Logger
 	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
 
