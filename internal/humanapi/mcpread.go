@@ -69,15 +69,20 @@ func (s *Server) roomsList(ctx context.Context, p authn.Principal, args json.Raw
 	}
 	views := make([]roomview.Row, len(rows))
 	for i, r := range rows {
-		views[i] = roomview.Row{ID: r.ID, URL: r.URL, Phase: r.Phase, State: r.State, Repository: r.Repository, Issue: r.Issue,
-			Title: r.Title, Task: r.Task, PR: r.PR, Reason: r.Reason, LastSeq: r.LastSeq, LastEventAt: r.LastEventAt,
-			NeedsMe: r.NeedsMe, NeedsYou: r.NeedsYou, Need: r.Need}
+		views[i] = viewRow(r)
 	}
 	var text strings.Builder
 	if err := roomview.Overview(&text, views, s.viewOptions(a.All)); err != nil {
 		return nil, err
 	}
 	return viewResult{text: text.String(), data: map[string]any{"rooms": rows, "access": access}}, nil
+}
+
+// viewRow is the part of a roomRow the text view shows. TestViewRowCarriesEveryField keeps the two in step.
+func viewRow(r roomRow) roomview.Row {
+	return roomview.Row{ID: r.ID, URL: r.URL, Phase: r.Phase, State: r.State, Repository: r.Repository, Issue: r.Issue,
+		Title: r.Title, Task: r.Task, PR: r.PR, Reason: r.Reason, LastSeq: r.LastSeq, LastEventAt: r.LastEventAt,
+		NeedsMe: r.NeedsMe, NeedsYou: r.NeedsYou, Need: r.Need}
 }
 
 // viewOptions are the choices of a view rendered for the model's chat: Markdown, with the rooms'

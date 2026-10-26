@@ -208,3 +208,70 @@ func TestRoomsListAllOnlyChangesTheText(t *testing.T) {
 		}
 	}
 }
+
+// The nested objects of an outputSchema name their required keys, and a real result has them all.
+func TestViewToolsOutputSchemaNestedRequired(t *testing.T) {
+	e := setup(t, mcpOn)
+	e.log.evs = []envelope.Event{progress(1, "planning")}
+	_, out := rpc(t, e, viaRoomctl("dev"), "tools/list", nil)
+	b, _ := json.Marshal(out["result"])
+	var r struct {
+		Tools []struct {
+			Name         string
+			OutputSchema struct {
+				Properties map[string]struct {
+					Type     string
+					Required []string
+					Items    *struct {
+						Type     string
+						Required []string
+					}
+				}
+			}
+		}
+	}
+	if json.Unmarshal(b, &r) != nil {
+		t.Fatal(string(b))
+	}
+	calls := map[string]toolCall{
+		"rooms_list":   call(t, e, viaRoomctl("dev"), "rooms_list", map[string]any{}),
+		"room_summary": call(t, e, viaRoomctl("dev"), "room_summary", map[string]any{"room": roomID}),
+		"room_changes": call(t, e, viaRoomctl("dev"), "room_changes", map[string]any{"room": roomID, "cursor": "seq:0"}),
+	}
+	// the nested objects each tool must constrain
+	nested := map[string][]string{"rooms_list": {"rooms"}, "room_summary": {"status"}, "room_changes": {"items"}}
+	for _, tool := range r.Tools {
+		got, ok := calls[tool.Name]
+		if !ok {
+			continue
+		}
+		var data map[string]json.RawMessage
+		if json.Unmarshal(got.structured, &data) != nil {
+			t.Fatal(string(got.structured))
+		}
+		for _, name := range nested[tool.Name] {
+			prop := tool.OutputSchema.Properties[name]
+			required, elems := prop.Required, []json.RawMessage{data[name]}
+			if prop.Type == "array" {
+				if prop.Items == nil {
+					t.Fatalf("%s.%s: an array with no items schema", tool.Name, name)
+				}
+				required = prop.Items.Required
+				elems = nil
+				_ = json.Unmarshal(data[name], &elems)
+			}
+			if len(required) == 0 || len(elems) == 0 {
+				t.Errorf("%s.%s: required %v over %d values", tool.Name, name, required, len(elems))
+			}
+			for _, el := range elems {
+				var keys map[string]json.RawMessage
+				_ = json.Unmarshal(el, &keys)
+				for _, k := range required {
+					if _, ok := keys[k]; !ok {
+						t.Errorf("%s.%s requires %q, which %s lacks", tool.Name, name, k, el)
+					}
+				}
+			}
+		}
+	}
+}
