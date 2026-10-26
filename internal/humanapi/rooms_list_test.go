@@ -176,3 +176,69 @@ func TestRoomRowsReadApprovalsOnlyWhenPending(t *testing.T) {
 		t.Fatalf("OpenApprovals called %d times for 3 rooms, one pending, want 1", log.approvalReads)
 	}
 }
+
+func rowsFor(t *testing.T, e env, q string, h http.Header) []roomRow {
+	t.Helper()
+	code, body := get(t, e, "/api/rooms"+q, h)
+	var rows []roomRow
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &rows) != nil {
+		t.Fatalf("%d %s", code, body)
+	}
+	return rows
+}
+
+// The answer need counts in a row as in the card: the owner of an Escalated room waiting for the
+// issue's author needs to answer, so the row, needs_me and the inbox agree. One facts read serves
+// the count, the reason and the need.
+func TestRoomRowCountsTheAnswerNeed(t *testing.T) {
+	var log *memLog
+	e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		log = v.memLog
+		a := repoRoom(roomID, "Smana/a")
+		a.Status.Task = &v1alpha1.TaskStatus{Phase: "Escalated", Issue: 42}
+		s.Rooms = roomClient(t, a)
+		s.PublicURL = "https://rooms.test"
+		f := envelope.TaskFacts{Phase: "Escalated", Reason: "needs_author", Issue: &envelope.IssueFact{Number: 42, URL: "https://github.com/Smana/a/issues/42", Author: "alice"}}
+		v.evs = append(v.evs, envelope.Event{V: 1, Seq: 1, RoomID: roomID, Type: envelope.StateChanged, TS: time.Now(), Payload: envelope.TaskStatePayload(f)})
+	})
+	rows := rowsFor(t, e, "?needs_me=1", admin("boss"))
+	if len(rows) != 1 || rows[0].NeedsYou != 1 || !rows[0].NeedsMe || rows[0].Need == nil || rows[0].Need.Kind != "answer" || rows[0].Need.ID != "42" {
+		t.Fatalf("an owner's row: %+v", rows)
+	}
+	if rows[0].Reason != "needs_author" || log.factsReads != 1 {
+		t.Errorf("reason %q after %d facts reads, want one read", rows[0].Reason, log.factsReads)
+	}
+	if w := rowsFor(t, e, "", header("dev1")); len(w) != 1 || w[0].NeedsYou != 0 || w[0].Need != nil {
+		t.Errorf("a watcher has no need: %+v", w)
+	}
+}
+
+// An approval past its deadline that the sweep has not decided yet is no need: the count and the
+// first need agree with the summary, which drops it.
+func TestRoomRowSkipsAnUnsweptExpiredApproval(t *testing.T) {
+	e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		a := repoRoom(roomID, "Smana/a")
+		a.Status.PendingApprovals = 2
+		s.Rooms = roomClient(t, a)
+		v.approvals = []store.Approval{
+			{ID: "01J9A", RoomID: roomID, Class: "shell", ExpiresAt: time.Now().Add(-time.Hour)},
+			{ID: "01J9B", RoomID: roomID, Class: "shell", ExpiresAt: time.Now().Add(time.Hour)},
+		}
+	})
+	rows := rowsFor(t, e, "", admin("boss"))
+	if len(rows) != 1 || rows[0].NeedsYou != 1 || rows[0].Need == nil || rows[0].Need.ID != "01J9B" {
+		t.Fatalf("one live approval: %+v", rows)
+	}
+	e2 := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		a := repoRoom(roomID, "Smana/a")
+		a.Status.PendingApprovals = 1
+		s.Rooms = roomClient(t, a)
+		v.approvals = []store.Approval{{ID: "01J9A", RoomID: roomID, Class: "shell", ExpiresAt: time.Now().Add(-time.Hour)}}
+	})
+	if rows := rowsFor(t, e2, "?needs_me=1", admin("boss")); len(rows) != 0 {
+		t.Fatalf("only an expired approval: needs_me lists %+v", rows)
+	}
+	if rows := rowsFor(t, e2, "", admin("boss")); len(rows) != 1 || rows[0].NeedsYou != 0 || rows[0].NeedsMe || rows[0].Need != nil {
+		t.Fatalf("the row says it needs you with nothing to show: %+v", rows)
+	}
+}
