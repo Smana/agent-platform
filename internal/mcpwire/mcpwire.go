@@ -100,6 +100,12 @@ func ToolResult(out any) (map[string]any, error) {
 		"structuredContent": out}, nil
 }
 
+// ToolResultText is a tools/call result whose text is a view for the human to read, and whose
+// structuredContent is out, the data it was rendered from.
+func ToolResultText(text string, out any) (map[string]any, error) {
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": out}, nil
+}
+
 // DecodeArgs reads a tool's arguments, one JSON object, into dst: an unknown field or anything
 // after the object is refused. No arguments, or null, is the empty object.
 func DecodeArgs(args json.RawMessage, dst any) error {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Smana/agent-platform/api/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -115,5 +116,94 @@ func TestMCPRoomTail(t *testing.T) {
 	}
 	if got := call(t, e, viaRoomctl("dev"), "room_tail", map[string]any{"room": roomID, "kinds": []string{"secrets"}}); !got.isError {
 		t.Fatalf("an unknown kind: %+v", got)
+	}
+}
+
+func TestViewToolsReturnTextAndStructure(t *testing.T) {
+	e := setup(t, mcpOn)
+	list := call(t, e, viaRoomctl("dev"), "rooms_list", map[string]any{})
+	if !strings.HasPrefix(list.text, "**Factory rooms**") {
+		t.Fatalf("rooms_list text: %q", list.text)
+	}
+	var l struct{ Rooms []json.RawMessage }
+	if json.Unmarshal(list.structured, &l) != nil || len(l.Rooms) == 0 {
+		t.Fatalf("rooms_list structure: %s", list.structured)
+	}
+	sum := call(t, e, viaRoomctl("dev"), "room_summary", map[string]any{"room": roomID})
+	if !strings.HasPrefix(sum.text, "### ") {
+		t.Fatalf("room_summary text: %q", sum.text)
+	}
+	var s struct{ APIVersion string }
+	if json.Unmarshal(sum.structured, &s) != nil || s.APIVersion != "summary/v1" {
+		t.Fatalf("room_summary structure: %s", sum.structured)
+	}
+}
+
+func TestViewToolsDeclareOutputSchema(t *testing.T) {
+	e := setup(t, mcpOn)
+	_, out := rpc(t, e, viaRoomctl("dev"), "tools/list", nil)
+	b, _ := json.Marshal(out["result"])
+	var r struct {
+		Tools []struct {
+			Name         string
+			OutputSchema *struct {
+				Type     string
+				Required []string
+			}
+		}
+	}
+	if json.Unmarshal(b, &r) != nil {
+		t.Fatal(string(b))
+	}
+	calls := map[string]toolCall{
+		"rooms_list":   call(t, e, viaRoomctl("dev"), "rooms_list", map[string]any{}),
+		"room_summary": call(t, e, viaRoomctl("dev"), "room_summary", map[string]any{"room": roomID}),
+	}
+	seen := 0
+	for _, tool := range r.Tools {
+		got, view := calls[tool.Name]
+		if !view {
+			if tool.OutputSchema != nil {
+				t.Errorf("%s declares an outputSchema", tool.Name)
+			}
+			continue
+		}
+		seen++
+		if tool.OutputSchema == nil || tool.OutputSchema.Type != "object" || len(tool.OutputSchema.Required) == 0 {
+			t.Fatalf("%s: outputSchema %+v", tool.Name, tool.OutputSchema)
+		}
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(got.structured, &keys) != nil {
+			t.Fatal(string(got.structured))
+		}
+		for _, k := range tool.OutputSchema.Required {
+			if _, ok := keys[k]; !ok {
+				t.Errorf("%s requires %q, which the structured result lacks", tool.Name, k)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d view tools", seen)
+	}
+}
+
+func TestRoomsListAllOnlyChangesTheText(t *testing.T) {
+	old := repoRoom(roomID, "Smana/a")
+	old.Status.Phase, old.Status.Task = "Closed", &v1alpha1.TaskStatus{Phase: "Merged", Issue: 42}
+	e := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Rooms = roomClient(t, old) })
+	e.log.mu.Lock()
+	e.log.evs = append(e.log.evs, logEvent(11, envelope.StateChanged, envelope.Actor{Kind: envelope.ActorSystem, ID: "system:factory"},
+		envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Merged"})))
+	e.log.lastEventAt = map[string]time.Time{roomID: time.Now().Add(-30 * 24 * time.Hour)}
+	e.log.mu.Unlock()
+	for _, all := range []bool{false, true} {
+		got := call(t, e, viaRoomctl("dev"), "rooms_list", map[string]any{"all": all})
+		var res struct{ Rooms []struct{ ID string } }
+		if json.Unmarshal(got.structured, &res) != nil || len(res.Rooms) != 1 {
+			t.Fatalf("all=%v: structured must hold every row: %s", all, got.structured)
+		}
+		if has := strings.Contains(got.text, "#42"); has != all {
+			t.Errorf("all=%v: text shows the old room = %v\n%s", all, has, got.text)
+		}
 	}
 }

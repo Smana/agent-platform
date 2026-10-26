@@ -56,3 +56,20 @@ func TestWriteAndToolResult(t *testing.T) {
 		t.Fatalf("%s", b)
 	}
 }
+
+func TestToolResultText(t *testing.T) {
+	res, err := ToolResultText("**view**", map[string]int{"n": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := res["content"].([]map[string]string)
+	if len(c) != 1 || c[0]["type"] != "text" || c[0]["text"] != "**view**" {
+		t.Fatalf("content: %v", res["content"])
+	}
+	if s, _ := res["structuredContent"].(map[string]int); s["n"] != 1 {
+		t.Fatalf("structuredContent: %v", res["structuredContent"])
+	}
+	if _, ok := res["isError"]; ok {
+		t.Fatal("isError set")
+	}
+}

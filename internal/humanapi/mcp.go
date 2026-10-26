@@ -75,8 +75,16 @@ func mcpContext(r *http.Request) (context.Context, context.CancelFunc) {
 type mcpTool struct {
 	name, description string
 	schema            json.RawMessage
-	tasks             bool // execution.taskSupport: optional, as an MCP Task (mcptasks.go)
+	output            json.RawMessage // outputSchema of structuredContent, when the tool declares one
+	tasks             bool            // execution.taskSupport: optional, as an MCP Task (mcptasks.go)
 	call              func(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error)
+}
+
+// viewResult is a tool's answer in two forms: text, the view the model shows as it is, and data,
+// the JSON it was rendered from, sent as structuredContent.
+type viewResult struct {
+	text string
+	data any
 }
 
 // toolError is a tool's refusal of its arguments or its caller, shown to the model as is.
@@ -88,14 +96,17 @@ func (e toolError) Error() string { return string(e) }
 func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 	all := []mcpTool{
 		{name: "rooms_list", call: s.roomsList,
-			description: "The factory rooms you can read, one row each: its state (queued, running, waiting_for_human, done, failed, stopped), " +
+			description: "The factory rooms you can read, as a table to show as it is (text), and one row each as structuredContent: its state (queued, running, waiting_for_human, done, failed, stopped), " +
 				"phase, the task's issue, title, phase, reason and PR, what waits for you (needsYou) and its url. access says why the list may be short. " +
-				"Filters: repo (owner/name), mine (tasks of issues you filed or labelled, PRs you authored or review), needsMe.",
-			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"},"mine":{"type":"boolean"},"needsMe":{"type":"boolean"}}}`)},
+				"Filters: repo (owner/name), mine (tasks of issues you filed or labelled, PRs you authored or review), needsMe. " +
+				"all adds to the text the rooms that ended over a week ago; structuredContent always has every row.",
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"},"mine":{"type":"boolean"},"needsMe":{"type":"boolean"},"all":{"type":"boolean"}}}`),
+			output: json.RawMessage(`{"type":"object","required":["rooms","access"],"properties":{"rooms":{"type":"array","items":{"type":"object"}},"access":{"type":"string"}}}`)},
 		{name: "room_summary", call: s.roomSummaryTool,
 			description: "Where a room stands, as summary/v1: status with its coarse state, what needs you (approvals link to the room page, never a command), " +
 				"what you may do, and the agents' notes after the cursor `after`, under untrusted: true.",
-			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"after":{"type":"string","pattern":"^(seq:)?[0-9]+$"}}}`)},
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"after":{"type":"string","pattern":"^(seq:)?[0-9]+$"}}}`),
+			output: json.RawMessage(`{"type":"object","required":["apiVersion","room","status"],"properties":{"apiVersion":{"type":"string"},"room":{"type":"string"},"status":{"type":"object"}}}`)},
 		{name: "room_tail", call: s.roomTail, tasks: true,
 			description: "The room's events after a cursor, a page at a time (at most 100), under untrusted: true; without a cursor, the last 50. " +
 				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
@@ -200,6 +211,9 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		tools := []map[string]any{}
 		for _, t := range s.mcpTools(p) {
 			entry := map[string]any{"name": t.name, "description": t.description, "inputSchema": t.schema}
+			if t.output != nil {
+				entry["outputSchema"] = t.output
+			}
 			if t.tasks {
 				entry["execution"] = map[string]string{"taskSupport": "optional"}
 			}
@@ -290,7 +304,12 @@ func (s *Server) mcpCall(w http.ResponseWriter, r *http.Request, req mcpwire.Req
 func (s *Server) writeTool(ctx context.Context, w http.ResponseWriter, id json.RawMessage, tool string, out any, err error) {
 	if err == nil {
 		var res map[string]any
-		if res, err = mcpwire.ToolResult(out); err == nil {
+		if v, ok := out.(viewResult); ok {
+			res, err = mcpwire.ToolResultText(v.text, v.data)
+		} else {
+			res, err = mcpwire.ToolResult(out)
+		}
+		if err == nil {
 			s.mcpCounted(ctx, tool, "ok")
 			mcpwire.Write(w, id, res, nil)
 			return

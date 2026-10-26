@@ -13,6 +13,7 @@ import (
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/agent-platform/internal/roomview"
 	"github.com/Smana/agent-platform/internal/summary"
 )
 
@@ -31,6 +32,7 @@ type (
 		Repo    string `json:"repo"`
 		Mine    bool   `json:"mine"`
 		NeedsMe bool   `json:"needsMe"`
+		All     bool   `json:"all"`
 	}
 	summaryArgs struct {
 		Room  string `json:"room"`
@@ -59,13 +61,29 @@ type tailPage struct {
 func (s *Server) roomsList(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a listArgs
 	if mcpwire.DecodeArgs(args, &a) != nil || (a.Repo != "" && !repositoryRE.MatchString(a.Repo)) {
-		return nil, toolError("invalid_arguments: repo is owner/name; mine and needsMe are booleans")
+		return nil, toolError("invalid_arguments: repo is owner/name; mine, needsMe and all are booleans")
 	}
 	rows, access, err := s.roomRows(ctx, p, &roomFilter{repo: a.Repo, mine: a.Mine, needsMe: a.NeedsMe})
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"rooms": rows, "access": access}, nil
+	views := make([]roomview.Row, len(rows))
+	for i, r := range rows {
+		views[i] = roomview.Row{ID: r.ID, URL: r.URL, Phase: r.Phase, State: r.State, Repository: r.Repository, Issue: r.Issue,
+			Title: r.Title, Task: r.Task, PR: r.PR, Reason: r.Reason, LastSeq: r.LastSeq, LastEventAt: r.LastEventAt,
+			NeedsMe: r.NeedsMe, NeedsYou: r.NeedsYou, Need: r.Need}
+	}
+	var text strings.Builder
+	if err := roomview.Overview(&text, views, s.viewOptions(a.All)); err != nil {
+		return nil, err
+	}
+	return viewResult{text: text.String(), data: map[string]any{"rooms": rows, "access": access}}, nil
+}
+
+// viewOptions are the choices of a view rendered for the model's chat: Markdown, with the rooms'
+// base URL the broker knows.
+func (s *Server) viewOptions(all bool) roomview.Options {
+	return roomview.Options{Format: roomview.Markdown, Rooms: s.PublicURL, Now: s.now(), All: all}
 }
 
 // room_summary is GET /api/rooms/{id}/summary as a tool.
@@ -82,7 +100,15 @@ func (s *Server) roomSummaryTool(ctx context.Context, p authn.Principal, args js
 			return nil, bad
 		}
 	}
-	return s.summaryOf(ctx, a.Room, p, after)
+	sum, err := s.summaryOf(ctx, a.Room, p, after)
+	if err != nil {
+		return nil, err
+	}
+	var text strings.Builder
+	if err := roomview.Card(&text, sum, s.viewOptions(false)); err != nil {
+		return nil, err
+	}
+	return viewResult{text: text.String(), data: sum}, nil
 }
 
 // room_tail is the room's events after a cursor, a page at a time: what roomctl watch prints.
