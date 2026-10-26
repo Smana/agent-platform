@@ -30,6 +30,7 @@ const (
 	defaultPoll = 5 * time.Second
 	maxPoll     = 30 * time.Second
 	elicitWait  = 10 * time.Minute // how long issue_file waits for the developer's answer
+	roomWait    = 60 * time.Second // how long issue_file waits for the room of an issue it started
 	rootsWait   = 5 * time.Second  // how long the relay waits for the client's roots
 )
 
@@ -42,6 +43,10 @@ type Relay struct {
 	Token func(context.Context) (string, error) // a valid access token, asked for on every request
 	HC    *http.Client                          // httpx: each request bounded
 	File  IssueFiler                            // files an accepted draft; nil refuses issue_file
+	// Label puts a label on the issue just filed, as the developer; nil refuses to start one.
+	Label Labeler
+	// RoomWait bounds how long issue_file waits for the room of an issue it started; zero is roomWait.
+	RoomWait time.Duration
 	// After waits d; nil is time.After. Tests step their own.
 	After func(d time.Duration) <-chan time.Time
 	// RootsWait bounds the client's answer to roots/list; zero is rootsWait.

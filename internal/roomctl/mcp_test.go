@@ -35,6 +35,11 @@ type mcpBroker struct {
 	noteWait time.Duration // a notification is recorded this long after it arrives
 	// roomText is room_summary's text; its structuredContent is a card for room r1.
 	roomText string
+	// canStart and canStartWhy are what issue_draft says about starting (Task 12); nil is an older broker.
+	canStart    *bool
+	canStartWhy string
+	// rooms is rooms_list's structuredContent rows; nil answers an empty list.
+	rooms []map[string]any
 }
 
 func newMCPBroker(t *testing.T) *mcpBroker {
@@ -76,7 +81,13 @@ func newMCPBroker(t *testing.T) *mcpBroker {
 			case c.Name == "room_summary" && b.roomText != "":
 				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": b.roomText}}, "structuredContent": map[string]any{"room": "r1", "url": "https://rooms.example/r/r1"}}
 			case c.Name == "issue_draft":
-				res = map[string]any{"content": []any{}, "structuredContent": map[string]any{"repo": "Smana/a", "title": "docs: a dead link", "body": "## What is wrong\nstripped"}}
+				d := map[string]any{"repo": "Smana/a", "title": "docs: a dead link", "body": "## What is wrong\nstripped"}
+				if b.canStart != nil {
+					d["canStart"], d["canStartWhy"] = *b.canStart, b.canStartWhy
+				}
+				res = map[string]any{"content": []any{}, "structuredContent": d}
+			case c.Name == "rooms_list" && b.rooms != nil:
+				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": "rooms"}}, "structuredContent": map[string]any{"rooms": b.rooms}}
 			default:
 				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": "{}"}}, "structuredContent": map[string]any{}}
 			}
