@@ -23,7 +23,7 @@ const defaultChangesLimit = 30
 type ChangeSet struct {
 	Room      string      `json:"room"`
 	URL       string      `json:"url"`
-	Since     time.Time   `json:"since"`
+	Since     time.Time   `json:"since,omitzero"`
 	Items     []Milestone `json:"items"`
 	More      int         `json:"more"`
 	Cursor    string      `json:"cursor"`
@@ -67,8 +67,9 @@ const (
 )
 
 // MilestoneInput is a page of a room's log and the task facts as they stood before it. A nil Base
-// means the page's first facts are the first this view knows: whatever they hold predates the
-// window, so it is not reported.
+// means the room had no facts before the window: the page is measured against an empty state, so
+// its first run, pull request and merge are news. A caller that cannot know the earlier state must
+// not pass nil.
 type MilestoneInput struct {
 	Room, URL string
 	Base      *envelope.TaskFacts
@@ -113,7 +114,10 @@ func Milestones(in MilestoneInput) ChangeSet {
 	}
 	c := ChangeSet{Room: in.Room, URL: in.URL, Items: []Milestone{}, Untrusted: true}
 	var ms []Milestone
-	prev, known := in.Base, in.Base != nil
+	prev := in.Base
+	if prev == nil {
+		prev = &envelope.TaskFacts{}
+	}
 	acts := map[string]*act{}
 	var order []string
 	for _, e := range in.Events {
@@ -136,10 +140,8 @@ func Milestones(in MilestoneInput) ChangeSet {
 				if json.Unmarshal(e.Payload, &f) != nil {
 					continue
 				}
-				if known {
-					ms = append(ms, diffFacts(prev, &f, e)...)
-				}
-				prev, known = &f, true
+				ms = append(ms, diffFacts(prev, &f, e)...)
+				prev = &f
 			case k.Kind == "room_phase" && k.Phase == "Closed":
 				ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindEnded, Text: "the room was closed"})
 			case k.Kind == "limit" && k.Events != nil:
@@ -226,10 +228,23 @@ func Milestones(in MilestoneInput) ChangeSet {
 		}
 		return 0
 	})
+	// A page ends on a seq boundary, as the cursor is a seq: one event can hold several milestones
+	// (a run ending, the next starting, a merge), and a cut between them would lose the rest. When
+	// one seq alone outruns the limit it is shown whole.
 	if len(ms) > limit {
-		c.More = len(ms) - limit
-		ms = ms[:limit]
-		c.Cursor = "seq:" + strconv.FormatInt(ms[limit-1].Seq, 10)
+		cut := limit
+		for cut > 0 && ms[cut].Seq == ms[cut-1].Seq {
+			cut--
+		}
+		if cut == 0 {
+			for cut = limit; cut < len(ms) && ms[cut].Seq == ms[cut-1].Seq; cut++ {
+			}
+		}
+		c.More = len(ms) - cut
+		ms = ms[:cut]
+		if c.More > 0 { // the cursor is the last seq shown in full, only when something is left
+			c.Cursor = "seq:" + strconv.FormatInt(ms[cut-1].Seq, 10)
+		}
 	}
 	if len(ms) > 0 {
 		c.Items = ms
@@ -240,13 +255,19 @@ func Milestones(in MilestoneInput) ChangeSet {
 // held is whether f is a task another holder of the room keeps waiting.
 func held(f *envelope.TaskFacts) bool { return summary.IsHold(f.Reason) }
 
-// budgetReached is whether f's dollars, else its tokens, have hit their limit.
+// budgetReached is whether f's dollars, else its tokens, have hit their limit. Money is what a
+// reader is told (spec, Money rule): tokens only for a task that is unpriced.
 func budgetReached(f *envelope.TaskFacts) (string, bool) {
-	if s := f.Spend; s != nil && s.LimitMicroUSD > 0 {
+	s := f.Spend
+	if s != nil && s.LimitMicroUSD > 0 {
 		return dollars(s.UsedMicroUSD) + " of " + dollars(s.LimitMicroUSD), s.UsedMicroUSD >= s.LimitMicroUSD
 	}
 	if b := f.Budget; b != nil && b.LimitTokens > 0 {
-		return tokens(b.UsedTokens) + " of " + tokens(b.LimitTokens) + " tokens", b.UsedTokens >= b.LimitTokens
+		what := tokens(b.UsedTokens) + " of " + tokens(b.LimitTokens) + " tokens"
+		if s != nil && s.UsedMicroUSD > 0 {
+			what = dollars(s.UsedMicroUSD) + " spent"
+		}
+		return what, b.UsedTokens >= b.LimitTokens
 	}
 	return "", false
 }

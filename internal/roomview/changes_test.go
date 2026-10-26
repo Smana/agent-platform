@@ -95,7 +95,15 @@ func TestMilestonesFromFacts(t *testing.T) {
 			&envelope.TaskFacts{Phase: "Implementing", Spend: &envelope.SpendFact{UsedMicroUSD: 1500000, LimitMicroUSD: 1500000}},
 			envelope.TaskFacts{Phase: "Implementing", Spend: &envelope.SpendFact{UsedMicroUSD: 1600000, LimitMicroUSD: 1500000}},
 			nil},
-		{"nil base, the pr predates the window", nil, envelope.TaskFacts{Phase: "Implementing", PR: pr}, nil},
+		// A nil base means the room had no facts before the window: its first PR and run are news.
+		{"nil base, the pr is news", nil, envelope.TaskFacts{Phase: "Implementing", PR: pr},
+			[]string{"pr_opened: pull request #2239 opened"}},
+		{"nil base, the first run is news", nil, envelope.TaskFacts{Phase: "Implementing", Runs: []envelope.RunFact{run("a", "implementer", "initial")}},
+			[]string{"run_started: the factory started implementer `a` (first run)"}},
+		{"budget reached by tokens of a priced task reads dollars",
+			&envelope.TaskFacts{Phase: "Implementing", Budget: &envelope.BudgetFact{UsedTokens: 900000, LimitTokens: 1000000}, Spend: &envelope.SpendFact{UsedMicroUSD: 310000}},
+			envelope.TaskFacts{Phase: "Implementing", Budget: &envelope.BudgetFact{UsedTokens: 1000000, LimitTokens: 1000000}, Spend: &envelope.SpendFact{UsedMicroUSD: 310000}},
+			[]string{"budget_reached: the budget is reached: $0.31 spent"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -355,5 +363,33 @@ func TestChangesHostileFactsAutolink(t *testing.T) {
 		if !strings.Contains(strings.Join(codeSpans(md), "\n"), h) {
 			t.Errorf("%q is not in a code span:\n%s", h, md)
 		}
+	}
+}
+
+// The page ends on a seq boundary: the milestones of one event are never split across two pages.
+func TestMilestonesCutAtASeqBoundary(t *testing.T) {
+	pr := &envelope.PRFact{Number: 2239, URL: pr2239}
+	var evs []envelope.Event
+	for i := 1; i <= 29; i++ {
+		evs = append(evs, note(int64(i), at(i, 0), fmt.Sprintf("n%d", i)))
+	}
+	// One fact event is three milestones at seq 30: item 30 of the page falls inside it.
+	evs = append(evs, factEv(30, at(30, 0), envelope.TaskFacts{Phase: "Merged", PR: pr,
+		Runs: []envelope.RunFact{run("b", "implementer", "retry")}}))
+	c := milestones(&envelope.TaskFacts{Phase: "Implementing"}, evs...)
+	if len(c.Items) != 29 || c.More != 3 || c.Cursor != "seq:29" {
+		t.Errorf("items %d, more %d, cursor %q; want 29, 3, seq:29", len(c.Items), c.More, c.Cursor)
+	}
+	// A seq that alone outruns the limit is shown whole, and nothing is left behind.
+	c = Milestones(MilestoneInput{Room: changesRoom, Base: &envelope.TaskFacts{Phase: "Implementing"}, Limit: 2, Events: evs[29:]})
+	if len(c.Items) != 3 || c.More != 0 || c.Cursor != "seq:30" {
+		t.Errorf("one seq of 3 with limit 2: items %d, more %d, cursor %q", len(c.Items), c.More, c.Cursor)
+	}
+}
+
+func TestChangeSetSinceIsOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(Milestones(MilestoneInput{Room: changesRoom}))
+	if err != nil || strings.Contains(string(b), "since") {
+		t.Errorf("%s %v", b, err)
 	}
 }
