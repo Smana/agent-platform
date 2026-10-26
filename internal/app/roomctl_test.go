@@ -4,11 +4,14 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -332,5 +335,103 @@ func TestRoomctlMCP(t *testing.T) {
 	}
 	if err := r.Run(t.Context(), []string{"mcp", "extra"}); err == nil {
 		t.Fatal("mcp takes no arguments")
+	}
+}
+
+func TestRoomctlSetup(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	run := func(args ...string) (string, error) {
+		out := &strings.Builder{}
+		r := Roomctl{Dir: t.TempDir(), Out: out, Home: home, Cwd: cwd,
+			LookPath: func(string) (string, error) { return "", errors.New("absent") },
+			RunCmd:   func(context.Context, []string) error { t.Error("ran a command"); return nil }}
+		err := r.Run(context.Background(), args)
+		return out.String(), err
+	}
+	if _, err := run("setup", "vim"); err == nil || !strings.Contains(err.Error(), "copilot") {
+		t.Errorf("setup vim: %v, want the six clients named", err)
+	}
+	if _, err := run("setup"); err == nil {
+		t.Error("setup with no client: want usage")
+	}
+	out, err := run("setup", "cursor", "--print")
+	if err != nil || !strings.Contains(out, "~/.cursor/mcp.json") {
+		t.Errorf("setup cursor --print: %q, %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cursor")); err == nil {
+		t.Error("--print wrote")
+	}
+	// No configure needed: the config is absent in Dir, and the skill still lands.
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", cwd, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	if _, err := run("setup", "cursor", "--project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".cursor", "skills", "factory-handoff", "SKILL.md")); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestRoomctlSetupProjectIsRootedAtTheRepository(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	sub := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(cwd string) error {
+		r := Roomctl{Dir: t.TempDir(), Out: &strings.Builder{}, Home: t.TempDir(), Cwd: cwd,
+			LookPath: func(string) (string, error) { return "", errors.New("absent") }}
+		return r.Run(context.Background(), []string{"setup", "cursor", "--project"})
+	}
+	if err := run(sub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".cursor", "skills", "factory-handoff", "SKILL.md")); err != nil {
+		t.Errorf("not at the repository top: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, ".cursor")); err == nil {
+		t.Error("wrote under the subdirectory")
+	}
+	// Not a repository: a clear refusal, and nothing written.
+	plain := t.TempDir()
+	if err := run(plain); err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Errorf("outside a repository: %v, want a refusal naming the repository", err)
+	}
+	if _, err := os.Stat(filepath.Join(plain, ".cursor")); err == nil {
+		t.Error("wrote outside a repository")
+	}
+}
+
+func TestRoomctlDoctorReadsTheRepositorySkillDirs(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	sub := filepath.Join(repo, "a")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	r := Roomctl{Home: home, Cwd: sub}
+	dirs, err := r.skillDirs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(dirs, filepath.Join(repo, ".claude", "skills")) || slices.Contains(dirs, filepath.Join(sub, ".claude", "skills")) {
+		t.Errorf("dirs %v: want the repository top, not the subdirectory", dirs)
+	}
+	r.Cwd = t.TempDir()
+	dirs, err = r.skillDirs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if !strings.HasPrefix(d, home) {
+			t.Errorf("outside a repository the project scope is skipped, got %s", d)
+		}
 	}
 }

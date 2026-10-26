@@ -1,0 +1,14 @@
+add this to .github/mcp.json (roomctl setup never edits a config):
+
+{
+  "mcpServers": {
+    "factory": {
+      "type": "local",
+      "command": "roomctl",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}
+
+setup installs the factory-handoff skill in .github/skills

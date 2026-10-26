@@ -6,11 +6,14 @@ package skill
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"sigs.k8s.io/yaml"
 )
 
 // all: keeps references/ and any dotfile the skill grows.
@@ -50,4 +53,32 @@ func Install(dir, version string) ([]string, error) {
 		return nil
 	})
 	return written, err
+}
+
+// Version is the metadata.roomctl-version of dir/factory-handoff/SKILL.md. It reports false when
+// the file is absent, and an error when the front matter is not YAML.
+func Version(dir string) (string, bool, error) {
+	p := filepath.Join(dir, name, "SKILL.md")
+	b, err := os.ReadFile(p) //nolint:gosec // dir is an agent skill directory resolved by setup, not request input
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	parts := strings.SplitN(strings.ReplaceAll(string(b), "\r\n", "\n"), "---\n", 3)
+	if len(parts) != 3 || parts[0] != "" {
+		return "", false, fmt.Errorf("%s has no front matter", p)
+	}
+	var fm struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+		return "", false, fmt.Errorf("%s: front matter is not YAML: %w", p, err)
+	}
+	v, _ := fm.Metadata["roomctl-version"].(string)
+	if v == "" {
+		return "", false, fmt.Errorf("%s has no metadata.roomctl-version: run roomctl setup <client> to rewrite it", p)
+	}
+	return v, true, nil
 }

@@ -1,0 +1,14 @@
+add this to ~/.copilot/mcp-config.json (roomctl setup never edits a config):
+
+{
+  "mcpServers": {
+    "factory": {
+      "type": "local",
+      "command": "roomctl",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}
+
+setup installs the factory-handoff skill in ~/.copilot/skills

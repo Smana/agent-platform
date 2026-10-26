@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/Smana/agent-platform/internal/roomctl/skill"
 )
 
 // #48: each failure the runbook met names its cause and its fix.
@@ -181,5 +184,109 @@ func TestDoctorNamesTheCauseAndTheFix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDoctorSkillDrift(t *testing.T) {
+	stamp := func(t *testing.T, dir, v string) {
+		t.Helper()
+		if _, err := skill.Install(dir, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, tc := range map[string]struct {
+		setup   func(t *testing.T, d1, d2 string)
+		want    []string
+		wantErr bool
+	}{
+		"drifted": {func(t *testing.T, d1, _ string) { stamp(t, d1, "v0.1.0") },
+			[]string{"FAIL skill", "v0.1.0", "v0.2.0", "roomctl setup"}, true},
+		"current": {func(t *testing.T, d1, d2 string) { stamp(t, d1, "v0.2.0"); stamp(t, d2, "v0.2.0") },
+			[]string{"ok   skill"}, false},
+		"one of two drifted": {func(t *testing.T, d1, d2 string) { stamp(t, d1, "v0.2.0"); stamp(t, d2, "v0.1.0") },
+			[]string{"FAIL skill", "v0.1.0"}, true},
+		"none": {func(*testing.T, string, string) {}, []string{"skip skill"}, false},
+		"unreadable": {func(t *testing.T, d1, _ string) {
+			stamp(t, d1, "v0.2.0")
+			p := filepath.Join(d1, "factory-handoff", "SKILL.md")
+			if err := os.Chmod(p, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.ReadFile(p); err == nil {
+				t.Skip("running as a user that reads mode 000 files")
+			}
+		}, []string{"FAIL skill"}, true},
+		"symlinked skill dir": {func(t *testing.T, d1, d2 string) {
+			stamp(t, d2, "v0.1.0")
+			if err := os.Remove(d1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(d2, d1); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"FAIL skill", "v0.1.0"}, true},
+		"nonexistent dir": {func(t *testing.T, d1, d2 string) {
+			if err := os.Remove(d1); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(d2); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"skip skill"}, false},
+		"no stamp": {func(t *testing.T, d1, _ string) {
+			stamp(t, d1, "v0.2.0")
+			p := filepath.Join(d1, "factory-handoff", "SKILL.md")
+			if err := os.WriteFile(p, []byte("---\nname: factory-handoff\n---\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"FAIL skill", "roomctl-version"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newDoctorRig(t)
+			d1, d2 := t.TempDir(), t.TempDir()
+			tc.setup(t, d1, d2)
+			r.d.SkillDirs, r.d.Version = []string{d1, d2}, "v0.2.0"
+			var out strings.Builder
+			err := r.d.Run(t.Context(), &out)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v\n%s", err, tc.wantErr, &out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("no %q in:\n%s", w, &out)
+				}
+			}
+			if tc.wantErr {
+				// The directory that drifted is the one named on the FAIL line, not the current one.
+				bad := d1
+				if name == "one of two drifted" {
+					bad = d2
+				}
+				named := false
+				for _, l := range strings.Split(out.String(), "\n") {
+					if strings.HasPrefix(l, "FAIL skill") && strings.Contains(l, bad) {
+						named = true
+					}
+				}
+				if !named {
+					t.Errorf("no FAIL skill line names %s:\n%s", bad, &out)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorSkillCheckRunsWithAnUnusableURL(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := skill.Install(dir, "v0.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	d := Doctor{Config: Config{URL: "::not a url"}, SkillDirs: []string{dir}, Version: "v0.2.0"}
+	var out strings.Builder
+	if err := d.Run(t.Context(), &out); err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(out.String(), "FAIL skill") {
+		t.Errorf("the skill check did not run:\n%s", &out)
 	}
 }

@@ -1,0 +1,17 @@
+with opencode on the PATH, setup runs:
+  opencode mcp add --global factory -- roomctl mcp
+
+otherwise: add this to ~/.config/opencode/opencode.json (roomctl setup never edits a config):
+
+{
+  "mcp": {
+    "servers": {
+      "factory": {
+        "type": "local",
+        "command": ["roomctl", "mcp"]
+      }
+    }
+  }
+}
+
+setup installs the factory-handoff skill in ~/.agents/skills
