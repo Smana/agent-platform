@@ -32,7 +32,8 @@ func clean(s string) string {
 }
 
 // code is s in a code span, the one place untrusted text can sit: the fence is longer than any run
-// of backticks in s, and the spaces inside keep a leading or trailing backtick from joining it. In
+// of backticks in s, and a space on each side keeps a leading or trailing backtick from joining it (a
+// span with neither stays unpadded, as the design's examples read). In
 // a table cell every pipe becomes U+2223 (a divides sign), never a backslash escape: parsers
 // disagree on what a backslash before a pipe means (cmark-gfm, goldmark, pandoc), so no pipe may
 // reach a cell at all.
@@ -51,7 +52,10 @@ func code(s string, cell bool) string {
 		s = strings.ReplaceAll(s, "|", cellPipe)
 	}
 	fence := strings.Repeat("`", longest+1)
-	return fence + " " + s + " " + fence
+	if s == "" || strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
 }
 
 // cellPipe stands for a pipe inside a table cell.

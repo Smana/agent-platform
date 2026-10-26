@@ -32,7 +32,7 @@ func TestClean(t *testing.T) {
 }
 
 func TestCodeSpanOutrunsBackticks(t *testing.T) {
-	if got := code("a``b", false); got != "``` a``b ```" {
+	if got := code("a``b", false); got != "```a``b```" {
 		t.Fatalf("code = %q", got)
 	}
 	if got := code("`x", false); !strings.Contains(got, " `x") {
