@@ -107,6 +107,11 @@ type act struct {
 
 // Milestones is the milestones of in, in the order they happened, at most in.Limit (30 when it is
 // 0). Task facts are diffed in order against Base, then against each other.
+//
+// Two limits to know. An activity milestone (a run's model turns and tool calls) sits at the seq of
+// the run's last event in the page, so a page cut before it, or a window that starts inside a run,
+// counts only the turns and tools it holds. And a window with no events returns an empty Cursor:
+// the caller keeps the cursor it passed in.
 func Milestones(in MilestoneInput) ChangeSet {
 	limit := in.Limit
 	if limit <= 0 {
