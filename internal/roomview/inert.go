@@ -64,8 +64,11 @@ func inertWord(raw, got string) string {
 // a table cell every pipe becomes U+2223 (a divides sign), never a backslash escape: parsers
 // disagree on what a backslash before a pipe means (cmark-gfm, goldmark, pandoc), so no pipe may
 // reach a cell at all.
-func code(s string, cell bool) string {
-	s = clean(s)
+func code(s string, cell bool) string { return fence(clean(s), cell) }
+
+// fence is s, already made one line, in a code span: code's rules without the cut, for a command the
+// broker wrote, whose end matters.
+func fence(s string, cell bool) string {
 	longest, run := 0, 0
 	for _, r := range s {
 		if r == '`' {
@@ -78,11 +81,11 @@ func code(s string, cell bool) string {
 	if cell {
 		s = strings.ReplaceAll(s, "|", cellPipe)
 	}
-	fence := strings.Repeat("`", longest+1)
+	f := strings.Repeat("`", longest+1)
 	if s == "" || strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
 		s = " " + s + " "
 	}
-	return fence + s + fence
+	return f + s + f
 }
 
 // cellPipe stands for a pipe inside a table cell.

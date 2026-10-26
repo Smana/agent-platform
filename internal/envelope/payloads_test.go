@@ -41,7 +41,6 @@ func TestTaskFactsValidate(t *testing.T) {
 		want string // "" means any error
 	}{
 		"no phase":        {TaskFacts{}, ""},
-		"author with _":   {TaskFacts{Phase: "Queued", Issue: &IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: "_www.evil.example"}}, "author"},
 		"negative usage":  {TaskFacts{Phase: "Implementing", Budget: &BudgetFact{UsedTokens: -1}}, ""},
 		"non-github pr":   {TaskFacts{Phase: "AwaitingHuman", PR: &PRFact{Number: 1, URL: "https://evil.example/pull/1"}}, ""},
 		"negative used":   {TaskFacts{Phase: "Queued", Spend: &SpendFact{UsedMicroUSD: -1}}, "usedMicroUSD"},
@@ -138,20 +137,27 @@ func TestOldTaskFactsStillDecodeAndValidate(t *testing.T) {
 	}
 }
 
-// IssueFact.Author reaches a sentence of the broker's, so it must be a GitHub login: 1 to 39 of
-// letters, digits and single inner hyphens.
-func TestIssueAuthorIsAGitHubLogin(t *testing.T) {
-	facts := func(author string) TaskFacts {
-		return TaskFacts{Phase: "Escalated", Issue: &IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: author}}
-	}
-	for _, ok := range []string{"", "a", "alice", "alice-b", "A1-b2-c3", strings.Repeat("a", 39)} {
-		if err := facts(ok).Validate(); err != nil {
-			t.Errorf("%q refused: %v", ok, err)
+// The facts never refuse an author: GitHub has logins outside the view's rule, and refusing them
+// would leave the room with no facts at all. ValidLogin is the view's check.
+func TestIssueAuthorIsNeverRefused(t *testing.T) {
+	for _, a := range []string{"", "alice", "a--b", "a-", "name_shortcode", "_www.evil.example", "dependabot[bot]"} {
+		f := TaskFacts{Phase: "Escalated", Issue: &IssueFact{Number: 1, URL: "https://github.com/o/r/issues/1", Author: a}}
+		if err := f.Validate(); err != nil {
+			t.Errorf("%q refused: %v", a, err)
 		}
 	}
-	for _, bad := range []string{"-a", "a-", "a--b", strings.Repeat("a", 40), "a_b", "_x_", "a b", "a.b", "a@b", "a*", "a\u200b", "a\n", "é", "x[bot]x", "[bot]", "a[Bot]", "a[bot][bot]", "-a[bot]"} {
-		if err := facts(bad).Validate(); err == nil || !strings.Contains(err.Error(), "author") {
-			t.Errorf("%q accepted: %v", bad, err)
+}
+
+// ValidLogin is GitHub's user rule plus an App's "<slug>[bot]"; the view names only these.
+func TestValidLogin(t *testing.T) {
+	for _, ok := range []string{"a", "alice", "alice-b", "A1-b2-c3", strings.Repeat("a", 39)} {
+		if !ValidLogin(ok) {
+			t.Errorf("ValidLogin(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"", "-a", "a-", "a--b", strings.Repeat("a", 40), "a_b", "_x_", "a b", "a.b", "a@b", "a*", "a\u200b", "a\n", "é", "x[bot]x", "[bot]", "a[Bot]", "a[bot][bot]", "-a[bot]"} {
+		if ValidLogin(bad) {
+			t.Errorf("ValidLogin(%q) = true", bad)
 		}
 	}
 }

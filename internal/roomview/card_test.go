@@ -527,6 +527,22 @@ func TestCardMergeNeedIsInertForAHostileRepository(t *testing.T) {
 	}
 }
 
+// The broker's command is never cut: a 39-character owner and a 100-character repository name
+// (GitHub's limits) still give the whole command, in a code span and on a terminal.
+func TestCardMergeCommandIsWhole(t *testing.T) {
+	repo := strings.Repeat("o", 39) + "/" + strings.Repeat("r", 100)
+	sum := summary.Summary{Room: "r", URL: rooms + "/r/r"}
+	sum.Status.Phase = "AwaitingHuman"
+	sum.NeedsYou = []summary.Need{{Kind: "merge", ID: "2239", What: summary.MergeHow(repo, 2239), URL: "https://github.com/" + repo + "/pull/2239"}}
+	want := "gh pr merge 2239 --squash --admin --repo " + repo
+	if md := card1(t, sum, Options{Format: Markdown, Now: now, Rooms: rooms}); !slices.Contains(codeSpans(md), want) {
+		t.Errorf("markdown: the whole command is a code span, got %q", codeSpans(md))
+	}
+	if txt := card1(t, sum, textOpts(now)); !strings.Contains(txt, want) {
+		t.Errorf("terminal: the whole command, got\n%s", txt)
+	}
+}
+
 // The answer need names the issue's author: only a GitHub login is shown, in a code span.
 func TestCardAnswerNeedIsInertForAHostileAuthor(t *testing.T) {
 	for author, want := range map[string]string{"alice-b": "`@alice-b`", "_www.evil.example": "the issue's author", "x`y": "the issue's author", "": "the issue's author"} {

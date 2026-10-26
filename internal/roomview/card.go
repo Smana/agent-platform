@@ -222,6 +222,15 @@ func (c *card) broker(s string) string {
 	return s
 }
 
+// command is a command the broker composed, in a code span in Markdown and plain on a terminal,
+// never cut: a cut command does not run.
+func (c *card) command(s string) string {
+	if c.md() {
+		return fence(strip(s), false)
+	}
+	return strip(s)
+}
+
 // span is a value in a code span in Markdown, plain on a terminal.
 func (c *card) span(s string) string {
 	if c.md() {
@@ -247,7 +256,7 @@ func (c *card) mergeLine(n summary.Need) (string, bool) {
 	}
 	s += "merges PR #" + n.ID + `: the ruleset blocks a plain merge, so tick "bypass rules" on the PR page`
 	if repo != "" {
-		s += ", or run " + c.span("gh pr merge "+n.ID+" --squash --admin --repo "+repo)
+		s += ", or run " + c.command("gh pr merge "+n.ID+" --squash --admin --repo "+repo)
 	}
 	return s, true
 }

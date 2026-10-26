@@ -221,8 +221,9 @@ type PRFact struct {
 var githubLogin = regexp.MustCompile(`^([A-Za-z0-9]+(-[A-Za-z0-9]+)*)(\[bot\])?$`)
 
 // ValidLogin reports whether s is a GitHub login in that rule's shape: a user, or an App's
-// "<slug>[bot]". A view that names a person in a sentence of its own checks it again, as facts
-// stored before the rule may hold anything.
+// "<slug>[bot]". Facts are not refused for an author outside it (legacy logins with double or
+// trailing hyphens, Enterprise Managed Users' "name_shortcode" exist): a view that names the author
+// in a sentence of its own checks it here, and says "the issue's author" otherwise.
 func ValidLogin(s string) bool {
 	m := githubLogin.FindStringSubmatch(s)
 	return m != nil && len(m[1]) <= 39
@@ -267,8 +268,6 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
-	case f.Issue != nil && f.Issue.Author != "" && !ValidLogin(f.Issue.Author):
-		return errors.New("task facts: the issue author is a GitHub login (1 to 39 letters, digits and single hyphens)")
 	}
 	if f.Run != nil {
 		if err := f.Run.validate(); err != nil {
