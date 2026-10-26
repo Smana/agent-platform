@@ -113,7 +113,7 @@ It does:
 - Follow a task: find the room, and report phase, run, PR and the newest notes.
 - Say "it needs you" first when something waits on you, giving the link: approvals stay on the room page.
 - Answer "anything waiting on me?".
-- Follow a room in the background with `room_wait` when the agent can run a background task or subagent, and bring a room's branch back with `room_checkout`, only when you ask.
+- Follow a room in the background with `room_wait` when the agent can run a background task or subagent, and check a room's branch out into a new worktree beside the repository with `room_checkout`, only when you ask. It never touches your current checkout.
 - Queue guidance for the next run with `roomctl post <room> --queue`, only with your words.
 
 It never:

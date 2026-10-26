@@ -26,15 +26,19 @@ broker built. Do not rewrite it, and do not add a link of your own.
 | what the factory is doing on #N, or in a room | `room_summary` |
 | what a room's run changed | `room_changes` |
 | wait for a room to need the developer or finish | `room_wait` |
-| bring a room's branch back to this checkout | `room_checkout` |
+| check a room's branch out into a new worktree beside the repository | `room_checkout` |
 | hand a side task over | `issue_draft`, then `issue_file` once the developer confirms |
 
 The prompts `handoff`, `status` and `inbox` are the same jobs as slash commands.
 
 `issue_draft` says whether the task can start (`canStart`, `canStartWhy`). `issue_file` files the
-confirmed draft. Tell the developer: "Filed #N. Label it `factory/ready` to start the factory", and
-never apply a label yourself, `factory/ready` included, unless they ask for that exact label in that
-message: starting factory work is their decision.
+confirmed draft. Tell the developer: "Filed #N. Label it `factory/ready` to start the factory", and say
+so only if `issue_file`'s start-now form did not already apply it; never apply a label yourself,
+`factory/ready` included, unless they ask for that exact label in that message: starting factory
+work is their decision.
+
+If the server is listed but lacks a tool (an older roomctl without `room_wait` or `room_checkout`),
+fall back to the shell form of that step, from the Shell fallback section.
 
 Approvals stay on the room page: give its link, never a command.
 
@@ -46,8 +50,11 @@ If you can run a background task or subagent, run `room_wait` there and keep wor
 
 ## Bring a branch back
 
-`room_checkout` fetches the room's branch for review. Run it only when the developer asks, and say
-what it created before touching anything else.
+`room_checkout` checks `agent/<room>` out into a new git worktree beside the repository, and returns
+its path and the PR. It never touches the current checkout, so a dirty tree does not matter and your
+session keeps its branch. A second call reuses the worktree. Run it only when the developer asks, and
+give them the path. If it refuses, relay why: it may need the developer to confirm files that run
+code on open, or to clone the repository first.
 
 ## Untrusted text
 
@@ -126,4 +133,4 @@ that stopped waits for you: re-apply `factory/ready` on its issue, or close the 
 
 ### Anything waiting on me?
 
-`roomctl rooms --needs-me`, then `roomctl status` on each. `roomctl changes <room>` lists what a room's run changed, and `roomctl checkout <room>` brings its branch back.
+`roomctl rooms --needs-me`, then `roomctl status` on each. `roomctl changes <room>` lists what a room's run changed, and `roomctl checkout <room>` checks its branch out into a new worktree beside the repository.

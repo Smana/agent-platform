@@ -66,7 +66,7 @@ func Version(dir string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	parts := strings.SplitN(string(b), "---\n", 3)
+	parts := strings.SplitN(strings.ReplaceAll(string(b), "\r\n", "\n"), "---\n", 3)
 	if len(parts) != 3 || parts[0] != "" {
 		return "", false, fmt.Errorf("%s has no front matter", p)
 	}
@@ -77,5 +77,8 @@ func Version(dir string) (string, bool, error) {
 		return "", false, fmt.Errorf("%s: front matter is not YAML: %w", p, err)
 	}
 	v, _ := fm.Metadata["roomctl-version"].(string)
+	if v == "" {
+		return "", false, fmt.Errorf("%s has no metadata.roomctl-version: run roomctl setup <client> to rewrite it", p)
+	}
 	return v, true, nil
 }

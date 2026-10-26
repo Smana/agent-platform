@@ -188,3 +188,29 @@ func TestVersion(t *testing.T) {
 		t.Error("want an error for a SKILL.md without front matter")
 	}
 }
+
+func TestVersionFrontMatterShapes(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "factory-handoff"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "factory-handoff", "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	if v, ok, err := Version(write(t, "---\r\nname: factory-handoff\r\nmetadata:\r\n  roomctl-version: \"v0.3.0\"\r\n---\r\n# x\r\n")); v != "v0.3.0" || !ok || err != nil {
+		t.Errorf("CRLF: Version = %q, %v, %v", v, ok, err)
+	}
+	for name, body := range map[string]string{
+		"no metadata":  "---\nname: factory-handoff\n---\n# x\n",
+		"empty stamp":  "---\nmetadata:\n  roomctl-version: \"\"\n---\n",
+		"other fields": "---\nmetadata:\n  other: x\n---\n",
+	} {
+		if _, _, err := Version(write(t, body)); err == nil || !strings.Contains(err.Error(), "roomctl-version") {
+			t.Errorf("%s: err = %v, want one naming roomctl-version", name, err)
+		}
+	}
+}

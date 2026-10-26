@@ -130,6 +130,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	u, err := url.Parse(d.Config.URL)
 	if err != nil || u.Hostname() == "" {
 		report(false, "dns", fmt.Sprintf("%q is not a URL: run roomctl configure --url https://rooms.<domain>", d.Config.URL))
+		d.skill(report, skip) // needs no network
 		return errors.New("doctor: the configuration is unusable")
 	}
 	lookup := d.Lookup
