@@ -59,9 +59,8 @@ type Relay struct {
 	mu      sync.Mutex
 	version string                          // the revision initialize settled on
 	forms   bool                            // the client can ask its human in a form (elicitation)
-	urls    bool                            // ... or send them to a URL (elicitation, url mode)
 	roots   bool                            // the client answers roots/list
-	local   map[string]context.CancelFunc   // the local tool calls in flight, by request id
+	local   map[string]*localEntry          // the local tool calls in flight, by request id (idKey)
 	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
 	nextID  int
 }
@@ -80,7 +79,7 @@ type message struct {
 // or ctx does. Requests run concurrently, at most maxInFlight; the client's answers to the relay's
 // own requests are read at once, so a request waiting on one never blocks the line.
 func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	r.out, r.waiting, r.local = out, map[string]chan json.RawMessage{}, map[string]context.CancelFunc{}
+	r.out, r.waiting, r.local = out, map[string]chan json.RawMessage{}, map[string]*localEntry{}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g := &errgroup.Group{}
@@ -106,10 +105,14 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			// A notification is posted before the next line is read: MCP wants the client's
 			// notifications (initialized above all) to reach the broker ahead of its later requests.
 			// A hung broker holds the line only as long as one forward, which HC bounds.
-			r.handle(ctx, m, raw)
+			r.handle(ctx, m, raw, nil)
 			continue
 		}
-		if !g.TryGo(func() error { r.handle(ctx, m, raw); return nil }) && len(m.ID) > 0 {
+		// A local call is registered here, before its goroutine starts: the client's cancellation
+		// is handled inline, and may be the very next line.
+		pre := r.reserve(ctx, m)
+		if !g.TryGo(func() error { r.handle(ctx, m, raw, pre); return nil }) {
+			r.release(pre)
 			r.write(mcpwire.Response(m.ID, nil, &mcpwire.Error{Code: mcpwire.InternalError, Message: "busy: 8 requests in flight"}))
 		}
 	}
@@ -119,7 +122,7 @@ func (r *Relay) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 }
 
 // handle serves one request or notification.
-func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
+func (r *Relay) handle(ctx context.Context, m message, raw []byte, pre *localEntry) {
 	if len(m.ID) == 0 { // a notification: relayed, never answered
 		if m.Method == "notifications/cancelled" && r.cancelLocal(m.Params) {
 			return // the client's cancellation of a call only the relay serves
@@ -136,9 +139,9 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 			} `json:"capabilities"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		forms, urls := elicitationModes(p.Capabilities.Elicitation)
+		forms, _ := elicitationModes(p.Capabilities.Elicitation) // URL mode is not used yet
 		r.mu.Lock()
-		r.forms, r.urls = forms, urls
+		r.forms = forms
 		r.roots = present(p.Capabilities.Roots)
 		r.mu.Unlock()
 		res, err := r.relay(ctx, raw)
@@ -160,22 +163,13 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte) {
 		}
 		r.reply(m, res, err)
 	case "tools/call":
-		var c struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-			Meta      struct {
-				ProgressToken json.RawMessage `json:"progressToken"`
-			} `json:"_meta"`
-		}
-		if json.Unmarshal(m.Params, &c) == nil {
-			if tool, ok := r.handler(c.Name); ok {
-				r.callLocal(ctx, m, tool, localCall{Name: c.Name, Args: c.Arguments, Progress: c.Meta.ProgressToken})
-				return
-			}
+		if pre != nil {
+			r.callLocal(m, pre)
+			return
 		}
 		res, err := r.relay(ctx, raw)
 		if err == nil {
-			res = viewed(c.Name, res, r.URL, time.Now())
+			res = viewed(callName(m.Params), res, r.URL, time.Now())
 		}
 		r.reply(m, res, err)
 	case "tasks/result":

@@ -328,8 +328,10 @@ func TestRelayReadsElicitationModes(t *testing.T) {
 			s.request(t, 1, "initialize", map[string]any{"capabilities": tc.caps})
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			if r.forms != tc.forms || r.urls != tc.urls || r.roots != (name == "with roots") {
-				t.Fatalf("forms=%v urls=%v roots=%v", r.forms, r.urls, r.roots)
+			raw, _ := json.Marshal(tc.caps["elicitation"])
+			forms, urls := elicitationModes(raw)
+			if r.forms != tc.forms || forms != tc.forms || urls != tc.urls || r.roots != (name == "with roots") {
+				t.Fatalf("forms=%v/%v urls=%v roots=%v", r.forms, forms, urls, r.roots)
 			}
 		})
 	}
@@ -461,5 +463,156 @@ func TestRelayCallsTheBroker(t *testing.T) {
 	text, structured, isErr, err := r.callBroker(t.Context(), "room_summary", map[string]any{"room": "r1"})
 	if err != nil || isErr || text != "the card" || !strings.Contains(string(structured), `"room":"r1"`) {
 		t.Fatalf("%q %s %v %v", text, structured, isErr, err)
+	}
+}
+
+// blocker is a local tool that blocks until its call is cancelled or released.
+type blocker struct {
+	mu      sync.Mutex
+	started chan int
+	release []chan struct{}
+	ended   chan int
+}
+
+func newBlocker() *blocker { return &blocker{started: make(chan int, 4), ended: make(chan int, 4)} }
+
+func (b *blocker) tool(ctx context.Context, _ *Relay, _ localCall) any {
+	b.mu.Lock()
+	n := len(b.release)
+	rel := make(chan struct{})
+	b.release = append(b.release, rel)
+	b.mu.Unlock()
+	b.started <- n
+	select {
+	case <-ctx.Done():
+	case <-rel:
+	}
+	b.ended <- n
+	return mcpwire.ToolError("done")
+}
+
+func withBlocker(b *blocker) func(*Relay) {
+	return func(r *Relay) { r.handlers = map[string]localTool{toolRoomWait: b.tool} }
+}
+
+func callWait(s session, t *testing.T, id any) {
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": toolRoomWait}})
+}
+
+func cancelOf(s session, t *testing.T, id any) {
+	s.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": map[string]any{"requestId": id}})
+}
+
+// A cancellation sent right behind the call finds it: the call is registered before it starts.
+func TestRelayCancelRightAfterTheCall(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		b := newBlocker()
+		br := newMCPBroker(t)
+		s, _ := locals(t, br, withBlocker(b))
+		callWait(s, t, 7)
+		cancelOf(s, t, 7)
+		<-b.ended
+		if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 {
+			t.Fatalf("a cancelled call is not answered: %v", res)
+		}
+		if methods, _ := br.seen(); strings.Contains(strings.Join(methods, ","), "cancelled") {
+			t.Fatalf("the broker heard of a local call's cancellation: %v", methods)
+		}
+	}
+}
+
+// A cancelled call never replies, and a new call that reuses its id keeps its own entry.
+func TestRelayCancelledIdIsReused(t *testing.T) {
+	b := newBlocker()
+	s, _ := locals(t, newMCPBroker(t), withBlocker(b))
+	callWait(s, t, 7)
+	<-b.started
+	cancelOf(s, t, 7)
+	// The first call has not returned yet when the id comes back: hold it open.
+	callWait(s, t, 7)
+	<-b.started
+	cancelOf(s, t, 7) // must cancel the second call
+	<-b.ended
+	<-b.ended
+	if res := s.request(t, 9, "tools/list", nil); res["id"] != 9.0 {
+		t.Fatalf("neither cancelled call is answered: %v", res)
+	}
+}
+
+// Ids compare as JSON values: 7 is 7.0, and the string "7" is another id.
+func TestRelayCancelNormalisesTheId(t *testing.T) {
+	b := newBlocker()
+	s, _ := locals(t, newMCPBroker(t), withBlocker(b))
+	callWait(s, t, 7)
+	<-b.started
+	cancelOf(s, t, "7")
+	select {
+	case <-b.ended:
+		t.Fatal(`the string "7" cancelled the call 7`)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancelOf(s, t, 7.0)
+	<-b.ended
+	if res := s.request(t, 9, "tools/list", nil); res["id"] != 9.0 {
+		t.Fatalf("%v", res)
+	}
+}
+
+// viewed renders only a payload it can trust, and touches nothing else.
+func TestViewedKeepsWhatItCannotRender(t *testing.T) {
+	mk := func(isErr bool, sc string, extra string) json.RawMessage {
+		s := `{"content":[{"type":"text","text":"{\"room\":\"r1\"}"}` + extra + `]`
+		if sc != "" {
+			s += `,"structuredContent":` + sc
+		}
+		if isErr {
+			s += `,"isError":true`
+		}
+		return json.RawMessage(s + `}`)
+	}
+	for name, tc := range map[string]struct {
+		tool string
+		res  json.RawMessage
+		same bool
+	}{
+		"null":        {"room_summary", mk(false, "null", ""), true},
+		"absent":      {"room_summary", mk(false, "", ""), true},
+		"empty":       {"room_summary", mk(false, "{}", ""), true},
+		"wrong shape": {"room_summary", mk(false, `[1]`, ""), true},
+		"list no key": {"rooms_list", mk(false, `{"x":1}`, ""), true},
+		"is error":    {"room_summary", mk(true, `{"room":"r1"}`, ""), true},
+		"renders":     {"room_summary", mk(false, `{"room":"r1"}`, ""), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := viewed(tc.tool, tc.res, "https://rooms.example", time.Now())
+			if (string(got) == string(tc.res)) != tc.same {
+				t.Fatalf("same=%v: %s", tc.same, got)
+			}
+		})
+	}
+	t.Run("keeps the other content", func(t *testing.T) {
+		got := viewed("room_summary", mk(false, `{"room":"r1"}`, `,{"type":"text","text":"second"}`), "", time.Now())
+		if !strings.Contains(string(got), `"second"`) {
+			t.Fatalf("%s", got)
+		}
+	})
+}
+
+func TestRelayProgressOmitsAnUnknownTotal(t *testing.T) {
+	var out strings.Builder
+	r := &Relay{out: &out}
+	r.progress(json.RawMessage(`7`), 1, 0, "")
+	if strings.Contains(out.String(), "total") {
+		t.Fatalf("%q", out.String())
+	}
+}
+
+func TestRelayUnavailableToolsSayTheyAre(t *testing.T) {
+	s := relayTo(t, newMCPBroker(t), tok)
+	for _, tl := range s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
+		m := tl.(map[string]any)
+		if (m["name"] == toolRoomWait || m["name"] == toolRoomCheckout) && !strings.HasPrefix(m["description"].(string), "Not yet available in this roomctl:") {
+			t.Fatalf("%v", m)
+		}
 	}
 }

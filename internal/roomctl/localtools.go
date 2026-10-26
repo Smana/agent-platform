@@ -36,14 +36,18 @@ type localCall struct {
 // client's cancellation, or the end of the session.
 type localTool func(ctx context.Context, r *Relay, c localCall) any
 
-// localHandlers are the relay's own tools.
-func localHandlers() map[string]localTool {
+// localHandlers are the relay's own tools, built once.
+var localHandlers = buildHandlers()
+
+func buildHandlers() map[string]localTool {
 	unavailable := func(_ context.Context, _ *Relay, c localCall) any {
 		return mcpwire.ToolError("unavailable: " + c.Name + " is not served by this roomctl yet")
 	}
 	return map[string]localTool{
-		issueFileTool:    func(ctx context.Context, r *Relay, c localCall) any { return r.issueFile(ctx, c.Args) },
-		toolRoomWait:     unavailable, // Task 16
+		issueFileTool: func(ctx context.Context, r *Relay, c localCall) any { return r.issueFile(ctx, c.Args) },
+		// Task 16 must bound a blocking room_wait: each local call holds one of the maxInFlight
+		// slots, and eight waits would starve every other request with "busy".
+		toolRoomWait:     unavailable,
 		toolRoomCheckout: unavailable, // Task 17
 	}
 }
@@ -53,12 +57,12 @@ var localEntries = []any{
 	issueFileEntry,
 	map[string]any{
 		"name":        toolRoomWait,
-		"description": "Wait, without polling, until a room has something new for the developer: a need, a milestone, or its end.",
+		"description": "Not yet available in this roomctl: wait, without polling, until a room has something new for the developer: a need, a milestone, or its end.",
 		"inputSchema": json.RawMessage(`{"type":"object","properties":{"room":{"type":"string"},"after":{"type":"string"}}}`),
 	},
 	map[string]any{
 		"name":        toolRoomCheckout,
-		"description": "Check out the pull request a room opened into the developer's workspace.",
+		"description": "Not yet available in this roomctl: check out the pull request a room opened into the developer's workspace.",
 		"inputSchema": json.RawMessage(`{"type":"object","properties":{"room":{"type":"string"}}}`),
 	},
 }
@@ -98,26 +102,103 @@ func elicitationModes(raw json.RawMessage) (forms, urls bool) {
 func (r *Relay) handler(name string) (localTool, bool) {
 	h := r.handlers
 	if h == nil {
-		h = localHandlers()
+		h = localHandlers
 	}
 	t, ok := h[name]
 	return t, ok
 }
 
-// callLocal runs a local tool under a context the client can cancel, and answers m, unless the
-// client cancelled it: a cancelled request is never answered.
-func (r *Relay) callLocal(ctx context.Context, m message, tool localTool, c localCall) {
-	key := string(m.ID)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+// localEntry is one local tool call in flight. It is compared by pointer: an id that comes back
+// after a cancellation is another call.
+type localEntry struct {
+	call      localCall
+	tool      localTool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	key       string
+	cancelled bool // the client cancelled it: no reply
+}
+
+// callName is the tool a tools/call names.
+func callName(params json.RawMessage) string {
+	var c struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(params, &c)
+	return c.Name
+}
+
+// idKey is a request id as a map key: JSON numbers compare as numbers (7 is 7.0), and a string id
+// is another id than the number that spells it.
+func idKey(raw json.RawMessage) string {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&v) != nil {
+		return "raw:" + string(bytes.TrimSpace(raw))
+	}
+	switch id := v.(type) {
+	case string:
+		return "s:" + id
+	case json.Number:
+		if f, err := strconv.ParseFloat(string(id), 64); err == nil {
+			return "n:" + strconv.FormatFloat(f, 'g', -1, 64)
+		}
+	}
+	return "raw:" + string(bytes.TrimSpace(raw))
+}
+
+// reserve registers m when it is a call to a local tool, and returns its entry; nil otherwise.
+func (r *Relay) reserve(ctx context.Context, m message) *localEntry {
+	if m.Method != "tools/call" {
+		return nil
+	}
+	var c struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Meta      struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
+	}
+	if json.Unmarshal(m.Params, &c) != nil {
+		return nil
+	}
+	tool, ok := r.handler(c.Name)
+	if !ok {
+		return nil
+	}
+	e := &localEntry{tool: tool, key: idKey(m.ID), call: localCall{Name: c.Name, Args: c.Arguments, Progress: c.Meta.ProgressToken}}
+	e.ctx, e.cancel = context.WithCancel(ctx)
 	r.mu.Lock()
-	r.local[key] = cancel
+	r.local[e.key] = e
 	r.mu.Unlock()
-	res := tool(ctx, r, c)
+	return e
+}
+
+// release drops an entry whose call never started.
+func (r *Relay) release(e *localEntry) {
+	if e == nil {
+		return
+	}
 	r.mu.Lock()
-	_, live := r.local[key]
-	delete(r.local, key)
+	if r.local[e.key] == e {
+		delete(r.local, e.key)
+	}
 	r.mu.Unlock()
+	e.cancel()
+}
+
+// callLocal runs a reserved local tool and answers m, unless the client cancelled it: a cancelled
+// request is never answered.
+func (r *Relay) callLocal(m message, e *localEntry) {
+	res := e.tool(e.ctx, r, e.call)
+	r.mu.Lock()
+	live := !e.cancelled
+	if r.local[e.key] == e {
+		delete(r.local, e.key)
+	}
+	r.mu.Unlock()
+	e.cancel()
 	if live {
 		r.write(mcpwire.Response(m.ID, res, nil))
 	}
@@ -132,13 +213,16 @@ func (r *Relay) cancelLocal(params json.RawMessage) bool {
 	if json.Unmarshal(params, &p) != nil || len(p.RequestID) == 0 {
 		return false
 	}
-	key := string(p.RequestID)
+	key := idKey(p.RequestID)
 	r.mu.Lock()
-	cancel, ok := r.local[key]
-	delete(r.local, key)
+	e, ok := r.local[key]
+	if ok {
+		e.cancelled = true
+		delete(r.local, key)
+	}
 	r.mu.Unlock()
 	if ok {
-		cancel()
+		e.cancel()
 	}
 	return ok
 }
@@ -184,7 +268,10 @@ func (r *Relay) progress(token json.RawMessage, done, total float64, msg string)
 	if len(token) == 0 || string(token) == "null" {
 		return
 	}
-	p := map[string]any{"progressToken": token, "progress": done, "total": total}
+	p := map[string]any{"progressToken": token, "progress": done}
+	if total > 0 {
+		p["total"] = total
+	}
 	if msg != "" {
 		p["message"] = msg
 	}
@@ -232,17 +319,21 @@ func viewed(tool string, res json.RawMessage, rooms string, now time.Time) json.
 		return res
 	}
 	var out map[string]json.RawMessage
-	if json.Unmarshal(res, &out) != nil {
+	if json.Unmarshal(res, &out) != nil || string(out["isError"]) == "true" {
 		return res
 	}
-	var content []struct {
+	var content []json.RawMessage
+	if json.Unmarshal(out["content"], &content) != nil || len(content) == 0 {
+		return res
+	}
+	var first struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if json.Unmarshal(out["content"], &content) != nil || len(content) == 0 || content[0].Type != "text" {
+	if json.Unmarshal(content[0], &first) != nil || first.Type != "text" {
 		return res
 	}
-	if t := strings.TrimSpace(content[0].Text); t == "" || (t[0] != '{' && t[0] != '[') || !json.Valid([]byte(t)) {
+	if t := strings.TrimSpace(first.Text); t == "" || (t[0] != '{' && t[0] != '[') || !json.Valid([]byte(t)) {
 		return res
 	}
 	o := roomview.Options{Format: roomview.Markdown, Now: now, Rooms: rooms}
@@ -250,20 +341,22 @@ func viewed(tool string, res json.RawMessage, rooms string, now time.Time) json.
 	switch tool {
 	case "rooms_list":
 		var sc struct {
-			Rooms []roomview.Row `json:"rooms"`
+			Rooms *[]roomview.Row `json:"rooms"`
 		}
-		if json.Unmarshal(out["structuredContent"], &sc) != nil || roomview.Overview(&view, sc.Rooms, o) != nil {
+		if json.Unmarshal(out["structuredContent"], &sc) != nil || sc.Rooms == nil || roomview.Overview(&view, *sc.Rooms, o) != nil {
 			return res
 		}
 	default:
 		var sum summary.Summary
-		if json.Unmarshal(out["structuredContent"], &sum) != nil || roomview.Card(&view, sum, o) != nil {
+		if json.Unmarshal(out["structuredContent"], &sum) != nil || sum.Room == "" || roomview.Card(&view, sum, o) != nil {
 			return res
 		}
 	}
-	content[0].Text = view.String()
-	var err error
-	if out["content"], err = json.Marshal(content); err != nil {
+	head, err := json.Marshal(map[string]string{"type": "text", "text": view.String()})
+	if err != nil {
+		return res
+	}
+	if out["content"], err = json.Marshal(append([]json.RawMessage{head}, content[1:]...)); err != nil {
 		return res
 	}
 	b, err := json.Marshal(out)
