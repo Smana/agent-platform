@@ -1,9 +1,9 @@
 Factory rooms · 4 open · 1 needs you
 
-ROOM      TASK                                  STATE      WHERE IT IS                                 PR     UPDATED
-26zfnuxm  #2238 docs: chart version is wrong    needs you  approve "git push to agent/26zfnuxm" 19:30  -      3 min ago
-k3vlmkwq  #2241 deps: bump renovate preset      running    an agent is coding                          -      1 min ago
-tvcpihkr  #2244 links: dead link in runbook 04  queued     waiting for a run slot                      -      6 min ago
-huwttc64  #2230 docs: wrong port in guide       done       done                                        #2239  2 h ago
+ROOM      TASK                                  STATE      WHERE IT IS                                     PR     UPDATED
+26zfnuxm  #2238 docs: chart version is wrong    needs you  approve "git push to agent/26zfnuxm" 19:30 UTC  -      3 min ago
+k3vlmkwq  #2241 deps: bump renovate preset      running    an agent is coding                              -      1 min ago
+tvcpihkr  #2244 links: dead link in runbook 04  queued     waiting for a run slot                          -      6 min ago
+huwttc64  #2230 docs: wrong port in guide       done       done                                            #2239  2 h ago
 
 1 room ended more than 7 days ago: roomctl rooms --all shows it.

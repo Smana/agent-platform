@@ -72,7 +72,7 @@ func TestOverviewGolden(t *testing.T) {
 	md := render(t, overviewRows(), Options{Format: Markdown, Now: now, Rooms: rooms})
 	golden(t, "overview.md", md)
 	golden(t, "overview.txt", render(t, overviewRows(), Options{Format: Text, Now: now, Rooms: rooms}))
-	if !strings.HasSuffix(md, "\n\n1 room ended more than 7 days ago: `roomctl rooms --all` shows it.\n") {
+	if !strings.HasSuffix(md, "\n\n1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") {
 		t.Errorf("footer: %q", md)
 	}
 	assertInert(t, md, rooms, []string{"git push"})
@@ -282,6 +282,54 @@ func TestOverviewTerminalWidth(t *testing.T) {
 			t.Errorf("state column at width %d, want %d:\n%s", w, col, out)
 		} else {
 			col = w
+		}
+	}
+}
+
+// A need of the broker's own kinds reads as a short phrase in the row, and the terminal dates a
+// deadline that is not today's (spec, Time rule).
+func TestOverviewNeedPhrasesAndDatedDeadline(t *testing.T) {
+	rows := []Row{
+		{ID: "merge001", State: summary.StateWaiting, Need: &summary.Need{Kind: "merge", ID: "2239", What: summary.MergeHow("Smana/a", 2239)}, LastEventAt: now},
+		{ID: "answer01", State: summary.StateWaiting, Need: &summary.Need{Kind: "answer", ID: "42", What: "@alice answers the scoper's question by editing issue #42, then a maintainer re-applies `factory/ready`"}, LastEventAt: now},
+		{ID: "hold0001", State: summary.StateQueued, Need: &summary.Need{Kind: "hold", ID: "waiting_human_driver", What: "the factory's task waits while a person drives this room: hand the driver back to start its next run"}, LastEventAt: now},
+		{ID: "appr0001", State: summary.StateWaiting, Need: &summary.Need{Kind: "approval", What: "make test", Deadline: now.Add(10 * time.Minute)}, LastEventAt: now},
+		{ID: "appr0002", State: summary.StateWaiting, Need: &summary.Need{Kind: "approval", What: "make lint", Deadline: now.Add(24 * time.Hour)}, LastEventAt: now},
+	}
+	for _, f := range []Format{Markdown, Text} {
+		out := render(t, rows, Options{Format: f, Now: now, Rooms: rooms})
+		for _, w := range []string{"merge #2239", "answer on #42", "hand the driver back", "19:30 UTC", "2026-10-08 19:20 UTC"} {
+			if !strings.Contains(out, w) {
+				t.Errorf("format %d: no %q in\n%s", f, w, out)
+			}
+		}
+		if strings.Contains(out, "gh pr merge") || strings.Contains(out, "…") {
+			t.Errorf("format %d: a long need reaches the cell:\n%s", f, out)
+		}
+	}
+}
+
+// The footer names the way to list the ended rooms in the caller's own terms: a command on a
+// terminal, the tool's argument in the Markdown an agent reads.
+func TestOverviewFooterByFormat(t *testing.T) {
+	rows := overviewRows()
+	if out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms}); !strings.Contains(out, "`roomctl rooms --all`") && !strings.Contains(out, "roomctl rooms --all shows it") {
+		t.Errorf("Text footer:\n%s", out)
+	}
+	out := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
+	if !strings.Contains(out, "1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") || strings.Contains(out, "roomctl") {
+		t.Errorf("Markdown footer:\n%s", out)
+	}
+}
+
+// A room with no task reads its own phase in words, never an empty cell.
+func TestOverviewRoomPhaseWithoutATask(t *testing.T) {
+	for phase, want := range map[string]string{"Open": "open", "Active": "an agent is working", "Idle": "idle", "Sealed": "sealed, its log is full"} {
+		rows := []Row{{ID: "room0001", Phase: phase, State: summary.StateQueued, LastEventAt: now}}
+		for _, f := range []Format{Markdown, Text} {
+			if out := render(t, rows, Options{Format: f, Now: now, Rooms: rooms}); !strings.Contains(out, want) {
+				t.Errorf("%s, format %d: no %q in\n%s", phase, f, want, out)
+			}
 		}
 	}
 }

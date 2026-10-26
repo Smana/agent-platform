@@ -32,6 +32,8 @@ var phases = map[string]string{
 	"AwaitingHuman": "waiting for a human", "Escalated": "handed to a maintainer",
 	"Done": "done", "NoOp": "nothing to change", "Rejected": "rejected", "Reverted": "merge reverted",
 	"Stopped": "stopped", "Closed": "closed",
+	// A room's own phases, for a room no task owns.
+	"Open": "open", "Active": "an agent is working", "Idle": "idle", "Sealed": "sealed, its log is full",
 }
 
 // phaseWords is a Task phase in words.

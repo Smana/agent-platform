@@ -129,14 +129,16 @@ func Overview(w io.Writer, rows []Row, o Options) error {
 		}
 	}
 	if hidden > 0 {
-		cmd, verb, noun := "roomctl rooms --all", "it", "room"
+		// The way to list them is the caller's own: a command on a terminal, the tool's argument in
+		// the Markdown an agent reads.
+		how, verb, noun := "roomctl rooms --all shows it", "see it", "room"
 		if hidden > 1 {
-			verb, noun = "them", "rooms"
+			how, verb, noun = "roomctl rooms --all shows them", "see them", "rooms"
 		}
 		if md {
-			cmd = "`" + cmd + "`"
+			how = "call `rooms_list` with `all: true` to " + verb
 		}
-		fmt.Fprintf(&b, "\n%d %s ended more than 7 days ago: %s shows %s.\n", hidden, noun, cmd, verb)
+		fmt.Fprintf(&b, "\n%d %s ended more than 7 days ago: %s.\n", hidden, noun, how)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -194,15 +196,43 @@ func markdownWhere(r Row, o Options) string {
 			}
 			return s
 		}
+		if p := needPhrase(n); p != "" {
+			return p
+		}
 		return code(n.What, true)
 	}
 	return cellWords(r)
 }
 
+// needPhrase is a need of the broker's own kinds as a short phrase for a row's cell, "" for a need
+// it does not know. The need's full text is the card's: a cell stays one short line.
+func needPhrase(n *summary.Need) string {
+	digits := func(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
+	switch {
+	case n.Kind == "merge" && digits(n.ID):
+		return "merge #" + n.ID
+	case n.Kind == "answer" && digits(n.ID):
+		return "answer on #" + n.ID
+	case n.Kind == "hold" && n.ID == "waiting_human_driver":
+		return "hand the driver back"
+	case n.Kind == "hold" && n.ID == "waiting_room_busy":
+		return "wait for the other run to end"
+	}
+	return ""
+}
+
+// roomWords is the phase a room's row reads: its task's, else its own.
+func roomWords(r Row) (raw, got string) {
+	if r.Task != "" {
+		return r.Task, phaseWords(r.Task)
+	}
+	return r.Phase, phaseWords(r.Phase)
+}
+
 // cellWords is the reason, else the phase, in words as plain text: a phrase this package knows is
 // as is, and a value it does not is untrusted, so escaped.
 func cellWords(r Row) string {
-	raw, got := r.Task, phaseWords(r.Task)
+	raw, got := roomWords(r)
 	if r.Reason != "" {
 		raw, got = r.Reason, reasonWords(r.Reason)
 	}
@@ -228,14 +258,16 @@ func textRow(r Row, mixed bool, o Options) []string {
 	case n != nil && n.Kind == "approval":
 		where = "approve " + quote(n.What)
 		if !n.Deadline.IsZero() {
-			where += " " + n.Deadline.UTC().Format("15:04")
+			where += " " + stamp(n.Deadline, o.Now)
 		}
+	case n != nil && needPhrase(n) != "":
+		where = needPhrase(n)
 	case n != nil:
 		where = clean(n.What)
 	case r.Reason != "":
 		where = reasonWords(r.Reason)
 	default:
-		where = phaseWords(r.Task)
+		_, where = roomWords(r)
 	}
 	pr := "-"
 	if r.PR > 0 {

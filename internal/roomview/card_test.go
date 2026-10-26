@@ -312,7 +312,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 		{"a hold is what releases it, with the room's link, and no approval",
 			`{"room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm","status":{"phase":"Queued"},` +
 				`"needsYou":[{"kind":"hold","id":"waiting_human_driver","what":"hand the driver back","url":"https://rooms.example/r/26zfnuxm"}],"notes":{"items":[]}}`, cardNow,
-			[]string{"Needs you\n1. \"hand the driver back\" → https://rooms.example/r/26zfnuxm\n"}, []string{"approve"}},
+			[]string{"Needs you\n1. hand the driver back → https://rooms.example/r/26zfnuxm\n"}, []string{"approve"}},
 		{"another day dates the deadline and the note", summaryBody, time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC),
 			[]string{"by 2026-10-08 14:00 UTC →", "- 2026-10-08 19:14 UTC cf4ato2x"}, nil},
 		{"why and next",
@@ -324,7 +324,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 		{"a merge carries its PR link",
 			`{"room":"r","url":"u","status":{"phase":"AwaitingHuman"},` +
 				`"needsYou":[{"kind":"merge","id":"2267","what":"merge PR #2267: tick bypass","url":"https://github.com/Smana/a/pull/2267"}],"notes":{"items":[]}}`, cardNow,
-			[]string{`1. "merge PR #2267: tick bypass" → https://github.com/Smana/a/pull/2267`}, nil},
+			[]string{`1. merge PR #2267: tick bypass → https://github.com/Smana/a/pull/2267`}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := card1(t, body(t, tc.body), textOpts(tc.now))
@@ -352,5 +352,50 @@ func TestCardTokenAutolink(t *testing.T) {
 	}
 	if got := c.token("glm-5.3", false); got != "glm-5.3" {
 		t.Errorf("token(glm-5.3) = %q", got)
+	}
+}
+
+// Only untrusted text is cut: the broker's own instructions arrive whole, and their code spans
+// are not wrapped in a second one.
+func TestCardKeepsTheBrokersTextWhole(t *testing.T) {
+	merge := summary.MergeHow("Smana/a", 2239)
+	answer := "@alice answers the scoper's question by editing issue #42, then a maintainer re-applies `factory/ready`; or a maintainer comments `/factory retry` to proceed on its assumption"
+	next := "nothing to do: the task goes on when the class's holdout checks report; a check that never reports keeps it waiting until merge.awaitingCIFor, if set (agent-platform #182)"
+	for _, s := range []string{merge, answer, next} {
+		if len([]rune(s)) <= maxText {
+			t.Fatalf("the fixture must outrun the cut: %q", s)
+		}
+	}
+	sum := summary.Summary{Room: "r", URL: rooms + "/r/r"}
+	sum.Status.Phase = "AwaitingHuman"
+	sum.Status.Next = next
+	sum.NeedsYou = []summary.Need{
+		{Kind: "merge", ID: "2239", What: merge, URL: "https://github.com/Smana/a/pull/2239"},
+		{Kind: "answer", ID: "42", What: answer, URL: "https://github.com/Smana/a/issues/42"},
+	}
+	for _, f := range []Format{Markdown, Text} {
+		got := card1(t, sum, Options{Format: f, Now: now, Rooms: rooms})
+		for _, s := range []string{merge, answer, next} {
+			want := s
+			if f == Text {
+				want = s // a terminal keeps the broker's backticks
+			}
+			if !strings.Contains(got, want) {
+				t.Errorf("format %d: %q is cut or rewritten in\n%s", f, s, got)
+			}
+		}
+		if strings.Contains(got, "…") {
+			t.Errorf("format %d: a cut in\n%s", f, got)
+		}
+	}
+	md := card1(t, sum, Options{Format: Markdown, Now: now, Rooms: rooms})
+	assertInert(t, md, rooms, nil)
+	if spans := strings.Join(codeSpans(md), "\n"); !strings.Contains(spans, "gh pr merge 2239 --squash --admin --repo Smana/a") || strings.Contains(spans, "a maintainer with admin") {
+		t.Errorf("the merge command is its own code span, not nested in another:\n%v", codeSpans(md))
+	}
+	// An approval's text is the agent's: cut.
+	sum.NeedsYou = []summary.Need{{Kind: "approval", What: strings.Repeat("x", 300), URL: rooms + "/r/r#a"}}
+	if got := card1(t, sum, textOpts(now)); strings.Contains(got, strings.Repeat("x", 161)) || !strings.Contains(got, "…") {
+		t.Errorf("an approval's text is cut at %d runes:\n%s", maxText, got)
 	}
 }

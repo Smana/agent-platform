@@ -7,4 +7,4 @@
 | [tvcpihkr](https://rooms.example/r/tvcpihkr) | #2244 links: dead link in runbook 04 | queued | waiting for a run slot | — | 6 min ago |
 | [huwttc64](https://rooms.example/r/huwttc64) | #2230 docs: wrong port in guide | done | done | [#2239](https://github.com/Smana/cloud-native-ref/pull/2239) | 2 h ago |
 
-1 room ended more than 7 days ago: `roomctl rooms --all` shows it.
+1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.

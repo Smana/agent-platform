@@ -201,10 +201,11 @@ func (c *card) facts(s summary.Summary) {
 	}
 }
 
-// broker is a sentence the broker wrote (what happens next): cleaned, as it may hold a code span of
-// its own, and without a pipe in a table cell.
+// broker is a sentence the broker wrote (what happens next, how to merge): on one line but never
+// cut, as it may end in the command, and without a pipe in a table cell. It may hold code spans of
+// its own, so it is never put inside another.
 func (c *card) broker(s string) string {
-	return strings.ReplaceAll(clean(s), "|", cellPipe)
+	return strings.ReplaceAll(strip(s), "|", cellPipe)
 }
 
 func (c *card) runFact(r envelope.RunFact) string {
@@ -267,18 +268,21 @@ func (c *card) needs(s summary.Summary) {
 	c.line("")
 	c.line(c.head("Needs you"))
 	for i, n := range s.NeedsYou {
-		what := c.quoted(n.What, false)
-		item, label := what, "open the room"
+		var item, label string
 		switch n.Kind {
 		case "approval":
-			item, label = "approve "+what, "decide in the room"
+			item, label = "approve "+c.quoted(n.What, false), "decide in the room"
 			if !n.Deadline.IsZero() {
 				item += " by " + stamp(n.Deadline, c.o.Now)
 			}
 		case "merge":
-			label = "open the pull request"
+			item, label = c.broker(n.What), "open the pull request"
 		case "answer":
-			label = "answer on the issue"
+			item, label = c.broker(n.What), "answer on the issue"
+		case "hold":
+			item, label = c.broker(n.What), "open the room"
+		default:
+			item, label = c.quoted(n.What, false), "open the room"
 		}
 		if allowed(n.URL, c.o) {
 			if c.md() {
