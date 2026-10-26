@@ -123,7 +123,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 		if !ok {
 			mark, failed = "FAIL", true
 		}
-		_, _ = fmt.Fprintf(out, "%s %s: %s\n", mark, name, oneLine(msg))
+		_, _ = fmt.Fprintf(out, "%s %s: %s\n", mark, name, OneLine(msg))
 	}
 	skip := func(name, why string) { _, _ = fmt.Fprintf(out, "skip %s: %s\n", name, why) }
 

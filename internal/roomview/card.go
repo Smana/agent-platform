@@ -23,6 +23,8 @@ const maxCardNotes = 5
 type card struct {
 	b strings.Builder
 	o Options
+	// over is whether the task is done, failed or stopped: a run it left unfinished is not running.
+	over bool
 }
 
 func (c *card) md() bool { return c.o.Format == Markdown }
@@ -104,6 +106,10 @@ func (c *card) line(s string) { c.b.WriteString(s + "\n") }
 // left out. It prints no cursor: the caller that needs one has the summary.
 func Card(w io.Writer, s summary.Summary, o Options) error {
 	c := &card{o: o}
+	switch cardState(s) {
+	case summary.StateDone, summary.StateFailed, summary.StateStopped:
+		c.over = true
+	}
 	needs := len(s.NeedsYou) > 0
 	c.title(s)
 	c.stateLine(s, needs)
@@ -132,11 +138,7 @@ func (c *card) title(s summary.Summary) {
 }
 
 func (c *card) stateLine(s summary.Summary, needs bool) {
-	state := s.Status.State
-	if state == "" {
-		state = summary.Coarse(s.Status.Phase, s.Status.Phase, false)
-	}
-	word := stateWord(state, needs)
+	word := stateWord(cardState(s), needs)
 	if needs {
 		word = c.bold(word)
 	}
@@ -151,6 +153,14 @@ func (c *card) stateLine(s summary.Summary, needs bool) {
 		parts = append(parts, c.url("open the room", s.URL))
 	}
 	c.line(strings.Join(parts, " · "))
+}
+
+// cardState is the coarse state the summary carries, else the one its phase gives.
+func cardState(s summary.Summary) string {
+	if s.Status.State != "" {
+		return s.Status.State
+	}
+	return summary.Coarse(s.Status.Phase, s.Status.Phase, false)
 }
 
 func urlOf(i *envelope.IssueFact) string {
@@ -213,7 +223,18 @@ func (c *card) runFact(r envelope.RunFact) string {
 	if t := clean(r.Trigger); t != "" {
 		s += " (" + c.words(r.Trigger, triggerWords(r.Trigger), c.md()) + ")"
 	}
-	if !r.StartedAt.IsZero() {
+	switch {
+	case r.StartedAt.IsZero():
+	case r.Outcome != "" || !r.EndedAt.IsZero() || c.over:
+		// The factory's facts say it ended (or the task is over): when, never "N min ago".
+		s += " · started " + stamp(r.StartedAt, c.o.Now) + ", ended"
+		if !r.EndedAt.IsZero() {
+			s += " " + stamp(r.EndedAt, c.o.Now)
+		}
+		if r.Outcome != "" && r.Outcome != "ended" {
+			s += " (" + c.words(r.Outcome, outcomeWords(r.Outcome), c.md()) + ")"
+		}
+	default:
 		s += " · started " + stamp(r.StartedAt, c.o.Now) + ", " + ago(r.StartedAt, c.o.Now)
 	}
 	return s
@@ -320,7 +341,7 @@ func (c *card) runPhrase(r envelope.RunFact) string {
 	}
 	var how string
 	switch {
-	case r.Outcome == "" && r.EndedAt.IsZero():
+	case r.Outcome == "" && r.EndedAt.IsZero() && !c.over:
 		how = c.bold("running")
 	case r.Outcome == "":
 		how = "ended"
@@ -330,7 +351,7 @@ func (c *card) runPhrase(r envelope.RunFact) string {
 		how = c.words(r.Outcome, outcomeWords(r.Outcome), false)
 	}
 	s += " " + how
-	if d, ok := duration(r, c.o.Now); ok {
+	if d, ok := duration(r, c.o.Now, c.over); ok {
 		s += " · " + d
 	}
 	if r.MicroUSD > 0 {
@@ -339,13 +360,14 @@ func (c *card) runPhrase(r envelope.RunFact) string {
 	return s
 }
 
-// duration is how long a run took, or has taken so far.
-func duration(r envelope.RunFact, now time.Time) (string, bool) {
+// duration is how long a run took, or has taken so far; an unfinished run of a task that is over has
+// no time to count.
+func duration(r envelope.RunFact, now time.Time, over bool) (string, bool) {
 	end := r.EndedAt
 	switch {
 	case r.StartedAt.IsZero():
 		return "", false
-	case end.IsZero() && r.Outcome == "":
+	case end.IsZero() && r.Outcome == "" && !over:
 		end = now
 	case end.IsZero():
 		return "", false

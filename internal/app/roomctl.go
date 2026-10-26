@@ -373,12 +373,22 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 	if err := json.Unmarshal(raw, &sum); err != nil {
 		return fmt.Errorf("status: the broker's answer: %w", err)
 	}
-	if err := roomview.Card(r.Out, sum, roomview.Options{Format: textFormat(r.Out), Now: time.Now(), Rooms: c.URL}); err != nil {
+	if err := roomview.Card(r.Out, sum, roomview.Options{Format: textFormat(r.Out), Now: time.Now(), Rooms: roomsBase(sum, c.URL)}); err != nil {
 		return err
 	}
 	// The card has no cursor: status prints it last, so --after can take it back.
-	_, err = fmt.Fprintf(r.Out, "cursor: %s\n", strings.Join(strings.Fields(roomctl.SafeText(sum.Cursor)), " "))
+	_, err = fmt.Fprintf(r.Out, "cursor: %s\n", roomctl.OneLine(sum.Cursor))
 	return err
+}
+
+// roomsBase is the base of the room links the card may print: the broker's PublicURL, which the
+// summary's own URL ends with ("/r/<room>"), else the URL roomctl is configured with. A broker
+// reached by another name (a port-forward) still gets its links.
+func roomsBase(s summary.Summary, configured string) string {
+	if base, ok := strings.CutSuffix(s.URL, "/r/"+s.Room); ok && s.Room != "" && strings.HasPrefix(base, "https://") {
+		return base
+	}
+	return configured
 }
 
 // textFormat is TextColor when w is a terminal and NO_COLOR is unset, else Text.

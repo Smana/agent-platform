@@ -24,6 +24,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/Smana/agent-platform/internal/roomctl"
+	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/wire"
 )
 
@@ -71,7 +73,7 @@ func newRoomctlBroker(t *testing.T) *roomctlBroker {
 			case strings.Contains(r.URL.Path, "/gone/"):
 				http.Error(w, "no such room", http.StatusNotFound)
 			default:
-				_, _ = w.Write([]byte(`{"apiVersion":"summary/v1","room":"26zfnuxm","status":{"phase":"Implementing"},"needsYou":[],"actions":[],` +
+				_, _ = w.Write([]byte(`{"apiVersion":"summary/v1","room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm","status":{"phase":"Implementing"},"needsYou":[],"actions":[],` +
 					`"notes":{"untrusted":true,"items":[{"at":"2026-10-08T19:14:00Z","run":"cf4ato2x","text":"hi\u001b[2J"}]},"cursor":"seq:142"}`))
 			}
 			return
@@ -248,8 +250,12 @@ func TestRoomctlStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.query != "/api/rooms/26zfnuxm/summary?after=5" || !strings.Contains(out.String(), "running · an agent is coding") ||
-		!strings.Contains(out.String(), "hi[2J") || strings.ContainsRune(out.String(), 0x1b) || !strings.Contains(out.String(), "cursor: seq:142") {
+		!strings.Contains(out.String(), "hi[2J") || strings.ContainsRune(out.String(), 0x1b) || !strings.HasSuffix(out.String(), "\ncursor: seq:142\n") {
 		t.Fatalf("%q\n%q", b.query, out)
+	}
+	// The rooms base is the broker's own (the summary's URL), not the address roomctl reached it at.
+	if !strings.Contains(out.String(), "open the room (https://rooms.example/r/26zfnuxm)") {
+		t.Fatalf("no room link: %q", out)
 	}
 	out.Reset()
 	if err := r.Run(t.Context(), []string{"status", "--json", "26zfnuxm"}); err != nil || !strings.HasPrefix(out.String(), `{"apiVersion":"summary/v1"`) || !strings.Contains(out.String(), `\u001b`) {
@@ -433,5 +439,45 @@ func TestRoomctlDoctorReadsTheRepositorySkillDirs(t *testing.T) {
 		if !strings.HasPrefix(d, home) {
 			t.Errorf("outside a repository the project scope is skipped, got %s", d)
 		}
+	}
+}
+
+func TestRoomsBase(t *testing.T) {
+	for _, tc := range []struct{ name, url, room, want string }{
+		{"the broker's public URL", "https://rooms.example/r/26zfnuxm", "26zfnuxm", "https://rooms.example"},
+		{"a trailing slash", "https://rooms.example/r/26zfnuxm/", "26zfnuxm", "https://configured.example"},
+		{"another room's page", "https://rooms.example/r/other", "26zfnuxm", "https://configured.example"},
+		{"not https", "http://rooms.example/r/26zfnuxm", "26zfnuxm", "https://configured.example"},
+		{"no url", "", "26zfnuxm", "https://configured.example"},
+	} {
+		if got := roomsBase(summary.Summary{URL: tc.url, Room: tc.room}, "https://configured.example"); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTextFormat(t *testing.T) {
+	tty, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0) // a character device, like a terminal
+	if err != nil {
+		t.Skip(err)
+	}
+	defer func() { _ = tty.Close() }()
+	file, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	t.Setenv("NO_COLOR", "")
+	for name, tc := range map[string]struct {
+		w    io.Writer
+		want roomview.Format
+	}{"a terminal": {tty, roomview.TextColor}, "a file": {file, roomview.Text}, "a buffer": {&strings.Builder{}, roomview.Text}} {
+		if got := textFormat(tc.w); got != tc.want {
+			t.Errorf("%s: format %d, want %d", name, got, tc.want)
+		}
+	}
+	t.Setenv("NO_COLOR", "1")
+	if got := textFormat(tty); got != roomview.Text {
+		t.Errorf("NO_COLOR set: format %d", got)
 	}
 }

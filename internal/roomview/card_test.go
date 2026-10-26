@@ -399,3 +399,73 @@ func TestCardKeepsTheBrokersTextWhole(t *testing.T) {
 		t.Errorf("an approval's text is cut at %d runes:\n%s", maxText, got)
 	}
 }
+
+// The Run row reads what PR 2's facts say about the current run: an ended run is ended, with when.
+func TestCardRunRowReadsAnEndedRun(t *testing.T) {
+	s, n := foldGolden(t, "runs_and_spend")
+	s.Status.State = summary.StateDone
+	s.Status.Phase = "Done"
+	r := *s.Status.Run
+	r.EndedAt, r.Outcome = r.StartedAt.Add(29*time.Minute), "succeeded"
+	s.Status.Run = &r
+	got := card1(t, s, Options{Format: Markdown, Now: n.Add(3 * time.Hour), Rooms: rooms})
+	if !strings.Contains(got, "| Run | implementer c3 (human review) · started 19:11 UTC, ended 19:40 UTC (succeeded) |\n") || strings.Contains(got, " ago") {
+		t.Errorf("an ended run:\n%s", got)
+	}
+}
+
+// A run with no outcome on a task that is over reads ended, never running, in the row and the line.
+func TestCardUnfinishedRunOfATerminalTaskReadsEnded(t *testing.T) {
+	for _, state := range []string{summary.StateDone, summary.StateFailed, summary.StateStopped} {
+		s, n := foldGolden(t, "runs_and_spend")
+		s.Status.State = state
+		for _, f := range []Format{Markdown, Text, TextColor} {
+			got := card1(t, s, Options{Format: f, Now: n.Add(5 * time.Hour), Rooms: rooms})
+			if strings.Contains(got, "(human review) running") || strings.Contains(got, "**running**") || strings.Contains(got, "ago") || !strings.Contains(got, "(human review) ended") {
+				t.Errorf("%s, format %d:\n%s", state, f, got)
+			}
+		}
+	}
+}
+
+// Reason, Next and a verdict's words are hostile here: they stay inert, on their own lines.
+func TestCardHostileFields(t *testing.T) {
+	h := "x`**[a](https://evil.example) www.evil.example a@b.example <b>\u202e\n# heading\n| a | b |"
+	s := summary.Summary{Room: "26zfnuxm", URL: rooms + "/r/26zfnuxm"}
+	s.Status.Phase = "Escalated"
+	s.Status.Reason = h
+	// Next is the broker's own sentence (summary.nextStep), with code spans of its own, so its markup
+	// is not escaped: it only has to stay on its line and in its cell.
+	s.Status.Next = "a maintainer comments `/factory retry`\n# heading\n| a | b |\u202e"
+	s.Status.LastVerdict = &summary.Verdict{By: h, Verdict: h, At: now}
+	s.Status.PR = &envelope.PRFact{Number: 7, URL: "https://github.com/Smana/a/pull/7"}
+	s.Runs = []envelope.RunFact{{ID: h, Role: "reviewer", Verdict: h, Outcome: "succeeded", StartedAt: now, EndedAt: now.Add(time.Minute)}}
+	md := card1(t, s, Options{Format: Markdown, Now: now, Rooms: rooms})
+	golden(t, "card_hostile_fields.md", md)
+	golden(t, "card_hostile_fields.txt", card1(t, s, textOpts(now)))
+	// Reason and the verdict are the agents' or the factory's text: escaped.
+	assertInert(t, md, rooms, []string{"evil.example", "a@b.example"})
+	if strings.Contains(md, "\n# heading") || strings.Count(md, "\n| Next |") != 1 {
+		t.Errorf("a field broke out of its line:\n%s", md)
+	}
+	if got := tableCells(t, md); len(got) != 1 {
+		t.Errorf("tables: %v", got)
+	} else {
+		for i, n := range got[0] {
+			if n != 2 {
+				t.Errorf("row %d has %d cells:\n%s", i, n, md)
+			}
+		}
+	}
+}
+
+func TestCardTextColorBoldsTheStateWord(t *testing.T) {
+	s, n := foldGolden(t, "normal")
+	got := card1(t, s, Options{Format: TextColor, Now: n, Rooms: rooms})
+	if !strings.HasPrefix(strings.SplitN(got, "\n", 3)[1], "\x1b[1mneeds you\x1b[0m · ") {
+		t.Errorf("the state word is bold on a terminal:\n%q", got)
+	}
+	if plain := card1(t, s, textOpts(n)); strings.Contains(plain, "\x1b") {
+		t.Errorf("Text has an escape: %q", plain)
+	}
+}
