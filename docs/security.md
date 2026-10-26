@@ -231,6 +231,27 @@ The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is 
 - **A key problem is not a bad signature.** A webhook key the App cannot read answers `503 no_key`, counted apart from `bad_signature`. It is not a hold: the broker retries after 10s, 1m and 5m, then counts a failure, and three given-up deliveries disable the subscriber until its `generation` is bumped, so events are lost meanwhile ([recovery](slack.md#state)).
 - **Redelivery.** Slack events and broker webhooks are deduplicated in memory (one replica). Two concurrent redeliveries of one id can both pass the check before either finishes; the worst case is one duplicate thread line.
 
+## roomctl on the developer's machine
+
+`roomctl mcp` and `roomctl checkout` run as the developer, beside a local coding agent that room
+text and a branch can try to steer ([roomctl](roomctl.md#the-mcp-server)).
+
+- **The start form.** The factory starts only from a form field that defaults to no, in `issue_file`.
+  The model can call the tool but cannot answer the form. The factory still takes only a
+  maintainer's label, and the per-task, per-person and daily dollar caps bound the spend.
+  **Accepted risk:** a client that auto-accepts forms (some headless modes) lets the agent start
+  work. That is not new: the agent can already label with the developer's `gh`, which local-first
+  calls "advice, not a control".
+- **Checking out an agent's branch (R15).** A sandboxed agent can commit agent or editor config,
+  hooks or mise files that run when a tool opens the folder or when the developer commits.
+  `room_checkout` and `roomctl checkout` therefore fetch only `agent/<room>` from an `origin`
+  verified to be the room's repository, run git with an argument list and `core.hooksPath=/dev/null`
+  (no hook runs during the fetch or the worktree creation), confine the new worktree beside the
+  repository, refuse an existing path, and confirm the changed files that run code, in a form that
+  defaults to no or with `y/N` on a terminal. Without either they refuse, naming the files.
+  The residual: a developer who confirms, then opens the folder or commits there, runs what the
+  agent wrote. Read the listed files first.
+
 ## Supply chain
 
 | Control | How |

@@ -32,7 +32,7 @@ roomctl doctor                                   # check the setup
 - `configure` reads the issuer, client id and project id from the broker's unauthenticated `/.well-known/roomctl`. Pass `--issuer`, `--client-id` or `--project-id` to override one. The URL must be `https`.
 - The config and token files sit in `<user config dir>/roomctl/` (`config.json`, `token.json`), owner-only.
 - `login` prints `Open <verification URL> and enter the code …` (the URL is the one your identity provider returns), then `logged in; …`.
-- `doctor` prints one line per check, `ok` or the failure with its fix: `dns`, `tls`, `login`, `github`.
+- `doctor` prints one line per check, `ok` or the failure with its fix: `dns`, `tls`, `login`, `github`, `skill`.
 
 ## Commands
 
@@ -42,10 +42,13 @@ roomctl doctor                                   # check the setup
 |---|---|
 | `configure --url URL [--issuer URL --client-id ID --project-id ID]` | Saves the config. The broker's URL is enough |
 | `login` | Signs in with the device flow |
-| `doctor` | Checks the VPN, the CA, your login and your GitHub link, with the fix of each |
+| `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill. `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
+| `doctor` | Checks the VPN, the CA, your login, your GitHub link and the installed skill's version (`skill`), with the fix of each |
 | `token` | Prints a valid access token, for scripts. Treat it as a secret |
 | `status <room> [--json] [--after seq:N]` | Where a room stands, as the room card (below): the title, the state, the facts (run, spend, PR and last verdict, next, why), what needs you, the runs line, the agents' notes and what you can do, then a `cursor: seq:N` line. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
-| `rooms [--repo owner/name] [--mine] [--needs-me] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--json`: the broker's rows as is |
+| `rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--all`: the rooms that ended over a week ago too. `--json`: the broker's rows as is |
+| `changes <room> [--cursor seq:N] [--format md\|text] [--json]` | What changed in a room since the cursor of your last call (the first call: 24 hours). The cursor is kept in `cursors.json` beside the config. Needs a broker with `room_changes` |
+| `checkout <room>` | Checks the room's branch, `agent/<room>`, out into a new git worktree beside the repository you are in, `<repo>.<room>`, and prints its path. It never touches your current checkout, so a dirty tree or your branch is safe, and a second call prints the same path. It refuses outside a checkout of the room's repository, and prints the `gh repo clone` command. When the branch changes files that run code on open or on commit, it lists them and asks `y/N`, and refuses without a terminal ([below](#checking-out-an-agents-branch)) |
 | `watch <room> [--tail N]` | Follows a room, one line per event: its `seq`, who (`role (id)` for a participant with a room role), what, and its text. Shows the last `N` events first (default 50). It reconnects after a drop and picks up where it stopped |
 | `post <room> [--queue] <text>` | Posts a chat message and prints its `seq`. With `--queue` the text is kept for the next run's brief instead. The broker stores it labelled as [machine-sent](api.md#machine-sent-text), as any text from roomctl |
 | `skill install [--dir .agents/skills]` | Writes the factory-handoff skill. Needs no config or login |
@@ -101,13 +104,23 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 
 - The broker's operator turns `/mcp` on (`human.mcp.enabled`). Off, every call answers `mcp_off`.
 - The tools: `rooms_list`, `room_summary`, `room_tail`, `room_changes`, `room_queue`, `room_fork` and
-  `issue_draft` from the broker, and `issue_file`, roomctl's own. `room_tail` also runs as an MCP Task that waits
-  for the room's next events; `roomctl mcp` polls it for your agent. The broker also serves the
-  prompts `handoff` (`what`), `status` (`room`) and `inbox`, which your agent offers as slash commands.
+  `issue_draft` from the broker, and `issue_file`, `room_wait` and `room_checkout`, roomctl's own.
+  `room_tail` also runs as an MCP Task that waits for the room's next events; `roomctl mcp` polls it
+  for your agent. The broker also serves the prompts `handoff` (`what`), `status` (`room`) and
+  `inbox`, which your agent offers as slash commands.
 - `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
   shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
   shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself
-  with `gh issue create`. It never labels: `factory/ready` stays yours.
+  with `gh issue create`. The form has a second field, "start", which defaults to no and appears
+  only when the broker's `issue_draft` says `canStart`: yes labels the issue `factory/ready` with
+  your `gh`, which starts the factory. It is a form field, never a tool argument: your agent can
+  call `issue_file` but cannot answer the form.
+- `room_wait` polls `rooms_list` from your machine until a room needs you, opens a pull request or
+  ends, or until its timeout (300 s by default, at most 1800 s), and returns the room's card. A
+  cancellation ends it at once. Run it in a background task where your client has them.
+- `room_checkout {room}` is `roomctl checkout`, for your agent. The repository and the pull request
+  come from the broker's row of the room, and the workspace is your client's first root, else
+  where `roomctl mcp` runs.
 - No tool approves, steers, stops or labels. Approvals happen on the room page.
 - What your agent queues is stored labelled as [machine-sent](api.md#machine-sent-text).
 - Every request reads `token.json` and refreshes the token when it has expired, one refresh at a
@@ -116,6 +129,31 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 
 The [factory-handoff skill](#the-factory-handoff-skill) does the same jobs through the shell, for an
 agent with no MCP configuration. Configure one of the two.
+
+### Checking out an agent's branch
+
+An agent's branch is code a sandboxed agent wrote, and some of its files run on your machine without
+you running anything: agent and editor configuration, `.mcp.json`, hooks, `mise.toml`, `.envrc`.
+So the checkout works like this:
+
+- It fetches only `agent/<room>` from your `origin`, after checking that `origin` is the room's
+  repository (`git@github.com:o/n` or `https://github.com/o/n`, with or without `.git`, in any case).
+- It runs git with an argument list, never a shell, and with `core.hooksPath=/dev/null`, so no hook
+  of your repository or of the branch runs during the fetch or the checkout. It runs nothing in the
+  new worktree.
+- The worktree path is `<repository>.<room>` in the repository's own parent directory. A path that
+  already exists is refused, never overwritten.
+- It lists what the branch changed against its merge base with your `HEAD`. If a changed file is one
+  of the paths below, or is under your repository's in-tree `core.hooksPath`, it asks first: a form
+  whose `create` field defaults to no (`room_checkout`), or `y/N` on a terminal (`roomctl checkout`).
+  A client with no forms, or a command with no terminal, is refused and told the files.
+
+The paths: `.claude/settings.json`, `.claude/settings.local.json`, `.opencode/plugins/`, `.mcp.json`,
+`.vscode/tasks.json`, `.envrc`, `mise.toml`, `.mise.toml`, `mise.local.toml`, `opencode.json`,
+`opencode.jsonc`, `.codex/config.toml`, `.gemini/settings.json`, `.cursor/mcp.json`,
+`.github/mcp.json`, `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `lefthook.yml` and
+`.lefthook.yml`, in the repository root or any folder of it. The list is `flagged` in
+`internal/roomctl/checkout.go`; the tests hold a fixture per entry.
 
 ## The factory-handoff skill
 
