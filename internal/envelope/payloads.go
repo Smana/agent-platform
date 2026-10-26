@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MessageKind distinguishes chat from SP3's reserved kinds.
@@ -137,6 +139,9 @@ type TaskFacts struct {
 // MaxRuns bounds TaskFacts.Runs.
 const MaxRuns = 20
 
+// MaxMicroUSD bounds every dollar amount in the facts ($1,000,000), so sums of them cannot overflow.
+const MaxMicroUSD int64 = 1_000_000_000_000
+
 // MaxVerdict bounds RunFact.Verdict, in bytes, as the Task CRD bounds RunRecord.Verdict.
 const MaxVerdict = 32
 
@@ -216,14 +221,17 @@ var githubURL = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-
 // GitHubURL reports whether s is the URL of a github.com issue or pull request.
 func GitHubURL(s string) bool { return githubURL.MatchString(s) }
 
+// validate is deliberately loose where the factory can produce it: an EndedAt without StartedAt,
+// an Outcome without EndedAt, and (in SpendFact) Used above Limit, a cap overrun.
 func (r RunFact) validate() error {
 	switch {
-	case r.MicroUSD < 0:
-		return errors.New("microUSD is not negative")
+	case r.MicroUSD < 0 || r.MicroUSD > MaxMicroUSD:
+		return fmt.Errorf("microUSD is between 0 and %d", MaxMicroUSD)
 	case !validOutcome(r.Outcome):
 		return fmt.Errorf("outcome %q is not one of the run outcomes", r.Outcome)
-	case len(r.Verdict) > MaxVerdict:
-		return fmt.Errorf("verdict is at most %d bytes", MaxVerdict)
+	case len(r.Verdict) > MaxVerdict || !utf8.ValidString(r.Verdict) ||
+		strings.ContainsFunc(r.Verdict, func(c rune) bool { return control(c) || c == '\n' || c == '\t' }):
+		return fmt.Errorf("verdict is at most %d bytes of plain text, with no control, bidi or zero-width characters", MaxVerdict)
 	case !r.EndedAt.IsZero() && r.EndedAt.Before(r.StartedAt):
 		return errors.New("endedAt is before startedAt")
 	}
@@ -237,10 +245,10 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: a phase is required")
 	case f.Budget != nil && (f.Budget.UsedTokens < 0 || f.Budget.LimitTokens < 0):
 		return errors.New("task facts: token counts are not negative")
-	case f.Spend != nil && f.Spend.UsedMicroUSD < 0:
-		return errors.New("task facts: spend usedMicroUSD is not negative")
-	case f.Spend != nil && f.Spend.LimitMicroUSD < 0:
-		return errors.New("task facts: spend limitMicroUSD is not negative")
+	case f.Spend != nil && (f.Spend.UsedMicroUSD < 0 || f.Spend.UsedMicroUSD > MaxMicroUSD):
+		return fmt.Errorf("task facts: spend usedMicroUSD is between 0 and %d", MaxMicroUSD)
+	case f.Spend != nil && (f.Spend.LimitMicroUSD < 0 || f.Spend.LimitMicroUSD > MaxMicroUSD):
+		return fmt.Errorf("task facts: spend limitMicroUSD is between 0 and %d", MaxMicroUSD)
 	case len(f.Runs) > MaxRuns:
 		return fmt.Errorf("task facts: runs are at most %d, got %d", MaxRuns, len(f.Runs))
 	case f.Issue != nil && !githubURL.MatchString(f.Issue.URL):
