@@ -102,6 +102,21 @@ func (a Agent) skillDir(project bool) string {
 	return a.SkillDir
 }
 
+// SkillDirs is every directory an agent reads skills from, each once: every agent's SkillDir under
+// home and SkillProjectDir under dir.
+func SkillDirs(home, dir string) []string {
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(Agents)) {
+		for _, p := range []string{Agents[k].SkillDir, Agents[k].SkillProjectDir} {
+			s := Setup{Home: home, Dir: dir}.resolve(p)
+			if !slices.Contains(out, s) {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
 // SetupCmd is the command the agent will run: roomctl when the PATH finds it, else the absolute path
 // of this executable, so a binary that is not installed still works.
 func SetupCmd(lookPath func(string) (string, error), executable func() (string, error)) string {

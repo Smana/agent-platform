@@ -133,3 +133,58 @@ func TestInstallRefusesASymlinkedFile(t *testing.T) {
 		t.Error("wrote through the file symlink")
 	}
 }
+
+func TestSkillV2(t *testing.T) {
+	b, err := files.ReadFile("factory-handoff/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	fallback := strings.Index(body, "## Shell fallback")
+	if fallback < 0 {
+		t.Fatal("no Shell fallback section")
+	}
+	for _, tool := range []string{"rooms_list", "room_summary", "room_changes", "room_wait", "room_checkout", "issue_file"} {
+		if i := strings.Index(body, tool); i < 0 || i > fallback {
+			t.Errorf("%s is not named before the shell fallback (at %d, fallback at %d)", tool, i, fallback)
+		}
+	}
+	for _, want := range []string{
+		"show the tool's text as it is",
+		"If you can run a background task or subagent, run `room_wait` there and keep working; otherwise call it only when the developer asks to wait. Call it again when it times out.",
+		"never apply a label",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SKILL.md lost %q", want)
+		}
+	}
+	tools, _ := frontMatter(t, b)["allowed-tools"].(string)
+	for _, want := range []string{"Bash(roomctl changes:*)", "Bash(roomctl checkout:*)", "Bash(gh issue create:*)", "Bash(roomctl status:*)"} {
+		if !strings.Contains(tools, want) {
+			t.Errorf("allowed-tools lacks %q: %s", want, tools)
+		}
+	}
+}
+
+func TestVersion(t *testing.T) {
+	dir := t.TempDir()
+	if v, ok, err := Version(dir); v != "" || ok || err != nil {
+		t.Errorf("empty dir: Version = %q, %v, %v", v, ok, err)
+	}
+	if _, err := Install(dir, "v0.8.0"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok, err := Version(dir); v != "v0.8.0" || !ok || err != nil {
+		t.Errorf("installed: Version = %q, %v, %v", v, ok, err)
+	}
+	bad := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(bad, "factory-handoff"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "factory-handoff", "SKILL.md"), []byte("no front matter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Version(bad); err == nil {
+		t.Error("want an error for a SKILL.md without front matter")
+	}
+}

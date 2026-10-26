@@ -141,7 +141,12 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return err
 	}
 	if cmd == "doctor" {
-		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath}.Run(ctx, r.Out)
+		home, cwd, err := r.homeAndCwd()
+		if err != nil {
+			return err
+		}
+		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath,
+			SkillDirs: roomctl.SkillDirs(home, cwd), Version: version.Version}.Run(ctx, r.Out)
 	}
 	if cmd == "mcp" {
 		return r.mcp(ctx, cfg, tokPath, args)
@@ -261,6 +266,21 @@ func (r Roomctl) skill(args []string) error {
 	return nil
 }
 
+// homeAndCwd is the home directory and the working directory, the process's when not set.
+func (r Roomctl) homeAndCwd() (home, cwd string, err error) {
+	if home, cwd = r.Home, r.Cwd; home == "" {
+		if home, err = os.UserHomeDir(); err != nil {
+			return "", "", err
+		}
+	}
+	if cwd == "" {
+		if cwd, err = os.Getwd(); err != nil {
+			return "", "", err
+		}
+	}
+	return home, cwd, nil
+}
+
 // setup registers roomctl mcp with a coding agent and installs the skill; it needs no configuration.
 func (r Roomctl) setup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
@@ -289,15 +309,8 @@ func (r Roomctl) setup(ctx context.Context, args []string) error {
 			return cmd.Run()
 		}
 	}
-	if s.Home == "" {
-		if s.Home, err = os.UserHomeDir(); err != nil {
-			return err
-		}
-	}
-	if s.Dir == "" {
-		if s.Dir, err = os.Getwd(); err != nil {
-			return err
-		}
+	if s.Home, s.Dir, err = r.homeAndCwd(); err != nil {
+		return err
 	}
 	s.Cmd = roomctl.SetupCmd(s.LookPath, os.Executable)
 	return s.Do(ctx)

@@ -105,12 +105,15 @@ agent with no MCP configuration. Configure one of the two.
 
 `roomctl skill install` writes an Agent Skill that lets a local coding agent hand a side task to the [factory](factory.md) and follow it. The skill is embedded in the binary, so it always matches the CLI that runs its commands (`internal/roomctl/skill`).
 
+It works MCP first. With the `factory` MCP server registered (`roomctl setup <client>`), it uses `rooms_list`, `room_summary`, `room_changes`, `room_wait`, `room_checkout`, `issue_draft` and `issue_file`, and shows each tool's text as it is. Without the server, a shell fallback section runs the same jobs through `gh` and `roomctl`.
+
 It does:
 
-- Draft one issue per defect from a template, show it, and run `gh issue create` only after you confirm.
-- Follow a task: find the room link in the factory's comment, run `roomctl status <room> --json`, and report phase, run, PR and the newest notes.
-- Say "it needs you" first when something waits on you, giving the link: approvals happen on the room page.
-- Answer "anything waiting on me?" with `roomctl rooms --needs-me`.
+- Draft one issue per defect from a template, show it, and file it only after you confirm.
+- Follow a task: find the room, and report phase, run, PR and the newest notes.
+- Say "it needs you" first when something waits on you, giving the link: approvals stay on the room page.
+- Answer "anything waiting on me?".
+- Follow a room in the background with `room_wait` when the agent can run a background task or subagent, and bring a room's branch back with `room_checkout`, only when you ask.
 - Queue guidance for the next run with `roomctl post <room> --queue`, only with your words.
 
 It never:
@@ -123,6 +126,8 @@ It never:
 `skill install` writes `<dir>/factory-handoff/` (`SKILL.md` and `references/issue-template.md`), `.agents/skills` by default, and overwrites what is there. It refuses to write through a symlink inside the skill tree. `--dir` sets where the skill is written; point it at the directory your agent reads skills from.
 
 The skill needs `gh` (authenticated) and `roomctl` (signed in) on the PATH.
+
+`roomctl doctor` has a `skill` check: it reads the `roomctl-version` of every `factory-handoff` skill in the directories the six clients read (`roomctl setup`'s, under your home and under the working directory), and fails when one is not this binary's version, because a skill from another release names tools or commands this one lacks. It skips when none is installed.
 
 ## Troubleshooting
 
@@ -137,3 +142,4 @@ Run `roomctl doctor` first: it checks in the order things fail and prints the fi
 | auth error, expired token | not signed in | `roomctl login` |
 | `401: user_inactive` | your ZITADEL user was deactivated, locked or deleted | ask an admin to reactivate it; `roomctl login` cannot help |
 | `rooms` lists nothing | your ZITADEL user has no linked GitHub identity, so no repository is readable | ask an admin to link your GitHub account to your ZITADEL user; `roomctl doctor` reports it on its `github` line |
+| `FAIL skill` on `roomctl doctor` | a `factory-handoff` skill from another roomctl release, in your home or in the repository (`cloud-native-ref` carries `.agents/skills/factory-handoff` at `roomctl-version: "v0.11.0"`, so this fails there until that copy is removed) | delete the stale copy, or run `roomctl setup <client> --project` to rewrite it |

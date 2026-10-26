@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/Smana/agent-platform/internal/roomctl/skill"
 )
 
 // #48: each failure the runbook met names its cause and its fix.
@@ -179,6 +181,48 @@ func TestDoctorNamesTheCauseAndTheFix(t *testing.T) {
 				if !strings.Contains(out.String(), w) {
 					t.Errorf("no %q in:\n%s", w, &out)
 				}
+			}
+		})
+	}
+}
+
+func TestDoctorSkillDrift(t *testing.T) {
+	stamp := func(t *testing.T, dir, v string) {
+		t.Helper()
+		if _, err := skill.Install(dir, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, tc := range map[string]struct {
+		setup   func(t *testing.T, d1, d2 string)
+		want    []string
+		wantErr bool
+	}{
+		"drifted": {func(t *testing.T, d1, _ string) { stamp(t, d1, "v0.1.0") },
+			[]string{"FAIL skill", "v0.1.0", "v0.2.0", "roomctl setup"}, true},
+		"current": {func(t *testing.T, d1, d2 string) { stamp(t, d1, "v0.2.0"); stamp(t, d2, "v0.2.0") },
+			[]string{"ok   skill"}, false},
+		"one of two drifted": {func(t *testing.T, d1, d2 string) { stamp(t, d1, "v0.2.0"); stamp(t, d2, "v0.1.0") },
+			[]string{"FAIL skill", "v0.1.0"}, true},
+		"none": {func(*testing.T, string, string) {}, []string{"skip skill"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newDoctorRig(t)
+			d1, d2 := t.TempDir(), t.TempDir()
+			tc.setup(t, d1, d2)
+			r.d.SkillDirs, r.d.Version = []string{d1, d2}, "v0.2.0"
+			var out strings.Builder
+			err := r.d.Run(t.Context(), &out)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v\n%s", err, tc.wantErr, &out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("no %q in:\n%s", w, &out)
+				}
+			}
+			if tc.wantErr && !strings.Contains(out.String(), d1) && !strings.Contains(out.String(), d2) {
+				t.Errorf("the directory is not named:\n%s", &out)
 			}
 		})
 	}

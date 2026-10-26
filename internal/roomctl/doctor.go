@@ -12,9 +12,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/agent-platform/internal/roomctl/skill"
 )
 
 // setupPath is the broker's unauthenticated endpoint for the values `roomctl configure` needs.
@@ -109,6 +111,8 @@ type Doctor struct {
 	HC        *http.Client
 	TokenPath string
 	Lookup    func(ctx context.Context, host string) ([]string, error) // nil is the system resolver
+	SkillDirs []string                                                 // where agents read skills from
+	Version   string                                                   // this binary's version
 }
 
 // Run prints one line per check and returns an error if any failed.
@@ -167,10 +171,35 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	default:
 		d.github(ctx, tok, report)
 	}
+	d.skill(report, skip)
 	if failed {
 		return errors.New("doctor: a check failed, see the fix above")
 	}
 	return nil
+}
+
+// skill compares the roomctl-version each installed factory-handoff skill carries with this
+// binary's: a copy from another release names tools or commands this one lacks.
+func (d Doctor) skill(report func(bool, string, string), skip func(string, string)) {
+	found := false
+	for _, dir := range d.SkillDirs {
+		v, ok, err := skill.Version(dir)
+		switch {
+		case err != nil:
+			found = true
+			report(false, "skill", fmt.Sprintf("%v: run roomctl setup <client> to rewrite it", err))
+		case !ok:
+		case v != d.Version:
+			found = true
+			report(false, "skill", fmt.Sprintf("%s holds factory-handoff %s, this roomctl is %s: run roomctl setup <client> (add --project for a repository copy), or delete the directory", filepath.Join(dir, "factory-handoff"), v, d.Version))
+		default:
+			found = true
+			report(true, "skill", fmt.Sprintf("%s is %s", filepath.Join(dir, "factory-handoff"), v))
+		}
+	}
+	if !found {
+		skip("skill", "no factory-handoff skill installed: run roomctl setup <client>")
+	}
 }
 
 // github asks the room list, whose X-Rooms-Access says whether the caller's GitHub link works.

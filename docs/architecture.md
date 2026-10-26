@@ -217,7 +217,7 @@ Broker, bridge and CLI, by pipeline stage:
 | `cmd/room-bridge` | The sidecar binary |
 | `cmd/run-controller` | The AgentRun controller binary |
 | `cmd/roomctl`, `internal/roomctl` | The human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
-| `internal/roomctl/skill` | The embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
+| `internal/roomctl/skill` | The embedded factory-handoff Agent Skill (MCP first, shell fallback), released with roomctl; `roomctl setup` and `skill install` write it, `skill.Version` reads its stamp for the doctor's `skill` drift check |
 | `internal/app` | Wiring per binary, the only importer of every adapter |
 | `internal/config` | The broker's config file: strict decode, defaults, validation |
 | `internal/logging` | A binary's `*slog.Logger`: JSON or text, level by env |
