@@ -5,6 +5,7 @@ package envelope
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 )
@@ -125,8 +126,36 @@ type TaskFacts struct {
 	Reason string      `json:"reason,omitempty"`
 	Run    *RunFact    `json:"run,omitempty"`
 	Budget *BudgetFact `json:"budget,omitempty"`
-	Issue  *IssueFact  `json:"issue,omitempty"`
-	PR     *PRFact     `json:"pr,omitempty"`
+	// Spend is the task's dollars, beside Budget's tokens (BudgetFact is unchanged).
+	Spend *SpendFact `json:"spend,omitempty"`
+	// Runs is the task's run history, oldest first, at most MaxRuns.
+	Runs  []RunFact  `json:"runs,omitempty"`
+	Issue *IssueFact `json:"issue,omitempty"`
+	PR    *PRFact    `json:"pr,omitempty"`
+}
+
+// MaxRuns bounds TaskFacts.Runs.
+const MaxRuns = 20
+
+// MaxVerdict bounds RunFact.Verdict, in bytes, as the Task CRD bounds RunRecord.Verdict.
+const MaxVerdict = 32
+
+// A run's outcome, once it has ended. An empty Outcome is a run that has not.
+const (
+	OutcomeSucceeded       = "succeeded"
+	OutcomeFailed          = "failed"
+	OutcomeBudgetExhausted = "budget_exhausted"
+	OutcomeRevoked         = "revoked"
+	OutcomeLost            = "lost"
+	OutcomeEnded           = "ended"
+)
+
+func validOutcome(o string) bool {
+	switch o {
+	case "", OutcomeSucceeded, OutcomeFailed, OutcomeBudgetExhausted, OutcomeRevoked, OutcomeLost, OutcomeEnded:
+		return true
+	}
+	return false
 }
 
 // RunFact is a run's role, trigger, and lifecycle in a task.
@@ -135,6 +164,11 @@ type RunFact struct {
 	Role      string    `json:"role"`
 	Trigger   string    `json:"trigger,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
+	// EndedAt, Outcome, Verdict and MicroUSD are set once the run has ended.
+	EndedAt  time.Time `json:"endedAt,omitzero"`
+	Outcome  string    `json:"outcome,omitempty"`
+	Verdict  string    `json:"verdict,omitempty"`
+	MicroUSD int64     `json:"microUSD,omitempty"`
 	// What the run ran on (R10), as far as the factory knows it yet.
 	Provenance *ProvenanceFact `json:"provenance,omitempty"`
 }
@@ -152,6 +186,12 @@ type ProvenanceFact struct {
 type BudgetFact struct {
 	UsedTokens  int64 `json:"usedTokens"`
 	LimitTokens int64 `json:"limitTokens"`
+}
+
+// SpendFact is the dollars a task has spent and, when it has one, its dollar limit.
+type SpendFact struct {
+	UsedMicroUSD  int64 `json:"usedMicroUSD"`
+	LimitMicroUSD int64 `json:"limitMicroUSD,omitempty"`
 }
 
 // IssueFact is a GitHub issue linked to a task.
@@ -173,6 +213,23 @@ type PRFact struct {
 
 var githubURL = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$`)
 
+// GitHubURL reports whether s is the URL of a github.com issue or pull request.
+func GitHubURL(s string) bool { return githubURL.MatchString(s) }
+
+func (r RunFact) validate() error {
+	switch {
+	case r.MicroUSD < 0:
+		return errors.New("microUSD is not negative")
+	case !validOutcome(r.Outcome):
+		return fmt.Errorf("outcome %q is not one of the run outcomes", r.Outcome)
+	case len(r.Verdict) > MaxVerdict:
+		return fmt.Errorf("verdict is at most %d bytes", MaxVerdict)
+	case !r.EndedAt.IsZero() && r.EndedAt.Before(r.StartedAt):
+		return errors.New("endedAt is before startedAt")
+	}
+	return nil
+}
+
 // Validate refuses facts a broker should not store.
 func (f TaskFacts) Validate() error {
 	switch {
@@ -180,10 +237,26 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: a phase is required")
 	case f.Budget != nil && (f.Budget.UsedTokens < 0 || f.Budget.LimitTokens < 0):
 		return errors.New("task facts: token counts are not negative")
+	case f.Spend != nil && f.Spend.UsedMicroUSD < 0:
+		return errors.New("task facts: spend usedMicroUSD is not negative")
+	case f.Spend != nil && f.Spend.LimitMicroUSD < 0:
+		return errors.New("task facts: spend limitMicroUSD is not negative")
+	case len(f.Runs) > MaxRuns:
+		return fmt.Errorf("task facts: runs are at most %d, got %d", MaxRuns, len(f.Runs))
 	case f.Issue != nil && !githubURL.MatchString(f.Issue.URL):
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
+	}
+	if f.Run != nil {
+		if err := f.Run.validate(); err != nil {
+			return fmt.Errorf("task facts: run: %w", err)
+		}
+	}
+	for i, r := range f.Runs {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("task facts: runs[%d]: %w", i, err)
+		}
 	}
 	return nil
 }
