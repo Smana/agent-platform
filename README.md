@@ -1,5 +1,14 @@
 # agent-platform
 
+<a href="docs/naming.md">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/png/maku-lockup-horizontal-dark.png">
+    <img src="docs/assets/brand/png/maku-lockup-horizontal-light.png" alt="Maku, a controlled stage for delegated agent work" width="480">
+  </picture>
+</a>
+
+Maku is the product name; `agent-platform` stays the name of the repository, module, binaries, images and APIs ([naming](docs/naming.md)).
+
 **Run coding agents on your Kubernetes cluster without trusting them.**
 
 - **Sandboxed:** every run is an isolated pod holding only short-lived, scoped credentials, inside a budget it cannot raise.

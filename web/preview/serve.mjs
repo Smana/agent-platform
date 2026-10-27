@@ -3,6 +3,8 @@
 // The smallest static server for the UI preview, stdlib only, no cluster and
 // no network beyond localhost. Serves web/ so the fixture, the sources' CSS
 // and the built preview.js are all reachable; open the URL it prints.
+// /assets/ maps like the broker's: /assets/app.css is src/app.css, any other
+// /assets/<file> is src/assets/<file>. Under SERVE_ROOT it serves that tree as is.
 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -19,10 +21,23 @@ const types = {
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".jsonl": "application/x-ndjson; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
 };
 
 createServer((req, res) => {
-  const path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+  let path;
+  try {
+    path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+  } catch {
+    res.writeHead(400).end("bad request");
+    return;
+  }
+  // normalize keeps the leading /, so a /assets/ prefix here has no .. left above it.
+  if (!process.env.SERVE_ROOT && path.startsWith(`${sep}assets${sep}`)) {
+    path = path === `${sep}assets${sep}app.css` ? join(sep, "src", "app.css") : join(sep, "src", path);
+  }
   let file = join(root, path);
   if (file.startsWith(root) && existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.html");
   if (!file.startsWith(root) || !existsSync(file) || !statSync(file).isFile()) {

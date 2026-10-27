@@ -6,7 +6,7 @@
 
 import type { RoomEvent, Snapshot } from "../src/conn";
 import type { Summary } from "../src/summary";
-import { initTheme } from "../src/theme";
+import { applyTheme, initTheme } from "../src/theme";
 import { summaryAt } from "./demo-summary";
 import { mountPreviewPage } from "./page";
 import { Replay } from "./replay";
@@ -34,12 +34,13 @@ async function run() {
   ]);
   const events = text.trim().split("\n").map((l) => JSON.parse(l) as RoomEvent);
   const theme = initTheme();
-  if (new URLSearchParams(location.search).get("theme") === "dark") document.documentElement.classList.add("dark");
+  const override = new URLSearchParams(location.search).get("theme");
+  if (override === "light" || override === "dark") applyTheme(override);
 
   const shown: RoomEvent[] = [];
   const page = mountPreviewPage(document.getElementById("app")!, { snap, summary: summaryAt(summary, shown, events.length, false),
     // The snapshot stands before the first event, so every event replays onto it.
-    count: 0, nothingSent: "Demo: nothing is sent.", sessionOpen: false, sessionLabel: "Session · driver: the factory", theme });
+    count: 0, nothingSent: "Demo: nothing is sent.", sessionOpen: false, sessionLabel: "Session · driver: the factory", assetBase: "assets", homeHref: "./", theme });
 
   const banner = document.createElement("div");
   banner.className = "banner demo-banner";

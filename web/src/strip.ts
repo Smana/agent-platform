@@ -144,7 +144,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
       const text = st?.issue?.title ? `#${st.issue.number} ${st.issue.title}` : `Room ${i.roomId}`;
       const phase = st?.phase || i.phase;
       if (title.textContent !== text) title.textContent = text;
-      document.title = phase ? `${text} · ${phase}` : text;
+      document.title = phase ? `${text} · ${phase} · Maku` : `${text} · Maku`;
       const { now: latest, sealedBy, needs, connection, ...rest } = i;
       const headKey = JSON.stringify(rest);
       if (headKey !== shown.head) {
