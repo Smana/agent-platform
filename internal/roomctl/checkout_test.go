@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -389,10 +390,18 @@ func TestCheckoutRefusesAHostileRoomOrRepository(t *testing.T) {
 	}
 }
 
-// sync with roomctl.Agents (PR 5): every project MCP snippet path and skill folder `roomctl setup` writes.
 func TestFlaggedCoversEveryProjectSnippet(t *testing.T) {
-	for _, p := range []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".vscode/mcp.json", ".github/mcp.json",
-		".agents/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".gemini/skills/x/SKILL.md", ".cursor/skills/x/SKILL.md", ".github/skills/x/SKILL.md"} {
+	paths := []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".vscode/mcp.json", ".github/mcp.json",
+		".agents/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".gemini/skills/x/SKILL.md", ".cursor/skills/x/SKILL.md", ".github/skills/x/SKILL.md"}
+	for _, a := range Agents {
+		if a.SnippetProjectPath != "" {
+			paths = append(paths, a.SnippetProjectPath)
+		}
+		if a.SkillProjectDir != "" {
+			paths = append(paths, path.Join(a.SkillProjectDir, "x", "SKILL.md"))
+		}
+	}
+	for _, p := range paths {
 		if !isFlagged(p, flagged) {
 			t.Errorf("%s is not flagged", p)
 		}
