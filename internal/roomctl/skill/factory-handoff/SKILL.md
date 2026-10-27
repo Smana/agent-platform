@@ -37,6 +37,10 @@ so only if `issue_file`'s start-now form did not already apply it; never apply a
 `factory/ready` included, unless they ask for that exact label in that message: starting factory
 work is their decision.
 
+When `issue_file` returns `started: true`, start a background `room_wait` on the room at once (the
+result's `room`; no `room`, `rooms_list` finds it by the issue number), and tell the developer you are
+following it. They never have to ask you to wait. A result with `started: false` has nothing to wait for.
+
 If the server is listed but lacks a tool (an older roomctl without `room_wait` or `room_checkout`),
 fall back to the shell form of that step, from the Shell fallback section.
 

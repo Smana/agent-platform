@@ -214,3 +214,20 @@ func TestVersionFrontMatterShapes(t *testing.T) {
 		}
 	}
 }
+
+// O11: after issue_file returns started: true the skill starts the background room_wait at once,
+// so the developer never types "wait for it". The /factory command says it too.
+func TestSkillWaitsAfterStarted(t *testing.T) {
+	b, err := files.ReadFile("factory-handoff/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "When `issue_file` returns `started: true`, start a background `room_wait` on the room at once"
+	if !strings.Contains(string(b), want) {
+		t.Errorf("SKILL.md lost %q", want)
+	}
+	if !strings.Contains(string(command), "started: true") || !strings.Contains(string(command), "room_wait") {
+		t.Errorf("the /factory command does not wait after started: true:\n%s", command)
+	}
+}
+
