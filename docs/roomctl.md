@@ -113,9 +113,9 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 - `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
   shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
   shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself
-  with `gh issue create`. The form has a second field, "start", which defaults to no and appears
+  with `gh issue create`. The form's "file" toggle defaults to no (so Claude Code shows it set, not "required"), and a second field, "start", defaults to no too and appears
   only when the broker's `issue_draft` says `canStart`: yes labels the issue `factory/ready` with
-  your `gh`, which starts the factory. It is a form field, never a tool argument: your agent can
+  your `gh`, which starts the factory. A client that returns the form without `start` (or with a value that is not a boolean) gets `started:false` and a `next` that says start was not chosen, and `roomctl mcp` logs it on stderr: your agent then asks you rather than guessing. It is a form field, never a tool argument: your agent can
   call `issue_file` but cannot answer the form.
 - `room_wait` polls `rooms_list` from your machine until a room needs you, opens a pull request or
   ends, or until its timeout (300 s by default, at most 1800 s), and returns the room's card. A

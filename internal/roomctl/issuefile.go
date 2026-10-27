@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -68,7 +69,9 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 		return refused
 	}
 	offer := draft.CanStart && r.Label != nil
-	props := map[string]any{"file": map[string]any{"type": "boolean", "title": "File this issue", "description": "Filed with your gh, as you"}}
+	// A default, or Claude Code shows the required toggle as unset with "This field is required"
+	// until it is toggled; false keeps filing an explicit yes.
+	props := map[string]any{"file": map[string]any{"type": "boolean", "title": "File this issue", "default": false, "description": "Filed with your gh, as you"}}
 	tail := "It gets no label: label it " + readyLabel + " yourself to start the factory."
 	if offer {
 		props["start"] = map[string]any{"type": "boolean", "title": "Start the factory now", "default": false,
@@ -85,28 +88,53 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 		return mcpwire.ToolError("not_filed: the developer was not asked: " + err.Error())
 	}
 	var res struct {
-		Action  string `json:"action"`
-		Content struct {
-			File  bool `json:"file"`
-			Start bool `json:"start"`
-		} `json:"content"`
+		Action  string                     `json:"action"`
+		Content map[string]json.RawMessage `json:"content"` // a client may return it partial
 	}
 	if len(ans.Error) > 0 || json.Unmarshal(ans.Result, &res) != nil {
 		return mcpwire.ToolError("not_filed: the client could not ask the developer")
 	}
-	if res.Action != "accept" || !res.Content.File {
+	file, _ := formBool(res.Content["file"])
+	if res.Action != "accept" || !file {
 		out, _ := mcpwire.ToolResult(map[string]any{"filed": false, "why": "the developer did not confirm (" + res.Action + ")"})
 		return out
+	}
+	start, chosen := formBool(res.Content["start"])
+	if offer && !chosen {
+		slog.Warn("issue_file: the form answer has no usable start; treated as not started", "start", string(res.Content["start"]))
 	}
 	url, err := r.File(ctx, draft.Repo, draft.Title, draft.Body)
 	if err != nil {
 		return mcpwire.ToolError("not_filed: " + err.Error())
 	}
-	if !offer || !res.Content.Start { // a start the form never offered is ignored
-		out, _ := mcpwire.ToolResult(map[string]any{"filed": true, "url": url, "started": false, "next": "label it " + readyLabel + " to start the factory: your decision"})
+	if !offer || !start { // a start the form never offered is ignored
+		next := "label it " + readyLabel + " to start the factory: your decision"
+		if offer && !chosen {
+			next = "start was not chosen (the form came back without it), so the factory is not started: ask the developer whether to start it, and label it " + readyLabel + " only on their yes"
+		}
+		out, _ := mcpwire.ToolResult(map[string]any{"filed": true, "url": url, "started": false, "next": next})
 		return out
 	}
 	return r.start(ctx, draft.Repo, url)
+}
+
+// formBool reads a form field: a JSON boolean, or the strings "true" and "false" some clients send.
+// ok is false when the field is absent, null or neither, which callers treat as false.
+func formBool(raw json.RawMessage) (v, ok bool) {
+	var b bool
+	if json.Unmarshal(raw, &b) == nil && len(raw) > 0 && string(raw) != "null" {
+		return b, true
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		switch strings.ToLower(strings.TrimSpace(str)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // start labels the issue just filed and waits for its room. A failure files without the label and

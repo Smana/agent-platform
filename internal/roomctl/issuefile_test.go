@@ -383,3 +383,54 @@ func TestIssueFileFindsTheRoomInAnotherCase(t *testing.T) {
 		t.Fatalf("%v", sc)
 	}
 }
+
+// O4: Claude Code showed the required `file` toggle unset with "This field is required" until
+// toggled, so the form was cancelled; the field now has a default (false: filing still needs an
+// explicit yes).
+func TestIssueFileFormDefaultsFileToFalse(t *testing.T) {
+	b := newMCPBroker(t)
+	b.canStart = boolp(true)
+	s := startSession(t, b, &filing{}, &labeling{}, time.Second)
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": issueFileArgs})
+	ask := s.next(t)
+	props := ask["params"].(map[string]any)["requestedSchema"].(map[string]any)["properties"].(map[string]any)
+	if d, ok := props["file"].(map[string]any); !ok || d["default"] != false || d["type"] != "boolean" {
+		t.Fatalf("file: %v", props["file"])
+	}
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": ask["id"], "result": map[string]any{"action": "cancel"}})
+	s.next(t)
+}
+
+// O4: a client may return a partial content object, or booleans as strings. A missing start is
+// false, never a guess, and the result says start was not chosen, so the agent asks the developer.
+func TestIssueFileStartNotChosen(t *testing.T) {
+	for name, tc := range map[string]struct {
+		content     map[string]any
+		wantStarted bool
+		wantNext    string
+	}{
+		"start missing":        {map[string]any{"file": true}, false, "start was not chosen"},
+		"start null":           {map[string]any{"file": true, "start": nil}, false, "start was not chosen"},
+		"start as a string":    {map[string]any{"file": true, "start": "true"}, true, ""},
+		"file as a string":     {map[string]any{"file": "true", "start": false}, false, ""},
+		"start explicit no":    {map[string]any{"file": true, "start": false}, false, ""},
+		"start unintelligible": {map[string]any{"file": true, "start": "maybe"}, false, "start was not chosen"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := newMCPBroker(t)
+			b.canStart, b.roomText, b.rooms = boolp(true), "# card", []map[string]any{{"id": "r1", "repository": "Smana/a", "issue": 7}}
+			l := &labeling{}
+			sc := fileWith(t, startSession(t, b, &filing{}, l, time.Second), issueFileArgs, map[string]any{"action": "accept", "content": tc.content})
+			if sc["filed"] != true || sc["started"] != tc.wantStarted {
+				t.Fatalf("%v", sc)
+			}
+			next, _ := sc["next"].(string)
+			if tc.wantNext != "" && !strings.Contains(next, tc.wantNext) || tc.wantNext == "" && strings.Contains(next, "not chosen") {
+				t.Fatalf("next %q", next)
+			}
+			if tc.wantStarted != (len(l.calls) == 1) {
+				t.Fatalf("labels %v", l.calls)
+			}
+		})
+	}
+}
