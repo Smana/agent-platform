@@ -69,8 +69,11 @@ const (
 // for an operator's audit. Older days are deleted by the meter, its only writer after them.
 const ledgerRetention = 35 * 24 * time.Hour
 
-// fenceYesterday is how long past midnight a new leader also fences the day just ended, for a
-// run it knows no entry on it: the first write of the run may have been the lost one.
+// fenceYesterday is how long past midnight a new leader's learn also seeds the day just ended,
+// for a run it knows no entry on it, so that fence covers it: the run's first write may have been
+// the lost one. What bounds it is how long after its send a write can still commit, the
+// apiserver's request timeout (about 60 s), plus the lease handover (about 15 s) between the old
+// leader's send and the new leader's learn; 10 minutes is a wide margin over both.
 const fenceYesterday = 10 * time.Minute
 
 // fenceAnnotation is what fence writes to a past day's ledger to move its resourceVersion on.
@@ -470,10 +473,23 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	if m.accounts == nil {
 		m.accounts = map[string]account{}
 	}
+	now := m.now().UTC()
+	today, yesterday := now.Format(api.LedgerDayLayout), now.Add(-24*time.Hour).Format(api.LedgerDayLayout)
+	recent := now.Sub(now.Truncate(24*time.Hour)) < fenceYesterday
 	for _, id := range need {
 		a := m.accounts[id]
 		a.settled, a.known = settled[id], true
-		a.learned, a.guarded = maps.Clone(days[id]), false // an earlier leader's lost write may still commit (#166)
+		// An earlier leader's lost write may still commit (#166): the days it can land on are the
+		// run's entries as read, today's, and the day just ended while the window lasts. They are
+		// seeded here, at learn's read, so fence covers them whenever it runs.
+		a.learned, a.guarded = maps.Clone(days[id]), false
+		if a.learned == nil {
+			a.learned = map[string]int64{}
+		}
+		a.learned[today] = days[id][today]
+		if recent {
+			a.learned[yesterday] = days[id][yesterday]
+		}
 		m.accounts[id] = a
 	}
 	return nil
@@ -1084,12 +1100,9 @@ func (m *Meter) fence(ctx context.Context, day string, inc map[string]int64) (ma
 			if a.seenDay != day {
 				days[a.seenDay] = true
 			}
-		case !a.guarded: // a new leader: the days the run was charged on, and the one just ended
+		case !a.guarded: // a new leader: the days learn read the run on, seeded at its read
 			for d := range a.learned {
 				days[d] = true
-			}
-			if now := m.now().UTC(); now.Sub(now.Truncate(24*time.Hour)) < fenceYesterday {
-				days[now.Add(-24*time.Hour).Format(api.LedgerDayLayout)] = true
 			}
 			delete(days, day)
 		}

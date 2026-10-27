@@ -294,3 +294,76 @@ func TestTheSettledGaugeKeepsAnUnlistedRunAnHourFromTheFirstMiss(t *testing.T) {
 		}
 	}
 }
+
+// N1: the day to fence depends on when the new leader learned, not on when its first settle
+// succeeds. B learns just after midnight, A's lost first write on the 22nd commits after that, and
+// B's ledger stays busy past the window: the run is still charged once. The same when B learns
+// before midnight and settles on the 23rd.
+func TestANewLeaderFencesTheDaysItLearnedOnWhenItsFirstSettleIsLate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		learn  time.Time // B's first tick: learns, and its settle fails
+		settle time.Time // B's first successful settle
+		busy   string    // the ledger whose Update stays busy on B's first tick
+	}{
+		"learned inside the window, settled after it":  {time.Date(2026, 10, 23, 0, 0, 30, 0, time.UTC), time.Date(2026, 10, 23, 0, 11, 30, 0, time.UTC), "20261022"},
+		"learned before midnight, settled on the 23rd": {time.Date(2026, 10, 22, 23, 59, 50, 0, time.UTC), time.Date(2026, 10, 23, 0, 11, 0, 0, time.UTC), "20261022"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := midnight
+			c := newLateCommit(ledgerDay(t, "20261022", map[string]int64{"github:bob": 5}, nil))
+			src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+			run := glmRun("aaaaaaaa", now)
+			a := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+			c.failing = true
+			if err := a.Tick(t.Context()); err == nil || c.held == nil {
+				t.Fatalf("leader A: %v", err)
+			}
+			c.failing = false
+			now = tc.learn
+			b := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+			c.conflicts = map[string]int{api.LedgerPrefix + tc.busy: api.LedgerAttempts}
+			if err := b.Tick(t.Context()); err == nil {
+				t.Fatal("B's first tick: want the busy ledger to fail it")
+			}
+			c.commitHeld(t.Context(), c.WithWatch) // A's write lands after B's learn
+			if c.commit != nil {
+				t.Fatalf("A's write: %v", c.commit)
+			}
+			now = tc.settle
+			if err := b.Tick(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if spent, settled := totals(t, c); spent != 1_400_000 || settled["aaaaaaaa"] != 1_400_000 {
+				t.Fatalf("spent %d, settled %d, want the run's 1400000 once", spent, settled["aaaaaaaa"])
+			}
+		})
+	}
+}
+
+// N3: a learned baseline that already holds a charge. A earlier settled 0.7 M of the run; A's
+// next write, the other 0.7 M, is lost for good. B learns the 0.7 M, charges the rest once and is
+// not netted: the guard against an under-charge.
+func TestANewLeaderWithAChargeInItsBaselineStillChargesTheRest(t *testing.T) {
+	now := day22
+	cm := ledgerDay(t, "20261022", map[string]int64{runs.PrincipalFactory: 700_000, "github:bob": 5}, nil)
+	if err := api.AddSettled(cm, map[string]int64{"aaaaaaaa": 700_000}); err != nil {
+		t.Fatal(err)
+	}
+	c := newLateCommit(cm)
+	src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+	run := glmRun("aaaaaaaa", now)
+	a := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+	c.failing = true
+	if err := a.Tick(t.Context()); err == nil || c.held == nil {
+		t.Fatalf("leader A: %v", err)
+	}
+	c.failing, c.held = false, nil // the write is lost for good
+	now = now.Add(time.Minute)
+	b := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+	if err := b.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if spent, settled := totals(t, c); spent != 1_400_000 || settled["aaaaaaaa"] != 1_400_000 {
+		t.Fatalf("spent %d, settled %d, want 1400000: the 0.7 M learned and the rest charged once", spent, settled["aaaaaaaa"])
+	}
+}

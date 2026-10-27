@@ -382,10 +382,11 @@ the ledger back: the meter keeps the run's entry as that read saw it and reads i
 attempt of its own write, taking any gain off what it adds. A new leader does the same against
 the entries it learned, for a write its predecessor lost. That write carries the ledger's new
 `resourceVersion`, so a late one conflicts; across midnight the meter first updates the failed
-write's ledger to the same end, and a new leader does so for the days it learned the run on and,
-in the first ten minutes of a day, the day before
+write's ledger to the same end, and a new leader does so for the days its first read of the run
+showed, today's, and, in the first ten minutes of a day, the day before
 ([#166](https://github.com/Smana/agent-platform/issues/166)). A run is charged once across a
-failover, a ledger that cannot be read, a failed write, landed or not, and midnight, with three bounded exceptions:
+failover, a ledger that cannot be read, a failed write, landed or not, and midnight, with three
+bounded exceptions:
 
 - A gateway counter reset before a new leader's first reading, once the counters have passed what
   was settled, loses what the run spent before the reset: an under-count.
