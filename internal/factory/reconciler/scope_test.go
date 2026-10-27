@@ -21,7 +21,7 @@ const reviewNote = "# Steering: review\n\n## Verify\n- `task check` (CI: check):
 // scopeRig is the rig with loops.review.scope set to mode (review is the rig's default class).
 func scopeRig(t *testing.T, mode config.ScopeMode) *rig {
 	t.Helper()
-	g := newRig(t, issueTask("3buqdlot", 7, "# Fix the link"))
+	g := newRig(t, issueTask("3buqdlot", 7, "# Fix the link\n\n## Acceptance check\nthe link resolves"))
 	g.r.Cfg.Loops = map[string]config.Loop{"review": {Scope: mode}}
 	return g
 }

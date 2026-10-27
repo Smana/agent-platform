@@ -5,7 +5,9 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"slices"
+	"strings"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
@@ -69,7 +71,12 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 	if err != nil {
 		return err
 	}
-	if split != nil && sc.State != envelope.ScopeReady {
+	if sc != nil && sc.State == envelope.ScopeReady && t.Spec.Issue > 0 && t.Spec.Parent == nil && !statesAcceptance(t.Spec.Text) {
+		// The owner's rule (2026-10-27, drill B): the scoper asks when the issue states no
+		// acceptance check, and never infers one. The model's own ready is not trusted for it.
+		sc = askForAcceptance(sc)
+	}
+	if split != nil && sc != nil && sc.State != envelope.ScopeReady {
 		r.ignoreSplit(ctx, t, seq) // a question bounces alone (splitter design SL2)
 		split = nil
 	}
@@ -86,6 +93,43 @@ func (r *Reconciler) scoped(ctx context.Context, t *v1alpha1.Task, phase, reason
 		return r.scopeEnd(ctx, t, "assumed", seq)
 	}
 	return r.bounce(ctx, t, sc, seq)
+}
+
+// acceptanceHeading is the section the issue template and the judge read (loop_policy.acceptance):
+// a heading starting with "acceptance"; its body runs to the next heading.
+var (
+	acceptanceHeading = regexp.MustCompile(`(?im)^#{1,6}[ \t]*acceptance\b[^\n]*$`)
+	nextHeading       = regexp.MustCompile(`(?m)^#{1,6}[ \t]`)
+)
+
+// statesAcceptance: the issue text carries a non-empty acceptance section.
+func statesAcceptance(text string) bool {
+	m := acceptanceHeading.FindStringIndex(text)
+	if m == nil {
+		return false
+	}
+	rest := text[m[1]:]
+	if n := nextHeading.FindStringIndex(rest); n != nil {
+		rest = rest[:n[0]]
+	}
+	return strings.TrimSpace(rest) != ""
+}
+
+// askForAcceptance turns a ready scope of an issue that states no acceptance into the question the
+// author answers. What the scoper proposed becomes the assumption a maintainer may proceed on.
+func askForAcceptance(sc *envelope.Scope) *envelope.Scope {
+	q := *sc
+	q.State = envelope.ScopeQuestion
+	q.Question = "The issue states no acceptance check: which command or observation proves it is done?"
+	guess := "No acceptance stated; proceed on the scoper's own: " + sc.Acceptance[0].Check
+	if len(guess) > 300 {
+		guess = guess[:300]
+	}
+	q.Assumptions = append([]string{guess}, sc.Assumptions...)
+	if len(q.Assumptions) > 5 {
+		q.Assumptions = q.Assumptions[:5]
+	}
+	return &q
 }
 
 // lastScope is the scoper run's scope and split: the last handoff of the current run that carries
