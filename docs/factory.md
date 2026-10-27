@@ -269,7 +269,8 @@ dollar figure while its token cap binds: a known limit.
 ## Triage: tiers, templates, classes
 
 Triage runs once, in `Received`. A classifier (`triage.classifierURL`) picks the tier; an error or
-a timeout falls back to `standard` and never blocks. `triage.controlPercent` of tasks run at
+a timeout falls back to `standard` and never blocks. With `triage.classifierURL` unset, no
+classifier is called: every task takes the static `standard` tier. `triage.controlPercent` of tasks run at
 `frontier` whatever it says.
 
 | Tier | Holds (`tiers.<tier>`) |
@@ -975,8 +976,8 @@ human-authored pull request changes it. Source: `internal/factory/config/config.
 | `broker` | `url` (https only), `caFile`, `tokenFile` | Required |
 | `github` | `appIDFile`, `privateKeyFile`; `mergerAppIDFile`, `mergerKeyFile` (both or neither; required once a class is live or shadow) | Required |
 | `poll` | `issues`, `tasks`, `meter`: durations such as `"60s"` | Required, positive |
-| `defaults` | `template`, `tier`, `dataClass`, `predictedClass` | Required |
-| `triage` | `classifierURL`, `controlPercent` (0–100) | Required |
+| `defaults` | `template`, `tier`, `dataClass`, `predictedClass` | `dataClass` and `predictedClass` required; `template` and `tier` are read by nothing, optional, checked only when set |
+| `triage` | `classifierURL`, `controlPercent` (0–100) | `controlPercent` required; `classifierURL` unset: no classifier call, every task takes the static `standard` tier |
 | `tiers` | Exactly `light`, `standard`, `frontier`; see [Triage](#triage-tiers-templates-classes) | `runUSD`, `taskUSD` from the token caps when `meter.prices` is set |
 | `templates` | `<name>: {roles, maxReviewRounds, reviewerModel}`; every template but a lone `triager` has an `implementer`; `reviewerModel` (a gateway logical name) needs a `reviewer` role | Required; `reviewerModel` unset: the other tier's model |
 | `caps` | `activeTasks`, `concurrentRuns`, `tasksPerDay`, `maxTextBytes` (≤ 14336), `awaitingHumanWIP`, `maxPendingMinutes` (5–480), `escalatedHours` | `maxPendingMinutes` 30, `escalatedHours` 168 |

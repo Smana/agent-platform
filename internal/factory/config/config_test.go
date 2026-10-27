@@ -246,6 +246,9 @@ func TestGoodVariantsParse(t *testing.T) {
 		// P: an explicit Pending bound, inside 5..480.
 		"an explicit pending bound": {"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5}",
 			"caps: {activeTasks: 3, concurrentRuns: 4, tasksPerDay: 20, maxTextBytes: 14336, awaitingHumanWIP: 5, maxPendingMinutes: 20}"},
+		// R8: no C7 service, and the defaults the reconciler never reads, may all be left out.
+		"no classifier URL":           {`classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", `, ""},
+		"no default template or tier": {"defaults: {template: solo, tier: standard, dataClass", "defaults: {dataClass"},
 		// R23: a system caller pairs issuer with JWKS (empty today: none exists).
 		"api with a system caller": {"humanJWKS: https://auth.ogenki.io/oauth/v2/keys",
 			"humanJWKS: https://auth.ogenki.io/oauth/v2/keys\n  systemIssuer: https://accounts.cluster.local\n  systemJWKS: https://accounts.cluster.local/keys"},
@@ -360,7 +363,6 @@ func TestBadConfigsFail(t *testing.T) {
 		"unknown data class":   {"dataClass: public", "dataClass: secret", "defaults.dataClass is public or internal"},
 		"no predicted class":   {", predictedClass: review}", "}", "defaults.predictedClass is required"},
 		// §5.2: C7's endpoint, the OD-14 share, and the two entry classes are required.
-		"no classifier URL":          {`classifierURL: "http://complexity-classifier.agent-system.svc.cluster.local:8080/v1/classify", `, "", "triage.classifierURL is required"},
 		"control percent above 100":  {"controlPercent: 10", "controlPercent: 101", "triage.controlPercent must be 0..100"},
 		"control percent negative":   {"controlPercent: 10", "controlPercent: -1", "triage.controlPercent must be 0..100"},
 		"no docs-links class":        {"classes: {docs-links: {shadow: true}, revert: {shadow: true}", "classes: {revert: {shadow: true}", "class docs-links is required (OD-8)"},

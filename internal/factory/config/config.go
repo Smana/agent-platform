@@ -351,7 +351,8 @@ type Defaults struct {
 
 // Triage is phase 4's classification config (§2, §5.2).
 type Triage struct {
-	// C7's endpoint (R24). An error or timeout falls back to standard: never blocks.
+	// C7's endpoint (R24). Unset: no C7 call, every task takes the static standard tier. An error
+	// or timeout falls back the same way: never blocks.
 	ClassifierURL string `json:"classifierURL"`
 	// OD-14: this share of tasks runs at tier-frontier whatever C7 says.
 	ControlPercent int `json:"controlPercent"`
@@ -1096,10 +1097,11 @@ func (c *Config) Validate() error {
 			bad("template %s: only an implementer writes, so every template but a lone triager has one", name)
 		}
 	}
-	if _, ok := c.Templates[c.Defaults.Template]; !ok {
+	// Nothing reads defaults.template or defaults.tier: checked only when set.
+	if _, ok := c.Templates[c.Defaults.Template]; c.Defaults.Template != "" && !ok {
 		bad("defaults.template %q is not a template", c.Defaults.Template)
 	}
-	if !slices.Contains(tiers(), c.Defaults.Tier) {
+	if c.Defaults.Tier != "" && !slices.Contains(tiers(), c.Defaults.Tier) {
 		bad("defaults.tier %q is not a tier", c.Defaults.Tier)
 	}
 	if c.Defaults.DataClass != "public" && c.Defaults.DataClass != "internal" {
@@ -1107,9 +1109,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Defaults.PredictedClass == "" {
 		bad("defaults.predictedClass is required")
-	}
-	if c.Triage.ClassifierURL == "" {
-		bad("triage.classifierURL is required")
 	}
 	if c.Triage.ControlPercent < 0 || c.Triage.ControlPercent > 100 {
 		bad("triage.controlPercent must be 0..100")

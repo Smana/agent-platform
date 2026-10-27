@@ -183,9 +183,13 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	}
 	rc := runs.Client{C: mgr.GetClient()}
 	perms := conns.permissions(cfg.API.Access)
+	var c7 triage.Classifier // nil while triage.classifierURL is unset: no HTTP client, no call
+	if cfg.Triage.ClassifierURL != "" {
+		c7 = triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)}
+	}
 	rec := &reconciler.Reconciler{Client: mgr.GetClient(), Ledger: live, Namespace: ns, Cfg: cfg, Clients: conns.task, Owned: fenced.Owned,
 		CanWrite: perms.CanWrite, Runs: rc, Rooms: broker,
-		Triage: triage.Classify{Cfg: cfg, C: triage.HTTPClassifier{URL: cfg.Triage.ClassifierURL, HC: httpx.New(classifierTimeout, nil)},
+		Triage: triage.Classify{Cfg: cfg, C: c7,
 			Clients: conns.class},
 		Metrics: m, Now: time.Now, Nonce: taskid.Random, Log: log,
 		Trace: sink, Costs: costs}

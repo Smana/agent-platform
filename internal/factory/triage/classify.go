@@ -4,6 +4,7 @@ package triage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -84,7 +85,10 @@ func (c Classify) Triage(ctx context.Context, t *v1alpha1.Task) (Decision, error
 		return Decision{Template: "solo", PredictedClass: class, DataClass: dataClass, Budget: BudgetFor(c.Cfg, "light"),
 			Classification: v1alpha1.Classification{Tier: "light", Classifier: "static"}}, nil
 	}
-	res, err := c.C.Classify(ctx, C7Request{Text: t.Spec.Text, Ref: t.Name, DataClass: dataClass})
+	res, err := C7Response{}, errors.New("no classifier") // unset URL: no C7 service, no call
+	if c.Cfg.Triage.ClassifierURL != "" && c.C != nil {
+		res, err = c.C.Classify(ctx, C7Request{Text: t.Spec.Text, Ref: t.Name, DataClass: dataClass})
+	}
 	if err != nil || (res.Tier != "light" && res.Tier != "standard" && res.Tier != "frontier") {
 		res = C7Response{Tier: "standard", Classifier: "static", Fallback: "static"} // never blocks (C7)
 	}

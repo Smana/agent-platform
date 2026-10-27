@@ -66,7 +66,7 @@ func testCfg() *config.Config {
 			"light":    {Model: "agent-default", RunTokens: 300_000, TaskTokens: 600_000, RunMinutes: 20},
 			"standard": {Model: "agent-default", RunTokens: 1_500_000, TaskTokens: 3_000_000, RunMinutes: 45},
 			"frontier": {Model: "agent-default", RunTokens: 4_000_000, TaskTokens: 8_000_000, RunMinutes: 90}},
-		Triage:  config.Triage{ControlPercent: 0},
+		Triage:  config.Triage{ClassifierURL: "http://c7.test/v1/classify", ControlPercent: 0},
 		Classes: map[string]config.Class{"docs-links": {Live: true}, "revert": {Live: true}, "docs": {}, "tests": {}, "dashboards": {}}}
 }
 
@@ -189,5 +189,24 @@ func TestAnOracleClassRunsSoloOnLight(t *testing.T) {
 	if err != nil || d.Template != "solo" || d.Budget.Tier != "light" || d.PredictedClass != "dead-links" || d.Classification.Control ||
 		c7.got.Text != "" {
 		t.Fatalf("%+v %v (classifier asked: %+v)", d, err, c7.got)
+	}
+}
+
+// An unset triage.classifierURL means no C7 service: Triage skips the call and takes the static fallback.
+func TestClassifyWithoutAClassifierURLMakesNoCall(t *testing.T) {
+	cfg := testCfg()
+	cfg.Triage.ClassifierURL = ""
+	c7 := &fakeC7{resp: C7Response{Tier: "light", Classifier: "semantic-router"}}
+	f := forgetest.NewFake()
+	f.SetIssue(forge.Issue{Number: 7})
+	d, err := Classify{Cfg: cfg, C: c7, Forge: f}.Triage(t.Context(), issueTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c7.got != (C7Request{}) {
+		t.Fatalf("C7 was called: %+v", c7.got)
+	}
+	if d.Classification.Tier != "standard" || d.Classification.Classifier != "static" || d.Classification.Fallback != "static" {
+		t.Fatalf("%+v", d.Classification)
 	}
 }
