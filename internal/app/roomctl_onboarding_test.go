@@ -63,7 +63,7 @@ func TestRoomctlDoctorRunsTheChecks(t *testing.T) {
 	if err := r.Run(t.Context(), []string{"doctor"}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out.String(), "ok   github") {
+	if !strings.Contains(out.String(), "github") || strings.Contains(out.String(), "FAIL") {
 		t.Fatalf("%s", out)
 	}
 	b.access = "unlinked"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -111,13 +112,15 @@ func TestDiscoverReadsTheBrokersPublicEndpoint(t *testing.T) {
 type doctorRig struct {
 	d      Doctor
 	access *string
-	rooms  *string // GET /api/rooms' body
-	draft  *string // issue_draft's structuredContent
+	rooms  *string           // GET /api/rooms' body
+	draft  *string           // issue_draft's structuredContent
+	byRepo map[string]string // issue_draft's structuredContent for one repository, over draft
 }
 
 func newDoctorRig(t *testing.T) doctorRig {
 	t.Helper()
 	access, rooms, draft := "", `[]`, `{"canStart":false,"canStartWhy":"off"}`
+	byRepo := map[string]string{}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/roomctl":
@@ -132,7 +135,17 @@ func newDoctorRig(t *testing.T) doctorRig {
 			}
 			_, _ = w.Write([]byte(rooms))
 		case "/mcp":
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"x","result":{"content":[{"type":"text","text":"d"}],"structuredContent":` + draft + `}}`))
+			var m struct {
+				Params struct {
+					Arguments struct{ Repo string } `json:"arguments"`
+				} `json:"params"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&m)
+			sc := draft
+			if v, ok := byRepo[m.Params.Arguments.Repo]; ok {
+				sc = v
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"x","result":{"content":[{"type":"text","text":"d"}],"structuredContent":` + sc + `}}`))
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -141,13 +154,14 @@ func newDoctorRig(t *testing.T) doctorRig {
 	if err := SaveJSON(tokPath, &oauth2.Token{AccessToken: "tok", TokenType: "Bearer", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	return doctorRig{access: &access, rooms: &rooms, draft: &draft, d: Doctor{Config: Config{URL: srv.URL, Issuer: "https://auth.example", ClientID: "c", ProjectID: "p"},
+	return doctorRig{access: &access, rooms: &rooms, draft: &draft, byRepo: byRepo, d: Doctor{Config: Config{URL: srv.URL, Issuer: "https://auth.example", ClientID: "c", ProjectID: "p"},
 		HC: srv.Client(), TokenPath: tokPath,
 		Lookup: func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }}}
 }
 
 func TestDoctorPassesWhenEverythingWorks(t *testing.T) {
 	r := newDoctorRig(t)
+	*r.rooms, *r.draft = `[{"repository":"Smana/a"}]`, `{"canStart":true}`
 	var out strings.Builder
 	if err := r.d.Run(t.Context(), &out); err != nil {
 		t.Fatalf("%v\n%s", err, &out)
@@ -307,8 +321,8 @@ func TestDoctorGitHubLinkIsNeverAssumed(t *testing.T) {
 		"admin, not linked": {"ok", room, `{"canStart":false,"canStartWhy":"not_linked"}`,
 			[]string{"FAIL github", "no linked GitHub identity"}, []string{"identity is linked"}, true},
 		"linked":               {"ok", room, `{"canStart":true}`, []string{"ok   github", "identity is linked"}, nil, false},
-		"cannot say":           {"ok", room, `{"canStart":false,"canStartWhy":"off"}`, []string{"ok   github", "unverified"}, []string{"identity is linked"}, false},
-		"no room to ask about": {"", `[]`, `{"canStart":true}`, []string{"unverified"}, []string{"identity is linked"}, false},
+		"cannot say":           {"ok", room, `{"canStart":false,"canStartWhy":"off"}`, []string{"warn github", "unverified"}, []string{"identity is linked"}, false},
+		"no room to ask about": {"", `[]`, `{"canStart":true}`, []string{"warn github", "unverified"}, []string{"identity is linked"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newDoctorRig(t)
@@ -327,6 +341,37 @@ func TestDoctorGitHubLinkIsNeverAssumed(t *testing.T) {
 				if strings.Contains(out.String(), w) {
 					t.Errorf("%q in:\n%s", w, &out)
 				}
+			}
+		})
+	}
+}
+
+// Review 6: the probe tries another repository when the first one cannot answer (not in
+// sessionStart), up to three, and "unverified" is a warning that does not fail the run.
+func TestDoctorProbeTriesOtherRepositories(t *testing.T) {
+	rooms := `[{"repository":"Smana/a"},{"repository":"Smana/a"},{"repository":"Smana/b"},{"repository":"Smana/c"}]`
+	for name, tc := range map[string]struct {
+		byRepo map[string]string
+		want   string
+		fails  bool
+	}{
+		"second repository says not linked":  {map[string]string{"Smana/b": `{"canStart":false,"canStartWhy":"not_linked"}`}, "FAIL github", true},
+		"second repository says linked":      {map[string]string{"Smana/b": `{"canStart":true}`}, "ok   github: your GitHub identity is linked", false},
+		"none can say":                       {nil, "warn github", false},
+		"the fourth repository is not asked": {map[string]string{"Smana/d": `{"canStart":true}`}, "warn github", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newDoctorRig(t)
+			*r.rooms = rooms
+			if name == "the fourth repository is not asked" {
+				*r.rooms = `[{"repository":"Smana/a"},{"repository":"Smana/b"},{"repository":"Smana/c"},{"repository":"Smana/d"}]`
+			}
+			for k, v := range tc.byRepo {
+				r.byRepo[k] = v
+			}
+			var out strings.Builder
+			if err := r.d.Run(t.Context(), &out); (err != nil) != tc.fails || !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("err %v\n%s", err, &out)
 			}
 		})
 	}

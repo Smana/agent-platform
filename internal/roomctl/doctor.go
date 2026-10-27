@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Smana/agent-platform/internal/httpx"
@@ -125,6 +126,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(out, "%s %s: %s\n", mark, name, OneLine(msg))
 	}
+	warn := func(name, msg string) { _, _ = fmt.Fprintf(out, "warn %s: %s\n", name, OneLine(msg)) }
 	skip := func(name, why string) { _, _ = fmt.Fprintf(out, "skip %s: %s\n", name, why) }
 
 	u, err := url.Parse(d.Config.URL)
@@ -170,7 +172,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	case !reachable || terr != nil:
 		skip("github", "needs tls and login")
 	default:
-		d.github(ctx, tok, report)
+		d.github(ctx, tok, report, warn)
 	}
 	d.skill(report, skip)
 	if failed {
@@ -204,7 +206,7 @@ func (d Doctor) skill(report func(bool, string, string), skip func(string, strin
 }
 
 // github asks the room list, whose X-Rooms-Access says whether the caller's GitHub link works.
-func (d Doctor) github(ctx context.Context, tok string, report func(bool, string, string)) {
+func (d Doctor) github(ctx context.Context, tok string, report func(bool, string, string), warn func(string, string)) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.Config.URL+"/api/rooms", nil)
 	if err != nil {
 		report(false, "github", err.Error())
@@ -237,41 +239,48 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 	default:
 		// "ok" is no proof: an admin reads every room with no link, and a list with no room checks
 		// nothing. issue_draft's canStart looks the link up, so ask it.
-		d.linkProbe(ctx, tok, rows, report)
+		d.linkProbe(ctx, tok, rows, report, warn)
 	}
 }
 
-// linkProbe checks the GitHub link the way issue_draft's canStart does, on the repository of the
-// first room the list shows. Only "linked" and "not linked" are answers; anything else is unverified.
+// maxProbes is how many repositories the link probe asks about.
+const maxProbes = 3
+
+// linkProbe checks the GitHub link the way issue_draft's canStart does, on the repositories the
+// room list shows, up to maxProbes of them: a repository outside human.mcp.sessionStart cannot
+// answer, another may. Only "linked" and "not linked" are answers; anything else is a warning.
 func (d Doctor) linkProbe(ctx context.Context, tok string, rows []struct {
 	Repository string `json:"repository"`
-}, report func(bool, string, string)) {
-	repo := ""
+}, report func(bool, string, string), warn func(string, string)) {
+	var repos []string
 	for _, r := range rows {
-		if r.Repository != "" {
-			repo = r.Repository
-			break
+		if r.Repository != "" && !slices.Contains(repos, r.Repository) && len(repos) < maxProbes {
+			repos = append(repos, r.Repository)
 		}
 	}
 	const unverified = "unverified: the room list does not say whether GitHub is linked to your account (an admin reads every room without one)"
-	if repo == "" {
-		report(true, "github", unverified+", and no room shows a repository to check against")
+	if len(repos) == 0 {
+		warn("github", unverified+", and no room shows a repository to check against")
 		return
 	}
 	rl := &Relay{URL: d.Config.URL, HC: d.HC, Token: func(context.Context) (string, error) { return tok, nil }}
-	_, sc, isErr, err := rl.callBroker(ctx, "issue_draft", map[string]string{"repo": repo, "title": "doctor: check the GitHub link",
-		"body": "## What is wrong\nnothing\n\n## What it should be\nnothing\n\n## Acceptance check\nnothing\n"})
-	var got draftShape
-	if err != nil || isErr || json.Unmarshal(sc, &got) != nil {
-		report(true, "github", unverified+": issue_draft did not answer")
-		return
+	last := "issue_draft did not answer"
+	for _, repo := range repos {
+		_, sc, isErr, err := rl.callBroker(ctx, "issue_draft", map[string]string{"repo": repo, "title": "doctor: check the GitHub link",
+			"body": "## What is wrong\nnothing\n\n## What it should be\nnothing\n\n## Acceptance check\nnothing\n"})
+		var got draftShape
+		if err != nil || isErr || json.Unmarshal(sc, &got) != nil {
+			continue
+		}
+		switch {
+		case got.CanStart:
+			report(true, "github", "your GitHub identity is linked")
+			return
+		case got.CanStartWhy == "not_linked":
+			report(false, "github", "your account has no linked GitHub identity: ask an admin to link GitHub to it at "+d.Config.Issuer)
+			return
+		}
+		last = "issue_draft: " + OneLine(got.CanStartWhy)
 	}
-	switch {
-	case got.CanStart:
-		report(true, "github", "your GitHub identity is linked")
-	case got.CanStartWhy == "not_linked":
-		report(false, "github", "your account has no linked GitHub identity: ask an admin to link GitHub to it at "+d.Config.Issuer)
-	default:
-		report(true, "github", unverified+" (issue_draft: "+OneLine(got.CanStartWhy)+")")
-	}
+	warn("github", unverified+" ("+last+")")
 }
