@@ -323,7 +323,7 @@ class LoopForTest(unittest.TestCase):
 class DriveTest(unittest.TestCase):
     """drive() over a scripted conversation: each poll is one finish, each judge call one answer."""
 
-    def drive(self, polls, answers, policy=POLICY, commits=1, offered=None):
+    def drive(self, polls, answers, policy=POLICY, commits=1, offered=None, notes=None):
         self.sent, self.interrupted, state = [], [], lp.State(start="s")
         path = os.path.join(tempfile.mkdtemp(), "loop.json")
 
@@ -346,7 +346,7 @@ class DriveTest(unittest.TestCase):
                 mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
                 mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
                 mock.patch("sys.stdout", new=io.StringIO()) as out:
-            result = agent_run.drive({}, "cid", Steps(0), policy, state, "task", path)
+            result = agent_run.drive({}, "cid", Steps(0), policy, state, "task", path, notes)
         self.out = out.getvalue()
         return result, state
 
@@ -396,6 +396,22 @@ class DriveTest(unittest.TestCase):
         self.assertEqual(state.sent, 1)
         self.assertIn("override met -> not_yet, failing check:validate", self.out)
         self.assertIn("check:validate", self.sent[0])
+
+    def test_every_judge_verdict_reaches_the_room_after_the_override(self):
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        met = json.dumps({"verdict": "met", "reason": "intended", "evidence": ["check:validate"]}), "glm-5.3"
+        posted = []
+
+        class Notes:
+            def judge(self, kind, reason, evidence):
+                posted.append((kind, evidence))
+
+        self.drive([0, 0], [met, self.answer("met")], offered=offered, notes=Notes(), policy=lp.Policy(80, 1, "tier-light"))
+        self.assertEqual(posted, [("not_yet", ("check:validate",)), ("not_yet", ("diff",))])
+        posted.clear()
+        self.drive([0], [self.answer("met")], notes=Notes())  # no failing check: met stands, and is posted
+        self.assertEqual(posted, [("met", ("diff",))])
 
     def test_not_yet_continues_in_the_same_conversation_then_met(self):
         result, state = self.drive([0, 0], [self.answer("not_yet", "lint fails"), self.answer("met")])

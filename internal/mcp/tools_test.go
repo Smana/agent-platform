@@ -366,6 +366,7 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		"room_progress": {[]string{"implementer", "reviewer", "tester", "triager"}, policy.Chat},
 		"room_handoff":  {[]string{"implementer", "tester", "triager"}, policy.Chat},
 		"room_verdict":  {[]string{"reviewer", "tester"}, policy.Chat},
+		"room_judge":    {[]string{"implementer"}, policy.Chat},
 	}
 	got := tools(&memLog{})
 	if len(got) != len(want) {
@@ -516,5 +517,38 @@ func TestReadIsBoundedForLargeEvents(t *testing.T) {
 		if seen[i] <= seen[i-1] {
 			t.Fatalf("out of order or twice: %v", seen)
 		}
+	}
+}
+
+// O15: the harness posts the completion judge's verdict through room_judge, an event the summary
+// and room_changes show.
+func TestJudgeVerdictIsAMessage(t *testing.T) {
+	log := &memLog{}
+	out, err := tool(tools(log), "room_judge").Call(t.Context(), impl,
+		json.RawMessage(`{"verdict":"not_yet","reason":"check:validate failed.","evidence":["check:validate","diff"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(out); string(b) != `{"seq":1}` {
+		t.Fatalf("result = %s", b)
+	}
+	d := log.drafts[0]
+	if err := d.Validate(); err != nil {
+		t.Fatalf("the store would refuse the draft: %v", err)
+	}
+	var p envelope.MessagePayload
+	_ = json.Unmarshal(d.Payload, &p)
+	if p.Kind != envelope.KindJudgeVerdict || p.Verdict != "not_yet" || p.Text != "check:validate failed." ||
+		strings.Join(p.Evidence, ",") != "check:validate,diff" || p.Delivery != envelope.DeliveryNone {
+		t.Fatalf("payload = %+v", p)
+	}
+	for _, bad := range []string{`{"verdict":"done","reason":"x","evidence":["diff"]}`, `{"verdict":"met","reason":"","evidence":["diff"]}`,
+		`{"verdict":"met","reason":"x","evidence":[]}`, `{"verdict":"met","reason":"x","evidence":["a\nb"]}`} {
+		if _, err := tool(tools(log), "room_judge").Call(t.Context(), impl, json.RawMessage(bad)); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	if len(log.drafts) != 1 {
+		t.Fatalf("%d drafts", len(log.drafts))
 	}
 }

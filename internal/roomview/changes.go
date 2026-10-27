@@ -34,17 +34,19 @@ type ChangeSet struct {
 // approval_requested (Text is what it asks, Until when it expires) Text is the agent's; for every
 // other kind it is a sentence the broker wrote, with markup of its own around run ids.
 type Milestone struct {
-	Seq    int64     `json:"seq"`
-	At     time.Time `json:"at"`
-	Until  time.Time `json:"until,omitzero"`
-	Kind   string    `json:"kind"`
-	Run    string    `json:"run,omitempty"`
-	Role   string    `json:"role,omitempty"`
-	Text   string    `json:"text,omitempty"`
-	URL    string    `json:"url,omitempty"`
-	Turns  int       `json:"turns,omitempty"`
-	Tools  int       `json:"tools,omitempty"`
-	Pushes int       `json:"pushes,omitempty"`
+	Seq   int64     `json:"seq"`
+	At    time.Time `json:"at"`
+	Until time.Time `json:"until,omitzero"`
+	Kind  string    `json:"kind"`
+	Run   string    `json:"run,omitempty"`
+	Role  string    `json:"role,omitempty"`
+	Text  string    `json:"text,omitempty"`
+	// Verdict is a judge milestone's verdict as words (met, not yet, impossible); Text is its reason.
+	Verdict string `json:"verdict,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Turns   int    `json:"turns,omitempty"`
+	Tools   int    `json:"tools,omitempty"`
+	Pushes  int    `json:"pushes,omitempty"`
 }
 
 // The kinds of milestone.
@@ -57,6 +59,7 @@ const (
 	kindApprovalRequested = "approval_requested"
 	kindApprovalDecided   = "approval_decided"
 	kindVerdict           = "verdict"
+	kindJudge             = "judge"
 	kindPROpened          = "pr_opened"
 	kindMerged            = "merged"
 	kindReverted          = "reverted"
@@ -160,6 +163,8 @@ func Milestones(in MilestoneInput) ChangeSet {
 			switch p.Kind {
 			case envelope.KindProgress:
 				ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindNote, Run: e.RunID, Role: clean(e.Actor.Role), Text: clean(p.Text)})
+			case envelope.KindJudgeVerdict:
+				ms = append(ms, Milestone{Seq: e.Seq, At: e.TS, Kind: kindJudge, Run: e.RunID, Verdict: judgeWords(p.Verdict), Text: clean(p.Text)})
 			case envelope.KindReviewVerdict:
 				m := Milestone{Seq: e.Seq, At: e.TS, Kind: kindVerdict, Run: e.RunID, Role: clean(e.Actor.Role), Text: inertWord(p.Verdict, verdictWords(p.Verdict))}
 				if envelope.GitHubURL(p.PullRequest) {
@@ -457,6 +462,8 @@ func (c *card) milestone(m Milestone) string {
 			s += " on " + c.sentence(ref, m.URL)
 		}
 		return s
+	case kindJudge:
+		return "completion judge: " + c.words(m.Verdict, m.Verdict, false) + " " + c.quoted(m.Text, false)
 	case kindHandoff:
 		s := "handoff " + c.text(m.Role, false)
 		if m.Text != "" {

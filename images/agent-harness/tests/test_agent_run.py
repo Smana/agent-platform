@@ -402,6 +402,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
     """The room broker's MCP port as the run reaches it: stateless JSON-RPC, tools/call answered."""
     calls = []
     tool = "room_progress"
+    judge_tool = "room_judge"
     limited = 0
     sse = False
     fail = 0
@@ -430,7 +431,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
             return
         result = {}
         if body["method"] == "tools/list":
-            result = {"tools": [{"name": type(self).tool}, {"name": "room_read"}]}
+            result = {"tools": [{"name": type(self).tool}, {"name": "room_read"}, {"name": type(self).judge_tool}]}
         if body["method"] == "tools/call":
             if type(self).limited:
                 type(self).limited -= 1
@@ -455,6 +456,7 @@ class ProgressNotesTest(unittest.TestCase):
 
     def setUp(self):
         FakeMCP.calls, FakeMCP.tool, FakeMCP.limited, FakeMCP.sse = [], "room_progress", 0, False
+        FakeMCP.judge_tool = "room_judge"
         FakeMCP.fail, FakeMCP.deleted, FakeMCP.traceparents = 0, [], []
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeMCP)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -604,6 +606,24 @@ class ProgressNotesTest(unittest.TestCase):
         self.assertEqual(self.notes.sent, 0)
         self.notes.flush()
         self.assertEqual(self.notes.sent, 1)
+
+    def test_a_judge_verdict_is_posted_through_room_judge(self):
+        # O15: the verdict is a room event, not only a harness log line.
+        self.notes.judge("not_yet", "check:validate failed", ["check:validate", "diff"])
+        [call] = [c for c in FakeMCP.calls if c.get("method") == "tools/call"]
+        self.assertEqual(call["params"]["name"], "room_judge")
+        self.assertEqual(call["params"]["arguments"], {"verdict": "not_yet", "reason": "check:validate failed",
+                                                       "evidence": ["check:validate", "diff"]})
+
+    def test_a_judge_verdict_is_best_effort_and_prefixed_names_are_found(self):
+        FakeMCP.judge_tool = "room-broker_room_judge"
+        self.notes.judge("met", "ok", ["diff"])
+        self.assertEqual(FakeMCP.calls[-1]["params"]["name"], "room-broker_room_judge")
+        FakeMCP.judge_tool = "room_other"
+        broken = agent_run.ProgressNotes("http://127.0.0.1:%d/mcp" % self.server.server_port, "implementer")
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            broken.judge("met", "ok", ["diff"])  # no room_judge exposed: logged, never raised
+        self.assertIn("judge verdict not posted", err.getvalue())
 
     def test_a_gateway_prefixed_tool_name_is_found(self):
         FakeMCP.tool = "room-broker__room_progress"

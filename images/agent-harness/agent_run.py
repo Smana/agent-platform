@@ -509,6 +509,7 @@ class ProgressNotes:
         self.last = None
         self.failures = 0
         self.tool = None
+        self.names = None
         self.session = None
         self.rid = 0
 
@@ -617,22 +618,26 @@ class ProgressNotes:
         except urllib.error.HTTPError as exc:
             if not 400 <= exc.code < 500:
                 raise
-            self.tool, self.session = None, None
+            self.names, self.tool, self.session = None, None, None
             return self.call(text)
         finally:
             self.traceparent = None
             if span:
                 span.end()
 
-    def call(self, text: str) -> bool:
-        if self.tool is None:
+    def find_tool(self, name: str) -> str | None:
+        """The gateway's name for the broker's tool: the tool itself, <backend>__<tool> (Agent Router) or
+        <backend>_<tool> (agentgateway, ADR-0053); the suffix covers all three."""
+        if self.names is None:
             self.rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "agent-run", "version": "1"}})
             self.rpc("notifications/initialized", notify=True)
-            names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
-            # The gateway may prefix the backend's name: <backend>__<tool> (Agent Router) or
-            # <backend>_<tool> (agentgateway, ADR-0053); the suffix covers both.
-            self.tool = next((n for n in names if n == "room_progress" or n.endswith("_room_progress")), None)
+            self.names = [t.get("name", "") for t in self.rpc("tools/list").get("tools", [])]
+        return next((n for n in self.names if n == name or n.endswith("_" + name)), None)
+
+    def call(self, text: str) -> bool:
+        if self.tool is None:
+            self.tool = self.find_tool("room_progress")
             if self.tool is None:
                 self.failures = NOTE_FAILURES
                 raise RuntimeError("room_progress is not exposed to this run")
@@ -643,6 +648,28 @@ class ProgressNotes:
                 return False
             raise RuntimeError(message[:200])
         return True
+
+    def judge(self, kind: str, reason: str, evidence: list) -> None:
+        """Posts the completion judge's verdict as a room event (O15), through the run's own MCP route.
+        Best effort: a verdict that cannot be posted is still in the harness log."""
+        try:
+            self.traceparent = None
+            for attempt in range(2):
+                try:
+                    name = self.find_tool("room_judge")
+                    if name is None:
+                        raise RuntimeError("room_judge is not exposed to this run")
+                    result = self.rpc("tools/call", {"name": name, "arguments": {
+                        "verdict": kind, "reason": _short(reason, loop_policy.REASON_MAX), "evidence": list(evidence)[:20]}})
+                    if result.get("isError"):
+                        raise RuntimeError(_text({"content": result.get("content")})[:200])
+                    return
+                except urllib.error.HTTPError as exc:  # an expired session redoes the handshake once
+                    if attempt or not 400 <= exc.code < 500:
+                        raise
+                    self.names, self.tool, self.session = None, None, None
+        except Exception as exc:  # noqa: BLE001 -- a verdict note must never fail the run
+            print("agent-run: judge verdict not posted: %s" % exc, file=sys.stderr, flush=True)
 
 
 # v3 feature 3: the repository's checks in the sandbox, on a check-enabled run only (AGENT_CHECKS=1,
@@ -1177,7 +1204,7 @@ def loop_for(env: dict):
         return None
 
 
-def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE) -> tuple[int, str | None, str]:
+def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
     stuck conversation does, so a bridge that drops the reason still has the task escalated."""
     tick = stall_watch(env, steps, policy, state, path)
@@ -1208,6 +1235,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
                 print("agent-run judge %d: override %s -> %s, failing %s" % (rounds, v.kind, guarded.kind, ",".join(offered.failing)),
                       flush=True)
                 v = guarded
+            if notes is not None and v.kind != "invalid":
+                notes.judge(v.kind, v.reason, v.evidence)
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
@@ -1466,7 +1495,7 @@ def main() -> int:
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
         steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None)
         if policy:
-            code, end, note = drive(env, cid, steps, policy, state, task)
+            code, end, note = drive(env, cid, steps, policy, state, task, notes=notes)
         else:
             code = poll(cid, on_tick=steps)
         steps()

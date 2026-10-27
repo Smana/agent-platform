@@ -589,3 +589,17 @@ func TestCardListsQueuedNotes(t *testing.T) {
 		t.Errorf("an empty queue shows a block:\n%s", out)
 	}
 }
+
+// O15: the card shows the last completion judge verdict, its reason quoted.
+func TestCardShowsTheLastJudgeVerdict(t *testing.T) {
+	s, n := foldGolden(t, "normal")
+	s.Status.LastJudge = &summary.JudgeVerdict{Verdict: "not_yet", Reason: "validate fails # x", Evidence: []string{"check:validate"}, At: n}
+	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
+	txt := card1(t, s, Options{Format: Text, Now: n, Rooms: rooms})
+	for _, w := range []string{"Judge", "not yet", "validate fails"} {
+		if !strings.Contains(md, w) || !strings.Contains(txt, w) {
+			t.Errorf("no %q:\n%s\n%s", w, md, txt)
+		}
+	}
+	assertInert(t, md, rooms, []string{"# x"})
+}
