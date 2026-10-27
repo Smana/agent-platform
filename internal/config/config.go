@@ -368,6 +368,17 @@ func (h HumanConfig) validate(system []string) []error {
 		if h.Issuer != "" || h.JWKSURL != "" || h.ClientIDFile != "" || h.ProjectIDFile != "" || h.RoomctlClientIDFile != "" || h.Access != nil {
 			errs = append(errs, errors.New("human: mode local takes no issuer, jwksURL, client or project files, or access block"))
 		}
+		// The MCP server is the OIDC viewers': /mcp takes roomctl's tokens, and its sponsored callers
+		// and sessionStart's GitHub check name principals and repositories local mode does not have.
+		if h.MCP.Enabled {
+			errs = append(errs, errors.New("human.mcp.enabled: mode local serves no /mcp: the loopback user has no token to present"))
+		}
+		if len(h.MCP.Sponsored) > 0 {
+			errs = append(errs, errors.New("human.mcp.sponsored: mode local takes no sponsored principal"))
+		}
+		if len(h.MCP.SessionStart) > 0 {
+			errs = append(errs, errors.New("human.mcp.sessionStart: mode local takes no sessionStart repository"))
+		}
 		return errs
 	}
 	if h.Mode != "" && h.Mode != "oidc" {

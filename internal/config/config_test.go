@@ -252,3 +252,34 @@ func TestHumanLocalMode(t *testing.T) {
 		t.Fatal("an unknown mode must be refused")
 	}
 }
+
+// Local mode has one fixed loopback user and no IdP to name a sponsored principal or a repository's
+// GitHub identity, so every human.mcp feature is refused by name: the rollout fails rather than
+// carrying a switch the broker can never honour.
+func TestHumanLocalModeRefusesMCP(t *testing.T) {
+	tests := []struct {
+		name, mcp, want string
+	}{
+		{"enabled", "  mcp:\n    enabled: true\n", "human.mcp.enabled: mode local"},
+		{"sponsored", "  mcp:\n    sponsored:\n      - name: slack-app\n        clientIDFile: /etc/room-broker/sponsored/slack-app\n",
+			"human.mcp.sponsored: mode local"},
+		{"sessionStart", "  mcp:\n    sessionStart: [Smana/a]\n", "human.mcp.sessionStart: mode local"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(write(t, localConfig+tc.mcp))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	// The switch is off by default, and an empty block changes nothing.
+	if _, err := Load(write(t, localConfig+"  mcp: {}\n")); err != nil {
+		t.Fatalf("an empty mcp block: %v", err)
+	}
+	// OIDC mode keeps validating /mcp as before: the refusal is local mode's alone.
+	roomctl := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
+	if _, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n")); err != nil {
+		t.Fatalf("oidc mode with /mcp on: %v", err)
+	}
+}
