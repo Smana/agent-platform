@@ -372,3 +372,14 @@ func TestGHCallsTimeOut(t *testing.T) {
 		t.Fatal("gh was not cut off")
 	}
 }
+
+// The room's repository is compared as GitHub does, case-insensitively.
+func TestIssueFileFindsTheRoomInAnotherCase(t *testing.T) {
+	b := newMCPBroker(t)
+	b.canStart, b.roomText = boolp(true), "# card"
+	b.rooms = []map[string]any{{"id": "r1", "repository": "smana/A", "issue": 7}}
+	sc := fileWith(t, startSession(t, b, &filing{}, &labeling{}, time.Second), issueFileArgs, map[string]any{"action": "accept", "content": map[string]any{"file": true, "start": true}})
+	if sc["room"] != "r1" {
+		t.Fatalf("%v", sc)
+	}
+}

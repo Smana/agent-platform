@@ -158,7 +158,7 @@ func (r *Relay) awaitRoom(ctx context.Context, repo string, issue int) string {
 			}
 			if json.Unmarshal(sc, &list) == nil {
 				for _, row := range list.Rooms {
-					if row.Repository == repo && row.Issue == issue && row.ID != "" {
+					if strings.EqualFold(row.Repository, repo) && row.Issue == issue && row.ID != "" {
 						return row.ID
 					}
 				}
