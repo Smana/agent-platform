@@ -75,3 +75,19 @@ func TestRunGitNeutralisesSubmodulesAndFilters(t *testing.T) {
 		}
 	}
 }
+
+// ls-remote and worktree add may take as long as a fetch.
+func TestRunGitBoundsTheSlowCallsLikeAFetch(t *testing.T) {
+	fakeGit(t, "sleep 1")
+	oldGit, oldFetch := gitTimeout, fetchTimeout
+	gitTimeout, fetchTimeout = 200*time.Millisecond, time.Hour
+	t.Cleanup(func() { gitTimeout, fetchTimeout = oldGit, oldFetch })
+	for _, args := range [][]string{{"ls-remote", "origin"}, {"worktree", "add", "p", "x"}} {
+		if _, err := RunGit(t.Context(), t.TempDir(), args...); err != nil {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+	if _, err := RunGit(t.Context(), t.TempDir(), "worktree", "list"); err == nil {
+		t.Error("worktree list keeps the short bound")
+	}
+}

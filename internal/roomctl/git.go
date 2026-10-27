@@ -47,14 +47,18 @@ func (w *capWriter) Write(p []byte) (int, error) {
 
 // RunGit runs git -c core.hooksPath=/dev/null -C dir args (R15), with an argv and never a shell:
 // no hook of the repository runs, a branch's included, no Git LFS smudge, no recursion into
-// submodules, and git never prompts. A fetch is bounded at 2 minutes and any other call at 30
-// seconds. Its stdout is capped (16 MiB for diff and ls-tree, 1 MiB otherwise), its stderr at 64 KiB,
+// submodules, and git never prompts. A fetch, an ls-remote and a worktree add are bounded at 2 minutes and any
+// other call at 30 seconds. Its stdout is capped (16 MiB for diff and ls-tree, 1 MiB otherwise), its stderr at 64 KiB,
 // and an error carries the first line of stderr.
 func RunGit(ctx context.Context, dir string, args ...string) (string, error) {
 	limit, outMax := gitTimeout, maxGitOut
 	switch args[0] {
-	case "fetch":
+	case "fetch", "ls-remote":
 		limit = fetchTimeout
+	case "worktree":
+		if len(args) > 1 && args[1] == "add" { // a large checkout takes as long as a fetch
+			limit = fetchTimeout
+		}
 	case "diff", "ls-tree":
 		outMax = maxGitListOut
 	}
