@@ -495,8 +495,16 @@ type PerPerson struct {
 // PrincipalFactory is the fleet's ledger key: the factory's own principal.
 const PrincipalFactory = "system:factory"
 
-// Sponsored is whether key is a declared sponsored principal's: its day is a bound, never a
-// shadow (F4, R7).
+// addSponsoredDay records a principal's day, a sponsored or an internal one's (R7).
+func (b *Budgets) addSponsoredDay(s Sponsored) {
+	if b.sponsoredDays == nil {
+		b.sponsoredDays = map[string]int64{}
+	}
+	b.sponsoredDays[s.Principal()] = MicroUSD(s.DailyUSD)
+}
+
+// Sponsored is whether key is a declared sponsored or internal principal's: its day is a bound,
+// never a shadow (F4, R7).
 func (b Budgets) Sponsored(key string) bool { _, ok := b.sponsoredDays[key]; return ok }
 
 // DailyMicroUSD is the day of a ledger key, in the ledger's micro-USD: the fleet's for
@@ -611,6 +619,9 @@ type API struct {
 	// Sponsored is factory interfaces F4: the service accounts that may start tasks through
 	// POST /v1/tasks, each bound to a maintainer. Empty ships: the route is a 404 (D4).
 	Sponsored []Sponsored `json:"sponsored,omitempty"`
+	// InternalPrincipals are sponsored principals allowed internal data (RunLore agent-to-agent
+	// RA2): empty ships, and POST /v1/tasks stays a 404 while this and Sponsored are both empty (D4).
+	InternalPrincipals []InternalPrincipal `json:"internalPrincipals,omitempty"`
 }
 
 // Access is api.access (v2 D4).
@@ -667,6 +678,39 @@ func (c *Config) SponsoredBy(principal string) *Sponsored {
 	return nil
 }
 
+// InternalPrincipal is an internal principal (RunLore agent-to-agent RA2): a sponsored principal
+// allowed dataClass internal, whose tasks take the investigate template, gated by the finding's
+// confidence and a count of tasks a day (RA3). Its other keys are a sponsored principal's.
+type InternalPrincipal struct {
+	Sponsored
+	MinConfidence float64 `json:"minConfidence"`
+	DailyTasks    int     `json:"dailyTasks"`
+	// Verification admits POST /v1/tasks/{task}/verification for this principal (RA11).
+	Verification bool `json:"verification,omitempty"`
+}
+
+// InternalBy is principal's internal declaration, nil when the config declares none.
+func (c *Config) InternalBy(principal string) *InternalPrincipal {
+	for i := range c.API.InternalPrincipals {
+		if c.API.InternalPrincipals[i].Principal() == principal {
+			return &c.API.InternalPrincipals[i]
+		}
+	}
+	return nil
+}
+
+// PrincipalBy is the bounds of principal, sponsored or internal: every charge and cap reads it, so
+// neither list is skipped.
+func (c *Config) PrincipalBy(principal string) *Sponsored {
+	if s := c.SponsoredBy(principal); s != nil {
+		return s
+	}
+	if ip := c.InternalBy(principal); ip != nil {
+		return &ip.Sponsored
+	}
+	return nil
+}
+
 // MaxTaskMicroUSD is the largest task cap any tier holds: no request's max_cost may exceed what a
 // class could ever hold (R5); triage then applies the class's own.
 func (c *Config) MaxTaskMicroUSD() int64 {
@@ -686,84 +730,114 @@ var (
 )
 
 func (c *Config) validateSponsored(bad func(string, ...any)) {
-	if len(c.API.Sponsored) > 0 && c.API.ProjectIDFile == "" {
-		bad("api.sponsored needs api.projectIDFile: a sponsored token's audience is pinned to the project")
+	which := "api.sponsored"
+	if len(c.API.Sponsored) == 0 {
+		which = "api.internalPrincipals"
 	}
-	if len(c.API.Sponsored) > 0 && len(c.Meter.Prices) == 0 {
+	declared := len(c.API.Sponsored)+len(c.API.InternalPrincipals) > 0
+	if declared && c.API.ProjectIDFile == "" {
+		bad("%s needs api.projectIDFile: a token's audience is pinned to the project", which)
+	}
+	if declared && len(c.Meter.Prices) == 0 {
 		// Without prices a tier is capped in tokens and usdCapped never holds: a ceiling in dollars
 		// would silently be a ceiling in nothing (C13).
-		bad("api.sponsored needs meter.prices: a ceiling in USD needs priced runs")
+		bad("%s needs meter.prices: a ceiling in USD needs priced runs", which)
 	}
 	system := slices.Collect(maps.Values(c.API.SystemPrincipals))
-	finite := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 	seen, files := map[string]bool{}, map[string]string{}
 	for _, s := range c.API.Sponsored {
-		switch {
-		case !factoryRE.MatchString(s.Name):
-			bad("api.sponsored: %q is not a DNS label", s.Name)
-			continue
-		case sponsored.IsReserved(s.Name) || slices.Contains(system, s.Principal()):
-			bad("api.sponsored: %q is reserved", s.Name)
-			continue
-		case seen[s.Name]:
-			bad("api.sponsored: %q is declared twice", s.Name)
+		c.validatePrincipal(bad, "api.sponsored", s, seen, files, sponsored.IsReserved(s.Name) || slices.Contains(system, s.Principal()))
+	}
+	for _, ip := range c.API.InternalPrincipals {
+		// R2: the name runlore is an internal principal's, and no other's.
+		reserved := slices.Contains(system, ip.Principal()) || (sponsored.IsReserved(ip.Name) && ip.Name != "runlore")
+		if !c.validatePrincipal(bad, "api.internalPrincipals", ip.Sponsored, seen, files, reserved) {
 			continue
 		}
-		seen[s.Name] = true
-		if s.ClientIDFile == "" {
-			bad("api.sponsored.%s: clientIDFile is required", s.Name)
-		} else if other, ok := files[s.ClientIDFile]; ok {
-			bad("api.sponsored.%s: clientIDFile %q is already used by %s", s.Name, s.ClientIDFile, other)
-		} else {
-			files[s.ClientIDFile] = s.Name
+		if len(ip.OnBehalfOf.Slack) > 0 {
+			bad("api.internalPrincipals.%s: onBehalfOf is not allowed: an internal principal speaks for its sponsor only", ip.Name)
 		}
-		if !githubLoginRE.MatchString(s.Sponsor) {
-			bad("api.sponsored.%s: sponsor %q is not a GitHub login", s.Name, s.Sponsor)
+		if !finite(ip.MinConfidence) || ip.MinConfidence <= 0 || ip.MinConfidence > 1 {
+			bad("api.internalPrincipals.%s: minConfidence must be in (0, 1]", ip.Name)
 		}
-		if len(s.Repositories) == 0 {
-			bad("api.sponsored.%s: repositories is empty", s.Name)
+		if ip.DailyTasks < 1 {
+			bad("api.internalPrincipals.%s: dailyTasks must be 1 or more", ip.Name)
 		}
-		for i, name := range s.Repositories {
-			if slices.Contains(s.Repositories[:i], name) {
-				bad("api.sponsored.%s: %q is listed twice", s.Name, name)
-				continue
-			}
-			// Exact: admission matches the request's repository against this list as written, and
-			// spec.repository becomes the run's octo-sts audience (C22).
-			r := c.listed(name)
-			if r == nil || r.Name != name {
-				bad("api.sponsored.%s: %q is not a listed repository, spelled as listed", s.Name, name)
-				continue
-			}
-			if !r.IsMaintainer(s.Sponsor) {
-				bad("api.sponsored.%s: sponsor %q is not a maintainer of %s", s.Name, s.Sponsor, r.Name)
-			}
-			for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
-				login := s.OnBehalfOf.Slack[id]
-				if !r.IsMaintainer(login) {
-					bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a maintainer of %s", s.Name, id, login, r.Name)
-				}
-			}
+	}
+}
+
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// validatePrincipal checks the keys a sponsored and an internal principal share, under list; seen
+// and files are shared across both lists, so a name and a client id file are one principal's. It
+// reports whether the principal's identity was usable.
+func (c *Config) validatePrincipal(bad func(string, ...any), list string, s Sponsored, seen map[string]bool, files map[string]string, isReserved bool) bool {
+	switch {
+	case !factoryRE.MatchString(s.Name):
+		bad("%s: %q is not a DNS label", list, s.Name)
+		return false
+	case isReserved:
+		bad("%s: %q is reserved", list, s.Name)
+		return false
+	case seen[s.Name]:
+		bad("%s: %q is declared twice", list, s.Name)
+		return false
+	}
+	seen[s.Name] = true
+	if s.ClientIDFile == "" {
+		bad("%s.%s: clientIDFile is required", list, s.Name)
+	} else if other, ok := files[s.ClientIDFile]; ok {
+		bad("%s.%s: clientIDFile %q is already used by %s", list, s.Name, s.ClientIDFile, other)
+	} else {
+		files[s.ClientIDFile] = s.Name
+	}
+	if !githubLoginRE.MatchString(s.Sponsor) {
+		bad("%s.%s: sponsor %q is not a GitHub login", list, s.Name, s.Sponsor)
+	}
+	if len(s.Repositories) == 0 {
+		bad("%s.%s: repositories is empty", list, s.Name)
+	}
+	for i, name := range s.Repositories {
+		if slices.Contains(s.Repositories[:i], name) {
+			bad("%s.%s: %q is listed twice", list, s.Name, name)
+			continue
+		}
+		// Exact: admission matches the request's repository against this list as written, and
+		// spec.repository becomes the run's octo-sts audience (C22).
+		r := c.listed(name)
+		if r == nil || r.Name != name {
+			bad("%s.%s: %q is not a listed repository, spelled as listed", list, s.Name, name)
+			continue
+		}
+		if !r.IsMaintainer(s.Sponsor) {
+			bad("%s.%s: sponsor %q is not a maintainer of %s", list, s.Name, s.Sponsor, r.Name)
 		}
 		for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
 			login := s.OnBehalfOf.Slack[id]
-			if !slackLinkRE.MatchString(id) {
-				bad("api.sponsored.%s: onBehalfOf.slack %q is not <team>/<user>", s.Name, id)
+			if !r.IsMaintainer(login) {
+				bad("%s.%s: onBehalfOf.slack links %q to %q, not a maintainer of %s", list, s.Name, id, login, r.Name)
 			}
-			if !githubLoginRE.MatchString(login) {
-				bad("api.sponsored.%s: onBehalfOf.slack links %q to %q, not a GitHub login", s.Name, id, login)
-			}
-		}
-		if !finite(s.DailyUSD) || s.DailyUSD <= 0 || s.DailyUSD > c.Budgets.FactoryDailyUSD {
-			bad("api.sponsored.%s: dailyUSD must be above 0 and at most factoryDailyUSD", s.Name)
-		}
-		if !finite(s.MaxCostUSD) || s.MaxCostUSD <= 0 || s.MaxCostUSD > s.DailyUSD {
-			bad("api.sponsored.%s: maxCostUSD must be above 0 and at most dailyUSD", s.Name)
-		}
-		if s.MaxOpenTasks < 0 {
-			bad("api.sponsored.%s: maxOpenTasks must be 1 or more (omitted: %d)", s.Name, DefaultSponsoredOpenTasks)
 		}
 	}
+	for _, id := range slices.Sorted(maps.Keys(s.OnBehalfOf.Slack)) {
+		login := s.OnBehalfOf.Slack[id]
+		if !slackLinkRE.MatchString(id) {
+			bad("%s.%s: onBehalfOf.slack %q is not <team>/<user>", list, s.Name, id)
+		}
+		if !githubLoginRE.MatchString(login) {
+			bad("%s.%s: onBehalfOf.slack links %q to %q, not a GitHub login", list, s.Name, id, login)
+		}
+	}
+	if !finite(s.DailyUSD) || s.DailyUSD <= 0 || s.DailyUSD > c.Budgets.FactoryDailyUSD {
+		bad("%s.%s: dailyUSD must be above 0 and at most factoryDailyUSD", list, s.Name)
+	}
+	if !finite(s.MaxCostUSD) || s.MaxCostUSD <= 0 || s.MaxCostUSD > s.DailyUSD {
+		bad("%s.%s: maxCostUSD must be above 0 and at most dailyUSD", list, s.Name)
+	}
+	if s.MaxOpenTasks < 0 {
+		bad("%s.%s: maxOpenTasks must be 1 or more (omitted: %d)", list, s.Name, DefaultSponsoredOpenTasks)
+	}
+	return true
 }
 
 // MaxAccessTTL is the longest a GitHub permission answer is trusted, and the default: the
@@ -903,10 +977,10 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	for _, s := range c.API.Sponsored {
-		if c.Budgets.sponsoredDays == nil {
-			c.Budgets.sponsoredDays = map[string]int64{}
-		}
-		c.Budgets.sponsoredDays[s.Principal()] = MicroUSD(s.DailyUSD)
+		c.Budgets.addSponsoredDay(s)
+	}
+	for _, ip := range c.API.InternalPrincipals {
+		c.Budgets.addSponsoredDay(ip.Sponsored)
 	}
 	sum := sha256.Sum256(j)
 	c.Hash = hex.EncodeToString(sum[:])
