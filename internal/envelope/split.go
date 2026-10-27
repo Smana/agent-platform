@@ -40,7 +40,7 @@ var ErrSplit = errors.New("split: why 1-500 bytes; children 2-5, in the order th
 // Validate checks the split's shape and bounds (SL2). Each part is a scope, held to Scope.Validate.
 func (s Split) Validate() error {
 	good := strings.TrimSpace(s.Why) != "" && len(s.Why) <= 500 && utf8.ValidString(s.Why) &&
-		!strings.ContainsFunc(s.Why, control) && len(s.Children) >= MinChildren && len(s.Children) <= MaxChildren
+		!strings.ContainsFunc(s.Why, Control) && len(s.Children) >= MinChildren && len(s.Children) <= MaxChildren
 	for _, c := range s.Children {
 		good = good && c.State == ScopeReady && c.Validate() == nil
 	}

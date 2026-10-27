@@ -1,0 +1,16 @@
+26zfnuxm · #42
+needs you · an agent is coding · Smana/cloud-native-ref · open the room (https://rooms.example/r/26zfnuxm)
+
+Run   implementer c3 (human review) · started 19:11 UTC, 18 min ago
+Spend $0.31 of $1.50 (21 %) · 189 k tokens
+PR    #2239 (https://github.com/Smana/cloud-native-ref/pull/2239) · reviewer approved at 18:49 UTC
+
+Needs you
+1. approve "git push to agent/26zfnuxm" by 19:45 UTC → https://rooms.example/r/26zfnuxm#01M4A
+
+Runs implementer (first run) succeeded · 40 min · $0.18 → reviewer approved · 10 min · $0.03 → implementer (human review) running · 18 min · $0.10
+
+Agents' notes, their claims, not checked
+- 19:12 UTC cf4ato2x "found both versions on line 12-13, fixing"
+
+You can queue a note for the next run · steer the running agent · stop it with the label factory/stop

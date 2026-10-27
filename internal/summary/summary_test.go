@@ -22,7 +22,7 @@ import (
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.json want fields from the current fold")
 
-var goldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts"}
+var goldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts", "runs_and_spend", "hostile"}
 
 func TestFoldGolden(t *testing.T) {
 	for _, name := range goldens {

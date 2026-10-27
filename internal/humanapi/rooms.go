@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +25,7 @@ import (
 	"github.com/Smana/agent-platform/internal/policy"
 	"github.com/Smana/agent-platform/internal/roomctrl"
 	"github.com/Smana/agent-platform/internal/runrequest"
+	"github.com/Smana/agent-platform/internal/store"
 	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/version"
 	"github.com/Smana/agent-platform/internal/wire"
@@ -181,9 +184,11 @@ type roomRow struct {
 	Task  string `json:"task,omitempty"`
 	PR    int    `json:"pr,omitempty"`
 	// Reason is why the task waits, from its last facts: only while it waits, as the summary's.
-	Reason   string   `json:"reason,omitempty"`
-	NeedsYou int      `json:"needsYou"` // how many things wait for this caller
-	You      wire.You `json:"you"`
+	Reason   string `json:"reason,omitempty"`
+	NeedsYou int    `json:"needsYou"` // how many things wait for this caller
+	// Need is the first of them, in the summary's order: absent when none waits.
+	Need *summary.Need `json:"need,omitempty"`
+	You  wire.You      `json:"you"`
 }
 
 // roomFilter is the query of GET /api/rooms. The caller's GitHub login is read at most once per
@@ -220,44 +225,134 @@ func (f *roomFilter) isMine(ctx context.Context, s *Server, p authn.Principal, r
 		func(u string) bool { return strings.EqualFold(u, f.login) })
 }
 
+// factsFn is a room's last task facts, read at most once however many callers ask: the hold, the
+// answer, the wait reason and the first need all want them, and a row that needs none reads none.
+type factsFn func() *envelope.TaskFacts
+
+// taskFacts is room's last task facts: one indexed read, which carries what the Room status does
+// not project (the wait reason). The returned func reads on its first call; its value is nil when
+// the facts cannot be read: the room's summary still says it.
+func (s *Server) taskFacts(ctx context.Context, room *v1alpha1.Room) factsFn {
+	var once sync.Once
+	var facts *envelope.TaskFacts
+	return func() *envelope.TaskFacts {
+		once.Do(func() {
+			raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
+			if err != nil {
+				s.log().Warn("room row: task facts unread", "room", room.Name, "err", err)
+				return
+			}
+			var f envelope.TaskFacts
+			if raw != nil && json.Unmarshal(raw, &f) == nil {
+				facts = &f
+			}
+		})
+		return facts
+	}
+}
+
 // held reports the summary's hold need for sub (N3, #78). The projected task phase screens out
-// every room but a Queued one sub could release, so only those read the room's last task facts —
-// one indexed row, which carries the wait reason the Room status does not. An unreadable row is
-// no need: the room's summary still says it.
-func (s *Server) held(ctx context.Context, room *v1alpha1.Room, sub policy.Subject) bool {
+// every room but a Queued one sub could release, so only those read the room's last task facts.
+// An unreadable row is no need: the room's summary still says it.
+func held(room *v1alpha1.Room, sub policy.Subject, url string, facts factsFn) (summary.Need, bool) {
 	if t := room.Status.Task; t == nil || t.Phase != "Queued" || !policy.Allowed(sub, policy.StartRun) {
-		return false
+		return summary.Need{}, false
 	}
-	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
+	return summary.Hold(facts(), sub, url)
+}
+
+// answer is the summary's answer need for sub: the facts of an Escalated room wait on the issue's
+// author, and the room's owner sees it. Only an Escalated room reads its facts for it.
+func answer(room *v1alpha1.Room, sub policy.Subject, facts factsFn) (summary.Need, bool) {
+	if t := room.Status.Task; t == nil || t.Phase != "Escalated" || !policy.Allowed(sub, policy.Close) {
+		return summary.Need{}, false
+	}
+	return summary.Answer(facts(), sub)
+}
+
+// prNeed is the summary's merge need for sub, from the projected task: the Room status holds the
+// PR's number, not its facts, so the URL is built from the room's repository.
+func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
+	t := room.Status.Task
+	if t == nil || t.PR <= 0 {
+		return summary.Need{}, false
+	}
+	pr := &envelope.PRFact{Number: int(t.PR)}
+	if repo := room.Spec.Repository; repo != "" {
+		pr.URL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, t.PR)
+	}
+	return summary.Merge(&envelope.TaskFacts{Phase: t.Phase, PR: pr}, sub)
+}
+
+// liveApprovals are the approvals of room that sub could decide in the web UI and whose deadline
+// has not passed: a lapsed one the sweep's approval_decided{expired} has not landed on is no need,
+// as the summary drops it. The table is read only for a room with one pending that web could decide.
+// expired is how many it dropped: the room's own count, which the sweep has not caught up with,
+// less those is what waits. An unread table drops none.
+func (s *Server) liveApprovals(ctx context.Context, room *v1alpha1.Room, web policy.Subject) (live []store.Approval, expired int) {
+	if room.Status.PendingApprovals <= 0 || !policy.Allowed(web, policy.Decide) {
+		return nil, 0
+	}
+	open, err := s.Log.OpenApprovals(ctx, room.Name)
 	if err != nil {
-		s.log().Warn("needsMe: task facts unread", "room", room.Name, "err", err)
-		return false
+		s.log().Warn("room row: approvals unread", "room", room.Name, "err", err)
+		return nil, 0
 	}
-	var f envelope.TaskFacts
-	if raw == nil || json.Unmarshal(raw, &f) != nil {
-		return false
+	now := s.now()
+	for _, a := range open {
+		if !a.ExpiresAt.IsZero() && now.After(a.ExpiresAt) {
+			expired++
+			continue
+		}
+		live = append(live, a)
 	}
-	_, ok := summary.Hold(&f, sub, "")
-	return ok
+	return live, expired
 }
 
 // needs counts what waits for sub in room, as the room's summary lists it: approvals sub could
-// decide in the web UI (web is sub as that UI), a hold sub could release, a merge sub owns.
-func (s *Server) needs(ctx context.Context, room *v1alpha1.Room, sub, web policy.Subject) int {
+// decide in the web UI (web is sub as that UI), a hold sub could release, a merge sub owns, an
+// answer the issue's author owes.
+func needs(room *v1alpha1.Room, sub, web policy.Subject, expired int, facts factsFn) int {
 	n := 0
 	if policy.Allowed(web, policy.Decide) {
-		n += int(room.Status.PendingApprovals)
+		n = max(0, int(room.Status.PendingApprovals)-expired)
 	}
-	if s.held(ctx, room, sub) {
+	if _, ok := held(room, sub, "", facts); ok {
 		n++
 	}
-	if t := room.Status.Task; t != nil && t.PR > 0 {
-		f := envelope.TaskFacts{Phase: t.Phase, PR: &envelope.PRFact{Number: int(t.PR)}}
-		if _, ok := summary.Merge(&f, sub); ok {
-			n++
-		}
+	if _, ok := prNeed(room, sub); ok {
+		n++
+	}
+	if _, ok := answer(room, sub, facts); ok {
+		n++
 	}
 	return n
+}
+
+// firstNeed is the first thing that waits for the caller, in the summary's order: an approval
+// (the lowest id, ULIDs sorting by time, as the summary's sorted keys), a hold, a merge, an answer.
+// nil when nothing waits.
+func firstNeed(room *v1alpha1.Room, sub policy.Subject, url string, live []store.Approval, facts factsFn) *summary.Need {
+	var first *store.Approval
+	for i := range live {
+		if first == nil || live[i].ID < first.ID {
+			first = &live[i]
+		}
+	}
+	if first != nil {
+		return &summary.Need{Kind: "approval", ID: first.ID, What: summary.DescribeApproval(first.Class, first.Action),
+			Deadline: first.ExpiresAt, URL: url + "#" + first.ID}
+	}
+	if n, ok := held(room, sub, url, facts); ok {
+		return &n
+	}
+	if n, ok := prNeed(room, sub); ok {
+		return &n
+	}
+	if n, ok := answer(room, sub, facts); ok {
+		return &n
+	}
+	return nil
 }
 
 // listRooms is GET /api/rooms: every room of the namespace the caller may read
@@ -334,20 +429,23 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			continue
 		}
 		// After mine: a row filtered out never costs held's store read.
-		needs := s.needs(ctx, room, sub, web)
-		if f.needsMe && needs == 0 {
+		facts := s.taskFacts(ctx, room) // one read serves the count, the reason and the need
+		live, expired := s.liveApprovals(ctx, room, web)
+		count := needs(room, sub, web, expired, facts)
+		if f.needsMe && count == 0 {
 			continue
 		}
 		row := roomRow{ID: room.Name, URL: s.PublicURL + "/r/" + room.Name, Phase: room.Status.Phase, Owner: room.Spec.Owner,
 			Driver: room.Status.Driver, DataClass: room.Spec.DataClass, LastSeq: room.Status.LastSeq, Repository: repo,
-			NeedsMe: needs > 0, NeedsYou: needs, You: you}
+			NeedsMe: count > 0, NeedsYou: count, You: you}
 		if t := room.Status.Task; t != nil {
 			row.Task, row.Issue, row.Title, row.PR = t.Phase, int(t.Issue), t.IssueTitle, int(t.PR)
 		}
 		row.State = summary.Coarse(row.Task, row.Phase, s.nextRun(room.Name))
 		if waits[row.Task] {
-			row.Reason = s.waitReason(ctx, room)
+			row.Reason = waitReason(facts)
 		}
+		row.Need = firstNeed(room, sub, row.URL, live, facts)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
@@ -360,12 +458,10 @@ var waits = map[string]bool{"Queued": true, "AwaitingCI": true, "AwaitingHuman":
 // maxRowReason bounds a row's reason, in runes: the factory writes a code.
 const maxRowReason = 64
 
-// waitReason is the reason in room's last task facts, which the Room's status does not project:
-// one indexed read. "" when it cannot be read: the room's summary still says it.
-func (s *Server) waitReason(ctx context.Context, room *v1alpha1.Room) string {
-	raw, err := s.Log.LastTaskState(ctx, room.Name, roomctrl.ForkSeq(room))
-	var f envelope.TaskFacts
-	if err != nil || raw == nil || json.Unmarshal(raw, &f) != nil {
+// waitReason is the reason in room's last task facts, "" when they cannot be read.
+func waitReason(facts factsFn) string {
+	f := facts()
+	if f == nil {
 		return ""
 	}
 	if r := []rune(f.Reason); len(r) > maxRowReason {

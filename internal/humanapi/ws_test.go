@@ -62,6 +62,8 @@ type memLog struct {
 	sealed         bool
 	approvals      []store.Approval
 	approvalErr    error
+	approvalReads  int
+	factsReads     int
 	lastEventAt    map[string]time.Time
 	lastEventAtErr error
 }
@@ -75,6 +77,7 @@ func (m *memLog) Queue(context.Context, string) ([]store.Queued, error) {
 func (m *memLog) OpenApprovals(context.Context, string) ([]store.Approval, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.approvalReads++
 	return m.approvals, m.approvalErr
 }
 
@@ -94,6 +97,7 @@ func (m *memLog) LastEventAt(_ context.Context, ids []string) (map[string]time.T
 func (m *memLog) LastTaskState(_ context.Context, _ string, after int64) (json.RawMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.factsReads++
 	for i := len(m.evs) - 1; i >= 0; i-- {
 		e := m.evs[i]
 		var p struct {

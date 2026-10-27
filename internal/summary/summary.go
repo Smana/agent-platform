@@ -39,6 +39,12 @@ func holds() map[string]string {
 	}
 }
 
+// IsHold reports whether reason is one of the Queued reasons another holder of the room causes.
+func IsHold(reason string) bool {
+	_, ok := holds()[reason]
+	return ok
+}
+
 // Hold is N3's need: a factory task a person holds waits on whoever can release the room — its
 // driver, or its owner, who can take the driver back. The factory's next facts end it. The room
 // list's needsMe asks the same (#78).
@@ -93,6 +99,9 @@ type Need struct {
 	What     string    `json:"what"`
 	Deadline time.Time `json:"deadline,omitzero"`
 	URL      string    `json:"url"`
+	// Author is an answer need's issue author, a validated GitHub login: the part views build their
+	// own sentence from. Absent for every other kind.
+	Author string `json:"author,omitempty"`
 }
 
 // Action is something the viewer can do now.
@@ -114,14 +123,17 @@ type Summary struct {
 		State       string               `json:"state,omitempty"`
 		Run         *envelope.RunFact    `json:"run"`
 		Budget      *envelope.BudgetFact `json:"budget"`
+		Spend       *envelope.SpendFact  `json:"spend,omitempty"` // the task's dollars, beside Budget's tokens
 		PR          *envelope.PRFact     `json:"pr"`
 		Issue       *envelope.IssueFact  `json:"issue"`
 		LastVerdict *Verdict             `json:"lastVerdict"`
 		Reason      string               `json:"reason,omitempty"` // why the task waits, when it does (#59)
 		Next        string               `json:"next,omitempty"`   // what happens or who acts next
 	} `json:"status"`
-	NeedsYou []Need   `json:"needsYou"`
-	Actions  []Action `json:"actions"`
+	// Runs is the task's run history, oldest first: the factory's facts, so a sealed room keeps it.
+	Runs     []envelope.RunFact `json:"runs,omitempty"`
+	NeedsYou []Need             `json:"needsYou"`
+	Actions  []Action           `json:"actions"`
 	Notes    struct {
 		Untrusted bool   `json:"untrusted"`
 		Items     []Note `json:"items"`
@@ -226,12 +238,16 @@ func foldState(st *State, ev envelope.Event) {
 }
 
 // describe is an approval's one line: the redacted call's command, else its class.
-func describe(a envelope.ApprovalRequestedPayload) string {
+func describe(a envelope.ApprovalRequestedPayload) string { return DescribeApproval(a.Class, a.Action) }
+
+// DescribeApproval is the one line an approval of this class and redacted action shows, so that a
+// room's summary and a room list row say the same.
+func DescribeApproval(class string, action json.RawMessage) string {
 	var call struct {
 		Command string `json:"command"`
 	}
-	what := a.Class
-	if json.Unmarshal(a.Action, &call) == nil && call.Command != "" {
+	what := class
+	if json.Unmarshal(action, &call) == nil && call.Command != "" {
 		what = call.Command
 	}
 	if r := []rune(what); len(r) > maxWhat {
@@ -248,6 +264,11 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	s.Status.Phase = st.RoomPhase
 	if f := st.Facts; f != nil {
 		s.Status.Phase, s.Status.Run, s.Status.Budget, s.Status.PR, s.Status.Issue = f.Phase, f.Run, f.Budget, f.PR, f.Issue
+		s.Runs = slices.Clone(f.Runs) // a copy, not the fold state's slice
+		if f.Spend != nil {
+			sp := *f.Spend
+			s.Status.Spend = &sp
+		}
 	}
 	s.Status.LastVerdict = st.Verdict
 	s.NeedsYou, s.Actions = []Need{}, []Action{}

@@ -5,8 +5,11 @@ package envelope
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MessageKind distinguishes chat from SP3's reserved kinds.
@@ -125,8 +128,39 @@ type TaskFacts struct {
 	Reason string      `json:"reason,omitempty"`
 	Run    *RunFact    `json:"run,omitempty"`
 	Budget *BudgetFact `json:"budget,omitempty"`
-	Issue  *IssueFact  `json:"issue,omitempty"`
-	PR     *PRFact     `json:"pr,omitempty"`
+	// Spend is the task's dollars, beside Budget's tokens (BudgetFact is unchanged).
+	Spend *SpendFact `json:"spend,omitempty"`
+	// Runs is the task's run history, oldest first, at most MaxRuns.
+	Runs  []RunFact  `json:"runs,omitempty"`
+	Issue *IssueFact `json:"issue,omitempty"`
+	PR    *PRFact    `json:"pr,omitempty"`
+}
+
+// MaxRuns bounds TaskFacts.Runs.
+const MaxRuns = 20
+
+// MaxMicroUSD bounds every dollar amount in the facts ($1,000,000), so sums of them cannot overflow.
+const MaxMicroUSD int64 = 1_000_000_000_000
+
+// MaxVerdict bounds RunFact.Verdict, in bytes, as the Task CRD bounds RunRecord.Verdict.
+const MaxVerdict = 32
+
+// A run's outcome, once it has ended. An empty Outcome is a run that has not.
+const (
+	OutcomeSucceeded       = "succeeded"
+	OutcomeFailed          = "failed"
+	OutcomeBudgetExhausted = "budget_exhausted"
+	OutcomeRevoked         = "revoked"
+	OutcomeLost            = "lost"
+	OutcomeEnded           = "ended"
+)
+
+func validOutcome(o string) bool {
+	switch o {
+	case "", OutcomeSucceeded, OutcomeFailed, OutcomeBudgetExhausted, OutcomeRevoked, OutcomeLost, OutcomeEnded:
+		return true
+	}
+	return false
 }
 
 // RunFact is a run's role, trigger, and lifecycle in a task.
@@ -135,6 +169,11 @@ type RunFact struct {
 	Role      string    `json:"role"`
 	Trigger   string    `json:"trigger,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
+	// EndedAt, Outcome, Verdict and MicroUSD are set once the run has ended.
+	EndedAt  time.Time `json:"endedAt,omitzero"`
+	Outcome  string    `json:"outcome,omitempty"`
+	Verdict  string    `json:"verdict,omitempty"`
+	MicroUSD int64     `json:"microUSD,omitempty"`
 	// What the run ran on (R10), as far as the factory knows it yet.
 	Provenance *ProvenanceFact `json:"provenance,omitempty"`
 }
@@ -154,6 +193,12 @@ type BudgetFact struct {
 	LimitTokens int64 `json:"limitTokens"`
 }
 
+// SpendFact is the dollars a task has spent and, when it has one, its dollar limit.
+type SpendFact struct {
+	UsedMicroUSD  int64 `json:"usedMicroUSD"`
+	LimitMicroUSD int64 `json:"limitMicroUSD,omitempty"`
+}
+
 // IssueFact is a GitHub issue linked to a task.
 type IssueFact struct {
 	Number     int    `json:"number"`
@@ -171,7 +216,40 @@ type PRFact struct {
 	Reviewers []string `json:"reviewers,omitempty"`
 }
 
+// githubLogin is GitHub's rule for a user name: 1 to 39 letters and digits, single hyphens between
+// them, none at either end. A GitHub App authors as its slug plus the literal suffix "[bot]".
+var githubLogin = regexp.MustCompile(`^([A-Za-z0-9]+(-[A-Za-z0-9]+)*)(\[bot\])?$`)
+
+// ValidLogin reports whether s is a GitHub login in that rule's shape: a user, or an App's
+// "<slug>[bot]". Facts are not refused for an author outside it (legacy logins with double or
+// trailing hyphens, Enterprise Managed Users' "name_shortcode" exist): a view that names the author
+// in a sentence of its own checks it here, and says "the issue's author" otherwise.
+func ValidLogin(s string) bool {
+	m := githubLogin.FindStringSubmatch(s)
+	return m != nil && len(m[1]) <= 39
+}
+
 var githubURL = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$`)
+
+// GitHubURL reports whether s is the URL of a github.com issue or pull request.
+func GitHubURL(s string) bool { return githubURL.MatchString(s) }
+
+// validate is deliberately loose where the factory can produce it: an EndedAt without StartedAt,
+// an Outcome without EndedAt, and (in SpendFact) Used above Limit, a cap overrun.
+func (r RunFact) validate() error {
+	switch {
+	case r.MicroUSD < 0 || r.MicroUSD > MaxMicroUSD:
+		return fmt.Errorf("microUSD is between 0 and %d", MaxMicroUSD)
+	case !validOutcome(r.Outcome):
+		return fmt.Errorf("outcome %q is not one of the run outcomes", r.Outcome)
+	case len(r.Verdict) > MaxVerdict || !utf8.ValidString(r.Verdict) ||
+		strings.ContainsFunc(r.Verdict, func(c rune) bool { return Control(c) || c == '\n' || c == '\t' }):
+		return fmt.Errorf("verdict is at most %d bytes of plain text, with no control, bidi or zero-width characters", MaxVerdict)
+	case !r.EndedAt.IsZero() && r.EndedAt.Before(r.StartedAt):
+		return errors.New("endedAt is before startedAt")
+	}
+	return nil
+}
 
 // Validate refuses facts a broker should not store.
 func (f TaskFacts) Validate() error {
@@ -180,10 +258,26 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: a phase is required")
 	case f.Budget != nil && (f.Budget.UsedTokens < 0 || f.Budget.LimitTokens < 0):
 		return errors.New("task facts: token counts are not negative")
+	case f.Spend != nil && (f.Spend.UsedMicroUSD < 0 || f.Spend.UsedMicroUSD > MaxMicroUSD):
+		return fmt.Errorf("task facts: spend usedMicroUSD is between 0 and %d", MaxMicroUSD)
+	case f.Spend != nil && (f.Spend.LimitMicroUSD < 0 || f.Spend.LimitMicroUSD > MaxMicroUSD):
+		return fmt.Errorf("task facts: spend limitMicroUSD is between 0 and %d", MaxMicroUSD)
+	case len(f.Runs) > MaxRuns:
+		return fmt.Errorf("task facts: runs are at most %d, got %d", MaxRuns, len(f.Runs))
 	case f.Issue != nil && !githubURL.MatchString(f.Issue.URL):
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
+	}
+	if f.Run != nil {
+		if err := f.Run.validate(); err != nil {
+			return fmt.Errorf("task facts: run: %w", err)
+		}
+	}
+	for i, r := range f.Runs {
+		if err := r.validate(); err != nil {
+			return fmt.Errorf("task facts: runs[%d]: %w", i, err)
+		}
 	}
 	return nil
 }

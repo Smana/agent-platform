@@ -164,7 +164,7 @@ func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
 			task = "(" + r.Phase + ")"
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", printable(r.ID), printable(r.Repository), number(r.Issue),
-			dash(clip(oneLine(r.Title), maxTitle)), printable(task), number(r.PR), count(r.NeedsYou), printable(r.You.Role))
+			dash(clip(OneLine(r.Title), maxTitle)), printable(task), number(r.PR), count(r.NeedsYou), printable(r.You.Role))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

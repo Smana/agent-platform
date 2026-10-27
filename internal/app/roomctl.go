@@ -22,6 +22,8 @@ import (
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl"
 	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/agent-platform/internal/summary"
 	"github.com/Smana/agent-platform/internal/version"
 )
 
@@ -367,7 +369,38 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 		_, err = fmt.Fprintln(r.Out, string(raw))
 		return err
 	}
-	return roomctl.RenderSummary(r.Out, raw, time.Now())
+	var sum summary.Summary
+	if err := json.Unmarshal(raw, &sum); err != nil {
+		return fmt.Errorf("status: the broker's answer: %w", err)
+	}
+	if err := roomview.Card(r.Out, sum, roomview.Options{Format: textFormat(r.Out), Now: time.Now(), Rooms: roomsBase(sum, c.URL)}); err != nil {
+		return err
+	}
+	// The card has no cursor: status prints it last, so --after can take it back.
+	_, err = fmt.Fprintf(r.Out, "cursor: %s\n", roomctl.OneLine(sum.Cursor))
+	return err
+}
+
+// roomsBase is the base of the room links the card may print: the broker's PublicURL, which the
+// summary's own URL ends with ("/r/<room>"), else the URL roomctl is configured with. A broker
+// reached by another name (a port-forward) still gets its links.
+func roomsBase(s summary.Summary, configured string) string {
+	if base, ok := strings.CutSuffix(s.URL, "/r/"+s.Room); ok && s.Room != "" && strings.HasPrefix(base, "https://") {
+		return base
+	}
+	return configured
+}
+
+// textFormat is TextColor when w is a terminal and NO_COLOR is unset, else Text.
+func textFormat(w io.Writer) roomview.Format {
+	f, ok := w.(*os.File)
+	if !ok || os.Getenv("NO_COLOR") != "" {
+		return roomview.Text
+	}
+	if fi, err := f.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return roomview.Text
+	}
+	return roomview.TextColor
 }
 
 // post chats, or queues a message for the next run's brief: never steering.

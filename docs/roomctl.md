@@ -44,8 +44,8 @@ roomctl doctor                                   # check the setup
 | `login` | Signs in with the device flow |
 | `doctor` | Checks the VPN, the CA, your login and your GitHub link, with the fix of each |
 | `token` | Prints a valid access token, for scripts. Treat it as a secret |
-| `status <room> [--json] [--after seq:N]` | Where a room stands, task first (below): the issue's number and title, then phase, run, budget, PR, issue, why and next, the last verdict, what needs you, the actions you may take, the agents' notes. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
-| `rooms [--repo owner/name] [--mine] [--needs-me] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, or a PR waiting for your merge. `--json`: the broker's rows as is |
+| `status <room> [--json] [--after seq:N]` | Where a room stands, as the room card (below): the title, the state, the facts (run, spend, PR and last verdict, next, why), what needs you, the runs line, the agents' notes and what you can do, then a `cursor: seq:N` line. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
+| `rooms [--repo owner/name] [--mine] [--needs-me] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--json`: the broker's rows as is |
 | `watch <room> [--tail N]` | Follows a room, one line per event: its `seq`, who (`role (id)` for a participant with a room role), what, and its text. Shows the last `N` events first (default 50). It reconnects after a drop and picks up where it stopped |
 | `post <room> [--queue] <text>` | Posts a chat message and prints its `seq`. With `--queue` the text is kept for the next run's brief instead. The broker stores it labelled as [machine-sent](api.md#machine-sent-text), as any text from roomctl |
 | `skill install [--dir .agents/skills]` | Writes the factory-handoff skill. Needs no config or login |
@@ -54,25 +54,40 @@ roomctl doctor                                   # check the setup
 
 Flags may come before or after the positional arguments. Source: `internal/app/roomctl.go`.
 
-`status` prints, for a task's room:
+`status` prints the room card, then the cursor. For a task's room:
 
 ```text
-task: #42 "Fix the flaky retention test"
-phase: Implementing  run: 7f3cq2xz (implementer)  budget: 189 k / 1.5 M (13 %)
-PR #57 https://github.com/<owner>/<repo>/pull/57
-issue #42 https://github.com/<owner>/<repo>/issues/42
-needs you: none
-actions:
-  queue a note for the next run: roomctl post 3kq7x2ma --queue '<text>'
-notes (the agents' claims):
-  09:14 UTC 7f3cq2xz  tests pass locally; pushing
-cursor: seq:1842
+26zfnuxm · #42 docs: chart version is wrong
+needs you · an agent is coding · Smana/cloud-native-ref · open the room (https://rooms.example/r/26zfnuxm)
+
+Run   implementer cf4ato2x (human review) · started 19:11 UTC, 18 min ago
+Spend $0.31 of $1.50 (21 %) · 189 k tokens
+PR    #2239 (https://github.com/Smana/cloud-native-ref/pull/2239) · reviewer approved at 18:49 UTC
+
+Needs you
+1. approve "git push to agent/26zfnuxm" by 19:45 UTC → https://rooms.example/r/26zfnuxm#01M4A
+
+Runs implementer (first run) succeeded · 40 min · $0.18 → reviewer approved · 10 min · $0.03 → implementer (human review) running · 18 min · $0.10
+
+Agents' notes, their claims, not checked
+- 19:12 UTC cf4ato2x "found both versions on line 12-13, fixing"
+
+You can queue a note for the next run · steer the running agent · stop it with the label factory/stop
+cursor: seq:7
 ```
 
-Token counts read like the room page's: under 1,000 as is, then `k`, then `M` (999,500 reads
-`1 M`). Times are UTC, the time alone when on today's date. `why:`, `next:` and `last verdict:` lines appear when the summary has them; a pending
-approval reads `needs you: approve "<what>" by <deadline> → <link>`, a link to its card on the
-room page, never a command. Source: `internal/roomctl/status.go`.
+Each line is left out when its data is absent: a room with no task has no facts table, a sealed
+room no `Needs you` or `You can`. The spend line reads dollars when the factory priced the task
+and tokens (`182 k of 1.5 M tokens (12 %)`) when it did not; token counts read like the room
+page's, under 1,000 as is, then `k`, then `M`. Times are UTC, dated when not today. A run that
+ended reads `succeeded`, `failed` and so on, and a stopped task's unfinished run reads `ended`,
+never `running`. On a terminal, with `NO_COLOR` unset, the state word is bold when it needs you.
+The agents' text is quoted; an approval is a link to its card on the room page, never a command.
+
+Room links print only under the broker's own address: the card takes it from the summary's URL
+(the broker's `PublicURL`), and falls back to the URL `roomctl` is configured with when the summary
+carries none. A broker reached by another name (a port-forward) therefore still shows its links.
+Source: `internal/roomview/card.go`.
 
 ## The MCP server
 

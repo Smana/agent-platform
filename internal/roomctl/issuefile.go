@@ -133,7 +133,7 @@ func GH(ctx context.Context, repo, title, body string) (string, error) {
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &capped{b: &out}, &capped{b: &errOut}
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("gh issue create: %w: %s", err, oneLine(errOut.String()))
+		return "", fmt.Errorf("gh issue create: %w: %s", err, OneLine(errOut.String()))
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	return strings.TrimSpace(lines[len(lines)-1]), nil
