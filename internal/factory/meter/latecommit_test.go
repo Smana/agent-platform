@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -29,17 +30,42 @@ type lateCommit struct {
 	ticking int
 	at      int
 	commit  error
+	// atUpdate commits the held write just before the tick's next Update of a ledger: after that
+	// write's read, so the Update conflicts and the tick retries.
+	atUpdate bool
+	// conflicts is how many Updates of each named ledger answer a conflict, before any commit.
+	conflicts map[string]int
+	updates   map[string]int // Updates attempted by ledger name
 }
 
 func newLateCommit(objs ...client.Object) *lateCommit {
 	l := &lateCommit{}
 	l.WithWatch = fake.NewClientBuilder().WithScheme(cmScheme()).WithObjects(objs...).WithInterceptorFuncs(interceptor.Funcs{
 		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if l.updates == nil {
+				l.updates = map[string]int{}
+			}
+			l.updates[obj.GetName()]++
+			if l.conflicts[obj.GetName()] > 0 {
+				l.conflicts[obj.GetName()]--
+				return apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, obj.GetName(), errors.New("busy"))
+			}
 			if l.failing && l.held == nil {
 				l.held = obj.DeepCopyObject().(client.Object)
 				return errors.New("the server was unable to return a response in the time allotted")
 			}
+			if l.atUpdate && l.held != nil {
+				l.commitHeld(ctx, cl)
+				l.atUpdate = false
+			}
 			return cl.Update(ctx, obj, opts...)
+		},
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if l.failing && l.held == nil {
+				l.held = obj.DeepCopyObject().(client.Object)
+				return errors.New("the server was unable to return a response in the time allotted")
+			}
+			return cl.Create(ctx, obj, opts...)
 		},
 		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := api.LedgerDay(key.Name, api.LedgerPrefix); ok {
@@ -55,7 +81,11 @@ func newLateCommit(objs ...client.Object) *lateCommit {
 }
 
 func (l *lateCommit) commitHeld(ctx context.Context, cl client.WithWatch) {
-	l.commit = cl.Update(ctx, l.held)
+	if l.held.GetResourceVersion() == "" { // a write that would have created the ledger
+		l.commit = cl.Create(ctx, l.held)
+	} else {
+		l.commit = cl.Update(ctx, l.held)
+	}
 	l.held = nil
 }
 

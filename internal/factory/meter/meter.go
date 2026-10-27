@@ -69,6 +69,10 @@ const (
 // for an operator's audit. Older days are deleted by the meter, its only writer after them.
 const ledgerRetention = 35 * 24 * time.Hour
 
+// fenceYesterday is how long past midnight a new leader also fences the day just ended, for a
+// run it knows no entry on it: the first write of the run may have been the lost one.
+const fenceYesterday = 10 * time.Minute
+
 // fenceAnnotation is what fence writes to a past day's ledger to move its resourceVersion on.
 const fenceAnnotation = "agents.ogenki.io/fenced-at"
 
@@ -341,14 +345,16 @@ type reading struct {
 // the lift and does not charge the run's pre-switch cost again.
 type account struct {
 	total, settled, base int64
-	known                bool   // settled was read from the ledgers
-	measured             bool   // base is fixed: the run was measured once since
-	doubt                string // the day of a charge whose write reported an error: it may have landed
-	was                  int64  // the run's settled entry on that day before the write
-	lift                 int64  // R10's lift, recorded in the settled entry with the run's next charge
-	seenDay              string // the day of a write resolve judged lost: it may still commit (#166)
-	seen                 int64  // the run's settled entry on seenDay when resolve read it
-	payer, kind          string // whom and what its charges count for (runs.Run.Payer, Kind)
+	known                bool             // settled was read from the ledgers
+	measured             bool             // base is fixed: the run was measured once since
+	doubt                string           // the day of a charge whose write reported an error: it may have landed
+	was                  int64            // the run's settled entry on that day before the write
+	lift                 int64            // R10's lift, recorded in the settled entry with the run's next charge
+	seenDay              string           // the day of a write resolve judged lost: it may still commit (#166)
+	seen                 int64            // the run's settled entry on seenDay when resolve read it
+	learned              map[string]int64 // the run's settled entry by day as learn read it: what a lost write of a previous leader is netted against
+	guarded              bool             // a write of this meter's own carries the run: nothing earlier can commit after it
+	payer, kind          string           // whom and what its charges count for (runs.Run.Payer, Kind)
 }
 
 // settledKept is how long OnSettled keeps a run after it ends: longer than the cross-check's
@@ -446,8 +452,10 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 		return nil
 	}
 	var settled map[string]int64
+	var days map[string]map[string]int64
 	if m.Ledger != nil {
-		days, err := api.SettledByRunDay(ctx, m.Ledger, m.Namespace)
+		var err error
+		days, err = api.SettledByRunDay(ctx, m.Ledger, m.Namespace)
 		if err != nil {
 			return fmt.Errorf("meter: %w", err)
 		}
@@ -465,6 +473,7 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	for _, id := range need {
 		a := m.accounts[id]
 		a.settled, a.known = settled[id], true
+		a.learned, a.guarded = maps.Clone(days[id]), false // an earlier leader's lost write may still commit (#166)
 		m.accounts[id] = a
 	}
 	return nil
@@ -891,8 +900,8 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 		late := maps.Clone(fenced)
 		for id := range inc {
-			if a := m.accounts[id]; a.seenDay == day {
-				late[id] += max(0, was[id]-a.seen)
+			if base, ok := m.baseline(m.accounts[id], day); ok {
+				late[id] += max(0, was[id]-base)
 			}
 		}
 		add, addInc := m.net(delta, inc, keys, late)
@@ -919,9 +928,12 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 		switch {
 		case err == nil:
-			after, _ := api.SettledColumn(cm) // the object the write returned
-			for id := range inc {
-				m.noteOf(day, after, id)
+			if after, err := api.SettledColumn(cm); err != nil { // the object the write returned
+				m.log().Warn("meter: the written ledger does not parse, the settled gauge keeps its last reading", "day", day, "err", err)
+			} else {
+				for id := range inc {
+					m.noteOf(day, after, id)
+				}
 			}
 			m.settledUp(inc)
 			return spent, nil
@@ -937,6 +949,7 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 				}
 				a.doubt, a.was = day, was[id]
 				a.seenDay, a.seen = "", 0
+				a.learned, a.guarded = nil, true
 				m.accounts[id] = a
 			}
 			return nil, fmt.Errorf("meter: write the %s ledger: %w", day, err)
@@ -1007,8 +1020,23 @@ func (m *Meter) settledUp(inc map[string]int64) {
 	for id := range inc {
 		a := m.accounts[id]
 		a.seenDay, a.seen = "", 0
+		a.learned, a.guarded = nil, true
 		m.accounts[id] = a
 	}
+}
+
+// baseline is the entry of the run's ledger on a day that a write lost to an earlier meter, or
+// to this one, is netted against: what resolve read when it judged this meter's own write lost,
+// else what learn read for a run no write of this meter carries yet (a new leader: the old one's
+// 504 may still commit). Not ok when nothing can still commit there.
+func (m *Meter) baseline(a account, day string) (int64, bool) {
+	switch {
+	case a.seenDay != "":
+		return a.seen, a.seenDay == day
+	case !a.guarded:
+		return a.learned[day], true
+	}
+	return 0, false
 }
 
 // net is what this write adds once late, the micro-USD of each run that an earlier write
@@ -1019,12 +1047,20 @@ func (m *Meter) net(delta, inc map[string]int64, keys map[string][]string, late 
 	for id, n := range inc {
 		g := late[id]
 		if g > 0 {
+			cut := max(0, g-m.accounts[id].lift)
 			for _, k := range keys[id] {
-				add[k] = max(0, add[k]-max(0, g-m.accounts[id].lift))
+				if cut > add[k] {
+					m.log().Warn("meter: a late write landed more than this tick charges, the excess is not netted",
+						"run", id, "key", k, "late", cut, "charge", add[k])
+				}
+				add[k] = max(0, add[k]-cut)
 			}
 		}
 		if n-g > 0 {
 			addInc[id] = n - g
+		} else if g > n {
+			m.log().Warn("meter: a late write landed more than this tick settles, the excess is not netted",
+				"run", id, "late", g, "settles", n)
 		}
 	}
 	for k, n := range add {
@@ -1042,8 +1078,20 @@ func (m *Meter) net(delta, inc map[string]int64, keys map[string][]string, late 
 func (m *Meter) fence(ctx context.Context, day string, inc map[string]int64) (map[string]int64, error) {
 	days := map[string]bool{}
 	for id := range inc {
-		if a := m.accounts[id]; a.seenDay != "" && a.seenDay != day {
-			days[a.seenDay] = true
+		a := m.accounts[id]
+		switch {
+		case a.seenDay != "":
+			if a.seenDay != day {
+				days[a.seenDay] = true
+			}
+		case !a.guarded: // a new leader: the days the run was charged on, and the one just ended
+			for d := range a.learned {
+				days[d] = true
+			}
+			if now := m.now().UTC(); now.Sub(now.Truncate(24*time.Hour)) < fenceYesterday {
+				days[now.Add(-24*time.Hour).Format(api.LedgerDayLayout)] = true
+			}
+			delete(days, day)
 		}
 	}
 	late := map[string]int64{}
@@ -1086,8 +1134,8 @@ func (m *Meter) fence(ctx context.Context, day string, inc map[string]int64) (ma
 			}
 		}
 		for id := range inc {
-			if a := m.accounts[id]; a.seenDay == d {
-				late[id] += max(0, entries[id]-a.seen)
+			if base, ok := m.baseline(m.accounts[id], d); ok {
+				late[id] += max(0, entries[id]-base)
 				m.noteOf(d, entries, id)
 			}
 		}
