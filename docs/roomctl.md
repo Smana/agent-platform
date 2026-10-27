@@ -121,7 +121,7 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 - `room_checkout {room}` is `roomctl checkout`, for your agent. The repository and the pull request
   come from the broker's row of the room, and the workspace is your client's first root, else
   where `roomctl mcp` runs.
-- No tool approves, steers, stops or labels. Approvals happen on the room page.
+- No tool approves, steers or stops, and none labels on the agent's say: only your answer to the start form does. Approvals happen on the room page.
 - What your agent queues is stored labelled as [machine-sent](api.md#machine-sent-text).
 - Every request reads `token.json` and refreshes the token when it has expired, one refresh at a
   time. When the refresh is refused, a call answers `not_logged_in`: run `roomctl login` in a
@@ -144,23 +144,33 @@ So the checkout works like this:
   new worktree.
 - The worktree path is `<repository>.<room>` in the repository's own parent directory. A path that
   already exists is refused, never overwritten.
-- It lists what the branch changed against its merge base with your `HEAD`. If a changed file is one
-  of the paths below, or is under your repository's in-tree `core.hooksPath`, it asks first: a form
-  whose `create` field defaults to no (`room_checkout`), or `y/N` on a terminal (`roomctl checkout`).
+- It fetches `agent/<room>`, resolves it once to a commit, and checks, asks about and creates only
+  that commit: a fetch that moves the branch while a form is open changes nothing. It verifies the
+  new worktree is at that commit, and removes it otherwise. A killed or failed checkout is removed,
+  never left to be reused.
+- A local branch `agent/<room>` that is not that commit is refused, with the command to drop or move
+  it. Every git call is bounded (2 minutes for the fetch, 30 seconds for the rest), and recursion into
+  submodules is off.
+- It lists what the branch changed against its merge base with your `HEAD`, and against `HEAD`
+  itself. If a changed file is one of the paths below, or is under your repository's in-tree
+  `core.hooksPath`, it asks first: a form whose `create` field defaults to no (`room_checkout`),
+  or `y/N` on a terminal (`roomctl checkout`). The file names are shown in code spans, cleaned.
   `core.hooksPath` is read from your effective git config, and an `origin` with several URLs is refused.
   A client with no forms, or a command with no terminal, is refused and told the files.
 
-The paths: `.claude/settings.json`, `.claude/settings.local.json`, `.claude/skills/`,
-`.claude/agents/`, `.opencode/plugins/`, `.mcp.json`, `.vscode/tasks.json`, `.vscode/settings.json`,
-`.vscode/mcp.json`, `.devcontainer/`, `.envrc`, `mise.toml`, `.mise.toml`, `mise.local.toml`,
-`opencode.json`, `opencode.jsonc`, `.codex/config.toml`, `.gemini/settings.json`,
-`.cursor/mcp.json`, `.github/mcp.json`, `.husky/`, `.githooks/`, `.pre-commit-config.yaml`,
-`lefthook.yml` and `.lefthook.yml`, in the repository root or any folder of it, in any case.
-A changed path that is a folder of one of them counts too (a file named `.claude`), and so does
-every symlink the branch adds or changes, whatever its name: a link `.claude -> x` with
-`x/settings.json` would otherwise hide the file. A symlink the repository already has at one of
-these places is asked about as well. Flagging more is safe, since a flag only means "ask first".
-The list is `flagged` in `internal/roomctl/checkout.go`; the tests hold a fixture per entry.
+The paths: the folders `.claude/`, `.cursor/`, `.opencode/`, `.gemini/`, `.codex/`, `.vscode/`,
+`.agents/`, `.devcontainer/`, `.github/skills/`, `.husky/` and `.githooks/`, whole (settings, hooks,
+tools, plugins, skills and scripts all live there), and the files `.github/mcp.json`, `.mcp.json`,
+`opencode.json`, `opencode.jsonc`, `.envrc`, `mise.toml`, `.mise.toml`, `mise.local.toml`,
+`.gitmodules`, `.lfsconfig`, `.pre-commit-config.yaml`, `lefthook.yml` and `.lefthook.yml`, in the
+repository root or any folder of it, in ASCII case. A changed path with a byte past ASCII anywhere
+in its name is flagged too, since a filesystem may fold it into one of these names. A changed path
+that is a folder of one of them counts (a file named `.claude`), and so does every symlink the branch
+adds or changes, whatever its name: a link `.claude -> x` with `x/settings.json` would otherwise hide
+the file. A symlink the branch's tree already has at one of these places, in any folder, is asked
+about as well, since the branch can change its target. Flagging more is safe, since a flag only
+means "ask first". The list is `flagged` in `internal/roomctl/checkout.go`; the tests hold a
+fixture per entry.
 
 ## The factory-handoff skill
 

@@ -47,6 +47,7 @@ func link(t *testing.T, root, rel, target string) {
 }
 
 type fixture struct {
+	seed               string // the clone that pushes to origin; on agent/26zfnuxm when there is one
 	origin, ws, parent string
 	marker             string // the file the clone's hooks touch
 }
@@ -69,6 +70,7 @@ func newFixture(t *testing.T, o fixtureOpts) fixture {
 	root, _ = filepath.EvalSymlinks(root)
 	f := fixture{origin: filepath.Join(root, "origin.git"), parent: filepath.Join(root, "work"), marker: filepath.Join(root, "marker")}
 	seed := filepath.Join(root, "seed")
+	f.seed = seed
 	for _, d := range []string{f.origin, seed, f.parent} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -384,9 +386,10 @@ func TestCheckoutRefusesAHostileRoomOrRepository(t *testing.T) {
 	}
 }
 
-// sync with roomctl.Agents (PR 5): every project MCP snippet path `roomctl setup` writes.
+// sync with roomctl.Agents (PR 5): every project MCP snippet path and skill folder `roomctl setup` writes.
 func TestFlaggedCoversEveryProjectSnippet(t *testing.T) {
-	for _, p := range []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".vscode/mcp.json", ".github/mcp.json"} {
+	for _, p := range []string{".mcp.json", "opencode.json", ".codex/config.toml", ".gemini/settings.json", ".cursor/mcp.json", ".vscode/mcp.json", ".github/mcp.json",
+		".agents/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".gemini/skills/x/SKILL.md", ".cursor/skills/x/SKILL.md", ".github/skills/x/SKILL.md"} {
 		if !isFlagged(p, flagged) {
 			t.Errorf("%s is not flagged", p)
 		}
@@ -493,6 +496,10 @@ func TestIsFlagged(t *testing.T) {
 		".claude": true, "sub/.claude": true, ".vscode": true, ".github": true, ".claude/skills/a.md": true,
 		".claude/agents/a.md": true, ".devcontainer/devcontainer.json": true, ".vscode/settings.json": true,
 		".vscode/mcp.json": true, ".github/mcp.json": true, "sub/.MCP.json": true,
+		".cursor/hooks.json": true, ".claude/hooks/pre.sh": true, ".opencode/tool/x.ts": true, ".opencode/plugin/x.ts": true,
+		".agents/skills/a/SKILL.md": true, ".gemini/skills/a/SKILL.md": true, ".cursor/skills/a/SKILL.md": true, ".github/skills/a/SKILL.md": true,
+		".codex/prompts/x.md": true, ".gitmodules": true, ".lfsconfig": true, "sub/.CLAUDE/x": true,
+		"docs/café.md": true, ".huſky/x": true, "miſe.toml": true, ".c\u200claude/x": true,
 		".github/workflows/ci.yml": false, "src/claude.go": false, "README.md": false, ".claudex": false,
 	} {
 		if got := isFlagged(p, flagged); got != want {
@@ -579,5 +586,212 @@ func TestRelayRoomCheckoutReportsBrokerErrors(t *testing.T) {
 	text, _, isErr := resultOf(first(checkoutCall(t, s, "26zfnuxm", t.TempDir(), nil)))
 	if !isErr || strings.Contains(text, "unknown_room") || !strings.Contains(text, "not_checked_out") {
 		t.Fatalf("%q", text)
+	}
+}
+
+// advance pushes a new commit to agent/26zfnuxm from the seed, and fetches it into the workspace.
+func (f fixture) advance(t *testing.T, files map[string]string) string {
+	t.Helper()
+	for rel, body := range files {
+		put(t, f.seed, rel, body, 0o644)
+	}
+	gitIn(t, f.seed, "add", "-A")
+	gitIn(t, f.seed, "commit", "-q", "-m", "later")
+	gitIn(t, f.seed, "push", "-q", "origin", "agent/26zfnuxm")
+	gitIn(t, f.ws, "fetch", "-q", "origin", "+refs/heads/agent/26zfnuxm:refs/remotes/origin/agent/26zfnuxm")
+	return gitIn(t, f.seed, "rev-parse", "HEAD")
+}
+
+// The commit the developer confirms is the commit that is checked out: a fetch while the form is
+// open moves the remote ref, and the worktree still gets the one that was checked.
+func TestCheckoutCreatesTheCommitThatWasChecked(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"mise.toml": "[tasks]\n"}})
+	checked := gitIn(t, f.seed, "rev-parse", "HEAD")
+	co := f.checkout(RunGit)
+	co.Confirm = func(context.Context, []string) (bool, error) {
+		f.advance(t, map[string]string{".claude/settings.json": "{\"hooks\":1}\n"}) // what a later fetch brings
+		return true, nil
+	}
+	got, err := co.Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head := gitIn(t, got.Path, "rev-parse", "HEAD"); head != checked {
+		t.Fatalf("checked out %s, confirmed %s", head, checked)
+	}
+	if _, err := os.Stat(filepath.Join(got.Path, ".claude", "settings.json")); err == nil {
+		t.Fatal("the unconfirmed file is in the worktree")
+	}
+	if up := gitIn(t, got.Path, "rev-parse", "--abbrev-ref", "agent/26zfnuxm@{upstream}"); up != "origin/agent/26zfnuxm" {
+		t.Fatalf("upstream %q", up)
+	}
+}
+
+// A local branch that is not the commit that was checked is never used silently.
+func TestCheckoutRefusesAStaleLocalBranch(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	gitIn(t, f.ws, "branch", "agent/26zfnuxm", "main")
+	_, err := f.checkout(RunGit).Run(t.Context())
+	r := asRefusal(t, err)
+	if !strings.Contains(r.Error(), "agent/26zfnuxm") || !strings.Contains(r.Error(), "git branch") {
+		t.Fatalf("%v", r)
+	}
+	if _, err := os.Stat(filepath.Join(f.parent, "a.26zfnuxm")); err == nil {
+		t.Fatal("created")
+	}
+	// the same commit is fine
+	sha := gitIn(t, f.seed, "rev-parse", "HEAD")
+	gitIn(t, f.ws, "branch", "-f", "agent/26zfnuxm", sha)
+	got, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil || gitIn(t, got.Path, "rev-parse", "HEAD") != sha {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// failAfter runs the real git, then fails the call that starts with prefix.
+func failAfter(prefix string, then func(args []string), err error) Git {
+	return func(ctx context.Context, dir string, args ...string) (string, error) {
+		out, e := RunGit(ctx, dir, args...)
+		if strings.HasPrefix(strings.Join(args, " "), prefix) {
+			if then != nil {
+				then(args)
+			}
+			return out, err
+		}
+		return out, e
+	}
+}
+
+// A worktree add that ends badly (a cancellation kills git) leaves nothing half-made behind.
+func TestCheckoutRemovesAWorktreeThatWasNotFinished(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	_, err := f.checkout(failAfter("worktree add", nil, context.Canceled)).Run(t.Context())
+	if err == nil {
+		t.Fatal("expected the failure")
+	}
+	if _, err := os.Stat(filepath.Join(f.parent, "a.26zfnuxm")); err == nil {
+		t.Fatal("a half-made worktree is left")
+	}
+	if list := gitIn(t, f.ws, "worktree", "list", "--porcelain"); strings.Contains(list, "a.26zfnuxm") {
+		t.Fatalf("still registered: %s", list)
+	}
+	if got, err := f.checkout(RunGit).Run(t.Context()); err != nil || got.Reused {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// What the add made must be the commit that was checked, or it is removed.
+func TestCheckoutRemovesAWorktreeAtAnotherCommit(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	other := gitIn(t, f.ws, "rev-parse", "main")
+	g := failAfter("worktree add", func(args []string) {
+		gitIn(t, args[len(args)-2], "reset", "-q", "--hard", other) // the new path is the second to last argument
+	}, nil)
+	_, err := f.checkout(g).Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "not the commit") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.parent, "a.26zfnuxm")); err == nil {
+		t.Fatal("left")
+	}
+}
+
+// A worktree git is still initialising is not a worktree to reuse.
+func TestCheckoutDoesNotReuseAnInitializingWorktree(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	first, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.ws, "worktree", "lock", "--reason", "initializing", first.Path)
+	got, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil || got.Reused {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// A link main already has, in a folder and in another case, whose target the branch changes.
+func TestCheckoutFlagsAnExistingLinkInAnyFolderAndCase(t *testing.T) {
+	f := newFixture(t, fixtureOpts{
+		main: map[string]string{"x/settings.json": "{}\n", "sub/keep": "k\n"}, mainLink: map[string]string{"sub/.Claude": "../x"},
+		branch: map[string]string{"x/settings.json": "{\"hooks\":1}\n"}})
+	c := &confirmer{answer: false}
+	co := f.checkout(RunGit)
+	co.Confirm = c.confirm
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	if len(c.asked) != 1 || !slices.Contains(c.asked[0], "sub/.Claude") {
+		t.Fatalf("%q", c.asked)
+	}
+}
+
+// A flagged file the branch carries unchanged, which HEAD has since fixed, is still asked about.
+func TestCheckoutDiffsAgainstHeadToo(t *testing.T) {
+	f := newFixture(t, fixtureOpts{main: map[string]string{".mcp.json": "{}\n"}, branch: map[string]string{"x": "x"}})
+	put(t, f.ws, ".mcp.json", "{\"fixed\":1}\n", 0o644)
+	gitIn(t, f.ws, "commit", "-q", "-am", "fix the MCP config")
+	c := &confirmer{answer: false}
+	co := f.checkout(RunGit)
+	co.Confirm = c.confirm
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	if len(c.asked) != 1 || !slices.Contains(c.asked[0], ".mcp.json") {
+		t.Fatalf("%q", c.asked)
+	}
+}
+
+func TestCodeSpan(t *testing.T) {
+	for in, want := range map[string]string{
+		".mcp.json":                 "`.mcp.json`",
+		"a`b":                       "`a'b`",
+		"[x](https://evil.example)": "`[x](https://evil.example)`",
+		strings.Repeat("a", 300):    "`" + strings.Repeat("a", 117) + "...`",
+	} {
+		if got := CodeSpan(in); got != want {
+			t.Errorf("CodeSpan(%q) = %q", in, got)
+		}
+	}
+}
+
+func TestRelayCheckoutFormShowsNamesInCodeSpans(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n", "sub/.claude/x`[ok](https:/e.example)": "x\n"}})
+	b := newMCPBroker(t)
+	b.roomsFn = func(int, map[string]any) []map[string]any {
+		return []map[string]any{row("26zfnuxm", func(m map[string]any) { m["repository"], m["pr"] = "Smana/a", 7 })}
+	}
+	s := relayTo(t, b, tok)
+	s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"roots": map[string]any{}, "elicitation": map[string]any{}}})
+	_, forms := checkoutCall(t, s, "26zfnuxm", f.ws, map[string]any{"action": "decline"})
+	msg := fmt.Sprint(forms[0]["params"].(map[string]any)["message"])
+	if !strings.Contains(msg, "`.mcp.json`") || !strings.Contains(msg, "`sub/.claude/x'[ok](https:/e.example)`") {
+		t.Fatalf("%q", msg)
+	}
+}
+
+// A cancelled call takes back its form: the client is told, and stops asking the developer.
+func TestRelayCancellingCheckoutCancelsItsForm(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
+	b := newMCPBroker(t)
+	b.roomsFn = func(int, map[string]any) []map[string]any {
+		return []map[string]any{row("26zfnuxm", func(m map[string]any) { m["repository"], m["pr"] = "Smana/a", 7 })}
+	}
+	s := relayTo(t, b, tok)
+	s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"roots": map[string]any{}, "elicitation": map[string]any{}}})
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": map[string]any{"name": toolRoomCheckout, "arguments": map[string]any{"room": "26zfnuxm"}}})
+	var form map[string]any
+	for form == nil {
+		m := s.next(t)
+		switch m["method"] {
+		case "roots/list":
+			s.send(t, map[string]any{"jsonrpc": "2.0", "id": m["id"], "result": map[string]any{"roots": []any{map[string]any{"uri": "file://" + f.ws}}}})
+		case "elicitation/create":
+			form = m
+		}
+	}
+	cancelOf(s, t, 9)
+	m := s.next(t)
+	p, _ := m["params"].(map[string]any)
+	if m["method"] != "notifications/cancelled" || p["requestId"] != form["id"] {
+		t.Fatalf("%v", m)
 	}
 }

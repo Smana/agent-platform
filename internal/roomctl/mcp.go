@@ -368,6 +368,9 @@ func (r *Relay) ask(ctx context.Context, method string, params any) (message, er
 	defer cancel()
 	select {
 	case <-ctx.Done():
+		// Take the question back: the client stops asking its human, and its answer is not waited for.
+		r.write(map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled",
+			"params": map[string]any{"requestId": id, "reason": "the request that needed the answer ended"}})
 		return message{}, ctx.Err()
 	case raw := <-ch:
 		var m message
