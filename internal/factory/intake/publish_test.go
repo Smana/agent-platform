@@ -91,8 +91,8 @@ func TestPublishFilesTheProposalOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := f.Created(); len(got) != 1 || !strings.HasPrefix(got[0], "docs(alerts): the crash-loop rule fires on a completed Job\n") ||
-		!strings.Contains(got[0], "\n\n---\nPublished by @Smana from agent factory task `3buqdlot`.\nlabels: ") || !strings.HasSuffix(got[0], "labels: ") {
-		t.Fatalf("the draft's title, a footer and no label: %q", got)
+		!strings.Contains(got[0], "\n\n---\nPublished by @Smana from agent factory task `3buqdlot`.\nlabels: ") || !strings.HasSuffix(got[0], "labels: factory/published-from:3buqdlot") {
+		t.Fatalf("the draft's title, a footer and only the marker that makes a retry find it, never factory/ready: %q", got)
 	}
 	tk := getTask(t, c, "3buqdlot")
 	if pub := tk.Status.Published; pub == nil || pub.Issue != 501 || pub.By != "smana" || !pub.At.Time.Equal(t0.Add(time.Hour)) ||
@@ -256,5 +256,47 @@ func TestOriginOfAStartedIssue(t *testing.T) {
 				t.Fatalf("%+v", started)
 			}
 		})
+	}
+}
+
+// A crash between CreateIssue and the record, or a record that failed, leaves an issue the label
+// still asks for: the retry reuses it, and files no second one.
+func TestPublishReusesTheIssueAnEarlierAttemptFiled(t *testing.T) {
+	p, f, c := publishing(t, proposalOK, investigated("3buqdlot"), "Smana")
+	f.SetIssue(forge.Issue{Number: 88, Title: "docs(alerts): x", Labels: []string{"factory/published-from:3buqdlot"}})
+	f.SetIssue(forge.Issue{Number: 89, Title: "another task's", Labels: []string{"factory/published-from:other000"}})
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	tk := getTask(t, c, "3buqdlot")
+	if len(f.Created()) != 0 || tk.Status.Published == nil || tk.Status.Published.Issue != 88 || tk.Labels[v1alpha1.LabelPublishedIssue] != "88" {
+		t.Fatalf("%v %+v %v", f.Created(), tk.Status.Published, tk.Labels)
+	}
+	if cs := strings.Join(f.Comments(7), "\n"); !strings.Contains(cs, "Published as #88") || !slices.Contains(f.Removed(7), LabelPublish) {
+		t.Fatalf("%q %v", cs, f.Removed(7))
+	}
+}
+
+// The kill switch pauses publishing, as it pauses factory/ready: the label waits.
+func TestPublishWaitsOutTheKillSwitch(t *testing.T) {
+	p, f, _ := publishing(t, proposalOK, investigated("3buqdlot"), "Smana")
+	p.Stopped = func(context.Context) bool { return true }
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Created()) != 0 || len(f.Comments(7)) != 0 || len(f.Removed(7)) != 0 {
+		t.Fatalf("%v %v %v", f.Created(), f.Comments(7), f.Removed(7))
+	}
+}
+
+// Without a redactor nothing is published: no scan, no publication.
+func TestPublishWithoutARedactorRefuses(t *testing.T) {
+	p, f, _ := publishing(t, proposalOK, investigated("3buqdlot"), "Smana")
+	p.Redact = nil
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if cs := strings.Join(f.Comments(7), "\n"); len(f.Created()) != 0 || !strings.Contains(cs, "looks like a secret") {
+		t.Fatalf("%v %q", f.Created(), cs)
 	}
 }

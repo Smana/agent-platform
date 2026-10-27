@@ -576,11 +576,12 @@ sequenceDiagram
 task. Only the last label event's actor counts, through the same maintainer and write checks as
 `factory/ready`; anyone else's is answered `unauthorised_labeller` and removed. The proposal is the
 last handoff to `implementer` that the task's triager run recorded itself. Its first line is the
-title and the rest the body, held to the issue template, then made inert (every link, bare URL and
-address becomes a code span, no HTML survives, no hidden character), then scanned by the redactor.
+title and the rest the body, held to the issue template, then made inert (every link, bare URL,
+address, @mention and issue reference becomes a code span, no HTML survives, no hidden character), then scanned by the redactor.
 A refusal (`task_not_ended`, `no_proposal`, `invalid_draft`, `redacted`) is a comment on the stub and
-the label removed; nothing is created. The factory files the issue **once per task**, with no label:
-the maintainer reads it on GitHub and starts it with `factory/ready`, which is the second, money
+the label removed; nothing is created. The factory files the issue **once per task**, with no trigger label (only a marker,
+`factory/published-from:<task>`, which grants nothing and lets a retry after a crash find the issue
+instead of filing a second): the maintainer reads it on GitHub and starts it with `factory/ready`, which is the second, money
 spending decision.
 
 **`spec.origin`.** The poller sets it on a new `factory/ready` task only when a task of the same

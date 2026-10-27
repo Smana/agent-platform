@@ -89,18 +89,36 @@ func (p *IssuePoller) publishOne(ctx context.Context, n int) error {
 	case t.Status.Phase != v1alpha1.PhaseDone: // a stopped, closed or empty task's handoff is no proposal
 		return p.refusePublish(ctx, n, last, "no_proposal")
 	}
-	title, body, reason, err := p.draftOf(ctx, t)
-	switch {
-	case err != nil:
-		return err
-	case reason != "":
-		return p.refusePublish(ctx, n, last, reason)
-	}
-	iss, err := p.Forge.CreateIssue(ctx, title,
-		body+fmt.Sprintf("\n\n---\nPublished by @%s from agent factory task `%s`.", last.Actor, t.Name), nil) // no label: the maintainer starts it
+	// Filing is made idempotent by a marker label on the new issue, which grants nothing: a crash
+	// between CreateIssue and the record, or a record that failed, leaves an issue the retry finds
+	// and reuses, so a re-label never files a duplicate.
+	marker := PublishedFromLabel(t.Name)
+	found, err := p.Forge.IssuesLabelled(ctx, marker)
 	if err != nil {
-		return fmt.Errorf("create the issue: %w", err)
+		return fmt.Errorf("look for an earlier attempt: %w", err)
 	}
+	filed := forge.Issue{}
+	for _, i := range found {
+		if filed.Number == 0 || i.Number < filed.Number {
+			filed = i
+		}
+	}
+	if filed.Number == 0 {
+		title, body, reason, err := p.draftOf(ctx, t)
+		switch {
+		case err != nil:
+			return err
+		case reason != "":
+			return p.refusePublish(ctx, n, last, reason)
+		}
+		// No factory/ready: the maintainer reads the issue and starts it.
+		filed, err = p.Forge.CreateIssue(ctx, title,
+			body+fmt.Sprintf("\n\n---\nPublished by @%s from agent factory task `%s`.", last.Actor, t.Name), []string{marker})
+		if err != nil {
+			return fmt.Errorf("create the issue: %w", err)
+		}
+	}
+	iss := filed
 	// The label stays only while the issue is unrecorded: past this point a failure is logged with
 	// the issue's number and the label still goes, so a retry files no second issue.
 	by := strings.ToLower(last.Actor)
@@ -112,6 +130,9 @@ func (p *IssuePoller) publishOne(ctx context.Context, n int) error {
 	}
 	return p.Forge.RemoveLabel(ctx, n, LabelPublish)
 }
+
+// PublishedFromLabel marks the issue filed from task name's proposal: the retry's way to find it.
+func PublishedFromLabel(name string) string { return "factory/published-from:" + name }
 
 // investigateOf is the newest investigate task of this repository's issue n, nil when there is none.
 func (p *IssuePoller) investigateOf(ctx context.Context, n int) (*v1alpha1.Task, error) {

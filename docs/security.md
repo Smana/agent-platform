@@ -206,9 +206,9 @@ principal is never allowed `internal`, and its request refuses an `incident`.
 
 `factory/publish` is the one place internal text becomes public, and a maintainer's label starts it.
 The proposal is the triager run's own handoff, never another writer's. It is held to the issue
-template, made inert (`sanitize.Public`: no link, raw HTML, image or hidden character survives; URLs
-and addresses are kept in code spans), and scanned by the redactor; a hit publishes nothing. The
-factory files it once, with no label, and records it on the task. An origin is that record, never
+template, made inert (`sanitize.Public`: no link, raw HTML, image or hidden character survives; URLs,
+addresses, @mentions and issue references are kept in code spans, so none pings or links), and scanned by the redactor; a hit publishes nothing. The
+factory files it once, with no trigger label, and records it on the task. An origin is that record, never
 issue text.
 
 ## Webhooks

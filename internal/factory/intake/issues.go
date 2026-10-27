@@ -56,6 +56,7 @@ type issueForge interface {
 	AgentPulls(ctx context.Context) ([]forge.AgentPull, error)
 	AddLabels(ctx context.Context, number int, labels ...string) error
 	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
+	IssuesLabelled(ctx context.Context, label string) ([]forge.Issue, error)
 }
 
 // errorCounter counts a failed poll, a label left for the next one, and a label refused on its
