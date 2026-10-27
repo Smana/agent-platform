@@ -397,10 +397,33 @@ class TimeoutRetryTest(unittest.TestCase):
                 self.assertEqual(len(FakeLLM.calls), 1)
                 self.assertNotIn("model retry", err)
 
-    def test_a_stream_that_may_have_produced_tokens_is_not_retried(self):
-        out, _ = self.run_call("async", [FakeTimeout("a"), "ok"], on_token=lambda t: None)
-        self.assertIsInstance(out, FakeTimeout)
-        self.assertEqual(len(FakeLLM.calls), 1)
+    def test_a_timeout_before_the_first_token_is_retried_even_with_a_stream_callback(self):
+        # SDK 1.56 always calls agenerate(on_token=stream.token_callback), so on_token is never None
+        # on the live path: what matters is whether a token came out.
+        got = []
+        out, err = self.run_call("async", [FakeTimeout("hard timeout"), "ok"], on_token=got.append)
+        self.assertEqual((out, len(FakeLLM.calls)), ("ok", 2))
+        self.assertIn("model retry timeout 1/1", err)
+        # the callback the retried call received still reaches the caller's
+        FakeLLM.calls[1][1]["on_token"]("t")
+        self.assertEqual(got, ["t"])
+
+    def test_a_timeout_after_a_token_was_emitted_is_not_retried(self):
+        got = []
+
+        async def emits_then_hangs(self, messages, **kwargs):
+            FakeLLM.calls.append(("agenerate", kwargs))
+            kwargs["on_token"]("first")
+            raise FakeTimeout("hard timeout after a token")
+
+        self.cls.agenerate = emits_then_hangs
+        self.assertTrue(load_site().patch_timeout_retry(self.cls, FakeTimeout))
+        FakeLLM.calls = []
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            with self.assertRaises(FakeTimeout):
+                asyncio.run(self.llm.agenerate([], on_token=got.append))
+        self.assertEqual((got, len(FakeLLM.calls)), (["first"], 1))
+        self.assertNotIn("model retry", err.getvalue())
 
     def test_an_sdk_without_the_entry_points_is_said_and_not_patched(self):
         class Bare:

@@ -196,7 +196,7 @@ def patch_timeout_retry(llm, timeout_error) -> bool:
     Live on gcp-0 (2026-10-27) a rare call hung on glm-5.3 via Z.ai (p99 was 82 s) and one timeout failed
     the whole run, twice. patch_model_retry cannot help: the SDK's window wraps its attempts, so a hang
     has no time left to retry inside it. Only that timeout is retried, once: never a 4xx or any other
-    error, and never a call that streams tokens to a callback, which may already have produced some."""
+    error, and never a call that already emitted a token to its stream callback."""
     sync_call = getattr(llm, "completion", None)
     async_call = getattr(llm, "agenerate", None)
     if sync_call is None or async_call is None:
@@ -204,27 +204,43 @@ def patch_timeout_retry(llm, timeout_error) -> bool:
               "one model timeout will end the run" % getattr(llm, "__name__", llm), file=sys.stderr, flush=True)
         return False
 
-    def again(exc, kwargs) -> bool:
-        if kwargs.get("on_token") is not None:
+    def attempt_kwargs(kwargs):
+        """kwargs for one attempt, with on_token wrapped to note that a token came out. SDK 1.56 always
+        passes a stream callback, so its presence says nothing: only a token already emitted does."""
+        seen = [False]
+        out = dict(kwargs)
+        cb = kwargs.get("on_token")
+        if cb is not None:
+            def on_token(*args, **kw):
+                seen[0] = True
+                return cb(*args, **kw)
+
+            out["on_token"] = on_token
+        return out, seen
+
+    def again(exc, seen) -> bool:
+        if seen[0]:
             return False
         _log_retry("agent-run model retry timeout 1/1: %s %s" % (type(exc).__name__, " ".join(str(exc).split())[:200]))
         return True
 
     def completion(self, *args, **kwargs):
+        kw, seen = attempt_kwargs(kwargs)
         try:
-            return sync_call(self, *args, **kwargs)
+            return sync_call(self, *args, **kw)
         except timeout_error as exc:
-            if not again(exc, kwargs):
+            if not again(exc, seen):
                 raise
-        return sync_call(self, *args, **kwargs)
+        return sync_call(self, *args, **attempt_kwargs(kwargs)[0])
 
     async def agenerate(self, *args, **kwargs):
+        kw, seen = attempt_kwargs(kwargs)
         try:
-            return await async_call(self, *args, **kwargs)
+            return await async_call(self, *args, **kw)
         except timeout_error as exc:
-            if not again(exc, kwargs):
+            if not again(exc, seen):
                 raise
-        return await async_call(self, *args, **kwargs)
+        return await async_call(self, *args, **attempt_kwargs(kwargs)[0])
 
     llm.completion = completion
     llm.agenerate = agenerate
