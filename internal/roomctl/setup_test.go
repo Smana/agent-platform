@@ -373,3 +373,84 @@ func TestSetupInstallsTheFactoryCommand(t *testing.T) {
 		}
 	}
 }
+
+// O8: OpenCode's background service keeps the config it started with, so sessions attached to it
+// have no factory tools although `opencode mcp list` says connected. setup says so, and restarts
+// the service only on a yes (a terminal's, or --restart-service), never silently.
+func TestSetupOpenCodeServiceRestart(t *testing.T) {
+	type rig struct {
+		ran      [][]string
+		status   string
+		statusEr error
+		asked    int
+	}
+	run := func(t *testing.T, r *rig, restart bool, ask func(string) (bool, error)) string {
+		t.Helper()
+		var out bytes.Buffer
+		s := Setup{Agent: Agents["opencode"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+			Run: func(_ context.Context, argv []string) error { r.ran = append(r.ran, argv); return nil },
+			Capture: func(_ context.Context, argv []string) (string, error) {
+				r.ran = append(r.ran, argv)
+				return r.status, r.statusEr
+			},
+			RestartService: restart, Ask: ask}
+		if err := s.Do(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	restarted := func(r *rig) bool {
+		return slices.ContainsFunc(r.ran, func(a []string) bool { return slices.Equal(a, []string{"opencode", "service", "restart"}) })
+	}
+	t.Run("running, no terminal: says it, restarts nothing", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, nil)
+		if restarted(r) || !strings.Contains(out, "opencode service restart") || !strings.Contains(out, "restart") || !strings.Contains(out, "factory tools") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("running, terminal says no", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, func(string) (bool, error) { r.asked++; return false, nil })
+		if restarted(r) || r.asked != 1 || !strings.Contains(out, "not restarted") {
+			t.Fatalf("restarted=%v asked=%d\n%s", restarted(r), r.asked, out)
+		}
+	})
+	t.Run("running, terminal says yes", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, func(string) (bool, error) { return true, nil })
+		if !restarted(r) || !strings.Contains(out, "restarted") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("--restart-service restarts without asking", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		run(t, r, true, func(string) (bool, error) { r.asked++; return false, nil })
+		if !restarted(r) || r.asked != 0 {
+			t.Fatalf("restarted=%v asked=%d", restarted(r), r.asked)
+		}
+	})
+	t.Run("not running: nothing said, nothing restarted", func(t *testing.T) {
+		r := &rig{status: "not running\n"}
+		out := run(t, r, true, nil)
+		if restarted(r) || strings.Contains(out, "service") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("no service subcommand: the hint only", func(t *testing.T) {
+		r := &rig{statusEr: errors.New("unknown command service")}
+		out := run(t, r, true, func(string) (bool, error) { return true, nil })
+		if restarted(r) || !strings.Contains(out, "opencode service restart") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("another client is not asked about it", func(t *testing.T) {
+		var out bytes.Buffer
+		s := Setup{Agent: Agents["claude"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+			Run:     func(context.Context, []string) error { return nil },
+			Capture: func(context.Context, []string) (string, error) { t.Error("captured"); return "", nil }}
+		if err := s.Do(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

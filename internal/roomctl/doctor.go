@@ -12,9 +12,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl/skill"
@@ -114,6 +116,10 @@ type Doctor struct {
 	Lookup    func(ctx context.Context, host string) ([]string, error) // nil is the system resolver
 	SkillDirs []string                                                 // where agents read skills from
 	Version   string                                                   // this binary's version
+	// OpenCodeConfigs are the OpenCode config files setup writes, and ServiceStart when its
+	// background service started (false: none runs); nil ServiceStart skips the check.
+	OpenCodeConfigs []string
+	ServiceStart    func() (time.Time, bool)
 }
 
 // Run prints one line per check and returns an error if any failed.
@@ -175,10 +181,40 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 		d.github(ctx, tok, report, warn)
 	}
 	d.skill(report, skip)
+	d.opencode(report, warn)
 	if failed {
 		return errors.New("doctor: a check failed, see the fix above")
 	}
 	return nil
+}
+
+// opencode warns when OpenCode's background service started before its config last changed: the
+// service keeps the config it started with, so its sessions have no factory tools although
+// `opencode mcp list` says connected. It says nothing when no service runs.
+func (d Doctor) opencode(report func(bool, string, string), warn func(string, string)) {
+	if d.ServiceStart == nil {
+		return
+	}
+	start, running := d.ServiceStart()
+	if !running {
+		return
+	}
+	var newest time.Time
+	var file string
+	for _, p := range d.OpenCodeConfigs {
+		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(newest) {
+			newest, file = fi.ModTime(), p
+		}
+	}
+	switch {
+	case file == "":
+		return
+	case start.Before(newest):
+		warn("opencode", fmt.Sprintf("the background service started %s, before %s changed (%s): its sessions have no factory tools until `opencode service restart`",
+			start.Format(time.DateTime), file, newest.Format(time.DateTime)))
+	default:
+		report(true, "opencode", "the background service started after its config changed")
+	}
 }
 
 // skill compares the roomctl-version each installed factory-handoff skill carries with this

@@ -63,7 +63,7 @@ const roomctlUsage = `usage: roomctl <command>
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
   mcp                             the factory's MCP tools on stdio, for a local coding agent:
                                   claude mcp add factory -- roomctl mcp
-  setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]
+  setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print] [--restart-service]
                                   register roomctl mcp with that agent (through its own CLI, else the
                                   snippet to paste) and install the factory-handoff skill; --print writes nothing
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
@@ -83,6 +83,9 @@ type Roomctl struct {
 	Home, Cwd string
 	LookPath  func(string) (string, error)
 	RunCmd    func(ctx context.Context, argv []string) error
+
+	// Capture runs a command and returns its output (setup's OpenCode service check); nil runs it.
+	Capture func(ctx context.Context, argv []string) (string, error)
 
 	// Ask puts a yes/no question to the developer; nil asks on the terminal when In is one, else
 	// nothing is asked. Tests set it.
@@ -164,8 +167,13 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		home, _, herr := r.homeAndCwd()
+		if herr != nil {
+			return herr
+		}
 		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath,
-			SkillDirs: dirs, Version: version.Version}.Run(ctx, r.Out)
+			SkillDirs: dirs, Version: version.Version,
+			OpenCodeConfigs: roomctl.OpenCodeConfigs(home), ServiceStart: opencodeServiceStart(ctx)}.Run(ctx, r.Out)
 	}
 	if cmd == "mcp" {
 		return r.mcp(ctx, cfg, tokPath, args)
@@ -309,24 +317,9 @@ func (r Roomctl) ConfirmConfig(next, old roomctl.Config, yes bool) error {
 	if yes {
 		return nil
 	}
-	ask := r.Ask
+	ask := r.asker()
 	if ask == nil {
-		in := r.In
-		if in == nil {
-			in = os.Stdin
-		}
-		f, ok := in.(*os.File)
-		if !ok || !term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
-			return nil // a script: --yes is what it would pass, and the values are above
-		}
-		ask = func(prompt string) (bool, error) {
-			_, _ = fmt.Fprint(hints, prompt)
-			line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
-			if err != nil && line == "" {
-				return false, err
-			}
-			return strings.EqualFold(strings.TrimSpace(line), "y"), nil
-		}
+		return nil // a script: --yes is what it would pass, and the values are above
 	}
 	ok, err := ask("Write this configuration? [y/N] ")
 	if err != nil {
@@ -336,6 +329,33 @@ func (r Roomctl) ConfirmConfig(next, old roomctl.Config, yes bool) error {
 		return errors.New("not written: the configuration is unchanged")
 	}
 	return nil
+}
+
+// asker asks a yes/no question on the terminal, or is r.Ask; nil when stdin is no terminal.
+func (r Roomctl) asker() func(string) (bool, error) {
+	if r.Ask != nil {
+		return r.Ask
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	f, ok := in.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
+		return nil
+	}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	return func(prompt string) (bool, error) {
+		_, _ = fmt.Fprint(hints, prompt)
+		line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
+		if err != nil && line == "" {
+			return false, err
+		}
+		return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+	}
 }
 
 // sameRegistrableDomain is whether two URLs' hosts share a registrable domain (rooms.ogenki.io and
@@ -455,16 +475,23 @@ func (r Roomctl) setup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	project := fs.Bool("project", false, "register and install in this repository, not for the user")
 	dry := fs.Bool("print", false, "print what setup would do, and write nothing")
+	restart := fs.Bool("restart-service", false, "opencode: restart its background service if it runs, without asking")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) != 1 {
-		return fmt.Errorf("setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]: %w", errors.Join(err, errors.New("one client")))
+		return fmt.Errorf("setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print] [--restart-service]: %w", errors.Join(err, errors.New("one client")))
 	}
 	agent, err := roomctl.LookupAgent(pos[0])
 	if err != nil {
 		return err
 	}
 	s := roomctl.Setup{Agent: agent, Project: *project, Print: *dry, Home: r.Home, Dir: r.Cwd, Version: version.Version,
-		LookPath: r.LookPath, Run: r.RunCmd, Out: r.Out}
+		LookPath: r.LookPath, Run: r.RunCmd, Out: r.Out, Capture: r.Capture, Ask: r.asker(), RestartService: *restart}
+	if s.Capture == nil {
+		s.Capture = func(ctx context.Context, argv []string) (string, error) {
+			out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output() //nolint:gosec // argv is opencode service status
+			return string(out), err
+		}
+	}
 	if s.LookPath == nil {
 		s.LookPath = exec.LookPath
 	}
@@ -678,4 +705,22 @@ func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) 
 	_, _ = fmt.Fprintf(hints, "%s: %s%s\n", got.Branch, note, map[bool]string{true: ", " + got.PR, false: ""}[got.PR != ""])
 	_, err = fmt.Fprintln(r.Out, got.Path)
 	return err
+}
+
+// opencodeServiceStart is when OpenCode's background service started, read from its process
+// (`ps -o lstart`); false when none runs or ps cannot say.
+func opencodeServiceStart(ctx context.Context) func() (time.Time, bool) {
+	return func() (time.Time, bool) {
+		out, err := exec.CommandContext(ctx, "pgrep", "-f", `(^|/)opencode(\.exe)? serve --service$`).Output()
+		pid := strings.Fields(string(out))
+		if err != nil || len(pid) == 0 {
+			return time.Time{}, false
+		}
+		ls, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", pid[0]).Output() //nolint:gosec // a pid pgrep printed
+		if err != nil {
+			return time.Time{}, false
+		}
+		t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.Join(strings.Fields(string(ls)), " "), time.Local)
+		return t, err == nil
+	}
 }

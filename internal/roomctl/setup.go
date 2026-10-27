@@ -139,6 +139,11 @@ func SkillDirs(home, dir string) []string {
 	return out
 }
 
+// OpenCodeConfigs are the user-level OpenCode config files setup writes and the doctor reads.
+func OpenCodeConfigs(home string) []string {
+	return []string{filepath.Join(home, ".config", "opencode", "opencode.json"), filepath.Join(home, ".config", "opencode", "opencode.jsonc")}
+}
+
 // SetupCmd is the command the agent will run: roomctl when the PATH finds it, else the absolute path
 // of this executable, so a binary that is not installed still works.
 func SetupCmd(lookPath func(string) (string, error), executable func() (string, error)) string {
@@ -162,6 +167,12 @@ type Setup struct {
 	LookPath       func(string) (string, error)
 	Run            func(ctx context.Context, argv []string) error
 	Out            io.Writer
+	// Capture runs argv and returns its output; nil skips the OpenCode service check.
+	Capture func(ctx context.Context, argv []string) (string, error)
+	// Ask puts a yes/no question to the developer; nil when there is no terminal.
+	Ask func(prompt string) (bool, error)
+	// RestartService restarts OpenCode's background service without asking (--restart-service).
+	RestartService bool
 }
 
 // resolve places a ~/ path under home and any other under dir.
@@ -236,10 +247,51 @@ func (s Setup) Do(ctx context.Context) error {
 		if _, err := fmt.Fprintln(s.Out, line); err != nil {
 			return err
 		}
+		if err := s.opencodeService(ctx); err != nil {
+			return err
+		}
 	} else if err := s.printSnippet(snippet, path); err != nil {
 		return err
 	}
 	_, err = io.WriteString(s.Out, s.notes(warn))
+	return err
+}
+
+// opencodeService tells a developer whose OpenCode background service is running that it keeps the
+// config it started with: sessions attached to it have no factory tools, though `opencode mcp list`
+// says connected. It restarts the service only on a yes, never silently, since other sessions may be
+// attached. Without the binary's service subcommand it prints the hint alone.
+func (s Setup) opencodeService(ctx context.Context) error {
+	if s.Agent.Name != "opencode" || s.Capture == nil {
+		return nil
+	}
+	const restart = "opencode service restart"
+	out, err := s.Capture(ctx, []string{"opencode", "service", "status"})
+	if err != nil {
+		_, err = fmt.Fprintf(s.Out, "could not check %q: if you use OpenCode's background service, run `%s` so its sessions see the factory tools\n", "opencode service status", restart)
+		return err
+	}
+	if !strings.Contains(out, "://") { // status prints the service's URL while it runs
+		return nil
+	}
+	if _, err := fmt.Fprintf(s.Out, "OpenCode's background service is running (%s) and keeps the config it started with: sessions attached to it have no factory tools until it restarts (`%s`, which also disconnects them).\n", OneLine(out), restart); err != nil {
+		return err
+	}
+	yes := s.RestartService
+	if !yes && s.Ask != nil {
+		var aerr error
+		if yes, aerr = s.Ask("Restart it now? Other OpenCode sessions attached to it will be disconnected. [y/N] "); aerr != nil {
+			return aerr
+		}
+	}
+	if !yes {
+		_, err := fmt.Fprintln(s.Out, "not restarted: run it yourself when no session needs the service")
+		return err
+	}
+	if err := s.Run(ctx, []string{"opencode", "service", "restart"}); err != nil {
+		return fmt.Errorf("opencode service restart: %w", err)
+	}
+	_, err = fmt.Fprintln(s.Out, "restarted OpenCode's background service")
 	return err
 }
 

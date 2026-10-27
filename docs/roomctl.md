@@ -141,6 +141,18 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 The [factory-handoff skill](#the-factory-handoff-skill) does the same jobs through the shell, for an
 agent with no MCP configuration. Configure one of the two.
 
+### OpenCode's background service
+
+OpenCode v2 runs a background service (`opencode service start|restart|status|stop`) that keeps the
+config it started with. A service started before `roomctl setup opencode` gives its attached sessions
+no factory tools, while `opencode mcp list` still says `factory` is connected. After it registers the
+server, `setup opencode` runs `opencode service status`: when the service runs it says so and asks
+`y/N` on a terminal before running `opencode service restart`; `--restart-service` restarts without
+asking. It never restarts silently, since other sessions may be attached; without a terminal or the
+flag it prints the command. When the binary or its `service` subcommand is missing it prints the hint
+alone. `roomctl doctor` warns (`warn opencode`) when the service started before the OpenCode config
+file's last change.
+
 ### Short commands
 
 Claude Code lists the MCP prompts as `/factory:handoff`, but typing that is rejected as an unknown

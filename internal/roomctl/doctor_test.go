@@ -376,3 +376,46 @@ func TestDoctorProbeTriesOtherRepositories(t *testing.T) {
 		})
 	}
 }
+
+// O8: the doctor warns when OpenCode's background service started before its config changed.
+func TestDoctorOpenCodeServiceStartedBeforeTheConfig(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "opencode.json")
+	if err := os.WriteFile(cfg, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(cfg, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		start   func() (time.Time, bool)
+		want    []string
+		wantNot []string
+	}{
+		"started before the config": {func() (time.Time, bool) { return changed.Add(-time.Hour), true },
+			[]string{"warn opencode", "opencode service restart"}, []string{"FAIL"}},
+		"started after the config": {func() (time.Time, bool) { return changed.Add(time.Minute), true },
+			[]string{"ok   opencode"}, []string{"warn opencode"}},
+		"no service running": {func() (time.Time, bool) { return time.Time{}, false }, nil, []string{"opencode:"}},
+		"not asked":          {nil, nil, []string{"opencode:"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newDoctorRig(t)
+			r.d.OpenCodeConfigs, r.d.ServiceStart = []string{cfg, cfg + ".missing"}, tc.start
+			var out strings.Builder
+			if err := r.d.Run(t.Context(), &out); err != nil {
+				t.Fatalf("%v\n%s", err, &out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("no %q in:\n%s", w, &out)
+				}
+			}
+			for _, w := range tc.wantNot {
+				if strings.Contains(out.String(), w) {
+					t.Errorf("%q in:\n%s", w, &out)
+				}
+			}
+		})
+	}
+}

@@ -3,9 +3,11 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -191,6 +193,30 @@ func TestSameRegistrableDomain(t *testing.T) {
 	} {
 		if got := sameRegistrableDomain(tc.a, tc.b); got != tc.want {
 			t.Errorf("%s vs %s: %v", tc.a, tc.b, got)
+		}
+	}
+}
+
+// O8: setup opencode --restart-service restarts a running background service, and without the
+// flag or a terminal it only says so.
+func TestRoomctlSetupOpenCodeRestartsTheServiceOnTheFlag(t *testing.T) {
+	for flagOn, wantRestart := range map[bool]bool{true: true, false: false} {
+		var ran [][]string
+		out := &strings.Builder{}
+		r := Roomctl{Dir: t.TempDir(), Out: out, Err: &strings.Builder{}, Home: t.TempDir(), Cwd: t.TempDir(),
+			LookPath: func(string) (string, error) { return "/usr/bin/opencode", nil },
+			RunCmd:   func(_ context.Context, argv []string) error { ran = append(ran, argv); return nil },
+			Capture:  func(context.Context, []string) (string, error) { return "http://127.0.0.1:49374\n", nil }}
+		args := []string{"setup", "opencode"}
+		if flagOn {
+			args = append(args, "--restart-service")
+		}
+		if err := r.Run(t.Context(), args); err != nil {
+			t.Fatal(err)
+		}
+		got := slices.ContainsFunc(ran, func(a []string) bool { return slices.Equal(a, []string{"opencode", "service", "restart"}) })
+		if got != wantRestart || !strings.Contains(out.String(), "background service") {
+			t.Errorf("flag %v: restarted %v\n%s", flagOn, got, out)
 		}
 	}
 }
