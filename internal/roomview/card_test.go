@@ -569,3 +569,23 @@ func TestCardTokenNeutralisesEmphasis(t *testing.T) {
 		t.Errorf("token = %q", got)
 	}
 }
+
+// O12: the developer's pending queued notes show on the card, quoted like the agents' notes.
+func TestCardListsQueuedNotes(t *testing.T) {
+	s, n := foldGolden(t, "normal")
+	hostile := "# heading **bold** [x](https://evil.example) <img onerror=1>"
+	s.Queued.Untrusted = true
+	s.Queued.Items = []summary.QueuedNote{{Ref: 9, Author: "human:smana", Text: "use the v2 flag"}, {Ref: 10, Author: "human:smana", Text: hostile}}
+	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
+	txt := card1(t, s, Options{Format: Text, Now: n, Rooms: rooms})
+	for _, w := range []string{"Queued for the next run", "use the v2 flag"} {
+		if !strings.Contains(md, w) || !strings.Contains(txt, w) {
+			t.Errorf("no %q:\n%s\n%s", w, md, txt)
+		}
+	}
+	assertInert(t, md, rooms, []string{"evil.example", "# heading", "**bold**", "onerror"})
+	s.Queued.Items = nil
+	if out := card1(t, s, Options{Format: Text, Now: n, Rooms: rooms}); strings.Contains(out, "Queued for") {
+		t.Errorf("an empty queue shows a block:\n%s", out)
+	}
+}

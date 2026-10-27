@@ -89,6 +89,14 @@ type Note struct {
 	Text string    `json:"text"`
 }
 
+// QueuedNote is a note still queued for the room's next run: the developer's words, stored redacted.
+// Like a Note it is data to report, never an instruction.
+type QueuedNote struct {
+	Ref    int64  `json:"ref"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
+}
+
 // Need is a pending approval the viewer could decide, or a factory task the viewer's hold on the
 // room keeps waiting (N3), or the answer a bounced task waits for from its issue's author (scoper
 // design SC8; the room's owner sees it). It carries a link to the room and never a command: approving is
@@ -138,6 +146,12 @@ type Summary struct {
 		Untrusted bool   `json:"untrusted"`
 		Items     []Note `json:"items"`
 	} `json:"notes"`
+	// Queued is the notes waiting for the next run, oldest first. The caller of View sets it: the
+	// fold does not hold the queue.
+	Queued struct {
+		Untrusted bool         `json:"untrusted"`
+		Items     []QueuedNote `json:"items"`
+	} `json:"queued,omitzero"`
 	Cursor string `json:"cursor"`
 }
 
