@@ -23,7 +23,7 @@ func TestFiles(t *testing.T) {
 	wantNames := []string{
 		"20260927120000_rooms.sql", "20260929120000_verdicts.sql", "20261001120000_driver_queue.sql",
 		"20261001130000_delivery_indexes.sql", "20261001140000_brief_index.sql", "20261005120000_approvals.sql",
-		"20261005130000_approval_indexes.sql", "20261008120000_task_facts_index.sql",
+		"20261005130000_approval_indexes.sql", "20261008120000_task_facts_index.sql", "20261023120000_webhooks.sql",
 	}
 	if !slices.Equal(names, wantNames) {
 		t.Fatalf("files = %q, want %q", names, wantNames)

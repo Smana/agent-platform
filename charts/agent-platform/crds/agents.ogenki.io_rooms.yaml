@@ -111,14 +111,15 @@ spec:
                 description: Runs join through their own spec.roomRef, never through
                   this list.
                 items:
-                  description: Member is a human admitted to the room, with a role
-                    and the approver flag.
+                  description: |-
+                    Member is a principal admitted to the room, with a role and the approver flag: a human, or a
+                    sponsored principal the factory makes a watcher of its task's room (factory interfaces F4).
                   properties:
                     approver:
                       type: boolean
                     principal:
                       maxLength: 261
-                      pattern: ^human:[A-Za-z0-9@._-]+$
+                      pattern: ^(human|system):[A-Za-z0-9@._-]+$
                       type: string
                     role:
                       description: 'Cumulative: watcher < collaborator < owner (§1).'
@@ -131,6 +132,11 @@ spec:
                   - principal
                   - role
                   type: object
+                  x-kubernetes-validations:
+                  - message: 'a system member only watches: never an owner, a collaborator
+                      or an approver'
+                    rule: '!self.principal.startsWith(''system:'') || (self.role ==
+                      ''watcher'' && !(has(self.approver) && self.approver))'
                 maxItems: 20
                 type: array
                 x-kubernetes-list-map-keys:
