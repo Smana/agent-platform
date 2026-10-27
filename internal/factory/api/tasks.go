@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,7 +361,7 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 	if err != nil {
 		return 0, nil, err // the Task exists; a replay finds it and files nothing, so the owner sees it without an issue
 	}
-	if err := s.linkIssue(fctx, name, iss.Number); err != nil {
+	if err := s.linkIssue(fctx, name, iss.Number, false); err != nil {
 		return 0, nil, err
 	}
 	body["issue"] = iss.Number
@@ -369,8 +370,16 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 
 // linkIssue records the filed issue on the Task, three attempts on conflict. A failure names the
 // unlinked issue so an operator can link it by hand.
-func (s *Server) linkIssue(ctx context.Context, name string, issue int) error {
-	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"issue": issue}})
+//
+// labelIssue also sets the task's issue label, which the issue poller finds a task by: an internal
+// principal's stub issue is where factory/publish and factory/stop are read. A sponsored task keeps
+// no label, so a factory/ready on its issue never meets it as an active task.
+func (s *Server) linkIssue(ctx context.Context, name string, issue int, labelIssue bool) error {
+	doc := map[string]any{"spec": map[string]any{"issue": issue}}
+	if labelIssue {
+		doc["metadata"] = map[string]any{"labels": map[string]string{factoryv1.LabelIssue: strconv.Itoa(issue)}}
+	}
+	patch, _ := json.Marshal(doc)
 	for attempt := 1; ; attempt++ {
 		err := s.Rooms.Patch(ctx, &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
 			client.RawPatch(types.MergePatchType, patch))

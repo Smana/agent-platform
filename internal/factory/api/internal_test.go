@@ -70,6 +70,9 @@ func TestCreateInternalTask(t *testing.T) {
 	if len(f.got) != 1 || f.got[0].labels[0] != "factory/proposed" || strings.Contains(f.got[0].body, "OOM") {
 		t.Fatalf("the stub issue names the alert and the room, never the finding: %+v", f.got)
 	}
+	if tk.Labels[factoryv1.LabelIssue] != "42" || tk.Spec.Issue != 42 {
+		t.Fatalf("the stub is linked and labelled, as the poller finds a task by it: %v %d", tk.Labels, tk.Spec.Issue)
+	}
 	if w := postTask(s, incident(0.9), key); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"duplicate":true`) {
 		t.Fatalf("a replay while open: %d %s", w.Code, w.Body)
 	}

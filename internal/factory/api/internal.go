@@ -167,7 +167,7 @@ func (s *Server) admitInternal(ctx context.Context, w http.ResponseWriter, out f
 		fail("intake_failed", err)
 		return
 	}
-	if err := s.linkIssue(fctx, name, iss.Number); err != nil {
+	if err := s.linkIssue(fctx, name, iss.Number, true); err != nil {
 		fail("intake_failed", err)
 		return
 	}
