@@ -50,7 +50,7 @@ type RoomFilter struct {
 	Repo          string // owner/name
 	Mine, NeedsMe bool
 	All           bool            // list the rooms that ended more than a week ago too; the overview filters, not the query
-	Format        roomview.Format // how the overview is written; the zero value is Markdown
+	Format        roomview.Format // how the overview is written; the zero value is Markdown, which is not for a terminal: callers set it
 	JSON          bool            // print the broker's rows unchanged; not part of the query
 }
 
@@ -166,16 +166,16 @@ func (c Client) Rooms(ctx context.Context, out io.Writer, f RoomFilter) error {
 	if err != nil {
 		return err
 	}
+	var rows []roomview.Row
+	if err := json.Unmarshal(body, &rows); err != nil { // before --json prints it: a garbled body is an error
+		return fmt.Errorf("rooms: %w", err)
+	}
 	if f.JSON { // the broker's rows as sent: today's fields and the task's
 		if _, err := fmt.Fprintln(out, string(body)); err != nil {
 			return err
 		}
 		c.hint(access)
 		return nil
-	}
-	var rows []roomview.Row
-	if err := json.Unmarshal(body, &rows); err != nil {
-		return fmt.Errorf("rooms: %w", err)
 	}
 	if err := roomview.Overview(out, rows, roomview.Options{Format: f.Format, Now: time.Now(), All: f.All, Rooms: c.URL}); err != nil {
 		return err
@@ -277,7 +277,7 @@ func (c Client) Tool(ctx context.Context, name string, args any) (text string, s
 			Message string
 		}
 		_ = json.Unmarshal(rel.e, &e)
-		if e.Code == mcpwire.InvalidParams {
+		if e.Code == mcpwire.InvalidParams && strings.HasPrefix(strings.ToLower(e.Message), "unknown tool") {
 			return "", nil, fmt.Errorf("%w: %s", ErrUnknownTool, OneLine(e.Message))
 		}
 		return "", nil, fmt.Errorf("%s: %s", name, OneLine(e.Message))

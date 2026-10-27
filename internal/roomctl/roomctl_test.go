@@ -307,6 +307,10 @@ func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 		!strings.Contains(lines[3], "fix[2J the CA") || strings.ContainsRune(out.String(), 0x1b) {
 		t.Fatalf("%q", lines)
 	}
+	// the second row, with no task, and the first row's PR
+	if !strings.Contains(out.String(), "d66mo4b4") || !strings.Contains(lines[3], "#2267") {
+		t.Fatalf("a row or a PR is missing: %q", lines)
+	}
 	bad := b.client(func(context.Context) (string, error) { return "nope", nil })
 	if err := bad.Rooms(t.Context(), &out, RoomFilter{}); err == nil || !strings.Contains(err.Error(), "roomctl login") {
 		t.Fatalf("a refused token: %v", err)
@@ -613,9 +617,28 @@ func TestToolErrors(t *testing.T) {
 		t.Fatalf("an isError result carries its text: %v", err)
 	}
 	c, _ = toolBroker(t, http.StatusOK, func(map[string]any) string {
-		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool"}}`
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"unknown tool: x"}}`
 	})
 	if _, _, err := c.Tool(t.Context(), "x", nil); !errors.Is(err, ErrUnknownTool) {
-		t.Fatalf("-32602 is ErrUnknownTool: %v", err)
+		t.Fatalf("an unknown tool is ErrUnknownTool: %v", err)
+	}
+	c, _ = toolBroker(t, http.StatusOK, func(map[string]any) string {
+		return `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"tools/call takes {name, arguments}"}}`
+	})
+	if _, _, err := c.Tool(t.Context(), "x", nil); err == nil || errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("another -32602 is no old broker: %v", err)
+	}
+}
+
+// rooms --json prints what the broker sent, but only when it is the rows: a garbled body is an error.
+func TestRoomsJSONValidatesTheBody(t *testing.T) {
+	for body, ok := range map[string]bool{`[{"id":"3kq7x2ma"}]`: true, `[]`: true, `<html>proxy error</html>`: false, `{"error":"x"}`: false, ``: false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		var out strings.Builder
+		err := Client{URL: srv.URL, HC: srv.Client(), Token: fixed}.Rooms(t.Context(), &out, RoomFilter{JSON: true})
+		srv.Close()
+		if (err == nil) != ok || (!ok && out.Len() != 0) {
+			t.Errorf("%q: %v, printed %q", body, err, out.String())
+		}
 	}
 }
