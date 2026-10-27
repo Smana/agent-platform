@@ -2,7 +2,8 @@
 
 // Package mcpwire is the wire both of the broker's MCP servers share: the agents' room tools on
 // :8090 and the humans' /mcp on :8080. One JSON-RPC 2.0 message in, one answer out: no batch,
-// nothing after the message. It knows no method and no caller; each server keeps its own.
+// nothing after the message. It knows no method and no caller; each server keeps its own. The
+// names of the tools both sides must agree on are its only vocabulary.
 package mcpwire
 
 import (
@@ -11,6 +12,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+)
+
+// The tools the broker's /mcp and roomctl mcp share by name: roomctl mcp serves RoomWait and
+// RoomCheckout itself, and the broker's instructions and prompts name them (one spelling, so the
+// two cannot drift).
+const (
+	RoomWait     = "room_wait"
+	RoomCheckout = "room_checkout"
+	RoomChanges  = "room_changes"
 )
 
 // The JSON-RPC 2.0 error codes the servers answer with.
@@ -88,6 +98,12 @@ func ToolResult(out any) (map[string]any, error) {
 	}
 	return map[string]any{"content": []map[string]string{{"type": "text", "text": string(bytes.TrimSuffix(text.Bytes(), []byte("\n")))}},
 		"structuredContent": out}, nil
+}
+
+// ToolResultText is a tools/call result whose text is a view for the human to read, and whose
+// structuredContent is out, the data it was rendered from.
+func ToolResultText(text string, out any) (map[string]any, error) {
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "structuredContent": out}, nil
 }
 
 // DecodeArgs reads a tool's arguments, one JSON object, into dst: an unknown field or anything

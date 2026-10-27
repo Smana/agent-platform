@@ -3,9 +3,16 @@
 package humanapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
 func TestMCPIssueDraft(t *testing.T) {
@@ -30,5 +37,83 @@ func TestMCPIssueDraft(t *testing.T) {
 				t.Fatalf("%+v", got)
 			}
 		})
+	}
+}
+
+// issue_draft says whether the caller may start the factory on the repository (R11): the
+// repository is in human.mcp.sessionStart, and the caller writes to it on GitHub.
+func TestIssueDraftCanStart(t *testing.T) {
+	listed := func(s *Server, _ *fanout.Hub, _ *hubView) { s.SessionStart = map[string]bool{"smana/a": true} }
+	tests := []struct {
+		name    string
+		w       *gitHubWorld
+		opts    []option
+		caller  http.Header
+		repo    string
+		want    bool
+		wantWhy string
+	}{
+		{"listed, linked, write", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, []option{listed}, viaRoomctl("dev"), "Smana/a", true, ""},
+		{"not listed", &gitHubWorld{writes: map[string][]string{"Smana/b": {"dev"}}}, []option{listed}, viaRoomctl("dev"), "Smana/b", false, "off"},
+		{"listed, Identity nil", &gitHubWorld{}, []option{listed, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Identity = nil }}, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"listed, unlinked", &gitHubWorld{unlinked: map[string]bool{"dev": true}}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "not_linked"},
+		{"listed, read only", &gitHubWorld{}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
+		{"listed, the App cannot see it", &gitHubWorld{unseen: map[string]bool{"Smana/a": true}}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
+		{"listed, the lookup fails", &gitHubWorld{down: true}, []option{listed}, viaRoomctl("dev"), "Smana/a", false, "unverified"},
+		{"nil Access", &gitHubWorld{}, []option{listed, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Access = nil }}, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"empty SessionStart", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, []option{func(s *Server, _ *fanout.Hub, _ *hubView) { s.SessionStart = map[string]bool{} }}, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"nil SessionStart", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, nil, viaRoomctl("dev"), "Smana/a", false, "off"},
+		{"the write check itself says no repository", &gitHubWorld{}, []option{listed, func(s *Server, _ *fanout.Hub, _ *hubView) {
+			s.Access.Perm = func(context.Context, string, string, string) (string, error) {
+				return "", fmt.Errorf("installation: %w", repoaccess.ErrNoRepository)
+			}
+		}}, viaRoomctl("dev"), "Smana/a", false, "no_write"},
+		{"the list is matched case-insensitively", &gitHubWorld{writes: map[string][]string{"Smana/a": {"dev"}}}, []option{func(s *Server, _ *fanout.Hub, _ *hubView) { s.SessionStart = map[string]bool{"smana/a": true} }}, viaRoomctl("dev"), "Smana/a", true, ""},
+		{"a sponsored caller", &gitHubWorld{writes: map[string][]string{"Smana/a": {"slack-app"}}}, []option{listed, withSponsored(sponsoredP)}, bearer("slack-app"), "Smana/a", false, "off"},
+	}
+	body := "## What is wrong\nx\n\n## What it should be\ny\n\n## Acceptance check\nz\n"
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.w.now = time.Now()
+			if tc.w.unlinked == nil {
+				tc.w.unlinked = map[string]bool{}
+			}
+			if tc.w.inactive == nil {
+				tc.w.inactive = map[string]bool{}
+			}
+			e := setup(t, append([]option{mcpOn, actorOn(&actLog{}), tc.w.option()}, tc.opts...)...)
+			got := call(t, e, tc.caller, "issue_draft", map[string]any{"repo": tc.repo, "title": "docs(agents): a dead link", "body": body})
+			var d issueDraft
+			if got.isError || json.Unmarshal(got.structured, &d) != nil || d.CanStart != tc.want || d.CanStartWhy != tc.wantWhy {
+				t.Fatalf("%+v: %+v", got, d)
+			}
+		})
+	}
+}
+
+// A lookup that never answers is cut at accessWait, as the gate's is: the draft comes back
+// unverified, not after mcpTimeout.
+func TestIssueDraftCanStartLookupIsBounded(t *testing.T) {
+	old := accessWait
+	accessWait = 200 * time.Millisecond
+	t.Cleanup(func() { accessWait = old })
+	w := &gitHubWorld{now: time.Now(), unlinked: map[string]bool{}, inactive: map[string]bool{}}
+	hung := func(s *Server, _ *fanout.Hub, _ *hubView) {
+		s.SessionStart = map[string]bool{"smana/a": true}
+		s.Access.Perm = func(ctx context.Context, _, _, _ string) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+	}
+	e := setup(t, mcpOn, actorOn(&actLog{}), w.option(), hung)
+	body := "## What is wrong\nx\n\n## What it should be\ny\n\n## Acceptance check\nz\n"
+	start := time.Now()
+	got := call(t, e, viaRoomctl("dev"), "issue_draft", map[string]any{"repo": "Smana/a", "title": "docs(agents): a dead link", "body": body})
+	var d issueDraft
+	if got.isError || json.Unmarshal(got.structured, &d) != nil || d.CanStart || d.CanStartWhy != "unverified" {
+		t.Fatalf("%+v: %+v", got, d)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("the draft took %v with a hung lookup", took)
 	}
 }

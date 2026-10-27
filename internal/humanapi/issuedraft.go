@@ -12,6 +12,7 @@ import (
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
 	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/agent-platform/internal/repoaccess"
 )
 
 // issueDraft is issue_draft's result: what roomctl mcp's issue_file shows the developer, then files.
@@ -21,12 +22,16 @@ type issueDraft struct {
 	Body  string `json:"body"`
 	// Stripped counts the hidden and control characters removed (F8): what is filed is what is shown.
 	Stripped int `json:"stripped"`
+	// CanStart says whether the handoff may start the factory on Repo for the caller (R11);
+	// CanStartWhy is the reason when not: off, not_linked, no_write or unverified.
+	CanStart    bool   `json:"canStart"`
+	CanStartWhy string `json:"canStartWhy,omitempty"`
 }
 
 // issue_draft validates a factory issue in the skill's shape: hidden characters stripped, the
 // template's title and sections, no secret. It files nothing: issue_file, roomctl mcp's own tool,
 // files it with the developer's gh after they confirm (F3).
-func (s *Server) issueDraftTool(ctx context.Context, _ authn.Principal, args json.RawMessage) (any, error) {
+func (s *Server) issueDraftTool(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a struct {
 		Repo  string `json:"repo"`
 		Title string `json:"title"`
@@ -39,7 +44,46 @@ func (s *Server) issueDraftTool(ctx context.Context, _ authn.Principal, args jso
 	if err != nil {
 		return nil, err
 	}
-	return issueDraft{Repo: a.Repo, Title: d.Title, Body: d.Body, Stripped: d.Stripped}, nil
+	can, why := s.canStart(ctx, p, a.Repo)
+	return issueDraft{Repo: a.Repo, Title: d.Title, Body: d.Body, Stripped: d.Stripped, CanStart: can, CanStartWhy: why}, nil
+}
+
+// The reasons issue_draft gives when canStart is false.
+const (
+	startOff        = "off"        // the repository is not in human.mcp.sessionStart, or no check is wired
+	startNotLinked  = "not_linked" // the caller has no GitHub link to check
+	startNoWrite    = "no_write"   // the caller cannot write to the repository, or the App cannot see it
+	startUnverified = "unverified" // ZITADEL or GitHub could not answer
+)
+
+// canStart is true when repo is in human.mcp.sessionStart and the caller writes to it on GitHub,
+// following gate's lookup with CanWrite for CanRead. A sponsored caller never starts a session. It
+// fails closed: an answer that cannot be had is false.
+func (s *Server) canStart(ctx context.Context, p authn.Principal, repo string) (bool, string) {
+	if p.Sponsored || !s.SessionStart[strings.ToLower(repo)] || s.Identity == nil || s.Access == nil {
+		return false, startOff
+	}
+	ctx, cancel := context.WithTimeout(ctx, accessWait) // as the gate's lookup is: a hung one is unverified
+	defer cancel()
+	login, err := s.Identity.Login(ctx, p.Sub, repo)
+	switch {
+	case errors.Is(err, repoaccess.ErrNoRepository):
+		return false, startNoWrite
+	case err != nil:
+		return false, startUnverified
+	case login == "":
+		return false, startNotLinked
+	}
+	ok, err := s.Access.CanWrite(ctx, repo, login)
+	switch {
+	case errors.Is(err, repoaccess.ErrNoRepository):
+		return false, startNoWrite
+	case err != nil:
+		return false, startUnverified
+	case !ok:
+		return false, startNoWrite
+	}
+	return true, ""
 }
 
 // checkDraft is issue_draft's whole check: the template (sanitize.CheckDraft), then the redactor,

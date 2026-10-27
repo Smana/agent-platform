@@ -39,6 +39,7 @@ import (
 type gitHubWorld struct {
 	mu       sync.Mutex
 	reads    map[string][]string
+	writes   map[string][]string // the logins that write each repository: they answer "write"
 	unlinked map[string]bool
 	unseen   map[string]bool
 	down     bool
@@ -123,6 +124,9 @@ func (w *gitHubWorld) gate(s *Server) {
 			}
 			if w.unseen[owner+"/"+repo] {
 				return "", fmt.Errorf("installation: %w", repoaccess.ErrNoRepository)
+			}
+			if slices.Contains(w.writes[owner+"/"+repo], login) {
+				return "write", nil
 			}
 			if w.reads == nil || slices.Contains(w.reads[owner+"/"+repo], login) {
 				return "read", nil

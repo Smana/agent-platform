@@ -66,6 +66,8 @@ type Log interface {
 	// LastTaskState is the room's last task facts above seq after, for the room list's hold
 	// need (#78): its wait reason is not projected into the Room status.
 	LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error)
+	// TaskStateAt is the task facts as they stood at seq upTo, above after: room_changes' baseline.
+	TaskStateAt(ctx context.Context, roomID string, after, upTo int64) (json.RawMessage, error)
 	// LastEventAt is when each listed room's log last moved, for the room list.
 	LastEventAt(ctx context.Context, roomIDs []string) (map[string]time.Time, error)
 }
@@ -115,9 +117,12 @@ type Server struct {
 	Actor         *Actor // serves act frames (phase 4); nil refuses every one
 	// Identity and Access are D7's GitHub check: who the caller is on GitHub, and
 	// whether they may read a room's repository. Either nil shows rooms to admins only.
-	Identity *ghidentity.Resolver
-	Access   *repoaccess.Checker
-	Logger   *slog.Logger
+	// SessionStart holds the repositories, lowercased owner/name, whose issue_draft says canStart
+	// (human.mcp.sessionStart). Empty: none does.
+	SessionStart map[string]bool
+	Identity     *ghidentity.Resolver
+	Access       *repoaccess.Checker
+	Logger       *slog.Logger
 	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
 

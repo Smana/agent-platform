@@ -15,7 +15,7 @@ import (
 
 // accessWait bounds one request's GitHub checks inside routeTimeout, so a slow GitHub still
 // leaves time to write the refusal.
-const accessWait = 10 * time.Second
+var accessWait = 10 * time.Second
 
 // reasonAccessUnverified is the 503 when ZITADEL or GitHub cannot answer past the cache. It never
 // names the repository: the caller may not be allowed to know which one the room is on.

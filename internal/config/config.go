@@ -65,6 +65,9 @@ type MCPConfig struct {
 	// Sponsored are the service accounts that may call run_create (factory interfaces F4, R13);
 	// each is also declared in the factory's api.sponsored, which decides everything else.
 	Sponsored []SponsoredConfig `json:"sponsored,omitempty"`
+	// SessionStart lists the repositories ("owner/name") whose issue_draft says canStart: the
+	// handoff prompt may start the factory there for a caller who writes to them. Empty, none does.
+	SessionStart []string `json:"sessionStart,omitempty"`
 }
 
 // SponsoredConfig is one sponsored principal the broker admits on /mcp.
@@ -72,6 +75,9 @@ type SponsoredConfig struct {
 	Name         string `json:"name"`
 	ClientIDFile string `json:"clientIDFile"`
 }
+
+// repositoryRE is an owner/name, as humanapi's.
+var repositoryRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 
 // sponsoredNameRE is a sponsored principal's name: a DNS label, as the factory's api.sponsored.
 var sponsoredNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -354,6 +360,23 @@ func (h HumanConfig) validate(system []string) []error {
 			errs = append(errs, fmt.Errorf("human.mcp.sponsored.%s: clientIDFile is required", sp.Name))
 		}
 		seen[sp.Name] = true
+	}
+	if len(h.MCP.SessionStart) > 0 && !h.MCP.Enabled {
+		errs = append(errs, errors.New("human.mcp.sessionStart needs human.mcp.enabled"))
+	}
+	if len(h.MCP.SessionStart) > 0 && h.Access == nil {
+		errs = append(errs, errors.New("human.mcp.sessionStart needs human.access: without the GitHub check canStart is always off"))
+	}
+	listed := map[string]bool{}
+	for i, r := range h.MCP.SessionStart {
+		key := strings.ToLower(r)
+		switch {
+		case !repositoryRE.MatchString(r):
+			errs = append(errs, fmt.Errorf("human.mcp.sessionStart[%d]: %q is not owner/name", i, r))
+		case listed[key]:
+			errs = append(errs, fmt.Errorf("human.mcp.sessionStart: %q is declared twice", r))
+		}
+		listed[key] = true
 	}
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {
