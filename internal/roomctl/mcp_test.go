@@ -474,6 +474,7 @@ type blocker struct {
 	started chan int
 	release []chan struct{}
 	ended   chan int
+	hold    map[int]bool // calls that ignore their context until released
 }
 
 func newBlocker() *blocker { return &blocker{started: make(chan int, 4), ended: make(chan int, 4)} }
@@ -485,9 +486,13 @@ func (b *blocker) tool(ctx context.Context, _ *Relay, _ localCall) any {
 	b.release = append(b.release, rel)
 	b.mu.Unlock()
 	b.started <- n
-	select {
-	case <-ctx.Done():
-	case <-rel:
+	if b.hold[n] {
+		<-rel
+	} else {
+		select {
+		case <-ctx.Done():
+		case <-rel:
+		}
 	}
 	b.ended <- n
 	return mcpwire.ToolError("done")
@@ -523,21 +528,73 @@ func TestRelayCancelRightAfterTheCall(t *testing.T) {
 	}
 }
 
-// A cancelled call never replies, and a new call that reuses its id keeps its own entry.
+// A cancelled call never replies, and a new call that reuses its id keeps its own entry. The first
+// call ignores its context, so it is provably still running when the id comes back.
 func TestRelayCancelledIdIsReused(t *testing.T) {
 	b := newBlocker()
+	b.hold = map[int]bool{0: true}
 	s, _ := locals(t, newMCPBroker(t), withBlocker(b))
 	callWait(s, t, 7)
 	<-b.started
 	cancelOf(s, t, 7)
-	// The first call has not returned yet when the id comes back: hold it open.
 	callWait(s, t, 7)
 	<-b.started
-	cancelOf(s, t, 7) // must cancel the second call
-	<-b.ended
+	cancelOf(s, t, 7) // must cancel the second call, not find the first one's entry
+	select {
+	case n := <-b.ended:
+		if n != 1 {
+			t.Fatalf("call %d ended first", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second call was not cancelled")
+	}
+	b.mu.Lock()
+	close(b.release[0]) // now the first call finishes, after its entry was replaced
+	b.mu.Unlock()
 	<-b.ended
 	if res := s.request(t, 9, "tools/list", nil); res["id"] != 9.0 {
 		t.Fatalf("neither cancelled call is answered: %v", res)
+	}
+}
+
+func TestIDKey(t *testing.T) {
+	same := [][]string{{`7`, `7.0`, `7e0`, ` 7 `}, {`"7"`}, {`null`}, {`"a"`}}
+	for i, g := range same {
+		for _, a := range g {
+			for _, b := range g {
+				if idKey(json.RawMessage(a)) != idKey(json.RawMessage(b)) {
+					t.Errorf("%s and %s are the same id", a, b)
+				}
+			}
+			for _, other := range same[i+1:] {
+				if idKey(json.RawMessage(a)) == idKey(json.RawMessage(other[0])) {
+					t.Errorf("%s and %s are not the same id", a, other[0])
+				}
+			}
+		}
+	}
+}
+
+// A call that finishes after its cancellation is never answered, for any local tool.
+func TestRelayNoReplyToACancelledLocalToolThatFinishesLater(t *testing.T) {
+	for _, name := range []string{toolRoomCheckout, issueFileTool} {
+		t.Run(name, func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			s, _ := locals(t, newMCPBroker(t), func(r *Relay) {
+				r.handlers = map[string]localTool{name: func(context.Context, *Relay, localCall) any {
+					close(started)
+					<-release // ignores its context: it completes after the cancel
+					return mcpwire.ToolError("late")
+				}}
+			})
+			s.send(t, map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": name}})
+			<-started
+			cancelOf(s, t, 7)
+			close(release)
+			if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 {
+				t.Fatalf("the late result of a cancelled call was written: %v", res)
+			}
+		})
 	}
 }
 
