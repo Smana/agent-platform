@@ -40,6 +40,8 @@ const (
 const roomctlUsage = `usage: roomctl <command>
   configure --url URL [--issuer URL --client-id ID --project-id ID]
                                   the broker's URL is enough: it serves the other three
+  configure --from URL            replace the whole config with the values the broker serves (a rooms page
+                                  URL works): the fix for a stale client id after a rebuild
   login                           sign in with the device flow
   doctor                          check the VPN, the CA, your login and your GitHub link, with the fix of each
   token                           print a valid access token, for scripts (task agent:run)
@@ -216,11 +218,22 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	var cfg roomctl.Config
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>")
+	from := fs.String("from", "", "a rooms URL: take every value from the broker, whatever is stored")
 	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL (default: the broker's)")
 	fs.StringVar(&cfg.ClientID, "client-id", "", "the roomctl client id (default: the broker's)")
 	fs.StringVar(&cfg.ProjectID, "project-id", "", "the rooms project id (default: the broker's)")
 	if _, err := flags(fs, args); err != nil {
 		return err
+	}
+	if *from != "" {
+		if cfg.URL != "" || cfg.Issuer != "" || cfg.ClientID != "" || cfg.ProjectID != "" {
+			return errors.New("configure: --from takes every value from the broker: drop the other flags, or use --url to override one")
+		}
+		base, err := originOf(*from)
+		if err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+		cfg.URL = base
 	}
 	cfg.URL, cfg.Issuer = strings.TrimRight(cfg.URL, "/"), strings.TrimRight(cfg.Issuer, "/")
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ProjectID == "" {
@@ -250,6 +263,16 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	}
 	_, err := fmt.Fprintf(hints, "configured %s; next: roomctl login\n", cfg.URL)
 	return err
+}
+
+// originOf is the https origin of a rooms URL: the room list's or a room page's address both name
+// the broker. A plain-http URL would carry the token in clear.
+func originOf(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("--from %q is not an https URL: roomctl configure --from https://rooms.<your private domain>", raw)
+	}
+	return "https://" + u.Host, nil
 }
 
 // mcp relays the broker's MCP server on stdio until the client closes it: one token source for

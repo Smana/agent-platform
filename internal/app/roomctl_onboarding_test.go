@@ -4,6 +4,7 @@ package app
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,5 +82,44 @@ func TestRoomctlRoomsJSONIsTheBrokersBody(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.String(), `[{"id":"3kq7x2ma"`) {
 		t.Fatalf("%s", out)
+	}
+}
+
+// O3a: `configure --from <rooms URL>` takes the four values from the broker, whatever the stored
+// config says, so a rebuilt platform's new client id replaces the stale one. A rooms page URL is
+// reduced to its origin; a plain-http URL is refused.
+func TestRoomctlConfigureFrom(t *testing.T) {
+	b := newRoomctlBroker(t)
+	dir := t.TempDir()
+	r := Roomctl{Dir: dir, HC: b.srv.Client(), Stream: b.srv.Client(), Out: &strings.Builder{}, Err: &strings.Builder{}}
+	stale := roomctl.Config{URL: b.srv.URL, Issuer: "https://old.example", ClientID: "stale", ProjectID: "1"}
+	if err := roomctl.SaveJSON(filepath.Join(dir, "config.json"), stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(t.Context(), []string{"configure", "--from", b.srv.URL + "/r/26zfnuxm"}); err != nil {
+		t.Fatal(err)
+	}
+	var cfg roomctl.Config
+	if err := roomctl.LoadJSON(filepath.Join(dir, "config.json"), &cfg); err != nil ||
+		cfg != (roomctl.Config{URL: b.srv.URL, Issuer: "https://auth.example", ClientID: "cli", ProjectID: "29184"}) {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if err := r.Run(t.Context(), []string{"configure", "--from", "http://rooms.priv.example"}); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("a plain-http rooms URL: %v", err)
+	}
+	if err := r.Run(t.Context(), []string{"configure", "--from", b.srv.URL, "--url", b.srv.URL}); err == nil {
+		t.Fatal("--from and --url together are ambiguous")
+	}
+}
+
+// An http issuer in the broker's answer is refused: the device flow would run in clear.
+func TestRoomctlConfigureFromRefusesAnHTTPIssuer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issuer":"http://auth.example","clientID":"cli","projectID":"1"}`))
+	}))
+	t.Cleanup(srv.Close)
+	r := Roomctl{Dir: t.TempDir(), HC: srv.Client(), Out: &strings.Builder{}, Err: &strings.Builder{}}
+	if err := r.Run(t.Context(), []string{"configure", "--from", srv.URL}); err == nil || !strings.Contains(err.Error(), "issuer") {
+		t.Fatalf("%v", err)
 	}
 }

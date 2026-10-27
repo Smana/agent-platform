@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -640,5 +641,20 @@ func TestRoomsJSONValidatesTheBody(t *testing.T) {
 		if (err == nil) != ok || (!ok && out.Len() != 0) {
 			t.Errorf("%q: %v, printed %q", body, err, out.String())
 		}
+	}
+}
+
+// O3a: a stale client id (a rebuilt platform) makes the issuer answer invalid_client; the error
+// names the fix instead of leaving the developer with ZITADEL's sentence.
+func TestLoginInvalidClientNamesConfigureFrom(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"no active client not found"}`))
+	}))
+	t.Cleanup(srv.Close)
+	_, err := Login(t.Context(), srv.Client(), Config{Issuer: srv.URL, ClientID: "stale", ProjectID: "1"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "configure --from") || !strings.Contains(err.Error(), "invalid_client") {
+		t.Fatalf("%v", err)
 	}
 }
