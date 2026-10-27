@@ -369,6 +369,11 @@ func TestRolesMatchTheSpecTable(t *testing.T) {
 		"room_judge":    {[]string{"implementer"}, policy.Chat},
 	}
 	got := tools(&memLog{})
+	for _, t2 := range got {
+		if (t2.Name == "room_judge") != t2.HarnessOnly {
+			t.Errorf("%s: HarnessOnly = %v", t2.Name, t2.HarnessOnly)
+		}
+	}
 	if len(got) != len(want) {
 		t.Fatalf("%d tools", len(got))
 	}

@@ -139,8 +139,8 @@ func RoomTools(log Log, red Redactor, now func() time.Time) []Tool {
 				}
 				return out, err
 			}},
-		{Name: "room_judge", Roles: []string{"implementer"}, Action: policy.Chat,
-			Description: "The harness's completion judge records its verdict on your finished conversation: met, not_yet or impossible, a reason and the evidence ids it cited. The harness calls it, not you; the room shows it as the judge's, never as a decision.",
+		{Name: "room_judge", Roles: []string{"implementer"}, Action: policy.Chat, HarnessOnly: true,
+			Description: "The harness's completion judge records its verdict on your finished conversation: met, not_yet or impossible, a reason and the evidence ids it cited. Only the harness's own client lists or may call it; it is never on the model's list.",
 			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["verdict","reason","evidence"],"properties":{"verdict":{"type":"string","enum":["met","not_yet","impossible"]},"reason":{"type":"string","minLength":1,"maxLength":1000},"evidence":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":200}}}}`),
 			Call: func(ctx context.Context, c Caller, args json.RawMessage) (any, error) {
 				var a struct {

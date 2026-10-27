@@ -408,6 +408,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
     fail = 0
     deleted = []
     traceparents = []
+    harness = []
 
     def do_DELETE(self):
         type(self).deleted.append(self.headers.get("Mcp-Session-Id"))
@@ -419,6 +420,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         type(self).calls.append(body)
         type(self).traceparents.append((body.get("method"), self.headers.get("traceparent")))
+        type(self).harness.append(self.headers.get("X-Agent-Harness"))
         if type(self).fail and body.get("method") == "tools/call":
             type(self).fail -= 1
             self.send_response(404)
@@ -457,7 +459,7 @@ class ProgressNotesTest(unittest.TestCase):
     def setUp(self):
         FakeMCP.calls, FakeMCP.tool, FakeMCP.limited, FakeMCP.sse = [], "room_progress", 0, False
         FakeMCP.judge_tool = "room_judge"
-        FakeMCP.fail, FakeMCP.deleted, FakeMCP.traceparents = 0, [], []
+        FakeMCP.fail, FakeMCP.deleted, FakeMCP.traceparents, FakeMCP.harness = 0, [], [], []
         self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeMCP)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -612,6 +614,8 @@ class ProgressNotesTest(unittest.TestCase):
         self.notes.judge("not_yet", "check:validate failed", ["check:validate", "diff"])
         [call] = [c for c in FakeMCP.calls if c.get("method") == "tools/call"]
         self.assertEqual(call["params"]["name"], "room_judge")
+        # the broker lists and accepts room_judge only for the harness's own client
+        self.assertTrue(FakeMCP.harness and all(h == "1" for h in FakeMCP.harness), FakeMCP.harness)
         self.assertEqual(call["params"]["arguments"], {"verdict": "not_yet", "reason": "check:validate failed",
                                                        "evidence": ["check:validate", "diff"]})
 
@@ -1317,3 +1321,11 @@ class TracedRunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelMcpConfigTest(unittest.TestCase):
+    def test_the_models_mcp_client_never_carries_the_harness_marker(self):
+        # O15: room_judge is the harness's: the broker hides it from any client without the marker.
+        env = {"MODEL": "agent-default", "LLM_BASE_URL": "http://127.0.0.1:1/v1", "MCP_URL": "http://127.0.0.1:1/mcp"}
+        platform = agent_run.build_request(env, "t", "r")["agent"]["mcp_config"]["platform"]
+        self.assertNotIn("x-agent-harness", {k.lower() for k in platform.get("headers", {})})

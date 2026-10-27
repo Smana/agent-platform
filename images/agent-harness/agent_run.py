@@ -588,7 +588,10 @@ class ProgressNotes:
         if not notify:
             self.rid += 1
             body["id"] = self.rid
-        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        # The marker tells the broker this is the harness, not the model: room_judge is listed and callable
+        # only here. The model's own MCP client (build_request) is configured without it.
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                   "X-Agent-Harness": "1"}
         if self.session:
             headers["Mcp-Session-Id"] = self.session
         if self.traceparent:
