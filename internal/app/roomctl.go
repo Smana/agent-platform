@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
 	"golang.org/x/term"
 
 	"github.com/Smana/agent-platform/internal/httpx"
@@ -41,7 +42,7 @@ const (
 const roomctlUsage = `usage: roomctl <command>
   configure --url URL [--issuer URL --client-id ID --project-id ID]
                                   the broker's URL is enough: it serves the other three
-  configure --from URL            replace the whole config with the values the broker serves (a rooms page
+  configure --from URL [--yes]    replace the whole config with the values the broker serves (a rooms page
                                   URL works): the fix for a stale client id after a rebuild
   login                           sign in with the device flow
   doctor                          check the VPN, the CA, your login and your GitHub link, with the fix of each
@@ -82,6 +83,10 @@ type Roomctl struct {
 	Home, Cwd string
 	LookPath  func(string) (string, error)
 	RunCmd    func(ctx context.Context, argv []string) error
+
+	// Ask puts a yes/no question to the developer; nil asks on the terminal when In is one, else
+	// nothing is asked. Tests set it.
+	Ask func(prompt string) (bool, error)
 }
 
 // RunRoomctl runs one roomctl command (SP2 §8), its files under roomctl.Dir and
@@ -220,6 +225,7 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>")
 	from := fs.String("from", "", "a rooms URL: take every value from the broker, whatever is stored")
+	yes := fs.Bool("yes", false, "with --from: write without asking, and accept an issuer on another domain than the URL")
 	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL (default: the broker's)")
 	fs.StringVar(&cfg.ClientID, "client-id", "", "the roomctl client id (default: the broker's)")
 	fs.StringVar(&cfg.ProjectID, "project-id", "", "the rooms project id (default: the broker's)")
@@ -254,6 +260,13 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("configure: %w", err)
 	}
+	if *from != "" {
+		var old roomctl.Config
+		_ = roomctl.LoadJSON(path, &old) // none yet is fine
+		if err := r.ConfirmConfig(cfg, old, *yes); err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+	}
 	if err := roomctl.SaveJSON(path, cfg); err != nil {
 		return err
 	}
@@ -264,6 +277,87 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	}
 	_, err := fmt.Fprintf(hints, "configured %s; next: roomctl login\n", cfg.URL)
 	return err
+}
+
+// ConfirmConfig shows what `configure --from` will write, and what it replaces, then decides: an
+// issuer outside the URL's registrable domain is refused unless yes; a terminal is asked unless yes.
+// The values come from the broker's answer, so the developer sees the two a hostile one would plant.
+func (r Roomctl) ConfirmConfig(next, old roomctl.Config, yes bool) error {
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	line := func(name, now, was string) {
+		note := ""
+		if was != "" && was != now {
+			note = " (was " + roomctl.SafeText(was) + ")"
+		}
+		_, _ = fmt.Fprintf(hints, "  %-10s %s%s\n", name, roomctl.SafeText(now), note)
+	}
+	_, _ = fmt.Fprintln(hints, "roomctl configure --from will write:")
+	line("url", next.URL, old.URL)
+	line("issuer", next.Issuer, old.Issuer)
+	line("client id", next.ClientID, old.ClientID)
+	line("project id", next.ProjectID, old.ProjectID)
+	if !sameRegistrableDomain(next.URL, next.Issuer) {
+		_, _ = fmt.Fprintf(hints, "warning: the issuer %s is not under the same domain as %s: a broker could point you at an identity provider of its own\n",
+			roomctl.SafeText(next.Issuer), roomctl.SafeText(next.URL))
+		if !yes {
+			return errors.New("the issuer is on another domain than the URL: check it above, then pass --yes if it is yours")
+		}
+	}
+	if yes {
+		return nil
+	}
+	ask := r.Ask
+	if ask == nil {
+		in := r.In
+		if in == nil {
+			in = os.Stdin
+		}
+		f, ok := in.(*os.File)
+		if !ok || !term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
+			return nil // a script: --yes is what it would pass, and the values are above
+		}
+		ask = func(prompt string) (bool, error) {
+			_, _ = fmt.Fprint(hints, prompt)
+			line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
+			if err != nil && line == "" {
+				return false, err
+			}
+			return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+		}
+	}
+	ok, err := ask("Write this configuration? [y/N] ")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not written: the configuration is unchanged")
+	}
+	return nil
+}
+
+// sameRegistrableDomain is whether two URLs' hosts share a registrable domain (rooms.ogenki.io and
+// auth.ogenki.io do). A host with none (an address, localhost) matches only itself.
+func sameRegistrableDomain(a, b string) bool {
+	host := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(u.Hostname())
+	}
+	ha, hb := host(a), host(b)
+	if ha == "" || hb == "" {
+		return false
+	}
+	if ha == hb {
+		return true
+	}
+	da, errA := publicsuffix.EffectiveTLDPlusOne(ha)
+	db, errB := publicsuffix.EffectiveTLDPlusOne(hb)
+	return errA == nil && errB == nil && da == db
 }
 
 // originOf is the https origin of a rooms URL: the room list's or a room page's address both name

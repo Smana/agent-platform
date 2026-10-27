@@ -30,7 +30,7 @@ roomctl doctor                                   # check the setup
 ```
 
 - `configure` reads the issuer, client id and project id from the broker's unauthenticated `/.well-known/roomctl`. Pass `--issuer`, `--client-id` or `--project-id` to override one. The URL must be `https`.
-- `configure --from <rooms URL>` replaces the whole config with what the broker serves now (a room page's URL works: only its origin is used). Use it after a platform rebuild: a stale client id makes the identity provider answer `invalid_client`, and `roomctl login` then prints this fix. It refuses a non-`https` URL or issuer, and cannot be combined with the other flags.
+- `configure --from <rooms URL>` replaces the whole config with what the broker serves now (a room page's URL works: only its origin is used). Use it after a platform rebuild: a stale client id makes the identity provider answer `invalid_client`, and `roomctl login` then prints this fix. It refuses a non-`https` URL or issuer, and cannot be combined with the other flags. It prints the four values it will write (and the old ones when they change) and, on a terminal, asks `y/N`; `--yes` skips the question. An issuer outside the URL's registrable domain (`rooms.ogenki.io` and `auth.ogenki.io` share one) is refused unless `--yes` says you checked it.
 - The config and token files sit in `<user config dir>/roomctl/` (`config.json`, `token.json`), owner-only.
 - `login` prints `Open <verification URL> and enter the code …` (the URL is the one your identity provider returns), then `logged in; …`.
 - `doctor` prints one line per check, `ok` or the failure with its fix: `dns`, `tls`, `login`, `github`, `skill`. The room list cannot tell an admin without a GitHub link from one with it, so `github` asks `issue_draft` (the check `issue_file` relies on) and says `unverified` when that cannot answer: it never says "linked" unproven.
@@ -42,7 +42,7 @@ roomctl doctor                                   # check the setup
 | Command | What it does |
 |---|---|
 | `configure --url URL [--issuer URL --client-id ID --project-id ID]` | Saves the config. The broker's URL is enough |
-| `configure --from URL` | Replaces the config with the values the broker serves now, whatever is stored |
+| `configure --from URL [--yes]` | Replaces the config with the values the broker serves now, whatever is stored |
 | `login` | Signs in with the device flow |
 | `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill and, for `claude` and `opencode`, the short `/factory` command ([below](#short-commands)). `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
 | `doctor` | Checks the VPN, the CA, your login, your GitHub link and the installed skill's version (`skill`), with the fix of each |
