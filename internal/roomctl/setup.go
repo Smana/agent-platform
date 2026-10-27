@@ -28,7 +28,10 @@ type Agent struct {
 	Snippet, SnippetProject         string
 	SnippetPath, SnippetProjectPath string
 	SkillDir, SkillProjectDir       string
-	Note                            string // printed after setup: what the agent still needs
+	// CommandDir and CommandProjectDir hold the agent's custom slash commands, where setup writes
+	// /factory; empty for an agent with none.
+	CommandDir, CommandProjectDir string
+	Note                          string // printed after setup: what the agent still needs
 }
 
 const (
@@ -65,13 +68,15 @@ var Agents = map[string]Agent{
 		AddProject: []string{"claude", "mcp", "add", "--scope", "project", "factory", "--", "{CMD}", "mcp"},
 		Snippet:    mcpServersJSON, SnippetProject: mcpServersJSON,
 		SnippetPath: "~/.claude.json", SnippetProjectPath: ".mcp.json",
-		SkillDir: "~/.claude/skills", SkillProjectDir: ".claude/skills"},
+		SkillDir: "~/.claude/skills", SkillProjectDir: ".claude/skills",
+		CommandDir: "~/.claude/commands", CommandProjectDir: ".claude/commands"},
 	"opencode": {Name: "opencode",
 		Add:        []string{"opencode", "mcp", "add", "--global", "factory", "--", "{CMD}", "mcp"},
 		AddProject: []string{"opencode", "mcp", "add", "factory", "--", "{CMD}", "mcp"},
 		Snippet:    opencodeJSON, SnippetProject: opencodeJSON,
 		SnippetPath: "~/.config/opencode/opencode.json", SnippetProjectPath: "opencode.json",
-		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills"},
+		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills",
+		CommandDir: "~/.config/opencode/commands", CommandProjectDir: ".opencode/commands"},
 	"codex": {Name: "codex",
 		Add:     []string{"codex", "mcp", "add", "factory", "--", "{CMD}", "mcp"},
 		Snippet: codexTOML, SnippetProject: codexTOML,
@@ -107,6 +112,13 @@ func (a Agent) skillDir(project bool) string {
 		return a.SkillProjectDir
 	}
 	return a.SkillDir
+}
+
+func (a Agent) commandDir(project bool) string {
+	if project {
+		return a.CommandProjectDir
+	}
+	return a.CommandDir
 }
 
 // SkillDirs is every directory an agent reads skills from, each once: every agent's SkillDir under
@@ -196,6 +208,15 @@ func (s Setup) Do(ctx context.Context) error {
 	if _, err := fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n", s.resolve(skillDir), len(paths)); err != nil {
 		return err
 	}
+	if cd := a.commandDir(s.Project); cd != "" {
+		p, err := skill.InstallCommand(s.resolve(cd))
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(s.Out, "installed the /factory command in %s: /factory handoff, /factory status, /factory inbox\n", p); err != nil {
+			return err
+		}
+	}
 	if len(argv) > 0 {
 		if _, err := s.LookPath(argv[0]); err != nil {
 			if _, err := fmt.Fprintf(s.Out, "%s is not on the PATH, so nothing registered the server.\n", argv[0]); err != nil {
@@ -257,6 +278,10 @@ func (s Setup) print(argv []string, snippet, path, skillDir, warn string) error 
 		errs = append(errs, err)
 	}
 	errs = append(errs, s.printSnippet(snippet, path))
-	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s", skillDir, s.notes(warn))
+	extra := ""
+	if cd := s.Agent.commandDir(s.Project); cd != "" {
+		extra = fmt.Sprintf("and the /factory command (handoff, status, inbox) in %s\n", cd)
+	}
+	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s%s", skillDir, extra, s.notes(warn))
 	return errors.Join(append(errs, err)...)
 }

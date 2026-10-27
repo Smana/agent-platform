@@ -156,9 +156,13 @@ func TestSetupNeverEditsAConfig(t *testing.T) {
 					root = dir
 				}
 				skills := filepath.Join(root, strings.TrimPrefix(a.skillDir(project), "~/"))
+				command := ""
+				if c := a.commandDir(project); c != "" {
+					command = filepath.Join(root, strings.TrimPrefix(c, "~/"), "factory.md")
+				}
 				for _, f := range filesUnder(t, home, dir) {
-					if !strings.HasPrefix(f, filepath.Join(skills, "factory-handoff")+string(filepath.Separator)) {
-						t.Errorf("wrote %s, not a skill file", f)
+					if !strings.HasPrefix(f, filepath.Join(skills, "factory-handoff")+string(filepath.Separator)) && f != command {
+						t.Errorf("wrote %s, not a skill file or the /factory command", f)
 					}
 				}
 			})
@@ -323,5 +327,49 @@ func TestSkillDirsWithoutARepositorySkipsTheProjectScope(t *testing.T) {
 	}
 	if len(SkillDirs("/home/dev", "/repo")) <= len(SkillDirs("/home/dev", "")) {
 		t.Error("a repository adds no project dirs")
+	}
+}
+
+// O6: the MCP prompts autocomplete as /factory:handoff but typing that is rejected, and only
+// /mcp__factory__handoff runs. setup installs a short /factory command, with handoff, status and
+// inbox as its subcommands, for the agents that have a command mechanism.
+func TestSetupInstallsTheFactoryCommand(t *testing.T) {
+	for name, tc := range map[string]struct{ user, project string }{
+		"claude":   {".claude/commands", ".claude/commands"},
+		"opencode": {".config/opencode/commands", ".opencode/commands"},
+	} {
+		for _, project := range []bool{false, true} {
+			t.Run(name, func(t *testing.T) {
+				home, dir := t.TempDir(), t.TempDir()
+				s := Setup{Agent: Agents[name], Project: project, Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &bytes.Buffer{}}
+				if err := s.Do(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				root, sub := home, tc.user
+				if project {
+					root, sub = dir, tc.project
+				}
+				b, err := os.ReadFile(filepath.Join(root, sub, "factory.md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, w := range []string{"description:", "$ARGUMENTS", "handoff", "status", "inbox", "issue_draft", "issue_file", "room_summary", "rooms_list", "never apply a label"} {
+					if !strings.Contains(string(b), w) {
+						t.Errorf("the command lacks %q:\n%s", w, b)
+					}
+				}
+			})
+		}
+	}
+	// An agent with no command mechanism gets none.
+	home, dir := t.TempDir(), t.TempDir()
+	s := Setup{Agent: Agents["codex"], Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &bytes.Buffer{}}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range filesUnder(t, home, dir) {
+		if strings.HasSuffix(f, "factory.md") {
+			t.Errorf("codex got %s", f)
+		}
 	}
 }

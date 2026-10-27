@@ -44,7 +44,7 @@ roomctl doctor                                   # check the setup
 | `configure --url URL [--issuer URL --client-id ID --project-id ID]` | Saves the config. The broker's URL is enough |
 | `configure --from URL` | Replaces the config with the values the broker serves now, whatever is stored |
 | `login` | Signs in with the device flow |
-| `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill. `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
+| `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill and, for `claude` and `opencode`, the short `/factory` command ([below](#short-commands)). `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
 | `doctor` | Checks the VPN, the CA, your login, your GitHub link and the installed skill's version (`skill`), with the fix of each |
 | `token` | Prints a valid access token, for scripts. Treat it as a secret |
 | `status <room> [--json] [--after seq:N]` | Where a room stands, as the room card (below): the title, the state, the facts (run, spend, PR and last verdict, next, why), what needs you, the runs line, the agents' notes and what you can do, then a `cursor: seq:N` line. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
@@ -109,7 +109,7 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
   `issue_draft` from the broker, and `issue_file`, `room_wait` and `room_checkout`, roomctl's own.
   `room_tail` also runs as an MCP Task that waits for the room's next events; `roomctl mcp` polls it
   for your agent. The broker also serves the prompts `handoff` (`what`), `status` (`room`) and
-  `inbox`, which your agent offers as slash commands.
+  `inbox`, which your agent offers as slash commands (see [Short commands](#short-commands) for how to type them).
 - `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
   shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
   shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself
@@ -131,6 +131,23 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 
 The [factory-handoff skill](#the-factory-handoff-skill) does the same jobs through the shell, for an
 agent with no MCP configuration. Configure one of the two.
+
+### Short commands
+
+Claude Code lists the MCP prompts as `/factory:handoff`, but typing that is rejected as an unknown
+command: only `/mcp__factory__handoff` runs. So `roomctl setup claude` and `roomctl setup opencode`
+also write one command file, `factory.md`, that calls the same prompts' tools:
+
+| Type | Does |
+|---|---|
+| `/factory handoff [what]` | drafts the issue, checks it with `issue_draft`, files it with `issue_file` |
+| `/factory status [room]` | `room_summary` of the room; none: your most recently updated room |
+| `/factory inbox` | `rooms_list` with `needsMe`, then `mine` |
+
+Where: `~/.claude/commands/factory.md` (`.claude/commands/` with `--project`) for Claude Code,
+`~/.config/opencode/commands/factory.md` (`.opencode/commands/`) for OpenCode, which reads the same
+markdown file with `$ARGUMENTS`. A second `setup` rewrites it. The MCP prompts stay as they are.
+Source: `internal/roomctl/skill/commands/factory.md`.
 
 ### Checking out an agent's branch
 
