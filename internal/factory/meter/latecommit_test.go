@@ -121,3 +121,82 @@ func TestReviewParked1LateCommit(t *testing.T) {
 		})
 	}
 }
+
+// settledGauge is the last OnSettled hand-over, by run.
+type settledGauge struct{ last map[string]float64 }
+
+func (g *settledGauge) set(s map[string]float64) { g.last = s }
+
+// XC5: the settled gauge is the ledger's total for the run, which a double charge doubles: the
+// reviewer's sequence reads 1.4 once the fix holds. (With the fix reverted the same test reads
+// 2.8, the ledger's count and not the meter's own.)
+func TestTheSettledGaugeReadsTheLedgerAfterALateCommit(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	c := newLateCommit(ledgerDay(t, "20261022", map[string]int64{"github:bob": 5}, nil))
+	m := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{glmRun("aaaaaaaa", now)}},
+		typed{"aaaaaaaa": glmUsage(1_000_000)}, c, &now)
+	g := &settledGauge{}
+	m.OnSettled = g.set
+	c.failing = true
+	if err := m.Tick(t.Context()); err == nil || c.held == nil {
+		t.Fatalf("tick N: the 504 is reported and the write held: %v", err)
+	}
+	if got, ok := g.last["aaaaaaaa"]; ok {
+		t.Fatalf("a write that reported an error showed %v", got)
+	}
+	c.failing, c.ticking, c.at = false, 0, 2
+	now = now.Add(time.Minute)
+	if err := m.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.last["aaaaaaaa"]; got != 1.4 {
+		t.Fatalf("the gauge reads %v, want the run's 1.4 once", got)
+	}
+}
+
+// XC5: the gauge sums the run's entries across days, a new leader reads it back, and the run
+// leaves an hour after it ends.
+func TestTheSettledGaugeSumsDaysSurvivesAFailoverAndLeavesAfterAnHour(t *testing.T) {
+	now := time.Date(2026, 10, 22, 23, 59, 30, 0, time.UTC)
+	c := fake.NewClientBuilder().WithScheme(cmScheme()).Build()
+	run := glmRun("aaaaaaaa", now)
+	st := &store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}
+	src := typed{"aaaaaaaa": glmUsage(1_000_000)}
+	m := usdLedgerMeter(st, src, c, &now)
+	g := &settledGauge{}
+	m.OnSettled = g.set
+	if err := m.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	now, src["aaaaaaaa"] = now.Add(time.Minute), glmUsage(1_100_000)
+	if err := m.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.last["aaaaaaaa"]; got != 1.54 { // 1.4 on the 22nd, 0.14 on the 23rd
+		t.Fatalf("the gauge reads %v, want 1.54", got)
+	}
+	run.Tokens = 1_100_000
+	next := usdLedgerMeter(&store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}, src, c, &now)
+	ng := &settledGauge{}
+	next.OnSettled = ng.set
+	if err := next.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ng.last["aaaaaaaa"]; got != 1.54 {
+		t.Fatalf("a new leader's gauge reads %v, want 1.54", got)
+	}
+	run.Phase, run.Finished = "Succeeded", now
+	next.Runs = &store{patches: map[string]map[string]string{}, runs: []runs.Run{run}}
+	for _, tc := range []struct {
+		after time.Duration
+		kept  bool
+	}{{59 * time.Minute, true}, {time.Hour, false}} {
+		now = run.Finished.Add(tc.after)
+		if err := next.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := ng.last["aaaaaaaa"]; ok != tc.kept {
+			t.Fatalf("%v after the end: kept %v, want %v", tc.after, ok, tc.kept)
+		}
+	}
+}

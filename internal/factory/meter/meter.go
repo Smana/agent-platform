@@ -272,6 +272,11 @@ type Meter struct {
 	// OnSpend receives, each tick that read usage, the USD spend of every priced run whose cost
 	// is not reported yet, by run then served model: the per-run gauge.
 	OnSpend func(spend map[string]map[string]float64)
+	// OnSettled receives, each tick that listed the runs, what the day ledgers settled for each
+	// run that has an entry, in USD: the sum of its settled.<runId> over the days, as the ledger
+	// objects read or written show it (XC5), never the meter's own account of it. A run stays in it
+	// settledKept after it ends, then leaves.
+	OnSettled func(settled map[string]float64)
 	// OnUnpriced is told, once per run, of a model that served it with no price (J-AC4).
 	OnUnpriced func(ctx context.Context, model string)
 	// OnInputExcludesCache is told, once per run, of a model whose input read below its cache
@@ -313,6 +318,7 @@ type Meter struct {
 	ended    map[string]time.Time        // live-seen runs, by when this meter first saw them ended
 	settled  map[string]map[string]int64 // reported runs: the micro-USD by served model reported
 	fell     map[string]bool             // runs whose fallback was reported
+	ledger   map[string]*runLedger       // per run: its settled entries as the ledgers last showed them
 	named    map[string]bool             // run and model pairs whose missing price, or input without cache, was reported
 }
 
@@ -343,6 +349,17 @@ type account struct {
 	seenDay              string // the day of a write resolve judged lost: it may still commit (#166)
 	seen                 int64  // the run's settled entry on seenDay when resolve read it
 	payer, kind          string // whom and what its charges count for (runs.Run.Payer, Kind)
+}
+
+// settledKept is how long OnSettled keeps a run after it ends: longer than the cross-check's
+// alert waits.
+const settledKept = time.Hour
+
+// runLedger is a run's settled entries by UTC day, as the ledger objects last showed them, and
+// when it was first seen ended (zero while it runs).
+type runLedger struct {
+	days  map[string]int64
+	ended time.Time
 }
 
 // mono is one monotonic counter's last raw value and the total it gave.
@@ -430,9 +447,16 @@ func (m *Meter) learn(ctx context.Context, all []runs.Run) error {
 	}
 	var settled map[string]int64
 	if m.Ledger != nil {
-		var err error
-		if settled, err = api.SettledByRun(ctx, m.Ledger, m.Namespace); err != nil {
+		days, err := api.SettledByRunDay(ctx, m.Ledger, m.Namespace)
+		if err != nil {
 			return fmt.Errorf("meter: %w", err)
+		}
+		settled = make(map[string]int64, len(days))
+		for _, id := range need {
+			for day, n := range days[id] {
+				settled[id] += n
+				m.note(day, id, n)
+			}
 		}
 	}
 	if m.accounts == nil {
@@ -472,6 +496,7 @@ func (m *Meter) resolve(ctx context.Context) error {
 			}
 			read[a.doubt] = entries
 		}
+		m.noteOf(a.doubt, entries, id)
 		gain := max(0, entries[id]-a.was)
 		if gain == 0 { // lost, as far as this read shows: settle watches for it to commit late
 			a.seenDay, a.seen = a.doubt, entries[id]
@@ -602,6 +627,9 @@ func (m *Meter) Start(ctx context.Context) error {
 	if m.OnCharges != nil { // the charge info is the leader's (SI3): it ends with the leadership
 		defer m.OnCharges(nil)
 	}
+	if m.OnSettled != nil { // so is the settled gauge
+		defer m.OnSettled(nil)
+	}
 	for {
 		if err := m.Tick(ctx); err != nil {
 			m.log().Warn("meter tick failed", "err", err)
@@ -629,6 +657,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	if m.OnCharges != nil {
 		m.OnCharges(m.chargeInfo(all))
 	}
+	defer m.publishSettled(all)
 	used, err := m.Source.RunUsage(ctx)
 	if err != nil {
 		if m.OnUsageError != nil {
@@ -857,6 +886,9 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		if err != nil {
 			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
 		}
+		for id := range inc {
+			m.noteOf(day, was, id)
+		}
 		late := maps.Clone(fenced)
 		for id := range inc {
 			if a := m.accounts[id]; a.seenDay == day {
@@ -887,6 +919,10 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 		switch {
 		case err == nil:
+			after, _ := api.SettledColumn(cm) // the object the write returned
+			for id := range inc {
+				m.noteOf(day, after, id)
+			}
 			m.settledUp(inc)
 			return spent, nil
 		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
@@ -907,6 +943,62 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 	}
 	return nil, fmt.Errorf("meter: the %s ledger stayed busy", day)
+}
+
+// note records a run's settled entry n on a day as a ledger object showed it; a run with no
+// entry there has nothing to record.
+func (m *Meter) note(day, id string, n int64) {
+	if m.ledger == nil {
+		m.ledger = map[string]*runLedger{}
+	}
+	l := m.ledger[id]
+	if l == nil {
+		l = &runLedger{days: map[string]int64{}}
+		m.ledger[id] = l
+	}
+	l.days[day] = n
+}
+
+// noteOf records run id's entry of a ledger's settled column on day, when it has one.
+func (m *Meter) noteOf(day string, entries map[string]int64, id string) {
+	if n, ok := entries[id]; ok {
+		m.note(day, id, n)
+	}
+}
+
+// publishSettled hands OnSettled each run's ledger total, and lets go of the runs that ended
+// settledKept ago: a run absent from the list counts as ended when first missed.
+func (m *Meter) publishSettled(all []runs.Run) {
+	if m.OnSettled == nil {
+		return
+	}
+	now := m.now()
+	listed := make(map[string]runs.Run, len(all))
+	for _, r := range all {
+		listed[r.ID] = r
+	}
+	out := make(map[string]float64, len(m.ledger))
+	for id, l := range m.ledger {
+		r, ok := listed[id]
+		switch {
+		case ok && !runs.Terminal(r.Phase):
+			l.ended = time.Time{}
+		case ok && !r.Finished.IsZero():
+			l.ended = r.Finished
+		case l.ended.IsZero():
+			l.ended = now
+		}
+		if !l.ended.IsZero() && now.Sub(l.ended) >= settledKept {
+			delete(m.ledger, id)
+			continue
+		}
+		var sum int64
+		for _, n := range l.days {
+			sum += n
+		}
+		out[id] = float64(sum) / 1e6
+	}
+	m.OnSettled(out)
 }
 
 // settledUp ends the watch for a late commit of each run charged: the write that settled it
@@ -996,6 +1088,7 @@ func (m *Meter) fence(ctx context.Context, day string, inc map[string]int64) (ma
 		for id := range inc {
 			if a := m.accounts[id]; a.seenDay == d {
 				late[id] += max(0, entries[id]-a.seen)
+				m.noteOf(d, entries, id)
 			}
 		}
 	}

@@ -69,21 +69,40 @@ func AddSettled(cm *corev1.ConfigMap, inc map[string]int64) error {
 // sum to the retained days. c must list ConfigMaps live: the factory's cache sees the stop object
 // only. One entry that does not parse fails the whole read: a meter must not guess what was charged.
 func SettledByRun(ctx context.Context, c client.Reader, ns string) (map[string]int64, error) {
+	days, err := SettledByRunDay(ctx, c, ns)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for id, by := range days {
+		for _, n := range by {
+			out[id] += n
+		}
+	}
+	return out, nil
+}
+
+// SettledByRunDay is SettledByRun's read by UTC day: each run's settled entries, day by day.
+func SettledByRunDay(ctx context.Context, c client.Reader, ns string) (map[string]map[string]int64, error) {
 	var cms corev1.ConfigMapList
 	if err := c.List(ctx, &cms, client.InNamespace(ns)); err != nil {
 		return nil, fmt.Errorf("ledger: list the day ledgers: %w", err)
 	}
-	out := map[string]int64{}
+	out := map[string]map[string]int64{}
 	for i := range cms.Items {
-		if _, ok := LedgerDay(cms.Items[i].Name, LedgerPrefix); !ok {
+		day, ok := LedgerDay(cms.Items[i].Name, LedgerPrefix)
+		if !ok {
 			continue
 		}
-		day, err := SettledColumn(&cms.Items[i])
+		entries, err := SettledColumn(&cms.Items[i])
 		if err != nil {
 			return nil, err
 		}
-		for id, n := range day {
-			out[id] += n
+		for id, n := range entries {
+			if out[id] == nil {
+				out[id] = map[string]int64{}
+			}
+			out[id][day] = n
 		}
 	}
 	return out, nil

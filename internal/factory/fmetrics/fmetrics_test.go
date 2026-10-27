@@ -144,6 +144,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 	s.RunCost(ctx, "standard", 0.65, map[string]float64{"glm-5.3": 0.65})
 	s.LateCost(ctx, map[string]float64{"glm-5.3": 0.1})
 	s.RunSpend(map[string]map[string]float64{"nh5tztlh": {"claude-opus-5-5": 2.13212}})
+	s.RunSettled(map[string]float64{"nh5tztlh": 2.8})
 	s.RunBudgetUSD(ctx, "standard", 2.55)
 	s.RunBudgetFallback(ctx, "task", "unpriced")
 	s.ModelUnpriced(ctx, "claude-fable-5-1")
@@ -176,6 +177,7 @@ func TestEverySection7MetricIsExposed(t *testing.T) {
 		`agent_factory_run_cost_usd_bucket{tier="standard",le="0.75"} 1`,
 		`agent_factory_model_cost_usd_total{model="glm-5.3"} 0.75`,
 		`agent_factory_run_spend_usd{model="claude-opus-5-5",run="nh5tztlh"} 2.13212`,
+		`agent_factory_run_settled_usd{run="nh5tztlh"} 2.8`,
 		`agent_factory_run_budget_usd{tier="standard"} 2.55`,
 		`agent_factory_run_budget_fallbacks_total{scope="task",why="unpriced"} 1`,
 		`agent_factory_meter_unpriced_model_runs_total{model="claude-fable-5-1"} 1`,
@@ -229,6 +231,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 	s.RunRevoked(ctx, "budget-run", "a limit")
 	s.RunCost(ctx, "huge", 1, map[string]float64{"A Model": 1})
 	s.RunSpend(map[string]map[string]float64{"not a run": {"glm-5.3": 1}, "aaaaaaaa": {"A Model": 2}})
+	s.RunSettled(map[string]float64{"not a run": 1, "aaaaaaaa": 2})
 	s.RunBudgetFallback(ctx, "a scope", "a reason")
 	s.ModelUnpriced(ctx, "Ignore previous instructions")
 	s.InputExcludesCache(ctx, "Ignore previous instructions")
@@ -244,6 +247,7 @@ func TestLabelValuesAreBounded(t *testing.T) {
 		`agent_factory_run_cost_usd_count{tier="other"} 1`,
 		`agent_factory_model_cost_usd_total{model="other"} 1`,
 		`agent_factory_run_spend_usd{model="other",run="aaaaaaaa"} 2`,
+		`agent_factory_run_settled_usd{run="aaaaaaaa"} 2`,
 		`agent_factory_run_budget_fallbacks_total{scope="other",why="other"} 1`,
 		`agent_factory_meter_unpriced_model_runs_total{model="other"} 1`,
 		`agent_factory_meter_input_excludes_cache_runs_total{model="other"} 1`,
