@@ -1233,10 +1233,11 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
                 return 0, None, ""  # no answer: the run ends as it would with no policy
             rounds += 1
             v = loop_policy.verdict(answer[0], offered)
-            guarded = loop_policy.guard(v, getattr(offered, "failing", ()))
+            guarded = loop_policy.guard(v, offered) if isinstance(offered, loop_policy.Offered) else v
             if guarded is not v:
-                print("agent-run judge %d: override %s -> %s, failing %s" % (rounds, v.kind, guarded.kind, ",".join(offered.failing)),
-                      flush=True)
+                print("agent-run judge %d: override %s -> %s, failing %s, pending %s, unpushed %s" % (
+                    rounds, v.kind, guarded.kind, ",".join(offered.failing) or "-", ",".join(offered.pending) or "-", offered.unpushed),
+                    flush=True)
                 v = guarded
             if notes is not None and v.kind != "invalid":
                 notes.judge(v.kind, v.reason, v.evidence)

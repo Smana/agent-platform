@@ -98,14 +98,19 @@ FAILED = ("failure", "timed_out", "cancelled", "startup_failure", "action_requir
 
 
 class Offered(set):
-    """The evidence ids the judge may cite; failing lists those of the check runs that failed."""
+    """The evidence ids the judge may cite, and what the harness knows about the head's checks:
+    failing and pending list the ids of check runs that failed or have not completed, unpushed is
+    whether GitHub knew no such head (not pushed, or gh failing)."""
     failing: tuple = ()
+    pending: tuple = ()
+    unpushed: bool = False
 
 
 def judge_input(checks_text: str, head: str, files: list[str], diff: str, runs: list[dict] | None) -> tuple[str, set[str]]:
     """The judge's user message and the evidence ids it may cite. runs is None when GitHub knows no
     such head; a check that has not completed is listed as pending, which is evidence of nothing."""
     offered = Offered(["acceptance", "diff"])
+    offered.unpushed = runs is None
     lines = ["ACCEPTANCE CHECKS (id: acceptance)", checks_text or "(none given)", "",
              "CHECKS' OUTPUT on %s" % (head or "an unknown head")]
     if runs is None:
@@ -115,7 +120,9 @@ def judge_input(checks_text: str, head: str, files: list[str], diff: str, runs: 
     for r in runs or []:
         cid = "check:" + r["name"]
         offered.add(cid)
-        if r["status"] == "completed" and r["conclusion"] in FAILED:
+        if r["status"] != "completed":
+            offered.pending += (cid,)
+        elif r["conclusion"] in FAILED:
             offered.failing += (cid,)
         state = r["conclusion"] if r["status"] == "completed" else "pending (%s)" % r["status"]
         lines.append("- %s: %s%s" % (cid, state, " - " + r["title"] if r["title"] else ""))
@@ -170,19 +177,25 @@ def verdict(text: str, offered: set[str]) -> Verdict:
     return Verdict(kind, reason.strip()[:REASON_MAX], ids)
 
 
-CANNOT_PASS = re.compile(r"\b(?:cannot|can't|can not|can never|impossible|unsatisfiable)\b", re.I)
-
-
-def guard(v: Verdict, failing: tuple) -> Verdict:
-    """A deterministic floor under the judge: with any check run failing, `met` is never the verdict.
-    It becomes impossible when the judge's own reason says the check cannot pass, else not_yet. The
+def guard(v: Verdict, offered) -> Verdict:
+    """A deterministic floor under the judge: `met` is never the verdict while a check run failed, one
+    has not completed, or GitHub knows no such head (the checks' output is then evidence of nothing). It
+    becomes not_yet. The judge's own impossible, not_yet and invalid answers are left as they are. The
     judge once answered `met` on a failing check because the repository's README called the failure
     intended; prose is data, a failed check is a fact."""
-    if v.kind != "met" or not failing:
+    if v.kind != "met":
         return v
-    why = "a check failed (%s), so the acceptance checks are not met" % ", ".join(failing)
-    kind = "impossible" if CANNOT_PASS.search(v.reason) else "not_yet"
-    return Verdict(kind, "%s; the judge's reading was: %s" % (why, v.reason), v.evidence)
+    why = []
+    if offered.failing:
+        why.append("a check failed (%s)" % ", ".join(offered.failing))
+    if offered.pending:
+        why.append("a check has not completed (%s: pending)" % ", ".join(offered.pending))
+    if offered.unpushed:
+        why.append("GitHub knows no such head (not pushed, or its checks could not be read)")
+    if not why:
+        return v
+    return Verdict("not_yet", "%s, so the acceptance checks are not met; the judge's reading was: %s" % ("; ".join(why), v.reason),
+                   v.evidence)
 
 
 @dataclass
