@@ -55,6 +55,7 @@ type issueForge interface {
 	Comment(ctx context.Context, number int, body string) error
 	AgentPulls(ctx context.Context) ([]forge.AgentPull, error)
 	AddLabels(ctx context.Context, number int, labels ...string) error
+	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
 }
 
 // errorCounter counts a failed poll, a label left for the next one, and a label refused on its
@@ -96,6 +97,13 @@ type IssuePoller struct {
 	Ledger client.Reader
 	// Now is the clock the ledger is read on; nil means time.Now.
 	Now func() time.Time
+	// Proposal reads an investigate task's proposal for factory/publish (RunLore RA9); it answers
+	// ErrNoProposal when there is none. nil publishes nothing.
+	Proposal func(context.Context, *v1alpha1.Task) (string, error)
+	// Redact scans a proposal before it is published; nil publishes nothing (fails closed).
+	Redact interface {
+		String(string) (string, []string)
+	}
 }
 
 func (p *IssuePoller) repo() *config.Repository { return p.Cfg.RepositoryFor(p.Repository) }
@@ -208,6 +216,9 @@ func (p *IssuePoller) Poll(ctx context.Context) error {
 		return fmt.Errorf("intake: %w", err)
 	}
 	var errs []error
+	if err := p.publishes(ctx); err != nil { // before factory/ready: the maintainer reads the filed issue, then starts it
+		errs = append(errs, err)
+	}
 	for _, it := range items {
 		if it.PullRequest {
 			continue // factory/ready starts work from issues only
@@ -332,6 +343,11 @@ func (p *IssuePoller) one(ctx context.Context, n int) error {
 	if parent != nil { // a re-labelled part: its parent's spec comes at its triage (splitter SR11)
 		t.Spec.Parent = parent
 		t.Labels[v1alpha1.LabelParent] = parent.Task
+	}
+	if origin, err := p.originOf(ctx, n); err != nil {
+		return err
+	} else if origin != "" {
+		t.Spec.Origin = origin // RA9: the factory's own record, never the issue's text
 	}
 	if err := p.Client.Create(ctx, t); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create task %s: %w", name, err) // AlreadyExists is the dedup (S2)

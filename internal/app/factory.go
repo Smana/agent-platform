@@ -268,20 +268,29 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
 	}
-	if len(cfg.API.Sponsored)+len(cfg.API.InternalPrincipals) > 0 { // only the sponsored intake reads it, and it fails closed on a nil interface
-		redactor, err := redact.New()
-		if err != nil {
-			return err
+	// The api intake and factory/publish scan what they publish, and both fail closed without it.
+	redactor, err := redact.New()
+	if err != nil {
+		return err
+	}
+	apiSrv.Redact = redactor
+	proposal := func(ctx context.Context, t *factoryv1.Task) (string, error) {
+		text, err := rec.Proposal(ctx, t)
+		if errors.Is(err, reconciler.ErrNoProposal) {
+			return "", intake.ErrNoProposal
 		}
-		apiSrv.Redact = redactor
+		return text, err
 	}
 	var runnables []manager.Runnable
 	for _, rp := range cfg.Repos() {
 		c, _ := conns.get(rp.Name)
 		name := rp.Name
-		runnables = append(runnables, &intake.IssuePoller{Forge: c.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+		poller := &intake.IssuePoller{Forge: c.gh, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Repository: name, Errors: m, Log: log.With("repository", name), Stopped: stopped, Owned: fenced.Owned, Ledger: live,
-			CanWrite: func(ctx context.Context, login string) (bool, error) { return perms.CanWrite(ctx, name, login) }})
+			CanWrite: func(ctx context.Context, login string) (bool, error) { return perms.CanWrite(ctx, name, login) },
+			Proposal: proposal}
+		poller.Redact = redactor
+		runnables = append(runnables, poller)
 	}
 	for _, r := range append(runnables,
 		&intake.Scheduler{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,

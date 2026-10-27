@@ -242,7 +242,7 @@ A task ends with one of these:
 
 | Phase | Reasons |
 |---|---|
-| `Done` | `children_merged` (a split's last part merged), `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: open a new issue with the text you approve and label it) |
+| `Done` | `children_merged` (a split's last part merged), `merged` (by a maintainer), `merged_verified` (auto-merged, main green for `merge.verifyFor`), `proposal_ready` (a triager's proposal: label its issue `factory/publish`, read the new issue the factory files, then label that one `factory/ready`) |
 | `NoOp` | `no_pr` (the run opened no pull request), `no_action` (the triager found nothing to change). Add detail and re-apply `factory/ready` |
 | `Rejected` | `text_too_long` (over `caps.maxTextBytes`), `daily_task_cap` (`caps.tasksPerDay`). Fix it and re-apply `factory/ready` |
 | `Closed` | `pr_closed`, `stale`, `child_dropped` (a part's issue closed unmerged, or a part reverted) |
