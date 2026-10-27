@@ -36,6 +36,20 @@ func Matrix(class, source, tier string) string {
 	return "pair"
 }
 
+// Investigates is whether t takes the investigate template, forced by its source and never by its
+// body: a RunLore finding, or an api task of a declared internal principal (RunLore agent-to-agent
+// RA4). A sponsored principal's task, and an api task of a principal the config no longer declares,
+// are not forced.
+func Investigates(cfg *config.Config, t *v1alpha1.Task) bool {
+	switch t.Spec.Source.Kind {
+	case "runlore":
+		return true
+	case "api":
+		return cfg.InternalBy(t.Spec.Source.RequestedBy) != nil
+	}
+	return false
+}
+
 // Control puts percent % of tasks in the OD-14 control group, deterministically by task id.
 func Control(taskID string, percent int) bool {
 	h := fnv.New32a()
@@ -76,7 +90,7 @@ func (c Classify) Triage(ctx context.Context, t *v1alpha1.Task) (Decision, error
 	if err != nil {
 		return Decision{}, err
 	}
-	if t.Spec.Source.Kind == "runlore" {
+	if Investigates(c.Cfg, t) {
 		dataClass = "internal" // the investigate template forces it (§2)
 	}
 	if c.Cfg.RepositoryFor(t.Spec.Repository).Classes[class].Oracle != nil {
@@ -103,17 +117,21 @@ func (c Classify) Triage(ctx context.Context, t *v1alpha1.Task) (Decision, error
 	if Control(t.Name, c.Cfg.Triage.ControlPercent) {
 		cl.Control, tier = true, "frontier"
 	}
-	return Decision{Template: Matrix(class, t.Spec.Source.Kind, tier), PredictedClass: class, DataClass: dataClass,
+	source := t.Spec.Source.Kind
+	if Investigates(c.Cfg, t) {
+		source = "runlore" // Matrix keys on the source kind: both take investigate
+	}
+	return Decision{Template: Matrix(class, source, tier), PredictedClass: class, DataClass: dataClass,
 		Budget: BudgetFor(c.Cfg, tier), Classification: cl}, nil
 }
 
 // predictClass: the schedule's class; else a maintainer-applied class:<name> label; else review.
 // RunLore tasks are always review. Labels are intent, never authority (§2, §8 T3).
 func (c Classify) predictClass(ctx context.Context, t *v1alpha1.Task) (string, error) {
-	switch t.Spec.Source.Kind {
-	case "runlore":
+	if Investigates(c.Cfg, t) {
 		return "review", nil
-	case "schedule":
+	}
+	if t.Spec.Source.Kind == "schedule" {
 		if _, ok := c.Cfg.RepositoryFor(t.Spec.Repository).Classes[t.Spec.PredictedClass]; ok {
 			return t.Spec.PredictedClass, nil
 		}

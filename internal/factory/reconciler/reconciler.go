@@ -920,7 +920,7 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	// R34: the factory's own day, checked before every run it starts, not only by the meter.
 	// M-8: an api task's principal that left the config would run in shadow: refuse it first.
-	if p := t.Sponsored(); p != "" && r.Cfg.SponsoredBy(p) == nil {
+	if p := t.Sponsored(); p != "" && r.Cfg.PrincipalBy(p) == nil {
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "principal_unknown")
 	}
 	limit, sponsored := r.Cfg.Budgets.DailyMicroUSD(runs.PrincipalFactory), r.sponsored(t)
