@@ -122,25 +122,25 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 }
 
 // fallbackNext is the hint for a form that could not be shown or answered (OpenCode cuts a tool at
-// its execution timeout): one command for the developer to run, nothing filed until they do.
+// its execution timeout): one command for the developer to run, nothing filed until they do. It never
+// labels the issue: starting the factory is the developer's own act.
 func fallbackNext(d draftShape) string {
-	return "next: show the developer this one command and let them run it; it is their yes, and nothing is filed until they do:\n" +
-		fallbackCommand(d, d.CanStart)
+	start := "to start the factory they add the label " + readyLabel + " themselves, or you call issue_file again and they choose start in its form"
+	if !d.CanStart {
+		start = "the factory cannot be started from here; they label the issue " + readyLabel + " themselves when it can run"
+	}
+	return "next: show the developer this one command and let them run it; it only files the issue, and nothing is filed until they do. " +
+		"Never add a label yourself: " + start + ", and that is what starts the factory:\n" + fallbackCommand(d)
 }
 
-// fallbackCommand is one shell command that files the draft with gh and, when start, labels the issue
-// readyLabel. Every value is single-quoted and the body rides a quoted heredoc whose end never
-// occurs in it.
-func fallbackCommand(d draftShape, start bool) string {
+// fallbackCommand is one shell command that files the draft with gh and nothing else. Every value is
+// single-quoted and the body rides a quoted heredoc whose end never occurs in it.
+func fallbackCommand(d draftShape) string {
 	eof := "BODY_EOF"
 	for i := 1; strings.Contains(d.Body, "\n"+eof+"\n") || strings.HasPrefix(d.Body, eof+"\n") || strings.HasSuffix(d.Body, "\n"+eof) || d.Body == eof; i++ {
 		eof = fmt.Sprintf("BODY_EOF_%d", i)
 	}
-	create := fmt.Sprintf("gh issue create --repo=%s --title=%s --body-file=- <<'%s'\n%s\n%s\n", d.Repo, shQuote(d.Title), eof, strings.TrimRight(d.Body, "\n"), eof)
-	if !start {
-		return create
-	}
-	return "url=$(" + create + ") && gh issue edit \"${url##*/}\" --repo=" + d.Repo + " --add-label=" + readyLabel
+	return fmt.Sprintf("gh issue create --repo=%s --title=%s --body-file=- <<'%s'\n%s\n%s\n", d.Repo, shQuote(d.Title), eof, strings.TrimRight(d.Body, "\n"), eof)
 }
 
 // shQuote single-quotes s for a POSIX shell.

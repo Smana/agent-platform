@@ -170,8 +170,8 @@ config edit setup makes; every other client's config is only ever printed.
 It also sets `"timeout": {"execution": 900000}` (ms) there: OpenCode cuts a tool at its execution
 timeout, which cut `issue_file`'s form ("context deadline exceeded"). `roomctl doctor` warns when the
 factory entry has none. When a form cannot be shown or is not answered, `issue_file` answers with a
-`next:` hint holding one `gh` command that files the issue (and labels it `factory/ready` when the
-draft could start the factory) for the developer to run.
+`next:` hint holding one `gh` command that only files the issue, for the developer to run. It never
+labels: starting the factory stays the developer's act (the label, or choosing start in the form).
 
 ### Short commands
 

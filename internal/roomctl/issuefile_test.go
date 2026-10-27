@@ -452,10 +452,10 @@ func TestIssueFileStartNotChosen(t *testing.T) {
 }
 
 // O10: OpenCode cut issue_file's form short ("context deadline exceeded"). When the form cannot be
-// shown or is not answered, the result holds ONE command that files the issue with gh, and labels
-// it factory/ready only when the draft could start the factory.
+// shown or is not answered, the result holds ONE command that files the issue with gh and never labels
+// it: starting the factory stays the developer's own act, whatever the draft could do.
 func TestIssueFileFallbackCommand(t *testing.T) {
-	check := func(t *testing.T, res map[string]any, wantLabel bool) {
+	check := func(t *testing.T, res map[string]any, _ bool) {
 		t.Helper()
 		text := fmt.Sprint(res["result"])
 		for _, want := range []string{"next:", "gh issue create", "--repo=Smana/a", "docs: a dead link", "--body-file=-"} {
@@ -463,8 +463,11 @@ func TestIssueFileFallbackCommand(t *testing.T) {
 				t.Fatalf("no %q in %s", want, text)
 			}
 		}
-		if got := strings.Contains(text, "--add-label=factory/ready"); got != wantLabel {
-			t.Fatalf("label %v, want %v: %s", got, wantLabel, text)
+		if strings.Contains(text, "--add-label") || strings.Contains(text, "gh issue edit") {
+			t.Fatalf("the fallback starts the factory: %s", text)
+		}
+		if !strings.Contains(text, "starts the factory") || !strings.Contains(text, "factory/ready") {
+			t.Fatalf("it does not say how the developer starts it: %s", text)
 		}
 	}
 	t.Run("a client that cannot ask", func(t *testing.T) {
@@ -494,7 +497,7 @@ func TestIssueFileFallbackCommand(t *testing.T) {
 
 // The command quotes what the draft holds: a title with a quote, a body that holds the heredoc's end.
 func TestFallbackCommandQuoting(t *testing.T) {
-	cmd := fallbackCommand(draftShape{Repo: "Smana/a", Title: "fix: it's $(bad)", Body: "x\nBODY_EOF\ny"}, false)
+	cmd := fallbackCommand(draftShape{Repo: "Smana/a", Title: "fix: it's $(bad)", Body: "x\nBODY_EOF\ny"})
 	if !strings.Contains(cmd, `--title='fix: it'\''s $(bad)'`) || strings.Count(cmd, "\nBODY_EOF\n") != 1 && !strings.Contains(cmd, "BODY_EOF_1") {
 		t.Fatalf("%s", cmd)
 	}
