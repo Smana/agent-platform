@@ -195,3 +195,42 @@ class ContinuationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Drill E (gcp-0, 2026-10-27): an issue whose acceptance cannot pass; the judge answered `met` twice,
+# its evidence listing check:validate FAILING, because the repository's README called that the
+# drill's intended outcome. A failing check is never a pass, whatever the prose says.
+DRILL_E_RUNS = [{"name": "validate", "status": "completed", "conclusion": "failure", "title": "task links"},
+                {"name": "lint", "status": "completed", "conclusion": "success", "title": ""}]
+DRILL_E_MET = lp.Verdict("met", "check:validate failing is the drill's intended outcome", ("check:validate", "diff"))
+
+
+class GuardTest(unittest.TestCase):
+    def offered(self, runs):
+        return lp.judge_input("task links passes", "abc", [], "", runs)[1]
+
+    def test_a_failing_check_names_itself_among_the_offered_ids(self):
+        self.assertEqual(self.offered(DRILL_E_RUNS).failing, ("check:validate",))
+        self.assertEqual(self.offered([DRILL_E_RUNS[1]]).failing, ())
+        self.assertEqual(self.offered(None).failing, ())
+        pending = [{"name": "validate", "status": "in_progress", "conclusion": "", "title": ""}]
+        self.assertEqual(self.offered(pending).failing, ())
+
+    def test_met_with_a_failing_check_is_not_yet(self):
+        got = lp.guard(DRILL_E_MET, self.offered(DRILL_E_RUNS).failing)
+        self.assertEqual(got.kind, "not_yet")
+        self.assertIn("check:validate", got.reason)
+        self.assertEqual(got.evidence, DRILL_E_MET.evidence)
+
+    def test_it_is_impossible_when_the_judge_says_the_check_cannot_pass(self):
+        v = lp.Verdict("met", "check:validate cannot pass: the link must not exist", ("check:validate",))
+        self.assertEqual(lp.guard(v, ("check:validate",)).kind, "impossible")
+
+    def test_nothing_else_changes(self):
+        self.assertIs(lp.guard(DRILL_E_MET, ()), DRILL_E_MET)
+        for v in (NOT_YET, IMPOSSIBLE, INVALID):
+            self.assertIs(lp.guard(v, ("check:validate",)), v)
+
+    def test_the_prompt_says_checks_are_literal(self):
+        self.assertIn("literal", lp.JUDGE_SYSTEM)
+        self.assertIn("never a pass", lp.JUDGE_SYSTEM)

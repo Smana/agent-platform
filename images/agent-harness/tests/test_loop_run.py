@@ -323,7 +323,7 @@ class LoopForTest(unittest.TestCase):
 class DriveTest(unittest.TestCase):
     """drive() over a scripted conversation: each poll is one finish, each judge call one answer."""
 
-    def drive(self, polls, answers, policy=POLICY, commits=1):
+    def drive(self, polls, answers, policy=POLICY, commits=1, offered=None):
         self.sent, self.interrupted, state = [], [], lp.State(start="s")
         path = os.path.join(tempfile.mkdtemp(), "loop.json")
 
@@ -341,7 +341,7 @@ class DriveTest(unittest.TestCase):
             return p
 
         with mock.patch("agent_run.poll", side_effect=poll), mock.patch("agent_run.http", side_effect=http), \
-                mock.patch("agent_run.evidence", return_value=("e", {"diff"})), \
+                mock.patch("agent_run.evidence", return_value=("e", offered or {"diff"})), \
                 mock.patch("agent_run.ask_judge", side_effect=answers), \
                 mock.patch("agent_run.commits_since", return_value=commits), mock.patch("agent_run.head", return_value="h"), \
                 mock.patch("agent_run.continue_conversation", side_effect=lambda cid, text: self.sent.append(text)), \
@@ -384,6 +384,18 @@ class DriveTest(unittest.TestCase):
     def test_met_at_the_first_finish_is_todays_finish(self):
         self.assertEqual(self.drive([0], [self.answer("met")])[0], (0, None, ""))
         self.assertIn("agent-run judge 1: met by glm-5.3-flash, evidence diff: r", self.out)
+
+    def test_drill_e_met_on_a_failing_check_is_overridden_and_logged(self):
+        # gcp-0, 2026-10-27: the judge said met with check:validate failing ("the drill's intended outcome").
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        met = json.dumps({"verdict": "met", "reason": "check:validate failing is the drill's intended outcome",
+                          "evidence": ["check:validate"]}), "glm-5.3"
+        result, state = self.drive([0, 0], [met, met], offered=offered, policy=lp.Policy(80, 1, "tier-light"))
+        self.assertEqual(result[:2], (1, "not_met"))
+        self.assertEqual(state.sent, 1)
+        self.assertIn("override met -> not_yet, failing check:validate", self.out)
+        self.assertIn("check:validate", self.sent[0])
 
     def test_not_yet_continues_in_the_same_conversation_then_met(self):
         result, state = self.drive([0, 0], [self.answer("not_yet", "lint fails"), self.answer("met")])

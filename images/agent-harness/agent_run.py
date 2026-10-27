@@ -1203,6 +1203,11 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
                 return 0, None, ""  # no answer: the run ends as it would with no policy
             rounds += 1
             v = loop_policy.verdict(answer[0], offered)
+            guarded = loop_policy.guard(v, getattr(offered, "failing", ()))
+            if guarded is not v:
+                print("agent-run judge %d: override %s -> %s, failing %s" % (rounds, v.kind, guarded.kind, ",".join(offered.failing)),
+                      flush=True)
+                v = guarded
             print("agent-run judge %d: %s by %s, evidence %s: %s" % (rounds, v.kind, answer[1] or "?", ",".join(v.evidence) or "-",
                                                                    _short(v.reason, 300)), flush=True)
             d = loop_policy.decide(policy, state, v, new_commit)
