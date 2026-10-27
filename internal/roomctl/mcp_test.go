@@ -590,9 +590,14 @@ func TestRelayNoReplyToACancelledLocalToolThatFinishesLater(t *testing.T) {
 			s.send(t, map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": name}})
 			<-started
 			cancelOf(s, t, 7)
+			if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 { // the cancel was read before this
+				t.Fatalf("%v", res)
+			}
 			close(release)
-			if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 {
-				t.Fatalf("the late result of a cancelled call was written: %v", res)
+			// Serve returns only after the call has: closing stdin is the sync point.
+			_ = s.in.Close()
+			for m := range s.lines {
+				t.Fatalf("the late result of a cancelled call was written: %v", m)
 			}
 		})
 	}
