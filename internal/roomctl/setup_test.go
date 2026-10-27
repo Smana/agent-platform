@@ -5,6 +5,7 @@ package roomctl
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io/fs"
@@ -311,8 +312,9 @@ func TestSetupInstallsTheSkillBeforeRegistering(t *testing.T) {
 	}
 }
 
+// What the CLI writes, then setup's codemode flag (O9).
 func TestSetupOpencodeSnippetIsWhatTheCLIWrites(t *testing.T) {
-	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"]}}}}`
+	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"],"codemode":false}}}}`
 	got := strings.NewReplacer(" ", "", "\n", "").Replace(strings.ReplaceAll(Agents["opencode"].Snippet, "{CMD}", "roomctl"))
 	if got != want {
 		t.Errorf("opencode snippet %s, want %s", got, want)
@@ -453,4 +455,80 @@ func TestSetupOpenCodeServiceRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// O9: OpenCode v2 exposes MCP tools through Code Mode by default, and a config with an `execute`
+// deny rule turns Code Mode off, hiding every Code Mode server. `"codemode": false` on the server
+// keeps its tools on the native list, where the elicitation forms and room_wait also belong.
+func TestSetupOpenCodeWritesCodeModeOff(t *testing.T) {
+	const existing = `{"theme":"dark","permission":[{"action":"execute","resource":"*","effect":"deny"}],"mcp":{"servers":{"other":{"type":"local","command":["x"]},"factory":{"type":"local","command":["roomctl","mcp"]}}}}`
+	for name, project := range map[string]bool{"user": false, "project": true} {
+		t.Run(name, func(t *testing.T) {
+			home, dir := t.TempDir(), t.TempDir()
+			path := filepath.Join(home, ".config", "opencode", "opencode.json")
+			if project {
+				path = filepath.Join(dir, "opencode.json")
+			}
+			var out bytes.Buffer
+			// `opencode mcp add` writes the file; the stub plays it.
+			add := func(context.Context, []string) error {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(path, []byte(existing), 0o644)
+			}
+			s := Setup{Agent: Agents["opencode"], Project: project, Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out, Run: add}
+			for range 2 { // a second setup changes nothing more
+				if err := s.Do(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var got map[string]any
+			b, _ := os.ReadFile(path)
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("%v\n%s", err, b)
+			}
+			servers := got["mcp"].(map[string]any)["servers"].(map[string]any)
+			if f := servers["factory"].(map[string]any); f["codemode"] != false || f["type"] != "local" {
+				t.Errorf("factory: %v", f)
+			}
+			if _, ok := servers["other"]; !ok || got["theme"] != "dark" || got["permission"] == nil {
+				t.Errorf("the rest of the file was not kept: %s", b)
+			}
+			if !strings.Contains(out.String(), "codemode") {
+				t.Errorf("setup does not say it:\n%s", &out)
+			}
+		})
+	}
+}
+
+// A config with comments is not rewritten; the developer is told what to add.
+func TestSetupOpenCodeLeavesACommentedConfig(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	const commented = "// mine\n{\"mcp\":{\"servers\":{\"factory\":{}}}}\n"
+	var out bytes.Buffer
+	s := Setup{Agent: Agents["opencode"], Home: home, Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+		Run: func(context.Context, []string) error {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			return os.WriteFile(path, []byte(commented), 0o644)
+		}}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != commented || !strings.Contains(out.String(), `"codemode": false`) {
+		t.Fatalf("%q\n%s", b, &out)
+	}
+}
+
+// The snippet a developer pastes has it too.
+func TestSetupOpenCodeSnippetHasCodeModeOff(t *testing.T) {
+	var out bytes.Buffer
+	s := Setup{Agent: Agents["opencode"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &out}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"codemode": false`) {
+		t.Fatalf("%s", &out)
+	}
 }

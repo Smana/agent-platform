@@ -153,6 +153,20 @@ flag it prints the command. When the binary or its `service` subcommand is missi
 alone. `roomctl doctor` warns (`warn opencode`) when the service started before the OpenCode config
 file's last change.
 
+### OpenCode and Code Mode
+
+OpenCode v2 exposes MCP tools through Code Mode by default (`tools.<server>.<tool>` through its
+`execute` tool). A config with the permission `{"action":"execute","resource":"*","effect":"deny"}`
+turns Code Mode off and hides every Code Mode server: the factory is "connected" in
+`opencode mcp list`, yet a session has no factory tools. `"codemode": false` on
+`mcp.servers.<name>` keeps that server's tools on the native tool list (OpenCode's
+"Disable Code Mode for an MCP Server"), which also suits the elicitation forms and `room_wait`.
+After `opencode mcp add`, `roomctl setup opencode` sets `"codemode": false` on `mcp.servers.factory`
+and keeps the rest of the file (it is rewritten as indented JSON; a file with comments is left
+alone and setup says what to add). The pasted snippet carries it too. `roomctl doctor` warns
+(`warn opencode`) when the factory entry lacks it and an `execute` deny rule exists. This is the one
+config edit setup makes; every other client's config is only ever printed.
+
 ### Short commands
 
 Claude Code lists the MCP prompts as `/factory:handoff`, but typing that is rejected as an unknown

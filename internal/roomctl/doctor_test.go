@@ -419,3 +419,36 @@ func TestDoctorOpenCodeServiceStartedBeforeTheConfig(t *testing.T) {
 		})
 	}
 }
+
+// O9: the doctor warns when an `execute` deny rule hides Code Mode servers and the factory entry
+// does not opt out with codemode:false.
+func TestDoctorOpenCodeCodeMode(t *testing.T) {
+	deny := `"permission":[{"action":"execute","resource":"*","effect":"deny"}]`
+	for name, tc := range map[string]struct {
+		config string
+		warn   bool
+	}{
+		"deny, no opt-out":   {`{` + deny + `,"mcp":{"servers":{"factory":{"type":"local"}}}}`, true},
+		"deny, opted out":    {`{` + deny + `,"mcp":{"servers":{"factory":{"codemode":false}}}}`, false},
+		"no deny":            {`{"mcp":{"servers":{"factory":{"type":"local"}}}}`, false},
+		"deny, no factory":   {`{` + deny + `,"mcp":{"servers":{}}}`, false},
+		"another effect":     {`{"permission":[{"action":"execute","resource":"*","effect":"allow"}],"mcp":{"servers":{"factory":{}}}}`, false},
+		"deny nested deeper": {`{"agent":{"build":{"rules":[{"action":"execute","resource":"*","effect":"deny"}]}},"mcp":{"servers":{"factory":{}}}}`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := filepath.Join(t.TempDir(), "opencode.json")
+			if err := os.WriteFile(cfg, []byte(tc.config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r := newDoctorRig(t)
+			r.d.OpenCodeConfigs = []string{cfg}
+			var out strings.Builder
+			if err := r.d.Run(t.Context(), &out); err != nil {
+				t.Fatalf("%v\n%s", err, &out)
+			}
+			if got := strings.Contains(out.String(), "warn opencode"); got != tc.warn || (tc.warn && !strings.Contains(out.String(), "codemode")) {
+				t.Fatalf("warn=%v want %v\n%s", got, tc.warn, &out)
+			}
+		})
+	}
+}

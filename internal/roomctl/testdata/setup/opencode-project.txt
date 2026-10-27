@@ -8,7 +8,8 @@ otherwise: add this to opencode.json (roomctl setup never edits a config):
     "servers": {
       "factory": {
         "type": "local",
-        "command": ["roomctl", "mcp"]
+        "command": ["roomctl", "mcp"],
+        "codemode": false
       }
     }
   }

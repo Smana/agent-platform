@@ -182,6 +182,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	}
 	d.skill(report, skip)
 	d.opencode(report, warn)
+	d.opencodeCodeMode(warn)
 	if failed {
 		return errors.New("doctor: a check failed, see the fix above")
 	}
@@ -215,6 +216,48 @@ func (d Doctor) opencode(report func(bool, string, string), warn func(string, st
 	default:
 		report(true, "opencode", "the background service started after its config changed")
 	}
+}
+
+// opencodeCodeMode warns when an `execute` deny rule turns OpenCode's Code Mode off and the factory
+// entry does not opt out with codemode:false: Code Mode servers are hidden, the factory's with them.
+func (d Doctor) opencodeCodeMode(warn func(string, string)) {
+	for _, p := range d.OpenCodeConfigs {
+		b, err := os.ReadFile(filepath.Clean(p))
+		if err != nil {
+			continue
+		}
+		var cfg map[string]any
+		if json.Unmarshal(b, &cfg) != nil { // comments: not ours to read
+			continue
+		}
+		factory, ok := mapAt(mapAt(cfg, "mcp"), "servers")["factory"].(map[string]any)
+		if ok && factory["codemode"] != false && hasExecuteDeny(cfg) {
+			warn("opencode", p+" denies execute, which turns Code Mode off and hides the factory tools: add \"codemode\": false to mcp.servers.factory (roomctl setup opencode does it)")
+			return
+		}
+	}
+}
+
+// hasExecuteDeny is whether any object in v is a permission rule that denies the execute action.
+func hasExecuteDeny(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		if x["action"] == "execute" && x["effect"] == "deny" {
+			return true
+		}
+		for _, c := range x {
+			if hasExecuteDeny(c) {
+				return true
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if hasExecuteDeny(c) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // skill compares the roomctl-version each installed factory-handoff skill carries with this
