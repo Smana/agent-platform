@@ -55,6 +55,9 @@ func TestRoomctlErrorsNameTheCause(t *testing.T) {
 }
 
 func TestRoomctlDoctorRunsTheChecks(t *testing.T) {
+	// doctor reads the skill directories under the home directory: never the machine's own.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	b := newRoomctlBroker(t)
 	r, out := configured(t, b)
 	if err := r.Run(t.Context(), []string{"doctor"}); err != nil {
