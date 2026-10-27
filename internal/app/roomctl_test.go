@@ -287,6 +287,29 @@ func TestRoomctlStatus(t *testing.T) {
 	}
 }
 
+// status --format md|text picks the view; anything else is refused with the usage.
+func TestRoomctlStatusFormat(t *testing.T) {
+	b := newRoomctlBroker(t)
+	r, out := configured(t, b)
+	if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--format", "md"}); err != nil {
+		t.Fatal(err)
+	}
+	md := out.String()
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--format", "text"}); err != nil {
+		t.Fatal(err)
+	}
+	if md == out.String() || !strings.Contains(out.String(), "hi[2J") || strings.ContainsRune(out.String(), 0x1b) {
+		t.Fatalf("md and text differ, and text is inert:\n%q\n%q", md, out)
+	}
+	if err := r.Run(t.Context(), []string{"status", "26zfnuxm", "--format", "html"}); err == nil || !strings.Contains(err.Error(), "md or text") {
+		t.Fatalf("%v", err)
+	}
+	if err := r.Run(t.Context(), []string{"status"}); err == nil || !strings.Contains(err.Error(), "--format md|text") {
+		t.Fatalf("the usage names --format: %v", err)
+	}
+}
+
 // --after takes the summary's cursor as printed, seq:N, or the bare seq.
 func TestRoomctlStatusAfterTakesTheCursor(t *testing.T) {
 	b := newRoomctlBroker(t)

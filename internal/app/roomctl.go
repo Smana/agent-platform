@@ -378,7 +378,7 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 	// The summary prints its cursor as seq:N, so the next call can pass it back as is.
 	after, aerr := strconv.ParseInt(strings.TrimPrefix(*cursor, "seq:"), 10, 64)
 	if err != nil || len(pos) != 1 || aerr != nil || after < 0 {
-		return fmt.Errorf("status <room> [--json] [--after seq:N]: %w", errors.Join(err, errors.New("one room, and a cursor of seq:N or N")))
+		return fmt.Errorf("status <room> [--json] [--after seq:N] [--format md|text]: %w", errors.Join(err, errors.New("one room, and a cursor of seq:N or N")))
 	}
 	f, err := viewFormat(r.Out, *format)
 	if err != nil {
