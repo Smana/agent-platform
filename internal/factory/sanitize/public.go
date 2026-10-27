@@ -10,10 +10,17 @@ import (
 var (
 	// mdLink is an inline link on one line; its URL stops at the first space, ")" or backtick.
 	mdLink = regexp.MustCompile(`\[([^\]\n]*)\]\(([^)\s` + "`" + `]*)[^)\n` + "`" + `]*\)`)
-	// autolink is what GFM turns into a link without markup: a scheme URL, a www. host, an email.
-	// A URL stops at a backslash too: the escaped backtick codeSpans leaves must not end up inside
-	// the span built around it.
-	autolink = regexp.MustCompile("(?:(?:https?|ftp)://|www\\.)[^\\s<>`\\\\]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
+	// autolink is what GitHub turns into something live without markup, in one pass so a match is
+	// never matched again: a scheme URL, a www. host, an email (GFM links); an owner/repo#n
+	// reference; and a @mention or #n reference, which ping a person or write a backlink. A URL
+	// stops at a backslash: the escaped backtick codeSpans leaves must not end up inside the span
+	// built around it. A mention or a bare #n needs a non-word character before it, as on GitHub, so
+	// "C#" and "fix#9" are left alone; that character is outside the match.
+	autolink = regexp.MustCompile("(?m)" +
+		"(?:(?:https?|ftp)://|www\\.)[^\\s<>`\\\\]+" +
+		"|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+" +
+		"|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+" +
+		"|(?:^|[^A-Za-z0-9_`\\\\])(@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9_.-]+)?|#[0-9]+)")
 )
 
 // Public makes text written by an agent safe to publish as a GitHub issue (RunLore agent-to-agent
@@ -32,7 +39,7 @@ func Public(s string) (string, Report) {
 		// A destination the pattern did not take (a nested bracket, a title) is no link either:
 		// "](" is what makes one.
 		t = strings.ReplaceAll(t, "](", "] (")
-		t = autolink.ReplaceAllStringFunc(t, func(u string) string { return "`" + u + "`" })
+		t = codeSpanLive(t)
 		b.WriteString(t)
 	}
 	return b.String(), rep
@@ -103,4 +110,21 @@ func closingRun(s string, from, n int) int {
 		i = j
 	}
 	return -1
+}
+
+// codeSpanLive wraps every autolink, mention and reference of t in a code span.
+func codeSpanLive(t string) string {
+	var b strings.Builder
+	last := 0
+	for _, m := range autolink.FindAllStringSubmatchIndex(t, -1) {
+		start, end := m[0], m[1]
+		if m[2] >= 0 { // a mention or #n: the character before it stays outside
+			start = m[2]
+		}
+		b.WriteString(t[last:start])
+		b.WriteString("`" + t[start:end] + "`")
+		last = end
+	}
+	b.WriteString(t[last:])
+	return b.String()
 }

@@ -70,3 +70,24 @@ func TestPublicSurvivesBacktickTricks(t *testing.T) {
 		t.Errorf("a code span is left alone: %q", out)
 	}
 }
+
+// A mention pings a person and a cross-reference writes a backlink on another issue: both come out
+// in code spans, where GitHub renders neither. A heading, a plain word and an issue-less "#" stay.
+func TestPublicDefusesMentionsAndReferences(t *testing.T) {
+	in := "## What is wrong\nping @smana and (@org/team), see #123, Smana/other#7 and fix#9.\n" +
+		"## What it should be\n@bob: #4.\n## Acceptance check\nmail a@b.example, `@kept` and #1 stay, C# and 50% too."
+	out, _ := Public(in)
+	for _, want := range []string{"`@smana`", "`@org/team`", "`#123`", "`Smana/other#7`", "`@bob`", "`#4`", "`#1`", "`@kept`"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%s is not in a code span: %q", want, out)
+		}
+	}
+	for _, bad := range []string{" @smana", "(@org", " #123", "other#7 ", "\n@bob", " #4."} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%q survived live: %q", bad, out)
+		}
+	}
+	if !strings.Contains(out, "## What is wrong") || !strings.Contains(out, "C# and 50% too") {
+		t.Errorf("a heading and a plain # are left alone: %q", out)
+	}
+}
