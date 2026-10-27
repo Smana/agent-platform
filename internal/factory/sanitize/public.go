@@ -14,13 +14,13 @@ var (
 	// never matched again: a scheme URL, a www. host, an email (GFM links); an owner/repo#n
 	// reference; and a @mention or #n reference, which ping a person or write a backlink. A URL
 	// stops at a backslash: the escaped backtick codeSpans leaves must not end up inside the span
-	// built around it. A mention or a bare #n needs a non-word character before it, as on GitHub, so
-	// "C#" and "fix#9" are left alone; that character is outside the match.
+	// built around it. A mention or a bare #n needs a non-alphanumeric character before it, as on GitHub,
+	// so "C#" and "fix#9" are left alone, but an underscore, a backtick or a backslash does not shield it; that character is outside the match.
 	autolink = regexp.MustCompile("(?m)" +
 		"(?:(?:https?|ftp)://|www\\.)[^\\s<>`\\\\]+" +
 		"|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+" +
 		"|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+" +
-		"|(?:^|[^A-Za-z0-9_`\\\\])(@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9_.-]+)?|#[0-9]+)")
+		"|(?:^|[^A-Za-z0-9])(@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9_.-]+)?|#[0-9]+)")
 )
 
 // Public makes text written by an agent safe to publish as a GitHub issue (RunLore agent-to-agent

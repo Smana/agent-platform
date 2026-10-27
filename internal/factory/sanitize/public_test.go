@@ -37,6 +37,10 @@ func TestPublicIsInert(t *testing.T) {
 	if l := links(out); len(l) != 0 {
 		t.Errorf("%v survived in %q", l, out)
 	}
+	// A mention right after an unpaired backtick or an underscore is live on GitHub too.
+	if m, _ := Public("a `@z b _@n_ c"); !strings.Contains(m, "`@z`") || !strings.Contains(m, "`@n`") {
+		t.Errorf("a mention after a backtick or an underscore: %q", m)
+	}
 	if !strings.Contains(out, "`https://evil.example/x`") || !strings.Contains(out, "`https://evil.example/y`") {
 		t.Fatalf("each URL is kept, inert, in a code span: %q", out)
 	}
