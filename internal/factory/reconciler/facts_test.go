@@ -492,3 +492,23 @@ func TestFactsOfEndsASupersededUnfinishedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Dollars past envelope.MaxMicroUSD are clamped, so the facts still validate and the room keeps its
+// card; a refused post would leave it with none.
+func TestFactsClampDollarsToTheCap(t *testing.T) {
+	task := issueTask("3buqdlot", 0, "x")
+	task.Status.Phase = v1alpha1.PhaseImplementing
+	task.Spec.Budget.TaskMicroUSD = envelope.MaxMicroUSD + 5
+	task.Status.Usage.CostMicroUSD = envelope.MaxMicroUSD + 7
+	task.Status.Runs = []v1alpha1.RunRecord{{ID: "r1", Role: "implementer", CostMicroUSD: envelope.MaxMicroUSD + 9}}
+	f := factsOf(task)
+	if err := f.Validate(); err != nil {
+		t.Fatalf("facts refused: %v", err)
+	}
+	if f.Spend == nil || f.Spend.UsedMicroUSD != envelope.MaxMicroUSD || f.Spend.LimitMicroUSD != envelope.MaxMicroUSD {
+		t.Errorf("spend %+v, want both clamped", f.Spend)
+	}
+	if len(f.Runs) == 0 || f.Runs[len(f.Runs)-1].MicroUSD != envelope.MaxMicroUSD {
+		t.Errorf("runs %+v, want the run's dollars clamped", f.Runs)
+	}
+}

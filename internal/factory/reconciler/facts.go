@@ -63,7 +63,7 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 	}
 	// Known limit: a task mixing priced and unpriced runs shows the priced dollars only, while its token cap binds.
 	if u, limit := t.Status.Usage.CostMicroUSD, t.Spec.Budget.TaskMicroUSD; u > 0 || limit > 0 {
-		f.Spend = &envelope.SpendFact{UsedMicroUSD: u, LimitMicroUSD: limit}
+		f.Spend = &envelope.SpendFact{UsedMicroUSD: dollars(u), LimitMicroUSD: dollars(limit)}
 	}
 	if t.Spec.Budget.TaskTokens > 0 {
 		f.Budget = &envelope.BudgetFact{UsedTokens: t.Status.Usage.Tokens, LimitTokens: t.Spec.Budget.TaskTokens}
@@ -85,7 +85,7 @@ func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
 // runFact is a run record as the room's facts carry it, without provenance (only the current run has it).
 // Times are as the CRD stores them, so the hash of a task read back matches the one posted.
 func runFact(r v1alpha1.RunRecord) envelope.RunFact {
-	f := envelope.RunFact{ID: r.ID, Role: r.Role, Trigger: r.Trigger, Verdict: r.Verdict, MicroUSD: r.CostMicroUSD, Outcome: outcomeOf(r)}
+	f := envelope.RunFact{ID: r.ID, Role: r.Role, Trigger: r.Trigger, Verdict: r.Verdict, MicroUSD: dollars(r.CostMicroUSD), Outcome: outcomeOf(r)}
 	if r.Started != nil {
 		f.StartedAt = r.Started.UTC().Truncate(time.Second)
 	}
@@ -226,3 +226,7 @@ func (r *Reconciler) postFacts(ctx context.Context, t *v1alpha1.Task) error {
 	t.Status.Facts.Posted = true
 	return nil
 }
+
+// dollars is a micro-USD amount clamped to the envelope's bound: a task past it still posts its facts,
+// read as the cap.
+func dollars(v int64) int64 { return min(max(v, 0), envelope.MaxMicroUSD) }
