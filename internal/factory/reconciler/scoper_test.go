@@ -36,7 +36,7 @@ func TestTheScoperRunsFirstAtTheLightCaps(t *testing.T) {
 	if s.Role != "triager" || s.Tier != "light" || s.MaxTokens != 300_000 || s.MaxMinutes != 20 || s.Model != "agent-default" {
 		t.Fatalf("the scoper's claim %+v", s)
 	}
-	for _, want := range []string{"You are the scoper", "STEERING-n0nce234", "TASK-DATA-n0nce234", "room_handoff", "one question"} {
+	for _, want := range []string{"You are the scoper", "STEERING-n0nce234", "TASK-DATA-n0nce234", "room_handoff", "one question", "never invent one"} {
 		if !strings.Contains(s.TaskText, want) {
 			t.Errorf("the scoping brief lacks %q", want)
 		}
@@ -79,7 +79,7 @@ func (f *fakeRuns) lose(id string) {
 // scoperRigOf is scoperRig on a task shaped by edit before its triage.
 func scoperRigOf(t *testing.T, edit func(*v1alpha1.Task)) *rig {
 	t.Helper()
-	tk := issueTask("3buqdlot", 7, "# Fix the link")
+	tk := issueTask("3buqdlot", 7, "# Fix the link\n\n## Acceptance check\nthe link resolves")
 	edit(tk)
 	g := newRig(t, tk)
 	g.r.Cfg.Loops = map[string]config.Loop{"review": {Scope: config.ScopeScoper}}
