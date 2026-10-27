@@ -181,3 +181,41 @@ func TestChildOfLabel(t *testing.T) {
 		}
 	}
 }
+
+// RA9, R9: spec.origin is a C2 id, fixed at creation, so a task never gains, loses or changes an
+// origin after it exists; status.published records what the factory filed, bounded.
+func TestTaskCRDOrigin(t *testing.T) {
+	raw, err := os.ReadFile("../../../config/crd/agents.ogenki.io_tasks.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.UnmarshalStrict(raw, &crd); err != nil {
+		t.Fatal(err)
+	}
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	spec := root.Properties["spec"]
+	origin := spec.Properties["origin"]
+	if origin.Pattern != `^[a-z2-7]{8}$` || origin.MaxLength == nil || *origin.MaxLength != 8 {
+		t.Errorf("spec.origin is not a C2 id: %+v", origin)
+	}
+	if len(origin.XValidations) != 1 || origin.XValidations[0].Rule != "self == oldSelf" || origin.XValidations[0].Message != "origin never changes" {
+		t.Errorf("spec.origin rules %v: a change is refused", origin.XValidations)
+	}
+	specRules := map[string]string{}
+	for _, v := range spec.XValidations {
+		specRules[v.Rule] = v.Message
+	}
+	// An optional field's own transition rule runs only when both objects hold it: the object's rule
+	// is what refuses an origin added to, or dropped from, an existing task.
+	if specRules["has(self.origin) == has(oldSelf.origin)"] != "spec.origin is fixed at creation" {
+		t.Errorf("spec rules %v: an origin is neither added nor removed after creation", spec.XValidations)
+	}
+	pub := root.Properties["status"].Properties["published"]
+	if pub.Type != "object" || pub.Properties["issue"].Type != "integer" || len(pub.Required) != 3 {
+		t.Errorf("status.published = %+v", pub)
+	}
+	if ev := pub.Properties["evidence"]; ev.MaxLength == nil || *ev.MaxLength != 16384 {
+		t.Errorf("status.published.evidence = %+v", ev)
+	}
+}

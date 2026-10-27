@@ -40,6 +40,11 @@ const AnnotationRevert = "agents.ogenki.io/revert"
 // LabelIssue carries the number of the issue a task narrates on.
 const LabelIssue = "agents.ogenki.io/issue"
 
+// LabelPublishedIssue carries the number of the issue the factory filed from an investigate task's
+// proposal (RunLore agent-to-agent R9): the poller finds the origin of a started issue by it, in
+// one List, as it finds a task by LabelIssue.
+const LabelPublishedIssue = "agents.ogenki.io/published-issue"
+
 // LabelParent carries a child task's parent's name (splitter design SL14): a family's cost is a
 // selector sum, and the parent finds its children by it.
 const LabelParent = "agents.ogenki.io/parent"
