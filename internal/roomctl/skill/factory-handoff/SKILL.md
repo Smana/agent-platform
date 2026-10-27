@@ -1,7 +1,7 @@
 ---
 name: factory-handoff
 description: >-
-  Hand a side task to the agent factory and follow it. Use when the user says "hand this to the factory", "file this for the factory", "what's the factory doing on #N", or "anything waiting on me in the factory?".
+  Hand a side task to the agent factory and follow it. Use whenever the user says "hand this to the factory", "file this for the factory", "what's the factory doing on #N", or "anything waiting on me in the factory?", before any planning or brainstorming skill: it files first and plans inside the issue (the template's three sections), never a design detour beforehand.
 compatibility: Requires gh (authenticated) and roomctl (logged in) on PATH
 allowed-tools: Bash(gh issue create:*), Bash(gh issue view:*), Bash(roomctl status:*), Bash(roomctl rooms:*), Bash(roomctl changes:*), Bash(roomctl checkout:*), Bash(roomctl post:*), Bash(roomctl doctor:*), Bash(tailscale status:*), Bash(getent hosts:*)
 metadata:
@@ -13,6 +13,12 @@ metadata:
 The factory runs work you do not want to babysit (docs fixes, dependency bumps, small bug fixes,
 side tasks found mid-session) sandboxed, reviewed and budgeted. Never hand off the task the user
 is working on now.
+
+## File first, plan inside the issue
+
+When the user hands a task over, this skill applies, not a planning or brainstorming skill. No design detour
+before filing: the issue is the plan (what is wrong, what it should be, the acceptance check),
+and the factory's scoper asks if it needs more. Draft, check, ask the developer, file.
 
 ## MCP first
 
