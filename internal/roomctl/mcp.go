@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ type Relay struct {
 	RoomWait time.Duration
 	// After waits d; nil is time.After. Tests step their own.
 	After func(d time.Duration) <-chan time.Time
+	// Log is where roomctl mcp says what it did not do for the client (stderr in the CLI); nil is silent.
+	Log *slog.Logger
 	// RootsWait bounds the client's answer to roots/list; zero is rootsWait.
 	RootsWait time.Duration
 	// Git runs room_checkout's git; nil is RunGit. Tests replace it.
@@ -66,6 +69,14 @@ type Relay struct {
 	local   map[string]*localEntry          // the local tool calls in flight, by request id (idKey)
 	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
 	nextID  int
+}
+
+// log is the relay's logger, discarding when none was injected.
+func (r *Relay) log() *slog.Logger {
+	if r.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.Log
 }
 
 // message is any JSON-RPC message, read far enough to route it.
@@ -178,6 +189,13 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte, pre *localEnt
 		if pre != nil {
 			r.callLocal(m, pre)
 			return
+		}
+		if roomRefTools[callName(m.Params)] {
+			var refusal any
+			if raw, refusal = r.resolveCall(ctx, m); refusal != nil {
+				r.write(mcpwire.Response(m.ID, refusal, nil))
+				return
+			}
 		}
 		res, err := r.relay(ctx, raw)
 		if err == nil {
@@ -402,4 +420,22 @@ func (r *Relay) write(v any) {
 	r.outMu.Lock()
 	defer r.outMu.Unlock()
 	_, _ = r.out.Write(append(b, '\n'))
+}
+
+// resolveCall is the tools/call m with its room reference resolved to an id, or the refusal.
+func (r *Relay) resolveCall(ctx context.Context, m message) ([]byte, any) {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(m.Params, &p) != nil {
+		return nil, nil
+	}
+	args, refusal := r.resolveArgs(ctx, p["arguments"], "room")
+	if refusal != nil {
+		return nil, refusal
+	}
+	if args != nil {
+		p["arguments"] = args
+	}
+	params, _ := json.Marshal(p)
+	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "method": m.Method, "params": json.RawMessage(params)})
+	return raw, nil
 }

@@ -52,13 +52,13 @@ var roomWaitEntry = map[string]any{
 	"name": toolRoomWait,
 	"description": "Wait until a room has something new for the developer, polling the broker from their machine: " +
 		"a need (needs_you), a pull request (pr_opened), its end (ended), or any change (any_change). " +
-		"Without rooms it watches the developer's own open rooms, the 20 most recently updated. " +
+		"A room is " + refHint + ". Without rooms it watches the developer's own open rooms, the 20 most recently updated. " +
 		"Without until it waits for needs_you, pr_opened and ended. The wait is bounded: timeout is in seconds, " +
 		"300 by default and at most 1800, and then the result says nothing new yet; call it again to keep waiting. " +
 		"It reports progress when the client gave a progress token, and a cancellation ends it at once. " +
 		"The result is the room's card and the condition that was met. Run it in a background task where the client has them.",
 	"inputSchema": json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{` +
-		`"rooms":{"type":"array","maxItems":20,"items":{"type":"string","pattern":"^[a-z2-7]{8}$"}},` +
+		`"rooms":{"type":"array","maxItems":20,"items":{"type":"string","description":"the room's id, #<issue>, PR #<n>, a bare number or a fragment of its title"}},` +
 		`"until":{"type":"array","items":{"type":"string","enum":["needs_you","pr_opened","ended","any_change"]}},` +
 		`"timeout":{"type":"integer","minimum":1,"maximum":1800}}}`),
 }
@@ -174,6 +174,11 @@ func (r *Relay) listRows(ctx context.Context, args map[string]any) ([]roomview.R
 // returns when a condition newly holds against the snapshot of its first poll, or at its timeout.
 // It sleeps through r.after with no lock and no slot held, and ends with ctx.
 func (r *Relay) roomWait(ctx context.Context, c localCall) any {
+	args, refusal := r.resolveArgs(ctx, c.Args, "rooms")
+	if refusal != nil {
+		return refusal
+	}
+	c.Args = args
 	a, timeout, bad := parseWaitArgs(c.Args)
 	if bad != "" {
 		return mcpwire.ToolError(bad)

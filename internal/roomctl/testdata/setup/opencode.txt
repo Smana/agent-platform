@@ -8,10 +8,12 @@ otherwise: add this to ~/.config/opencode/opencode.json (roomctl setup never edi
     "servers": {
       "factory": {
         "type": "local",
-        "command": ["roomctl", "mcp"]
+        "command": ["roomctl", "mcp"],
+        "codemode": false
       }
     }
   }
 }
 
 setup installs the factory-handoff skill in ~/.agents/skills
+and the /factory command (handoff, status, inbox) in ~/.config/opencode/commands

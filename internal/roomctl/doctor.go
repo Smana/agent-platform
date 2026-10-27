@@ -12,8 +12,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl/skill"
@@ -113,6 +116,10 @@ type Doctor struct {
 	Lookup    func(ctx context.Context, host string) ([]string, error) // nil is the system resolver
 	SkillDirs []string                                                 // where agents read skills from
 	Version   string                                                   // this binary's version
+	// OpenCodeConfigs are the OpenCode config files setup writes, and ServiceStart when its
+	// background service started (false: none runs); nil ServiceStart skips the check.
+	OpenCodeConfigs []string
+	ServiceStart    func() (time.Time, bool)
 }
 
 // Run prints one line per check and returns an error if any failed.
@@ -125,6 +132,7 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(out, "%s %s: %s\n", mark, name, OneLine(msg))
 	}
+	warn := func(name, msg string) { _, _ = fmt.Fprintf(out, "warn %s: %s\n", name, OneLine(msg)) }
 	skip := func(name, why string) { _, _ = fmt.Fprintf(out, "skip %s: %s\n", name, why) }
 
 	u, err := url.Parse(d.Config.URL)
@@ -170,13 +178,86 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	case !reachable || terr != nil:
 		skip("github", "needs tls and login")
 	default:
-		d.github(ctx, tok, report)
+		d.github(ctx, tok, report, warn)
 	}
 	d.skill(report, skip)
+	d.opencode(report, warn)
+	d.opencodeCodeMode(warn)
 	if failed {
 		return errors.New("doctor: a check failed, see the fix above")
 	}
 	return nil
+}
+
+// opencode warns when OpenCode's background service started before its config last changed: the
+// service keeps the config it started with, so its sessions have no factory tools although
+// `opencode mcp list` says connected. It says nothing when no service runs.
+func (d Doctor) opencode(report func(bool, string, string), warn func(string, string)) {
+	if d.ServiceStart == nil {
+		return
+	}
+	start, running := d.ServiceStart()
+	if !running {
+		return
+	}
+	var newest time.Time
+	var file string
+	for _, p := range d.OpenCodeConfigs {
+		if fi, err := os.Stat(p); err == nil && fi.ModTime().After(newest) {
+			newest, file = fi.ModTime(), p
+		}
+	}
+	switch {
+	case file == "":
+		return
+	case start.Before(newest):
+		warn("opencode", fmt.Sprintf("the background service started %s, before %s changed (%s): its sessions have no factory tools until `opencode service restart`",
+			start.Format(time.DateTime), file, newest.Format(time.DateTime)))
+	default:
+		report(true, "opencode", "the background service started after its config changed")
+	}
+}
+
+// opencodeCodeMode warns when an `execute` deny rule turns OpenCode's Code Mode off and the factory
+// entry does not opt out with codemode:false: Code Mode servers are hidden, the factory's with them.
+func (d Doctor) opencodeCodeMode(warn func(string, string)) {
+	for _, p := range d.OpenCodeConfigs {
+		b, err := os.ReadFile(filepath.Clean(p))
+		if err != nil {
+			continue
+		}
+		var cfg map[string]any
+		if json.Unmarshal(b, &cfg) != nil { // comments: not ours to read
+			continue
+		}
+		factory, ok := mapAt(mapAt(cfg, "mcp"), "servers")["factory"].(map[string]any)
+		if ok && factory["codemode"] != false && hasExecuteDeny(cfg) {
+			warn("opencode", p+" denies execute, which turns Code Mode off and hides the factory tools: add \"codemode\": false to mcp.servers.factory (roomctl setup opencode does it)")
+			return
+		}
+	}
+}
+
+// hasExecuteDeny is whether any object in v is a permission rule that denies the execute action.
+func hasExecuteDeny(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		if x["action"] == "execute" && x["effect"] == "deny" {
+			return true
+		}
+		for _, c := range x {
+			if hasExecuteDeny(c) {
+				return true
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if hasExecuteDeny(c) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // skill compares the roomctl-version each installed factory-handoff skill carries with this
@@ -204,7 +285,7 @@ func (d Doctor) skill(report func(bool, string, string), skip func(string, strin
 }
 
 // github asks the room list, whose X-Rooms-Access says whether the caller's GitHub link works.
-func (d Doctor) github(ctx context.Context, tok string, report func(bool, string, string)) {
+func (d Doctor) github(ctx context.Context, tok string, report func(bool, string, string), warn func(string, string)) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.Config.URL+"/api/rooms", nil)
 	if err != nil {
 		report(false, "github", err.Error())
@@ -217,7 +298,15 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	switch access := resp.Header.Get("X-Rooms-Access"); {
+	access := resp.Header.Get("X-Rooms-Access")
+	var rows []struct {
+		Repository string `json:"repository"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		body, _ := httpx.ReadBody(resp.Body, maxSetupBody)
+		_ = json.Unmarshal(body, &rows)
+	}
+	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		report(false, "github", "the broker refused the token: run roomctl login")
 	case resp.StatusCode != http.StatusOK:
@@ -227,6 +316,50 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 	case access == "unverified":
 		report(false, "github", "the broker cannot verify your GitHub access right now: retry in a minute, and if it persists ask an admin")
 	default:
-		report(true, "github", "your GitHub identity is linked")
+		// "ok" is no proof: an admin reads every room with no link, and a list with no room checks
+		// nothing. issue_draft's canStart looks the link up, so ask it.
+		d.linkProbe(ctx, tok, rows, report, warn)
 	}
+}
+
+// maxProbes is how many repositories the link probe asks about.
+const maxProbes = 3
+
+// linkProbe checks the GitHub link the way issue_draft's canStart does, on the repositories the
+// room list shows, up to maxProbes of them: a repository outside human.mcp.sessionStart cannot
+// answer, another may. Only "linked" and "not linked" are answers; anything else is a warning.
+func (d Doctor) linkProbe(ctx context.Context, tok string, rows []struct {
+	Repository string `json:"repository"`
+}, report func(bool, string, string), warn func(string, string)) {
+	var repos []string
+	for _, r := range rows {
+		if r.Repository != "" && !slices.Contains(repos, r.Repository) && len(repos) < maxProbes {
+			repos = append(repos, r.Repository)
+		}
+	}
+	const unverified = "unverified: the room list does not say whether GitHub is linked to your account (an admin reads every room without one)"
+	if len(repos) == 0 {
+		warn("github", unverified+", and no room shows a repository to check against")
+		return
+	}
+	rl := &Relay{URL: d.Config.URL, HC: d.HC, Token: func(context.Context) (string, error) { return tok, nil }}
+	last := "issue_draft did not answer"
+	for _, repo := range repos {
+		_, sc, isErr, err := rl.callBroker(ctx, "issue_draft", map[string]string{"repo": repo, "title": "doctor: check the GitHub link",
+			"body": "## What is wrong\nnothing\n\n## What it should be\nnothing\n\n## Acceptance check\nnothing\n"})
+		var got draftShape
+		if err != nil || isErr || json.Unmarshal(sc, &got) != nil {
+			continue
+		}
+		switch {
+		case got.CanStart:
+			report(true, "github", "your GitHub identity is linked")
+			return
+		case got.CanStartWhy == "not_linked":
+			report(false, "github", "your account has no linked GitHub identity: ask an admin to link GitHub to it at "+d.Config.Issuer)
+			return
+		}
+		last = "issue_draft: " + OneLine(got.CanStartWhy)
+	}
+	warn("github", unverified+" ("+last+")")
 }

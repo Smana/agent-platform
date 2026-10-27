@@ -30,23 +30,25 @@ roomctl doctor                                   # check the setup
 ```
 
 - `configure` reads the issuer, client id and project id from the broker's unauthenticated `/.well-known/roomctl`. Pass `--issuer`, `--client-id` or `--project-id` to override one. The URL must be `https`.
+- `configure --from <rooms URL>` replaces the whole config with what the broker serves now (a room page's URL works: only its origin is used). Use it after a platform rebuild: a stale client id makes the identity provider answer `invalid_client`, and `roomctl login` then prints this fix. It refuses a non-`https` URL or issuer, and cannot be combined with the other flags. It prints the four values it will write (and the old ones when they change) and, on a terminal, asks `y/N`; `--yes` skips the question. An issuer outside the URL's registrable domain (`rooms.ogenki.io` and `auth.ogenki.io` share one) is refused unless `--yes` says you checked it.
 - The config and token files sit in `<user config dir>/roomctl/` (`config.json`, `token.json`), owner-only.
 - `login` prints `Open <verification URL> and enter the code …` (the URL is the one your identity provider returns), then `logged in; …`.
-- `doctor` prints one line per check, `ok` or the failure with its fix: `dns`, `tls`, `login`, `github`, `skill`.
+- `doctor` prints one line per check, `ok` or the failure with its fix: `dns`, `tls`, `login`, `github`, `skill`. The room list cannot tell an admin without a GitHub link from one with it, so `github` asks `issue_draft` (the check `issue_file` relies on) (on up to three of your rooms' repositories) and prints a `warn` line, which does not fail the run, when none can answer: it never says "linked" unproven. A broker that stated the link in the room list would make this probe unnecessary; the probe stays as the fallback for brokers that do not.
 
 ## Commands
 
-`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL.
+`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL. The MCP tools and prompts also take `#<issue>`, `PR #<n>`, a bare number or a title fragment ([below](#the-mcp-server)); the CLI takes ids only, since a shell drops an unquoted `#42`.
 
 | Command | What it does |
 |---|---|
 | `configure --url URL [--issuer URL --client-id ID --project-id ID]` | Saves the config. The broker's URL is enough |
+| `configure --from URL [--yes]` | Replaces the config with the values the broker serves now, whatever is stored |
 | `login` | Signs in with the device flow |
-| `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill. `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
+| `setup <claude\|codex\|copilot\|cursor\|gemini\|opencode> [--project] [--print]` | Registers `roomctl mcp` as the `factory` MCP server of a coding agent and writes the factory-handoff skill and, for `claude` and `opencode`, the short `/factory` command ([below](#short-commands)). `--project` writes under the repository's top instead of your home; `--print` shows what it would do and writes nothing |
 | `doctor` | Checks the VPN, the CA, your login, your GitHub link and the installed skill's version (`skill`), with the fix of each |
 | `token` | Prints a valid access token, for scripts. Treat it as a secret |
 | `status <room> [--json] [--after seq:N]` | Where a room stands, as the room card (below): the title, the state, the facts (run, spend, PR and last verdict, next, why), what needs you, the runs line, the agents' notes and what you can do, then a `cursor: seq:N` line. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
-| `rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--all`: the rooms that ended over a week ago too. `--json`: the broker's rows as is |
+| `rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--json]` | The rooms you can read, as a table that leads with the task and ends with the room id: TASK (`#issue title`), REPO (when several), STATE, WHERE IT IS, PR, UPDATED, ROOM. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--all`: the rooms that ended over a week ago too. `--json`: the broker's rows as is |
 | `changes <room> [--cursor seq:N] [--format md\|text] [--json]` | What changed in a room since the cursor of your last call (the first call: 24 hours). The cursor is kept in `cursors.json` beside the config. Needs a broker with `room_changes` |
 | `checkout <room>` | Checks the room's branch, `agent/<room>`, out into a new git worktree beside the repository you are in, `<repo>.<room>`, and prints its path. It never touches your current checkout, so a dirty tree or your branch is safe, and a second call prints the same path. It refuses outside a checkout of the room's repository, and prints the `gh repo clone` command. When the branch changes files that run code on open or on commit, it lists them and asks `y/N`, and refuses without a terminal ([below](#checking-out-an-agents-branch)) |
 | `watch <room> [--tail N]` | Follows a room, one line per event: its `seq`, who (`role (id)` for a participant with a room role), what, and its text. Shows the last `N` events first (default 50). It reconnects after a drop and picks up where it stopped |
@@ -60,7 +62,7 @@ Flags may come before or after the positional arguments. Source: `internal/app/r
 `status` prints the room card, then the cursor. For a task's room:
 
 ```text
-26zfnuxm · #42 docs: chart version is wrong
+#42 docs: chart version is wrong · 26zfnuxm
 needs you · an agent is coding · Smana/cloud-native-ref · open the room (https://rooms.example/r/26zfnuxm)
 
 Run   implementer cf4ato2x (human review) · started 19:11 UTC, 18 min ago
@@ -107,14 +109,23 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
   `issue_draft` from the broker, and `issue_file`, `room_wait` and `room_checkout`, roomctl's own.
   `room_tail` also runs as an MCP Task that waits for the room's next events; `roomctl mcp` polls it
   for your agent. The broker also serves the prompts `handoff` (`what`), `status` (`room`) and
-  `inbox`, which your agent offers as slash commands.
+  `inbox`, which your agent offers as slash commands (see [Short commands](#short-commands) for how to type them).
 - `issue_file` files a draft with your `gh`, as you, only after you accept it in a prompt your agent
   shows you (MCP elicitation). The broker's `issue_draft` checks the draft first, and the prompt
   shows exactly what is filed. An agent that cannot prompt you is refused: file the draft yourself
-  with `gh issue create`. The form has a second field, "start", which defaults to no and appears
+  with `gh issue create`. The form's "file" toggle defaults to no (so Claude Code shows it set, not "required"), and a second field, "start", defaults to no too and appears
   only when the broker's `issue_draft` says `canStart`: yes labels the issue `factory/ready` with
-  your `gh`, which starts the factory. It is a form field, never a tool argument: your agent can
+  your `gh`, which starts the factory. A client that returns the form without `start` (or with a value that is not a boolean) gets `started:false` and a `next` that says start was not chosen, and `roomctl mcp` logs it on stderr: your agent then asks you rather than guessing. It is a form field, never a tool argument: your agent can
   call `issue_file` but cannot answer the form.
+- Every tool and prompt that takes a room (`room_summary`, `room_changes`, `room_queue`, `room_tail`,
+  `room_fork`, `room_wait`, `room_checkout`, the `status` prompt) accepts the room id, `#<issue>`
+  (the issue only), `PR #<n>` (the PR only), a bare number (an issue or a PR), or a fragment of the
+  task's title (3 characters or more, case-insensitive; not an id or a number). `roomctl mcp` resolves
+  it through the room list, open rooms first and then the ended ones. When several rooms match (the
+  same number in two repositories, a bare number that is an issue in one room and a PR in another,
+  a fragment in several titles), the tool lists them with their ids and asks, and calls nothing: your
+  agent asks you. Text that matches nothing goes to the broker as typed, which refuses it. Cards and
+  the overview lead with the issue number and title, and end with the room id.
 - `room_wait` polls `rooms_list` from your machine until a room needs you, opens a pull request or
   ends, or until its timeout (300 s by default, at most 1800 s), and returns the room's card. A
   cancellation ends it at once. Run it in a background task where your client has them.
@@ -129,6 +140,49 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 
 The [factory-handoff skill](#the-factory-handoff-skill) does the same jobs through the shell, for an
 agent with no MCP configuration. Configure one of the two.
+
+### OpenCode's background service
+
+OpenCode v2 runs a background service (`opencode service start|restart|status|stop`) that keeps the
+config it started with. A service started before `roomctl setup opencode` gives its attached sessions
+no factory tools, while `opencode mcp list` still says `factory` is connected. After it registers the
+server, `setup opencode` runs `opencode service status`: when the service runs it says so and asks
+`y/N` on a terminal before running `opencode service restart`; `--restart-service` restarts without
+asking. It never restarts silently, since other sessions may be attached; without a terminal or the
+flag it prints the command. When the binary or its `service` subcommand is missing it prints the hint
+alone. `roomctl doctor` warns (`warn opencode`) when the service started before the OpenCode config
+file's last change.
+
+### OpenCode and Code Mode
+
+OpenCode v2 exposes MCP tools through Code Mode by default (`tools.<server>.<tool>` through its
+`execute` tool). A config with the permission `{"action":"execute","resource":"*","effect":"deny"}`
+turns Code Mode off and hides every Code Mode server: the factory is "connected" in
+`opencode mcp list`, yet a session has no factory tools. `"codemode": false` on
+`mcp.servers.<name>` keeps that server's tools on the native tool list (OpenCode's
+"Disable Code Mode for an MCP Server"), which also suits the elicitation forms and `room_wait`.
+After `opencode mcp add`, `roomctl setup opencode` sets `"codemode": false` on `mcp.servers.factory`
+and keeps the rest of the file (it is rewritten as indented JSON; a file with comments is left
+alone and setup says what to add). The pasted snippet carries it too. `roomctl doctor` warns
+(`warn opencode`) when the factory entry lacks it and an `execute` deny rule exists. This is the one
+config edit setup makes; every other client's config is only ever printed.
+
+### Short commands
+
+Claude Code lists the MCP prompts as `/factory:handoff`, but typing that is rejected as an unknown
+command: only `/mcp__factory__handoff` runs. So `roomctl setup claude` and `roomctl setup opencode`
+also write one command file, `factory.md`, that calls the same prompts' tools:
+
+| Type | Does |
+|---|---|
+| `/factory handoff [what]` | drafts the issue, checks it with `issue_draft`, files it with `issue_file` |
+| `/factory status [room]` | `room_summary` of the room; none: your most recently updated room |
+| `/factory inbox` | `rooms_list` with `needsMe`, then `mine` |
+
+Where: `~/.claude/commands/factory.md` (`.claude/commands/` with `--project`) for Claude Code,
+`~/.config/opencode/commands/factory.md` (`.opencode/commands/`) for OpenCode, which reads the same
+markdown file with `$ARGUMENTS`. A second `setup` rewrites it. The MCP prompts stay as they are.
+Source: `internal/roomctl/skill/commands/factory.md`.
 
 ### Checking out an agent's branch
 

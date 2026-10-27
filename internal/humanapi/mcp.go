@@ -111,7 +111,7 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 			description: "The room's events after a cursor, a page at a time (at most 100), under untrusted: true; without a cursor, the last 50. " +
 				"Pass the returned cursor back; more says the log held more. kinds keeps only those event types. " +
 				"As a task, it waits for the next events (ttl: the wait, 10 s to 15 min, default 5 min).",
-			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"},"kinds":{"type":"array","maxItems":10,"items":{"enum":["message","turn","tool_call","tool_result","approval_requested","approval_decided","participant","driver","handoff","state_changed"]}}}}`)},
+			schema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"cursor":{"type":"string","pattern":"^(seq:)?[0-9]+$"},"kinds":{"type":"array","maxItems":10,"items":{"type":"string","enum":["message","turn","tool_call","tool_result","approval_requested","approval_decided","participant","driver","handoff","state_changed"]}}}}`)},
 		{name: mcpwire.RoomChanges, call: s.roomChanges,
 			description: "What changed in a room since a cursor, as a short list of milestones to show as it is (text), and the same as structuredContent under untrusted: true: " +
 				"runs started and ended, notes, handoffs, approvals asked and decided, verdicts, the PR opened or merged, holds, the budget. " +
@@ -124,7 +124,7 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","text"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"text":{"type":"string","minLength":1,"maxLength":16384}}}`)},
 		{name: "room_fork", call: s.roomFork,
 			description: "Fork a room at a seq into a room you own, with a first run when role is set, as roomctl fork does.",
-			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","at"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"at":{"type":"integer","minimum":1},"role":{"enum":["implementer","reviewer","tester","triager"]},"prUrl":{"type":"string"},"egress":{"type":"array","maxItems":8,"items":{"enum":["pypi","npm","golang","crates"]}},"note":{"type":"string","maxLength":900}}}`)},
+			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","at"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"at":{"type":"integer","minimum":1},"role":{"type":"string","enum":["implementer","reviewer","tester","triager"]},"prUrl":{"type":"string"},"egress":{"type":"array","maxItems":8,"items":{"type":"string","enum":["pypi","npm","golang","crates"]}},"note":{"type":"string","maxLength":900}}}`)},
 		{name: "issue_draft", call: s.issueDraftTool,
 			description: "Check a factory issue draft: the title `<area>: <what is wrong>`, the body's sections ## What is wrong, ## What it should be, " +
 				"## Acceptance check, no secret; hidden characters are stripped. It files nothing: show the draft to the developer, then use issue_file.",

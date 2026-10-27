@@ -23,6 +23,29 @@ var files embed.FS
 
 const name = "factory-handoff"
 
+// command is the /factory slash command, one markdown file that Claude Code and OpenCode both
+// read from their commands directory: the short spelling of the MCP prompts, which autocomplete as
+// /factory:handoff but are only accepted typed as /mcp__factory__handoff.
+//
+//go:embed commands/factory.md
+var command []byte
+
+// CommandFile is the command's file name.
+const CommandFile = "factory.md"
+
+// InstallCommand writes the /factory command into dir and returns its path. It refuses a symlink
+// at the file, as Install does.
+func InstallCommand(dir string) (string, error) {
+	dst := filepath.Join(dir, CommandFile)
+	if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is a symlink: refusing to write through it", dst)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // a repo file, not a secret
+		return "", err
+	}
+	return dst, os.WriteFile(dst, command, 0o644) //nolint:gosec // same
+}
+
 // Install writes the skill under dir/factory-handoff, stamping version into SKILL.md, and
 // returns the paths written. It overwrites existing files, and refuses a symlink anywhere in the
 // skill tree: dir is user input and a write must never leave it.

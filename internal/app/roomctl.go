@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
 	"golang.org/x/term"
 
 	"github.com/Smana/agent-platform/internal/httpx"
@@ -40,6 +42,8 @@ const (
 const roomctlUsage = `usage: roomctl <command>
   configure --url URL [--issuer URL --client-id ID --project-id ID]
                                   the broker's URL is enough: it serves the other three
+  configure --from URL [--yes]    replace the whole config with the values the broker serves (a rooms page
+                                  URL works): the fix for a stale client id after a rebuild
   login                           sign in with the device flow
   doctor                          check the VPN, the CA, your login and your GitHub link, with the fix of each
   token                           print a valid access token, for scripts (task agent:run)
@@ -59,7 +63,7 @@ const roomctlUsage = `usage: roomctl <command>
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
   mcp                             the factory's MCP tools on stdio, for a local coding agent:
                                   claude mcp add factory -- roomctl mcp
-  setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]
+  setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print] [--restart-service]
                                   register roomctl mcp with that agent (through its own CLI, else the
                                   snippet to paste) and install the factory-handoff skill; --print writes nothing
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
@@ -79,6 +83,13 @@ type Roomctl struct {
 	Home, Cwd string
 	LookPath  func(string) (string, error)
 	RunCmd    func(ctx context.Context, argv []string) error
+
+	// Capture runs a command and returns its output (setup's OpenCode service check); nil runs it.
+	Capture func(ctx context.Context, argv []string) (string, error)
+
+	// Ask puts a yes/no question to the developer; nil asks on the terminal when In is one, else
+	// nothing is asked. Tests set it.
+	Ask func(prompt string) (bool, error)
 }
 
 // RunRoomctl runs one roomctl command (SP2 §8), its files under roomctl.Dir and
@@ -156,8 +167,13 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		home, _, herr := r.homeAndCwd()
+		if herr != nil {
+			return herr
+		}
 		return roomctl.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath,
-			SkillDirs: dirs, Version: version.Version}.Run(ctx, r.Out)
+			SkillDirs: dirs, Version: version.Version,
+			OpenCodeConfigs: roomctl.OpenCodeConfigs(home), ServiceStart: opencodeServiceStart(ctx)}.Run(ctx, r.Out)
 	}
 	if cmd == "mcp" {
 		return r.mcp(ctx, cfg, tokPath, args)
@@ -216,11 +232,23 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	var cfg roomctl.Config
 	fs := flag.NewFlagSet("configure", flag.ContinueOnError)
 	fs.StringVar(&cfg.URL, "url", "", "https://rooms.<private domain>")
+	from := fs.String("from", "", "a rooms URL: take every value from the broker, whatever is stored")
+	yes := fs.Bool("yes", false, "with --from: write without asking, and accept an issuer on another domain than the URL")
 	fs.StringVar(&cfg.Issuer, "issuer", "", "the ZITADEL issuer URL (default: the broker's)")
 	fs.StringVar(&cfg.ClientID, "client-id", "", "the roomctl client id (default: the broker's)")
 	fs.StringVar(&cfg.ProjectID, "project-id", "", "the rooms project id (default: the broker's)")
 	if _, err := flags(fs, args); err != nil {
 		return err
+	}
+	if *from != "" {
+		if cfg.URL != "" || cfg.Issuer != "" || cfg.ClientID != "" || cfg.ProjectID != "" {
+			return errors.New("configure: --from takes every value from the broker: drop the other flags, or use --url to override one")
+		}
+		base, err := originOf(*from)
+		if err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+		cfg.URL = base
 	}
 	cfg.URL, cfg.Issuer = strings.TrimRight(cfg.URL, "/"), strings.TrimRight(cfg.Issuer, "/")
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ProjectID == "" {
@@ -240,6 +268,13 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("configure: %w", err)
 	}
+	if *from != "" {
+		var old roomctl.Config
+		_ = roomctl.LoadJSON(path, &old) // none yet is fine
+		if err := r.ConfirmConfig(cfg, old, *yes); err != nil {
+			return fmt.Errorf("configure: %w", err)
+		}
+	}
 	if err := roomctl.SaveJSON(path, cfg); err != nil {
 		return err
 	}
@@ -252,6 +287,109 @@ func (r Roomctl) configure(ctx context.Context, path string, args []string) erro
 	return err
 }
 
+// ConfirmConfig shows what `configure --from` will write, and what it replaces, then decides: an
+// issuer outside the URL's registrable domain is refused unless yes; a terminal is asked unless yes.
+// The values come from the broker's answer, so the developer sees the two a hostile one would plant.
+func (r Roomctl) ConfirmConfig(next, old roomctl.Config, yes bool) error {
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	line := func(name, now, was string) {
+		note := ""
+		if was != "" && was != now {
+			note = " (was " + roomctl.SafeText(was) + ")"
+		}
+		_, _ = fmt.Fprintf(hints, "  %-10s %s%s\n", name, roomctl.SafeText(now), note)
+	}
+	_, _ = fmt.Fprintln(hints, "roomctl configure --from will write:")
+	line("url", next.URL, old.URL)
+	line("issuer", next.Issuer, old.Issuer)
+	line("client id", next.ClientID, old.ClientID)
+	line("project id", next.ProjectID, old.ProjectID)
+	if !sameRegistrableDomain(next.URL, next.Issuer) {
+		_, _ = fmt.Fprintf(hints, "warning: the issuer %s is not under the same domain as %s: a broker could point you at an identity provider of its own\n",
+			roomctl.SafeText(next.Issuer), roomctl.SafeText(next.URL))
+		if !yes {
+			return errors.New("the issuer is on another domain than the URL: check it above, then pass --yes if it is yours")
+		}
+	}
+	if yes {
+		return nil
+	}
+	ask := r.asker()
+	if ask == nil {
+		return nil // a script: --yes is what it would pass, and the values are above
+	}
+	ok, err := ask("Write this configuration? [y/N] ")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("not written: the configuration is unchanged")
+	}
+	return nil
+}
+
+// asker asks a yes/no question on the terminal, or is r.Ask; nil when stdin is no terminal.
+func (r Roomctl) asker() func(string) (bool, error) {
+	if r.Ask != nil {
+		return r.Ask
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	f, ok := in.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
+		return nil
+	}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	return func(prompt string) (bool, error) {
+		_, _ = fmt.Fprint(hints, prompt)
+		line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
+		if err != nil && line == "" {
+			return false, err
+		}
+		return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+	}
+}
+
+// sameRegistrableDomain is whether two URLs' hosts share a registrable domain (rooms.ogenki.io and
+// auth.ogenki.io do). A host with none (an address, localhost) matches only itself.
+func sameRegistrableDomain(a, b string) bool {
+	host := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(u.Hostname())
+	}
+	ha, hb := host(a), host(b)
+	if ha == "" || hb == "" {
+		return false
+	}
+	if ha == hb {
+		return true
+	}
+	da, errA := publicsuffix.EffectiveTLDPlusOne(ha)
+	db, errB := publicsuffix.EffectiveTLDPlusOne(hb)
+	return errA == nil && errB == nil && da == db
+}
+
+// originOf is the https origin of a rooms URL: the room list's or a room page's address both name
+// the broker. A plain-http URL would carry the token in clear.
+func originOf(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("--from %q is not an https URL: roomctl configure --from https://rooms.<your private domain>", raw)
+	}
+	return "https://" + u.Host, nil
+}
+
 // mcp relays the broker's MCP server on stdio until the client closes it: one token source for
 // every request, so a refresh happens once (factory interfaces F2).
 func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, args []string) error {
@@ -262,7 +400,12 @@ func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, ar
 	if in == nil {
 		in = os.Stdin
 	}
-	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH, Label: roomctl.GHLabel}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH, Label: roomctl.GHLabel,
+		Log: slog.New(slog.NewTextHandler(hints, nil))}
 	return relay.Serve(ctx, in, r.Out)
 }
 
@@ -332,16 +475,23 @@ func (r Roomctl) setup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	project := fs.Bool("project", false, "register and install in this repository, not for the user")
 	dry := fs.Bool("print", false, "print what setup would do, and write nothing")
+	restart := fs.Bool("restart-service", false, "opencode: restart its background service if it runs, without asking")
 	pos, err := flags(fs, args)
 	if err != nil || len(pos) != 1 {
-		return fmt.Errorf("setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print]: %w", errors.Join(err, errors.New("one client")))
+		return fmt.Errorf("setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print] [--restart-service]: %w", errors.Join(err, errors.New("one client")))
 	}
 	agent, err := roomctl.LookupAgent(pos[0])
 	if err != nil {
 		return err
 	}
 	s := roomctl.Setup{Agent: agent, Project: *project, Print: *dry, Home: r.Home, Dir: r.Cwd, Version: version.Version,
-		LookPath: r.LookPath, Run: r.RunCmd, Out: r.Out}
+		LookPath: r.LookPath, Run: r.RunCmd, Out: r.Out, Capture: r.Capture, Ask: r.asker(), RestartService: *restart}
+	if s.Capture == nil {
+		s.Capture = func(ctx context.Context, argv []string) (string, error) {
+			out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output() //nolint:gosec // argv is opencode service status
+			return string(out), err
+		}
+	}
 	if s.LookPath == nil {
 		s.LookPath = exec.LookPath
 	}
@@ -555,4 +705,22 @@ func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) 
 	_, _ = fmt.Fprintf(hints, "%s: %s%s\n", got.Branch, note, map[bool]string{true: ", " + got.PR, false: ""}[got.PR != ""])
 	_, err = fmt.Fprintln(r.Out, got.Path)
 	return err
+}
+
+// opencodeServiceStart is when OpenCode's background service started, read from its process
+// (`ps -o lstart`); false when none runs or ps cannot say.
+func opencodeServiceStart(ctx context.Context) func() (time.Time, bool) {
+	return func() (time.Time, bool) {
+		out, err := exec.CommandContext(ctx, "pgrep", "-f", `(^|/)opencode(\.exe)? serve --service$`).Output()
+		pid := strings.Fields(string(out))
+		if err != nil || len(pid) == 0 {
+			return time.Time{}, false
+		}
+		ls, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", pid[0]).Output() //nolint:gosec // a pid pgrep printed
+		if err != nil {
+			return time.Time{}, false
+		}
+		t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.Join(strings.Fields(string(ls)), " "), time.Local)
+		return t, err == nil
+	}
 }

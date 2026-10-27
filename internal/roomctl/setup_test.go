@@ -5,6 +5,7 @@ package roomctl
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io/fs"
@@ -156,9 +157,13 @@ func TestSetupNeverEditsAConfig(t *testing.T) {
 					root = dir
 				}
 				skills := filepath.Join(root, strings.TrimPrefix(a.skillDir(project), "~/"))
+				command := ""
+				if c := a.commandDir(project); c != "" {
+					command = filepath.Join(root, strings.TrimPrefix(c, "~/"), "factory.md")
+				}
 				for _, f := range filesUnder(t, home, dir) {
-					if !strings.HasPrefix(f, filepath.Join(skills, "factory-handoff")+string(filepath.Separator)) {
-						t.Errorf("wrote %s, not a skill file", f)
+					if !strings.HasPrefix(f, filepath.Join(skills, "factory-handoff")+string(filepath.Separator)) && f != command {
+						t.Errorf("wrote %s, not a skill file or the /factory command", f)
 					}
 				}
 			})
@@ -307,8 +312,9 @@ func TestSetupInstallsTheSkillBeforeRegistering(t *testing.T) {
 	}
 }
 
+// What the CLI writes, then setup's codemode flag (O9).
 func TestSetupOpencodeSnippetIsWhatTheCLIWrites(t *testing.T) {
-	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"]}}}}`
+	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"],"codemode":false}}}}`
 	got := strings.NewReplacer(" ", "", "\n", "").Replace(strings.ReplaceAll(Agents["opencode"].Snippet, "{CMD}", "roomctl"))
 	if got != want {
 		t.Errorf("opencode snippet %s, want %s", got, want)
@@ -323,5 +329,206 @@ func TestSkillDirsWithoutARepositorySkipsTheProjectScope(t *testing.T) {
 	}
 	if len(SkillDirs("/home/dev", "/repo")) <= len(SkillDirs("/home/dev", "")) {
 		t.Error("a repository adds no project dirs")
+	}
+}
+
+// O6: the MCP prompts autocomplete as /factory:handoff but typing that is rejected, and only
+// /mcp__factory__handoff runs. setup installs a short /factory command, with handoff, status and
+// inbox as its subcommands, for the agents that have a command mechanism.
+func TestSetupInstallsTheFactoryCommand(t *testing.T) {
+	for name, tc := range map[string]struct{ user, project string }{
+		"claude":   {".claude/commands", ".claude/commands"},
+		"opencode": {".config/opencode/commands", ".opencode/commands"},
+	} {
+		for _, project := range []bool{false, true} {
+			t.Run(name, func(t *testing.T) {
+				home, dir := t.TempDir(), t.TempDir()
+				s := Setup{Agent: Agents[name], Project: project, Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &bytes.Buffer{}}
+				if err := s.Do(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				root, sub := home, tc.user
+				if project {
+					root, sub = dir, tc.project
+				}
+				b, err := os.ReadFile(filepath.Join(root, sub, "factory.md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, w := range []string{"description:", "$ARGUMENTS", "handoff", "status", "inbox", "issue_draft", "issue_file", "room_summary", "rooms_list", "never apply a label"} {
+					if !strings.Contains(string(b), w) {
+						t.Errorf("the command lacks %q:\n%s", w, b)
+					}
+				}
+			})
+		}
+	}
+	// An agent with no command mechanism gets none.
+	home, dir := t.TempDir(), t.TempDir()
+	s := Setup{Agent: Agents["codex"], Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &bytes.Buffer{}}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range filesUnder(t, home, dir) {
+		if strings.HasSuffix(f, "factory.md") {
+			t.Errorf("codex got %s", f)
+		}
+	}
+}
+
+// O8: OpenCode's background service keeps the config it started with, so sessions attached to it
+// have no factory tools although `opencode mcp list` says connected. setup says so, and restarts
+// the service only on a yes (a terminal's, or --restart-service), never silently.
+func TestSetupOpenCodeServiceRestart(t *testing.T) {
+	type rig struct {
+		ran      [][]string
+		status   string
+		statusEr error
+		asked    int
+	}
+	run := func(t *testing.T, r *rig, restart bool, ask func(string) (bool, error)) string {
+		t.Helper()
+		var out bytes.Buffer
+		s := Setup{Agent: Agents["opencode"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+			Run: func(_ context.Context, argv []string) error { r.ran = append(r.ran, argv); return nil },
+			Capture: func(_ context.Context, argv []string) (string, error) {
+				r.ran = append(r.ran, argv)
+				return r.status, r.statusEr
+			},
+			RestartService: restart, Ask: ask}
+		if err := s.Do(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	restarted := func(r *rig) bool {
+		return slices.ContainsFunc(r.ran, func(a []string) bool { return slices.Equal(a, []string{"opencode", "service", "restart"}) })
+	}
+	t.Run("running, no terminal: says it, restarts nothing", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, nil)
+		if restarted(r) || !strings.Contains(out, "opencode service restart") || !strings.Contains(out, "restart") || !strings.Contains(out, "factory tools") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("running, terminal says no", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, func(string) (bool, error) { r.asked++; return false, nil })
+		if restarted(r) || r.asked != 1 || !strings.Contains(out, "not restarted") {
+			t.Fatalf("restarted=%v asked=%d\n%s", restarted(r), r.asked, out)
+		}
+	})
+	t.Run("running, terminal says yes", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		out := run(t, r, false, func(string) (bool, error) { return true, nil })
+		if !restarted(r) || !strings.Contains(out, "restarted") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("--restart-service restarts without asking", func(t *testing.T) {
+		r := &rig{status: "http://127.0.0.1:49374\n"}
+		run(t, r, true, func(string) (bool, error) { r.asked++; return false, nil })
+		if !restarted(r) || r.asked != 0 {
+			t.Fatalf("restarted=%v asked=%d", restarted(r), r.asked)
+		}
+	})
+	t.Run("not running: nothing said, nothing restarted", func(t *testing.T) {
+		r := &rig{status: "not running\n"}
+		out := run(t, r, true, nil)
+		if restarted(r) || strings.Contains(out, "service") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("no service subcommand: the hint only", func(t *testing.T) {
+		r := &rig{statusEr: errors.New("unknown command service")}
+		out := run(t, r, true, func(string) (bool, error) { return true, nil })
+		if restarted(r) || !strings.Contains(out, "opencode service restart") {
+			t.Fatalf("restarted=%v\n%s", restarted(r), out)
+		}
+	})
+	t.Run("another client is not asked about it", func(t *testing.T) {
+		var out bytes.Buffer
+		s := Setup{Agent: Agents["claude"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+			Run:     func(context.Context, []string) error { return nil },
+			Capture: func(context.Context, []string) (string, error) { t.Error("captured"); return "", nil }}
+		if err := s.Do(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// O9: OpenCode v2 exposes MCP tools through Code Mode by default, and a config with an `execute`
+// deny rule turns Code Mode off, hiding every Code Mode server. `"codemode": false` on the server
+// keeps its tools on the native list, where the elicitation forms and room_wait also belong.
+func TestSetupOpenCodeWritesCodeModeOff(t *testing.T) {
+	const existing = `{"theme":"dark","permission":[{"action":"execute","resource":"*","effect":"deny"}],"mcp":{"servers":{"other":{"type":"local","command":["x"]},"factory":{"type":"local","command":["roomctl","mcp"]}}}}`
+	for name, project := range map[string]bool{"user": false, "project": true} {
+		t.Run(name, func(t *testing.T) {
+			home, dir := t.TempDir(), t.TempDir()
+			path := filepath.Join(home, ".config", "opencode", "opencode.json")
+			if project {
+				path = filepath.Join(dir, "opencode.json")
+			}
+			var out bytes.Buffer
+			// `opencode mcp add` writes the file; the stub plays it.
+			add := func(context.Context, []string) error {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(path, []byte(existing), 0o644)
+			}
+			s := Setup{Agent: Agents["opencode"], Project: project, Home: home, Dir: dir, Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out, Run: add}
+			for range 2 { // a second setup changes nothing more
+				if err := s.Do(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var got map[string]any
+			b, _ := os.ReadFile(path)
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("%v\n%s", err, b)
+			}
+			servers := got["mcp"].(map[string]any)["servers"].(map[string]any)
+			if f := servers["factory"].(map[string]any); f["codemode"] != false || f["type"] != "local" {
+				t.Errorf("factory: %v", f)
+			}
+			if _, ok := servers["other"]; !ok || got["theme"] != "dark" || got["permission"] == nil {
+				t.Errorf("the rest of the file was not kept: %s", b)
+			}
+			if !strings.Contains(out.String(), "codemode") {
+				t.Errorf("setup does not say it:\n%s", &out)
+			}
+		})
+	}
+}
+
+// A config with comments is not rewritten; the developer is told what to add.
+func TestSetupOpenCodeLeavesACommentedConfig(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "opencode", "opencode.json")
+	const commented = "// mine\n{\"mcp\":{\"servers\":{\"factory\":{}}}}\n"
+	var out bytes.Buffer
+	s := Setup{Agent: Agents["opencode"], Home: home, Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: found, Out: &out,
+		Run: func(context.Context, []string) error {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			return os.WriteFile(path, []byte(commented), 0o644)
+		}}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != commented || !strings.Contains(out.String(), `"codemode": false`) {
+		t.Fatalf("%q\n%s", b, &out)
+	}
+}
+
+// The snippet a developer pastes has it too.
+func TestSetupOpenCodeSnippetHasCodeModeOff(t *testing.T) {
+	var out bytes.Buffer
+	s := Setup{Agent: Agents["opencode"], Home: t.TempDir(), Dir: t.TempDir(), Cmd: "roomctl", Version: "v1", LookPath: absent, Run: noRun(t), Out: &out}
+	if err := s.Do(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"codemode": false`) {
+		t.Fatalf("%s", &out)
 	}
 }

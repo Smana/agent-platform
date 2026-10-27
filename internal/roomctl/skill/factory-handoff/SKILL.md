@@ -29,7 +29,7 @@ broker built. Do not rewrite it, and do not add a link of your own.
 | check a room's branch out into a new worktree beside the repository | `room_checkout` |
 | hand a side task over | `issue_draft`, then `issue_file` once the developer confirms |
 
-The prompts `handoff`, `status` and `inbox` are the same jobs as slash commands.
+The prompts `handoff`, `status` and `inbox` are the same jobs as slash commands. Claude Code lists them as `/factory:handoff` but accepts only `/mcp__factory__handoff`, so `roomctl setup` (Claude Code, OpenCode) also installs a short command: `/factory handoff <what>`, `/factory status [#issue]`, `/factory inbox`.
 
 `issue_draft` says whether the task can start (`canStart`, `canStartWhy`). `issue_file` files the
 confirmed draft. Tell the developer: "Filed #N. Label it `factory/ready` to start the factory", and say

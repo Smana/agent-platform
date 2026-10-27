@@ -4,6 +4,7 @@ package roomctl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,16 +29,26 @@ func Login(ctx context.Context, hc *http.Client, c Config, prompt io.Writer) (*o
 	conf := oauthConfig(c)
 	da, err := conf.DeviceAuth(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("device authorization: %w", err)
+		return nil, fmt.Errorf("device authorization: %w%s", err, staleClientHint(err))
 	}
 	if _, err := fmt.Fprintf(prompt, "Open %s and enter the code %s\n", da.VerificationURI, da.UserCode); err != nil {
 		return nil, err
 	}
 	tok, err := conf.DeviceAccessToken(ctx, da)
 	if err != nil {
-		return nil, fmt.Errorf("device token: %w", err)
+		return nil, fmt.Errorf("device token: %w%s", err, staleClientHint(err))
 	}
 	return tok, nil
+}
+
+// staleClientHint names the fix of invalid_client: after a platform rebuild the stored client id
+// is no longer one, and ZITADEL's own sentence ("no active client not found") says nothing of it.
+func staleClientHint(err error) string {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) && re.ErrorCode == "invalid_client" {
+		return "\nhint: the stored client id is stale (the platform was rebuilt?): run roomctl configure --from https://rooms.<your private domain>, then roomctl login"
+	}
+	return ""
 }
 
 // Token returns a valid access token from the token file at path, refreshing

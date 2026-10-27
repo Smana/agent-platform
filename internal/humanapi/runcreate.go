@@ -31,7 +31,7 @@ const maxIdempotencyKey = 128
 // factory sees, system:<name>:<key>, stays under its 255.
 var runCreateSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["repo","text","dataClass","max_cost"],` +
 	`"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"},"title":{"type":"string","maxLength":1024},` +
-	`"text":{"type":"string","minLength":1,"maxLength":16384},"dataClass":{"enum":["public"]},"max_cost":{"type":"number","exclusiveMinimum":0},` +
+	`"text":{"type":"string","minLength":1,"maxLength":16384},"dataClass":{"type":"string","enum":["public"]},"max_cost":{"type":"number","exclusiveMinimum":0},` +
 	`"on_behalf_of":{"type":"string","pattern":"^slack:T[A-Z0-9]{2,20}/[UW][A-Z0-9]{2,20}$"},"ref":{"type":"string","maxLength":256},` +
 	`"idempotency_key":{"type":"string","minLength":1,"maxLength":128}}}`)
 

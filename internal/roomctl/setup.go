@@ -3,7 +3,9 @@
 package roomctl
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +30,10 @@ type Agent struct {
 	Snippet, SnippetProject         string
 	SnippetPath, SnippetProjectPath string
 	SkillDir, SkillProjectDir       string
-	Note                            string // printed after setup: what the agent still needs
+	// CommandDir and CommandProjectDir hold the agent's custom slash commands, where setup writes
+	// /factory; empty for an agent with none.
+	CommandDir, CommandProjectDir string
+	Note                          string // printed after setup: what the agent still needs
 }
 
 const (
@@ -38,7 +43,9 @@ const (
 	// opencodeJSON is what opencode 2.0.22's own `mcp add` writes to ./opencode.json (observed):
 	// mcp.servers.<name>, not the mcp.<name> its docs show. The CLI is the authority for the version
 	// we target.
-	opencodeJSON = "{\n  \"mcp\": {\n    \"servers\": {\n      \"factory\": {\n        \"type\": \"local\",\n        \"command\": [\"{CMD}\", \"mcp\"]\n      }\n    }\n  }\n}\n"
+	// "codemode": false keeps the server's tools on the native list: OpenCode v2 otherwise exposes
+	// them through Code Mode, which an `execute` deny rule turns off, hiding the server.
+	opencodeJSON = "{\n  \"mcp\": {\n    \"servers\": {\n      \"factory\": {\n        \"type\": \"local\",\n        \"command\": [\"{CMD}\", \"mcp\"],\n        \"codemode\": false\n      }\n    }\n  }\n}\n"
 	codexTOML    = "[mcp_servers.factory]\ncommand = \"{CMD}\"\nargs = [\"mcp\"]\n"
 )
 
@@ -65,13 +72,15 @@ var Agents = map[string]Agent{
 		AddProject: []string{"claude", "mcp", "add", "--scope", "project", "factory", "--", "{CMD}", "mcp"},
 		Snippet:    mcpServersJSON, SnippetProject: mcpServersJSON,
 		SnippetPath: "~/.claude.json", SnippetProjectPath: ".mcp.json",
-		SkillDir: "~/.claude/skills", SkillProjectDir: ".claude/skills"},
+		SkillDir: "~/.claude/skills", SkillProjectDir: ".claude/skills",
+		CommandDir: "~/.claude/commands", CommandProjectDir: ".claude/commands"},
 	"opencode": {Name: "opencode",
 		Add:        []string{"opencode", "mcp", "add", "--global", "factory", "--", "{CMD}", "mcp"},
 		AddProject: []string{"opencode", "mcp", "add", "factory", "--", "{CMD}", "mcp"},
 		Snippet:    opencodeJSON, SnippetProject: opencodeJSON,
 		SnippetPath: "~/.config/opencode/opencode.json", SnippetProjectPath: "opencode.json",
-		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills"},
+		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills",
+		CommandDir: "~/.config/opencode/commands", CommandProjectDir: ".opencode/commands"},
 	"codex": {Name: "codex",
 		Add:     []string{"codex", "mcp", "add", "factory", "--", "{CMD}", "mcp"},
 		Snippet: codexTOML, SnippetProject: codexTOML,
@@ -109,6 +118,13 @@ func (a Agent) skillDir(project bool) string {
 	return a.SkillDir
 }
 
+func (a Agent) commandDir(project bool) string {
+	if project {
+		return a.CommandProjectDir
+	}
+	return a.CommandDir
+}
+
 // SkillDirs is every directory an agent reads skills from, each once: every agent's SkillDir under
 // home and SkillProjectDir under dir; an empty dir (no repository) has no project scope.
 func SkillDirs(home, dir string) []string {
@@ -127,6 +143,11 @@ func SkillDirs(home, dir string) []string {
 	return out
 }
 
+// OpenCodeConfigs are the user-level OpenCode config files setup writes and the doctor reads.
+func OpenCodeConfigs(home string) []string {
+	return []string{filepath.Join(home, ".config", "opencode", "opencode.json"), filepath.Join(home, ".config", "opencode", "opencode.jsonc")}
+}
+
 // SetupCmd is the command the agent will run: roomctl when the PATH finds it, else the absolute path
 // of this executable, so a binary that is not installed still works.
 func SetupCmd(lookPath func(string) (string, error), executable func() (string, error)) string {
@@ -140,7 +161,7 @@ func SetupCmd(lookPath func(string) (string, error), executable func() (string, 
 }
 
 // Setup is one `roomctl setup <agent>`: it registers `roomctl mcp` through the agent's own CLI when
-// that exists and never edits a config file itself, else it prints the snippet. It installs the
+// that exists and edits no config file itself but the codemode flag of the OpenCode entry it just registered, else it prints the snippet. It installs the
 // skill, the one thing it writes. Print writes and runs nothing.
 type Setup struct {
 	Agent          Agent
@@ -150,6 +171,12 @@ type Setup struct {
 	LookPath       func(string) (string, error)
 	Run            func(ctx context.Context, argv []string) error
 	Out            io.Writer
+	// Capture runs argv and returns its output; nil skips the OpenCode service check.
+	Capture func(ctx context.Context, argv []string) (string, error)
+	// Ask puts a yes/no question to the developer; nil when there is no terminal.
+	Ask func(prompt string) (bool, error)
+	// RestartService restarts OpenCode's background service without asking (--restart-service).
+	RestartService bool
 }
 
 // resolve places a ~/ path under home and any other under dir.
@@ -196,6 +223,15 @@ func (s Setup) Do(ctx context.Context) error {
 	if _, err := fmt.Fprintf(s.Out, "installed the factory-handoff skill in %s (%d files)\n", s.resolve(skillDir), len(paths)); err != nil {
 		return err
 	}
+	if cd := a.commandDir(s.Project); cd != "" {
+		p, err := skill.InstallCommand(s.resolve(cd))
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(s.Out, "installed the /factory command in %s: /factory handoff, /factory status, /factory inbox\n", p); err != nil {
+			return err
+		}
+	}
 	if len(argv) > 0 {
 		if _, err := s.LookPath(argv[0]); err != nil {
 			if _, err := fmt.Fprintf(s.Out, "%s is not on the PATH, so nothing registered the server.\n", argv[0]); err != nil {
@@ -215,10 +251,104 @@ func (s Setup) Do(ctx context.Context) error {
 		if _, err := fmt.Fprintln(s.Out, line); err != nil {
 			return err
 		}
+		if err := s.opencodeCodeMode(snippetPath(s, path)); err != nil {
+			return err
+		}
+		if err := s.opencodeService(ctx); err != nil {
+			return err
+		}
 	} else if err := s.printSnippet(snippet, path); err != nil {
 		return err
 	}
 	_, err = io.WriteString(s.Out, s.notes(warn))
+	return err
+}
+
+// snippetPath is the resolved config file a setup edits or tells the developer about.
+func snippetPath(s Setup, path string) string { return s.resolve(path) }
+
+// opencodeCodeMode sets "codemode": false on mcp.servers.factory of the config `opencode mcp add`
+// just wrote, keeping the rest of the file. It is the one config edit setup makes, and it refuses a
+// file that is not plain JSON (comments), telling the developer what to add instead.
+func (s Setup) opencodeCodeMode(path string) error {
+	if s.Agent.Name != "opencode" {
+		return nil
+	}
+	tell := func(why string) error {
+		_, err := fmt.Fprintf(s.Out, "%s: %s: add \"codemode\": false to mcp.servers.factory yourself, or OpenCode's Code Mode (which an execute deny rule turns off) may hide the factory tools\n", path, why)
+		return err
+	}
+	b, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return tell("not found")
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var cfg map[string]any
+	if err := dec.Decode(&cfg); err != nil {
+		return tell("not plain JSON, left untouched")
+	}
+	servers := mapAt(mapAt(cfg, "mcp"), "servers")
+	factory, ok := servers["factory"].(map[string]any)
+	if !ok {
+		return tell("no mcp.servers.factory")
+	}
+	if factory["codemode"] == false {
+		return nil
+	}
+	factory["codemode"] = false
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil { //nolint:gosec // a config the developer owns
+		return err
+	}
+	_, err = fmt.Fprintf(s.Out, "set \"codemode\": false on mcp.servers.factory in %s: its tools stay on OpenCode's native list\n", path)
+	return err
+}
+
+// mapAt is m[key] as an object, nil when it is not one.
+func mapAt(m map[string]any, key string) map[string]any {
+	v, _ := m[key].(map[string]any)
+	return v
+}
+
+// opencodeService tells a developer whose OpenCode background service is running that it keeps the
+// config it started with: sessions attached to it have no factory tools, though `opencode mcp list`
+// says connected. It restarts the service only on a yes, never silently, since other sessions may be
+// attached. Without the binary's service subcommand it prints the hint alone.
+func (s Setup) opencodeService(ctx context.Context) error {
+	if s.Agent.Name != "opencode" || s.Capture == nil {
+		return nil
+	}
+	const restart = "opencode service restart"
+	out, err := s.Capture(ctx, []string{"opencode", "service", "status"})
+	if err != nil {
+		_, err = fmt.Fprintf(s.Out, "could not check %q: if you use OpenCode's background service, run `%s` so its sessions see the factory tools\n", "opencode service status", restart)
+		return err
+	}
+	if !strings.Contains(out, "://") { // status prints the service's URL while it runs
+		return nil
+	}
+	if _, err := fmt.Fprintf(s.Out, "OpenCode's background service is running (%s) and keeps the config it started with: sessions attached to it have no factory tools until it restarts (`%s`, which also disconnects them).\n", OneLine(out), restart); err != nil {
+		return err
+	}
+	yes := s.RestartService
+	if !yes && s.Ask != nil {
+		var aerr error
+		if yes, aerr = s.Ask("Restart it now? Other OpenCode sessions attached to it will be disconnected. [y/N] "); aerr != nil {
+			return aerr
+		}
+	}
+	if !yes {
+		_, err := fmt.Fprintln(s.Out, "not restarted: run it yourself when no session needs the service")
+		return err
+	}
+	if err := s.Run(ctx, []string{"opencode", "service", "restart"}); err != nil {
+		return fmt.Errorf("opencode service restart: %w", err)
+	}
+	_, err = fmt.Fprintln(s.Out, "restarted OpenCode's background service")
 	return err
 }
 
@@ -257,6 +387,10 @@ func (s Setup) print(argv []string, snippet, path, skillDir, warn string) error 
 		errs = append(errs, err)
 	}
 	errs = append(errs, s.printSnippet(snippet, path))
-	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s", skillDir, s.notes(warn))
+	extra := ""
+	if cd := s.Agent.commandDir(s.Project); cd != "" {
+		extra = fmt.Sprintf("and the /factory command (handoff, status, inbox) in %s\n", cd)
+	}
+	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s%s", skillDir, extra, s.notes(warn))
 	return errors.Join(append(errs, err)...)
 }
