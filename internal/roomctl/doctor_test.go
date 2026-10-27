@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -437,7 +438,14 @@ func TestDoctorOpenCodeCodeMode(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := filepath.Join(t.TempDir(), "opencode.json")
-			if err := os.WriteFile(cfg, []byte(tc.config), 0o644); err != nil {
+			// the execution timeout is O10's concern: these cases have it
+			conf := regexp.MustCompile(`"factory":\{(\}?)`).ReplaceAllStringFunc(tc.config, func(m string) string {
+				if strings.HasSuffix(m, "}") {
+					return `"factory":{"timeout":{"execution":900000}}`
+				}
+				return `"factory":{"timeout":{"execution":900000},`
+			})
+			if err := os.WriteFile(cfg, []byte(conf), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			r := newDoctorRig(t)
@@ -447,6 +455,36 @@ func TestDoctorOpenCodeCodeMode(t *testing.T) {
 				t.Fatalf("%v\n%s", err, &out)
 			}
 			if got := strings.Contains(out.String(), "warn opencode"); got != tc.warn || (tc.warn && !strings.Contains(out.String(), "codemode")) {
+				t.Fatalf("warn=%v want %v\n%s", got, tc.warn, &out)
+			}
+		})
+	}
+}
+
+// O10: OpenCode cuts a tool at its execution timeout, which cut issue_file's form. The doctor warns
+// when the factory entry has none.
+func TestDoctorOpenCodeExecutionTimeout(t *testing.T) {
+	for name, tc := range map[string]struct {
+		config string
+		warn   bool
+	}{
+		"none":           {`{"mcp":{"servers":{"factory":{"type":"local","codemode":false}}}}`, true},
+		"catalog only":   {`{"mcp":{"servers":{"factory":{"timeout":{"catalog":5000}}}}}`, true},
+		"set":            {`{"mcp":{"servers":{"factory":{"timeout":{"execution":900000}}}}}`, false},
+		"another server": {`{"mcp":{"servers":{"other":{}}}}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := filepath.Join(t.TempDir(), "opencode.json")
+			if err := os.WriteFile(cfg, []byte(tc.config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r := newDoctorRig(t)
+			r.d.OpenCodeConfigs = []string{cfg}
+			var out strings.Builder
+			if err := r.d.Run(t.Context(), &out); err != nil {
+				t.Fatalf("%v\n%s", err, &out)
+			}
+			if got := strings.Contains(out.String(), "warn opencode"); got != tc.warn || (tc.warn && !strings.Contains(out.String(), "execution")) {
 				t.Fatalf("warn=%v want %v\n%s", got, tc.warn, &out)
 			}
 		})

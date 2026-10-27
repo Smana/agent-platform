@@ -167,6 +167,12 @@ alone and setup says what to add). The pasted snippet carries it too. `roomctl d
 (`warn opencode`) when the factory entry lacks it and an `execute` deny rule exists. This is the one
 config edit setup makes; every other client's config is only ever printed.
 
+It also sets `"timeout": {"execution": 900000}` (ms) there: OpenCode cuts a tool at its execution
+timeout, which cut `issue_file`'s form ("context deadline exceeded"). `roomctl doctor` warns when the
+factory entry has none. When a form cannot be shown or is not answered, `issue_file` answers with a
+`next:` hint holding one `gh` command that files the issue (and labels it `factory/ready` when the
+draft could start the factory) for the developer to run.
+
 ### Short commands
 
 Claude Code lists the MCP prompts as `/factory:handoff`, but typing that is rejected as an unknown

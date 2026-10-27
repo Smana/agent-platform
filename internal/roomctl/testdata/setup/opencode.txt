@@ -9,7 +9,8 @@ otherwise: add this to ~/.config/opencode/opencode.json (roomctl setup never edi
       "factory": {
         "type": "local",
         "command": ["roomctl", "mcp"],
-        "codemode": false
+        "codemode": false,
+        "timeout": {"execution": 900000}
       }
     }
   }

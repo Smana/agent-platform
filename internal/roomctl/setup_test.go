@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -314,7 +315,7 @@ func TestSetupInstallsTheSkillBeforeRegistering(t *testing.T) {
 
 // What the CLI writes, then setup's codemode flag (O9).
 func TestSetupOpencodeSnippetIsWhatTheCLIWrites(t *testing.T) {
-	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"],"codemode":false}}}}`
+	want := `{"mcp":{"servers":{"factory":{"type":"local","command":["roomctl","mcp"],"codemode":false,"timeout":{"execution":900000}}}}}`
 	got := strings.NewReplacer(" ", "", "\n", "").Replace(strings.ReplaceAll(Agents["opencode"].Snippet, "{CMD}", "roomctl"))
 	if got != want {
 		t.Errorf("opencode snippet %s, want %s", got, want)
@@ -489,7 +490,7 @@ func TestSetupOpenCodeWritesCodeModeOff(t *testing.T) {
 				t.Fatalf("%v\n%s", err, b)
 			}
 			servers := got["mcp"].(map[string]any)["servers"].(map[string]any)
-			if f := servers["factory"].(map[string]any); f["codemode"] != false || f["type"] != "local" {
+			if f := servers["factory"].(map[string]any); f["codemode"] != false || f["type"] != "local" || fmt.Sprint(f["timeout"]) != "map[execution:900000]" {
 				t.Errorf("factory: %v", f)
 			}
 			if _, ok := servers["other"]; !ok || got["theme"] != "dark" || got["permission"] == nil {
@@ -528,7 +529,7 @@ func TestSetupOpenCodeSnippetHasCodeModeOff(t *testing.T) {
 	if err := s.Do(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), `"codemode": false`) {
+	if !strings.Contains(out.String(), `"codemode": false`) || !strings.Contains(out.String(), `"execution": 900000`) {
 		t.Fatalf("%s", &out)
 	}
 }

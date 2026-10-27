@@ -30,10 +30,12 @@ const (
 	maxInFlight = 8       // requests relayed at once; past it, a request is refused, never queued
 	defaultPoll = 5 * time.Second
 	maxPoll     = 30 * time.Second
-	elicitWait  = 10 * time.Minute // how long issue_file waits for the developer's answer
 	roomWait    = 60 * time.Second // how long issue_file waits for the room of an issue it started
 	rootsWait   = 5 * time.Second  // how long the relay waits for the client's roots
 )
+
+// elicitWait is how long issue_file waits for the developer's answer; a var so a test can shorten it.
+var elicitWait = 10 * time.Minute
 
 // Relay is roomctl mcp: an MCP server on stdio for a local coding agent. It relays each message to
 // the broker's /mcp with the developer's token (factory interfaces F2), and serves one tool of its

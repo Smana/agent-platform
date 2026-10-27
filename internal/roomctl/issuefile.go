@@ -59,11 +59,15 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 	r.mu.Lock()
 	elicit := r.forms
 	r.mu.Unlock()
-	if !elicit || r.File == nil {
-		return mcpwire.ToolError("needs_confirmation: issue_file asks the developer to confirm, and this client cannot ask (no elicitation); " +
-			"show them the draft and let them file it with gh issue create")
-	}
 	draft, refused := r.draft(ctx, args)
+	if !elicit || r.File == nil {
+		msg := "needs_confirmation: issue_file asks the developer to confirm, and this client cannot ask (no elicitation); " +
+			"show them the draft and let them file it with gh issue create"
+		if refused == nil {
+			msg += "\n" + fallbackNext(draft)
+		}
+		return mcpwire.ToolError(msg)
+	}
 	if refused != nil {
 		return refused
 	}
@@ -84,14 +88,14 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 		"requestedSchema": map[string]any{"type": "object", "required": []string{"file"}, "properties": props},
 	})
 	if err != nil {
-		return mcpwire.ToolError("not_filed: the developer was not asked: " + err.Error())
+		return mcpwire.ToolError("not_filed: the developer was not asked: " + err.Error() + "\n" + fallbackNext(draft))
 	}
 	var res struct {
 		Action  string                     `json:"action"`
 		Content map[string]json.RawMessage `json:"content"` // a client may return it partial
 	}
 	if len(ans.Error) > 0 || json.Unmarshal(ans.Result, &res) != nil {
-		return mcpwire.ToolError("not_filed: the client could not ask the developer")
+		return mcpwire.ToolError("not_filed: the client could not ask the developer\n" + fallbackNext(draft))
 	}
 	file, _ := formBool(res.Content["file"])
 	if res.Action != "accept" || !file {
@@ -116,6 +120,31 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 	}
 	return r.start(ctx, draft.Repo, url)
 }
+
+// fallbackNext is the hint for a form that could not be shown or answered (OpenCode cuts a tool at
+// its execution timeout): one command for the developer to run, nothing filed until they do.
+func fallbackNext(d draftShape) string {
+	return "next: show the developer this one command and let them run it; it is their yes, and nothing is filed until they do:\n" +
+		fallbackCommand(d, d.CanStart)
+}
+
+// fallbackCommand is one shell command that files the draft with gh and, when start, labels the issue
+// readyLabel. Every value is single-quoted and the body rides a quoted heredoc whose end never
+// occurs in it.
+func fallbackCommand(d draftShape, start bool) string {
+	eof := "BODY_EOF"
+	for i := 1; strings.Contains(d.Body, "\n"+eof+"\n") || strings.HasPrefix(d.Body, eof+"\n") || strings.HasSuffix(d.Body, "\n"+eof) || d.Body == eof; i++ {
+		eof = fmt.Sprintf("BODY_EOF_%d", i)
+	}
+	create := fmt.Sprintf("gh issue create --repo=%s --title=%s --body-file=- <<'%s'\n%s\n%s\n", d.Repo, shQuote(d.Title), eof, strings.TrimRight(d.Body, "\n"), eof)
+	if !start {
+		return create
+	}
+	return "url=$(" + create + ") && gh issue edit \"${url##*/}\" --repo=" + d.Repo + " --add-label=" + readyLabel
+}
+
+// shQuote single-quotes s for a POSIX shell.
+func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // formBool reads a form field: a JSON boolean, or the strings "true" and "false" some clients send.
 // ok is false when the field is absent, null or neither, which callers treat as false.
