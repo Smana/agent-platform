@@ -69,6 +69,9 @@ const (
 // for an operator's audit. Older days are deleted by the meter, its only writer after them.
 const ledgerRetention = 35 * 24 * time.Hour
 
+// fenceAnnotation is what fence writes to a past day's ledger to move its resourceVersion on.
+const fenceAnnotation = "agents.ogenki.io/fenced-at"
+
 // BlindTicks is how many periods without a metered tick admission tolerates before an enforced
 // daily cap refuses (#54): a leader handover or a scrape gap is not an outage, five minutes at
 // a 30 s period is.
@@ -337,6 +340,8 @@ type account struct {
 	doubt                string // the day of a charge whose write reported an error: it may have landed
 	was                  int64  // the run's settled entry on that day before the write
 	lift                 int64  // R10's lift, recorded in the settled entry with the run's next charge
+	seenDay              string // the day of a write resolve judged lost: it may still commit (#166)
+	seen                 int64  // the run's settled entry on seenDay when resolve read it
 	payer, kind          string // whom and what its charges count for (runs.Run.Payer, Kind)
 }
 
@@ -468,6 +473,9 @@ func (m *Meter) resolve(ctx context.Context) error {
 			read[a.doubt] = entries
 		}
 		gain := max(0, entries[id]-a.was)
+		if gain == 0 { // lost, as far as this read shows: settle watches for it to commit late
+			a.seenDay, a.seen = a.doubt, entries[id]
+		}
 		a.settled += gain
 		charge := gain
 		if gain > 0 { // the write landed whole: the run's charge, and its lift, which spent never counts
@@ -648,8 +656,9 @@ func (m *Meter) Tick(ctx context.Context) error {
 	usd := map[string]int64{}
 	caps := map[string]int64{}
 	costs := map[string]Cost{}
-	delta := map[string]int64{} // this tick's charges by ledger key
-	inc := map[string]int64{}   // and by run: its settled entry
+	delta := map[string]int64{}   // this tick's charges by ledger key
+	inc := map[string]int64{}     // and by run: its settled entry
+	keys := map[string][]string{} // the ledger keys each charged run is charged to
 	for _, r := range all {
 		u, seen := used[r.ID]
 		t := m.total(r, u.Tokens, seen) // never the raw counter (R12)
@@ -690,7 +699,8 @@ func (m *Meter) Tick(ctx context.Context) error {
 			m.fallback(ctx, r, why)
 		}
 		if n := m.unsettled(r.ID); n > 0 { // charged to the day it is observed in (R07)
-			for _, k := range charged(r) {
+			keys[r.ID] = charged(r)
+			for _, k := range keys[r.ID] {
 				delta[k] += n
 			}
 			inc[r.ID] = n + m.accounts[r.ID].lift
@@ -705,7 +715,7 @@ func (m *Meter) Tick(ctx context.Context) error {
 	var spent map[string]int64
 	settleErr := learnErr
 	if settleErr == nil {
-		spent, settleErr = m.settle(ctx, day, delta, inc) // budget-principal reads the ledger, not the live runs (R07)
+		spent, settleErr = m.settle(ctx, day, delta, inc, keys) // budget-principal reads the ledger, not the live runs (R07)
 	}
 	var errs []error
 	if settleErr != nil {
@@ -803,10 +813,18 @@ func (m *Meter) readSpent(ctx context.Context, day string) map[string]int64 {
 // (R07: the day a charge is observed is the day that carries it, not the day the run began).
 // Admission reserves against the same column (R50), so the write retries conflicts like reserve
 // does; a day that stays busy fails the tick, and the charges are retried whole on the next one.
+// keys names the ledger keys each run in inc is charged to.
 // A write that reports any other error may have landed all the same (a timeout after the commit):
 // settle leaves each charged run in doubt, with its entry before the write, for resolve. Without a
 // Ledger the day lives in this meter's memory alone.
-func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]int64) (map[string]int64, error) {
+//
+// A write resolve judged lost can still commit later (#166): its resourceVersion is the one the
+// run's entry was read at (account.seen). Each attempt reads the entry again, and what it gained
+// over seen is that write landing: it is taken off what this write adds, so the charge is added
+// once. The write's own Update carries the resourceVersion of the read, so a late write that
+// commits after it conflicts and never lands. A write that failed on another day than this one is
+// fenced first (fence): no Update of that day's ledger from before the fence can land after it.
+func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]int64, keys map[string][]string) (map[string]int64, error) {
 	if m.Ledger == nil {
 		if m.memDay != day { // the memory is one day wide: midnight starts it fresh
 			m.mem, m.memDay = map[string]int64{}, day
@@ -817,6 +835,10 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		return m.mem, nil
 	}
 	key := types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + day}
+	fenced, err := m.fence(ctx, day, inc)
+	if err != nil {
+		return nil, err
+	}
 	for range api.LedgerAttempts {
 		cm := &corev1.ConfigMap{}
 		err := m.Ledger.Get(ctx, key, cm)
@@ -831,23 +853,31 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		if err != nil {
 			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
 		}
-		if len(delta) == 0 { // a quiet tick reads, never creates a ledger of nothing
+		was, err := api.SettledColumn(cm)
+		if err != nil {
+			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
+		}
+		late := maps.Clone(fenced)
+		for id := range inc {
+			if a := m.accounts[id]; a.seenDay == day {
+				late[id] += max(0, was[id]-a.seen)
+			}
+		}
+		add, addInc := m.net(delta, inc, keys, late)
+		if len(add) == 0 && len(addInc) == 0 { // a quiet tick reads, never creates a ledger of nothing
+			m.settledUp(inc)
 			return spent, nil
 		}
 		if spent == nil {
 			spent = map[string]int64{}
 		}
-		for p, n := range delta {
+		for p, n := range add {
 			spent[p] += n
 		}
 		if err := api.SetLedgerSpentColumn(cm, spent); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
-		was, err := api.SettledColumn(cm)
-		if err != nil {
-			return nil, fmt.Errorf("meter: the %s ledger: %w", day, err)
-		}
-		if err := api.AddSettled(cm, inc); err != nil {
+		if err := api.AddSettled(cm, addInc); err != nil {
 			return nil, fmt.Errorf("meter: %w", err)
 		}
 		if existed {
@@ -857,19 +887,119 @@ func (m *Meter) settle(ctx context.Context, day string, delta, inc map[string]in
 		}
 		switch {
 		case err == nil:
+			m.settledUp(inc)
 			return spent, nil
 		case apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err):
 			continue // re-read and re-append (R50)
 		default:
 			for id := range inc {
 				a := m.accounts[id]
+				if g := late[id]; g > 0 { // landed late: counted now, as resolve counts a landed write
+					a.settled += g
+					m.charge(ctx, a, max(0, g-a.lift))
+					a.lift = 0
+				}
 				a.doubt, a.was = day, was[id]
+				a.seenDay, a.seen = "", 0
 				m.accounts[id] = a
 			}
 			return nil, fmt.Errorf("meter: write the %s ledger: %w", day, err)
 		}
 	}
 	return nil, fmt.Errorf("meter: the %s ledger stayed busy", day)
+}
+
+// settledUp ends the watch for a late commit of each run charged: the write that settled it
+// carried a resourceVersion no earlier write can commit after.
+func (m *Meter) settledUp(inc map[string]int64) {
+	for id := range inc {
+		a := m.accounts[id]
+		a.seenDay, a.seen = "", 0
+		m.accounts[id] = a
+	}
+}
+
+// net is what this write adds once late, the micro-USD of each run that an earlier write
+// committed meanwhile, is off: the spent column by key and the settled entries by run. What such
+// a write settled includes the run's lift, which spent never counts.
+func (m *Meter) net(delta, inc map[string]int64, keys map[string][]string, late map[string]int64) (map[string]int64, map[string]int64) {
+	add, addInc := maps.Clone(delta), map[string]int64{}
+	for id, n := range inc {
+		g := late[id]
+		if g > 0 {
+			for _, k := range keys[id] {
+				add[k] = max(0, add[k]-max(0, g-m.accounts[id].lift))
+			}
+		}
+		if n-g > 0 {
+			addInc[id] = n - g
+		}
+	}
+	for k, n := range add {
+		if n == 0 {
+			delete(add, k)
+		}
+	}
+	return add, addInc
+}
+
+// fence settles the question of a lost write on a day other than today's: for each run in inc
+// whose lost write was on one, it updates that day's ledger, so a write carrying an older
+// resourceVersion conflicts from then on, and returns what the run's entry there gained over
+// seen: the late write, if it committed before the fence. A day already pruned is let go.
+func (m *Meter) fence(ctx context.Context, day string, inc map[string]int64) (map[string]int64, error) {
+	days := map[string]bool{}
+	for id := range inc {
+		if a := m.accounts[id]; a.seenDay != "" && a.seenDay != day {
+			days[a.seenDay] = true
+		}
+	}
+	late := map[string]int64{}
+	for d := range days {
+		key := types.NamespacedName{Namespace: m.Namespace, Name: api.LedgerPrefix + d}
+		var entries map[string]int64
+		for attempt := range api.LedgerAttempts {
+			cm := &corev1.ConfigMap{}
+			existed := true
+			if err := m.Ledger.Get(ctx, key, cm); apierrors.IsNotFound(err) {
+				if d < m.retainedFrom() {
+					entries = nil
+					break
+				}
+				cm, existed = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}, false
+			} else if err != nil {
+				return nil, fmt.Errorf("meter: read the %s ledger: %w", d, err)
+			}
+			var err error
+			if entries, err = api.SettledColumn(cm); err != nil {
+				return nil, fmt.Errorf("meter: the %s ledger: %w", d, err)
+			}
+			if cm.Annotations == nil {
+				cm.Annotations = map[string]string{}
+			}
+			cm.Annotations[fenceAnnotation] = m.now().UTC().Format(time.RFC3339Nano)
+			if existed {
+				err = m.Ledger.Update(ctx, cm)
+			} else {
+				err = m.Ledger.Create(ctx, cm)
+			}
+			if err == nil {
+				break
+			}
+			if !apierrors.IsConflict(err) && !apierrors.IsAlreadyExists(err) {
+				return nil, fmt.Errorf("meter: fence the %s ledger: %w", d, err)
+			}
+			if attempt == api.LedgerAttempts-1 {
+				return nil, fmt.Errorf("meter: the %s ledger stayed busy", d)
+			}
+		}
+		for id := range inc {
+			if a := m.accounts[id]; a.seenDay == d {
+				late[id] += max(0, entries[id]-a.seen)
+			}
+		}
+	}
+	return late, nil
 }
 
 // charge tells OnCharge of n micro-USD the day's spent column now holds for a run, under its payer.
