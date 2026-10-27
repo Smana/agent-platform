@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/mcpwire"
@@ -29,6 +31,21 @@ func orElse(v, def string) string {
 	return v
 }
 
+// refText is the developer's room reference made safe to quote in a code span: no backtick or
+// control character, at most 80 runes.
+func refText(s string) string {
+	out := []rune{}
+	for _, r := range s {
+		if r == '`' || unicode.IsControl(r) {
+			continue
+		}
+		if out = append(out, r); len(out) == 80 {
+			break
+		}
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // mcpPrompts are the prompts a human's roomctl is offered; a sponsored principal has none.
 var mcpPrompts = []mcpPrompt{
 	{
@@ -45,7 +62,7 @@ var mcpPrompts = []mcpPrompt{
 		name: "status", description: "Show one room's card.",
 		args: []promptArg{{"room", "a room id, #<issue>, PR #<n> or an issue number; default: your most recently updated room"}},
 		text: func(a map[string]string) string {
-			if r := a["room"]; r != "" {
+			if r := refText(a["room"]); r != "" {
 				return "Call `room_summary` with room `" + r + "` (as written: roomctl resolves #<issue>, PR #<n> and numbers, and says when several rooms match; ask the developer then, never guess), and show its text as it is."
 			}
 			return "Find the caller's most recently updated room (from `rooms_list`), call `room_summary` for it, and show its text as it is."

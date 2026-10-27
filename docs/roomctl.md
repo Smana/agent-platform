@@ -37,7 +37,7 @@ roomctl doctor                                   # check the setup
 
 ## Commands
 
-`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL. The MCP tools and prompts also take `#<issue>`, `PR #<n>` or a bare issue number ([below](#the-mcp-server)); the CLI takes ids only, since a shell drops an unquoted `#42`.
+`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL. The MCP tools and prompts also take `#<issue>`, `PR #<n>`, a bare number or a title fragment ([below](#the-mcp-server)); the CLI takes ids only, since a shell drops an unquoted `#42`.
 
 | Command | What it does |
 |---|---|
@@ -117,12 +117,15 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
   only when the broker's `issue_draft` says `canStart`: yes labels the issue `factory/ready` with
   your `gh`, which starts the factory. A client that returns the form without `start` (or with a value that is not a boolean) gets `started:false` and a `next` that says start was not chosen, and `roomctl mcp` logs it on stderr: your agent then asks you rather than guessing. It is a form field, never a tool argument: your agent can
   call `issue_file` but cannot answer the form.
-- Every tool and prompt that takes a room (`room_summary`, `room_changes`, `room_queue`, `room_wait`,
-  `room_checkout`, the `status` prompt) accepts the room id, `#<issue>`, `PR #<n>` or a bare number.
-  `roomctl mcp` resolves it through the room list, open rooms first and then the ended ones; the issue
-  match wins over a PR of the same number. When several rooms match (the same issue number in two
-  repositories), the tool lists them with their ids and asks, and calls nothing: your agent asks you.
-  Cards and the overview lead with the issue number and title, and end with the room id.
+- Every tool and prompt that takes a room (`room_summary`, `room_changes`, `room_queue`, `room_tail`,
+  `room_fork`, `room_wait`, `room_checkout`, the `status` prompt) accepts the room id, `#<issue>`
+  (the issue only), `PR #<n>` (the PR only), a bare number (an issue or a PR), or a fragment of the
+  task's title (3 characters or more, case-insensitive; not an id or a number). `roomctl mcp` resolves
+  it through the room list, open rooms first and then the ended ones. When several rooms match (the
+  same number in two repositories, a bare number that is an issue in one room and a PR in another,
+  a fragment in several titles), the tool lists them with their ids and asks, and calls nothing: your
+  agent asks you. Text that matches nothing goes to the broker as typed, which refuses it. Cards and
+  the overview lead with the issue number and title, and end with the room id.
 - `room_wait` polls `rooms_list` from your machine until a room needs you, opens a pull request or
   ends, or until its timeout (300 s by default, at most 1800 s), and returns the room's card. A
   cancellation ends it at once. Run it in a background task where your client has them.

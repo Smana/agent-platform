@@ -33,8 +33,10 @@ func TestRoomReferencesResolve(t *testing.T) {
 	for name, tc := range map[string]struct{ ref, want string }{
 		"id as is":                  {"abcdefgh", "abcdefgh"},
 		"#issue":                    {"#7", "abcdefgh"},
-		"bare number is the issue":  {"12", "bcdefghi"}, // issue 12 and PR 12 both exist: the issue wins
-		"#number prefers the issue": {"#12", "bcdefghi"},
+		"#number is the issue only": {"#12", "bcdefghi"}, // PR 12 exists in another room: # still means the issue
+		"bare number, one room":     {"30", "cdefghij"},
+		"title fragment":            {"THIRTY", "cdefghij"},
+		"title fragment, spaces":    {"dead link", "abcdefgh"},
 		"PR #n":                     {"PR #12", "abcdefgh"},
 		"pr n lower case":           {"pr 7", "cdefghij"},
 	} {
@@ -53,14 +55,73 @@ func TestRoomReferencesResolve(t *testing.T) {
 	}
 }
 
-// With no issue of that number, a PR of it is the room.
-func TestRoomReferenceFallsBackToThePR(t *testing.T) {
+// `#7` is the issue only and `PR 7` the PR only; a bare 7 is either, and resolves only when one
+// room answers.
+func TestRoomReferenceKinds(t *testing.T) {
+	rows := []map[string]any{{"id": "cdefghij", "repository": "Smana/b", "issue": 30, "title": "feat", "pr": 7}}
+	for ref, want := range map[string]string{"7": "cdefghij", "PR 7": "cdefghij", "pr #7": "cdefghij", "#7": ""} {
+		b := newMCPBroker(t)
+		b.rooms = rows
+		s := startSession(t, b, &filing{}, &labeling{}, time.Second)
+		res := s.request(t, 5, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": ref}})["result"].(map[string]any)
+		got := lastCall(t, b)
+		if want == "" {
+			if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "unknown_room") || got.Name == "room_summary" {
+				t.Errorf("%q: %v %+v", ref, res, got)
+			}
+			continue
+		}
+		if got.Args["room"] != want {
+			t.Errorf("%q: %+v", ref, got)
+		}
+	}
+}
+
+// A bare number that is an issue in one room and a PR in another is asked about, never guessed.
+func TestRoomReferenceBareNumberAcrossKindsAsks(t *testing.T) {
 	b := newMCPBroker(t)
-	b.rooms = []map[string]any{{"id": "cdefghij", "repository": "Smana/b", "issue": 30, "title": "feat", "pr": 7}}
+	b.rooms = refRooms
 	s := startSession(t, b, &filing{}, &labeling{}, time.Second)
-	s.request(t, 5, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": "#7"}})
-	if got := lastCall(t, b); got.Args["room"] != "cdefghij" {
-		t.Fatalf("%+v", got)
+	res := s.request(t, 5, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": "12"}})["result"].(map[string]any)
+	text := fmt.Sprint(res["content"])
+	for _, w := range []string{"ambiguous_room", "issue", "PR", "bcdefghi", "abcdefgh", "#12", "PR #12"} {
+		if res["isError"] != true || !strings.Contains(text, w) {
+			t.Fatalf("lacks %q: %v", w, res)
+		}
+	}
+	if got := lastCall(t, b); got.Name == "room_summary" {
+		t.Fatalf("the broker was called: %+v", got)
+	}
+}
+
+// A title fragment of 3 characters or more, case-insensitive, when the text is no id and no
+// number: one match resolves, several are listed, none passes through.
+func TestRoomReferenceTitleFragment(t *testing.T) {
+	b := newMCPBroker(t)
+	b.rooms = refRooms
+	s := startSession(t, b, &filing{}, &labeling{}, time.Second)
+	res := s.request(t, 5, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": "chore: forty"}})["result"].(map[string]any)
+	if text := fmt.Sprint(res["content"]); res["isError"] != true || !strings.Contains(text, "ambiguous_room") || !strings.Contains(text, "defghijk") || !strings.Contains(text, "efghijkl") {
+		t.Fatalf("several titles: %v", res)
+	}
+	for _, frag := range []string{"no such title", "ab", "zz"} { // none, or under 3 characters: passed through
+		s.request(t, 6, "tools/call", map[string]any{"name": "room_summary", "arguments": map[string]any{"room": frag}})
+		if got := lastCall(t, b); got.Args["room"] != frag {
+			t.Errorf("%q: the broker got %+v", frag, got)
+		}
+	}
+}
+
+// room_tail and room_fork take references too.
+func TestRoomTailAndForkResolveReferences(t *testing.T) {
+	for _, tool := range []string{"room_tail", "room_fork"} {
+		b := newMCPBroker(t)
+		b.rooms = refRooms
+		s := startSession(t, b, &filing{}, &labeling{}, time.Second)
+		s.request(t, 5, "tools/call", map[string]any{"name": tool, "arguments": map[string]any{"room": "#7", "at": 1}})
+		if got := lastCall(t, b); got.Name != tool || got.Args["room"] != "abcdefgh" || got.Args["at"] != 1.0 {
+			t.Errorf("%s: %+v", tool, got)
+		}
 	}
 }
 
