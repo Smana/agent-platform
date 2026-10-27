@@ -23,7 +23,7 @@ import (
 
 // factsOf is what the room's summary shows of a task: phase, current run, budget, issue, PR.
 func factsOf(t *v1alpha1.Task) envelope.TaskFacts {
-	f := envelope.TaskFacts{Phase: t.Status.Phase, Reason: t.Status.Reason}
+	f := envelope.TaskFacts{Phase: t.Status.Phase, Reason: t.Status.Reason, Origin: t.Spec.Origin}
 	// An unfinished record is over (M4) when a later run superseded it (a retry from Escalated), ended
 	// at the next run's start; or, for the last one, when the task ended or escalated as stuck, at its
 	// phase's start. Otherwise a view would read a dead run as running.
