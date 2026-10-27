@@ -80,8 +80,23 @@ func TestRoomctlMCPAgainstTheBroker(t *testing.T) {
 		t.Fatalf("initialize: %v", res)
 	}
 	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
-	if tools := ask(2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any); len(tools) != 8 {
-		t.Fatalf("seven broker tools and issue_file: %v", tools)
+	// Names, not a count: PR 3 and PR 4 each add tools, in either merge order (M3).
+	var names []string
+	for _, tl := range ask(2, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
+		names = append(names, tl.(map[string]any)["name"].(string))
+	}
+	count := func(name string) int {
+		n := 0
+		for _, x := range names {
+			if x == name {
+				n++
+			}
+		}
+		return n
+	}
+	if n := len(names); n < 3 || strings.Join(names[n-3:], ",") != "issue_file,room_wait,room_checkout" ||
+		count("rooms_list") != 1 || count("room_summary") != 1 || count("room_changes") != 1 {
+		t.Fatalf("the broker's tools, then issue_file, room_wait and room_checkout: %v", names)
 	}
 	if res := ask(3, "tools/call", map[string]any{"name": "room_queue", "arguments": map[string]any{"room": roomID, "text": "use v2"}}); strings.Contains(fmt.Sprint(res), "isError:true") {
 		t.Fatalf("queue: %v", res)

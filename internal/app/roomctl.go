@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -15,9 +16,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/roomctl"
@@ -39,12 +43,17 @@ const roomctlUsage = `usage: roomctl <command>
   login                           sign in with the device flow
   doctor                          check the VPN, the CA, your login and your GitHub link, with the fix of each
   token                           print a valid access token, for scripts (task agent:run)
-  status <room> [--json] [--after seq:N] where a room stands: status, what needs you, notes
-  rooms [--repo owner/name] [--mine] [--needs-me] [--json]
+  status <room> [--json] [--after seq:N] [--format md|text]
+                                  where a room stands: status, what needs you, notes
+  changes <room> [--cursor seq:N] [--format md|text] [--json]
+                                  what changed in a room since the cursor of your last call (the first call: 24 hours)
+  rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--format md|text] [--json]
                                   the rooms you can read, with each task's issue, title, phase and PR. --mine: the tasks of
                                   issues you filed or labelled, PRs you authored or review.
                                   --needs-me: an approval you could decide, a task held on your room,
-                                  or a PR waiting for your merge
+                                  or a PR waiting for your merge. --all: the rooms that ended over a week ago too
+  checkout <room>                 check the room's agent/<room> branch out into a new worktree beside this repository,
+                                  never touching your checkout; it asks (y/N) before files that run code, and needs a terminal for that
   watch <room> [--tail N]         follow a room
   post <room> [--queue] <text>    chat, or queue it for the next run's brief
   skill install [--dir .agents/skills]   write the factory-handoff Agent Skill for local coding agents
@@ -120,7 +129,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "watch", "post", "fork", "doctor", "mcp":
+	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "doctor", "mcp":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -171,13 +180,22 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		fs.BoolVar(&f.Mine, "mine", false, "only the tasks of issues you filed or labelled, PRs you authored or review")
 		fs.BoolVar(&f.NeedsMe, "needs-me", false, "only rooms with an approval you could decide, a task held on your room, or a PR waiting for your merge")
 		fs.BoolVar(&f.JSON, "json", false, "print the broker's rows as is")
+		fs.BoolVar(&f.All, "all", false, "the rooms that ended over a week ago too")
+		format := fs.String("format", "", "md or text")
 		pos, err := flags(fs, args)
 		if err != nil || len(pos) != 0 {
-			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me] [--json]: %w", errors.Join(err, errors.New("no arguments")))
+			return fmt.Errorf("rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--format md|text] [--json]: %w", errors.Join(err, errors.New("no arguments")))
+		}
+		if f.Format, err = viewFormat(r.Out, *format); err != nil {
+			return err
 		}
 		return c.Rooms(ctx, r.Out, f)
 	case "status":
 		return r.status(ctx, c, args)
+	case "changes":
+		return r.changes(ctx, c, filepath.Join(r.Dir, "cursors.json"), args)
+	case "checkout":
+		return r.checkout(ctx, c, args)
 	case "watch":
 		fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 		tail := fs.Int("tail", 50, "events to show first")
@@ -244,7 +262,7 @@ func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, ar
 	if in == nil {
 		in = os.Stdin
 	}
-	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH}
+	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH, Label: roomctl.GHLabel}
 	return relay.Serve(ctx, in, r.Out)
 }
 
@@ -355,11 +373,16 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "print the broker's summary/v1 as is")
 	cursor := fs.String("after", "0", "only notes after this cursor: the summary's seq:N, or N")
+	format := fs.String("format", "", "md or text")
 	pos, err := flags(fs, args)
 	// The summary prints its cursor as seq:N, so the next call can pass it back as is.
 	after, aerr := strconv.ParseInt(strings.TrimPrefix(*cursor, "seq:"), 10, 64)
 	if err != nil || len(pos) != 1 || aerr != nil || after < 0 {
-		return fmt.Errorf("status <room> [--json] [--after seq:N]: %w", errors.Join(err, errors.New("one room, and a cursor of seq:N or N")))
+		return fmt.Errorf("status <room> [--json] [--after seq:N] [--format md|text]: %w", errors.Join(err, errors.New("one room, and a cursor of seq:N or N")))
+	}
+	f, err := viewFormat(r.Out, *format)
+	if err != nil {
+		return err
 	}
 	raw, err := c.Summary(ctx, pos[0], after)
 	if err != nil {
@@ -373,7 +396,7 @@ func (r Roomctl) status(ctx context.Context, c roomctl.Client, args []string) er
 	if err := json.Unmarshal(raw, &sum); err != nil {
 		return fmt.Errorf("status: the broker's answer: %w", err)
 	}
-	if err := roomview.Card(r.Out, sum, roomview.Options{Format: textFormat(r.Out), Now: time.Now(), Rooms: roomsBase(sum, c.URL)}); err != nil {
+	if err := roomview.Card(r.Out, sum, roomview.Options{Format: f, Now: time.Now(), Rooms: roomsBase(sum, c.URL)}); err != nil {
 		return err
 	}
 	// The card has no cursor: status prints it last, so --after can take it back.
@@ -474,5 +497,62 @@ func (r Roomctl) fork(ctx context.Context, c roomctl.Client, base string, args [
 		out += "# Before SP3 the owner creates the run (C3): kubectl create -f - with\n" + string(claim) + "\n"
 	}
 	_, err = io.WriteString(r.Out, roomctl.SafeText(out))
+	return err
+}
+
+// checkout makes the worktree of a room's branch. The repository and the pull request come from the
+// room's row. The files that run code are confirmed with y/N on a terminal, and refused without one.
+func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) error {
+	pos, err := flags(flag.NewFlagSet("checkout", flag.ContinueOnError), args)
+	if err != nil || len(pos) != 1 {
+		return fmt.Errorf("checkout <room>: %w", errors.Join(err, errors.New("one room")))
+	}
+	rows, _, err := c.RoomRows(ctx, roomctl.RoomFilter{All: true})
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(rows, func(row roomview.Row) bool { return row.ID == pos[0] })
+	if i < 0 {
+		return fmt.Errorf("checkout: %s is not one of the rooms you can read: roomctl rooms --all", roomctl.SafeText(pos[0]))
+	}
+	dir := r.Cwd
+	if dir == "" {
+		if dir, err = os.Getwd(); err != nil {
+			return err
+		}
+	}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	in := r.In
+	if in == nil {
+		in = os.Stdin
+	}
+	co := roomctl.Checkout{Workspace: dir, Room: pos[0], Repository: rows[i].Repository, PR: rows[i].PR}
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
+		co.Confirm = func(_ context.Context, files []string, more int) (bool, error) {
+			_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(roomctl.CodeSpans(files, more), "\n  "))
+			line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
+			if err != nil && line == "" {
+				return false, err
+			}
+			return strings.EqualFold(strings.TrimSpace(line), "y"), nil
+		}
+	}
+	got, err := co.Run(ctx)
+	var refusal *roomctl.CheckoutRefusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("checkout: %s", roomctl.SafeText(refusal.Error()))
+	}
+	if err != nil {
+		return err
+	}
+	note := "created"
+	if got.Reused {
+		note = "already there"
+	}
+	_, _ = fmt.Fprintf(hints, "%s: %s%s\n", got.Branch, note, map[bool]string{true: ", " + got.PR, false: ""}[got.PR != ""])
+	_, err = fmt.Fprintln(r.Out, got.Path)
 	return err
 }
