@@ -196,7 +196,7 @@ var issueURL = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-
 // repository, is refused: the number becomes gh's argument.
 func issueNumber(url, repo string) (int, error) {
 	m := issueURL.FindStringSubmatch(strings.TrimSpace(url))
-	if m == nil || m[1] != repo {
+	if m == nil || !strings.EqualFold(m[1], repo) { // gh prints the canonical case
 		return 0, fmt.Errorf("gh printed %q, not an issue of %s", OneLine(url), repo)
 	}
 	return strconv.Atoi(m[2])
@@ -204,6 +204,8 @@ func issueNumber(url, repo string) (int, error) {
 
 // GHLabel labels the issue with the developer's gh: each value joined to its flag, never a shell.
 func GHLabel(ctx context.Context, repo string, issue int, label string) error {
+	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "issue", "edit", strconv.Itoa(issue), "--repo="+repo, "--add-label="+label) //nolint:gosec // gh, with a checked repository, a number and a fixed label, never through a shell
 	var errOut bytes.Buffer
 	cmd.Stderr = &capped{b: &errOut}
@@ -238,11 +240,16 @@ func (r *Relay) draft(ctx context.Context, args json.RawMessage) (draftShape, an
 	return d, nil
 }
 
+// ghTimeout bounds one gh call.
+var ghTimeout = 60 * time.Second
+
 // maxGHOutput bounds what gh's stdout and stderr keep.
 const maxGHOutput = 4 << 10
 
 // GH files the issue with the developer's gh: their identity, the body on stdin, never a label.
 func GH(ctx context.Context, repo, title, body string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", ghArgs(repo, title)...) //nolint:gosec // gh, with a checked repository and title, never through a shell
 	cmd.Stdin = strings.NewReader(body)
 	var out, errOut bytes.Buffer

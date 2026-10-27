@@ -23,12 +23,16 @@ func withFile(f IssueFiler) func(*Relay) { return func(r *Relay) { r.File = f } 
 type filing struct {
 	mu    sync.Mutex
 	calls []string
+	url   string // what gh prints; empty is an issue of Smana/a
 }
 
 func (f *filing) file(_ context.Context, repo, title, body string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, repo+"|"+title+"|"+body)
+	if f.url != "" {
+		return f.url, nil
+	}
 	return "https://github.com/Smana/a/issues/7", nil
 }
 
@@ -274,10 +278,97 @@ func TestIssueNumber(t *testing.T) {
 		"https://github.com/Smana/a/issues/0":   0,
 		"http://github.com/Smana/a/issues/7":    0,
 		"":                                      0,
+		"https://github.com/smana/A/issues/7":   7, // gh prints the canonical case
 	} {
 		n, err := issueNumber(url, "Smana/a")
 		if (err == nil) != (want != 0) || n != want {
 			t.Errorf("%q: %d %v", url, n, err)
 		}
+	}
+}
+
+// answer files the issue with the given form answer, and returns the result's structuredContent.
+func fileWith(t *testing.T, s session, args map[string]any, answer map[string]any) map[string]any {
+	t.Helper()
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": args})
+	ask := s.next(t)
+	s.send(t, map[string]any{"jsonrpc": "2.0", "id": ask["id"], "result": answer})
+	sc, _ := s.next(t)["result"].(map[string]any)["structuredContent"].(map[string]any)
+	return sc
+}
+
+func TestIssueFileStartRefusals(t *testing.T) {
+	accept := func(content map[string]any) map[string]any {
+		return map[string]any{"action": "accept", "content": content}
+	}
+	t.Run("no labeler: nothing starts", func(t *testing.T) {
+		b := newMCPBroker(t)
+		b.canStart = boolp(true)
+		f := &filing{}
+		s := relayTo(t, b, tok, withFile(f.file))
+		s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"elicitation": map[string]any{}}})
+		s.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": issueFileArgs})
+		ask := s.next(t)
+		if _, has := ask["params"].(map[string]any)["requestedSchema"].(map[string]any)["properties"].(map[string]any)["start"]; has {
+			t.Fatal("start offered with no labeler")
+		}
+		s.send(t, map[string]any{"jsonrpc": "2.0", "id": ask["id"], "result": accept(map[string]any{"file": true, "start": true})})
+		sc := s.next(t)["result"].(map[string]any)["structuredContent"].(map[string]any)
+		if sc["filed"] != true || sc["started"] != false {
+			t.Fatalf("%v", sc)
+		}
+	})
+	t.Run("a URL that is not an issue of the repository", func(t *testing.T) {
+		for _, url := range []string{"https://github.com/Smana/b/issues/7", "https://github.com/Smana/a/pull/7", "not a url"} {
+			b := newMCPBroker(t)
+			b.canStart = boolp(true)
+			l := &labeling{}
+			sc := fileWith(t, startSession(t, b, &filing{url: url}, l, time.Second), issueFileArgs, accept(map[string]any{"file": true, "start": true}))
+			if sc["filed"] != true || sc["started"] != false || !strings.Contains(fmt.Sprint(sc["why"]), "without the label") || len(l.calls) != 0 {
+				t.Fatalf("%q: %v %v", url, sc, l.calls)
+			}
+		}
+	})
+	t.Run("a declined or cancelled form files and labels nothing", func(t *testing.T) {
+		for _, action := range []string{"decline", "cancel"} {
+			b := newMCPBroker(t)
+			b.canStart = boolp(true)
+			f, l := &filing{}, &labeling{}
+			sc := fileWith(t, startSession(t, b, f, l, time.Second), issueFileArgs, map[string]any{"action": action, "content": map[string]any{"file": true, "start": true}})
+			if sc["filed"] != false || len(f.calls) != 0 || len(l.calls) != 0 {
+				t.Fatalf("%s: %v %v %v", action, sc, f.calls, l.calls)
+			}
+		}
+	})
+	t.Run("a start the agent sends as an argument is not the developer's yes", func(t *testing.T) {
+		b := newMCPBroker(t)
+		b.canStart = boolp(true)
+		l := &labeling{}
+		args := map[string]any{"name": "issue_file", "arguments": map[string]any{"repo": "Smana/a", "title": "docs: a dead link", "body": "x", "start": true}}
+		sc := fileWith(t, startSession(t, b, &filing{}, l, time.Second), args, accept(map[string]any{"file": true}))
+		if sc["started"] != false || len(l.calls) != 0 {
+			t.Fatalf("%v %v", sc, l.calls)
+		}
+	})
+}
+
+func TestGHCallsTimeOut(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := ghTimeout
+	ghTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { ghTimeout = old })
+	start := time.Now()
+	if err := GHLabel(t.Context(), "Smana/a", 7, "factory/ready"); err == nil {
+		t.Fatal("label")
+	}
+	if _, err := GH(t.Context(), "Smana/a", "t", "b"); err == nil {
+		t.Fatal("file")
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("gh was not cut off")
 	}
 }
