@@ -263,7 +263,7 @@ func TestOriginOfAStartedIssue(t *testing.T) {
 // still asks for: the retry reuses it, and files no second one.
 func TestPublishReusesTheIssueAnEarlierAttemptFiled(t *testing.T) {
 	p, f, c := publishing(t, proposalOK, investigated("3buqdlot"), "Smana")
-	f.SetIssue(forge.Issue{Number: 88, Title: "docs(alerts): x", Labels: []string{"factory/published-from:3buqdlot"}})
+	f.SetIssue(forge.Issue{Number: 88, Title: "docs(alerts): x", Author: "ogenki-agent-factory[bot]", Labels: []string{"factory/published-from:3buqdlot"}})
 	f.SetIssue(forge.Issue{Number: 89, Title: "another task's", Labels: []string{"factory/published-from:other000"}})
 	if err := p.Poll(t.Context()); err != nil {
 		t.Fatal(err)
@@ -298,5 +298,19 @@ func TestPublishWithoutARedactorRefuses(t *testing.T) {
 	}
 	if cs := strings.Join(f.Comments(7), "\n"); len(f.Created()) != 0 || !strings.Contains(cs, "looks like a secret") {
 		t.Fatalf("%v %q", f.Created(), cs)
+	}
+}
+
+// A marker label anyone can apply by hand is no record: only an issue the factory's own App filed
+// is reused, so nobody can point a publish at an issue of their choosing.
+func TestPublishIgnoresAMarkerFiledBySomeoneElse(t *testing.T) {
+	p, f, c := publishing(t, proposalOK, investigated("3buqdlot"), "Smana")
+	f.SetIssue(forge.Issue{Number: 88, Title: "x", Author: "mallory", Labels: []string{"factory/published-from:3buqdlot"}})
+	if err := p.Poll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	tk := getTask(t, c, "3buqdlot")
+	if len(f.Created()) != 1 || tk.Status.Published == nil || tk.Status.Published.Issue == 88 {
+		t.Fatalf("%d filed, %+v", len(f.Created()), tk.Status.Published)
 	}
 }

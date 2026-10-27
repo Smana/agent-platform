@@ -99,6 +99,9 @@ func (p *IssuePoller) publishOne(ctx context.Context, n int) error {
 	}
 	filed := forge.Issue{}
 	for _, i := range found {
+		if !forge.SameLogin(i.Author, p.Cfg.FactoryLogin) {
+			continue // a label anyone can apply is no record: only the factory's own issue counts
+		}
 		if filed.Number == 0 || i.Number < filed.Number {
 			filed = i
 		}
