@@ -149,6 +149,7 @@ type Set struct {
 
 	spendMu sync.Mutex
 	spend   map[string]map[string]float64 // the meter's last live spend, run then model
+	settled map[string]float64            // the meter's last ledger totals, by run
 	live    []runs.Run                    // the meter's last charge info: the runs live or ended within endSettle
 
 	// repos is the config's repository list, the repository label's only values (v2 D10).
@@ -400,6 +401,7 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	}, sponsorInfo)
 	check(err)
 	check(s.registerSpend(meter))
+	check(s.registerSettled(meter))
 	check(s.registerCharges(meter))
 	if tasks != nil {
 		check(registerCollected(meter, tasks, ns, leader, s.repository, s.taskPayer))
@@ -636,6 +638,36 @@ func (s *Set) registerSpend(meter metric.Meter) error {
 			}
 			for model, v := range bounded {
 				o.ObserveFloat64(g, v, metric.WithAttributes(attribute.String("run", run), attribute.String("model", model)))
+			}
+		}
+		return nil
+	}, g)
+	return err
+}
+
+// RunSettled replaces the settled gauge's values: the run meter's OnSettled, each tick.
+func (s *Set) RunSettled(settled map[string]float64) {
+	s.spendMu.Lock()
+	defer s.spendMu.Unlock()
+	s.settled = settled
+}
+
+// registerSettled exposes agent_factory_run_settled_usd{run}: the sum of the run's settled
+// entries in the day ledgers, as the objects the meter read and wrote show it. Only the leader
+// meters, so only its gauge has values; a run leaves it an hour after it ends. Every id is a C2
+// id, or the run is left out.
+func (s *Set) registerSettled(meter metric.Meter) error {
+	g, err := meter.Float64ObservableGauge("agent_factory_run_settled_usd",
+		metric.WithDescription("A run's USD as the day ledgers settled it: the sum of its settled entries, never the meter's own account. Kept an hour after the run ends."))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s.spendMu.Lock()
+		defer s.spendMu.Unlock()
+		for run, v := range s.settled {
+			if runRE.MatchString(run) {
+				o.ObserveFloat64(g, v, metric.WithAttributes(attribute.String("run", run)))
 			}
 		}
 		return nil
