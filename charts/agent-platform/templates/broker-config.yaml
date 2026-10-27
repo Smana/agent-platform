@@ -43,3 +43,7 @@ data:
     human:
       {{- toYaml (omit $b.human "mode") | nindent 6 }}
     {{- end }}
+    {{- with $b.roomTools }}
+    roomTools:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}

@@ -38,10 +38,36 @@ type IssuerConfig struct {
 	Issuer     string `json:"issuer"`
 	JWKSURL    string `json:"jwksURL"`
 	SubPattern string `json:"subPattern,omitempty"`
-	// Mode, for a run issuer only: "" or "jwks" verify against JWKSURL; "tokenreview" asks the
-	// apiserver, for a cluster whose issuer is not reachable (kind).
+	// Mode names how the issuer's tokens are verified: "" or "jwks" against JWKSURL; "tokenreview"
+	// asks the apiserver, for a cluster whose issuer is not reachable (kind, adoption 3b).
 	Mode string `json:"mode,omitempty"`
 }
+
+// How a token issuer is verified. An empty mode is JWKS: the bytes a deployed broker already
+// carries need no edit.
+const (
+	// IssuerModeJWKS verifies a token offline against the issuer's JWKS.
+	IssuerModeJWKS = "jwks"
+	// IssuerModeTokenReview asks the apiserver, so no issuer URL has to be reachable from the pod.
+	IssuerModeTokenReview = "tokenreview"
+)
+
+// EffectiveMode is the mode this issuer serves: JWKS unless another is set.
+func (is IssuerConfig) EffectiveMode() string {
+	if is.Mode == "" {
+		return IssuerModeJWKS
+	}
+	return is.Mode
+}
+
+// The human listener's modes. An empty mode is OIDC: the bytes a deployed broker already carries
+// need no edit, and a local one is explicit (adoption 3b).
+const (
+	// HumanModeOIDC is the ZITADEL-backed default: oauth2-proxy in front, a token per member.
+	HumanModeOIDC = "oidc"
+	// HumanModeLocal is one loopback user behind a port-forward, for an install with no IdP.
+	HumanModeLocal = "local"
+)
 
 // HumanConfig is the viewers' identity provider (phase 2). The client and project
 // ids are read from mounted files at use, never literals (Ruling AS-a): the IdP
@@ -65,6 +91,25 @@ type HumanConfig struct {
 	MCP MCPConfig `json:"mcp,omitzero"`
 }
 
+// EffectiveMode is the mode the broker serves: an empty mode is the OIDC deployment every existing
+// config carries, so nothing has to be added to it.
+func (h HumanConfig) EffectiveMode() string {
+	if h.Mode == "" {
+		return HumanModeOIDC
+	}
+	return h.Mode
+}
+
+// EffectiveGroups is the two group names the listener admits and the policy matrix reads. Local
+// mode has one human and no IdP to name a group, so it takes the two fixed names; every other mode
+// keeps the configured ones.
+func (h HumanConfig) EffectiveGroups() GroupsConfig {
+	if h.EffectiveMode() == HumanModeLocal {
+		return localGroups
+	}
+	return h.Groups
+}
+
 // MCPConfig switches the human listener's MCP server.
 type MCPConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
@@ -74,6 +119,24 @@ type MCPConfig struct {
 	// SessionStart lists the repositories ("owner/name") whose issue_draft says canStart: the
 	// handoff prompt may start the factory there for a caller who writes to them. Empty, none does.
 	SessionStart []string `json:"sessionStart,omitempty"`
+}
+
+// RoomToolsConfig switches the agents' :8090 room tools listener (I8). It sits at the top level, apart
+// from human.mcp: the two MCP servers are different trust domains on different ports.
+type RoomToolsConfig struct {
+	// Enabled unset means on, today's :8090 listener: every deployed config keeps working with no
+	// edit. An explicit false binds no port at all — not even one to close again — and starts no
+	// server, so a broker with no room-tool client stays clean.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// RoomToolsEnabled is the listener's switch: absent block or nil enabled means true, as every
+// existing deployment expects.
+func (c Config) RoomToolsEnabled() bool {
+	if c.RoomTools == nil || c.RoomTools.Enabled == nil {
+		return true
+	}
+	return *c.RoomTools.Enabled
 }
 
 // SponsoredConfig is one sponsored principal the broker admits on /mcp.
@@ -132,14 +195,18 @@ type TLSConfig struct {
 
 // Config is the broker's configuration.
 type Config struct {
-	PublicURL        string            `json:"publicURL"`
-	RunIssuers       []IssuerConfig    `json:"runIssuers"`
-	SystemIssuer     IssuerConfig      `json:"systemIssuer"`
+	PublicURL  string         `json:"publicURL"`
+	RunIssuers []IssuerConfig `json:"runIssuers"`
+	// SystemIssuer is optional: only the factory calls the system routes, and without it they
+	// answer 401. systemPrincipals without it is refused: no principal could ever be vouched for.
+	SystemIssuer     *IssuerConfig     `json:"systemIssuer,omitempty"`
 	SystemPrincipals map[string]string `json:"systemPrincipals"` // token sub -> system:<component>
 	Human            HumanConfig       `json:"human"`
-	FactoryURL       string            `json:"factoryURL,omitempty"`
-	TLS              TLSConfig         `json:"tls"`
-	Suspend          SuspendConfig     `json:"suspend,omitzero"`
+	// RoomTools is the agents' :8090 listener (I8). Absent, it starts; explicit false is the opt-out.
+	RoomTools  *RoomToolsConfig `json:"roomTools,omitempty"`
+	FactoryURL string           `json:"factoryURL,omitempty"`
+	TLS        TLSConfig        `json:"tls"`
+	Suspend    SuspendConfig    `json:"suspend,omitzero"`
 	// Runs is where AgentRuns live (adoption 3a): cloud-native-ref's XR when omitted.
 	Runs runwatch.Kind `json:"runs,omitzero"`
 	// Webhooks are the subscribers to room events (factory interfaces F6).
@@ -258,6 +325,24 @@ var localGroups = GroupsConfig{Admin: "admin", Member: "member"}
 
 // ApplyDefaults fills what the file may leave out.
 func (c *Config) ApplyDefaults() {
+	// The mode a deployed broker already serves, spelled out so every reader can compare modes
+	// without special-casing the empty string.
+	for i := range c.RunIssuers {
+		if c.RunIssuers[i].Mode == "" {
+			c.RunIssuers[i].Mode = IssuerModeJWKS
+		}
+	}
+	// An all-empty block is the absent one a file may spell out: it was the zero value before
+	// systemIssuer became optional, so it must not start failing a deployed broker's rollout.
+	if c.SystemIssuer != nil && *c.SystemIssuer == (IssuerConfig{}) {
+		c.SystemIssuer = nil
+	}
+	if c.SystemIssuer != nil && c.SystemIssuer.Mode == "" {
+		c.SystemIssuer.Mode = IssuerModeJWKS
+	}
+	if c.Human.Mode == "" {
+		c.Human.Mode = HumanModeOIDC
+	}
 	if c.TLS.CertFile == "" {
 		c.TLS.CertFile = DefaultCertFile
 	}
@@ -271,9 +356,13 @@ func (c *Config) ApplyDefaults() {
 	if a := c.Human.Access; a != nil && a.TTL.Duration == 0 {
 		a.TTL.Duration = MaxAccessTTL
 	}
-	if c.Human.Mode == "local" {
+	if c.Human.EffectiveMode() == HumanModeLocal {
 		// Validate refuses any other value: the Origin check is the only gate, so it accepts
-		// publicURL and nothing else.
+		// publicURL and nothing else. A bare `human: {mode: local}` is the port-forward on the
+		// pod's :8080, which is what kubectl forwards.
+		if c.PublicURL == "" {
+			c.PublicURL = "http://localhost:8080"
+		}
 		if c.Human.Groups == (GroupsConfig{}) {
 			c.Human.Groups = localGroups
 		}
@@ -291,16 +380,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("runIssuers: at least one is required"))
 	}
 	for i, is := range c.RunIssuers {
-		switch is.Mode {
-		case "", "jwks":
-			errs = append(errs, issuer(fmt.Sprintf("runIssuers[%d]", i), is)...)
-		case "tokenreview":
-			if is.Issuer != "" || is.JWKSURL != "" {
-				errs = append(errs, fmt.Errorf("runIssuers[%d]: mode tokenreview takes no issuer or jwksURL: the apiserver is the issuer", i))
-			}
-		default:
-			errs = append(errs, fmt.Errorf("runIssuers[%d]: mode %q is not jwks or tokenreview", i, is.Mode))
-		}
+		errs = append(errs, issuer(fmt.Sprintf("runIssuers[%d]", i), is, true)...)
 		re, err := regexp.Compile(is.SubPattern)
 		if err != nil || re.NumSubexp() != 1 {
 			errs = append(errs, fmt.Errorf("runIssuers[%d] %s: subPattern must compile with one capture group (the runId)", i, is.Issuer))
@@ -312,8 +392,10 @@ func (c *Config) Validate() error {
 		errs = append(errs, c.runIssuerMatchesKind()...)
 	}
 	// Only the factory calls with a system token: a broker without one has no systemIssuer.
-	if c.SystemIssuer != (IssuerConfig{}) {
-		errs = append(errs, issuer("systemIssuer", c.SystemIssuer)...)
+	if c.SystemIssuer != nil {
+		errs = append(errs, issuer("systemIssuer", *c.SystemIssuer, false)...)
+	} else if len(c.SystemPrincipals) > 0 {
+		errs = append(errs, errors.New("systemPrincipals: needs systemIssuer: without it no system caller can be vouched for"))
 	}
 	for sub, id := range c.SystemPrincipals {
 		if !strings.HasPrefix(id, "system:") || id == "system:" {
@@ -324,16 +406,16 @@ func (c *Config) Validate() error {
 	if len(c.Human.MCP.Sponsored) > 0 && c.FactoryURL == "" {
 		errs = append(errs, errors.New("human.mcp.sponsored needs factoryURL: run_create posts to the factory's POST /v1/tasks"))
 	}
-	if c.Human.Mode == "local" {
-		if c.Human.Origin != c.PublicURL || c.Human.Groups != localGroups {
-			errs = append(errs, errors.New("human: mode local takes no origin or groups: the origin is publicURL and the groups are fixed"))
-		}
+	if c.Human.EffectiveMode() == HumanModeLocal {
 		// The one place publicURL may be http: a port-forward carries no TLS. It is exactly what a
 		// browser sends as Origin, which the Origin check compares verbatim.
-		u, err := url.Parse(c.PublicURL)
-		if err != nil || u.Scheme != "http" || u.Scheme+"://"+u.Host != c.PublicURL || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1") || u.Port() == "" {
-			errs = append(errs, fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is exactly http://localhost:<port> (or 127.0.0.1)", c.PublicURL))
+		if c.Human.Origin != c.PublicURL {
+			errs = append(errs, errors.New("human.origin: mode local takes no origin: it is publicURL"))
 		}
+		if c.Human.Groups != localGroups {
+			errs = append(errs, errors.New("human.groups: mode local fixes the groups to admin and member"))
+		}
+		errs = append(errs, loopbackOrigin(c.PublicURL)...)
 	}
 	if a := c.Suspend.After.Duration; a < minSuspendAfter || a > maxSuspendAfter {
 		errs = append(errs, fmt.Errorf("suspend.after: %s must be within [%s, %s]", a, minSuspendAfter, maxSuspendAfter))
@@ -363,10 +445,25 @@ func (c *Config) runIssuerMatchesKind() []error {
 }
 
 func (h HumanConfig) validate(system []string) []error {
-	if h.Mode == "local" {
+	if h.EffectiveMode() == HumanModeLocal {
+		// One field per line, each named: a typo in a local block fails the rollout with the field
+		// that does not belong there, not a sentence listing four.
 		var errs []error
-		if h.Issuer != "" || h.JWKSURL != "" || h.ClientIDFile != "" || h.ProjectIDFile != "" || h.RoomctlClientIDFile != "" || h.Access != nil {
-			errs = append(errs, errors.New("human: mode local takes no issuer, jwksURL, client or project files, or access block"))
+		for _, f := range []struct {
+			name    string
+			refused bool
+			why     string
+		}{
+			{"human.issuer", h.Issuer != "", "the loopback user is not an IdP principal"},
+			{"human.jwksURL", h.JWKSURL != "", "there is no token to verify"},
+			{"human.clientIDFile", h.ClientIDFile != "", "there is no OAuth client"},
+			{"human.roomctlClientIDFile", h.RoomctlClientIDFile != "", "there is no roomctl client"},
+			{"human.projectIDFile", h.ProjectIDFile != "", "no token carries a project audience"},
+			{"human.access", h.Access != nil, "the local user is an admin, and D7 gates members only"},
+		} {
+			if f.refused {
+				errs = append(errs, fmt.Errorf("%s: mode local takes no %s: %s", f.name, strings.TrimPrefix(f.name, "human."), f.why))
+			}
 		}
 		// The MCP server is the OIDC viewers': /mcp takes roomctl's tokens, and its sponsored callers
 		// and sessionStart's GitHub check name principals and repositories local mode does not have.
@@ -381,10 +478,10 @@ func (h HumanConfig) validate(system []string) []error {
 		}
 		return errs
 	}
-	if h.Mode != "" && h.Mode != "oidc" {
+	if h.EffectiveMode() != HumanModeOIDC {
 		return []error{fmt.Errorf("human: mode %q is not oidc or local", h.Mode)}
 	}
-	errs := issuer("human", IssuerConfig{Issuer: h.Issuer, JWKSURL: h.JWKSURL})
+	errs := issuer("human", IssuerConfig{Issuer: h.Issuer, JWKSURL: h.JWKSURL}, false)
 	if h.ClientIDFile == "" {
 		errs = append(errs, errors.New("human.clientIDFile: is required"))
 	}
@@ -456,13 +553,43 @@ func (h HumanConfig) validate(system []string) []error {
 	return errs
 }
 
-func issuer(field string, is IssuerConfig) []error {
-	var errs []error
-	if is.Issuer == "" {
-		errs = append(errs, fmt.Errorf("%s: issuer is required", field))
+// loopbackOrigin checks the one plain-HTTP URL a broker serves: the listener a port-forward reaches.
+// It is canonical (the browser sends exactly this as Origin), carries an explicit port, and names
+// this machine — localhost, or any address the standard library calls loopback.
+func loopbackOrigin(publicURL string) []error {
+	u, err := url.Parse(publicURL)
+	if err == nil && u.Scheme == "http" && u.Scheme+"://"+u.Host == publicURL && u.Port() != "" && u.Hostname() != "" {
+		if host := strings.ToLower(strings.TrimSuffix(u.Hostname(), ".")); host == "localhost" {
+			return nil
+		} else if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
 	}
-	if u, err := url.Parse(is.JWKSURL); err != nil || u.Scheme != "https" || u.Host == "" {
-		errs = append(errs, fmt.Errorf("%s: jwksURL must be an absolute https:// URL", field))
+	return []error{fmt.Errorf("publicURL %q: mode local serves only a port-forward, so publicURL is exactly http://localhost:<port> (or a loopback address)", publicURL)}
+}
+
+// issuer validates one issuer's mode and the fields that mode uses. run is true for a run issuer,
+// the only kind that maps a subject to a run.
+func issuer(field string, is IssuerConfig, run bool) []error {
+	switch is.EffectiveMode() {
+	case IssuerModeTokenReview:
+		var errs []error
+		if is.Issuer != "" || is.JWKSURL != "" {
+			errs = append(errs, fmt.Errorf("%s: mode tokenreview takes no issuer or jwksURL: the apiserver is the issuer", field))
+		}
+		if !run && is.SubPattern != "" {
+			errs = append(errs, fmt.Errorf("%s: mode tokenreview takes no subPattern: only a run issuer maps a subject to a run", field))
+		}
+		return errs
+	case IssuerModeJWKS:
+		var errs []error
+		if is.Issuer == "" {
+			errs = append(errs, fmt.Errorf("%s: issuer is required", field))
+		}
+		if u, err := url.Parse(is.JWKSURL); err != nil || u.Scheme != "https" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("%s: jwksURL must be an absolute https:// URL", field))
+		}
+		return errs
 	}
-	return errs
+	return []error{fmt.Errorf("%s: mode %q is not jwks or tokenreview", field, is.Mode)}
 }

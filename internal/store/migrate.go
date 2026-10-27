@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,47 +22,53 @@ import (
 // containers apply each file once.
 const migrateLock = 0x726f6f6d73 // "rooms"
 
+// ownerRole is the role the migrations run as, and the only one they may: every object they
+// create belongs to it, so the broker's own role can neither alter the schema nor drop an index
+// (SC-10). A DSN for any other role is refused before a single statement runs.
+const ownerRole = "rooms_owner"
+
 // Migrate applies the embedded migrations in order, recording each file's SHA-256. A file whose
 // checksum changed after it was applied, or a recorded version this binary does not ship, is
 // refused: the database is ahead of or different from the code. It returns how many it applied.
 func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
+	files, err := migrations.Files()
+	if err != nil {
+		return 0, fmt.Errorf("migrate: %w", err)
+	}
+	return migrate(ctx, dsn, files, log)
+}
+
+// migrate is Migrate over an explicit file list. Tests inject a truncated catalog, a tampered
+// file or a deliberately broken one through it instead of editing the embedded files.
+func migrate(ctx context.Context, dsn string, files []migrations.File, log *slog.Logger) (int, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return 0, fmt.Errorf("migrate: connect: %w", err)
 	}
 	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	// The role first: nothing below may touch the schema as anyone but its owner.
+	if err := requireOwner(ctx, conn); err != nil {
+		return 0, err
+	}
 	if err := lock(ctx, conn, log); err != nil {
 		return 0, err
 	}
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrateLock) }()
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS room_broker_revisions (
-		version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		return 0, fmt.Errorf("migrate: revisions table: %w", err)
-	}
-	applied := map[string]string{}
-	rows, err := conn.Query(ctx, "SELECT version, checksum FROM room_broker_revisions")
-	if err != nil {
+	// An invalid index of an embedded txmode-none file is the residue of a build that did not
+	// finish, and CREATE INDEX CONCURRENTLY would leave it there while the log grows.
+	if err := refuseInvalidIndexes(ctx, conn, files); err != nil {
 		return 0, err
 	}
-	for rows.Next() {
-		var v, c string
-		if err := rows.Scan(&v, &c); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		applied[v] = c
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	files, err := migrations.Files()
+	applied, err := recorded(ctx, conn)
 	if err != nil {
 		return 0, err
 	}
 	pending, err := validate(files, applied)
 	if err != nil {
 		return 0, err
+	}
+	if _, err := conn.Exec(ctx, createRevisions); err != nil {
+		return 0, fmt.Errorf("migrate: revisions table: %w", err)
 	}
 	n := 0
 	for _, f := range pending {
@@ -71,6 +79,21 @@ func Migrate(ctx context.Context, dsn string, log *slog.Logger) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// requireOwner refuses a connection whose role is not the schema's owner. Every migration would
+// fail on it a statement later, having left whatever the earlier files created behind; and a
+// ledger written by a role that does not own the migrations hides which side is wrong.
+func requireOwner(ctx context.Context, conn *pgx.Conn) error {
+	var user string
+	if err := conn.QueryRow(ctx, "SELECT current_user").Scan(&user); err != nil {
+		return fmt.Errorf("migrate: current_user: %w", err)
+	}
+	if user != ownerRole {
+		return fmt.Errorf("migrate: connected as %q: the migrations run as %s, which owns every table, "+
+			"policy and index they create, so give the migrate DSN %s's credentials", user, ownerRole, ownerRole)
+	}
+	return nil
 }
 
 // lock takes the advisory lock by polling. A blocking pg_advisory_lock would leave the waiter
@@ -112,7 +135,8 @@ func validate(files []migrations.File, applied map[string]string) ([]migrations.
 			continue
 		}
 		if sum := checksum(f.Body); c != sum {
-			return nil, fmt.Errorf("migrate: %s changed after it was applied (recorded %s, now %s)", f.Name, c, sum)
+			return nil, fmt.Errorf("migrate: %s (version %s) changed after it was applied: recorded checksum %s, now %s",
+				f.Name, f.Version, c, sum)
 		}
 	}
 	newest := ""
@@ -133,6 +157,38 @@ func validate(files []migrations.File, applied map[string]string) ([]migrations.
 func checksum(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
+}
+
+const createRevisions = `CREATE TABLE IF NOT EXISTS room_broker_revisions (
+	version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`
+
+// recorded reads the ledger, which a database that was never migrated does not have yet: an
+// absent table is an empty history, never an error.
+func recorded(ctx context.Context, conn *pgx.Conn) (map[string]string, error) {
+	applied := map[string]string{}
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('public.room_broker_revisions') IS NOT NULL").Scan(&exists); err != nil {
+		return nil, fmt.Errorf("migrate: revisions: %w", err)
+	}
+	if !exists {
+		return applied, nil
+	}
+	rows, err := conn.Query(ctx, "SELECT version, checksum FROM room_broker_revisions")
+	if err != nil {
+		return nil, fmt.Errorf("migrate: revisions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v, c string
+		if err := rows.Scan(&v, &c); err != nil {
+			return nil, fmt.Errorf("migrate: revisions: %w", err)
+		}
+		applied[v] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("migrate: revisions: %w", err)
+	}
+	return applied, nil
 }
 
 const recordSQL = "INSERT INTO room_broker_revisions (version, checksum) VALUES ($1, $2)"
@@ -158,7 +214,7 @@ func apply(ctx context.Context, conn *pgx.Conn, f migrations.File) error {
 		}
 		return tx.Commit(ctx)
 	}
-	for _, stmt := range statements(f.Body) {
+	for _, stmt := range splitTxModeNoneStatements(f.Body) {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("%w (a txmode-none file is not resumable: DROP every index this file created, an INVALID one included, then re-run)", err)
 		}
@@ -167,11 +223,11 @@ func apply(ctx context.Context, conn *pgx.Conn, f migrations.File) error {
 	return err
 }
 
-// statements splits a txmode-none migration into its statements, every one of
+// splitTxModeNoneStatements splits a txmode-none migration into its statements, every one of
 // them: a GRANT or a COMMENT skipped here would pass the tests and still run on
 // the cluster. These files hold no function body, so once the comment lines are
 // gone a semicolon ends each statement.
-func statements(sql string) []string {
+func splitTxModeNoneStatements(sql string) []string {
 	var code strings.Builder
 	for line := range strings.Lines(sql) {
 		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
@@ -185,4 +241,82 @@ func statements(sql string) []string {
 		}
 	}
 	return out
+}
+
+// concurrentIndexName is a CREATE INDEX CONCURRENTLY naming its index without a schema: the
+// captured group is the identifier, and a qualified name (public.events_x) captures nothing, so
+// an index another schema or another tool creates is never in the list below.
+var concurrentIndexName = regexp.MustCompile(
+	`(?is)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_$]*)\s*(?:\(|ON\b)`)
+
+// txModeNoneIndexNames is the ownership catalog of the invalid-index preflight: the unqualified
+// index names the embedded txmode-none files create, unique and sorted. It never scans the
+// catalog of a live database, so an index outside it (a third party's, an operator's) is neither
+// read nor refused.
+func txModeNoneIndexNames(files []migrations.File) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	for _, f := range files {
+		if !f.NoTx {
+			continue
+		}
+		for _, stmt := range splitTxModeNoneStatements(f.Body) {
+			m := concurrentIndexName.FindStringSubmatch(stmt)
+			if m == nil {
+				continue
+			}
+			if _, dup := seen[m[1]]; dup {
+				continue
+			}
+			seen[m[1]] = struct{}{}
+			names = append(names, m[1])
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// invalidIndexesSQL reads the invalid indexes of the owned list only: the list is a parameter, so
+// the query cannot see an index the embedded files do not create.
+const invalidIndexesSQL = `SELECT c.relname FROM pg_index i
+	JOIN pg_class c ON c.oid = i.indexrelid
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE n.nspname = 'public' AND NOT i.indisvalid AND c.relname = ANY($1::text[])
+	ORDER BY c.relname`
+
+// refuseInvalidIndexes stops a run whose owned index a half-finished concurrent build left
+// invalid, and names the one statement that recovers each: dropping the invalid index is the
+// operator's, so a rerun rebuilds it from its file and records the revision. It prescribes
+// nothing about an index outside the embedded files.
+func refuseInvalidIndexes(ctx context.Context, conn *pgx.Conn, files []migrations.File) error {
+	owned := txModeNoneIndexNames(files)
+	if len(owned) == 0 {
+		return nil
+	}
+	rows, err := conn.Query(ctx, invalidIndexesSQL, owned)
+	if err != nil {
+		return fmt.Errorf("migrate: invalid indexes: %w", err)
+	}
+	defer rows.Close()
+	var broken []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("migrate: invalid indexes: %w", err)
+		}
+		broken = append(broken, name)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate: invalid indexes: %w", err)
+	}
+	if len(broken) == 0 {
+		return nil
+	}
+	var fixes strings.Builder
+	for _, name := range broken {
+		fixes.WriteString("\n  DROP INDEX CONCURRENTLY public." + name + ";")
+	}
+	return fmt.Errorf("migrate: %s invalid: a CREATE INDEX CONCURRENTLY of an embedded txmode-none migration did not finish. "+
+		"As %s, drop it, then re-run; a file already recorded rebuilds nothing until its revision is deleted too:%s",
+		strings.Join(broken, ", "), ownerRole, fixes.String())
 }

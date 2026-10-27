@@ -31,13 +31,14 @@ spec:
       {{- if $b.database.ownerSecret }}
       initContainers:
         # The schema, applied as the owner role before the broker starts; the broker's own role
-        # cannot alter it.
+        # cannot alter it, so this container takes the owner's Secret and nothing else. Its
+        # variable is deliberately not ROOMS_DATABASE_URL: the two DSNs never share a name.
         - name: migrate
           image: {{ $img }}
           {{- include "ap.pullPolicy" . | nindent 10 }}
           args: [migrate]
           env:
-            - name: ROOMS_DATABASE_URL
+            - name: ROOMS_MIGRATION_DATABASE_URL
               valueFrom:
                 secretKeyRef: {name: {{ $b.database.ownerSecret }}, key: uri}
           securityContext: {{- include "ap.containerSecurityContext" . | nindent 12 }}

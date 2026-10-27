@@ -33,7 +33,10 @@ out="$q"
 check 'namePrefix: run-' 'broker config carries runs.namePrefix'
 check "subPattern: '^system:serviceaccount:agents:run-([a-z2-7]{8})\$'" 'the run issuer pattern is derived from runs'
 ykind ConfigMap 'select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | (.human.mode == "local" and .publicURL == "http://localhost:8080")' 'local mode config'
+ykind ConfigMap 'select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .roomTools.enabled == false' 'the quickstart turns the :8090 room tools off'
 ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.initContainers[0].args | join(",")) == "migrate"' 'migrate init container'
+ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.initContainers[0].env | ((length == 1) and (.[0].name == "ROOMS_MIGRATION_DATABASE_URL") and (.[0].valueFrom.secretKeyRef.name == "rooms-owner-dsn") and (.[0].valueFrom.secretKeyRef.key == "uri")))' 'the migrate init container reads the owner Secret through ROOMS_MIGRATION_DATABASE_URL only'
+ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.containers[0].env | map(select(.name == "ROOMS_DATABASE_URL")) | ((length == 1) and (.[0].valueFrom.secretKeyRef.name == "rooms-broker-dsn")))' 'the broker reads its own Secret through ROOMS_DATABASE_URL'
 ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.containers[0].ports | map(.containerPort) | sort | join(",")) == "8080,8443,9090"' 'broker ports'
 ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.containers[0] | (.livenessProbe.httpGet.path == "/healthz" and .readinessProbe.httpGet.path == "/readyz" and .startupProbe.httpGet.path == "/startupz" and .readinessProbe.httpGet.port == 9090))' 'probes on the ops port'
 ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true' 'restricted securityContext'
@@ -82,10 +85,19 @@ ynone 'select(.kind=="Deployment") | .spec.template.spec.initContainers | select
 check 'xplane-run-' 'the production prefix flows through'
 check 'cloud.ogenki.io' 'the production group flows through'
 ykind Service 'select(.metadata.name=="room-broker") | (.spec.ports | map(.port) | sort | join(",")) == "8080,8443,9090"' 'oidc mode exposes :8080'
+ykind ConfigMap 'select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .roomTools.enabled == true' 'the default keeps the :8090 room tools on, as every existing deployment runs it'
 ykind ConfigMap 'select(.metadata.name=="run-controller-config") | .data."config.yaml" | from_yaml | (.namePrefix == "xplane-run-" and .broker.caSecret == "broker-cert" and .broker.url == "https://room-broker.agent-system.svc.corp.local:8443")' 'controller follows runs, broker.tls.secretName, clusterDomain'
 ykind Role 'select(.metadata.name=="run-controller-ca") | (.rules[0].resourceNames | join(",")) == "broker-cert"' 'the CA Role follows broker.tls.secretName'
 ykind Role 'select(.metadata.name=="run-controller" and .metadata.namespace=="agents") | .rules[0].apiGroups[0] == "cloud.ogenki.io"' 'controller RBAC follows runs.group'
 ykind CiliumNetworkPolicy 'select(.metadata.name=="run-controller") | (.spec.egress[] | select(.toEntities[0]=="kube-apiserver") | (.toPorts[0].ports | map(.port) | join(",")) == "6443")' 'controller CNP follows apiServerPorts'
+
+# two DSNs, two roles, one pod: each container reads the Secret meant for it, through the variable
+# its subcommand reads, and the broker never sees the owner's credential
+out="$(helm template ap . -n x -f values-quickstart.yaml "${imgs[@]}" \
+     --set broker.database.ownerSecret=owner-dsn --set broker.database.brokerSecret=broker-dsn)"
+ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.initContainers[0].env | ((length == 1) and (.[0].name == "ROOMS_MIGRATION_DATABASE_URL") and (.[0].valueFrom.secretKeyRef.name == "owner-dsn")))' 'the migrate init container takes broker.database.ownerSecret, under ROOMS_MIGRATION_DATABASE_URL'
+ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.containers[0].env | map(select(.name == "ROOMS_DATABASE_URL")) | ((length == 1) and (.[0].valueFrom.secretKeyRef.name == "broker-dsn")))' 'the broker takes broker.database.brokerSecret, never the owner secret'
+ykind Deployment 'select(.metadata.name=="room-broker") | (.spec.template.spec.containers[0].env | map(select(.name == "ROOMS_MIGRATION_DATABASE_URL")) | length == 0)' 'the broker container never sees the migration DSN'
 
 # the runs namespace brought by the user keeps its default-deny
 out="$(helm template ap . -n x -f values-quickstart.yaml --set createRunsNamespace=false "${imgs[@]}")"
@@ -123,6 +135,8 @@ yq 'select(.metadata.name=="room-broker-config") | .data."config.yaml"' - <<<"$p
 yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml"' - <<<"$q" >"$tmp/rc-quickstart.yaml"
 yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml"' - <<<"$p" >"$tmp/rc-production.yaml"
 go run ./tests/loadconfig broker "$tmp/quickstart.yaml" "$tmp/production.yaml" || fail=1
+go run ./tests/loadconfig broker-roomtools-off "$tmp/quickstart.yaml" || fail=1
+go run ./tests/loadconfig broker-roomtools-on "$tmp/production.yaml" || fail=1
 go run ./tests/loadconfig run-controller "$tmp/rc-quickstart.yaml" "$tmp/rc-production.yaml" || fail=1
 
 # a bare tag is refused unless e2e.unpinnedImages

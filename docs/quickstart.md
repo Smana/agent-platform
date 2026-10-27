@@ -77,6 +77,12 @@ real thing; the rest is scaled down.
 | Each role gets a token scoped to what it may do (a reviewer cannot push) | Every role gets the same PAT, readable by the agent: the rules ("push only to your branch", "read-only") are instructions, not enforcement |
 | The room, the bridge, gVisor, default-deny + FQDN egress | **Same** |
 
+Two DSNs, two roles, and the init container is the one that owns the schema: `db.sh` creates
+`rooms-owner-dsn` (`rooms_owner`) and `rooms-broker-dsn` (`rooms_broker`). The chart renders the
+first as the `migrate` init container's `ROOMS_MIGRATION_DATABASE_URL` (`room-broker migrate` creates
+every object as `rooms_owner`); the broker itself reads the second as `ROOMS_DATABASE_URL`, and its
+role holds `SELECT, INSERT` on `events` only, so `serve` cannot alter the schema or delete history.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

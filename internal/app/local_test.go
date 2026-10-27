@@ -5,13 +5,19 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/agent-platform/internal/humanapi"
 	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/agent-platform/internal/policy"
 )
 
 func TestHumanListenAddr(t *testing.T) {
@@ -55,5 +61,32 @@ func TestAuthenticatorsLocal(t *testing.T) {
 	r.Header.Set("Origin", "https://evil.example")
 	if _, err := a.humans.Authenticate(r); !errors.Is(err, authn.ErrForbidden) {
 		t.Fatalf("foreign origin: %v", err)
+	}
+}
+
+// Local mode tells the listener what serves it: the fixed groups, the origin the every-route CSRF
+// gate compares against, and the mode roomctl's discovery reports. OIDC keeps the configured groups
+// and leaves the gate off.
+func TestHumanServerModes(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	m, err := metrics.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := func(cfg config.Config, humans humanapi.Authenticator) *humanapi.Server {
+		return humanServer(cfg, humans, fake.NewClientBuilder().Build(), "agent-system", fakeRoomLog{},
+			fanout.New(fakeRoomLog{}, nil, log), fakeRuns{}, &humanapi.Actor{}, m, log)
+	}
+	local := config.Config{PublicURL: "http://localhost:8080", Human: config.HumanConfig{Mode: config.HumanModeLocal}}
+	s := server(local, authn.NewLocal(local.PublicURL, []string{"admin", "member"}))
+	if s.Groups != (policy.Groups{Admin: "admin", Member: "member"}) || s.Origin != local.PublicURL ||
+		s.HumanMode != config.HumanModeLocal || s.WebClient() != authn.LocalClientID {
+		t.Fatalf("local server: groups %+v origin %q mode %q web %q", s.Groups, s.Origin, s.HumanMode, s.WebClient())
+	}
+	oidc := config.Config{PublicURL: "https://rooms.example", Human: config.HumanConfig{Issuer: humanIssuer,
+		Origin: "https://rooms.example", Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
+	o := server(oidc, authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), oidc.Human.Origin))
+	if o.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || o.Origin != "" || o.HumanMode != config.HumanModeOIDC {
+		t.Fatalf("oidc server: groups %+v origin %q mode %q", o.Groups, o.Origin, o.HumanMode)
 	}
 }

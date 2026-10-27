@@ -60,10 +60,12 @@ type auth struct {
 // human one is lazy: the IdP being down must not fail the rollout, nor :8443
 // with it (FORWARD 2.6); until it answers, humans are refused. One verifier
 // serves each (issuer, JWKS URL): the cluster's issuer usually signs both kinds
-// of machine token, and one cache then refreshes once. tr serves the tokenreview run
-// issuers; it is nil when none is configured. Every distinct verifier,
-// the human one included, is refreshed and gauged (Ruling AQ).
-func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier, tr authn.TokenReviewer) (auth, error) {
+// of machine token, and one cache then refreshes once. reviews supplies the
+// apiserver client a tokenreview issuer asks for, and is called at most once,
+// only when one is configured. Every distinct JWKS verifier, the human one
+// included, is refreshed and gauged (Ruling AQ); a TokenReview verifier is not
+// one, and adds no series of its own.
+func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, build newVerifier, reviews tokenReviewClient) (auth, error) {
 	byKey := map[[2]string]*authn.Verifier{}
 	var all []*authn.Verifier
 	verifier := func(issuer, jwksURL string, lazy bool) (*authn.Verifier, error) {
@@ -78,20 +80,38 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 		all = append(all, v)
 		return v, nil
 	}
+	// The apiserver client is built on the first tokenreview issuer, so a broker that has none
+	// never asks for a kubeconfig.
+	var reviewer authn.TokenReviewer
+	tokenReview := func() (authn.TokenReviewer, error) {
+		if reviewer != nil {
+			return reviewer, nil
+		}
+		if reviews == nil {
+			return nil, errors.New("a tokenreview issuer needs the in-cluster client")
+		}
+		var err error
+		if reviewer, err = reviews(); err != nil {
+			return nil, err
+		}
+		return reviewer, nil
+	}
+	// machine returns the verifier behind one issuer: its JWKS, or the apiserver's TokenReview.
+	machine := func(is config.IssuerConfig) (authn.RunVerifier, error) {
+		if is.EffectiveMode() == config.IssuerModeTokenReview {
+			tr, err := tokenReview()
+			if err != nil {
+				return nil, err
+			}
+			return authn.NewTokenReview(tr, time.Now), nil
+		}
+		return verifier(is.Issuer, is.JWKSURL, false)
+	}
 	var issuers []authn.RunIssuer
 	for _, is := range cfg.RunIssuers {
-		var v authn.RunVerifier
-		if is.Mode == "tokenreview" {
-			if tr == nil {
-				return auth{}, errors.New("a tokenreview run issuer needs the in-cluster client")
-			}
-			v = authn.NewTokenReview(tr, time.Now)
-		} else {
-			jv, err := verifier(is.Issuer, is.JWKSURL, false)
-			if err != nil {
-				return auth{}, err
-			}
-			v = jv
+		v, err := machine(is)
+		if err != nil {
+			return auth{}, err
 		}
 		// config.Load compiled it with one capture group already.
 		issuers = append(issuers, authn.RunIssuer{Verifier: v, SubPattern: regexp.MustCompile(is.SubPattern)})
@@ -100,15 +120,17 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 	if err != nil {
 		return auth{}, err
 	}
-	var sys *authn.Verifier
-	if cfg.SystemIssuer.Issuer != "" {
-		if sys, err = verifier(cfg.SystemIssuer.Issuer, cfg.SystemIssuer.JWKSURL, false); err != nil {
+	// A nil RunVerifier is the intentional never-authenticating path: an absent system issuer
+	// keeps the system routes at 401, and never stores a typed-nil *authn.Verifier in an interface.
+	var sys authn.RunVerifier
+	if is := cfg.SystemIssuer; is != nil {
+		if sys, err = machine(*is); err != nil {
 			return auth{}, err
 		}
 	}
 	h := cfg.Human
 	var hv *authn.Verifier
-	if h.Mode != "local" { // local mode has no IdP: nothing to verify, nothing to refresh
+	if h.EffectiveMode() != config.HumanModeLocal { // local mode has no IdP: nothing to verify, nothing to refresh
 		var err error
 		if hv, err = verifier(h.Issuer, h.JWKSURL, true); err != nil {
 			return auth{}, err
@@ -127,8 +149,9 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 		return auth{}, err
 	}
 	var humans humanapi.Authenticator
-	if h.Mode == "local" {
-		humans = authn.NewLocal(h.Origin, []string{h.Groups.Admin, h.Groups.Member})
+	if h.EffectiveMode() == config.HumanModeLocal {
+		groups := h.EffectiveGroups()
+		humans = authn.NewLocal(h.Origin, []string{groups.Admin, groups.Member})
 	} else {
 		humans = authn.NewHumans(hv, idFile(h.ProjectIDFile), idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile), h.Origin)
 	}

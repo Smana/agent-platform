@@ -658,3 +658,29 @@ func TestLoginInvalidClientNamesConfigureFrom(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// A local install's config names the broker on this machine and nothing else; the OIDC path it
+// replaces is unchanged, and an unknown mode is refused rather than guessed.
+func TestConfigValidateLocal(t *testing.T) {
+	for _, u := range []string{"http://localhost:18080", "http://127.0.0.1:8080", "http://[::1]:8080"} {
+		if err := (Config{URL: u, HumanMode: HumanModeLocal}).Validate(); err != nil {
+			t.Errorf("local %s: %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://rooms.example", "http://10.0.0.5:8080", "http://0.0.0.0:8080"} {
+		if err := (Config{URL: u, HumanMode: HumanModeLocal}).Validate(); err == nil {
+			t.Errorf("local %s: accepted a broker on another machine", u)
+		}
+	}
+	// A TLS proxy in front of the loopback listener is still a local broker.
+	if err := (Config{URL: "https://rooms.example", HumanMode: HumanModeLocal}).Validate(); err != nil {
+		t.Errorf("local behind TLS: %v", err)
+	}
+	if err := (Config{URL: "http://localhost:8080", HumanMode: "bogus"}).Validate(); err == nil {
+		t.Error("an unknown humanMode: accepted")
+	}
+	// Discovery may leave the mode out (an older broker): that is the OIDC path, unchanged.
+	if err := (Config{URL: "http://localhost:8080"}).Validate(); err == nil {
+		t.Error("no mode on plain http: accepted, though only a local broker is reached that way")
+	}
+}

@@ -49,7 +49,7 @@ func TestAuthenticators(t *testing.T) {
 	writeID(t, projectFile, "project-1")
 	cfg := config.Config{
 		RunIssuers:   []config.IssuerConfig{{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys", SubPattern: `^run-(\w+)$`}},
-		SystemIssuer: config.IssuerConfig{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys"},
+		SystemIssuer: &config.IssuerConfig{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys"},
 		Human: config.HumanConfig{Issuer: humanIssuer, JWKSURL: humanIssuer + "/oauth/v2/keys",
 			ClientIDFile: clientFile, ProjectIDFile: projectFile, Origin: "https://rooms.example.test"},
 	}
@@ -109,7 +109,7 @@ func TestAuthenticators(t *testing.T) {
 func TestAuthenticatorsFailsOnlyOnAMachineIssuer(t *testing.T) {
 	cfg := config.Config{
 		RunIssuers:   []config.IssuerConfig{{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys", SubPattern: `^run-(\w+)$`}},
-		SystemIssuer: config.IssuerConfig{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys"},
+		SystemIssuer: &config.IssuerConfig{Issuer: clusterIssuer, JWKSURL: clusterIssuer + "/keys"},
 		Human:        config.HumanConfig{Issuer: humanIssuer, JWKSURL: humanIssuer + "/oauth/v2/keys"},
 	}
 	down := errors.New("jwks unreachable")
@@ -161,7 +161,7 @@ func (noReviewer) Create(context.Context, *authv1.TokenReview, metav1.CreateOpti
 
 func TestAuthenticatorsTokenReviewIssuer(t *testing.T) {
 	cfg := config.Config{
-		RunIssuers: []config.IssuerConfig{{Mode: "tokenreview", SubPattern: `^system:serviceaccount:agents:run-([a-z2-7]{8})$`}},
+		RunIssuers: []config.IssuerConfig{{Mode: config.IssuerModeTokenReview, SubPattern: `^system:serviceaccount:agents:run-([a-z2-7]{8})$`}},
 		Human:      config.HumanConfig{Issuer: humanIssuer, JWKSURL: humanIssuer + "/oauth/v2/keys"},
 	}
 	m, err := metrics.New(nil)
@@ -176,7 +176,7 @@ func TestAuthenticatorsTokenReviewIssuer(t *testing.T) {
 	if _, err := authenticators(t.Context(), cfg, m, build, nil); err == nil {
 		t.Fatal("a tokenreview issuer without a client must be refused")
 	}
-	a, err := authenticators(t.Context(), cfg, m, build, noReviewer{})
+	a, err := authenticators(t.Context(), cfg, m, build, func() (authn.TokenReviewer, error) { return noReviewer{}, nil })
 	if err != nil || a.runs == nil {
 		t.Fatalf("authenticators: %v", err)
 	}

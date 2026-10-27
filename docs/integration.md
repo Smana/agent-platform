@@ -129,6 +129,7 @@ fetch at start fails the rollout too; the `human` issuer does not: until it answ
 |---|---|
 | `ROOMS_CONFIG` | Path of the config file |
 | `ROOMS_DATABASE_URL` | The `uri` of `xplane-rooms-cnpg-role-rooms-broker` (the retention job: `…-rooms-retention`) |
+| `ROOMS_MIGRATION_DATABASE_URL` | `migrate` only: the `uri` of `xplane-rooms-cnpg-role-rooms-owner`. The migrations run as that role and refuse any other, so the broker's own DSN never reaches them |
 | `POD_NAMESPACE` | Where Rooms and the leader lease live |
 | `LOG_FORMAT`, `LOG_LEVEL` | `json`, `info` (defaults); `text` and `debug` locally |
 | `ROOMS_MCP_KEY` | The key the MCPRoute injects. Unset: `:8090` refuses every call |

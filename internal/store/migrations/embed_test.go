@@ -3,11 +3,24 @@
 package migrations
 
 import (
+	"io/fs"
 	"slices"
 	"testing"
 )
 
-func TestFiles(t *testing.T) {
+// The catalog room-broker migrate ships: nine SQL files, sorted, five of them txmode none, and
+// nothing else embedded. atlas.sum is Atlas's and kustomization.yaml feeds the operator; neither
+// is read at run time, and this test stays Docker-free on purpose, so it runs everywhere.
+func TestEmbeddedMigrationCatalog(t *testing.T) {
+	entries, err := fs.Glob(FS, "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range entries {
+		if name == "atlas.sum" || name == "kustomization.yaml" {
+			t.Fatalf("%s is embedded: migrate applies SQL files only", name)
+		}
+	}
 	files, err := Files()
 	if err != nil {
 		t.Fatal(err)
@@ -28,8 +41,8 @@ func TestFiles(t *testing.T) {
 	if !slices.Equal(names, wantNames) {
 		t.Fatalf("files = %q, want %q", names, wantNames)
 	}
-	if !slices.IsSorted(versions) || versions[0] != "20260927120000" {
-		t.Fatalf("versions = %q", versions)
+	if !slices.IsSorted(versions) || versions[0] != "20260927120000" || versions[len(versions)-1] != "20261023120000" {
+		t.Fatalf("versions = %q, want sorted 20260927120000 through 20261023120000", versions)
 	}
 	// The txmode-none files are the ones with CREATE INDEX CONCURRENTLY; a change here changes how
 	// they are applied.

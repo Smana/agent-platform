@@ -3,15 +3,25 @@
 package app
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+
 	"github.com/Smana/agent-platform/internal/roomctl"
+	"github.com/Smana/agent-platform/internal/wire"
 )
 
 // #48: `configure --url` alone reads the rest from the broker, so configure and login are the
@@ -218,5 +228,227 @@ func TestRoomctlSetupOpenCodeRestartsTheServiceOnTheFlag(t *testing.T) {
 		if got != wantRestart || !strings.Contains(out.String(), "background service") {
 			t.Errorf("flag %v: restarted %v\n%s", flagOn, got, out)
 		}
+	}
+}
+
+// localBroker is a local-mode broker on loopback, over plain HTTP: the listener a port-forward
+// reaches. It records every Authorization, so a test proves roomctl sends none.
+type localBroker struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	auth []string
+}
+
+func newLocalBroker(t *testing.T) *localBroker {
+	t.Helper()
+	b := &localBroker{}
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		b.auth = append(b.auth, r.Header.Get("Authorization"))
+		b.mu.Unlock()
+		switch r.URL.Path {
+		case "/.well-known/roomctl":
+			_, _ = w.Write([]byte(`{"url":"` + b.srv.URL + `","humanMode":"local"}`))
+		case "/api/rooms":
+			_, _ = w.Write([]byte(`[{"id":"3kq7x2ma","repository":"Smana/a","phase":"Active","owner":"human:local","lastSeq":42,"you":{"role":"admin"}}]`))
+		case "/mcp":
+			var m struct {
+				ID json.RawMessage `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&m)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{}}`))
+		default:
+			c, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = c.CloseNow() }()
+			var hello wire.ClientFrame
+			if wsjson.Read(r.Context(), c, &hello) != nil {
+				return
+			}
+			for {
+				var f wire.ClientFrame
+				if wsjson.Read(r.Context(), c, &f) != nil {
+					return
+				}
+				if wsjson.Write(r.Context(), c, wire.ServerFrame{Type: wire.FrameAck, ClientSeq: f.ClientSeq, Seq: 43}) != nil {
+					return
+				}
+			}
+		}
+	}))
+	t.Cleanup(b.srv.Close)
+	return b
+}
+
+// configuredLocal is a roomctl directory configured for b, with no token file: a local broker needs
+// none.
+func configuredLocal(t *testing.T, b *localBroker) (roomctlApp Roomctl, out *strings.Builder) {
+	t.Helper()
+	out = &strings.Builder{}
+	r := Roomctl{Dir: t.TempDir(), HC: b.srv.Client(), Stream: b.srv.Client(), Out: out, Err: &strings.Builder{},
+		Home: t.TempDir(), Cwd: t.TempDir()} // a home with no installed skill: doctor's skill check skips
+	if err := r.Run(t.Context(), []string{"configure", "--url", b.srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	return r, out
+}
+
+// countingTransport answers every request and counts them: a refusal that must happen before any
+// request shows a count of zero.
+type countingTransport struct {
+	n      int
+	answer string
+}
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.n++
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{},
+		Body: io.NopCloser(strings.NewReader(c.answer))}, nil
+}
+
+// The URL alone configures a local install: the loopback broker serves humanMode local and no IdP
+// values, and roomctl refuses any plain-HTTP host that is not this machine before asking it.
+func TestRoomctlConfigureLocal(t *testing.T) {
+	b := newLocalBroker(t)
+	dir := t.TempDir()
+	r := Roomctl{Dir: dir, HC: b.srv.Client(), Stream: b.srv.Client(), Out: &strings.Builder{}, Err: &strings.Builder{}}
+	if err := r.Run(t.Context(), []string{"configure", "--url", b.srv.URL + "/"}); err != nil {
+		t.Fatal(err)
+	}
+	var cfg roomctl.Config
+	if err := roomctl.LoadJSON(filepath.Join(dir, "config.json"), &cfg); err != nil ||
+		cfg != (roomctl.Config{URL: b.srv.URL, HumanMode: roomctl.HumanModeLocal}) {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+
+	// The same loopback answer, reporting OIDC: the plain-HTTP listener is local mode's alone.
+	oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"humanMode":"oidc","issuer":"https://auth.example","clientID":"c","projectID":"p"}`))
+	}))
+	t.Cleanup(oidc.Close)
+	if err := r.Run(t.Context(), []string{"configure", "--url", oidc.URL}); err == nil || !strings.Contains(err.Error(), "humanMode") {
+		t.Fatalf("a plain-http broker that is not local: %v", err)
+	}
+
+	// Not this machine: refused before any request, though the fake would say humanMode local.
+	count := &countingTransport{answer: `{"humanMode":"local"}`}
+	plain := Roomctl{Dir: t.TempDir(), HC: &http.Client{Transport: count}, Out: &strings.Builder{}, Err: &strings.Builder{}}
+	if err := plain.Run(t.Context(), []string{"configure", "--url", "http://rooms.example"}); err == nil {
+		t.Fatal("a plain-http broker on another host must be refused")
+	}
+	if count.n != 0 {
+		t.Fatalf("%d requests reached http://rooms.example", count.n)
+	}
+
+	// HTTPS discovery is unchanged: the three values come from the broker, and no mode is assumed.
+	tls := newRoomctlBroker(t)
+	httpsDir := t.TempDir()
+	hr := Roomctl{Dir: httpsDir, HC: tls.srv.Client(), Out: &strings.Builder{}, Err: &strings.Builder{}}
+	if err := hr.Run(t.Context(), []string{"configure", "--url", tls.srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	var got roomctl.Config
+	if err := roomctl.LoadJSON(filepath.Join(httpsDir, "config.json"), &got); err != nil ||
+		got != (roomctl.Config{URL: tls.srv.URL, Issuer: "https://auth.example", ClientID: "cli", ProjectID: "29184"}) {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// A local broker has no IdP and no token: login and token say so, and no request roomctl makes to it
+// carries an Authorization header.
+func TestRoomctlLocalCommands(t *testing.T) {
+	b := newLocalBroker(t)
+	r, out := configuredLocal(t, b)
+	if err := r.Run(t.Context(), []string{"login"}); err != nil || !strings.Contains(out.String(), "local broker; no login needed") {
+		t.Fatalf("login: %q %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(r.Dir, "token.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("login wrote a token file: %v", err)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"token"}); err != nil || out.String() != "local broker: no token required\n" {
+		t.Fatalf("token: %q %v", out, err)
+	}
+	out.Reset()
+	if err := r.Run(t.Context(), []string{"rooms", "--format", "text"}); err != nil || !strings.Contains(out.String(), "3kq7x2ma") {
+		t.Fatalf("rooms: %q %v", out, err)
+	}
+	if err := r.Run(t.Context(), []string{"post", "3kq7x2ma", "hello"}); err != nil || !strings.Contains(out.String(), "seq 43") {
+		t.Fatalf("post over the WebSocket: %q %v", out, err)
+	}
+	// MCP: the relay's requests carry no Authorization either.
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	mcp := r
+	mcp.In, mcp.Out = inR, outW
+	done := make(chan error, 1)
+	go func() { done <- mcp.Run(t.Context(), []string{"mcp"}) }()
+	if _, err := inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(outR).ReadString('\n')
+	if err != nil || line != `{"id":1,"jsonrpc":"2.0","result":{}}`+"\n" {
+		t.Fatalf("mcp: %q %v", line, err)
+	}
+	_ = inW.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, a := range b.auth {
+		if a != "" {
+			t.Fatalf("request %d carried %q: a local broker takes no token", i, a)
+		}
+	}
+	if len(b.auth) < 4 {
+		t.Fatalf("only %d requests reached the broker: %v", len(b.auth), b.auth)
+	}
+}
+
+// Doctor on a local install: no token file and no IdP, the loopback discovery answers, and the room
+// list is read without an Authorization header.
+func TestDoctorLocal(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/rooms" {
+			auth = r.Header.Get("Authorization")
+		}
+		mu.Unlock()
+		if r.URL.Path == "/api/rooms" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"humanMode":"local"}`))
+	}))
+	t.Cleanup(srv.Close)
+	tokPath := filepath.Join(t.TempDir(), "token.json")
+	var out strings.Builder
+	d := roomctl.Doctor{Config: roomctl.Config{URL: srv.URL, HumanMode: roomctl.HumanModeLocal}, HC: srv.Client(),
+		TokenPath: tokPath, SkillDirs: nil, Version: "dev",
+		Lookup: func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }}
+	if err := d.Run(t.Context(), &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ok   login: local broker") || !strings.Contains(out.String(), "ok   dns") {
+		t.Fatalf("%s", out.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if auth != "" {
+		t.Fatalf("the room list carried %q", auth)
+	}
+	if slices.Contains(paths, "/oauth/v2/token") {
+		t.Fatalf("doctor called an IdP: %v", paths)
+	}
+	if _, err := os.Stat(tokPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("doctor wrote a token file: %v", err)
 	}
 }

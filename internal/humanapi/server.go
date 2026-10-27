@@ -98,6 +98,15 @@ type Server struct {
 
 	Humans Authenticator
 	Groups policy.Groups
+	// HumanMode is the human listener's mode ("oidc", "local"), which roomctl's discovery reports so
+	// `configure --url` knows whether an IdP and a token are needed. Empty reads as OIDC: the
+	// deployment every broker before local mode carried.
+	HumanMode string
+	// Origin is the one origin requests may come from, set in local mode alone: there is no token
+	// there, so an every-route check on Origin is the only CSRF gate, and it covers the public and
+	// static routes too. Empty installs no such gate; an OIDC install relies on its authenticator's
+	// own Origin check, which every authenticated route calls.
+	Origin string
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
 	// through it is the web UI, which may steer and decide (ruling P18).
 	WebClient func() string
@@ -184,7 +193,7 @@ func (s *Server) Routes() http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		})
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response has a write deadline; a hijacked WebSocket's is cleared
 		// by net/http, and each of its frames gets WriteWait instead.
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(routeTimeout))
@@ -192,6 +201,23 @@ func (s *Server) Routes() http.Handler {
 		// A room's page names the room in its path: no link out may carry it.
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		mux.ServeHTTP(w, r)
+	})
+	if s.Origin != "" { // local mode only: see Origin's contract
+		return sameOrigin(s.Origin, h)
+	}
+	return h
+}
+
+// sameOrigin refuses a request another site's page sent, before the route runs: local mode has no
+// token, so nothing else stands between a foreign page and the user's port-forward. A request with
+// no Origin (curl, roomctl, a same-origin GET) passes, and so does the configured origin's own.
+func sameOrigin(origin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" && o != origin {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

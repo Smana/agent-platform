@@ -70,6 +70,40 @@ func TestRunBrokerRefuses(t *testing.T) {
 	}
 }
 
+func TestRunBrokerMigrateEnvironment(t *testing.T) {
+	env := func(kv ...string) func(string) string {
+		m := map[string]string{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return func(k string) string { return m[k] }
+	}
+	for _, c := range []struct {
+		name   string
+		args   []string
+		getenv func(string) string
+		want   string
+	}{
+		// The owner's DSN only: a broker DSN present is not a migration credential.
+		{"migrate without a migration database", []string{"migrate"},
+			env("ROOMS_DATABASE_URL", "postgres://rooms_broker@127.0.0.1:1/rooms"), "ROOMS_MIGRATION_DATABASE_URL is not set"},
+		{"migrate with a database that does not answer", []string{"migrate"},
+			env("ROOMS_MIGRATION_DATABASE_URL", "postgres://rooms_owner@127.0.0.1:1/rooms?connect_timeout=1"),
+			"room-broker migrate:"},
+		{"the unknown-subcommand help lists migrate", []string{"serve-all"}, env(),
+			"serve, retention, migrate"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := RunBroker(ctx, slog.New(slog.DiscardHandler), c.args, c.getenv)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("RunBroker = %v, want an error naming %q", err, c.want)
+			}
+		})
+	}
+}
+
 type fakeAppends struct {
 	ev  envelope.Event
 	dup bool

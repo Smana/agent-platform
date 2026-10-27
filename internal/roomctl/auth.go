@@ -52,8 +52,12 @@ func staleClientHint(err error) string {
 }
 
 // Token returns a valid access token from the token file at path, refreshing
-// and saving it when it has expired.
+// and saving it when it has expired. A local broker takes none: there is no IdP, and the loopback
+// listener authenticates the port-forward itself.
 func Token(ctx context.Context, hc *http.Client, c Config, path string) (string, error) {
+	if c.HumanMode == HumanModeLocal {
+		return "", nil
+	}
 	var tok oauth2.Token
 	if err := LoadJSON(path, &tok); err != nil {
 		return "", fmt.Errorf("not logged in (%w): run roomctl login", err)

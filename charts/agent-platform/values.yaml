@@ -26,6 +26,11 @@ broker:
   human:
     mode: oidc
     # issuer, jwksURL, clientIDFile, projectIDFile, origin, groups, access ... (internal/config)
+  # The agents' room tools listener, :8090 (internal/config's roomTools, I8). On by default, as every
+  # existing deployment runs it; ROOMS_MCP_KEY alone decides whether calls are accepted, so bring it
+  # through extraEnv. Off, the broker binds no :8090 at all.
+  roomTools:
+    enabled: true
   # Who may call :8443 as a run. mode jwks verifies against issuer/jwksURL; tokenreview asks the
   # apiserver (a cluster whose issuer is unreachable, e.g. kind) and binds system:auth-delegator.
   runIssuer:

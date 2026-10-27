@@ -36,11 +36,20 @@ type Local struct {
 // NewLocal accepts requests from origin (or with no Origin, as non-browser clients send), and
 // only with the Host that origin names.
 func NewLocal(origin string, groups []string) *Local {
+	return NewLocalWithClock(origin, groups, time.Now)
+}
+
+// NewLocalWithClock is NewLocal with the clock a session's expiry is measured on: the one-hour life
+// is what humanapi caps a connection at, so a test pins it rather than racing the wall clock.
+func NewLocalWithClock(origin string, groups []string, now func() time.Time) *Local {
+	if now == nil {
+		now = time.Now
+	}
 	var host string
 	if u, err := url.Parse(origin); err == nil {
 		host = u.Host
 	}
-	return &Local{origin: origin, host: host, groups: groups, now: time.Now}
+	return &Local{origin: origin, host: host, groups: groups, now: now}
 }
 
 // Authenticate returns LocalPrincipal, in every group the broker knows.

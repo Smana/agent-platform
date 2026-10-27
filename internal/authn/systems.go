@@ -12,12 +12,14 @@ import (
 // Systems authenticates system:* callers of the :8443 API (SP3's factory). The
 // allowlist maps a ServiceAccount subject to its canonical principal.
 type Systems struct {
-	v     *Verifier
+	v     RunVerifier // nil: no system issuer is configured, and nothing authenticates
 	allow map[string]string
 }
 
-// NewSystems allowlists subjects: allow maps a token's sub to a system:<component> id.
-func NewSystems(v *Verifier, allow map[string]string) *Systems { return &Systems{v: v, allow: allow} }
+// NewSystems allowlists subjects: allow maps a token's sub to a system:<component> id. A nil v is
+// the intentional never-authenticating path, so a broker without a system issuer still answers 401
+// on the system routes rather than 404.
+func NewSystems(v RunVerifier, allow map[string]string) *Systems { return &Systems{v: v, allow: allow} }
 
 // Authenticate maps a system caller's token to its principal. A valid token for
 // an unlisted subject is ErrForbidden, not ErrUnauthenticated.

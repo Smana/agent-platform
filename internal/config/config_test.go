@@ -98,6 +98,43 @@ func TestLoadSuspend(t *testing.T) {
 	}
 }
 
+// I8: the agents' :8090 listener has a top-level block of its own, so it cannot be confused with
+// human.mcp. Absent, it starts as every existing deployment expects, and ROOMS_MCP_KEY alone
+// decides who may call it; an explicit false is the opt-out.
+func TestRoomToolsDefaultAndStrictDecode(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"the existing bytes, no block: today's :8090 listener", valid, true},
+		{"an empty block enables", valid + "roomTools: {}\n", true},
+		{"enabled: false is the opt-out", valid + "roomTools:\n  enabled: false\n", false},
+		{"enabled: true is explicit", valid + "roomTools:\n  enabled: true\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(write(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.RoomToolsEnabled(); got != tc.want {
+				t.Fatalf("roomTools enabled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// Strict decoding reaches the new block too: a typo, or a "boolean" that is a string, fails the
+	// rollout rather than silently starting a listener the operator meant to close.
+	for _, tc := range []struct{ name, body string }{
+		{"a misspelt key", valid + "roomTools:\n  enable: false\n"},
+		{"a string boolean", valid + "roomTools:\n  enabled: \"false\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Load(write(t, tc.body)); err == nil {
+				t.Fatal("want a decode error")
+			}
+		})
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	replace := func(old, repl string) string { return strings.Replace(valid, old, repl, 1) }
 	for _, c := range []struct {
@@ -179,14 +216,120 @@ const systemIssuerBlock = `systemIssuer:
   jwksURL: https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys
 `
 
+const systemPrincipalsBlock = `systemPrincipals:
+  system:serviceaccount:agent-system:agent-factory: system:factory
+`
+
+// Only the factory calls with a system token, and the factory is off in the quickstart: an absent
+// systemIssuer is legal, and the broker still answers 401 on the system routes. Principals without
+// it authenticate nobody, so they are refused by name.
 func TestSystemIssuerOptional(t *testing.T) {
-	body := strings.Replace(valid, systemIssuerBlock, "", 1)
-	if _, err := Load(write(t, body)); err != nil {
-		t.Fatalf("no systemIssuer must load: %v", err)
+	none := strings.Replace(strings.Replace(valid, systemIssuerBlock, "", 1), systemPrincipalsBlock, "", 1)
+	c, err := Load(write(t, none))
+	if err != nil {
+		t.Fatalf("no systemIssuer and no principals must load: %v", err)
+	}
+	if c.SystemIssuer != nil || len(c.SystemPrincipals) != 0 {
+		t.Fatalf("absent stays absent: issuer %+v, principals %v", c.SystemIssuer, c.SystemPrincipals)
+	}
+	null := strings.Replace(none, "human:\n", "systemIssuer: null\nhuman:\n", 1)
+	if c, err := Load(write(t, null)); err != nil || c.SystemIssuer != nil {
+		t.Fatalf("systemIssuer: null must load as absent: %+v, %v", c.SystemIssuer, err)
+	}
+	empty := strings.Replace(none, "human:\n", "systemIssuer: {}\nhuman:\n", 1)
+	if c, err := Load(write(t, empty)); err != nil || c.SystemIssuer != nil {
+		t.Fatalf("an all-empty systemIssuer block is the absent one: %+v, %v", c.SystemIssuer, err)
 	}
 	half := strings.Replace(valid, systemIssuerBlock, "systemIssuer:\n  issuer: https://x\n", 1)
 	if _, err := Load(write(t, half)); err == nil {
 		t.Fatal("an issuer without jwksURL must be refused")
+	}
+	principals := strings.Replace(valid, systemIssuerBlock, "", 1)
+	_, err = Load(write(t, principals))
+	if err == nil || !strings.Contains(err.Error(), "systemPrincipals") || !strings.Contains(err.Error(), "systemIssuer") {
+		t.Fatalf("systemPrincipals without systemIssuer must be refused by name, got %v", err)
+	}
+}
+
+// The existing JWKS bytes keep loading to the same values: the mode is the default spelled out,
+// not a new requirement on a deployed broker's config.
+func TestExistingJWKSConfigUnchanged(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.RunIssuers) != 1 || len(c.SystemPrincipals) != 1 || c.SystemIssuer == nil {
+		t.Fatalf("%+v", c)
+	}
+	run := c.RunIssuers[0]
+	if run.Issuer != "https://oidc.eks.eu-west-3.amazonaws.com/id/X" ||
+		run.JWKSURL != "https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys" ||
+		run.SubPattern != `^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$` {
+		t.Fatalf("runIssuers[0] %+v", run)
+	}
+	sys := c.SystemIssuer
+	if sys.Issuer != "https://oidc.eks.eu-west-3.amazonaws.com/id/X" ||
+		sys.JWKSURL != "https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys" || sys.SubPattern != "" {
+		t.Fatalf("systemIssuer %+v", sys)
+	}
+	if got := c.SystemPrincipals["system:serviceaccount:agent-system:agent-factory"]; got != "system:factory" {
+		t.Fatalf("systemPrincipals %v", c.SystemPrincipals)
+	}
+	if c.Human.Issuer != "https://auth.example.test" || c.Human.EffectiveMode() != HumanModeOIDC {
+		t.Fatalf("human %+v", c.Human)
+	}
+}
+
+// A mode names how the issuer is verified: jwks is the default the existing bytes get, tokenreview
+// asks the apiserver for the fixed audience and carries no issuer URL. The audience is a constant,
+// never a config field. Either mode serves the system issuer too.
+func TestIssuerModesAndDefaults(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.RunIssuers[0].EffectiveMode(); got != IssuerModeJWKS || c.RunIssuers[0].Mode != IssuerModeJWKS {
+		t.Fatalf("a run issuer with no mode is jwks: %q / %q", c.RunIssuers[0].Mode, got)
+	}
+	if c.SystemIssuer == nil || c.SystemIssuer.Mode != IssuerModeJWKS || c.SystemIssuer.EffectiveMode() != IssuerModeJWKS {
+		t.Fatalf("a system issuer with no mode is jwks: %+v", c.SystemIssuer)
+	}
+	explicit := strings.Replace(valid, "    subPattern:", "    mode: jwks\n    subPattern:", 1)
+	if c, err := Load(write(t, explicit)); err != nil || c.RunIssuers[0].Mode != IssuerModeJWKS {
+		t.Fatalf("mode: jwks is the default spelled out: %+v, %v", c.RunIssuers, err)
+	}
+	tr := "runIssuers:\n  - mode: tokenreview\n    subPattern: '^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$'\n"
+	if c, err := Load(write(t, replaceRunIssuers(valid, tr))); err != nil || c.RunIssuers[0].EffectiveMode() != IssuerModeTokenReview {
+		t.Fatalf("a tokenreview run issuer must load: %+v, %v", c.RunIssuers, err)
+	}
+	// The system issuer accepts either mode, and takes only what that mode uses.
+	for name, tc := range map[string]struct {
+		block string
+		want  string // "", or the field the refusal must name
+	}{
+		"tokenreview":                {"systemIssuer:\n  mode: tokenreview\n", ""},
+		"tokenreview with an issuer": {"systemIssuer:\n  mode: tokenreview\n  issuer: https://x\n", "systemIssuer"},
+		"tokenreview with a pattern": {"systemIssuer:\n  mode: tokenreview\n  subPattern: '^x-(\\w+)$'\n", "systemIssuer"},
+		"unknown mode":               {"systemIssuer:\n  mode: oidc\n", "systemIssuer"},
+		"jwks without a jwksURL":     {"systemIssuer:\n  issuer: https://x\n", "systemIssuer"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(write(t, strings.Replace(valid, systemIssuerBlock, tc.block, 1)))
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("%s must load: %v", tc.block, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s: want a %s refusal, got %v", tc.block, tc.want, err)
+			}
+		})
+	}
+	// No audience field: TokenReview's audiences are authn.AudienceRun and authn.AudienceSystem.
+	audience := strings.Replace(valid, "    subPattern:", "    audience: room-broker\n    subPattern:", 1)
+	if _, err := Load(write(t, audience)); err == nil || !strings.Contains(err.Error(), "audience") {
+		t.Fatalf("runIssuers[].audience must be refused as unknown, got %v", err)
 	}
 }
 
@@ -282,4 +425,97 @@ func TestHumanLocalModeRefusesMCP(t *testing.T) {
 	if _, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n")); err != nil {
 		t.Fatalf("oidc mode with /mcp on: %v", err)
 	}
+}
+
+// localBare is local mode and nothing else: no publicURL (the port-forward's origin is the default)
+// and no OIDC field.
+const localBare = `
+runIssuers:
+  - issuer: https://oidc.eks.eu-west-3.amazonaws.com/id/X
+    jwksURL: https://oidc.eks.eu-west-3.amazonaws.com/id/X/keys
+    subPattern: '^system:serviceaccount:agents:xplane-run-([a-z2-7]{8})$'
+human:
+  mode: local
+`
+
+// localAt is localBare with publicURL set.
+func localAt(u string) string { return "publicURL: " + u + "\n" + localBare }
+
+// The bytes every deployed broker already carries need no edit: an empty mode is OIDC, and the
+// defaults those values had before local mode existed are the ones they still get.
+func TestExistingConfigDefaultsUnchanged(t *testing.T) {
+	c, err := Load(write(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Human.Mode != HumanModeOIDC {
+		t.Fatalf("mode %q: an unset mode is oidc", c.Human.Mode)
+	}
+	if c.Human.EffectiveGroups() != c.Human.Groups ||
+		c.Human.EffectiveGroups() != (GroupsConfig{Admin: "agents-admin", Member: "agents-member"}) {
+		t.Fatalf("oidc keeps the configured groups: %+v", c.Human.EffectiveGroups())
+	}
+	if c.PublicURL != "https://rooms.priv.aws.ogenki.io" || c.Human.Origin != "https://rooms.example.test" ||
+		c.Human.Issuer != "https://auth.example.test" || c.Human.ClientIDFile != "/etc/room-broker/oidc/client-id" {
+		t.Fatalf("config: %+v", c)
+	}
+	if c.Human.Access != nil || c.Human.MCP.Enabled || len(c.Human.MCP.Sponsored) != 0 || len(c.Human.MCP.SessionStart) != 0 {
+		t.Fatalf("human switches: %+v", c.Human)
+	}
+	if c.TLS != (TLSConfig{CertFile: DefaultCertFile, KeyFile: DefaultKeyFile}) || c.Suspend != (SuspendConfig{After: Duration{DefaultSuspendAfter}}) {
+		t.Fatalf("defaults: tls %+v suspend %+v", c.TLS, c.Suspend)
+	}
+}
+
+// A local install names only the mode: the listener is the loopback port-forward, so publicURL and
+// origin default to it, the groups are fixed, and every IdP or /mcp field is refused by name.
+func TestLoadLocalHuman(t *testing.T) {
+	t.Run("publicURL and origin default to the port-forward", func(t *testing.T) {
+		c, err := Load(write(t, localBare))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.PublicURL != "http://localhost:8080" || c.Human.Origin != c.PublicURL {
+			t.Fatalf("publicURL %q origin %q", c.PublicURL, c.Human.Origin)
+		}
+		if c.Human.EffectiveGroups() != (GroupsConfig{Admin: "admin", Member: "member"}) || c.Human.Groups != c.Human.EffectiveGroups() {
+			t.Fatalf("local groups: %+v", c.Human.EffectiveGroups())
+		}
+	})
+	t.Run("publicURL", func(t *testing.T) {
+		for _, u := range []string{"http://localhost:18080", "http://127.0.0.1:8080"} {
+			if _, err := Load(write(t, localAt(u))); err != nil {
+				t.Fatalf("%s must be accepted: %v", u, err)
+			}
+		}
+		for _, u := range []string{"https://rooms.example", "http://0.0.0.0:8080", "http://localhost:8080/r/3kq7x2ma"} {
+			if _, err := Load(write(t, localAt(u))); err == nil || !strings.Contains(err.Error(), "publicURL") {
+				t.Fatalf("%s must be refused by name, got %v", u, err)
+			}
+		}
+	})
+	t.Run("every oidc field is refused by name", func(t *testing.T) {
+		for _, tc := range []struct{ name, extra, want string }{
+			{"issuer", "  issuer: https://idp.example\n", "human.issuer"},
+			{"jwksURL", "  jwksURL: https://idp.example/keys\n", "human.jwksURL"},
+			{"clientIDFile", "  clientIDFile: /etc/room-broker/oidc/client-id\n", "human.clientIDFile"},
+			{"roomctlClientIDFile", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n", "human.roomctlClientIDFile"},
+			{"projectIDFile", "  projectIDFile: /etc/room-broker/oidc/project-id\n", "human.projectIDFile"},
+			{"origin", "  origin: http://localhost:18080\n", "human.origin"},
+			{"groups", "  groups:\n    admin: a\n    member: b\n", "human.groups"},
+			{"access", "  access:\n    readerFile: /etc/room-broker/access/reader\n", "human.access"},
+			{"mcp", "  mcp:\n    enabled: true\n", "human.mcp.enabled"},
+			{"sponsored", "  mcp:\n    sponsored:\n      - name: slack-app\n        clientIDFile: /etc/room-broker/sponsored/slack-app\n", "human.mcp.sponsored"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := Load(write(t, localBare+tc.extra)); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want %q, got %v", tc.want, err)
+				}
+			})
+		}
+		if _, err := Load(write(t, strings.Replace(localBare, "mode: local", "mode: bogus", 1))); err == nil ||
+			!strings.Contains(err.Error(), `mode "bogus"`) {
+			t.Fatalf("an unknown mode: %v", err)
+		}
+	})
 }

@@ -116,7 +116,9 @@ func (c Client) header(ctx context.Context) (http.Header, error) {
 		return nil, fmt.Errorf("%w: %w", errToken, err)
 	}
 	h := http.Header{}
-	h.Set("Authorization", "Bearer "+tok)
+	if tok != "" { // a local broker takes no token, and an empty bearer would be a header it must refuse
+		h.Set("Authorization", "Bearer "+tok)
+	}
 	return h, nil
 }
 

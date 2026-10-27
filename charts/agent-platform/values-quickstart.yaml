@@ -2,6 +2,9 @@
 broker:
   human:
     mode: local
+  # No room tools on a laptop: no :8090 listener, and no ROOMS_MCP_KEY to invent.
+  roomTools:
+    enabled: false
   runIssuer:
     mode: tokenreview
   database:

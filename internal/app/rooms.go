@@ -81,7 +81,8 @@ func humanActor(h config.HumanConfig, roomLog humanapi.ActLog, red humanapi.Reda
 	if err := errors.Join(missing...); err != nil {
 		return nil, err
 	}
-	return &humanapi.Actor{Log: roomLog, Groups: policy.Groups{Admin: h.Groups.Admin, Member: h.Groups.Member},
+	groups := h.EffectiveGroups()
+	return &humanapi.Actor{Log: roomLog, Groups: policy.Groups{Admin: groups.Admin, Member: groups.Member},
 		Runs: runs, Redactor: red, Rooms: rooms, Requester: requester,
 		OnReject: func(ctx context.Context, reason string) {
 			m.Rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -35,5 +36,50 @@ func TestLocalForeignHost(t *testing.T) {
 	r.Host = "evil.example:8080" // DNS rebinding: no Origin on a same-origin GET, but its own Host
 	if _, err := l.Authenticate(r); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("foreign host must be ErrForbidden, got %v", err)
+	}
+}
+
+// A local session is the one human, whatever bearer it carries, and it lasts an hour: the UI
+// reconnects on the broker's 4001 when the socket reaches it.
+func TestLocalHumanAuthenticate(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	l := NewLocalWithClock("http://localhost:8080", []string{"admin", "member"}, func() time.Time { return now })
+	for _, bearer := range []string{"", "Bearer bogus"} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/rooms", nil)
+		r.Host = "localhost:8080"
+		if bearer != "" {
+			r.Header.Set("Authorization", bearer)
+		}
+		p, err := l.Authenticate(r)
+		if err != nil {
+			t.Fatalf("bearer %q: %v", bearer, err)
+		}
+		if p.ID != LocalPrincipal || p.Sub != "local" || p.ClientID != LocalClientID || p.AccessToken != "" ||
+			!slices.Equal(p.Groups, []string{"admin", "member"}) || !p.Expiry.Equal(now.Add(time.Hour)) {
+			t.Fatalf("bearer %q: %#v (expiry %s)", bearer, p, p.Expiry)
+		}
+	}
+	for _, tc := range []struct {
+		origin string
+		want   error
+	}{
+		{"http://localhost:8080", nil},
+		{"", nil},
+		{"https://evil.example", ErrForbidden},
+		{"null", ErrForbidden},
+		{"http://localhost:8081", ErrForbidden},
+	} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/rooms", nil)
+		r.Host = "localhost:8080"
+		if tc.origin != "" {
+			r.Header.Set("Origin", tc.origin)
+		}
+		_, err := l.Authenticate(r)
+		if tc.want == nil && err != nil {
+			t.Errorf("origin %q: %v", tc.origin, err)
+		}
+		if tc.want != nil && !errors.Is(err, tc.want) {
+			t.Errorf("origin %q: %v, want %v", tc.origin, err, tc.want)
+		}
 	}
 }
