@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -285,7 +286,12 @@ func (r Roomctl) mcp(ctx context.Context, cfg roomctl.Config, tokPath string, ar
 	if in == nil {
 		in = os.Stdin
 	}
-	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH, Label: roomctl.GHLabel}
+	hints := r.Err
+	if hints == nil {
+		hints = os.Stderr
+	}
+	relay := &roomctl.Relay{URL: cfg.URL, HC: r.HC, Token: roomctl.SharedToken(r.HC, cfg, tokPath), File: roomctl.GH, Label: roomctl.GHLabel,
+		Log: slog.New(slog.NewTextHandler(hints, nil))}
 	return relay.Serve(ctx, in, r.Out)
 }
 

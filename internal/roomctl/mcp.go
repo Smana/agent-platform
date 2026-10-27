@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ type Relay struct {
 	RoomWait time.Duration
 	// After waits d; nil is time.After. Tests step their own.
 	After func(d time.Duration) <-chan time.Time
+	// Log is where roomctl mcp says what it did not do for the client (stderr in the CLI); nil is silent.
+	Log *slog.Logger
 	// RootsWait bounds the client's answer to roots/list; zero is rootsWait.
 	RootsWait time.Duration
 	// Git runs room_checkout's git; nil is RunGit. Tests replace it.
@@ -66,6 +69,14 @@ type Relay struct {
 	local   map[string]*localEntry          // the local tool calls in flight, by request id (idKey)
 	waiting map[string]chan json.RawMessage // the relay's own requests to the client, by id
 	nextID  int
+}
+
+// log is the relay's logger, discarding when none was injected.
+func (r *Relay) log() *slog.Logger {
+	if r.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.Log
 }
 
 // message is any JSON-RPC message, read far enough to route it.

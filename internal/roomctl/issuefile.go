@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -101,7 +100,7 @@ func (r *Relay) issueFile(ctx context.Context, args json.RawMessage) any {
 	}
 	start, chosen := formBool(res.Content["start"])
 	if offer && !chosen {
-		slog.Warn("issue_file: the form answer has no usable start; treated as not started", "start", string(res.Content["start"]))
+		r.log().Warn("issue_file: the form answer has no usable start; treated as not started", "start", string(res.Content["start"]))
 	}
 	url, err := r.File(ctx, draft.Repo, draft.Title, draft.Body)
 	if err != nil {

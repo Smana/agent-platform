@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -403,6 +404,21 @@ func TestIssueFileFormDefaultsFileToFalse(t *testing.T) {
 
 // O4: a client may return a partial content object, or booleans as strings. A missing start is
 // false, never a guess, and the result says start was not chosen, so the agent asks the developer.
+func TestIssueFileLogsAMissingStart(t *testing.T) {
+	b := newMCPBroker(t)
+	b.canStart = boolp(true)
+	var logs strings.Builder
+	f := &filing{}
+	s := relayTo(t, b, tok, withFile(f.file), func(r *Relay) {
+		r.Label, r.Log = (&labeling{}).label, slog.New(slog.NewTextHandler(&logs, nil))
+	})
+	s.request(t, 1, "initialize", map[string]any{"capabilities": map[string]any{"elicitation": map[string]any{}}})
+	fileWith(t, s, issueFileArgs, map[string]any{"action": "accept", "content": map[string]any{"file": true}})
+	if !strings.Contains(logs.String(), "no usable start") {
+		t.Fatalf("logged %q", logs.String())
+	}
+}
+
 func TestIssueFileStartNotChosen(t *testing.T) {
 	for name, tc := range map[string]struct {
 		content     map[string]any
