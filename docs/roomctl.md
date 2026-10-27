@@ -121,7 +121,7 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
 - `room_checkout {room}` is `roomctl checkout`, for your agent. The repository and the pull request
   come from the broker's row of the room, and the workspace is your client's first root, else
   where `roomctl mcp` runs.
-- No tool approves, steers or stops, and none labels on the agent's say: only your answer to the start form does. Approvals happen on the room page.
+- No tool approves, steers or stops, and none labels on the agent's say: only your answer to the start form does. Approvals stay on the room page.
 - What your agent queues is stored labelled as [machine-sent](api.md#machine-sent-text).
 - Every request reads `token.json` and refreshes the token when it has expired, one refresh at a
   time. When the refresh is refused, a call answers `not_logged_in`: run `roomctl login` in a
