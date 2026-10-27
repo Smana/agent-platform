@@ -45,6 +45,19 @@ type TaskRequest struct {
 	MaxCostUSD float64 `json:"maxCostUSD"`
 	OnBehalfOf string  `json:"onBehalfOf,omitempty"`
 	Ref        string  `json:"ref,omitempty"`
+	// Incident is an internal principal's finding (RA3); a sponsored principal's request refuses it.
+	Incident *Incident `json:"incident,omitempty"`
+}
+
+// Incident is RunLore's finding, as an internal principal sends it (RA3, RA6): identifiers for the
+// stub issue and the gates' inputs. The finding itself is the request's text.
+type Incident struct {
+	Alert      string  `json:"alert"`
+	Resource   string  `json:"resource"`
+	Severity   string  `json:"severity"`
+	Cluster    string  `json:"cluster"`
+	Verdict    string  `json:"verdict"`
+	Confidence float64 `json:"confidence"`
 }
 
 const (
@@ -71,8 +84,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	if ip := s.Cfg.InternalBy(p.ID); p.Internal && ip != nil {
+		s.createInternalTask(w, r, p, ip)
+		return
+	}
 	sp := s.Cfg.SponsoredBy(p.ID)
-	if !p.Sponsored || sp == nil {
+	if !p.Sponsored || p.Internal || sp == nil {
 		refuse(w, http.StatusForbidden, reasonSponsoredOnly)
 		return
 	}
@@ -100,6 +117,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	switch {
+	case in.Incident != nil: // an internal principal's field: a sponsored request has no use for it
+		out(http.StatusBadRequest, "bad_json")
+		return
 	case key == "" || len(key) > maxKeyLen:
 		out(http.StatusBadRequest, "idempotency_key_required")
 		return
@@ -340,20 +360,28 @@ func (s *Server) admitTask(ctx context.Context, sp *config.Sponsored, login, nam
 	if err != nil {
 		return 0, nil, err // the Task exists; a replay finds it and files nothing, so the owner sees it without an issue
 	}
-	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"issue": iss.Number}})
-	for attempt := 1; ; attempt++ {
-		err = s.Rooms.Patch(fctx, &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
-			client.RawPatch(types.MergePatchType, patch))
-		if err == nil {
-			break
-		}
-		if !apierrors.IsConflict(err) || attempt == 3 {
-			if s.Log != nil { // the issue exists and is unlinked: name it so an operator can link it by hand
-				s.Log.ErrorContext(ctx, "intake: the filed issue is not linked to its task", "task", name, "issue", iss.Number, "error", err)
-			}
-			return 0, nil, err
-		}
+	if err := s.linkIssue(fctx, name, iss.Number); err != nil {
+		return 0, nil, err
 	}
 	body["issue"] = iss.Number
 	return http.StatusCreated, body, nil
+}
+
+// linkIssue records the filed issue on the Task, three attempts on conflict. A failure names the
+// unlinked issue so an operator can link it by hand.
+func (s *Server) linkIssue(ctx context.Context, name string, issue int) error {
+	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"issue": issue}})
+	for attempt := 1; ; attempt++ {
+		err := s.Rooms.Patch(ctx, &factoryv1.Task{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
+			client.RawPatch(types.MergePatchType, patch))
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) || attempt == 3 {
+			if s.Log != nil {
+				s.Log.ErrorContext(ctx, "intake: the filed issue is not linked to its task", "task", name, "issue", issue, "error", err)
+			}
+			return err
+		}
+	}
 }

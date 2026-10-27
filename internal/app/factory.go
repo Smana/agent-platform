@@ -161,6 +161,9 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	for _, sp := range cfg.API.Sponsored {
 		sponsors[sp.Principal()] = factoryv1.Person(sp.Sponsor)
 	}
+	for _, ip := range cfg.API.InternalPrincipals {
+		sponsors[ip.Principal()] = factoryv1.Person(ip.Sponsor)
+	}
 	m.Sponsors(sponsors)
 	// v2 D7: a repository is acted on only while its default branch names this factory.
 	fenced := &fence.Fence{Name: cfg.Factory, Repositories: conns.names(), Read: conns.fenceFile,
@@ -231,13 +234,19 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	people, _ := access.(api.PersonResolver) // D1: the login the write check reads is the person charged
 	auth := &api.Authenticator{Humans: humansV, Groups: groups, ClientIDs: clientIDs,
 		Systems: systemsV, SystemAllow: cfg.API.SystemPrincipals}
-	if len(cfg.API.Sponsored) > 0 { // F4: the third branch, only while a principal is declared
-		clients := make([]authn.SponsoredClient, 0, len(cfg.API.Sponsored))
-		for _, sp := range cfg.API.Sponsored {
-			clients = append(clients, authn.SponsoredClient{Name: sp.Name, ClientID: func() string {
+	if len(cfg.API.Sponsored)+len(cfg.API.InternalPrincipals) > 0 { // F4: the third branch, only while a principal is declared
+		clients := make([]authn.SponsoredClient, 0, len(cfg.API.Sponsored)+len(cfg.API.InternalPrincipals))
+		client := func(sp config.Sponsored, internal bool) authn.SponsoredClient {
+			return authn.SponsoredClient{Name: sp.Name, Internal: internal, ClientID: func() string {
 				b, _ := os.ReadFile(filepath.Clean(sp.ClientIDFile)) // re-read, as clientIDs: a rebuilt client rotates
 				return strings.TrimSpace(string(b))
-			}})
+			}}
+		}
+		for _, sp := range cfg.API.Sponsored {
+			clients = append(clients, client(sp, false))
+		}
+		for _, ip := range cfg.API.InternalPrincipals {
+			clients = append(clients, client(ip.Sponsored, true))
 		}
 		auth.Sponsored = &authn.Sponsored{V: humansV, Clients: clients, Exclude: clientIDs,
 			Audience: func() string {
@@ -259,7 +268,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 	if !ok {
 		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
 	}
-	if len(cfg.API.Sponsored) > 0 { // only the sponsored intake reads it, and it fails closed on a nil interface
+	if len(cfg.API.Sponsored)+len(cfg.API.InternalPrincipals) > 0 { // only the sponsored intake reads it, and it fails closed on a nil interface
 		redactor, err := redact.New()
 		if err != nil {
 			return err

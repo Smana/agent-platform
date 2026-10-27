@@ -172,7 +172,7 @@ func (s *Server) NeedLeaderElection() bool { return false }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/runs", s.createRun)
-	if len(s.Cfg.API.Sponsored) > 0 { // F4, D4: off until a principal is declared
+	if len(s.Cfg.API.Sponsored)+len(s.Cfg.API.InternalPrincipals) > 0 { // F4, D4: off until a principal is declared
 		mux.HandleFunc("POST /v1/tasks", s.createTask)
 	}
 	return mux

@@ -324,6 +324,9 @@ type Principal struct {
 	// Sponsored marks a sponsored principal's token (factory interfaces F4): a service account's,
 	// which may start api tasks and read its own tasks' rooms, and nothing a human may do.
 	Sponsored bool
+	// Internal marks an internal principal (RunLore agent-to-agent RA2): a sponsored principal
+	// allowed internal data. It is always set with Sponsored, never alone.
+	Internal bool
 }
 
 // String is the principal's id, so %v and %+v never print AccessToken.
