@@ -123,13 +123,16 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 	return err
 }
 
+// title leads with the task, `#42 title`, as a developer names a room, and ends with the room id.
 func (c *card) title(s summary.Summary) {
-	h := c.text(s.Room, false)
+	room := c.text(s.Room, false)
+	h := room
 	if i := s.Status.Issue; i != nil && i.Number > 0 {
-		h += " · #" + strconv.Itoa(i.Number)
+		h = "#" + strconv.Itoa(i.Number)
 		if clean(i.Title) != "" {
 			h += " " + c.text(i.Title, false)
 		}
+		h += " · " + room
 	}
 	if c.md() {
 		h = "### " + h

@@ -24,6 +24,11 @@ import (
 )
 
 // mcpBroker is a fake broker /mcp: it records each request and answers by method.
+type toolCall struct {
+	Name string
+	Args map[string]any
+}
+
 type mcpBroker struct {
 	srv      *httptest.Server
 	mu       sync.Mutex
@@ -43,6 +48,8 @@ type mcpBroker struct {
 	// roomsFn, when set, answers rooms_list: it gets the call's number (1 first) and its arguments.
 	roomsFn func(n int, args map[string]any) []map[string]any
 	listed  int
+	// calls records each tools/call but rooms_list: the tool and its arguments.
+	calls []toolCall
 	// card, when set, is room_summary's structuredContent.
 	card map[string]any
 }
@@ -76,13 +83,18 @@ func newMCPBroker(t *testing.T) *mcpBroker {
 		case "initialize":
 			res = map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{"tools": map[string]any{}}}
 		case "tools/list":
-			res = map[string]any{"tools": []any{map[string]any{"name": "rooms_list"}}}
+			res = map[string]any{"tools": []any{map[string]any{"name": "rooms_list"},
+				map[string]any{"name": "room_summary", "description": "d", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+					"room": map[string]any{"type": "string", "pattern": "^[a-z2-7]{8}$"}}}}}}
 		case "tools/call":
 			var c struct {
 				Name      string
 				Arguments map[string]any
 			}
 			_ = json.Unmarshal(m.Params, &c)
+			if c.Name != "rooms_list" {
+				b.calls = append(b.calls, toolCall{c.Name, c.Arguments})
+			}
 			switch {
 			case c.Name == "room_summary" && b.card != nil:
 				res = map[string]any{"content": []any{map[string]any{"type": "text", "text": b.roomText}}, "structuredContent": b.card}
@@ -407,7 +419,7 @@ func TestRelayListsLocalTools(t *testing.T) {
 	for _, tl := range s.request(t, 1, "tools/list", nil)["result"].(map[string]any)["tools"].([]any) {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	if got := strings.Join(names, ","); got != "rooms_list,issue_file,room_wait,room_checkout" {
+	if got := strings.Join(names, ","); got != "rooms_list,room_summary,issue_file,room_wait,room_checkout" {
 		t.Fatalf("%s", got)
 	}
 }

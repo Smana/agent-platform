@@ -554,14 +554,14 @@ func firstOf(names []string, n int) []string { return names[:min(len(names), n)]
 // room_checkout's tools/list entry.
 var roomCheckoutEntry = map[string]any{
 	"name": toolRoomCheckout,
-	"description": "Check out the branch a room's agent worked on, agent/<room>, into a new git worktree beside the developer's " +
+	"description": "Check out the branch a room's agent worked on (room is its id, #<issue>, PR #<n> or a bare issue number), agent/<room>, into a new git worktree beside the developer's " +
 		"repository, and return its path and pull request. It never touches the current checkout, so a dirty tree or the " +
 		"session's branch is safe, and a second call returns the same worktree. The workspace must be a checkout of the room's " +
 		"repository; otherwise it refuses and gives the gh repo clone command. When the branch changes files that run code on " +
 		"open (agent or editor config, hooks, mise), it asks the developer in a form, and refuses where the client cannot show one. " +
 		"It runs nothing in the worktree.",
 	"inputSchema": json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room"],"properties":{` +
-		`"room":{"type":"string","pattern":"^[a-z2-7]{8}$","description":"the room's id, from rooms_list"}}}`),
+		`"room":{"type":"string","description":"the room's id, or #<issue>, PR #<n> or a bare issue number"}}}`),
 }
 
 // roomRow is the room's row, which gives its repository and pull request: the open rooms first,
@@ -589,6 +589,11 @@ func (r *Relay) roomRow(ctx context.Context, room string) (roomview.Row, bool, e
 // roomCheckout is room_checkout. The repository and the pull request come from the broker's row
 // of the room, never from the agent's text; the developer's yes comes from a form.
 func (r *Relay) roomCheckout(ctx context.Context, c localCall) any {
+	args, refusal := r.resolveArgs(ctx, c.Args, "room")
+	if refusal != nil {
+		return refusal
+	}
+	c.Args = args
 	var a struct {
 		Room string `json:"room"`
 	}

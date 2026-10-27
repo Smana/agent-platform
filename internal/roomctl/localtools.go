@@ -61,6 +61,12 @@ func withLocalTools(res json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("tools/list: %w", err)
 	}
 	tools, _ := list["tools"].([]any)
+	for _, t := range tools {
+		if tool, ok := t.(map[string]any); ok && roomRefTools[fmt.Sprint(tool["name"])] {
+			tool["inputSchema"] = refSchema(tool["inputSchema"])
+			tool["description"] = fmt.Sprint(tool["description"]) + " room is " + refHint + "."
+		}
+	}
 	list["tools"] = append(tools, localEntries...)
 	return json.Marshal(list)
 }

@@ -109,11 +109,12 @@ func Overview(w io.Writer, rows []Row, o Options) error {
 	b.WriteString(head + "\n")
 	if len(shown) > 0 {
 		b.WriteString("\n")
-		cols := []string{"Room", "Task"}
+		// The task leads, as a developer names a room, and the room id comes last.
+		cols := []string{"Task"}
 		if mixed {
 			cols = append(cols, "Repo")
 		}
-		cols = append(cols, "State", "Where it is", "PR", "Updated")
+		cols = append(cols, "State", "Where it is", "PR", "Updated", "Room")
 		var table [][]string
 		for _, r := range shown {
 			if md {
@@ -168,7 +169,7 @@ func markdownRow(r Row, mixed bool, o Options) []string {
 			}
 		}
 	}
-	cells := []string{markdownRoom(r, o), task}
+	cells := []string{task}
 	if mixed {
 		repo := "—"
 		if clean(r.Repository) != "" {
@@ -176,7 +177,7 @@ func markdownRow(r Row, mixed bool, o Options) []string {
 		}
 		cells = append(cells, repo)
 	}
-	return append(cells, state, markdownWhere(r, o), pr, updated(r, o))
+	return append(cells, state, markdownWhere(r, o), pr, updated(r, o), markdownRoom(r, o))
 }
 
 // markdownRoom is the room id, linked to its page when the URL is the broker's.
@@ -272,7 +273,7 @@ func textRow(r Row, mixed bool, o Options) []string {
 	if r.PR > 0 {
 		pr = "#" + strconv.Itoa(r.PR)
 	}
-	cells := []string{clean(r.ID), task}
+	cells := []string{task}
 	if mixed {
 		repo := clean(r.Repository)
 		if repo == "" {
@@ -280,7 +281,7 @@ func textRow(r Row, mixed bool, o Options) []string {
 		}
 		cells = append(cells, repo)
 	}
-	return append(cells, stateWord(r.State, r.needsYou()), where, pr, updated(r, o))
+	return append(cells, stateWord(r.State, r.needsYou()), where, pr, updated(r, o), clean(r.ID))
 }
 
 func updated(r Row, o Options) string {

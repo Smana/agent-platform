@@ -1,7 +1,7 @@
 Factory rooms · 4 open · 4 needs you
 
-ROOM      TASK                                                                                   REPO                    STATE      WHERE IT IS                      PR  UPDATED
-26zfnuxm  #42 docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>   Smana/cloud-native-ref  needs you  approve "[2Jrm -rf /" 19:45 UTC  -   0 min ago
-pipea     #1 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  approve "a|b" 20:20 UTC          -   1 min ago
-pipeb     #2 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  approve "a\\|b" 20:20 UTC        -   2 min ago
-pipec     #3 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  x | y                            -   3 min ago
+TASK                                                                                   REPO                    STATE      WHERE IT IS                      PR  UPDATED    ROOM
+#42 docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>   Smana/cloud-native-ref  needs you  approve "[2Jrm -rf /" 19:45 UTC  -   0 min ago  26zfnuxm
+#1 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  approve "a|b" 20:20 UTC          -   1 min ago  pipea
+#2 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  approve "a\\|b" 20:20 UTC        -   2 min ago  pipeb
+#3 t|docs: see https://evil.example or www.evil.example, mail a@evil.example <b>x</b>  Smana/other             needs you  x | y                            -   3 min ago  pipec

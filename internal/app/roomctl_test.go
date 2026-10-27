@@ -538,7 +538,7 @@ func TestRoomctlRoomsRendersTheOverview(t *testing.T) {
 	if err := r.Run(t.Context(), []string{"rooms", "--format", "text"}); err != nil {
 		t.Fatal(err)
 	}
-	if h := strings.Fields(strings.Split(out.String(), "\n")[2]); !slices.Equal(h, []string{"ROOM", "TASK", "STATE", "WHERE", "IT", "IS", "PR", "UPDATED"}) {
+	if h := strings.Fields(strings.Split(out.String(), "\n")[2]); !slices.Equal(h, []string{"TASK", "STATE", "WHERE", "IT", "IS", "PR", "UPDATED", "ROOM"}) {
 		t.Fatalf("the terminal overview's header: %q", out)
 	}
 	out.Reset()

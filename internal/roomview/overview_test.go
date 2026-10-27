@@ -211,7 +211,7 @@ func TestOverviewHostile(t *testing.T) {
 func TestOverviewNoIssue(t *testing.T) {
 	rows := []Row{{ID: "apiroom1", URL: rooms + "/r/apiroom1", State: summary.StateRunning, Task: v1alpha1.PhaseImplementing, LastEventAt: now}}
 	md := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
-	if cells := strings.Split(strings.Split(md, "\n")[4], " | "); strings.Contains(md, "#0") || len(cells) < 2 || cells[1] != "—" {
+	if cells := strings.Split(strings.Split(md, "\n")[4], " | "); strings.Contains(md, "#0") || len(cells) < 2 || cells[0] != "| —" {
 		t.Errorf("Markdown: want an em dash in the Task cell, never #0:\n%s", md)
 	}
 	txt := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms})
@@ -219,7 +219,7 @@ func TestOverviewNoIssue(t *testing.T) {
 		t.Errorf("terminal: #0 in\n%s", txt)
 	}
 	line := strings.Fields(strings.Split(txt, "\n")[3])
-	if len(line) < 2 || line[1] != "-" {
+	if len(line) < 2 || line[0] != "-" {
 		t.Errorf("terminal: want - in the task column: %q", line)
 	}
 }
@@ -331,5 +331,22 @@ func TestOverviewRoomPhaseWithoutATask(t *testing.T) {
 				t.Errorf("%s, format %d: no %q in\n%s", phase, f, want, out)
 			}
 		}
+	}
+}
+
+// O7: a room is named by its task, so the task leads and the room id comes last, in the overview
+// and in the card's first line.
+func TestRoomIDComesLast(t *testing.T) {
+	rows := []Row{{ID: "apiroom1", URL: rooms + "/r/apiroom1", State: summary.StateRunning, Issue: 42, Title: "docs: a dead link",
+		Task: v1alpha1.PhaseImplementing, LastEventAt: now}}
+	md := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
+	if lines := strings.Split(md, "\n"); !strings.HasPrefix(lines[2], "| Task |") || !strings.HasSuffix(lines[2], "| Room |") ||
+		!strings.HasPrefix(lines[4], "| #42 docs: a dead link |") || !strings.Contains(lines[4], "[apiroom1](") {
+		t.Errorf("Markdown:\n%s", md)
+	}
+	txt := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms})
+	if lines := strings.Split(txt, "\n"); !strings.HasPrefix(lines[2], "TASK ") || !strings.HasSuffix(strings.TrimSpace(lines[2]), "ROOM") ||
+		!strings.HasPrefix(lines[3], "#42 docs: a dead link") || !strings.HasSuffix(strings.TrimSpace(lines[3]), "apiroom1") {
+		t.Errorf("terminal:\n%s", txt)
 	}
 }

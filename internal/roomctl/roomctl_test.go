@@ -304,7 +304,7 @@ func TestRoomsListsWhatTheCallerReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 5 || !strings.HasPrefix(lines[2], "ROOM") || !strings.Contains(lines[3], "3kq7x2ma") ||
+	if len(lines) != 5 || !strings.HasPrefix(lines[2], "TASK") || !strings.HasSuffix(lines[2], "ROOM") || !strings.Contains(lines[3], "3kq7x2ma") ||
 		!strings.Contains(lines[3], "fix[2J the CA") || strings.ContainsRune(out.String(), 0x1b) {
 		t.Fatalf("%q", lines)
 	}

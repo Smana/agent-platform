@@ -37,7 +37,7 @@ roomctl doctor                                   # check the setup
 
 ## Commands
 
-`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL.
+`roomctl --help` prints the list below. A `<room>` is a room id, the last part of a room page's `…/r/<room>` URL. The MCP tools and prompts also take `#<issue>`, `PR #<n>` or a bare issue number ([below](#the-mcp-server)); the CLI takes ids only, since a shell drops an unquoted `#42`.
 
 | Command | What it does |
 |---|---|
@@ -48,7 +48,7 @@ roomctl doctor                                   # check the setup
 | `doctor` | Checks the VPN, the CA, your login, your GitHub link and the installed skill's version (`skill`), with the fix of each |
 | `token` | Prints a valid access token, for scripts. Treat it as a secret |
 | `status <room> [--json] [--after seq:N]` | Where a room stands, as the room card (below): the title, the state, the facts (run, spend, PR and last verdict, next, why), what needs you, the runs line, the agents' notes and what you can do, then a `cursor: seq:N` line. `--json` prints the broker's summary as is; `--after` shows only the notes after a cursor (the output prints it as `seq:N`) |
-| `rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--json]` | The rooms you can read, as a table: ROOM, REPO, ISSUE, TITLE, TASK, PR, NEEDS-YOU, ROLE. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--all`: the rooms that ended over a week ago too. `--json`: the broker's rows as is |
+| `rooms [--repo owner/name] [--mine] [--needs-me] [--all] [--json]` | The rooms you can read, as a table that leads with the task and ends with the room id: TASK (`#issue title`), REPO (when several), STATE, WHERE IT IS, PR, UPDATED, ROOM. `--mine`: tasks of issues you filed or labelled, PRs you authored or review. `--needs-me`: an approval you could decide, a task held on your room, a PR waiting for your merge, or an Escalated task waiting for its issue's author when you own the room. `--all`: the rooms that ended over a week ago too. `--json`: the broker's rows as is |
 | `changes <room> [--cursor seq:N] [--format md\|text] [--json]` | What changed in a room since the cursor of your last call (the first call: 24 hours). The cursor is kept in `cursors.json` beside the config. Needs a broker with `room_changes` |
 | `checkout <room>` | Checks the room's branch, `agent/<room>`, out into a new git worktree beside the repository you are in, `<repo>.<room>`, and prints its path. It never touches your current checkout, so a dirty tree or your branch is safe, and a second call prints the same path. It refuses outside a checkout of the room's repository, and prints the `gh repo clone` command. When the branch changes files that run code on open or on commit, it lists them and asks `y/N`, and refuses without a terminal ([below](#checking-out-an-agents-branch)) |
 | `watch <room> [--tail N]` | Follows a room, one line per event: its `seq`, who (`role (id)` for a participant with a room role), what, and its text. Shows the last `N` events first (default 50). It reconnects after a drop and picks up where it stopped |
@@ -62,7 +62,7 @@ Flags may come before or after the positional arguments. Source: `internal/app/r
 `status` prints the room card, then the cursor. For a task's room:
 
 ```text
-26zfnuxm · #42 docs: chart version is wrong
+#42 docs: chart version is wrong · 26zfnuxm
 needs you · an agent is coding · Smana/cloud-native-ref · open the room (https://rooms.example/r/26zfnuxm)
 
 Run   implementer cf4ato2x (human review) · started 19:11 UTC, 18 min ago
@@ -117,6 +117,12 @@ claude mcp add factory -- roomctl mcp    # Claude Code; any agent that runs a st
   only when the broker's `issue_draft` says `canStart`: yes labels the issue `factory/ready` with
   your `gh`, which starts the factory. A client that returns the form without `start` (or with a value that is not a boolean) gets `started:false` and a `next` that says start was not chosen, and `roomctl mcp` logs it on stderr: your agent then asks you rather than guessing. It is a form field, never a tool argument: your agent can
   call `issue_file` but cannot answer the form.
+- Every tool and prompt that takes a room (`room_summary`, `room_changes`, `room_queue`, `room_wait`,
+  `room_checkout`, the `status` prompt) accepts the room id, `#<issue>`, `PR #<n>` or a bare number.
+  `roomctl mcp` resolves it through the room list, open rooms first and then the ended ones; the issue
+  match wins over a PR of the same number. When several rooms match (the same issue number in two
+  repositories), the tool lists them with their ids and asks, and calls nothing: your agent asks you.
+  Cards and the overview lead with the issue number and title, and end with the room id.
 - `room_wait` polls `rooms_list` from your machine until a room needs you, opens a pull request or
   ends, or until its timeout (300 s by default, at most 1800 s), and returns the room's card. A
   cancellation ends it at once. Run it in a background task where your client has them.

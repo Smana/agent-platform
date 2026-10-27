@@ -179,6 +179,13 @@ func (r *Relay) handle(ctx context.Context, m message, raw []byte, pre *localEnt
 			r.callLocal(m, pre)
 			return
 		}
+		if roomRefTools[callName(m.Params)] {
+			var refusal any
+			if raw, refusal = r.resolveCall(ctx, m); refusal != nil {
+				r.write(mcpwire.Response(m.ID, refusal, nil))
+				return
+			}
+		}
 		res, err := r.relay(ctx, raw)
 		if err == nil {
 			res = viewed(callName(m.Params), res, r.URL, time.Now())
@@ -402,4 +409,22 @@ func (r *Relay) write(v any) {
 	r.outMu.Lock()
 	defer r.outMu.Unlock()
 	_, _ = r.out.Write(append(b, '\n'))
+}
+
+// resolveCall is the tools/call m with its room reference resolved to an id, or the refusal.
+func (r *Relay) resolveCall(ctx context.Context, m message) ([]byte, any) {
+	var p map[string]json.RawMessage
+	if json.Unmarshal(m.Params, &p) != nil {
+		return nil, nil
+	}
+	args, refusal := r.resolveArgs(ctx, p["arguments"], "room")
+	if refusal != nil {
+		return nil, refusal
+	}
+	if args != nil {
+		p["arguments"] = args
+	}
+	params, _ := json.Marshal(p)
+	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "method": m.Method, "params": json.RawMessage(params)})
+	return raw, nil
 }

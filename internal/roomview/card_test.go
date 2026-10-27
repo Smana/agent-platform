@@ -84,7 +84,7 @@ func TestCardMatchesTheSpec(t *testing.T) {
 	s, n := foldGolden(t, "runs_and_spend")
 	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
 	want := []string{
-		"### 26zfnuxm · #42\n",
+		"### #42 · 26zfnuxm\n",
 		"\n**needs you** · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)\n",
 		"\n| | |\n|---|---|\n| Run | implementer c3 (human review) · started 19:11 UTC, 18 min ago |\n",
 		"| Spend | $0.31 of $1.50 (21 %) · 189 k tokens |\n",
@@ -308,10 +308,10 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 		{"the task leads and the budget reads as the page does",
 			`{"room":"r","url":"u","status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},"budget":{"usedTokens":189093,"limitTokens":1500000},` +
 				`"issue":{"number":74,"url":"https://github.com/o/r/issues/74","title":"Chat view: pair tool calls"}},"notes":{"items":[]}}`, cardNow,
-			[]string{"r · #74 Chat view: pair tool calls\n", "Spend 189 k of 1.5 M tokens (13 %)\n", "o/r"}, nil},
+			[]string{"#74 Chat view: pair tool calls · r\n", "Spend 189 k of 1.5 M tokens (13 %)\n", "o/r"}, nil},
 		{"a queued room with an issue and no needs",
 			`{"room":"26zfnuxm","url":"u","status":{"phase":"Queued","issue":{"number":42,"url":"https://github.com/Smana/a/issues/42"}},"needsYou":[],"actions":[],"notes":{"items":[]}}`, cardNow,
-			[]string{"26zfnuxm · #42\nqueued · queued for a run · Smana/a\n"}, []string{"Needs you", "needs you"}},
+			[]string{"#42 · 26zfnuxm\nqueued · queued for a run · Smana/a\n"}, []string{"Needs you", "needs you"}},
 		{"a hold is what releases it, with the room's link, and no approval",
 			`{"room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm","status":{"phase":"Queued"},` +
 				`"needsYou":[{"kind":"hold","id":"waiting_human_driver","what":"hand the driver back","url":"https://rooms.example/r/26zfnuxm"}],"notes":{"items":[]}}`, cardNow,
@@ -322,7 +322,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 			`{"room":"r","url":"u","status":{"phase":"Escalated\u001b[2J","reason":"CI stayed red after the fix runs",` +
 				"\"next\":\"a maintainer comments `/factory retry` on the issue\"," +
 				`"issue":{"number":42,"url":"https://github.com/Smana/a/issues/42","title":"fix the CA"}},"notes":{"items":[]}}`, cardNow,
-			[]string{"r · #42 fix the CA\n", "Escalated[2J", "Next  a maintainer comments /factory retry on the issue\n", "Why   CI stayed red after the fix runs\n"},
+			[]string{"#42 fix the CA · r\n", "Escalated[2J", "Next  a maintainer comments /factory retry on the issue\n", "Why   CI stayed red after the fix runs\n"},
 			[]string{"\x1b"}},
 		{"a merge carries its PR link",
 			`{"room":"r","url":"u","status":{"phase":"AwaitingHuman"},` +
