@@ -531,8 +531,8 @@ func (r Roomctl) checkout(ctx context.Context, c roomctl.Client, args []string) 
 	}
 	co := roomctl.Checkout{Workspace: dir, Room: pos[0], Repository: rows[i].Repository, PR: rows[i].PR}
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) { //nolint:gosec // a file descriptor fits an int
-		co.Confirm = func(_ context.Context, files []string) (bool, error) {
-			_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(roomctl.CodeSpans(files), "\n  "))
+		co.Confirm = func(_ context.Context, files []string, more int) (bool, error) {
+			_, _ = fmt.Fprintf(hints, "agent/%s changes files that run code on your machine:\n  %s\nCreate the worktree? [y/N] ", pos[0], strings.Join(roomctl.CodeSpans(files, more), "\n  "))
 			line, err := bufio.NewReader(io.LimitReader(f, 64)).ReadString('\n')
 			if err != nil && line == "" {
 				return false, err

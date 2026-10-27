@@ -165,7 +165,7 @@ The paths: the folders `.claude/`, `.cursor/`, `.opencode/`, `.gemini/`, `.codex
 files `.github/mcp.json`, `.mcp.json`, `opencode.json`, `opencode.jsonc`, `crush.json`,
 `.crush.json`, `.devcontainer.json`, `.envrc`, `.tool-versions`, `mise.toml`, `.mise.toml`,
 `mise.local.toml`, `.mise.local.toml`, `mise.*.toml`, `.mise.*.toml`, `.pre-commit-config.yaml`,
-`lefthook.*`, `lefthook-local.*`, `.lefthook.*`, `.config/lefthook.*`, `.gitmodules` and
+`lefthook.*`, `lefthook-local.*`, `.lefthook.*`, `.lefthook-local.*`, `.config/lefthook.*`, `.config/lefthook-local.*`, `.gitmodules` and
 `.lfsconfig` (a `*` stays within one name), in the repository root or any folder of it, in ASCII
 case. A changed path with a byte past ASCII anywhere in its name is flagged too, since a filesystem
 may fold it into one of these names. A changed path that is a folder of one of them counts (a file
@@ -173,8 +173,8 @@ named `.claude`), and so does every symlink the branch adds or changes, whatever
 `.claude -> x` with `x/settings.json` would otherwise hide the file. A symlink the branch's tree
 already has at one of these places, in any folder, is asked about as well, since the branch can
 change its target. Flagging more is safe, since a flag only means "ask first". The form lists every
-match of the paths above first, in full, and then the symlinks and non-ASCII names, at most 20 of
-them and a count of the rest. The list is `flagged` in `internal/roomctl/checkout.go`; the tests
+match of the paths above first (up to 200), and then the symlinks and non-ASCII names, at most 20
+of them, and a count of the rest. The list is `flagged` in `internal/roomctl/checkout.go`; the tests
 hold a fixture per entry.
 
 What the check cannot see: it follows names, not what runs them. A file that one of your own git
@@ -183,10 +183,13 @@ configuration, a Makefile target that a hook calls, `package.json` scripts, a wo
 `act`. Read the diff of those yourself. A repository with more than about 150,000 files makes the
 tree listing pass its 16 MiB cap, and the checkout then refuses instead of guessing.
 
-One checkout of a room runs at a time in a repository (a lock file `roomctl-checkout-<room>.lock` in
-git's directory); a second is refused while the first waits for you. What the call made is all it
-ever removes: the branch is created only if it does not exist yet, so a branch you made while the
-form was open is never used, moved or deleted.
+One checkout of a room runs at a time in a repository: it takes an advisory lock (`flock`) on
+`roomctl-checkout-<room>.lock` in git's directory, which the kernel drops when the process ends, so
+a crash leaves nothing to wait out. A second is refused while the first waits for you. What the
+call made is all it ever removes: the branch is created only if it does not exist yet, so a branch
+you made while the form was open is never used, moved or deleted, and a worktree at its path that
+git does not list as this call's is left alone. A worktree of the branch whose folder is gone is
+removed and made again, unless you locked it (`git worktree lock`).
 
 ## The factory-handoff skill
 

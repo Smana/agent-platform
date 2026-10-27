@@ -129,11 +129,13 @@ func (f fixture) checkout(g Git) Checkout {
 
 // confirmer records what it was asked and answers yes or no.
 type confirmer struct {
+	more   []int
 	asked  [][]string
 	answer bool
 }
 
-func (c *confirmer) confirm(_ context.Context, files []string) (bool, error) {
+func (c *confirmer) confirm(_ context.Context, files []string, more int) (bool, error) {
+	c.more = append(c.more, more)
 	c.asked = append(c.asked, slices.Clone(files))
 	return c.answer, nil
 }
@@ -503,7 +505,7 @@ func TestIsFlagged(t *testing.T) {
 		"docs/café.md": true, ".huſky/x": true, "miſe.toml": true, ".c\u200claude/x": true,
 		".mise.local.toml": true, "mise.test.toml": true, ".mise.dev.toml": true, ".mise/config.toml": true, "mise/config.toml": true,
 		".config/mise/conf.d/a.toml": true, "lefthook.yaml": true, "lefthook.toml": true, "lefthook-local.yml": true, ".lefthook.json": true,
-		".config/lefthook.yml": true, ".devcontainer.json": true, ".github/hooks/pre": true, ".kiro/hooks/x": true, ".amazonq/mcp.json": true,
+		".config/lefthook.yml": true, ".lefthook-local.yml": true, ".config/lefthook-local.toml": true, ".devcontainer.json": true, ".github/hooks/pre": true, ".kiro/hooks/x": true, ".amazonq/mcp.json": true,
 		".roo/mcp.json": true, ".continue/config.yaml": true, ".zed/settings.json": true, ".qwen/settings.json": true, ".windsurf/x": true,
 		"crush.json": true, ".tool-versions": true, "sub/lefthook.yml": true,
 		"mise.md": false, "lefthook": false, "src/mise.go": false, ".github/workflows/ci.yml": false, "src/claude.go": false, "README.md": false, ".claudex": false,
@@ -573,7 +575,7 @@ func TestCheckoutChecksThePathAgainBeforeTheAdd(t *testing.T) {
 	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
 	target := t.TempDir()
 	co := f.checkout(RunGit)
-	co.Confirm = func(context.Context, []string) (bool, error) {
+	co.Confirm = func(context.Context, []string, int) (bool, error) {
 		return true, os.Symlink(target, filepath.Join(f.parent, "a.26zfnuxm")) // during the form
 	}
 	_, err := co.Run(t.Context())
@@ -614,7 +616,7 @@ func TestCheckoutCreatesTheCommitThatWasChecked(t *testing.T) {
 	f := newFixture(t, fixtureOpts{branch: map[string]string{"mise.toml": "[tasks]\n"}})
 	checked := gitIn(t, f.seed, "rev-parse", "HEAD")
 	co := f.checkout(RunGit)
-	co.Confirm = func(context.Context, []string) (bool, error) {
+	co.Confirm = func(context.Context, []string, int) (bool, error) {
 		f.advance(t, map[string]string{".claude/settings.json": "{\"hooks\":1}\n"}) // what a later fetch brings
 		return true, nil
 	}
@@ -680,6 +682,9 @@ func TestCheckoutRemovesAWorktreeThatWasNotFinished(t *testing.T) {
 	}
 	if list := gitIn(t, f.ws, "worktree", "list", "--porcelain"); strings.Contains(list, "a.26zfnuxm") {
 		t.Fatalf("still registered: %s", list)
+	}
+	if out := gitIn(t, f.ws, "branch", "--list", "agent/26zfnuxm"); out != "" {
+		t.Fatalf("the branch this call made is left: %q", out)
 	}
 	if got, err := f.checkout(RunGit).Run(t.Context()); err != nil || got.Reused {
 		t.Fatalf("%+v %v", got, err)
@@ -812,7 +817,7 @@ func TestCheckoutNeverDeletesABranchItDidNotCreate(t *testing.T) {
 			defer cancel()
 			var mine string
 			co := f.checkout(RunGit)
-			co.Confirm = func(context.Context, []string) (bool, error) {
+			co.Confirm = func(context.Context, []string, int) (bool, error) {
 				gitIn(t, f.ws, "switch", "-q", "-c", "agent/26zfnuxm")
 				put(t, f.ws, "mine.txt", "my work\n", 0o644)
 				gitIn(t, f.ws, "add", "mine.txt")
@@ -839,7 +844,7 @@ func TestCheckoutSerialisesPerRoom(t *testing.T) {
 	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
 	entered, release := make(chan struct{}), make(chan struct{})
 	first := f.checkout(RunGit)
-	first.Confirm = func(context.Context, []string) (bool, error) { close(entered); <-release; return true, nil }
+	first.Confirm = func(context.Context, []string, int) (bool, error) { close(entered); <-release; return true, nil }
 	type result struct {
 		got CheckedOut
 		err error
@@ -848,7 +853,7 @@ func TestCheckoutSerialisesPerRoom(t *testing.T) {
 	go func() { got, err := first.Run(t.Context()); done <- result{got, err} }()
 	<-entered
 	second := f.checkout(RunGit)
-	second.Confirm = func(context.Context, []string) (bool, error) { return true, nil }
+	second.Confirm = func(context.Context, []string, int) (bool, error) { return true, nil }
 	_, err := second.Run(t.Context())
 	if r := asRefusal(t, err); !strings.Contains(r.Error(), "another") {
 		t.Fatalf("%v", r)
@@ -881,7 +886,34 @@ func TestCheckoutShowsRealMatchesFirst(t *testing.T) {
 	_, err := co.Run(t.Context())
 	_ = asRefusal(t, err)
 	got := c.asked[0]
-	if got[0] != ".claude/settings.json" || len(got) != 1+maxConfirmed+1 || got[len(got)-1] != "and 5 more" {
+	if got[0] != ".claude/settings.json" || len(got) != 1+maxPadded || c.more[0] != 5 {
+		t.Fatalf("%q, %d more", got, c.more[0])
+	}
+}
+
+// Named matches are generous but not unbounded.
+func TestCheckoutCapsNamedMatchesAtTwoHundred(t *testing.T) {
+	branch := map[string]string{}
+	for i := 0; i < 205; i++ {
+		branch[fmt.Sprintf(".claude/f%03d", i)] = "x\n"
+	}
+	f := newFixture(t, fixtureOpts{branch: branch})
+	c := &confirmer{answer: false}
+	co := f.checkout(RunGit)
+	co.Confirm = c.confirm
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	if len(c.asked[0]) != maxNamed || c.more[0] != 5 {
+		t.Fatalf("%d names, %d more", len(c.asked[0]), c.more[0])
+	}
+}
+
+// Only a line we appended is the count; a file by that name is a file.
+func TestCodeSpansTheCountOnlyWhenWeAddedIt(t *testing.T) {
+	if got := CodeSpans([]string{"and 3 more"}, 0); got[0] != "`and 3 more`" {
+		t.Fatalf("%q", got)
+	}
+	if got := CodeSpans([]string{"a", "and 3 more"}, 7); got[1] != "`and 3 more`" || got[2] != "and 7 more" {
 		t.Fatalf("%q", got)
 	}
 }
@@ -896,5 +928,91 @@ func TestCheckoutFailsClosedOnAHeadDiffError(t *testing.T) {
 	}
 	if _, err := f.checkout(g).Run(t.Context()); err == nil {
 		t.Fatal("a failed HEAD diff must not pass")
+	}
+}
+
+// flock: a lock is the kernel's, so a file left behind by a crash locks nothing, and a second
+// holder is refused while the first lives.
+func TestLockRoom(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	// a leftover file, however fresh
+	dir := gitIn(t, f.ws, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	put(t, dir, "roomctl-checkout-26zfnuxm.lock", "99999\n", 0o600)
+	unlock, err := lockRoom(t.Context(), RunGit, f.ws, "26zfnuxm")
+	if err != nil {
+		t.Fatalf("a leftover file is no lock: %v", err)
+	}
+	if _, err := lockRoom(t.Context(), RunGit, f.ws, "26zfnuxm"); err == nil {
+		t.Fatal("a second holder was let in")
+	}
+	if _, err := lockRoom(t.Context(), RunGit, f.ws, "bbbbbbbb"); err != nil {
+		t.Fatalf("another room is free: %v", err)
+	}
+	unlock()
+	if u, err := lockRoom(t.Context(), RunGit, f.ws, "26zfnuxm"); err != nil {
+		t.Fatalf("not released: %v", err)
+	} else {
+		u()
+	}
+}
+
+// A worktree the developer made at our path, between our checks and our add, is theirs.
+func TestCheckoutLeavesADevelopersWorktreeAtItsPath(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	path := filepath.Join(f.parent, "a.26zfnuxm")
+	once := false
+	g := func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "update-ref" && args[1] != "-d" && !once { // our create: the developer is faster than our add
+			once = true
+			gitIn(t, f.ws, "worktree", "add", "-q", "-b", "dev-work", path, "main")
+			put(t, path, "unsaved.txt", "mine\n", 0o644)
+		}
+		return RunGit(ctx, dir, args...)
+	}
+	if _, err := f.checkout(g).Run(t.Context()); err == nil {
+		t.Fatal("expected the add to fail")
+	}
+	if _, err := os.Stat(filepath.Join(path, "unsaved.txt")); err != nil {
+		t.Fatalf("the developer's worktree was removed: %v", err)
+	}
+	if out := gitIn(t, f.ws, "branch", "--list", "agent/26zfnuxm"); out != "" {
+		t.Fatalf("the branch this call made is left: %q", out)
+	}
+}
+
+// The branch is deleted only when nothing has it checked out and the worktree is gone.
+func TestCheckoutKeepsTheBranchWhenTheWorktreeCannotBeRemoved(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	g := func(ctx context.Context, dir string, args ...string) (string, error) {
+		if args[0] == "worktree" && args[1] == "remove" {
+			return "", errors.New("git worktree: fatal: refused")
+		}
+		return failAfter("worktree add", nil, context.Canceled)(ctx, dir, args...)
+	}
+	if _, err := f.checkout(g).Run(t.Context()); err == nil {
+		t.Fatal("expected the failure")
+	}
+	if out := gitIn(t, f.ws, "branch", "--list", "agent/26zfnuxm"); out == "" {
+		t.Fatal("the branch of a worktree that is still there was deleted")
+	}
+}
+
+// A lock the developer set on a worktree whose folder is gone is theirs to lift.
+func TestCheckoutRespectsADeliberateLock(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	first, err := f.checkout(RunGit).Run(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.ws, "worktree", "lock", "--reason", "usb disk", first.Path)
+	if err := os.RemoveAll(first.Path); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.checkout(RunGit).Run(t.Context())
+	if r := asRefusal(t, err); !strings.Contains(r.Error(), "locked") {
+		t.Fatalf("%v", r)
+	}
+	if list := gitIn(t, f.ws, "worktree", "list", "--porcelain"); !strings.Contains(list, "a.26zfnuxm") {
+		t.Fatalf("the locked worktree was removed: %s", list)
 	}
 }
