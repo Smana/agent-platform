@@ -312,3 +312,100 @@ class InstallTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeTimeout(Exception):
+    """Stands for openhands.sdk.llm.exceptions.LLMTimeoutError."""
+
+
+class FakeClientError(Exception):
+    status_code = 400
+
+
+class FakeLLM:
+    """The two public entry points the SDK's hard timeout wraps; each call pops the next scripted outcome."""
+    script, calls = [], []
+
+    def completion(self, messages, **kwargs):
+        FakeLLM.calls.append(("completion", kwargs))
+        out = FakeLLM.script.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    async def agenerate(self, messages, **kwargs):
+        FakeLLM.calls.append(("agenerate", kwargs))
+        out = FakeLLM.script.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+class TimeoutRetryTest(unittest.TestCase):
+    """Live on gcp-0 (glm-5.3 via Z.ai, p99 82 s) one call that hung to the SDK's 300 s hard timeout
+    failed the whole run, twice. A timed-out call is sent once more with a fresh request, and nothing
+    else is: not a 4xx, not a stream that already produced tokens."""
+
+    def setUp(self):
+        class LLM(FakeLLM):
+            pass
+
+        self.llm = LLM()
+        self.cls = LLM
+        FakeLLM.calls = []
+        self.retry_log = os.path.join(tempfile.mkdtemp(), "retries")
+        patcher = mock.patch.dict(os.environ, {"AGENT_RUN_RETRY_LOG": self.retry_log})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertTrue(load_site().patch_timeout_retry(LLM, FakeTimeout))
+
+    def run_call(self, path, script, **kwargs):
+        FakeLLM.script = list(script)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            try:
+                if path == "async":
+                    return asyncio.run(self.llm.agenerate([], **kwargs)), err.getvalue()
+                return self.llm.completion([], **kwargs), err.getvalue()
+            except Exception as exc:  # noqa: BLE001 -- the test asserts on it
+                return exc, err.getvalue()
+
+    def test_a_timeout_then_success_continues_and_is_logged(self):
+        for path in ("async", "sync"):
+            with self.subTest(path=path):
+                FakeLLM.calls = []
+                out, err = self.run_call(path, [FakeTimeout("hard timeout after 300 s"), "ok"])
+                self.assertEqual((out, len(FakeLLM.calls)), ("ok", 2))
+                self.assertIn("agent-run model retry timeout 1/1: FakeTimeout", err)
+        with mock.patch.object(agent_run, "RETRY_LOG", self.retry_log):
+            self.assertEqual(agent_run.model_retries(), 2)
+
+    def test_two_timeouts_fail_as_before(self):
+        for path in ("async", "sync"):
+            with self.subTest(path=path):
+                FakeLLM.calls = []
+                out, _ = self.run_call(path, [FakeTimeout("a"), FakeTimeout("b")])
+                self.assertIsInstance(out, FakeTimeout)
+                self.assertEqual(str(out), "b")
+                self.assertEqual(len(FakeLLM.calls), 2, "one retry, never more")
+
+    def test_nothing_but_a_timeout_is_retried(self):
+        for path in ("async", "sync"):
+            with self.subTest(path=path):
+                FakeLLM.calls = []
+                out, err = self.run_call(path, [FakeClientError("400"), "ok"])
+                self.assertIsInstance(out, FakeClientError)
+                self.assertEqual(len(FakeLLM.calls), 1)
+                self.assertNotIn("model retry", err)
+
+    def test_a_stream_that_may_have_produced_tokens_is_not_retried(self):
+        out, _ = self.run_call("async", [FakeTimeout("a"), "ok"], on_token=lambda t: None)
+        self.assertIsInstance(out, FakeTimeout)
+        self.assertEqual(len(FakeLLM.calls), 1)
+
+    def test_an_sdk_without_the_entry_points_is_said_and_not_patched(self):
+        class Bare:
+            __name__ = "Bare"
+
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertFalse(load_site().patch_timeout_retry(Bare, FakeTimeout))
+        self.assertIn("timeout retry NOT applied", err.getvalue())
