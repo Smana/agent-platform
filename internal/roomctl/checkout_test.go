@@ -203,6 +203,7 @@ func TestCheckoutReusesItsWorktree(t *testing.T) {
 
 // fixtureFile is a file that matches a flagged entry.
 func fixtureFile(entry string) string {
+	entry = strings.ReplaceAll(entry, "*", "x")
 	if strings.HasSuffix(entry, "/") {
 		return entry + "x"
 	}
@@ -500,7 +501,12 @@ func TestIsFlagged(t *testing.T) {
 		".agents/skills/a/SKILL.md": true, ".gemini/skills/a/SKILL.md": true, ".cursor/skills/a/SKILL.md": true, ".github/skills/a/SKILL.md": true,
 		".codex/prompts/x.md": true, ".gitmodules": true, ".lfsconfig": true, "sub/.CLAUDE/x": true,
 		"docs/café.md": true, ".huſky/x": true, "miſe.toml": true, ".c\u200claude/x": true,
-		".github/workflows/ci.yml": false, "src/claude.go": false, "README.md": false, ".claudex": false,
+		".mise.local.toml": true, "mise.test.toml": true, ".mise.dev.toml": true, ".mise/config.toml": true, "mise/config.toml": true,
+		".config/mise/conf.d/a.toml": true, "lefthook.yaml": true, "lefthook.toml": true, "lefthook-local.yml": true, ".lefthook.json": true,
+		".config/lefthook.yml": true, ".devcontainer.json": true, ".github/hooks/pre": true, ".kiro/hooks/x": true, ".amazonq/mcp.json": true,
+		".roo/mcp.json": true, ".continue/config.yaml": true, ".zed/settings.json": true, ".qwen/settings.json": true, ".windsurf/x": true,
+		"crush.json": true, ".tool-versions": true, "sub/lefthook.yml": true,
+		"mise.md": false, "lefthook": false, "src/mise.go": false, ".github/workflows/ci.yml": false, "src/claude.go": false, "README.md": false, ".claudex": false,
 	} {
 		if got := isFlagged(p, flagged); got != want {
 			t.Errorf("isFlagged(%q) = %v", p, got)
@@ -793,5 +799,102 @@ func TestRelayCancellingCheckoutCancelsItsForm(t *testing.T) {
 	p, _ := m["params"].(map[string]any)
 	if m["method"] != "notifications/cancelled" || p["requestId"] != form["id"] {
 		t.Fatalf("%v", m)
+	}
+}
+
+// What a developer commits on agent/<room> while the form is open is theirs: it survives the
+// call, whether the call is cancelled or goes on.
+func TestCheckoutNeverDeletesABranchItDidNotCreate(t *testing.T) {
+	for name, cancelled := range map[string]bool{"cancelled": true, "not cancelled": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var mine string
+			co := f.checkout(RunGit)
+			co.Confirm = func(context.Context, []string) (bool, error) {
+				gitIn(t, f.ws, "switch", "-q", "-c", "agent/26zfnuxm")
+				put(t, f.ws, "mine.txt", "my work\n", 0o644)
+				gitIn(t, f.ws, "add", "mine.txt")
+				gitIn(t, f.ws, "commit", "-q", "-m", "my work")
+				mine = gitIn(t, f.ws, "rev-parse", "HEAD")
+				gitIn(t, f.ws, "switch", "-q", "main")
+				if cancelled {
+					cancel()
+				}
+				return true, nil
+			}
+			if _, err := co.Run(ctx); err == nil {
+				t.Fatal("expected a refusal or a cancellation")
+			}
+			if got := gitIn(t, f.ws, "rev-parse", "refs/heads/agent/26zfnuxm"); got != mine {
+				t.Fatalf("the developer's branch is %s, was %s", got, mine)
+			}
+		})
+	}
+}
+
+// One checkout of a room at a time: the second is told so, and neither removes the other's worktree.
+func TestCheckoutSerialisesPerRoom(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{".mcp.json": "{}\n"}})
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := f.checkout(RunGit)
+	first.Confirm = func(context.Context, []string) (bool, error) { close(entered); <-release; return true, nil }
+	type result struct {
+		got CheckedOut
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { got, err := first.Run(t.Context()); done <- result{got, err} }()
+	<-entered
+	second := f.checkout(RunGit)
+	second.Confirm = func(context.Context, []string) (bool, error) { return true, nil }
+	_, err := second.Run(t.Context())
+	if r := asRefusal(t, err); !strings.Contains(r.Error(), "another") {
+		t.Fatalf("%v", r)
+	}
+	close(release)
+	res := <-done
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	if st, err := os.Stat(res.got.Path); err != nil || !st.IsDir() {
+		t.Fatalf("the first worktree is gone: %v", err)
+	}
+	// the lock is released: a third call finds the worktree
+	if again, err := f.checkout(RunGit).Run(t.Context()); err != nil || !again.Reused {
+		t.Fatalf("%+v %v", again, err)
+	}
+}
+
+// The real matches come first and in full: padding the list with names that are only asked about
+// for their bytes or their mode cannot hide them.
+func TestCheckoutShowsRealMatchesFirst(t *testing.T) {
+	branch := map[string]string{".claude/settings.json": "{}\n"}
+	for i := 0; i < 25; i++ {
+		branch[fmt.Sprintf("-\u00e9%02d.txt", i)] = "x\n"
+	}
+	f := newFixture(t, fixtureOpts{branch: branch})
+	c := &confirmer{answer: false}
+	co := f.checkout(RunGit)
+	co.Confirm = c.confirm
+	_, err := co.Run(t.Context())
+	_ = asRefusal(t, err)
+	got := c.asked[0]
+	if got[0] != ".claude/settings.json" || len(got) != 1+maxConfirmed+1 || got[len(got)-1] != "and 5 more" {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestCheckoutFailsClosedOnAHeadDiffError(t *testing.T) {
+	f := newFixture(t, fixtureOpts{branch: map[string]string{"x": "x"}})
+	g := func(ctx context.Context, dir string, args ...string) (string, error) {
+		if len(args) > 4 && args[0] == "diff" && args[len(args)-2] == "HEAD" {
+			return "", errors.New("git diff: fatal: bad object, HEAD is somehow bad")
+		}
+		return RunGit(ctx, dir, args...)
+	}
+	if _, err := f.checkout(g).Run(t.Context()); err == nil {
+		t.Fatal("a failed HEAD diff must not pass")
 	}
 }

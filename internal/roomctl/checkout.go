@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Smana/agent-platform/internal/mcpwire"
 	"github.com/Smana/agent-platform/internal/roomview"
@@ -27,11 +29,16 @@ import (
 var flagged = []string{
 	// Agent and editor configuration, whole: hooks, tools, plugins, skills and scripts all live beside the settings.
 	".claude/", ".cursor/", ".opencode/", ".gemini/", ".codex/", ".vscode/", ".agents/", ".devcontainer/",
-	".github/skills/", ".github/mcp.json",
-	".mcp.json", "opencode.json", "opencode.jsonc",
-	".envrc", "mise.toml", ".mise.toml", "mise.local.toml",
+	".kiro/", ".amazonq/", ".roo/", ".continue/", ".zed/", ".qwen/", ".windsurf/",
+	".github/skills/", ".github/hooks/", ".github/mcp.json",
+	".mcp.json", "opencode.json", "opencode.jsonc", "crush.json", ".crush.json", ".devcontainer.json",
+	// Tools that run what a file says when the developer enters the folder or commits. A "*" matches
+	// within one path component.
+	".envrc", ".tool-versions", "mise.toml", ".mise.toml", "mise.local.toml", ".mise.local.toml", "mise.*.toml", ".mise.*.toml",
+	".mise/", "mise/", ".config/mise/",
+	".pre-commit-config.yaml", "lefthook.*", "lefthook-local.*", ".lefthook.*", ".config/lefthook.*",
 	".gitmodules", ".lfsconfig",
-	".husky/", ".githooks/", ".pre-commit-config.yaml", "lefthook.yml", ".lefthook.yml",
+	".husky/", ".githooks/",
 }
 
 // maxConfirmed is how many flagged files a form or a refusal names; the rest is counted.
@@ -116,6 +123,11 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 		}
 		return out, refuse(why+", and the room opened no pull request", "")
 	}
+	unlock, err := lockRoom(ctx, git, top, c.Room)
+	if err != nil {
+		return out, err
+	}
+	defer unlock()
 	path, err := reusable(ctx, git, top, remote)
 	if err != nil {
 		return out, err
@@ -151,12 +163,11 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 		return out, refuse("a local branch "+branch+" exists and is not the commit origin has ("+local[:12]+", not "+sha[:12]+")",
 			"git branch -D "+branch+" to drop it, or git branch -f "+branch+" "+sha[:12]+" to move it")
 	}
-	files, err := c.flaggedFiles(ctx, git, top, sha)
+	shown, err := c.flaggedFiles(ctx, git, top, sha)
 	if err != nil {
 		return out, err
 	}
-	if len(files) > 0 {
-		shown := capNames(files)
+	if len(shown) > 0 {
 		if c.Confirm == nil {
 			return out, refuse(branch+" changes files that run code on your machine, and this client cannot ask you: "+strings.Join(shown, ", "),
 				"read them in the pull request, then check the branch out yourself")
@@ -172,21 +183,26 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 	if err := freePath(path, branch); err != nil { // the form can take minutes
 		return out, err
 	}
-	args := []string{"worktree", "add", "-b", branch, path, sha}
-	if haveLocal {
-		args = []string{"worktree", "add", path, branch}
-	}
-	// Whatever ends badly from here (a cancellation kills git half way) leaves nothing behind.
+	// The branch is made create-only: a branch the developer made while the form was open is theirs,
+	// and is never used, moved or deleted here. What undo removes is what this call made, at its own
+	// path (the room's lock is held, and the path was free a moment ago).
+	created := false
 	undo := func() {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitTimeout)
 		defer cancel()
 		_, _ = git(cctx, top, "worktree", "remove", "--force", "--force", path)
-		_, _ = git(cctx, top, "worktree", "prune")
-		if !haveLocal {
-			_, _ = git(cctx, top, "branch", "-D", branch)
+		if created { // only while it is still the commit this call put there
+			_, _ = git(cctx, top, "update-ref", "-d", remote, sha)
 		}
 	}
-	if _, err := git(ctx, top, args...); err != nil {
+	if !haveLocal {
+		zero := strings.Repeat("0", len(sha))
+		if _, err := git(ctx, top, "update-ref", remote, sha, zero); err != nil {
+			return out, refuse(branch+" appeared while you were deciding, or could not be created: it was left as it is", "git branch -D "+branch+" to drop it, then try again")
+		}
+		created = true
+	}
+	if _, err := git(ctx, top, "worktree", "add", path, branch); err != nil {
 		undo()
 		return out, fmt.Errorf("checkout: %w", err)
 	}
@@ -197,11 +213,42 @@ func (c Checkout) Run(ctx context.Context) (CheckedOut, error) {
 	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path || filepath.Dir(resolved) != parent {
 		return out, fmt.Errorf("checkout: %s is not where the worktree was meant to be: check it before you use it", OneLine(path))
 	}
-	if !haveLocal { // best effort: the branch follows origin's
+	if created { // best effort: the branch follows origin's
 		_, _ = git(ctx, top, "branch", "--set-upstream-to=origin/"+branch, branch)
 	}
 	out.Path = path
 	return out, nil
+}
+
+// lockStale is how old a room's lock file is before it is taken to be left by a crash: longer
+// than a form waits.
+const lockStale = 15 * time.Minute
+
+// lockRoom serialises the checkouts of one room in one repository, with a file made O_EXCL under
+// git's own directory, and returns its release. A second call is refused, never made to wait.
+func lockRoom(ctx context.Context, git Git, top, room string) (func(), error) {
+	dir, err := git(ctx, top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return nil, fmt.Errorf("checkout: %w", err)
+	}
+	lock := filepath.Join(strings.TrimRight(dir, "\n"), "roomctl-checkout-"+room+".lock")
+	for range 2 {
+		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // under git's own directory, named by a validated room
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("checkout: %w", err)
+		}
+		if st, serr := os.Stat(lock); serr == nil && time.Since(st.ModTime()) > lockStale {
+			_ = os.Remove(lock) // left by a crash
+			continue
+		}
+		break
+	}
+	return nil, refuse("another checkout of "+room+" is running in this repository", "wait for it, then ask again")
 }
 
 // revParse is the full id of the commit ref names.
@@ -245,9 +292,11 @@ func reusable(ctx context.Context, git Git, top, ref string) (string, error) {
 			if _, err := git(ctx, top, "worktree", "remove", "--force", "--force", path); err != nil {
 				return "", refuse(OneLine(path)+" is a half-made worktree of "+ref+" that cannot be removed: "+OneLine(err.Error()), "git worktree remove --force --force <path>")
 			}
+			continue
 		}
-		if _, err := git(ctx, top, "worktree", "prune"); err != nil {
-			return "", fmt.Errorf("checkout: %w", err)
+		// its folder is gone: forget this worktree only, never the repository's others
+		if _, err := git(ctx, top, "worktree", "remove", "--force", "--force", path); err != nil {
+			return "", refuse(OneLine(path)+" is a worktree of "+ref+" whose folder is gone and cannot be removed: "+OneLine(err.Error()), "git worktree prune")
 		}
 	}
 	return "", refuse("a worktree of "+ref+" is left over and cannot be removed", "git worktree prune")
@@ -295,10 +344,16 @@ func (c Checkout) flaggedFiles(ctx context.Context, git Git, top, sha string) ([
 			entries = append(entries, p)
 		}
 	}
-	var all []string
+	// The matches of the entries come first and in full; the symlinks and the names with a byte past
+	// ASCII, which a branch can make as many of as it likes, follow and are capped.
+	var named, padded []string
 	add := func(mode, file string) {
-		if file != "" && (mode == symlinkMode || isFlagged(file, entries)) {
-			all = append(all, OneLine(file))
+		switch {
+		case file == "":
+		case matchesEntries(file, entries):
+			named = append(named, OneLine(file))
+		case mode == symlinkMode || nonASCII(file):
+			padded = append(padded, OneLine(file))
 		}
 	}
 	tree, err := git(ctx, top, "ls-tree", "-r", "-z", sha)
@@ -336,11 +391,16 @@ func (c Checkout) flaggedFiles(ctx context.Context, git Git, top, sha string) ([
 			return nil, fmt.Errorf("checkout: listing the branch's changes: %w", err)
 		}
 	}
-	if err := diff("HEAD"); err != nil && mbErr == nil && !strings.Contains(err.Error(), "HEAD") {
-		return nil, fmt.Errorf("checkout: listing the branch's changes: %w", err)
-	} // an unborn HEAD has nothing to differ from
-	slices.Sort(all)
-	return slices.Compact(all), nil
+	if mbErr == nil { // HEAD is born: a failed diff against it is a failed check
+		if err := diff("HEAD"); err != nil {
+			return nil, fmt.Errorf("checkout: listing the branch's changes: %w", err)
+		}
+	}
+	slices.Sort(named)
+	slices.Sort(padded)
+	padded = slices.Compact(padded)
+	padded = slices.DeleteFunc(padded, func(f string) bool { return slices.Contains(named, f) })
+	return append(slices.Compact(named), capNames(padded)...), nil
 }
 
 // lsTreeEntry is the mode and the path of one "<mode> <type> <sha>\t<path>" record.
@@ -397,6 +457,9 @@ func dirNames(entries []string) []string {
 		}
 		parts := strings.Split(strings.TrimSuffix(e, "/"), "/")
 		for i := range parts {
+			if strings.Contains(parts[i], "*") {
+				break
+			}
 			names = append(names, strings.Join(parts[:i+1], "/"))
 		}
 	}
@@ -404,15 +467,27 @@ func dirNames(entries []string) []string {
 	return slices.Compact(names)
 }
 
-// isFlagged is whether file is under a flagged entry, or is a directory of one: at the root or in
-// a subdirectory (a tool started there reads its own folder), in ASCII case, or has a byte past
-// ASCII in its name. The hooks path entry "/" matches every file.
-func isFlagged(file string, entries []string) bool {
+// nonASCII is whether a name has a byte past ASCII: a filesystem may fold it into an ASCII name, and
+// roomctl never chases the foldings.
+func nonASCII(file string) bool {
 	for i := 0; i < len(file); i++ {
-		if file[i] >= 0x80 { // a filesystem may fold it into an ASCII name: never chase the foldings
+		if file[i] >= 0x80 {
 			return true
 		}
 	}
+	return false
+}
+
+// isFlagged is whether file is under a flagged entry, or is a directory of one, or has a byte past
+// ASCII in its name.
+func isFlagged(file string, entries []string) bool {
+	return nonASCII(file) || matchesEntries(file, entries)
+}
+
+// matchesEntries is whether file is under an entry, or is a directory of one: at the root or in a
+// subdirectory (a tool started there reads its own folder), in ASCII case. The hooks path entry "/"
+// matches every file; an entry with a "*" is a glob whose "*" stays within one path component.
+func matchesEntries(file string, entries []string) bool {
 	lf := strings.ToLower(file)
 	for _, e := range entries {
 		le := strings.ToLower(e)
@@ -421,6 +496,10 @@ func isFlagged(file string, entries []string) bool {
 			return true
 		case strings.HasSuffix(le, "/"):
 			if strings.HasPrefix(lf, le) || strings.Contains(lf, "/"+le) {
+				return true
+			}
+		case strings.Contains(le, "*"):
+			if globSuffix(le, lf) {
 				return true
 			}
 		case lf == le || strings.HasSuffix(lf, "/"+le):
@@ -433,6 +512,20 @@ func isFlagged(file string, entries []string) bool {
 		}
 	}
 	return false
+}
+
+// globSuffix is whether pattern matches file or any tail of it that starts at a "/".
+func globSuffix(pattern, file string) bool {
+	for {
+		if ok, _ := path.Match(pattern, file); ok {
+			return true
+		}
+		_, rest, found := strings.Cut(file, "/")
+		if !found {
+			return false
+		}
+		file = rest
+	}
 }
 
 // capNames keeps the first maxConfirmed names and counts the rest.
@@ -519,11 +612,13 @@ func (r *Relay) roomCheckout(ctx context.Context, c localCall) any {
 	return out
 }
 
+var moreRE = regexp.MustCompile(`^and [0-9]+ more$`)
+
 // CodeSpans is the names in code spans; the "and N more" line is ours, not a name.
 func CodeSpans(files []string) []string {
 	out := make([]string, len(files))
 	for i, f := range files {
-		if strings.HasPrefix(f, "and ") && strings.HasSuffix(f, " more") && i == len(files)-1 && len(files) == maxConfirmed+1 {
+		if i == len(files)-1 && moreRE.MatchString(f) {
 			out[i] = f
 			continue
 		}
