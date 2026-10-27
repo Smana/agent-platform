@@ -111,11 +111,13 @@ func TestDiscoverReadsTheBrokersPublicEndpoint(t *testing.T) {
 type doctorRig struct {
 	d      Doctor
 	access *string
+	rooms  *string // GET /api/rooms' body
+	draft  *string // issue_draft's structuredContent
 }
 
 func newDoctorRig(t *testing.T) doctorRig {
 	t.Helper()
-	access := ""
+	access, rooms, draft := "", `[]`, `{"canStart":false,"canStartWhy":"off"}`
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/roomctl":
@@ -128,7 +130,9 @@ func newDoctorRig(t *testing.T) doctorRig {
 			if access != "" {
 				w.Header().Set("X-Rooms-Access", access)
 			}
-			_, _ = w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(rooms))
+		case "/mcp":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"x","result":{"content":[{"type":"text","text":"d"}],"structuredContent":` + draft + `}}`))
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -137,7 +141,7 @@ func newDoctorRig(t *testing.T) doctorRig {
 	if err := SaveJSON(tokPath, &oauth2.Token{AccessToken: "tok", TokenType: "Bearer", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	return doctorRig{access: &access, d: Doctor{Config: Config{URL: srv.URL, Issuer: "https://auth.example", ClientID: "c", ProjectID: "p"},
+	return doctorRig{access: &access, rooms: &rooms, draft: &draft, d: Doctor{Config: Config{URL: srv.URL, Issuer: "https://auth.example", ClientID: "c", ProjectID: "p"},
 		HC: srv.Client(), TokenPath: tokPath,
 		Lookup: func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }}}
 }
@@ -288,5 +292,42 @@ func TestDoctorSkillCheckRunsWithAnUnusableURL(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "FAIL skill") {
 		t.Errorf("the skill check did not run:\n%s", &out)
+	}
+}
+
+// O3b: the room list answers "ok" for an admin whatever the GitHub link, so the header cannot say
+// "linked". doctor asks issue_draft, as the broker's canStart does, and tells what it learns.
+func TestDoctorGitHubLinkIsNeverAssumed(t *testing.T) {
+	const room = `[{"id":"3kq7x2ma","repository":"Smana/a"}]`
+	for name, tc := range map[string]struct {
+		access, rooms, draft string
+		want, wantNot        []string
+		fails                bool
+	}{
+		"admin, not linked": {"ok", room, `{"canStart":false,"canStartWhy":"not_linked"}`,
+			[]string{"FAIL github", "no linked GitHub identity"}, []string{"identity is linked"}, true},
+		"linked":               {"ok", room, `{"canStart":true}`, []string{"ok   github", "identity is linked"}, nil, false},
+		"cannot say":           {"ok", room, `{"canStart":false,"canStartWhy":"off"}`, []string{"ok   github", "unverified"}, []string{"identity is linked"}, false},
+		"no room to ask about": {"", `[]`, `{"canStart":true}`, []string{"unverified"}, []string{"identity is linked"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newDoctorRig(t)
+			*r.access, *r.rooms, *r.draft = tc.access, tc.rooms, tc.draft
+			var out strings.Builder
+			err := r.d.Run(t.Context(), &out)
+			if (err != nil) != tc.fails {
+				t.Fatalf("err %v\n%s", err, &out)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("no %q in:\n%s", w, &out)
+				}
+			}
+			for _, w := range tc.wantNot {
+				if strings.Contains(out.String(), w) {
+					t.Errorf("%q in:\n%s", w, &out)
+				}
+			}
+		})
 	}
 }

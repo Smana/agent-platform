@@ -217,7 +217,15 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	switch access := resp.Header.Get("X-Rooms-Access"); {
+	access := resp.Header.Get("X-Rooms-Access")
+	var rows []struct {
+		Repository string `json:"repository"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		body, _ := httpx.ReadBody(resp.Body, maxSetupBody)
+		_ = json.Unmarshal(body, &rows)
+	}
+	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		report(false, "github", "the broker refused the token: run roomctl login")
 	case resp.StatusCode != http.StatusOK:
@@ -227,6 +235,43 @@ func (d Doctor) github(ctx context.Context, tok string, report func(bool, string
 	case access == "unverified":
 		report(false, "github", "the broker cannot verify your GitHub access right now: retry in a minute, and if it persists ask an admin")
 	default:
+		// "ok" is no proof: an admin reads every room with no link, and a list with no room checks
+		// nothing. issue_draft's canStart looks the link up, so ask it.
+		d.linkProbe(ctx, tok, rows, report)
+	}
+}
+
+// linkProbe checks the GitHub link the way issue_draft's canStart does, on the repository of the
+// first room the list shows. Only "linked" and "not linked" are answers; anything else is unverified.
+func (d Doctor) linkProbe(ctx context.Context, tok string, rows []struct {
+	Repository string `json:"repository"`
+}, report func(bool, string, string)) {
+	repo := ""
+	for _, r := range rows {
+		if r.Repository != "" {
+			repo = r.Repository
+			break
+		}
+	}
+	const unverified = "unverified: the room list does not say whether GitHub is linked to your account (an admin reads every room without one)"
+	if repo == "" {
+		report(true, "github", unverified+", and no room shows a repository to check against")
+		return
+	}
+	rl := &Relay{URL: d.Config.URL, HC: d.HC, Token: func(context.Context) (string, error) { return tok, nil }}
+	_, sc, isErr, err := rl.callBroker(ctx, "issue_draft", map[string]string{"repo": repo, "title": "doctor: check the GitHub link",
+		"body": "## What is wrong\nnothing\n\n## What it should be\nnothing\n\n## Acceptance check\nnothing\n"})
+	var got draftShape
+	if err != nil || isErr || json.Unmarshal(sc, &got) != nil {
+		report(true, "github", unverified+": issue_draft did not answer")
+		return
+	}
+	switch {
+	case got.CanStart:
 		report(true, "github", "your GitHub identity is linked")
+	case got.CanStartWhy == "not_linked":
+		report(false, "github", "your account has no linked GitHub identity: ask an admin to link GitHub to it at "+d.Config.Issuer)
+	default:
+		report(true, "github", unverified+" (issue_draft: "+OneLine(got.CanStartWhy)+")")
 	}
 }
