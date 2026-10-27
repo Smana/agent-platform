@@ -221,7 +221,9 @@ func (r *Relay) roomWait(ctx context.Context, c localCall) any {
 				}
 			}
 			prev = now
-			r.progress(c.Progress, float64(poll), 0, fmt.Sprintf("watching %d rooms, nothing new yet", len(now)))
+			if ctx.Err() == nil { // nothing more is written for a cancelled request
+				r.progress(c.Progress, float64(poll), 0, fmt.Sprintf("watching %d rooms, nothing new yet", len(now)))
+			}
 		}
 		remaining := timeout - max(slept, time.Since(start))
 		if remaining <= 0 {
@@ -232,6 +234,9 @@ func (r *Relay) roomWait(ctx context.Context, c localCall) any {
 		case <-ctx.Done():
 			return mcpwire.ToolError("cancelled")
 		case <-r.after(wait):
+			if ctx.Err() != nil { // a cancel and the tick can be ready together: select picks either
+				return mcpwire.ToolError("cancelled")
+			}
 			slept += wait
 			if failing {
 				failedFor += wait
