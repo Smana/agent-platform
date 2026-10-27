@@ -17,29 +17,33 @@ import (
 func TestHit(t *testing.T) {
 	run := roomview.Row{ID: "a", State: "running", LastSeq: 5}
 	row := func(f func(*roomview.Row)) roomview.Row { r := run; f(&r); return r }
-	needs := func(r *roomview.Row) { r.NeedsMe = true }
+	needs := func(r *roomview.Row) { r.NeedsYou = 1 }
+	someone := func(r *roomview.Row) { r.NeedsMe = true }
 	pr := func(r *roomview.Row) { r.PR = 7 }
 	ended := func(r *roomview.Row) { r.State = "done" }
 	moved := func(r *roomview.Row) { r.LastSeq = 9 }
 	newNeed := func(id string) func(*roomview.Row) {
-		return func(r *roomview.Row) { r.NeedsMe, r.Need = true, &summary.Need{Kind: "approval", ID: id} }
+		return func(r *roomview.Row) { r.Need = &summary.Need{Kind: "approval", ID: id} }
 	}
 	for name, tc := range map[string]struct {
 		base, now roomview.Row
 		until     []string
 		want      string
 	}{
-		"needs_you newly true":      {run, row(needs), []string{"needs_you"}, "needs_you"},
-		"needs_you already true":    {row(needs), row(needs), []string{"needs_you"}, ""},
-		"needs_you, another need":   {row(newNeed("a1")), row(newNeed("a2")), []string{"needs_you"}, "needs_you"},
-		"needs_you, the same need":  {row(newNeed("a1")), row(newNeed("a1")), []string{"needs_you"}, ""},
-		"pr_opened newly":           {run, row(pr), []string{"pr_opened"}, "pr_opened"},
-		"pr_opened already":         {row(pr), row(pr), []string{"pr_opened"}, ""},
-		"ended newly":               {run, row(ended), []string{"ended"}, "ended"},
-		"ended already":             {row(ended), row(ended), []string{"ended"}, ""},
-		"any_change newly":          {run, row(moved), []string{"any_change"}, "any_change"},
-		"any_change, nothing moved": {run, run, []string{"any_change"}, ""},
-		"a condition not asked for": {run, row(pr), []string{"ended"}, ""},
+		"needs_you newly true":           {run, row(needs), []string{"needs_you"}, "needs_you"},
+		"needs_you, someone else's need": {run, row(someone), []string{"needs_you"}, ""},
+		"default: someone else's need":   {run, row(someone), nil, ""},
+		"needs_you, count 0 to 2":        {run, row(func(r *roomview.Row) { r.NeedsYou = 2 }), []string{"needs_you"}, "needs_you"},
+		"needs_you already true":         {row(needs), row(needs), []string{"needs_you"}, ""},
+		"needs_you, another need":        {row(newNeed("a1")), row(newNeed("a2")), []string{"needs_you"}, "needs_you"},
+		"needs_you, the same need":       {row(newNeed("a1")), row(newNeed("a1")), []string{"needs_you"}, ""},
+		"pr_opened newly":                {run, row(pr), []string{"pr_opened"}, "pr_opened"},
+		"pr_opened already":              {row(pr), row(pr), []string{"pr_opened"}, ""},
+		"ended newly":                    {run, row(ended), []string{"ended"}, "ended"},
+		"ended already":                  {row(ended), row(ended), []string{"ended"}, ""},
+		"any_change newly":               {run, row(moved), []string{"any_change"}, "any_change"},
+		"any_change, nothing moved":      {run, run, []string{"any_change"}, ""},
+		"a condition not asked for":      {run, row(pr), []string{"ended"}, ""},
 		// Without until it is the first three (L13): lastSeq alone is no hit.
 		"default: lastSeq alone":    {run, row(moved), nil, ""},
 		"default: needs_you":        {run, row(needs), nil, "needs_you"},
@@ -158,14 +162,21 @@ func TestRoomWaitDefaultsToMyOpenRooms(t *testing.T) {
 		var rows []map[string]any
 		for i := range 22 {
 			i := i
-			rows = append(rows, row(fmt.Sprintf("r%02d", i), func(m map[string]any) {
+			rows = append(rows, row(fmt.Sprintf("aaaaaa%c%c", 'a'+i/10, 'a'+i%10), func(m map[string]any) {
 				m["lastEventAt"] = time.Date(2026, 10, 20, 10, 60-i, 0, 0, time.UTC).Format(time.RFC3339)
 				if n > 1 && (i == 0 || i == 20 || i == 21) {
 					m["lastSeq"] = 9
 				}
 			}))
 		}
-		rows = append(rows, row("a-ended", func(m map[string]any) {
+		// A broker id that is not a room id is never watched, however fresh and busy.
+		rows = append(rows, row("../etc", func(m map[string]any) {
+			m["lastEventAt"] = "2026-10-20T12:00:00Z"
+			if n > 1 {
+				m["lastSeq"] = 9
+			}
+		}))
+		rows = append(rows, row("bbbbbbbb", func(m map[string]any) {
 			m["state"] = "done"
 			m["lastEventAt"] = "2026-10-20T11:00:00Z"
 			if n > 1 {
@@ -177,7 +188,7 @@ func TestRoomWaitDefaultsToMyOpenRooms(t *testing.T) {
 	s := relayTo(t, b, tok, withAfter((&steps{}).after))
 	waitCall(t, s, 1, map[string]any{"until": []string{"any_change"}}, nil)
 	_, sc, isErr := resultOf(first(answer(t, s, 1.0)))
-	if isErr || sc["room"] != "r00" || sc["condition"] != "any_change" {
+	if isErr || sc["room"] != "aaaaaaaa" || sc["condition"] != "any_change" {
 		t.Fatalf("%v", sc)
 	}
 	if args[0]["mine"] != true {
@@ -191,7 +202,7 @@ func TestRoomWaitReturnsTheCard(t *testing.T) {
 	b := newMCPBroker(t)
 	b.roomText = "# card of aaaaaaaa"
 	b.roomsFn = func(n int, _ map[string]any) []map[string]any {
-		return []map[string]any{row("aaaaaaaa", func(m map[string]any) { m["needsMe"] = n >= 3 })}
+		return []map[string]any{row("aaaaaaaa", func(m map[string]any) { m["needsYou"] = map[bool]int{false: 0, true: 1}[n >= 3] })}
 	}
 	st := &steps{}
 	s := relayTo(t, b, tok, withAfter(st.after))
@@ -213,7 +224,7 @@ func TestRoomWaitBacksOff(t *testing.T) {
 			if n >= 8 {
 				m["lastSeq"] = 6 // moves at the 8th poll: no hit, until is needs_you only
 			}
-			m["needsMe"] = n >= 10
+			m["needsYou"] = map[bool]int{false: 0, true: 1}[n >= 10]
 		})}
 	}
 	st := &steps{}
@@ -252,7 +263,7 @@ func TestRoomWaitProgressOnlyWithAToken(t *testing.T) {
 			b := newMCPBroker(t)
 			b.roomText = "# card"
 			b.roomsFn = func(n int, _ map[string]any) []map[string]any {
-				return []map[string]any{row("aaaaaaaa", func(m map[string]any) { m["needsMe"] = n >= 4 })}
+				return []map[string]any{row("aaaaaaaa", func(m map[string]any) { m["needsYou"] = map[bool]int{false: 0, true: 1}[n >= 4] })}
 			}
 			s := relayTo(t, b, tok, withAfter((&steps{}).after))
 			waitCall(t, s, 1, map[string]any{"rooms": []string{"aaaaaaaa"}}, tc.token)
@@ -282,17 +293,13 @@ func TestRoomWaitStopsOnCancel(t *testing.T) {
 	}
 	cancelOf(s, t, 7)
 	g.release <- time.Now() // the next tick comes after the cancel
-	if res := s.request(t, 8, "tools/list", nil); res["id"] != 8.0 {
-		t.Fatalf("a cancelled wait is not answered, and writes nothing more: %v", res)
+	// Closing stdin ends Serve only after the wait has returned: that is the sync point.
+	_ = s.in.Close()
+	for m := range s.lines {
+		t.Fatalf("written after the cancel: %v", m)
 	}
-	time.Sleep(50 * time.Millisecond)
 	if b.listed != 1 {
 		t.Fatalf("%d polls: none after the cancel", b.listed)
-	}
-	select {
-	case m := <-s.lines:
-		t.Fatalf("written after the cancel: %v", m)
-	default:
 	}
 }
 
@@ -329,6 +336,7 @@ func TestRoomWaitURLForm(t *testing.T) {
 		forms bool // the elicitation is sent
 	}{
 		"approval, rooms host, URL mode":   {map[string]any{"url": map[string]any{}}, "approval", func(b string) string { return b + "/r/" + room + "#ap1" }, true},
+		"a query on the right host":        {map[string]any{"url": map[string]any{}}, "approval", func(b string) string { return b + "/r/" + room + "?next=https://evil.example#ap1" }, true},
 		"URL mode with forms":              {map[string]any{"form": map[string]any{}, "url": map[string]any{}}, "approval", func(b string) string { return b + "/r/" + room + "#ap1" }, true},
 		"another host":                     {map[string]any{"url": map[string]any{}}, "approval", func(string) string { return "https://evil.example/r/" + room + "#ap1" }, false},
 		"another room's page":              {map[string]any{"url": map[string]any{}}, "approval", func(b string) string { return b + "/r/bbbbbbbb#ap1" }, false},
@@ -368,7 +376,7 @@ func TestRoomWaitURLForm(t *testing.T) {
 				t.Fatalf("the URL form goes out before the result: %v", before)
 			}
 			p := before[0]["params"].(map[string]any)
-			if p["mode"] != "url" || p["url"] != link || p["elicitationId"] == "" {
+			if p["mode"] != "url" || p["url"] != b.srv.URL+"/r/"+room+"#ap1" || p["elicitationId"] == "" {
 				t.Fatalf("%v", p)
 			}
 		})
@@ -420,7 +428,7 @@ func TestRoomWaitGivesUpAfterFailedPolls(t *testing.T) {
 	s := relayTo(t, b, tok, withAfter(st.after))
 	waitCall(t, s, 1, map[string]any{"rooms": []string{"aaaaaaaa"}}, nil)
 	text, _, isErr := resultOf(first(answer(t, s, 1.0)))
-	if !isErr || !strings.HasPrefix(text, "not_watching:") || len(st.waits()) != 2 {
+	if !isErr || !strings.HasPrefix(text, "not_watching:") || len(st.waits()) != 12 { // 60 s of 5 s waits
 		t.Fatalf("%q %v", text, st.waits())
 	}
 }
@@ -492,5 +500,43 @@ func TestRoomWaitSchema(t *testing.T) {
 	}
 	if d := roomWaitEntry["description"].(string); strings.Contains(d, "Not yet available") || !strings.Contains(d, "1800") {
 		t.Fatalf("%q", d)
+	}
+}
+
+func TestRoomWaitDefaultTimeoutIs300Seconds(t *testing.T) {
+	b := newMCPBroker(t)
+	b.roomsFn = func(int, map[string]any) []map[string]any { return []map[string]any{row("aaaaaaaa", nil)} }
+	st := &steps{}
+	s := relayTo(t, b, tok, withAfter(st.after))
+	waitCall(t, s, 1, map[string]any{}, nil)
+	text, sc, isErr := resultOf(first(answer(t, s, 1.0)))
+	var total time.Duration
+	for _, w := range st.waits() {
+		total += w
+	}
+	if isErr || sc["condition"] != "timeout" || total != 300*time.Second || !strings.Contains(text, "nothing new yet") {
+		t.Fatalf("%v %q waited %v", sc, text, total)
+	}
+}
+
+func TestRoomWaitWithNoOpenRoomsSaysNone(t *testing.T) {
+	b := newMCPBroker(t)
+	b.roomsFn = func(int, map[string]any) []map[string]any { return nil }
+	s := relayTo(t, b, tok, withAfter((&steps{}).after))
+	waitCall(t, s, 1, map[string]any{}, nil)
+	text, sc, isErr := resultOf(first(answer(t, s, 1.0)))
+	if isErr || sc["condition"] != "none" || !strings.Contains(text, "no open rooms") {
+		t.Fatalf("%v %q", sc, text)
+	}
+}
+
+func TestRoomWaitTimeoutAfterFailedPollsSaysSo(t *testing.T) {
+	b := newMCPBroker(t)
+	b.status = 500
+	s := relayTo(t, b, tok, withAfter((&steps{}).after))
+	waitCall(t, s, 1, map[string]any{"rooms": []string{"aaaaaaaa"}, "timeout": 1}, nil)
+	text, _, _ := resultOf(first(answer(t, s, 1.0)))
+	if !strings.Contains(text, "could not reach the broker") || strings.Contains(text, "nothing new") {
+		t.Fatalf("%q", text)
 	}
 }

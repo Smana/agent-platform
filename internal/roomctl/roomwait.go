@@ -24,12 +24,12 @@ import (
 // waitMax, so no call holds a slot forever. Waits have their own pool (maxWaits, see Serve), so
 // they never starve the relay's other requests.
 const (
-	waitDefault = 300  // seconds
-	waitMax     = 1800 // seconds
-	maxWatched  = 20   // rooms one call watches
-	maxWaits    = 8    // room_wait calls in flight at once; past it, a call is refused
-	waitGrowth  = 1.5  // the poll interval grows by this while nothing moves, up to maxPoll
-	maxPollFail = 3    // consecutive failed polls before the wait gives up
+	waitDefault = 300              // seconds
+	waitMax     = 1800             // seconds
+	maxWatched  = 20               // rooms one call watches
+	maxWaits    = 8                // room_wait calls in flight at once; past it, a call is refused
+	waitGrowth  = 1.5              // the poll interval grows by this while nothing moves, up to maxPoll
+	pollFailFor = 60 * time.Second // how long polls may keep failing before the wait gives up
 	urlMode     = "2025-11-25"
 )
 
@@ -45,6 +45,7 @@ const (
 var (
 	waitConditions = []string{condNeedsYou, condPROpened, condEnded, condAnyChange}
 	roomIDRE       = regexp.MustCompile(`^[a-z2-7]{8}$`)
+	linkIDRE       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
 var roomWaitEntry = map[string]any{
@@ -77,7 +78,8 @@ func rowEnded(r roomview.Row) bool {
 func holds(c string, base, now roomview.Row) bool {
 	switch c {
 	case condNeedsYou:
-		return (now.NeedsMe && !base.NeedsMe) || (now.Need != nil && (base.Need == nil || base.Need.ID != now.Need.ID))
+		// The caller's own fields: NeedsMe says some human has an item, not that this one does.
+		return (now.NeedsYou > 0 && base.NeedsYou == 0) || (now.Need != nil && (base.Need == nil || base.Need.ID != now.Need.ID))
 	case condPROpened:
 		return base.PR == 0 && now.PR > 0
 	case condEnded:
@@ -185,18 +187,19 @@ func (r *Relay) roomWait(ctx context.Context, c localCall) any {
 		watch[id] = true
 	}
 	var base, prev map[string]roomview.Row
-	interval, slept, start, fails := defaultPoll, time.Duration(0), time.Now(), 0
+	interval, slept, start, failedFor, failing := defaultPoll, time.Duration(0), time.Now(), time.Duration(0), false
 	for poll := 1; ; poll++ {
 		rows, err := r.listRows(ctx, listArgs)
 		if ctx.Err() != nil {
 			return mcpwire.ToolError("cancelled")
 		}
 		if err != nil {
-			if fails++; fails >= maxPollFail || errors.Is(err, errToken) {
+			failing = true
+			if failedFor >= pollFailFor || errors.Is(err, errToken) {
 				return mcpwire.ToolError("not_watching: " + explainRelay(err))
 			}
 		} else {
-			fails = 0
+			failing, failedFor = false, 0
 			now := r.watched(rows, a, watch, base == nil)
 			switch {
 			case base == nil && len(a.Rooms) > 0 && len(now) < len(watch):
@@ -230,6 +233,9 @@ func (r *Relay) roomWait(ctx context.Context, c localCall) any {
 			return mcpwire.ToolError("cancelled")
 		case <-r.after(wait):
 			slept += wait
+			if failing {
+				failedFor += wait
+			}
 		}
 	}
 }
@@ -240,13 +246,14 @@ func (r *Relay) watched(rows []roomview.Row, a waitArgs, watch map[string]bool, 
 	if len(a.Rooms) == 0 && first {
 		open := slices.DeleteFunc(slices.Clone(rows), rowEnded)
 		slices.SortStableFunc(open, func(x, y roomview.Row) int { return y.LastEventAt.Compare(x.LastEventAt) })
+		open = slices.DeleteFunc(open, func(row roomview.Row) bool { return !roomIDRE.MatchString(row.ID) })
 		for _, row := range open[:min(len(open), maxWatched)] {
 			watch[row.ID] = true
 		}
 	}
 	out := map[string]roomview.Row{}
 	for _, row := range rows {
-		if watch[row.ID] {
+		if roomIDRE.MatchString(row.ID) && watch[row.ID] {
 			out[row.ID] = row
 		}
 	}
@@ -275,6 +282,9 @@ func moved(prev, now map[string]roomview.Row) bool {
 }
 
 func (r *Relay) timeoutResult(rows map[string]roomview.Row) any {
+	if rows == nil { // no poll ever answered
+		return mcpwire.ToolError("not_watching: could not reach the broker before the timeout")
+	}
 	ids := make([]string, 0, len(rows))
 	for id := range rows {
 		ids = append(ids, id)
@@ -328,12 +338,16 @@ func (r *Relay) offerApproval(room string, row roomview.Row, card json.RawMessag
 	}
 	for _, n := range sum.NeedsYou {
 		if n.Kind == "approval" && n.ID == row.Need.ID && r.roomLink(room, n.URL) {
+			link := strings.TrimRight(r.URL, "/") + "/r/" + room // rebuilt: nothing of the broker's URL rides along
+			if linkIDRE.MatchString(n.ID) {
+				link += "#" + n.ID
+			}
 			r.mu.Lock()
 			r.nextID++
 			id := "roomctl-" + strconv.Itoa(r.nextID)
 			r.mu.Unlock()
 			r.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "elicitation/create", "params": map[string]any{
-				"mode": "url", "elicitationId": id, "url": n.URL,
+				"mode": "url", "elicitationId": id, "url": link,
 				"message": "Room " + room + " needs your approval. Approvals stay on the room page: open it to decide."}})
 			return
 		}
