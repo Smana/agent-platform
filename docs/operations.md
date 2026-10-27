@@ -368,6 +368,18 @@ possibly with a pull request open. A maintainer's `/factory retry` is paid by th
 A `run.` task that stays `failed` with `no such room` was never triaged (the grace is two minutes:
 see [the API](api.md#sponsored-principals-on-mcp)); check `agent_factory_api_intake_total` and the Task.
 
+### Internal principals and `factory/publish`
+
+Off until `api.internalPrincipals` is written (same prerequisites as a sponsored principal:
+`api.projectIDFile`, `meter.prices`, the client id file). `agent_factory_api_intake_total` counts its
+requests under `principal="system:<name>"`. The `factory/publish` label must exist on each
+repository the factory serves, as `factory/ready` does; the factory removes it once it has answered.
+An issue the factory filed from a proposal carries no label: the maintainer applies `factory/ready`.
+
+**Roll the broker first.** The broker decodes task facts strictly: the factory posts `origin` in
+them only for a fix started from a published issue, and an older broker refuses such facts. Upgrade
+the broker, then the factory.
+
 ### Webhooks
 
 The broker's `webhooks` list declares the subscribers of [room events](api.md#webhooks). Each entry:

@@ -283,7 +283,7 @@ another on one branch, and only the implementer writes. `templates.<name>.roles`
 
 | Template | Picked when |
 |---|---|
-| `investigate` | The task came from RunLore; its data class is forced to `internal` |
+| `investigate` | The task came from RunLore, by `/intake/runlore` or as an [internal principal](#internal-principals); its data class is forced to `internal` |
 | `solo` | A class with an `oracle` (such as `dead-links`), always at `light`, without the classifier; otherwise class `docs-links`, tier below `frontier` |
 | `pair` | Class `docs-links` at `frontier`, or any other class below `frontier` |
 | `trio` | Any other class at `frontier` |
@@ -526,6 +526,68 @@ Task exists already), the body ending with a footer naming the sponsor and the p
 `spec.issueAuthor` is the sponsor. Without a `title` the Task has no issue, as a schedule's has
 none. Text from a machine goes through the hidden-character strip, the draft rules (with a title)
 and the redactor, and the Task's `spec.text` is `untrusted`.
+
+
+### Internal principals
+
+Off by default: `api.internalPrincipals` is empty. An internal principal is a sponsored principal
+that may carry **internal** data: RunLore, one known caller, declared beside the others in its own
+list, so a sponsored principal never loosens to `internal`. It reuses the sponsored path end to end
+(the ZITADEL authenticator, the `api` source kind, the ceilings, `maxOpenTasks`, the day); what
+differs is decided in one place each. Source: `internal/factory/api/internal.go`.
+
+An entry holds a sponsored principal's keys (`name`, `clientIDFile`, `sponsor`, `repositories`,
+`dailyUSD`, `maxCostUSD`, `maxOpenTasks`; `onBehalfOf` is **refused**) and:
+
+| Key | Holds |
+|---|---|
+| `minConfidence` | In (0, 1]: a finding below it is `202 below_threshold` |
+| `dailyTasks` | At least 1: tasks of the principal created this UTC day, any kind, so the retiring `/intake/runlore`'s count while both run |
+| `verification` | Reserved for the verdict endpoint; no effect yet |
+
+The name `runlore` is allowed on an internal principal only. Names and client id files are unique
+across `api.sponsored`, `api.internalPrincipals` and `api.systemPrincipals`.
+
+Its task is `source.kind: api`, `requestedBy: system:<name>`, `dataClass: internal`, with the
+request's `maxCostUSD`. Triage forces `investigate` for any task whose `requestedBy` is an internal
+principal, never from the body. The gates run in this order: the request's own checks, the verdict
+and `minConfidence` (`202`), the dedup (`200`; a duplicate is answered before the caps, so a replay
+never reads as a refusal), `dailyTasks`, `maxOpenTasks`, the day. The dedup key is
+`api:<name>:<Idempotency-Key>`; the task name carries a generation, so a key whose task ended starts
+a new one. The public issue is the same stub `/intake/runlore` files, from the same code
+(`internal/factory/finding`).
+
+```mermaid
+sequenceDiagram
+  participant R as RunLore
+  participant F as factory
+  participant M as maintainer
+  R->>F: POST /v1/tasks (incident, internal)
+  F-->>R: 201 task, stub issue (factory/proposed)
+  Note over F: investigate: the triager's proposal stays in the room
+  M->>F: label the stub factory/publish
+  F->>F: sanitise as public text, redact, CheckDraft
+  F->>M: new issue (no label), status.published recorded
+  M->>F: label the new issue factory/ready
+  F->>F: fix task with spec.origin = the investigate task
+```
+
+**`factory/publish`.** The issue poller (leader only) reads it on the stub issue of an `investigate`
+task. Only the last label event's actor counts, through the same maintainer and write checks as
+`factory/ready`; anyone else's is answered `unauthorised_labeller` and removed. The proposal is the
+last handoff to `implementer` that the task's triager run recorded itself. Its first line is the
+title and the rest the body, held to the issue template, then made inert (every link, bare URL and
+address becomes a code span, no HTML survives, no hidden character), then scanned by the redactor.
+A refusal (`task_not_ended`, `no_proposal`, `invalid_draft`, `redacted`) is a comment on the stub and
+the label removed; nothing is created. The factory files the issue **once per task**, with no label:
+the maintainer reads it on GitHub and starts it with `factory/ready`, which is the second, money
+spending decision.
+
+**`spec.origin`.** The poller sets it on a new `factory/ready` task only when a task of the same
+repository carries the label `agents.ogenki.io/published-issue: <n>` **and** its
+`status.published.issue` is that issue. It is fixed at creation and never read from issue text, so
+nothing a person or an agent writes can forge one. Every webhook event of the fix's room repeats it
+(`origin`, [API](api.md#webhooks)); it rides the task facts, so the broker needs no new state.
 
 ## The merge gate
 
@@ -1161,8 +1223,8 @@ system's run request. Source: `internal/factory/api/server.go`.
 | `409`, `429` | `room_busy`, `branch_busy`, `run_busy`, `repository_not_owned` (the repository's fence names another factory, or none); `over_budget`, `person_budget_exhausted` (the caller's own day, [per-person caps](#per-person-caps)) |
 | `503` | `kill_switch`, `runs_unavailable`, `rooms_unavailable`, `ledger_busy`, `meter_blind`, `create_failed`, `identity_unavailable` (per-person caps on, and the caller's GitHub link could not be read) |
 
-**`POST /v1/tasks`**, on `api.listen`, registered only while `api.sponsored` is non-empty (otherwise
-`404`): a sponsored principal's task. [Sponsored principals](#sponsored-principals) is the model;
+**`POST /v1/tasks`**, on `api.listen`, registered only while `api.sponsored` or
+`api.internalPrincipals` is non-empty (otherwise `404`): a sponsored or internal principal's task. [Sponsored principals](#sponsored-principals) is the model;
 the broker's `run_create` is its client ([API](api.md#post-v1tasks)).
 
 **`POST /intake/runlore`**, on `runlore.listen` (the chart's `intake` port, 8080): a RunLore
