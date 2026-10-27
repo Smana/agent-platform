@@ -1455,6 +1455,10 @@ def server_env(env: dict) -> dict:
         out["OH_SECRET_KEY"] = run_key() if suspendable(env) else secrets.token_urlsafe(32)
     out["PYTHONPATH"] = os.pathsep.join(p for p in (SITE_DIR, env.get("PYTHONPATH")) if p)
     out["AGENT_RUN_RETRY_LOG"] = RETRY_LOG
+    # The run's deadline as wall-clock time, for the model-timeout retry (sitecustomize): it retries only
+    # with a whole second window and the final checks' reserve left.
+    if env.get("AGENT_RUN_SECONDS", "").isdigit():
+        out["AGENT_RUN_DEADLINE"] = str(time.time() + int(env["AGENT_RUN_SECONDS"]))
     return out
 
 

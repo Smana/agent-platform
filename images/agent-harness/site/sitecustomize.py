@@ -189,6 +189,24 @@ def patch_model_retry(llm, openai, sleep=time.sleep, asleep=asyncio.sleep) -> bo
     return True
 
 
+# What a timeout retry must leave before the run's deadline, beyond a whole second hard-timeout window: the
+# final checks' margin (agent_run.CHECKS_MARGIN_S) and the closing note's wait.
+RETRY_RESERVE_S = 120 + 60
+HARD_TIMEOUT_S = 300  # the SDK's default LLM.timeout, used when the LLM does not say
+
+
+def time_for_a_retry(llm) -> bool:
+    """Whether the run's deadline (AGENT_RUN_DEADLINE, epoch seconds, set by agent-run) leaves room for a
+    second hard-timeout window and the reserve. With no readable deadline there is nothing to compare."""
+    try:
+        left = float(os.environ["AGENT_RUN_DEADLINE"]) - time.time()
+    except (KeyError, ValueError):
+        return True
+    window = getattr(llm, "timeout", None)
+    window = window if isinstance(window, (int, float)) and window > 0 else HARD_TIMEOUT_S
+    return left > window + RETRY_RESERVE_S
+
+
 def patch_timeout_retry(llm, timeout_error) -> bool:
     """Wraps the model call's public entry points, sync and async, to send a call that hit the SDK's hard
     timeout (LLMTimeoutError, 300 s) once more, as a fresh request with a fresh window.
@@ -218,8 +236,8 @@ def patch_timeout_retry(llm, timeout_error) -> bool:
             out["on_token"] = on_token
         return out, seen
 
-    def again(exc, seen) -> bool:
-        if seen[0]:
+    def again(llm_self, exc, seen) -> bool:
+        if seen[0] or not time_for_a_retry(llm_self):
             return False
         _log_retry("agent-run model retry timeout 1/1: %s %s" % (type(exc).__name__, " ".join(str(exc).split())[:200]))
         return True
@@ -229,7 +247,7 @@ def patch_timeout_retry(llm, timeout_error) -> bool:
         try:
             return sync_call(self, *args, **kw)
         except timeout_error as exc:
-            if not again(exc, seen):
+            if not again(self, exc, seen):
                 raise
         return sync_call(self, *args, **attempt_kwargs(kwargs)[0])
 
@@ -238,7 +256,7 @@ def patch_timeout_retry(llm, timeout_error) -> bool:
         try:
             return await async_call(self, *args, **kw)
         except timeout_error as exc:
-            if not again(exc, seen):
+            if not again(self, exc, seen):
                 raise
         return await async_call(self, *args, **attempt_kwargs(kwargs)[0])
 

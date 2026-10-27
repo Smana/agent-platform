@@ -425,6 +425,22 @@ class TimeoutRetryTest(unittest.TestCase):
         self.assertEqual((got, len(FakeLLM.calls)), (["first"], 1))
         self.assertNotIn("model retry", err.getvalue())
 
+    def test_no_retry_without_the_time_for_a_whole_second_window(self):
+        # A retry can take the SDK's whole hard timeout again: it needs that much, plus the final checks'
+        # reserve, before the run's deadline.
+        site = load_site()
+        reserve = site.RETRY_RESERVE_S
+        for left, retried in ((10_000, True), (300 + reserve + 5, True), (300 + reserve - 5, False), (0, False), (-5, False)):
+            with self.subTest(left=left), mock.patch.dict(os.environ, {"AGENT_RUN_DEADLINE": str(time.time() + left)}):
+                FakeLLM.calls = []
+                out, err = self.run_call("async", [FakeTimeout("t"), "ok"])
+                self.assertEqual(len(FakeLLM.calls), 2 if retried else 1)
+                self.assertEqual("model retry timeout" in err, retried)
+        with mock.patch.dict(os.environ, {"AGENT_RUN_DEADLINE": "soon"}):  # unreadable: no deadline known
+            FakeLLM.calls = []
+            self.run_call("async", [FakeTimeout("t"), "ok"])
+            self.assertEqual(len(FakeLLM.calls), 2)
+
     def test_an_sdk_without_the_entry_points_is_said_and_not_patched(self):
         class Bare:
             __name__ = "Bare"

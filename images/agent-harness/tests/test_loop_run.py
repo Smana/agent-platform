@@ -581,3 +581,12 @@ class MainLoopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerEnvDeadlineTest(unittest.TestCase):
+    def test_the_deadline_is_passed_to_agent_server_as_wall_clock_time(self):
+        with mock.patch("time.time", return_value=1000.0):
+            out = agent_run.server_env({"AGENT_RUN_SECONDS": "600", "OH_SECRET_KEY": "k"})
+        self.assertEqual(out["AGENT_RUN_DEADLINE"], "1600.0")
+        self.assertNotIn("AGENT_RUN_DEADLINE", agent_run.server_env({"OH_SECRET_KEY": "k"}))
+        self.assertNotIn("AGENT_RUN_DEADLINE", agent_run.server_env({"AGENT_RUN_SECONDS": "soon", "OH_SECRET_KEY": "k"}))
