@@ -243,7 +243,11 @@ func (a *App) mention(ctx context.Context, ev slackEvent) string {
 		}
 		return "refused"
 	}
-	d, err := ParseMention(ev.Text, a.BotUserID)
+	only := ""
+	if len(ch.Repositories) == 1 {
+		only = ch.Repositories[0]
+	}
+	d, err := ParseMention(ev.Text, a.BotUserID, only)
 	if err != nil {
 		return refuse(err.Error())
 	}
