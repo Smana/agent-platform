@@ -1207,6 +1207,9 @@ def loop_for(env: dict):
         return None
 
 
+NO_VERDICT_FAILING = "the completion judge gave no verdict and a check failed (%s)"
+
+
 def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP_STATE, notes=None) -> tuple[int, str | None, str]:
     """poll under the loop policy: (exit code, end reason, the end's note). A loop end exits 1, as a
     stuck conversation does, so a bridge that drops the reason still has the task escalated."""
@@ -1224,12 +1227,16 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
         if code or policy.judge_model is None:
             return code, None, ""
         sent = None  # the continuation, once the judge asked for one
+        failing = ()  # the failing checks the evidence showed, once it was read
         try:
             n = commits_since(env, state.mark) if state.sent else None
             new_commit = n is None or n > 0
             message, offered = evidence(env, task)
+            failing = getattr(offered, "failing", ())
             answer = ask_judge(env, policy.judge_model, message)
             if answer is None:
+                if failing:
+                    return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
                 return 0, None, ""  # no answer: the run ends as it would with no policy
             rounds += 1
             v = loop_policy.verdict(answer[0], offered)
@@ -1255,6 +1262,8 @@ def drive(env: dict, cid: str, steps, policy, state, task: str, path: str = LOOP
         except Exception as exc:  # noqa: BLE001 -- the finished run must still reach its final read
             print("agent-run: judge round failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
             if sent is None:
+                if failing:  # the run must not end as met with a check known to fail
+                    return 1, "not_met", NO_VERDICT_FAILING % ", ".join(failing)
                 return 0, None, ""  # today's end
             # The judge said not_yet but the message did not go (SDK 1.56 answers 429 when its run
             # capacity is full: saved, no run started). Ending as met would hand off silently.

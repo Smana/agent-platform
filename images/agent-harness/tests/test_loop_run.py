@@ -413,6 +413,20 @@ class DriveTest(unittest.TestCase):
         self.drive([0], [self.answer("met")], notes=Notes())  # no failing check: met stands, and is posted
         self.assertEqual(posted, [("met", ("diff",))])
 
+    def test_no_verdict_with_a_known_failing_check_is_not_met(self):
+        # The run must not end 0 on a failing check just because the judge gave no answer or its round failed.
+        offered = lp.Offered(["diff", "check:validate"])
+        offered.failing = ("check:validate",)
+        for name, answers in (("no answer", [None]), ("the judge call raised", TypeError("boom"))):
+            with self.subTest(name), mock.patch("sys.stderr", new=io.StringIO()):
+                result, _ = self.drive([0], answers, offered=offered)
+                self.assertEqual(result[:2], (1, "not_met"))
+                self.assertIn("check:validate", result[2])
+        # evidence read nothing failing: today's end
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            self.assertEqual(self.drive([0], [None])[0], (0, None, ""))
+            self.assertEqual(self.drive([0], TypeError("boom"))[0], (0, None, ""))
+
     def test_not_yet_continues_in_the_same_conversation_then_met(self):
         result, state = self.drive([0, 0], [self.answer("not_yet", "lint fails"), self.answer("met")])
         self.assertEqual(result, (0, None, ""))
