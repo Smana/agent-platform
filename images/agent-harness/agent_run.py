@@ -90,6 +90,28 @@ SEARCH_STARTED = ("complete", "budget", "error", "interrupted")
 SEARCH_RULE = ("For any question about where something is in the repository, or which file, runbook or doc covers a "
                "topic, call `search` FIRST, with one self-contained question, before grep, find or cat; use grep only "
                "to confirm what it returned, by reading the files it names. Skip it when the task needs no lookup.")
+# The rule in the brief's first lines, where a model reads it; the system suffix alone went unread (0 calls in 4 drills).
+SEARCH_BRIEF = ("Before you open or grep files to find where something is, ask the `search` tool one question; "
+                "use grep only to confirm.\n\n")
+SEARCH_NUDGE = ("Use the `search` tool for lookups: ask it one self-contained question about where something is "
+                "before more grep, find or cat; use grep only to confirm what it returned.")
+SEARCH_NUDGE_STEPS = 6  # lookup-ish steps with no search call before the one nudge; AGENT_SEARCH_NUDGE_STEPS, 0 = never
+LOOKUP = re.compile(r"(?:^|[\s;&|(])(?:grep|egrep|rg|find|cat|tree|ls|head|tail|ag)\b")
+
+
+def search_task(task: str, on: bool) -> str:
+    return SEARCH_BRIEF + task if on else task
+
+
+def nudge_steps(env: dict) -> int:
+    try:
+        return max(0, int(env.get("AGENT_SEARCH_NUDGE_STEPS", SEARCH_NUDGE_STEPS)))
+    except ValueError:
+        return SEARCH_NUDGE_STEPS
+
+
+def tool_names(agent: dict) -> str:
+    return "agent-run tools: " + ", ".join(t.get("name", "?") for t in agent.get("tools", []))
 
 
 @functools.cache
@@ -317,6 +339,7 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
         from openhands.sdk.tool import Tool
         agent = agent.model_copy(update={"tools": [*agent.tools, Tool(name=SEARCH_TOOL)]})
     agent = agent.model_dump(mode="json", context=plain)
+    print(tool_names(agent), flush=True)
     mcp_url = env.get("MCP_URL")
     if mcp_url:
         platform = {"url": mcp_url, "transport": "http"}
@@ -1148,8 +1171,11 @@ class StepLog:
     effort: a failure here is logged and never fails the run. Agent-written
     text is redacted first."""
 
-    def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None, ledger: str | None = None):
+    def __init__(self, cid: str, trace_id: str = "", notes: "ProgressNotes | None" = None, ledger: str | None = None,
+                 nudge_after: int = 0):
         self.notes = notes
+        # Search nudge: lookup-ish steps seen with no search call; one note per run, never twice.
+        self.nudge_after, self.lookups, self.search_calls, self.nudged = nudge_after, 0, 0, False
         self.cid = cid
         self.trace_id = trace_id
         self.page = None
@@ -1185,6 +1211,15 @@ class StepLog:
             print("agent-run: step log unavailable: %s" % exc, file=sys.stderr, flush=True)
         if self.ledger:
             self.searched = sum(r["toolCalls"] for r in search_rows(self.ledger) if r["outcome"] in SEARCH_STARTED)
+        if self.nudge_after and not self.nudged and self.lookups >= self.nudge_after and not self.search_calls \
+                and not (self.ledger and search_rows(self.ledger)):
+            self.nudged = True
+            try:  # no run flag: the conversation is running, and reads the note at its next step
+                http("POST", "/api/conversations/%s/events" % self.cid,
+                     {"role": "user", "content": [{"type": "text", "text": SEARCH_NUDGE}], "run": False})
+                print("agent-run: search nudge sent after %d lookup steps" % self.lookups, flush=True)
+            except Exception as exc:  # noqa: BLE001 -- a nudge never fails the run
+                print("agent-run: search nudge failed: %s" % _short(exc, 200), file=sys.stderr, flush=True)
         if self.notes:
             self.notes.flush()
 
@@ -1197,6 +1232,10 @@ class StepLog:
             if self.notes:
                 self.notes.intend(event.get("tool_call_id") or "", action.get("command") or "")
             tool = event.get("tool_name") or action.get("kind")
+            if tool == SEARCH_TOOL:
+                self.search_calls += 1
+            elif LOOKUP.search(action.get("command") or "") or tool == "grep":
+                self.lookups += 1
             line = "agent-run step %d: %s | %s | %s" % (self.steps, tool, _short(event.get("summary"), 120), _short(target, 200))
             # Correlation only (O22): links the line to its trace in Grafana, attributes nothing.
             return line + (" | trace_id=" + self.trace_id if self.trace_id else "")
@@ -1805,15 +1844,15 @@ def main() -> int:
                 print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
         contract = load_contract(env, resumed, base)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
-            task = t.read()
             search = search_on(env)
+            task = t.read()
             tests = None
             if test_first(env) and base:
                 try:
                     tests = contract_module().declaration(REPO_DIR, base)
                 except Exception:  # noqa: BLE001 -- Undeclared or unreadable: no tests section, the end fails closed
                     tests = None
-            request = build_request(env, task, r.read() + checks_rules(env, decl) + contract_rules(env, contract, tests)
+            request = build_request(env, search_task(task, search), r.read() + checks_rules(env, decl) + contract_rules(env, contract, tests)
                                     + search_rules(search), span, search)
         policy = loop_for(env)
         # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
@@ -1824,7 +1863,8 @@ def main() -> int:
         cid = http("POST", "/api/conversations", request)["id"]
         notes = ProgressNotes(env["MCP_URL"], env.get("ROLE") or "agent", resumed,
                               start_span=child_spans(provider, span)) if env.get("MCP_URL") else None
-        steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None)
+        steps = StepLog(cid, trace_id, notes, SEARCH_LEDGER if search else None,
+                       nudge_steps(env) if search else 0)
         hold = make_hold(env, base, contract, decl, prefetched) if contract else None
         if policy:
             code, end, note = drive(env, cid, steps, policy, state, task, notes=notes, hold=hold)

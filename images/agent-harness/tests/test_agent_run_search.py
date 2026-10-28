@@ -122,5 +122,51 @@ class LedgerTest(unittest.TestCase):
                          "agent-run search: 0 calls, 0 steps, 0 tokens, outcomes none")
 
 
+class NudgeTest(unittest.TestCase):
+    def run_steps(self, commands, nudge_after=3, tool="terminal", ledger=None):
+        log = agent_run.StepLog("cid", ledger=ledger, nudge_after=nudge_after)
+        items = [{"id": str(i), "kind": "ActionEvent", "tool_name": tool if isinstance(c, str) else c[0],
+                  "action": {"command": c if isinstance(c, str) else ""}} for i, c in enumerate(commands)]
+        with mock.patch("agent_run.http", return_value={"items": items, "next_page_id": None}) as h, \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            log()
+            log()
+        return [c for c in h.call_args_list if c.args[0] == "POST"]
+
+    def test_the_tools_line(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", new=out):
+            agent_run.build_request(ENV, "t", "r", None, True)
+        self.assertIn("agent-run tools: terminal, file_editor, task_tracker, search\n", out.getvalue())
+
+    def test_the_brief_leads_with_the_instruction_only_when_search_is_on(self):
+        on = agent_run.search_task("fix it", True)
+        self.assertTrue(on.startswith("Before you open or grep files to find where something is, ask the `search` tool"))
+        self.assertTrue(on.endswith("fix it"))
+        self.assertEqual(agent_run.search_task("fix it", False), "fix it")
+
+    def test_the_nudge_fires_once_after_n_lookups_without_search(self):
+        posts = self.run_steps(["grep -rn foo .", "cat a.py", "find . -name x", "ls", "grep y"])
+        self.assertEqual(len(posts), 1)
+        self.assertIn("Use the `search` tool", json.dumps(posts[0].args[2]))
+
+    def test_no_nudge_below_n_or_for_non_lookups(self):
+        self.assertEqual(self.run_steps(["grep a", "cat b", "git status", "pytest"]), [])
+
+    def test_no_nudge_once_search_was_used(self):
+        self.assertEqual(self.run_steps([("search",), "grep a", "cat b", "find .", "ls"]), [])
+
+    def test_no_nudge_when_the_ledger_has_a_call(self):
+        ledger = os.path.join(tempfile.mkdtemp(), "l.jsonl")
+        with open(ledger, "w") as f:
+            f.write(json.dumps({"outcome": "complete", "toolCalls": 2}) + "\n")
+        self.assertEqual(self.run_steps(["grep a", "cat b", "find .", "ls"], ledger=ledger), [])
+
+    def test_no_nudge_when_search_is_off(self):
+        self.assertEqual(self.run_steps(["grep a", "cat b", "find .", "ls"], nudge_after=0), [])
+        self.assertEqual(agent_run.nudge_steps({}), 6)
+        self.assertEqual(agent_run.nudge_steps({"AGENT_SEARCH_NUDGE_STEPS": "9"}), 9)
+
+
 if __name__ == "__main__":
     unittest.main()
