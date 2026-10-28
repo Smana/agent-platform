@@ -32,6 +32,8 @@ type Row struct {
 	NeedsMe     bool          `json:"needsMe"`
 	NeedsYou    int           `json:"needsYou"`
 	Need        *summary.Need `json:"need,omitempty"`
+	// Step is the one thing the caller does for the room and where: the same sentence as the card's.
+	Step *summary.Step `json:"step,omitempty"`
 }
 
 // endedAfter is how long a room may have ended before the overview hides it.
@@ -188,7 +190,14 @@ func markdownRoom(r Row, o Options) string {
 	return "[" + escapeTitle(r.ID, true) + "](" + r.URL + ")"
 }
 
+// prStep reports whether the caller's step is on GitHub: the cell then says so, in place of the
+// need's own words, and links the pull request.
+func (r Row) prStep() bool { return r.Step != nil && r.Step.Kind == summary.StepPR }
+
 func markdownWhere(r Row, o Options) string {
+	if r.prStep() {
+		return link(r.Step.Label, r.Step.URL, o, true)
+	}
 	if n := r.Need; n != nil {
 		if n.Kind == "approval" {
 			s := "approve " + code(n.What, true)
@@ -255,6 +264,8 @@ func textRow(r Row, mixed bool, o Options) []string {
 	}
 	where := ""
 	switch n := r.Need; {
+	case r.prStep():
+		where = link(r.Step.Label, r.Step.URL, o, true)
 	case n != nil && n.Kind == "approval":
 		where = "approve " + quote(n.What)
 		if !n.Deadline.IsZero() {

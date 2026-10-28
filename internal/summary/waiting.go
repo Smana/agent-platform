@@ -238,7 +238,7 @@ func waiting(f *envelope.TaskFacts) (reason, next string) {
 			why = "the pull request is ready for a maintainer"
 		}
 		if next == "" {
-			next = "a maintainer reviews and merges the pull request"
+			next = "a maintainer reviews and merges or closes the pull request on GitHub"
 			if f.PR == nil {
 				next = "a maintainer looks at the task's issue"
 			}

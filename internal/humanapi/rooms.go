@@ -188,6 +188,9 @@ type roomRow struct {
 	NeedsYou int    `json:"needsYou"` // how many things wait for this caller
 	// Need is the first of them, in the summary's order: absent when none waits.
 	Need *summary.Need `json:"need,omitempty"`
+	// Step is the one thing to do for the room and where: approve on its page, or merge or close
+	// the PR on GitHub. Absent when nothing waits for a human.
+	Step *summary.Step `json:"step,omitempty"`
 	You  wire.You      `json:"you"`
 }
 
@@ -270,6 +273,14 @@ func answer(room *v1alpha1.Room, sub policy.Subject, facts factsFn) (summary.Nee
 	return summary.Answer(facts(), sub)
 }
 
+// prURLOf is the pull request's URL in repo, "" when either is unknown.
+func prURLOf(repo string, n int) string {
+	if repo == "" || n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", repo, n)
+}
+
 // prNeed is the summary's merge need for sub, from the projected task: the Room status holds the
 // PR's number, not its facts, so the URL is built from the room's repository.
 func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
@@ -277,10 +288,7 @@ func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
 	if t == nil || t.PR <= 0 {
 		return summary.Need{}, false
 	}
-	pr := &envelope.PRFact{Number: int(t.PR)}
-	if repo := room.Spec.Repository; repo != "" {
-		pr.URL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, t.PR)
-	}
+	pr := &envelope.PRFact{Number: int(t.PR), URL: prURLOf(room.Spec.Repository, int(t.PR))}
 	return summary.Merge(&envelope.TaskFacts{Phase: t.Phase, PR: pr}, sub)
 }
 
@@ -446,6 +454,7 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			row.Reason = waitReason(facts)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
+		row.Step = summary.StepFor(row.Task, row.PR, prURLOf(repo, row.PR), len(live) > 0, row.URL)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)

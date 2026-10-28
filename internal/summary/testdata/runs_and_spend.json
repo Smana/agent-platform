@@ -233,7 +233,10 @@
         "usedTokens": 189093,
         "limitTokens": 1500000
       },
-      "spend": {"usedMicroUSD": 310000, "limitMicroUSD": 1500000},
+      "spend": {
+        "usedMicroUSD": 310000,
+        "limitMicroUSD": 1500000
+      },
       "pr": {
         "number": 2239,
         "url": "https://github.com/Smana/cloud-native-ref/pull/2239"
@@ -249,9 +252,32 @@
       }
     },
     "runs": [
-      {"id": "c1", "role": "implementer", "trigger": "initial", "startedAt": "2026-10-07T17:00:00Z", "endedAt": "2026-10-07T17:40:00Z", "outcome": "succeeded", "microUSD": 180000},
-      {"id": "c2", "role": "reviewer", "trigger": "review", "startedAt": "2026-10-07T17:45:00Z", "endedAt": "2026-10-07T17:55:00Z", "outcome": "succeeded", "verdict": "approve", "microUSD": 30000},
-      {"id": "c3", "role": "implementer", "trigger": "human", "startedAt": "2026-10-07T19:11:42Z", "microUSD": 100000}
+      {
+        "id": "c1",
+        "role": "implementer",
+        "trigger": "initial",
+        "startedAt": "2026-10-07T17:00:00Z",
+        "endedAt": "2026-10-07T17:40:00Z",
+        "outcome": "succeeded",
+        "microUSD": 180000
+      },
+      {
+        "id": "c2",
+        "role": "reviewer",
+        "trigger": "review",
+        "startedAt": "2026-10-07T17:45:00Z",
+        "endedAt": "2026-10-07T17:55:00Z",
+        "outcome": "succeeded",
+        "verdict": "approve",
+        "microUSD": 30000
+      },
+      {
+        "id": "c3",
+        "role": "implementer",
+        "trigger": "human",
+        "startedAt": "2026-10-07T19:11:42Z",
+        "microUSD": 100000
+      }
     ],
     "needsYou": [
       {
@@ -262,6 +288,11 @@
         "url": "https://rooms.example/r/26zfnuxm#01M4A"
       }
     ],
+    "step": {
+      "kind": "approve",
+      "label": "approve here",
+      "url": "https://rooms.example/r/26zfnuxm"
+    },
     "actions": [
       {
         "kind": "queue",

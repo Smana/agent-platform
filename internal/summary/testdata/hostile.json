@@ -259,7 +259,7 @@
     "runs": [
       {
         "id": "c1",
-        "role": "impl`[x](https://evil.example)\u202e\u200b <b>",
+        "role": "impl`[x](https://evil.example)‮​ <b>",
         "trigger": "initial",
         "startedAt": "2026-10-07T17:00:00Z",
         "endedAt": "2026-10-07T17:40:00Z",
@@ -272,11 +272,16 @@
       {
         "kind": "approval",
         "id": "01M4A",
-        "what": "\u001b[2Jrm -rf / \u202e\u200b",
+        "what": "\u001b[2Jrm -rf / ‮​",
         "deadline": "2026-10-07T19:45:00Z",
         "url": "https://rooms.example/r/26zfnuxm#01M4A"
       }
     ],
+    "step": {
+      "kind": "approve",
+      "label": "approve here",
+      "url": "https://rooms.example/r/26zfnuxm"
+    },
     "actions": [
       {
         "kind": "queue",

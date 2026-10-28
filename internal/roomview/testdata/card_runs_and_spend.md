@@ -1,6 +1,8 @@
 ### #42 · 26zfnuxm
 **needs you** · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
 
+**Your move:** [approve here](https://rooms.example/r/26zfnuxm)
+
 | | |
 |---|---|
 | Run | implementer c3 (human review) · started 19:11 UTC, 18 min ago |

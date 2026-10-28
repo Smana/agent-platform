@@ -26,6 +26,8 @@ export interface Summary {
   };
   // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
   needsYou: { kind: "approval" | "hold" | "merge"; id: string; what: string; deadline?: string; url: string }[];
+  // The one thing to do for the room and where: "pr" is on GitHub, "approve" on this page.
+  step?: { kind: "approve" | "pr"; label: string; url?: string };
   actions: { kind: string; what: string; cli?: string }[];
   notes: { untrusted: true; items: { at: string; run: string; text: string }[] };
   cursor: string;

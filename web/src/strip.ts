@@ -172,12 +172,19 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         const n = nowText(latest, t, present);
         if (b && b.textContent !== n) b.textContent = n;
       }
-      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next]);
+      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next, i.summary?.step]);
       if (tailKey !== shown.tail) {
         const lines: HTMLElement[] = [];
         if (sealedBy || i.sealed) lines.push(el("div", { className: "closed", textContent: sealedText(i) }));
         else if (st?.reason || st?.next) {
           lines.push(el("div", { className: "waiting", textContent: `Waiting: ${[st.reason, st.next].filter(Boolean).join(" → ")}` }));
+        }
+        const step = i.summary?.step;
+        if (step && !sealedBy && !i.sealed) {
+          // A PR-held room has nothing to decide here: say where to act, and link it.
+          const line = el("div", { className: "waiting", textContent: "Your move: " });
+          line.append(step.kind === "pr" && step.url ? safeLink(step.label, step.url) : document.createTextNode(`${step.label}, in Needs you below`));
+          lines.push(line);
         }
         tail.replaceChildren(...lines);
         shown.tail = tailKey;
