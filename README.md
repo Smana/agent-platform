@@ -18,7 +18,7 @@ Maku is the product name; `agent-platform` stays the name of the repository, mod
 <a href="https://blog.ogenki.io/agent-platform/">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/room-dark.png">
-    <img alt="A room replaying an agent run: steps of tool calls, a denied command, an approval, the composer" src="docs/assets/room-light.png" width="800">
+    <img alt="A live factory room: the task's chips with its PR and the reviewer's approving verdict, the agent's latest claim, the triager's scope, its tool calls, the composer" src="docs/assets/room-light.png" width="800">
   </picture>
 </a>
 
