@@ -128,21 +128,33 @@ func (s *Server) recordVerification(w http.ResponseWriter, r *http.Request) {
 			refuse(w, http.StatusConflict, "not_merged")
 			return
 		}
-		vw := s.Cfg.RepositoryFor(t.Spec.Repository).Classes[t.Spec.PredictedClass].Monitor
-		switch {
-		case vw == nil || vw.Verification == nil:
-			refuse(w, http.StatusForbidden, "not_own_task")
-			return
-		case s.Now().After(pr.MergedAt.Add(vw.Verification.Within.Duration)):
-			refuse(w, http.StatusConflict, "window_closed")
-			return
-		}
 		if v := recorded(&t); v != nil {
+			// A replay is answered before the window: it never reads as a refusal. It also completes
+			// the evidence a first call could not write after its verdict.
 			if v.Verdict != in.Verdict {
 				refuse(w, http.StatusConflict, "verdict_already_recorded")
 				return
 			}
+			if err := s.writeEvidence(ctx, &t, &origin, in.Evidence); err != nil {
+				unavailable(err)
+				return
+			}
 			reply(w, http.StatusOK, map[string]any{"task": t.Name, "verdict": v.Verdict, "recordedAt": v.RecordedAt.Time, "duplicate": true})
+			return
+		}
+		vw := s.Cfg.RepositoryFor(t.Spec.Repository).Classes[t.Spec.PredictedClass].Monitor
+		// One window with the monitor: its Since is GitHub's merge time once a pass has read it; until
+		// then the Task's MergedAt, the factory's clock, which the monitor's first pass corrects.
+		since := pr.MergedAt.Time
+		if t.Status.Monitor != nil {
+			since = t.Status.Monitor.Since.Time
+		}
+		switch {
+		case vw == nil || vw.Verification == nil:
+			refuse(w, http.StatusForbidden, "not_own_task")
+			return
+		case s.Now().After(since.Add(vw.Verification.Within.Duration)):
+			refuse(w, http.StatusConflict, "window_closed")
 			return
 		}
 		at := metav1.NewTime(s.Now())
@@ -167,22 +179,28 @@ func recorded(t *factoryv1.Task) *factoryv1.Verification {
 	return t.Status.Monitor.Verification
 }
 
-// writeVerification writes the evidence first and the verdict second: a failure between them
-// leaves a replay to write both, never a verdict whose evidence was lost. The verdict's patch
-// carries the task's resourceVersion, so two racing verdicts cannot both land.
+// writeVerification writes the verdict first, under the task's resourceVersion so two racing
+// verdicts cannot both land, and the evidence only after it: a loser never leaves evidence behind.
+// A failure between the two leaves a replay to complete the evidence (see recordVerification).
 func (s *Server) writeVerification(ctx context.Context, t, origin *factoryv1.Task, in verificationRequest, by string, at metav1.Time) error {
-	if in.Evidence != "" && origin.Status.Published != nil {
-		base := origin.DeepCopy()
-		origin.Status.Published.Evidence, origin.Status.Published.EvidenceFor = in.Evidence, t.Name
-		if err := s.Rooms.Status().Patch(ctx, origin, client.MergeFrom(base)); err != nil {
-			return err
-		}
-	}
 	base := t.DeepCopy()
 	if t.Status.Monitor == nil {
 		t.Status.Monitor = &factoryv1.MonitorStatus{Since: *t.Status.PullRequest.MergedAt}
 	}
 	t.Status.Monitor.Verification = &factoryv1.Verification{Verdict: in.Verdict, CheckedAt: metav1.NewTime(in.CheckedAt), RecordedAt: at, By: by,
 		Alert: factoryv1.VerifiedAlert{Name: in.Alert.Name, FiringAtMerge: in.Alert.FiringAtMerge, FiringNow: in.Alert.FiringNow}}
-	return s.Rooms.Status().Patch(ctx, t, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	if err := s.Rooms.Status().Patch(ctx, t, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
+	}
+	return s.writeEvidence(ctx, t, origin, in.Evidence)
+}
+
+// writeEvidence puts the evidence on the origin task unless it already holds this fix's.
+func (s *Server) writeEvidence(ctx context.Context, t, origin *factoryv1.Task, evidence string) error {
+	if evidence == "" || origin.Status.Published == nil || origin.Status.Published.EvidenceFor == t.Name {
+		return nil
+	}
+	base := origin.DeepCopy()
+	origin.Status.Published.Evidence, origin.Status.Published.EvidenceFor = evidence, t.Name
+	return s.Rooms.Status().Patch(ctx, origin, client.MergeFrom(base))
 }

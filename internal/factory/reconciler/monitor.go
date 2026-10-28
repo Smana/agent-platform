@@ -139,6 +139,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 		m = &v1alpha1.MonitorStatus{Since: metav1.Time{Time: at}}
 		t.Status.Monitor = m
 	}
+	// The verification endpoint seeds Since from the Task's MergedAt (the factory's clock) when it
+	// records a verdict before the first pass: GitHub's merge time is the one every window counts from (L6).
+	if !pr.MergedAt.IsZero() && m.Since.Time.Equal(ref.MergedAt.Time) && !pr.MergedAt.Equal(m.Since.Time) {
+		m.Since = metav1.Time{Time: pr.MergedAt}
+	}
 	r.label(ctx, pr, MergedLabel(t.Spec.PredictedClass))
 	if m.Main == "" {
 		if m.Main, err = r.mainSignal(ctx, t); err != nil {
@@ -236,7 +241,7 @@ func monitorWhy(m *v1alpha1.MonitorStatus, origin, roomsURL string) []string {
 		}
 	}
 	if v := m.Verification; v != nil && m.Verified != "" {
-		out = append(out, fmt.Sprintf("RunLore: %s, alert %s, %s/r/%s", v.Verdict, finding.LabelSafe(v.Alert.Name),
+		out = append(out, fmt.Sprintf("RunLore: %s, alert `%s`, %s/r/%s", v.Verdict, finding.LabelSafe(v.Alert.Name),
 			strings.TrimSuffix(roomsURL, "/"), origin))
 	}
 	if len(m.FollowUps) > 0 {
@@ -266,7 +271,20 @@ func (r *Reconciler) verifiedBy(ctx context.Context, t *v1alpha1.Task) bool {
 // logged and tried again by the next pass; the record is the Task's status, written with the pass.
 func (r *Reconciler) fileFollowUp(ctx context.Context, t *v1alpha1.Task) {
 	m, ref := t.Status.Monitor, t.Status.PullRequest
-	title, body := narrate.FollowUpIssue(ref.Number, m.Verification.Alert.Name, t.Spec.Origin, r.Cfg.RoomsURL)
+	title, body := narrate.FollowUpIssue(t.Name, ref.Number, m.Verification.Alert.Name, t.Spec.Origin, r.Cfg.RoomsURL)
+	// The issue may exist already (its status write was lost, or its create timed out): adopt it by its marker.
+	marker := narrate.FollowUpMarker(t.Name)
+	found, err := r.gh(ctx).IssuesLabelled(ctx, "factory/proposed")
+	if err != nil {
+		r.log().Warn("RunLore follow-up issue not filed", "task.id", t.Name, "err", err)
+		return
+	}
+	for _, i := range found {
+		if forge.SameLogin(i.Author, r.Cfg.FactoryLogin) && strings.Contains(i.Body, marker) {
+			m.FollowUpIssue = i.Number
+			return
+		}
+	}
 	iss, err := r.gh(ctx).CreateIssue(ctx, title, body, []string{"factory/proposed"})
 	if err != nil {
 		r.log().Warn("RunLore follow-up issue not filed", "task.id", t.Name, "err", err)

@@ -162,3 +162,35 @@ func TestRecordVerificationRecordsAndReplays(t *testing.T) {
 		t.Fatalf("persisting after resolved: %d %s", w.Code, w.Body)
 	}
 }
+
+// A replay after the window is a 200 duplicate, not a refusal; and the window counts from the
+// monitor's Since when a pass has set it.
+func TestVerificationReplayAfterWindowAndSharedSince(t *testing.T) {
+	s := verifyServer(t, runlore, verifyTasks(30*time.Minute, origTask)...)
+	if w := postVerification(s, fixTask, verifyBody("resolved", "e"), true); w.Code != http.StatusCreated {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	s.Now = func() time.Time { return now.Add(5 * time.Hour) }
+	if w := postVerification(s, fixTask, verifyBody("resolved", "e"), true); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "duplicate") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	// The monitor's Since (GitHub's merge time) is earlier than the Task's MergedAt: it decides.
+	objs := verifyTasks(10*time.Minute, origTask)
+	objs[1].(*factoryv1.Task).Status.Monitor = &factoryv1.MonitorStatus{Since: metav1.NewTime(now.Add(-3 * time.Hour))}
+	s = verifyServer(t, runlore, objs...)
+	if w := postVerification(s, fixTask, verifyBody("resolved", "e"), true); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "window_closed") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// A losing racer's evidence never stays: a verdict refused leaves the origin task untouched.
+func TestRefusedVerdictLeavesNoEvidence(t *testing.T) {
+	s := verifyServer(t, runlore, verifyTasks(30*time.Minute, origTask)...)
+	postVerification(s, fixTask, verifyBody("resolved", "first"), true)
+	if w := postVerification(s, fixTask, verifyBody("persisting", "loser"), true); w.Code != http.StatusConflict {
+		t.Fatalf("%d", w.Code)
+	}
+	if e := getTask(t, s, origTask).Status.Published.Evidence; e != "first" {
+		t.Fatalf("evidence %q", e)
+	}
+}

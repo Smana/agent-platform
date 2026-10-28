@@ -616,7 +616,7 @@ func TestVerificationSignal(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("counted once: %v", g.metrics.recorded)
 		}
-		if !contains(g.f.Comments(12), "RunLore: resolved, alert KubePodCrashLooping, https://rooms.priv.aws.ogenki.io/r/"+originTask) {
+		if !contains(g.f.Comments(12), "RunLore: resolved, alert `KubePodCrashLooping`, https://rooms.priv.aws.ogenki.io/r/"+originTask) {
 			t.Fatalf("the PR comment: %q", g.f.Comments(12))
 		}
 	})
@@ -644,6 +644,13 @@ func TestVerificationSignal(t *testing.T) {
 		g.reconcile(t, "3buqdlot", 2)
 		if got := g.f.Created(); len(got) != 1 {
 			t.Fatalf("filed once: %d", len(got))
+		}
+		// A lost status write: the next pass adopts the filed issue by its marker, never files another.
+		filed := g.reconcile(t, "3buqdlot", 0).Status.Monitor.FollowUpIssue
+		g.patch(t, func(tk *v1alpha1.Task) { tk.Status.Monitor.FollowUpIssue = 0 })
+		g.r.Now = func() time.Time { return now.Add(2 * time.Hour) }
+		if got := g.reconcile(t, "3buqdlot", 1).Status.Monitor.FollowUpIssue; got != filed || len(g.f.Created()) != 1 {
+			t.Fatalf("adopted %d, filed %d, created %d", got, filed, len(g.f.Created()))
 		}
 		rc := g.r.Cfg.RepositoryFor("Smana/cloud-native-ref")
 		if paused, err := g.r.paused(t.Context(), rc, "dead-links"); err != nil || !paused {
@@ -674,5 +681,19 @@ func TestVerificationSignal(t *testing.T) {
 				t.Fatalf("%+v", tk.Status.Monitor)
 			}
 		})
+	}
+}
+
+// The endpoint seeds Since from the factory's clock; the monitor's first pass moves it to GitHub's
+// merge time, the one every window counts from.
+func TestVerificationSeedIsCorrectedToGitHubsMergeTime(t *testing.T) {
+	g := verifyRig(t, "system:runlore", "resolved", time.Hour, 2*time.Hour)
+	seeded := metav1.NewTime(now.Add(-time.Minute))
+	g.patch(t, func(tk *v1alpha1.Task) {
+		tk.Status.PullRequest.MergedAt = &seeded
+		tk.Status.Monitor.Since = seeded
+	})
+	if got := g.reconcile(t, "3buqdlot", 1).Status.Monitor.Since.Time; !got.Equal(now.Add(-2 * time.Hour)) {
+		t.Fatalf("since %v", got)
 	}
 }
