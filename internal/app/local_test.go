@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -79,14 +80,14 @@ func TestHumanServerModes(t *testing.T) {
 	}
 	local := config.Config{PublicURL: "http://localhost:8080", Human: config.HumanConfig{Mode: config.HumanModeLocal}}
 	s := server(local, authn.NewLocal(local.PublicURL, []string{"admin", "member"}))
-	if s.Groups != (policy.Groups{Admin: "admin", Member: "member"}) || s.Origin != local.PublicURL ||
+	if s.Groups != (policy.Groups{Admin: "admin", Member: "member"}) || !slices.Equal(s.Origins, authn.LoopbackOrigins(local.PublicURL)) ||
 		s.HumanMode != config.HumanModeLocal || s.WebClient() != authn.LocalClientID {
-		t.Fatalf("local server: groups %+v origin %q mode %q web %q", s.Groups, s.Origin, s.HumanMode, s.WebClient())
+		t.Fatalf("local server: groups %+v origins %q mode %q web %q", s.Groups, s.Origins, s.HumanMode, s.WebClient())
 	}
 	oidc := config.Config{PublicURL: "https://rooms.example", Human: config.HumanConfig{Issuer: humanIssuer,
 		Origin: "https://rooms.example", Groups: config.GroupsConfig{Admin: "agents-admin", Member: "agents-member"}}}
 	o := server(oidc, authn.NewHumans(authn.NewVerifierWithKeyfunc(humanIssuer, nil), idFile(""), idFile(""), idFile(""), oidc.Human.Origin))
-	if o.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || o.Origin != "" || o.HumanMode != config.HumanModeOIDC {
-		t.Fatalf("oidc server: groups %+v origin %q mode %q", o.Groups, o.Origin, o.HumanMode)
+	if o.Groups != (policy.Groups{Admin: "agents-admin", Member: "agents-member"}) || o.Origins != nil || o.HumanMode != config.HumanModeOIDC {
+		t.Fatalf("oidc server: groups %+v origins %q mode %q", o.Groups, o.Origins, o.HumanMode)
 	}
 }

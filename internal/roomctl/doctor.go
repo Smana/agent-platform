@@ -115,6 +115,9 @@ func Discover(ctx context.Context, hc *http.Client, base string) (Config, error)
 	switch {
 	case got.HumanMode == HumanModeLocal:
 		// No IdP values to take: the loopback listener is the whole credential.
+		if err := samePort(u, got.URL); err != nil {
+			return Config{}, err
+		}
 	case got.HumanMode != "" && got.HumanMode != HumanModeOIDC:
 		return Config{}, fmt.Errorf("%s reports humanMode %q, which this roomctl does not know: upgrade roomctl", base, got.HumanMode)
 	case u.Scheme == "http":
@@ -125,6 +128,25 @@ func Discover(ctx context.Context, hc *http.Client, base string) (Config, error)
 	}
 	got.URL = base
 	return got, nil
+}
+
+// samePort refuses a local broker reached on another port than its publicURL names: its Host
+// check answers only that port, so every later call would be a bare 403. An answer with no url
+// (a broker before install-anywhere) is not checked.
+func samePort(base *url.URL, public string) error {
+	if public == "" {
+		return nil
+	}
+	p, err := url.Parse(public)
+	if err != nil || p.Port() == "" {
+		return fmt.Errorf("%s reports publicURL %q, which names no port: its config is wrong", base, public)
+	}
+	if p.Port() != base.Port() {
+		return fmt.Errorf("%s: the broker's publicURL is %s, so it answers only on port %s: forward that port "+
+			"(kubectl port-forward deploy/room-broker %s:8080) and configure --url http://localhost:%s, or reinstall with LOCAL_PORT=%s",
+			base, public, p.Port(), p.Port(), p.Port(), base.Port())
+	}
+	return nil
 }
 
 // Doctor checks what a first `roomctl rooms` needs, in the order it fails, and prints the fix of

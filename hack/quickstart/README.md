@@ -3,8 +3,7 @@
 **Question:** can a kind node (a Docker container) run pods under gVisor (`runsc`), so the quickstart
 sandboxes agent workloads the same way a real cluster does?
 
-**Status:** artifacts built and verified statically; the live proof is the `quickstart-e2e` CI job
-(GitHub runners have Docker). Nothing below marked "pending" has been run yet.
+**Status:** Linux evidence from the 2026-10-27 spike; the live proof of the whole path is `quickstart-e2e`.
 
 ## Pinned versions (`versions.env`)
 
@@ -32,9 +31,9 @@ sandboxes agent workloads the same way a real cluster does?
 
 | Platform | Result |
 |---|---|
-| Linux + Docker (amd64, arm64) | pending live run (`quickstart-e2e`) |
-| macOS + Docker Desktop | untested |
-| Podman (rootful) | untested |
+| Linux + Docker (amd64) | pass: install-anywhere spike, 2026-10-27 (gVisor systrap in kind v0.32/node v1.37; port-forward to a 127.0.0.1-only listener) |
+| macOS + Docker Desktop | unverified: up.sh stops there |
+| Podman (rootful) | unverified |
 
 `gvisor-bin/` is required: runsc 20260928.0 looks up its sidecars there, next to itself (its embedded
 fallback stops working after 2026-10). `fetch-runsc.sh` extracts it and `kind-config.yaml` mounts it at
@@ -44,7 +43,7 @@ fallback stops working after 2026-10). `fetch-runsc.sh` extracts it and `kind-co
 
 If a platform cannot run gVisor, `ALLOW_UNSANDBOXED=1` (exactly `1`; `up.sh`) clears the chart's `runtimeClassName`, skips the
 `gvisor` RuntimeClass and runs agents under the default runtime. The environment is then **not
-sandboxed**; use it only on a machine you trust with the agent's code.
+sandboxed**; use it only on a machine you trust with the agent's code. Each unsandboxed run's room shows a `Not sandboxed` banner.
 
 ## Live check
 

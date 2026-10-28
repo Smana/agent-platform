@@ -34,6 +34,7 @@ import (
 type roomctlBroker struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
+	reqs   int // every request, whatever its path
 	acts   []map[string]any
 	bearer []string
 	query  string // the last REST query
@@ -49,6 +50,9 @@ func newRoomctlBroker(t *testing.T) *roomctlBroker {
 	t.Helper()
 	b := &roomctlBroker{}
 	b.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		b.reqs++
+		b.mu.Unlock()
 		if r.URL.Path == "/.well-known/roomctl" {
 			_, _ = w.Write([]byte(`{"url":"https://elsewhere","issuer":"https://auth.example","clientID":"cli","projectID":"29184"}`))
 			return
@@ -228,6 +232,10 @@ func TestRoomctlNeverSteersOrDecides(t *testing.T) {
 		if err := r.Run(t.Context(), args); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// run starts a run only on a local broker: on this OIDC one it refuses and sends nothing.
+	if err := r.Run(t.Context(), []string{"run", "--repo", "Smana/a", "--task", "x"}); err == nil || !strings.Contains(err.Error(), "quickstart-only") {
+		t.Errorf("run on an OIDC broker: %v", err)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -6,6 +6,4 @@ web/.demo-site/
 _site/
 __pycache__/
 *.pyc
-charts/agent-platform/charts/
-charts/agent-platform/Chart.lock
 .quickstart/

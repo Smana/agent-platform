@@ -10,7 +10,6 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 
 bash -n hack/quickstart/*.sh
 shellcheck -x hack/quickstart/*.sh
-helm dependency build charts/agent-platform >/dev/null # charts/ is gitignored
 
 qs=hack/quickstart
 vals=charts/agent-platform/values.yaml
@@ -20,24 +19,21 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 # ---- sources of truth ----
 # shellcheck source=hack/quickstart/versions.env
 . "$qs/versions.env"
+# shellcheck source=hack/quickstart/lib.sh
+. "$qs/lib.sh"
 ns=$(sed -n 's/^NS=//p' "$qs/up.sh")                          # the release namespace
 runs_ns=$(yq '.runs.namespace' "$vals")
-prefix=$(yq '.runs.namePrefix' "$vals")
 issuer_kind=$(yq '.broker.tls.issuerRef.kind' "$qvals")
 issuer_name=$(yq '.broker.tls.issuerRef.name' "$qvals")
-[[ -n $ns && -n $runs_ns && -n $prefix && -n $KIND_CLUSTER ]] || bad "a source of truth is empty"
+[[ -n $ns && -n $runs_ns && -n $KIND_CLUSTER ]] || bad "a source of truth is empty"
 
 # ---- templates render and parse ----
-export ROOM_ID=abcdefg2 RUN_ID=234567ab REPO=owner/repo RUN_PROMPT=$'say "hi": ok\n😀 second line'
-# shellcheck disable=SC2016 # envsubst takes a literal variable list
-render() { envsubst '${ROOM_ID} ${RUN_ID} ${REPO}' <"$qs/manifests/$1.yaml.tmpl"; }
 export RUNS_NS=$runs_ns NS=$ns PROBE_IMAGE CLUSTER_DOMAIN=cluster.local
 # shellcheck disable=SC2016 # envsubst takes a literal variable list
 envsubst '${RUNS_NS} ${NS} ${PROBE_IMAGE} ${CLUSTER_DOMAIN}' <"$qs/manifests/gvisor-probe.yaml.tmpl" >"$tmp/gvisor-probe.yaml"
 yq ea '.' "$tmp/gvisor-probe.yaml" >/dev/null || bad "gvisor-probe does not parse"
-for m in ca-issuer cnpg-cluster room agentrun; do render "$m" >"$tmp/$m.yaml"; yq ea '.' "$tmp/$m.yaml" >/dev/null || bad "$m does not parse"; done
-render agentrun | yq '.spec.task.text = strenv(RUN_PROMPT)' >"$tmp/run-final.yaml"
-[[ $(yq '.spec.task.text' "$tmp/run-final.yaml") == "$RUN_PROMPT" ]] || bad "task text does not survive run.sh's templating"
+# both templates are applied raw by up.sh and db.sh, no envsubst
+for m in ca-issuer cnpg-cluster; do cat "$qs/manifests/$m.yaml.tmpl" >"$tmp/$m.yaml"; yq ea '.' "$tmp/$m.yaml" >/dev/null || bad "$m does not parse"; done
 
 # ---- the chart as up.sh installs it ----
 dg='v0.0.0@sha256:0000'
@@ -52,10 +48,10 @@ q() { yq ea "[select(.kind == \"$1\")] | $2" - <<<"$out"; }
 if [[ $issuer_kind == Issuer ]]; then :; else bad "Issuer is namespaced in the release namespace; $issuer_kind needs a different ca-issuer apply"; fi
 
 # DSN Secrets: every secret the broker reads, under the key it reads, is created by db.sh with that key
-dbflat=$(sed -e ':a' -e '/\\$/{N;s/\\\n *//;ba' -e '}' "$qs/db.sh") # join continuation lines
 while read -r name key; do
   [[ -n $name ]] || continue
-  grep -qE -- "create secret generic $name .*--from-literal=$key=" <<<"$dbflat" || bad "db.sh does not create $name with key $key"
+  # shellcheck disable=SC2016 # a literal "$ns" is what db.sh must contain
+  grep -qF -- "qs_secret \"\$ns\" $name Opaque $key=" "$qs/db.sh" || bad "db.sh does not create $name with key $key"
 done < <(yq ea '[select(.kind=="Deployment") | .. | select(has("secretKeyRef")) | .secretKeyRef | .name + " " + .key] | unique | .[]' - <<<"$out")
 [[ $(q Deployment '[.. | select(has("secretKeyRef")) | .secretKeyRef.name] | unique | length') -ge 2 ]] || bad "the broker no longer reads two DSN secrets"
 
@@ -63,13 +59,10 @@ done < <(yq ea '[select(.kind=="Deployment") | .. | select(has("secretKeyRef")) 
 cfg=$(q ConfigMap '.[] | select(.metadata.name=="run-controller-config") | .data."config.yaml" | from_yaml')
 for k in modelSecret gitSecret; do
   s=$(yq ".. | select(has(\"$k\")) | .$k" - <<<"$cfg")
-  grep -q "secret generic $s " "$qs/up.sh" || bad "up.sh does not create $k ($s)"
+  grep -q "qs_secret agents $s " "$qs/up.sh" || bad "up.sh does not create $k ($s)"
 done
 [[ $(yq ".. | select(has(\"namespace\")) | .namespace" - <<<"$cfg" | head -1) == "$runs_ns" ]] || bad "run-controller namespace is not $runs_ns"
 grep -q "create namespace $runs_ns " "$qs/up.sh" || bad "up.sh does not create namespace $runs_ns"
-[[ $(yq '.metadata.namespace' "$tmp/agentrun.yaml") == "$runs_ns" ]] || bad "AgentRun is not in $runs_ns"
-[[ $(yq '.metadata.name' "$tmp/agentrun.yaml") == "$prefix$RUN_ID" ]] || bad "AgentRun name is not $prefix<id> (runs.namePrefix)"
-[[ $(yq '.metadata.namespace' "$tmp/room.yaml") == "$ns" ]] || bad "Room is not in the release namespace $ns (where the broker reads it)"
 [[ $(q Namespace 'length') == 0 ]] || bad "chart renders a Namespace despite createRunsNamespace=false"
 [[ $(q RuntimeClass '.[0].metadata.name') == $(yq '.runController.runtimeClassName' "$vals") ]] || bad "RuntimeClass not rendered"
 
@@ -82,8 +75,8 @@ rc=$(yq '.runController.runtimeClassName' "$vals")
 [[ $(yq ea 'select(.kind=="CiliumNetworkPolicy") | .spec.egress[1].toPorts[0].ports[0].port' "$tmp/gvisor-probe.yaml") == 8443 ]] || bad "probe CNP port is not the broker's 8443"
 for c in ok:dmesg ok:dns ok:tcp; do grep -q "$c" "$tmp/gvisor-probe.yaml" || bad "probe does not print $c"; done
 [[ $(yq '.clusterDomain' "$vals") == cluster.local ]] || bad "up.sh's probe assumes clusterDomain cluster.local"
-grep -q 'ALLOW_UNSANDBOXED:-} != 1 \]\]; then' "$qs/up.sh" || bad "up.sh does not skip the probe under ALLOW_UNSANDBOXED=1"
-for t in sha512sum bzip2 tar; do grep -E "^for t in " "$qs/up.sh" | grep -qw "$t" || bad "up.sh does not check for $t (fetch-runsc.sh needs it)"; done
+grep -qF 'unsandboxed == 0 ]]; then' "$qs/up.sh" || bad "up.sh does not skip the probe under ALLOW_UNSANDBOXED=1"
+for t in sha256sum sha512sum bzip2 tar; do grep -E "^for t in " "$qs/up.sh" | grep -qw "$t" || bad "up.sh does not check for $t (fetch-runsc.sh needs sha512sum, bzip2 and tar; qs_fetch_roomctl needs sha256sum)"; done
 
 # Cilium must keep socket-LB out of pod namespaces, or gVisor run pods cannot reach any ClusterIP
 grep -q 'socketLB.hostNamespaceOnly=true' "$qs/up.sh" || bad "up.sh does not set socketLB.hostNamespaceOnly=true (gVisor)"
@@ -100,8 +93,18 @@ for r in rooms_broker rooms_retention; do yq -e ".spec.managed.roles[] | select(
 grep -q "@rooms-rw.\${ns}.svc" "$qs/db.sh" || bad "db.sh does not point the broker DSN at rooms-rw.<ns>"
 
 # local mode: the printed port-forward and URL
-grep -q 'deploy/room-broker 8080:8080' "$qs/up.sh" || bad "up.sh port-forward command"
-[[ $(q ConfigMap '.[] | select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .publicURL') == http://localhost:8080 ]] || bad "publicURL is not http://localhost:8080"
+# shellcheck disable=SC2016 # the literal $VARs are what up.sh must contain
+{
+grep -qF 'deploy/room-broker $LOCAL_PORT:8080' "$qs/up.sh" || bad "up.sh port-forward command"
+grep -qF 'broker.publicURL=http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh does not set publicURL from LOCAL_PORT"
+grep -qF 'roomctl configure --url http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh's configure line does not use LOCAL_PORT"
+grep -qF 'roomctl run --repo $REPO' "$qs/up.sh" || bad "up.sh does not print roomctl run"
+grep -qF 'qs_platform_ok "$(uname -s)"' "$qs/up.sh" || bad "up.sh does not stop on an unproven platform"
+}
+[[ $(q ConfigMap '.[] | select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .publicURL') == http://localhost:8080 ]] || bad "default publicURL is not http://localhost:8080"
+# the repo's kubectl pin can drive the kind node
+qs_skew_ok "$(sed -n 's/^kubectl = "1\.\([0-9]*\)\..*"/\1/p' mise.toml)" "$(qs_node_minor "$KIND_NODE_IMAGE")" || bad "mise.toml's kubectl is outside the kind node's skew"
+grep -qF 'qs_skew_ok' "$qs/up.sh" || bad "up.sh has no kubectl skew preflight"
 
 # ALLOW_UNSANDBOXED=1: the three overrides really yield an unsandboxed config
 un=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRunsNamespace=false \
@@ -110,6 +113,8 @@ un=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRun
 grep -q 'kind: RuntimeClass' <<<"$un" && bad "unsandboxed render still has a RuntimeClass"
 grep -q 'allowUnsandboxed: true' <<<"$un" || bad "unsandboxed render lacks allowUnsandboxed"
 grep -q 'runController.runtimeClassName=' "$qs/up.sh" || bad "up.sh does not clear runtimeClassName for ALLOW_UNSANDBOXED"
+
+bash hack/quickstart/lib_test.sh || fail=1
 
 [[ $fail == 0 ]] && echo "quickstart check: ok"
 exit "$fail"

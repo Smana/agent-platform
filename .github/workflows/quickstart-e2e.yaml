@@ -1,4 +1,4 @@
-# The whole quickstart in CI: this checkout's images in kind, a stub model, one AgentRun to Succeeded.
+# The whole quickstart in CI: this checkout's images and roomctl in kind, a stub model, one run to Succeeded through roomctl run.
 # Needs the owner's secrets QUICKSTART_REPO (a throwaway owner/name) and QUICKSTART_GITHUB_TOKEN (a
 # fine-grained PAT scoped to it: Contents read; the stub model never pushes). The repo needs a `main` branch with at least
 # one commit: the harness branches from it. Without them (a fork PR) every step is skipped, not failed.
@@ -48,7 +48,7 @@ jobs:
       - if: env.QUICKSTART_REPO != ''
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
         with:
-          install_args: aqua:kubernetes-sigs/kind helm aqua:mikefarah/yq # all e2e needs; docker and kubectl ship with the runner
+          install_args: go kubectl aqua:kubernetes-sigs/kind helm aqua:mikefarah/yq # go builds roomctl; kubectl is the mise.toml pin, within the kind node's skew
       - if: env.QUICKSTART_REPO != ''
         # ~14 GB free is less than the harness image takes once built, saved and loaded into kind.
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL

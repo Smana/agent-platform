@@ -57,6 +57,9 @@ func Line(ev envelope.Event) string {
 		what = append(what, field("status"))
 	case envelope.StateChanged:
 		what = []string{field("kind"), field("phase"), field("reason")}
+		if field("unsandboxed") == "true" {
+			what = append(what, "unsandboxed")
+		}
 	case envelope.Handoff:
 		what = []string{"handoff →", field("toRole")}
 		if c := field("commit"); c != "" {

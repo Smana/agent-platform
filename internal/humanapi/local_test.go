@@ -87,7 +87,7 @@ func TestLocalHumanOriginPolicy(t *testing.T) {
 		s.Humans = authn.NewLocal(local, []string{"admin", "member"})
 		s.Groups = policy.Groups{Admin: "admin", Member: "member"}
 		s.WebClient = func() string { return authn.LocalClientID }
-		s.PublicURL, s.HumanMode, s.Origin, s.UI = local, config.HumanModeLocal, local, index
+		s.PublicURL, s.HumanMode, s.Origins, s.UI = local, config.HumanModeLocal, authn.LoopbackOrigins(local), index
 	})
 	get := func(e env, path, origin string) (int, string) {
 		t.Helper()
@@ -151,7 +151,7 @@ func TestLocalHumanWebSocketOrigin(t *testing.T) {
 		s.Humans = authn.NewLocal(local, []string{"admin", "member"})
 		s.Groups = policy.Groups{Admin: "admin", Member: "member"}
 		s.WebClient = func() string { return authn.LocalClientID }
-		s.HumanMode, s.Origin = config.HumanModeLocal, local
+		s.HumanMode, s.Origins = config.HumanModeLocal, authn.LoopbackOrigins(local)
 	})
 	addr := e.ts.Listener.Addr().String()
 	dialer := &net.Dialer{}
@@ -178,4 +178,76 @@ func TestLocalHumanWebSocketOrigin(t *testing.T) {
 		t.Fatalf("a foreign Origin must be refused before the upgrade: resp %v err %v", resp, err)
 	}
 	_ = resp.Body.Close()
+}
+
+// The page reached as http://127.0.0.1:8080 or http://[::1]:8080 is the same listener: it loads,
+// lists and upgrades; a rebound Host still gets 403 on both.
+func TestLocalLoopbackAliasesThroughServer(t *testing.T) {
+	const local = "http://localhost:8080"
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
+		s.Humans = authn.NewLocal(local, []string{"admin", "member"})
+		s.Groups = policy.Groups{Admin: "admin", Member: "member"}
+		s.WebClient = func() string { return authn.LocalClientID }
+		s.HumanMode, s.Origins = config.HumanModeLocal, authn.LoopbackOrigins(local)
+	})
+	for _, tc := range []struct {
+		host, origin string
+		want         int
+	}{
+		{"127.0.0.1:8080", "http://127.0.0.1:8080", http.StatusOK},
+		{"[::1]:8080", "http://[::1]:8080", http.StatusOK},
+		{"127.0.0.1:8080", "", http.StatusOK},
+		{"evil.example:8080", "", http.StatusForbidden},
+		{"127.0.0.1:8080", "http://127.0.0.1:9999", http.StatusForbidden},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, e.ts.URL+"/api/rooms", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = tc.host
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		resp, err := e.ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("host %q origin %q: %d, want %d", tc.host, tc.origin, resp.StatusCode, tc.want)
+		}
+	}
+	addr := e.ts.Listener.Addr().String()
+	dialer := &net.Dialer{}
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}}}
+	for _, tc := range []struct {
+		url, origin string
+		ok          bool
+	}{
+		{"ws://127.0.0.1:8080/v1/ws?room=" + roomID, "http://127.0.0.1:8080", true},
+		{"ws://[::1]:8080/v1/ws?room=" + roomID, "http://[::1]:8080", true},
+		{"ws://127.0.0.1:8080/v1/ws?room=" + roomID, "https://127.0.0.1:8080", false},
+		{"ws://evil.example:8080/v1/ws?room=" + roomID, "", false},
+		{"ws://localhost.evil.example:8080/v1/ws?room=" + roomID, "", false},
+	} {
+		hdr := http.Header{}
+		if tc.origin != "" {
+			hdr.Set("Origin", tc.origin)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		c, resp, err := websocket.Dial(ctx, tc.url, &websocket.DialOptions{HTTPClient: client, HTTPHeader: hdr})
+		cancel()
+		if c != nil {
+			_ = c.CloseNow()
+		}
+		refused := resp != nil && resp.StatusCode == http.StatusForbidden
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if tc.ok != (err == nil) || (!tc.ok && !refused) {
+			t.Errorf("%s origin %s: err %v refused %v", tc.url, tc.origin, err, refused)
+		}
+	}
 }

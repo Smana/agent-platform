@@ -254,10 +254,14 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
     asked = true;
     try {
       const r = await api("/api/roomctl", {}, get);
-      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string };
-      out.textContent = r.ok && c.clientID
-        ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
-        : "roomctl is not set up on this broker: it has no roomctl client.";
+      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string; humanMode?: string };
+      out.textContent = !r.ok
+        ? "roomctl is not set up on this broker: it has no roomctl client."
+        : c.humanMode === "local"
+          ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url}\nroomctl run --repo <owner/name> --task '<what the run should do>'`
+          : c.clientID
+            ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
+            : "roomctl is not set up on this broker: it has no roomctl client.";
     } catch (err) {
       asked = false;
       if (!(err instanceof SignInRequired)) out.textContent = `CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`;

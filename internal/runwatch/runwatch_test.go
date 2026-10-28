@@ -575,3 +575,46 @@ func TestEndReasonReadsTheLoopEndFirst(t *testing.T) {
 		})
 	}
 }
+
+func TestFromUnstructuredUnsandboxed(t *testing.T) {
+	for _, tc := range []struct {
+		conds []any
+		want  bool
+	}{
+		{[]any{map[string]any{"type": "Unsandboxed", "status": "True", "reason": "AllowUnsandboxed"}}, true},
+		{[]any{map[string]any{"type": "Unsandboxed", "status": "False"}}, false},
+		{[]any{map[string]any{"type": "Ready", "status": "True"}}, false},
+		{nil, false},
+	} {
+		u := claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", "")
+		if tc.conds != nil {
+			if err := unstructured.SetNestedSlice(u.Object, tc.conds, "status", "conditions"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r, ok := FromUnstructured(u)
+		if !ok || r.Unsandboxed != tc.want {
+			t.Errorf("%v: ok %v unsandboxed %v", tc.conds, ok, r.Unsandboxed)
+		}
+	}
+}
+
+func TestObserveRecordsAnUnsandboxedRun(t *testing.T) {
+	for _, tc := range []struct {
+		unsandboxed bool
+		want        string
+	}{
+		{true, `state_changed:{"kind":"run_phase","phase":"Running","unsandboxed":true}`},
+		{false, `state_changed:{"kind":"run_phase","phase":"Running"}`},
+	} {
+		fs := &fakeStore{keys: map[string]bool{}}
+		r, _ := FromUnstructured(claim("xplane-run-7f3cq2xz", "3kq7x2ma", "Running", ""))
+		r.Unsandboxed = tc.unsandboxed
+		if err := (&Events{Store: fs}).Observe(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+		if got := payloads(fs.drafts); len(got) != 2 || got[1] != tc.want {
+			t.Errorf("unsandboxed %v: %v", tc.unsandboxed, got)
+		}
+	}
+}

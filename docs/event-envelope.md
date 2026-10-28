@@ -119,7 +119,7 @@ The payload shape of every `type`.
 | `kind` | Fields | Written by |
 |---|---|---|
 | `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker |
-| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#the-log)) | Broker (leader) |
+| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#the-log)); the `Running` step carries `unsandboxed: true` for a run the controller placed without a RuntimeClass (`ALLOW_UNSANDBOXED=1`) | Broker (leader) |
 | `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` | Broker |
 | `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge |
 | `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge |

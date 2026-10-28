@@ -684,3 +684,89 @@ func TestConfigValidateLocal(t *testing.T) {
 		t.Error("no mode on plain http: accepted, though only a local broker is reached that way")
 	}
 }
+
+func TestCreateRoom(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string // the id, or a substring of the error
+		ok     bool
+	}{
+		{"created", http.StatusCreated, `{"id":"r2om2abc"}`, "r2om2abc", true},
+		{"no id", http.StatusCreated, `{}`, "no room id", false},
+		{"unknown repository", http.StatusNotFound, "no such repository\n", "create room: 404: no such repository", false},
+		{"refused", http.StatusForbidden, "", "create room: 403", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex // the handler goroutine writes got, the test reads it
+			var got map[string]string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/rooms" || r.Header.Get("Authorization") != "" {
+					http.Error(w, "unexpected", http.StatusTeapot)
+					return
+				}
+				mu.Lock()
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				mu.Unlock()
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c := Client{URL: srv.URL, HC: srv.Client(), Token: func(context.Context) (string, error) { return "", nil }}
+			id, err := c.CreateRoom(t.Context(), "owner/repo", "public")
+			if tc.ok && (err != nil || id != tc.want) || !tc.ok && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("id %q err %v, want %q", id, err, tc.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if got["repository"] != "owner/repo" || got["dataClass"] != "public" {
+				t.Fatalf("body %v", got)
+			}
+		})
+	}
+}
+
+// Follow prints like Watch and returns nil at the first event stop accepts, leaving later ones unread.
+func TestFollowStopsWhereTold(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		var hello wire.ClientFrame
+		if wsjson.Read(r.Context(), c, &hello) != nil {
+			return
+		}
+		_ = wsjson.Write(r.Context(), c, wire.ServerFrame{Type: wire.FrameState, Snapshot: &wire.Snapshot{RoomID: hello.RoomID}})
+		for _, p := range []struct {
+			seq   int64
+			phase string
+		}{{1, "Running"}, {2, "Succeeded"}, {3, "Failed"}} {
+			ev := envelope.Event{Seq: p.seq, RoomID: hello.RoomID, RunID: "a2b3c4d5", Type: envelope.StateChanged,
+				Actor:   envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+				Payload: envelope.StatePayload("run_phase", map[string]any{"phase": p.phase})}
+			_ = wsjson.Write(r.Context(), c, wire.ServerFrame{Type: wire.FrameEvent, Event: &ev})
+		}
+		var f wire.ClientFrame
+		_ = wsjson.Read(r.Context(), c, &f) // until roomctl closes
+	}))
+	defer srv.Close()
+	c := Client{URL: srv.URL, HC: srv.Client(), Stream: srv.Client(), Token: func(context.Context) (string, error) { return "", nil }}
+	var out strings.Builder
+	err := c.Follow(t.Context(), "r2om2abc", 10, &out, func(ev envelope.Event) bool {
+		return strings.Contains(string(ev.Payload), `"Succeeded"`)
+	})
+	if err != nil || !strings.Contains(out.String(), "#2 ") || strings.Contains(out.String(), "#3 ") {
+		t.Fatalf("err %v, out:\n%s", err, out.String())
+	}
+}
+
+func TestLineSaysUnsandboxed(t *testing.T) {
+	ev := envelope.Event{Seq: 7, Type: envelope.StateChanged, Actor: envelope.Actor{Kind: envelope.ActorSystem, ID: "system:room-broker"},
+		Payload: envelope.StatePayload("run_phase", map[string]any{"phase": "Running", "unsandboxed": true})}
+	if got := Line(ev); got != "#7 system:room-broker run_phase Running unsandboxed" {
+		t.Fatalf("%q", got)
+	}
+}

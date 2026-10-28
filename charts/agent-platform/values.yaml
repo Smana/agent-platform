@@ -41,7 +41,8 @@ broker:
   systemIssuer: {}
   systemPrincipals: {}
   factoryURL: ""
-  # oidc mode: the https URL humans reach the broker at. Local mode fixes it to http://localhost:8080.
+  # oidc mode: the https URL humans reach the broker at. local mode: http://localhost:<the port you
+  # forward>, default http://localhost:8080; the broker answers that port only.
   publicURL: ""
   database:
     # Secret with key `uri`: the broker's DSN (rooms_broker). Empty omits ROOMS_DATABASE_URL:
@@ -92,9 +93,6 @@ runController:
   allowUnsandboxed: false
   # Replaces the built-in profiles (github, pypi, npm, golang, crates) when set.
   egressProfiles: {}
-
-factory:
-  enabled: false
 
 # CI only: images `kind load`ed have no registry digest. Accepts a bare tag and never pulls.
 e2e:

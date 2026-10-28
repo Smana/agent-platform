@@ -194,8 +194,8 @@ fieldset.delivery > legend { position: absolute; width: 1px; height: 1px; overfl
   button.send { min-height: 40px; }
   .composer-row .keys { display: none; }
 }
-/* Not live: under the strip, why and when the page retries. */
-.banner { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
+/* Not live: under the strip, why and when the page retries. The unsandboxed banner sits above the strip. */
+.banner, .banner-unsandboxed { background: color-mix(in srgb, var(--warning) 18%, var(--card)); color: var(--warning-foreground); padding: 6px 16px; }
 /* The live demo (web/preview/demo.ts): its banner, and the replay bar as the dock's first row. */
 .demo-banner a { color: inherit; text-decoration: underline; }
 .replay-bar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }

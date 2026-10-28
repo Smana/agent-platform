@@ -4,12 +4,15 @@
 # Idempotent: passwords are generated once and kept. Usage: db.sh <namespace>
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+# shellcheck source=hack/quickstart/lib.sh
+. hack/quickstart/lib.sh
 ns="${1:?usage: db.sh <namespace>}"
 
 for role in rooms-broker rooms-retention; do
-  kubectl -n "$ns" get secret "$role-password" >/dev/null 2>&1 ||
-    kubectl -n "$ns" create secret generic "$role-password" --type=kubernetes.io/basic-auth \
-      --from-literal=username="${role//-/_}" --from-literal=password="$(openssl rand -hex 24)"
+  kubectl -n "$ns" get secret "$role-password" >/dev/null 2>&1 && continue
+  export QS_ROLE_USER=${role//-/_} QS_ROLE_PASSWORD
+  QS_ROLE_PASSWORD=$(openssl rand -hex 24)
+  qs_secret "$ns" "$role-password" kubernetes.io/basic-auth username=QS_ROLE_USER password=QS_ROLE_PASSWORD | kubectl apply -f -
 done
 
 kubectl -n "$ns" apply -f hack/quickstart/manifests/cnpg-cluster.yaml.tmpl
@@ -23,8 +26,9 @@ for _ in $(seq 60); do
 done
 [[ $reconciled == *rooms_broker* && $reconciled == *rooms_retention* ]] || { echo "managed roles not reconciled after 120s: $reconciled" >&2; exit 1; }
 
-owner_uri="$(kubectl -n "$ns" get secret rooms-app -o jsonpath='{.data.uri}' | base64 -d)?sslmode=require"
+export QS_OWNER_URI QS_BROKER_URI
+QS_OWNER_URI="$(kubectl -n "$ns" get secret rooms-app -o jsonpath='{.data.uri}' | base64 -d)?sslmode=require"
 pw=$(kubectl -n "$ns" get secret rooms-broker-password -o jsonpath='{.data.password}' | base64 -d)
-kubectl -n "$ns" create secret generic rooms-owner-dsn --from-literal=uri="$owner_uri" --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n "$ns" create secret generic rooms-broker-dsn \
-  --from-literal=uri="postgresql://rooms_broker:${pw}@rooms-rw.${ns}.svc:5432/rooms?sslmode=require" --dry-run=client -o yaml | kubectl apply -f -
+QS_BROKER_URI="postgresql://rooms_broker:${pw}@rooms-rw.${ns}.svc:5432/rooms?sslmode=require"
+qs_secret "$ns" rooms-owner-dsn Opaque uri=QS_OWNER_URI | kubectl apply -f -
+qs_secret "$ns" rooms-broker-dsn Opaque uri=QS_BROKER_URI | kubectl apply -f -

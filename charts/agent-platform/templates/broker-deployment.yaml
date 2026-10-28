@@ -18,6 +18,7 @@ spec:
         # The broker reads its config once at start: a changed config must roll the pods.
         checksum/config: {{ include (print $.Template.BasePath "/broker-config.yaml") . | sha256sum }}
     spec:
+      # No runtimeClassName, ever: kubectl port-forward, local mode's only way in, cannot reach a runsc pod.
       serviceAccountName: room-broker
       automountServiceAccountToken: true # the Room and AgentRun watches, the leader lease
       terminationGracePeriodSeconds: 30 # the broker's shutdown drains fit 23 s of it

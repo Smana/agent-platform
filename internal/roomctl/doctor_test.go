@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -475,7 +477,7 @@ func TestDiscoverLocal(t *testing.T) {
 		if r.URL.Path != "/.well-known/roomctl" || r.Header.Get("Authorization") != "" {
 			t.Errorf("%s with %q: discovery is unauthenticated", r.URL.Path, r.Header.Get("Authorization"))
 		}
-		_, _ = w.Write([]byte(`{"url":"` + r.Host + `","humanMode":"local"}`))
+		_, _ = w.Write([]byte(`{"url":"http://` + r.Host + `","humanMode":"local"}`))
 	}))
 	t.Cleanup(srv.Close)
 	got, err := Discover(t.Context(), srv.Client(), srv.URL+"/")
@@ -554,5 +556,29 @@ func TestDoctorLocal(t *testing.T) {
 	}
 	if _, err := os.Stat(tokPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("doctor wrote a token file: %v", err)
+	}
+}
+
+// A local broker's Host check answers publicURL's port only: discovery refuses another port up
+// front, with the port-forward that fixes it, instead of letting every later call get 403.
+func TestDiscoverLocalPortAgreement(t *testing.T) {
+	var answer atomic.Value // the test writes it, the server goroutine reads it
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(answer.Load().(string))) }))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	for _, tc := range []struct {
+		url, wantErr string
+	}{
+		{fmt.Sprintf("http://localhost:%d", port), ""},
+		{fmt.Sprintf("http://[::1]:%d", port), ""},
+		{"", ""}, // an older broker sends no url: not checked
+		{"http://localhost:1", "answers only on port 1"},
+		{"http://localhost", "names no port"},
+	} {
+		answer.Store(`{"url":"` + tc.url + `","humanMode":"local"}`)
+		_, err := Discover(t.Context(), srv.Client(), srv.URL)
+		if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("url %q: %v, want %q", tc.url, err, tc.wantErr)
+		}
 	}
 }

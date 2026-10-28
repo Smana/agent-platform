@@ -3,6 +3,7 @@
 package roomctl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/httpx"
 	"github.com/Smana/agent-platform/internal/mcpwire"
 	"github.com/Smana/agent-platform/internal/roomview"
@@ -358,11 +360,62 @@ func again(err error) bool {
 	return false
 }
 
-// Watch prints the room's state, its last tail events, then follows it until
-// ctx ends, which is not an error. Once connected, it dials again wherever the
-// broker says to, with a fresh token, from the last seq it printed.
+// Watch prints the room's state, its last tail events, then follows it until ctx ends.
 func (c Client) Watch(ctx context.Context, room string, tail int, out io.Writer) error {
-	w := watch{c: c, out: out}
+	return c.Follow(ctx, room, tail, out, nil)
+}
+
+// errFollowed ends a Follow whose stop accepted an event; Follow returns nil for it.
+var errFollowed = errors.New("followed to the event asked for")
+
+// CreateRoom is POST /api/rooms: a new room the developer owns and drives, on repository
+// (owner/name) and dataClass (public or internal). It returns the room's id.
+func (c Client) CreateRoom(ctx context.Context, repository, dataClass string) (string, error) {
+	h, err := c.header(ctx)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]string{"repository": repository, "dataClass": dataClass})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/api/rooms", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header = h
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HC.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("create room: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusCreated:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "", refusal("create room", resp)
+	default:
+		msg, _ := httpx.ReadBody(resp.Body, 1<<10)
+		return "", fmt.Errorf("create room: %d: %s", resp.StatusCode, OneLine(string(msg)))
+	}
+	raw, err := httpx.ReadBody(resp.Body, 1<<10)
+	if err != nil {
+		return "", fmt.Errorf("create room: %w", err)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(raw, &out) != nil || out.ID == "" {
+		return "", errors.New("create room: the broker's answer has no room id")
+	}
+	return out.ID, nil
+}
+
+// Follow is Watch until stop, called on each event it prints, reports true: it returns nil then.
+// A nil stop follows until ctx ends, which is not an error. Once connected, it dials again
+// wherever the broker says to, with a fresh token, from the last seq it printed.
+func (c Client) Follow(ctx context.Context, room string, tail int, out io.Writer, stop func(envelope.Event) bool) error {
+	w := watch{c: c, out: out, stop: stop}
 	first := c.Backoff
 	if first <= 0 {
 		first = time.Second
@@ -376,6 +429,8 @@ func (c Client) Watch(ctx context.Context, room string, tail int, out io.Writer)
 			wait = first // that connection got through: a later drop starts the backoff again
 		}
 		switch {
+		case errors.Is(err, errFollowed):
+			return nil
 		case ctx.Err() != nil:
 			return nil
 		case !w.connected || !again(err): // a first dial that fails is a bad URL or room, not a blip
@@ -395,6 +450,7 @@ func (c Client) Watch(ctx context.Context, room string, tail int, out io.Writer)
 type watch struct {
 	c         Client
 	out       io.Writer
+	stop      func(envelope.Event) bool
 	connected bool
 	states    int // state frames seen, one per connection that got through
 	last      int64
@@ -426,6 +482,9 @@ func (w *watch) follow(ctx context.Context, hello wire.ClientFrame) error {
 			w.last = f.Event.Seq
 			if _, err := fmt.Fprintln(w.out, Line(*f.Event)); err != nil {
 				return err
+			}
+			if w.stop != nil && w.stop(*f.Event) {
+				return errFollowed
 			}
 		}
 	}

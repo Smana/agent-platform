@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -102,11 +103,11 @@ type Server struct {
 	// `configure --url` knows whether an IdP and a token are needed. Empty reads as OIDC: the
 	// deployment every broker before local mode carried.
 	HumanMode string
-	// Origin is the one origin requests may come from, set in local mode alone: there is no token
-	// there, so an every-route check on Origin is the only CSRF gate, and it covers the public and
-	// static routes too. Empty installs no such gate; an OIDC install relies on its authenticator's
-	// own Origin check, which every authenticated route calls.
-	Origin string
+	// Origins are the origins requests may come from, set in local mode alone (authn.LoopbackOrigins
+	// of publicURL): there is no token there, so an every-route check on Origin is the only CSRF
+	// gate, and it covers the public and static routes too. Nil installs no such gate; an OIDC
+	// install relies on its authenticator's own Origin check, which every authenticated route calls.
+	Origins []string
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
 	// through it is the web UI, which may steer and decide (ruling P18).
 	WebClient func() string
@@ -202,8 +203,8 @@ func (s *Server) Routes() http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		mux.ServeHTTP(w, r)
 	})
-	if s.Origin != "" { // local mode only: see Origin's contract
-		return sameOrigin(s.Origin, h)
+	if len(s.Origins) > 0 { // local mode only: see Origins' contract
+		return sameOrigin(s.Origins, h)
 	}
 	return h
 }
@@ -211,9 +212,9 @@ func (s *Server) Routes() http.Handler {
 // sameOrigin refuses a request another site's page sent, before the route runs: local mode has no
 // token, so nothing else stands between a foreign page and the user's port-forward. A request with
 // no Origin (curl, roomctl, a same-origin GET) passes, and so does the configured origin's own.
-func sameOrigin(origin string, next http.Handler) http.Handler {
+func sameOrigin(origins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if o := r.Header.Get("Origin"); o != "" && o != origin {
+		if o := r.Header.Get("Origin"); o != "" && !slices.Contains(origins, o) {
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}

@@ -1153,6 +1153,23 @@ func TestSnapshotRuns(t *testing.T) {
 	}
 }
 
+func TestSnapshotRunsSayUnsandboxed(t *testing.T) {
+	e := setup(t)
+	runs := runwatch.New()
+	e.srv.Runs = runs
+	u := agentRun("7f3cq2xz", roomID, "implementer")
+	if err := unstructured.SetNestedSlice(u.Object, []any{map[string]any{"type": "Unsandboxed", "status": "True"}}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	runs.Upsert(t.Context(), u)
+	runs.Upsert(t.Context(), agentRun("2abcdefg", roomID, "reviewer"))
+	c := dial(t, e, "dev", hello(nil, 0))
+	b, _ := json.Marshal(read(t, c).Snapshot.Runs)
+	if want := `[{"id":"2abcdefg","role":"reviewer","phase":"Running"},{"id":"7f3cq2xz","role":"implementer","phase":"Running","unsandboxed":true}]`; string(b) != want {
+		t.Fatalf("runs %s", b)
+	}
+}
+
 // The state frame carries the queue, so a message queued before the page's tail
 // still shows (review 4.5 I1); a failed read is the log's failure.
 func TestSnapshotQueue(t *testing.T) {

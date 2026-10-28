@@ -358,7 +358,7 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Human.EffectiveMode() == HumanModeLocal {
 		// Validate refuses any other value: the Origin check is the only gate, so it accepts
-		// publicURL and nothing else. A bare `human: {mode: local}` is the port-forward on the
+		// authn.LoopbackOrigins(publicURL) (publicURL's port under localhost, 127.0.0.1 and [::1]) and nothing else. A bare `human: {mode: local}` is the port-forward on the
 		// pod's :8080, which is what kubectl forwards.
 		if c.PublicURL == "" {
 			c.PublicURL = "http://localhost:8080"

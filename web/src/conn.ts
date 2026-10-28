@@ -10,7 +10,7 @@ export interface RoomEvent {
 export interface Snapshot {
   roomId: string; phase: string; driver: string; driverEpoch: number; dataClass: string;
   you: { principal: string; role: string; approver: boolean; driver: boolean; webUI: boolean };
-  runs?: { id: string; role: string; phase: string }[];
+  runs?: { id: string; role: string; phase: string; unsandboxed?: boolean }[];
   queue?: { ref: number; author: string; text: string }[];
   sealed?: boolean;
   approvals?: { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }[];

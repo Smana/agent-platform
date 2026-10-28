@@ -82,8 +82,11 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 		return err
 	}
 	if r.Phase == "Running" || Terminal(r.Phase) {
-		if err := put(stepRunning, envelope.StateChanged, envelope.StatePayload("run_phase",
-			map[string]any{"phase": "Running"})); err != nil {
+		running := map[string]any{"phase": "Running"}
+		if r.Unsandboxed { // the room says so: the controller set the condition when it created the pod
+			running["unsandboxed"] = true
+		}
+		if err := put(stepRunning, envelope.StateChanged, envelope.StatePayload("run_phase", running)); err != nil {
 			return err
 		}
 	}

@@ -330,12 +330,12 @@ func humanServer(cfg config.Config, humans humanapi.Authenticator, rooms client.
 	groups := h.EffectiveGroups()
 	// The loopback listener has no token, so its Origin is the only CSRF gate and it applies to every
 	// route (humanapi's sameOrigin); OIDC leaves it empty and keeps authn.Humans' own check.
-	var origin string
+	var origins []string
 	if mode == config.HumanModeLocal {
-		origin = cfg.PublicURL
+		origins = authn.LoopbackOrigins(cfg.PublicURL)
 	}
 	return &humanapi.Server{Humans: humans, Groups: policy.Groups{Admin: groups.Admin, Member: groups.Member},
-		HumanMode: mode, Origin: origin,
+		HumanMode: mode, Origins: origins,
 		WebClient: webClient, PublicURL: cfg.PublicURL, Issuer: h.Issuer, RoomctlClient: roomctlClient,
 		ProjectID: projectID,
 		Rooms:     rooms, Namespace: ns, Log: roomLog, Hub: hub, Runs: runs, Actor: actor, Metrics: m, UI: ui.FS, Logger: log,

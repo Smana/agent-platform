@@ -100,11 +100,7 @@ jobs:
           digest="$(sed -n 's/^Digest: //p' <<<"$out")"
           [ -n "$digest" ] || { echo "helm push printed no digest" >&2; exit 1; }
           cosign sign --yes "ghcr.io/smana/charts/agent-factory@${digest}"
-          # The umbrella chart, same version; its factory subchart is built into the package.
-          # helm package stamps only the parent: stamp the bundled factory subchart too.
-          yq -i ".version = \"$v\" | .appVersion = \"$GITHUB_REF_NAME\"" charts/agent-factory/Chart.yaml
-          yq -i ".dependencies[0].version = \"$v\"" charts/agent-platform/Chart.yaml
-          helm dependency build charts/agent-platform
+          # The umbrella chart, same version: broker and run controller, no dependency.
           helm package charts/agent-platform --version "$v" --app-version "$GITHUB_REF_NAME"
           out="$(helm push "agent-platform-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
           digest="$(sed -n 's/^Digest: //p' <<<"$out")"

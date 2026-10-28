@@ -11,7 +11,7 @@ data:
   # left to its default, /etc/room-broker/tls/tls.{crt,key}, where the Deployment mounts the pair.
   config.yaml: |
     {{- if $local }}
-    publicURL: http://localhost:8080
+    publicURL: {{ $b.publicURL | default "http://localhost:8080" | quote }}
     {{- else if $b.publicURL }}
     publicURL: {{ $b.publicURL | quote }}
     {{- end }}

@@ -6,7 +6,9 @@
 # mode, the run-controller's config, RBAC and CNP, default-deny in the runs namespace, and an image by digest unless e2e says otherwise.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-helm dependency build . >/dev/null
+# No dependency: helm would render any chart left under charts/ (a stale dependency build) as a subchart.
+[[ $(yq '.dependencies // [] | length' Chart.yaml) == 0 ]] || { echo "FAIL: Chart.yaml lists a dependency" >&2; exit 1; }
+[[ ! -e charts ]] || { echo "FAIL: charts/agent-platform/charts/ exists: a stale dependency build helm would render; move it away" >&2; exit 1; }
 digest='v0.0.0@sha256:0000'
 # every render needs the controller's three images; the cases below add only what they test
 imgs=(--set broker.image.tag=$digest --set runController.image.tag=$digest
@@ -68,6 +70,12 @@ ykind Role 'select(.metadata.namespace=="agents" and .metadata.name=="run-contro
 ykind Role 'select(.metadata.name=="run-controller-ca") | (.metadata.namespace == null and (.rules[0].resourceNames | join(",")) == "room-broker-tls" and (.rules[0].verbs | join(",")) == "get")' 'get on the CA Secret by name, in the release namespace'
 ykind CiliumNetworkPolicy 'select(.metadata.name=="run-controller") | (.spec.endpointSelector.matchLabels."app.kubernetes.io/name" == "run-controller" and (.spec.egress[] | select(.toEntities[0]=="kube-apiserver") | (.toPorts[0].ports | map(.port) | join(",")) == "443,6443"))' 'controller CNP: apiserver on apiServerPorts, own selector'
 ykind RuntimeClass '(.handler == "runsc" and .metadata.name == "gvisor")' 'RuntimeClass gvisor'
+ynone 'select(.metadata.labels."app.kubernetes.io/name" == "agent-factory")' 'the quickstart renders no factory object'
+ynone 'select(.kind == "CustomResourceDefinition")' 'templates render no CRD: crds/ holds Room and AgentRun only'
+# crds/ only shows with --include-crds: assert it holds exactly Room and AgentRun
+crds="$(helm template ap . -n x -f values-quickstart.yaml "${imgs[@]}" --include-crds | yq ea 'select(.kind == "CustomResourceDefinition") | .spec.names.kind' - | grep -v "^---$" | sort | paste -sd,)"
+[[ $crds == "AgentRun,Room" ]] || { echo "FAIL: crds/ holds \"$crds\", want AgentRun,Room" >&2; fail=1; }
+ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.spec.runtimeClassName == null' 'the broker runs on the default runtime: kubectl port-forward cannot reach a runsc pod'
 
 # production-shaped render: no migrate, no tokenreview binding
 p="$(helm template ap . -n agent-system "${imgs[@]}" \
@@ -90,6 +98,8 @@ ykind ConfigMap 'select(.metadata.name=="run-controller-config") | .data."config
 ykind Role 'select(.metadata.name=="run-controller-ca") | (.rules[0].resourceNames | join(",")) == "broker-cert"' 'the CA Role follows broker.tls.secretName'
 ykind Role 'select(.metadata.name=="run-controller" and .metadata.namespace=="agents") | .rules[0].apiGroups[0] == "cloud.ogenki.io"' 'controller RBAC follows runs.group'
 ykind CiliumNetworkPolicy 'select(.metadata.name=="run-controller") | (.spec.egress[] | select(.toEntities[0]=="kube-apiserver") | (.toPorts[0].ports | map(.port) | join(",")) == "6443")' 'controller CNP follows apiServerPorts'
+ynone 'select(.metadata.labels."app.kubernetes.io/name" == "agent-factory")' 'the production render has no factory object'
+ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.spec.runtimeClassName == null' 'production: the broker runs on the default runtime'
 
 # two DSNs, two roles, one pod: each container reads the Secret meant for it, through the variable
 # its subcommand reads, and the broker never sees the owner's credential
@@ -111,6 +121,15 @@ ynone '[select(.kind=="Certificate") | .spec.dnsNames[] | select(test("cluster.l
 bhost="$(yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml" | from_yaml | .broker.url | sub("^https://", "") | sub(":[0-9]+$", "")' - <<<"$out")"
 BHOST="$bhost" ykind Certificate '.spec.dnsNames | contains([strenv(BHOST)])' "a dnsName covers the controller's broker.url host ($bhost)"
 
+# local publicURL follows the forwarded port (up.sh's LOCAL_PORT)
+fwd="$(helm template ap . -n x -f values-quickstart.yaml "${imgs[@]}" --set broker.publicURL=http://localhost:18080)"
+out="$fwd"
+ykind ConfigMap 'select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .publicURL == "http://localhost:18080"' 'local publicURL takes broker.publicURL'
+# ALLOW_UNSANDBOXED=1's overrides never reach the broker pod
+out="$(helm template ap . -n x -f values-quickstart.yaml "${imgs[@]}" --set runController.allowUnsandboxed=true \
+  --set runController.runtimeClassName= --set runController.createRuntimeClass=false)"
+ykind Deployment 'select(.metadata.name=="room-broker") | .spec.template.spec.runtimeClassName == null' 'unsandboxed: the broker still has no runtimeClassName'
+
 # a misconfiguration is a helm error, for the intended reason: each case names its message
 bad() { # bad 'expected message' --set ...
   local want="$1" err; shift
@@ -127,14 +146,19 @@ bad 'apiServerPorts is empty' --set apiServerPorts=null
 bad 'runController.modelSecret is required' --set runController.modelSecret=
 bad 'image.tag is <version>@sha256:<digest>, never a bare tag' --set runController.images.bridge.tag=v1
 bad 'image.tag is <version>@sha256:<digest>' --set runController.images.harness.tag=
+bad 'factory: this chart has no factory' --set factory.enabled=false
+bad 'broker.runtimeClassName: the broker runs on the default runtime' --set broker.runtimeClassName=gvisor
+bad 'broker.publicURL "https://rooms.example" in local mode' --set broker.publicURL=https://rooms.example
+bad 'broker.publicURL "http://0.0.0.0:8080" in local mode' --set broker.publicURL=http://0.0.0.0:8080
 
 # both rendered configs load through the broker's real loader
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 yq 'select(.metadata.name=="room-broker-config") | .data."config.yaml"' - <<<"$q" >"$tmp/quickstart.yaml"
 yq 'select(.metadata.name=="room-broker-config") | .data."config.yaml"' - <<<"$p" >"$tmp/production.yaml"
+yq 'select(.metadata.name=="room-broker-config") | .data."config.yaml"' - <<<"$fwd" >"$tmp/forwarded.yaml"
 yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml"' - <<<"$q" >"$tmp/rc-quickstart.yaml"
 yq 'select(.metadata.name=="run-controller-config") | .data."config.yaml"' - <<<"$p" >"$tmp/rc-production.yaml"
-go run ./tests/loadconfig broker "$tmp/quickstart.yaml" "$tmp/production.yaml" || fail=1
+go run ./tests/loadconfig broker "$tmp/quickstart.yaml" "$tmp/production.yaml" "$tmp/forwarded.yaml" || fail=1
 go run ./tests/loadconfig broker-roomtools-off "$tmp/quickstart.yaml" || fail=1
 go run ./tests/loadconfig broker-roomtools-on "$tmp/production.yaml" || fail=1
 go run ./tests/loadconfig run-controller "$tmp/rc-quickstart.yaml" "$tmp/rc-production.yaml" || fail=1

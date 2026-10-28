@@ -41,6 +41,15 @@ capabilities: {drop: [ALL]}
 {{/* A misconfiguration is a helm error, not a crashloop. */}}
 {{- define "ap.validate" -}}
 {{- $b := .Values.broker -}}
+{{- if hasKey .Values "factory" -}}
+{{- fail "factory: this chart has no factory: install charts/agent-factory on its own" -}}
+{{- end -}}
+{{- if hasKey $b "runtimeClassName" -}}
+{{- fail "broker.runtimeClassName: the broker runs on the default runtime: kubectl port-forward cannot reach a runsc pod (install-anywhere spike, outcome 3)" -}}
+{{- end -}}
+{{- if and (eq ($b.human.mode | default "oidc") "local") $b.publicURL (not (regexMatch "^http://(localhost|127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$" $b.publicURL)) -}}
+{{- fail (printf "broker.publicURL %q in local mode: it is http://localhost:<the port you forward>" $b.publicURL) -}}
+{{- end -}}
 {{- if not (has ($b.human.mode | default "oidc") (list "oidc" "local")) -}}
 {{- fail (printf "broker.human.mode %q is not oidc or local" $b.human.mode) -}}
 {{- end -}}

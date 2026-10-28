@@ -53,7 +53,8 @@ drive, then opens it.
 | Repository | `owner/name`, required. Anyone who can read it on GitHub can read the room. You must be able to read it yourself |
 
 A `CLI setup` fold under the list prints the one block that installs roomctl and configures it
-for this broker ([roomctl](roomctl.md)).
+for this broker ([roomctl](roomctl.md)); on a local broker it configures by URL alone and shows
+`roomctl run` instead of a login.
 
 ## The room page
 
@@ -78,6 +79,8 @@ every chat line or tool call. A sealed room shows who closed it, has no waiting 
 and no actions, and hides the composer, the Run and Driver groups and the invite. Everything an
 agent wrote is shown as text; a URL becomes a link only when it is `https`. The page keeps the
 newest 5,000 events; older ones leave the page, never the log.
+
+A run without gVisor (`ALLOW_UNSANDBOXED=1`) puts a `Not sandboxed` banner above the page for as long as it is open.
 
 ## What each standing may do
 

@@ -83,3 +83,54 @@ func TestLocalHumanAuthenticate(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbackOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		public string
+		want   []string
+	}{
+		{"http://localhost:8080", []string{"http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"}},
+		{"http://127.0.0.1:18080", []string{"http://127.0.0.1:18080", "http://localhost:18080", "http://[::1]:18080"}},
+		{"http://LOCALHOST:8080", []string{"http://LOCALHOST:8080", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"}},
+		{"https://rooms.example", []string{"https://rooms.example"}},
+	} {
+		if got := LoopbackOrigins(tc.public); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: %q, want %q", tc.public, got, tc.want)
+		}
+	}
+}
+
+// kubectl port-forward listens on 127.0.0.1 and [::1] and keeps the client's Host: the three
+// loopback names on publicURL's port are the listener's own; anything else is a rebound page.
+func TestLocalLoopbackAliases(t *testing.T) {
+	l := NewLocal("http://localhost:8080", []string{"admin", "member"})
+	for _, tc := range []struct {
+		host, origin string
+		want         error
+	}{
+		{"localhost:8080", "", nil},
+		{"127.0.0.1:8080", "", nil},
+		{"[::1]:8080", "", nil},
+		{"LOCALHOST:8080", "", nil},
+		{"127.0.0.1:8080", "http://127.0.0.1:8080", nil},
+		{"[::1]:8080", "http://[::1]:8080", nil},
+		{"localhost:8080", "http://127.0.0.1:8080", nil},
+		{"evil.example:8080", "", ErrForbidden},
+		{"localhost.evil.example:8080", "", ErrForbidden},
+		{"127.0.0.1:8081", "", ErrForbidden},
+		{"127.0.0.2:8080", "", ErrForbidden},
+		{"127.0.0.1:8080", "https://127.0.0.1:8080", ErrForbidden},
+		{"127.0.0.1:8080", "http://localhost:8081", ErrForbidden},
+		{"127.0.0.1:8080", "http://evil.example", ErrForbidden},
+	} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/rooms", nil)
+		r.Host = tc.host
+		if tc.origin != "" {
+			r.Header.Set("Origin", tc.origin)
+		}
+		_, err := l.Authenticate(r)
+		if (tc.want == nil) != (err == nil) || (tc.want != nil && !errors.Is(err, tc.want)) {
+			t.Errorf("host %q origin %q: %v, want %v", tc.host, tc.origin, err, tc.want)
+		}
+	}
+}

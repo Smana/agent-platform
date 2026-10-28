@@ -69,6 +69,9 @@ const roomctlUsage = `usage: roomctl <command>
                                   snippet to paste) and install the factory-handoff skill; --print writes nothing
   fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
                                   a room of your own from events 1..SEQ, with an optional run
+  run --repo owner/name --task TEXT [--role implementer|tester|triager]
+                                  quickstart only (a local broker): create a room, queue TEXT as the run's
+                                  task, start the run, apply its claim with your kubectl, follow it to the end
 roomctl never steers, interrupts, moves the driver token or decides (ruling P18): use the web UI`
 
 // Roomctl is roomctl's wiring: where its files live, and its two HTTP clients.
@@ -84,6 +87,9 @@ type Roomctl struct {
 	Home, Cwd string
 	LookPath  func(string) (string, error)
 	RunCmd    func(ctx context.Context, argv []string) error
+
+	// Apply creates a run's claim (roomctl run); nil runs kubectl apply -f - with the manifest on stdin.
+	Apply func(ctx context.Context, manifest []byte) error
 
 	// Capture runs a command and returns its output (setup's OpenCode service check); nil runs it.
 	Capture func(ctx context.Context, argv []string) (string, error)
@@ -141,7 +147,7 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		_, err := fmt.Fprintln(r.Out, roomctlUsage)
 		return err
-	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "doctor", "mcp":
+	case "login", "token", "rooms", "status", "changes", "checkout", "watch", "post", "fork", "run", "doctor", "mcp":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", cmd, roomctlUsage)
 	}
@@ -233,6 +239,8 @@ func (r Roomctl) run(ctx context.Context, args []string) error {
 		return c.Watch(ctx, pos[0], *tail, r.Out)
 	case "post":
 		return r.post(ctx, c, args)
+	case "run":
+		return r.quickstartRun(ctx, cfg, c, args)
 	}
 	return r.fork(ctx, c, cfg.URL, args)
 }

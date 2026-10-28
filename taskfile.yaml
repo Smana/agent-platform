@@ -91,13 +91,12 @@ tasks:
     cmds:
       - helm lint --strict charts/agent-factory --set image.tag='v0.0.0@sha256:0000'
       - bash charts/agent-factory/tests/render.sh
-      - helm dependency build charts/agent-platform
       - helm lint --strict charts/agent-platform -f charts/agent-platform/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000' --set runController.images.harness.tag='v0.0.0@sha256:0000' --set runController.images.bridge.tag='v0.0.0@sha256:0000'
       - bash charts/agent-platform/tests/render.sh
       - git diff --exit-code -- config/crd api
 
   quickstart:
-    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart (needs docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
+    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart + roomctl (Linux, docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
     cmds:
       - hack/quickstart/up.sh
 
@@ -105,15 +104,6 @@ tasks:
     desc: Delete the quickstart kind cluster
     cmds:
       - hack/quickstart/down.sh
-
-  quickstart:run:
-    desc: "Start a run: RUN_PROMPT='...' REPO=owner/name task quickstart:run (env form: go-task templates CLI-variable values)"
-    requires:
-      vars: [RUN_PROMPT, REPO]
-    # RUN_PROMPT/REPO come from the caller's environment: go-task would run a CLI-variable value through
-    # Go templating (`{{ … }}` mangled) and never exports it. TASK and PROMPT are taken (go-task, zsh).
-    cmds:
-      - hack/quickstart/run.sh
 
   quickstart:check:
     desc: Offline drift check of the quickstart scripts against the chart (no cluster, no docker)
