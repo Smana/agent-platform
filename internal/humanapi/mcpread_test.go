@@ -130,7 +130,7 @@ func TestViewToolsReturnTextAndStructure(t *testing.T) {
 		t.Fatalf("rooms_list structure: %s", list.structured)
 	}
 	sum := call(t, e, viaRoomctl("dev"), "room_summary", map[string]any{"room": roomID})
-	if !strings.HasPrefix(sum.text, "### ") {
+	if !strings.HasPrefix(sum.text, "**") || !strings.Contains(sum.text, "\n\n### ") { // the status line, then the heading
 		t.Fatalf("room_summary text: %q", sum.text)
 	}
 	var s struct{ APIVersion string }

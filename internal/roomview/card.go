@@ -111,6 +111,7 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 		c.over = true
 	}
 	needs := len(s.NeedsYou) > 0
+	c.status(s)
 	c.title(s)
 	c.stateLine(s, needs)
 	c.step(s)
@@ -123,6 +124,23 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 	c.actions(s)
 	_, err := io.WriteString(w, strings.TrimRight(c.b.String(), "\n")+"\n")
 	return err
+}
+
+// status is the room's status at first sight: the line the page's strip leads with, from the same
+// function (summary.StatusLine). Fixed words and numbers only, so it needs no escaping.
+func (c *card) status(s summary.Summary) {
+	st := summary.StatusOf(s, c.o.Now)
+	if st.Kind == "" {
+		return
+	}
+	line := st.String()
+	if c.md() {
+		line = c.bold(line)
+		c.line(line)
+		c.line("")
+		return
+	}
+	c.line(c.bold(line))
 }
 
 // title leads with the task, `#42 title`, as a developer names a room, and ends with the room id.

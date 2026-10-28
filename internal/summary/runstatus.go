@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package summary
+
+import (
+	"fmt"
+	"regexp"
+	"time"
+)
+
+// Run status kinds: the first thing a room says, so a reader sees at a glance where it stands.
+// web/src/run-status.ts mirrors this file; internal/summary/runstatus_cases.json is the
+// cases both pass.
+const (
+	KindRunning      = "running"
+	KindQueued       = "queued"
+	KindWaitingYou   = "waiting-you"
+	KindWaitingOther = "waiting-other"
+	KindWaitingPR    = "waiting-pr"
+	KindWaiting      = "waiting"
+	KindFinished     = "finished"
+	KindDone         = "done"
+	KindFailed       = "failed"
+	KindStopped      = "stopped"
+)
+
+// RunStatus is a room's status line: a kind (the page colours by it), an icon and words. The words
+// are fixed phrases, numbers and a role the broker bounds: never text an agent wrote.
+type RunStatus struct {
+	Kind  string `json:"kind"`
+	Icon  string `json:"icon"`
+	Words string `json:"words"`
+}
+
+// String is the line as text: "● Running — implementer, 4 min".
+func (s RunStatus) String() string { return s.Icon + " " + s.Words }
+
+// StatusIn is what StatusLine reads, all of it from the summary and the viewer's approvals.
+type StatusIn struct {
+	State, Phase, Reason string
+	RunRole              string    // the run's role
+	RunStart             time.Time // zero when unknown
+	RunPresent           bool      // an agent is present now
+	PR, Issue            int
+	Mine, Others         int // live approvals the viewer may decide, and those only others may
+	Step                 *Step
+	Now                  time.Time
+}
+
+var roleRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
+
+// failureWords is why a task failed or was handed back, in words, by the factory's reason code.
+func failureWords() map[string]string {
+	return map[string]string{
+		"budget-task": "budget reached", "resume_budget": "budget reached", "ci_red": "CI stayed red",
+		"ci_cancelled": "a check was cancelled", "deadline": "time limit reached", "agent_error": "the agent stopped on an error",
+		"agent_stuck": "the agent was stuck", "stuck": "no activity", "stalled": "no progress",
+		"not_met": "the acceptance checks are unmet", "judge_impossible": "cannot be done as asked", "pod_lost": "the sandbox was lost",
+		"run_unschedulable": "no capacity for the run", "secret_scan_red": "the secret scan failed",
+		"review_rounds_exhausted": "the review did not settle", "no_verdict": "no review verdict",
+	}
+}
+
+// Elapsed is a duration at a glance: "<1 min", "4 min", "1 h 5 min".
+func Elapsed(from, now time.Time) string {
+	m := int(max(0, now.Sub(from)) / time.Minute)
+	switch {
+	case m < 1:
+		return "<1 min"
+	case m < 60:
+		return fmt.Sprintf("%d min", m)
+	}
+	return fmt.Sprintf("%d h %d min", m/60, m%60)
+}
+
+// StatusLine is the room's status, "" kind when the state is one this broker does not know.
+func StatusLine(in StatusIn) RunStatus {
+	s := func(kind, icon, words string) RunStatus { return RunStatus{kind, icon, words} }
+	fail := func() RunStatus {
+		w := failureWords()[in.Reason]
+		switch {
+		case w != "":
+		case in.Phase == "Rejected":
+			w = "rejected"
+		case in.Phase == "Reverted":
+			w = "the merge was reverted"
+		}
+		if w == "" {
+			return s(KindFailed, "✗", "Failed")
+		}
+		return s(KindFailed, "✗", "Failed — "+w)
+	}
+	switch {
+	case in.State == StateDone && in.Phase == "NoOp":
+		return s(KindDone, "✓", "Done — nothing to change")
+	case in.State == StateDone && in.PR > 0:
+		return s(KindDone, "✓", "Done — merged")
+	case in.State == StateDone:
+		return s(KindDone, "✓", "Done")
+	case in.State == StateFailed:
+		return fail()
+	case in.State == StateStopped || in.Phase == "Closed" || in.Phase == "Sealed":
+		return s(KindStopped, "■", "Stopped")
+	case in.Mine == 1:
+		return s(KindWaitingYou, "⏳", "Waiting for you — approve a pending action")
+	case in.Mine > 1:
+		return s(KindWaitingYou, "⏳", fmt.Sprintf("Waiting for you — decide %d approvals", in.Mine))
+	case in.Others > 0:
+		return s(KindWaitingOther, "⏳", "Waiting for another approver")
+	case in.Step != nil && in.Step.Kind == StepPR && in.PR > 0:
+		return s(KindWaitingPR, "⏳", fmt.Sprintf("Waiting — review and merge PR #%d", in.PR))
+	case in.Step != nil && in.Step.Kind == StepAnswer && in.Issue > 0:
+		return s(KindWaiting, "⏳", fmt.Sprintf("Waiting — answer the question on issue #%d", in.Issue))
+	case in.Phase == "Escalated" && failureWords()[in.Reason] != "":
+		return fail()
+	case in.Phase == "Escalated":
+		return s(KindWaiting, "⏳", "Waiting — a maintainer decides")
+	case in.State == StateWaiting:
+		return s(KindWaiting, "⏳", "Waiting — for the next message or run")
+	case in.State == StateQueued:
+		return s(KindQueued, "○", "Queued")
+	case in.State == StateRunning && in.RunPresent:
+		parts := ""
+		if roleRE.MatchString(in.RunRole) {
+			parts = in.RunRole
+		}
+		if !in.RunStart.IsZero() {
+			if parts != "" {
+				parts += ", "
+			}
+			parts += Elapsed(in.RunStart, in.Now)
+		}
+		if parts == "" {
+			return s(KindRunning, "●", "Running")
+		}
+		return s(KindRunning, "●", "Running — "+parts)
+	case in.State == StateRunning && in.PR > 0 && in.Phase == "Reviewing":
+		return s(KindFinished, "✓", fmt.Sprintf("Finished — PR #%d opened, handed to the reviewer", in.PR))
+	case in.State == StateRunning && in.PR > 0 && in.Phase == "AwaitingCI":
+		return s(KindFinished, "✓", fmt.Sprintf("Finished — PR #%d opened, waiting for CI", in.PR))
+	case in.State == StateRunning:
+		return s(KindRunning, "●", "Running — between runs")
+	}
+	return RunStatus{}
+}
+
+// StatusOf is the status of a summary, as the caller holds it: now is the clock the run's age reads.
+func StatusOf(s Summary, now time.Time) RunStatus {
+	in := StatusIn{State: s.Status.State, Phase: s.Status.Phase, Reason: s.Status.Reason, Step: s.Step, Now: now}
+	if in.State == "" {
+		in.State = Coarse(s.Status.Phase, s.Status.Phase, false)
+	}
+	if r := s.Status.Run; r != nil {
+		in.RunRole, in.RunStart, in.RunPresent = r.Role, r.StartedAt, r.EndedAt.IsZero()
+	}
+	if s.Status.PR != nil {
+		in.PR = s.Status.PR.Number
+	}
+	if s.Status.Issue != nil {
+		in.Issue = s.Status.Issue.Number
+	}
+	for _, n := range s.NeedsYou {
+		if n.Kind == "approval" {
+			in.Mine++
+		}
+	}
+	return StatusLine(in)
+}

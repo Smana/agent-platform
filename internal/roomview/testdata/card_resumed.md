@@ -1,3 +1,5 @@
+**● Running — implementer, 10 min**
+
 ### #42 · 26zfnuxm
 running · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
 

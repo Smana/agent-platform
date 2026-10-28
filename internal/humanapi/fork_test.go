@@ -215,40 +215,57 @@ func TestOnlyAnOwnerForksASealedRoom(t *testing.T) {
 	}
 }
 
-// A fork keeps its source's approvals only for the source's owners; anyone else
-// gets, class by class, the stricter of the source's and a new room's default
-// (ruling M2): an unattended source never hands a watcher a weaker gate.
-func TestAForksApprovalsAreNeverWeakerThanANewRooms(t *testing.T) {
+// A fork asks by default (O21): its owner gets the attended profile with the source's ttl,
+// fourEyes and non-loosening overrides, even from an unattended factory room. Anyone else gets,
+// class by class, the stricter of the source's and a new room's default (ruling M2): an
+// unattended source never hands a watcher a weaker gate.
+func TestAForksApprovalsAskByDefault(t *testing.T) {
 	stricter := v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.other": "deny", "mcp.write": "deny"},
 		TTL: "2h", FourEyes: true}
+	asks := v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.pr": "human"}, TTL: "2h", FourEyes: true}
 	cases := []struct {
-		name, who, group string
-		source           bool // keeps the source's approvals as they are
+		name, who, group, approvals string
+		want                        v1alpha1.Approvals
 	}{
-		{"its owner", "human:own", "agents-member", true},
-		{"an agents-admin", "human:adm", "agents-admin", true},
-		{"a collaborator", "human:col", "agents-member", false},
-		{"a watcher", "human:bob", "agents-member", false},
+		{"its owner asks by default", "human:own", "agents-member", "", asks},
+		{"an agents-admin asks by default", "human:adm", "agents-admin", "", asks},
+		{"its owner asking for attended", "human:own", "agents-member", "attended", asks},
+		{"its owner may keep the source's unattended", "human:own", "agents-member", "unattended",
+			v1alpha1.Approvals{Profile: "unattended", Overrides: map[string]string{"forge.pr": "human"}, TTL: "2h", FourEyes: true}},
+		{"a collaborator", "human:col", "agents-member", "", stricter},
+		{"a watcher cannot ask for unattended", "human:bob", "agents-member", "unattended", stricter},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			a, _, room, _ := forkFixture(t, nil)
 			room.Spec.Approvals.TTL, room.Spec.Approvals.FourEyes = "2h", true
-			want := stricter
-			if c.source {
-				want = room.Spec.Approvals
-			}
-			if got := forkedSpec(t, a, room, forkIn(a, room, c.who, c.group, false, Action{Seq: 1})).Approvals; !equality.Semantic.DeepEqual(got, want) {
-				t.Fatalf("got %+v want %+v", got, want)
+			if got := forkedSpec(t, a, room, forkIn(a, room, c.who, c.group, false, Action{Seq: 1, Approvals: c.approvals})).Approvals; !equality.Semantic.DeepEqual(got, c.want) {
+				t.Fatalf("got %+v want %+v", got, c.want)
 			}
 		})
 	}
-	t.Run("an allow override is dropped", func(t *testing.T) {
+	t.Run("an allow override is dropped, a deny kept", func(t *testing.T) {
 		a, _, room, _ := forkFixture(t, nil)
-		room.Spec.Approvals = v1alpha1.Approvals{Profile: "attended", Overrides: map[string]string{"forge.pr": "allow"}}
-		if got := forkedSpec(t, a, room, forkAs(a, room, "human:bob", false, Action{Seq: 1})).Approvals; !equality.Semantic.DeepEqual(got,
-			v1alpha1.Approvals{Profile: "attended"}) {
+		room.Spec.Approvals = v1alpha1.Approvals{Profile: "unattended", Overrides: map[string]string{"forge.pr": "allow", "mcp.write": "deny"}}
+		for _, who := range []string{"human:own", "human:bob"} {
+			if got := forkedSpec(t, a, room, forkIn(a, room, who, "agents-member", false, Action{Seq: 1})).Approvals; got.Profile != "attended" ||
+				got.Overrides["forge.pr"] == "allow" || got.Overrides["mcp.write"] != "deny" {
+				t.Fatalf("%s got %+v", who, got)
+			}
+		}
+	})
+	t.Run("an attended source stays attended whatever the owner asks", func(t *testing.T) {
+		a, _, room, _ := forkFixture(t, nil)
+		room.Spec.Approvals = v1alpha1.Approvals{Profile: "attended"}
+		got := forkedSpec(t, a, room, forkAs(a, room, "human:own", false, Action{Seq: 1, Approvals: "unattended"})).Approvals
+		if got.Profile != "attended" {
 			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("an unknown profile is refused", func(t *testing.T) {
+		a, _, room, _ := forkFixture(t, nil)
+		if f := forkAs(a, room, "human:own", false, Action{Seq: 1, Approvals: "yolo"}); f.Rejected != rejectBadAction {
+			t.Fatalf("%+v", f)
 		}
 	})
 }

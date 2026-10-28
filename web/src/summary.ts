@@ -18,8 +18,9 @@ export interface Summary {
   url: string;
   status: {
     phase: string; // a task phase, or Closed/Sealed
+    state?: string; // the coarse state (queued, running, waiting_for_human, done, failed, stopped)
     task?: string; // the room's Task, named as the room; absent without one
-    run: { id: string; role: string; trigger?: string; startedAt?: string } | null;
+    run: { id: string; role: string; trigger?: string; startedAt?: string; endedAt?: string } | null;
     budget: { usedTokens: number; limitTokens: number } | null;
     pr: { number: number; url: string; author?: string; reviewers?: string[] } | null;
     issue: { number: number; url: string; title?: string; author?: string; labelledBy?: string } | null;
