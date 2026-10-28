@@ -209,8 +209,11 @@ func TestRoomRowCountsTheAnswerNeed(t *testing.T) {
 	if rows[0].Reason != "needs_author" || log.factsReads != 1 {
 		t.Errorf("reason %q after %d facts reads, want one read", rows[0].Reason, log.factsReads)
 	}
-	if w := rowsFor(t, e, "", header("dev1")); len(w) != 1 || w[0].NeedsYou != 0 || w[0].Need != nil {
-		t.Errorf("a watcher has no need: %+v", w)
+	if st := rows[0].Step; st == nil || st.Kind != summary.StepAnswer || st.Label != "answer the question on issue #42" || st.URL != "https://github.com/Smana/a/issues/42" {
+		t.Errorf("an owner's step: %+v", st)
+	}
+	if w := rowsFor(t, e, "", header("dev1")); len(w) != 1 || w[0].NeedsYou != 0 || w[0].Need != nil || w[0].Step != nil {
+		t.Errorf("a watcher has no need or step: %+v", w)
 	}
 }
 
@@ -254,14 +257,15 @@ func TestRoomRowStep(t *testing.T) {
 		name      string
 		task      *v1alpha1.TaskStatus
 		pending   int32
+		phase     string
 		approvals []store.Approval
 		h         http.Header
 		want      *summary.Step
 	}{
 		{name: "a PR held for an owner", task: pr, h: admin("boss"),
 			want: &summary.Step{Kind: summary.StepPR, Label: "review and merge or close PR #7", URL: "https://github.com/Smana/a/pull/7"}},
-		{name: "a PR held, seen by a watcher", task: pr, h: header("dev1"),
-			want: &summary.Step{Kind: summary.StepPR, Label: "review and merge or close PR #7", URL: "https://github.com/Smana/a/pull/7"}},
+		{name: "a PR held, a watcher cannot close it", task: pr, h: header("dev1")},
+		{name: "a sealed room", task: pr, phase: "Sealed", h: admin("boss")},
 		{name: "an approval wins", task: pr, pending: 1, approvals: []store.Approval{approval}, h: admin("boss"),
 			want: &summary.Step{Kind: summary.StepApprove, Label: "approve here", URL: "https://rooms.test/r/" + roomID}},
 		{name: "a watcher cannot decide", pending: 1, approvals: []store.Approval{approval}, h: header("dev1")},
@@ -271,6 +275,9 @@ func TestRoomRowStep(t *testing.T) {
 			e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
 				a := repoRoom(roomID, "Smana/a")
 				a.Status.PendingApprovals, a.Status.Task = tc.pending, tc.task
+				if tc.phase != "" {
+					a.Status.Phase = tc.phase
+				}
 				s.Rooms = roomClient(t, a)
 				s.PublicURL = "https://rooms.test"
 				v.approvals = tc.approvals

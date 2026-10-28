@@ -336,7 +336,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	if n, ok := Answer(st.Facts, sub); ok {
 		s.NeedsYou = append(s.NeedsYou, n)
 	}
-	s.Step = viewStep(s, url, policy.Allowed(web, policy.Decide))
+	s.Step = viewStep(s, factsReason(st.Facts), url, policy.Allowed(web, policy.Decide))
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
@@ -357,17 +357,30 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	return s
 }
 
-// viewStep is the summary's step: an approval it lists, else a PR-held task's merge.
-func viewStep(s Summary, roomURL string, canDecide bool) *Step {
-	pr, prURL := 0, ""
+// viewStep is the summary's step: an approval it lists, else a merge or an answer need it lists.
+// Those needs are listed only for a caller who may close, so they carry the standing.
+func viewStep(s Summary, reason, roomURL string, canDecide bool) *Step {
+	in := StepIn{RoomURL: roomURL, Phase: s.Status.Phase, Reason: reason}
 	if p := s.Status.PR; p != nil {
-		pr, prURL = p.Number, p.URL
+		in.PR, in.PRURL = p.Number, p.URL
 	}
-	approvals := false
-	if canDecide {
-		for _, n := range s.NeedsYou {
-			approvals = approvals || n.Kind == "approval"
+	if i := s.Status.Issue; i != nil {
+		in.Issue, in.IssueURL = i.Number, i.URL
+	}
+	for _, n := range s.NeedsYou {
+		switch n.Kind {
+		case "approval":
+			in.Approvals = canDecide
+		case "merge", "answer":
+			in.CanClose = true
 		}
 	}
-	return StepFor(s.Status.Phase, pr, prURL, approvals, roomURL)
+	return StepFor(in)
+}
+
+func factsReason(f *envelope.TaskFacts) string {
+	if f == nil {
+		return ""
+	}
+	return f.Reason
 }

@@ -13,6 +13,11 @@ import { ago, safeLink, type Summary, when } from "./summary";
 
 export { shortPrincipal };
 
+// A step's link is the broker's own, but it still goes in only when it is https on github.com.
+function isGitHubUrl(url?: string): boolean {
+  try { const u = url ? new URL(url) : null; return !!u && u.protocol === "https:" && u.hostname === "github.com"; } catch { return false; }
+}
+
 export interface StripInput {
   roomId: string; snap?: Snapshot; phase: string; driver: string; sealedBy?: { who: string; at: string };
   sealed?: boolean; // the room is sealed, closer known (sealedBy) or not
@@ -183,7 +188,9 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         if (step && !sealedBy && !i.sealed) {
           // A PR-held room has nothing to decide here: say where to act, and link it.
           const line = el("div", { className: "waiting", textContent: "Your move: " });
-          line.append(step.kind === "pr" && step.url ? safeLink(step.label, step.url) : document.createTextNode(`${step.label}, in Needs you below`));
+          line.append(step.kind !== "approve" && isGitHubUrl(step.url)
+            ? safeLink(step.label, step.url!)
+            : document.createTextNode(step.kind === "approve" ? `${step.label}, in Needs you below` : step.label));
           lines.push(line);
         }
         tail.replaceChildren(...lines);

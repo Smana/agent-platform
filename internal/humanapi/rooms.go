@@ -273,6 +273,18 @@ func answer(room *v1alpha1.Room, sub policy.Subject, facts factsFn) (summary.Nee
 	return summary.Answer(facts(), sub)
 }
 
+// rowStep is the row's step for the caller: a merge or an answer needs the right to close, as
+// the summary's needs do; a sealed room has none.
+func rowStep(room *v1alpha1.Room, sub policy.Subject, row roomRow, repo string, approvals bool) *summary.Step {
+	in := summary.StepIn{Phase: row.Task, Reason: row.Reason, PR: row.PR, PRURL: prURLOf(repo, row.PR), Issue: row.Issue,
+		Approvals: approvals, CanClose: policy.Allowed(sub, policy.Close), RoomURL: row.URL,
+		Sealed: room.Status.Phase == "Closed" || room.Status.Phase == "Sealed"}
+	if repo != "" && row.Issue > 0 {
+		in.IssueURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, row.Issue)
+	}
+	return summary.StepFor(in)
+}
+
 // prURLOf is the pull request's URL in repo, "" when either is unknown.
 func prURLOf(repo string, n int) string {
 	if repo == "" || n <= 0 {
@@ -454,7 +466,7 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			row.Reason = waitReason(facts)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
-		row.Step = summary.StepFor(row.Task, row.PR, prURLOf(repo, row.PR), len(live) > 0, row.URL)
+		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)

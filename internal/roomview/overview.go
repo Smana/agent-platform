@@ -190,12 +190,14 @@ func markdownRoom(r Row, o Options) string {
 	return "[" + escapeTitle(r.ID, true) + "](" + r.URL + ")"
 }
 
-// prStep reports whether the caller's step is on GitHub: the cell then says so, in place of the
-// need's own words, and links the pull request.
-func (r Row) prStep() bool { return r.Step != nil && r.Step.Kind == summary.StepPR }
+// githubStep reports whether the caller's step is on GitHub (a PR to merge, an issue to answer): the cell then says so, in place of the
+// need's own words, and links it.
+func (r Row) githubStep() bool {
+	return r.Step != nil && (r.Step.Kind == summary.StepPR || r.Step.Kind == summary.StepAnswer)
+}
 
 func markdownWhere(r Row, o Options) string {
-	if r.prStep() {
+	if r.githubStep() {
 		return link(r.Step.Label, r.Step.URL, o, true)
 	}
 	if n := r.Need; n != nil {
@@ -264,7 +266,7 @@ func textRow(r Row, mixed bool, o Options) []string {
 	}
 	where := ""
 	switch n := r.Need; {
-	case r.prStep():
+	case r.githubStep():
 		where = link(r.Step.Label, r.Step.URL, o, true)
 	case n != nil && n.Kind == "approval":
 		where = "approve " + quote(n.What)

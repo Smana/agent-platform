@@ -25,70 +25,24 @@
     "url": "https://rooms.example/r/26zfnuxm",
     "status": {
       "phase": "Implementing",
-      "run": {
-        "id": "cf4ato2x",
-        "role": "implementer",
-        "trigger": "human",
-        "startedAt": "2026-10-07T19:11:42Z"
-      },
-      "budget": {
-        "usedTokens": 189093,
-        "limitTokens": 1500000
-      },
-      "pr": {
-        "number": 2239,
-        "url": "https://github.com/Smana/cloud-native-ref/pull/2239"
-      },
-      "issue": {
-        "number": 42,
-        "url": "https://github.com/Smana/cloud-native-ref/issues/42"
-      },
-      "lastVerdict": {
-        "by": "reviewer",
-        "verdict": "approved",
-        "at": "2026-10-07T18:49:00Z"
-      }
+      "run": {"id":"cf4ato2x","role":"implementer","trigger":"human","startedAt":"2026-10-07T19:11:42Z"},
+      "budget": {"usedTokens":189093,"limitTokens":1500000},
+      "pr": {"number":2239,"url":"https://github.com/Smana/cloud-native-ref/pull/2239"},
+      "issue": {"number":42,"url":"https://github.com/Smana/cloud-native-ref/issues/42"},
+      "lastVerdict": {"by":"reviewer","verdict":"approved","at":"2026-10-07T18:49:00Z"}
     },
     "needsYou": [
-      {
-        "kind": "approval",
-        "id": "01M4A",
-        "what": "git push to agent/26zfnuxm",
-        "deadline": "2026-10-07T19:45:00Z",
-        "url": "https://rooms.example/r/26zfnuxm#01M4A"
-      }
+      {"kind":"approval","id":"01M4A","what":"git push to agent/26zfnuxm","deadline":"2026-10-07T19:45:00Z","url":"https://rooms.example/r/26zfnuxm#01M4A"}
     ],
-    "step": {
-      "kind": "approve",
-      "label": "approve here",
-      "url": "https://rooms.example/r/26zfnuxm"
-    },
+    "step": {"kind": "approve", "label": "approve here", "url": "https://rooms.example/r/26zfnuxm"},
     "actions": [
-      {
-        "kind": "queue",
-        "what": "queue a note for the next run",
-        "cli": "roomctl post 26zfnuxm --queue '<text>'"
-      },
-      {
-        "kind": "steer",
-        "what": "steer the running agent"
-      },
-      {
-        "kind": "stop",
-        "what": "stop this task",
-        "cli": "gh issue edit 42 --repo Smana/cloud-native-ref --add-label factory/stop"
-      }
+      {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"},
+      {"kind":"steer","what":"steer the running agent"},
+      {"kind":"stop","what":"stop this task","cli":"gh issue edit 42 --repo Smana/cloud-native-ref --add-label factory/stop"}
     ],
-    "notes": {
-      "untrusted": true,
-      "items": [
-        {
-          "at": "2026-10-07T19:12:10Z",
-          "run": "cf4ato2x",
-          "text": "found both versions on line 12-13, fixing"
-        }
-      ]
-    },
+    "notes": {"untrusted": true, "items": [
+      {"at":"2026-10-07T19:12:10Z","run":"cf4ato2x","text":"found both versions on line 12-13, fixing"}
+    ]},
     "cursor": "seq:6"
   }
 }
