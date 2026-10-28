@@ -4,10 +4,11 @@ package summary
 
 import (
 	"encoding/json"
-	"github.com/Smana/agent-platform/internal/envelope"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/Smana/agent-platform/internal/envelope"
 )
 
 type statusCase struct {
