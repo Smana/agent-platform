@@ -218,12 +218,8 @@ class RedCheckTest(Origin, unittest.TestCase):
 
 
 class Notes:
-    def __init__(self, reports=True):
-        self.finals, self.contracts, self.reports = [], [], reports
-
-    def contract(self, sha, base):
-        self.contracts.append((sha, base))
-        return self.reports
+    def __init__(self):
+        self.finals = []
 
     def final(self, text):
         self.finals.append(text)
@@ -259,12 +255,12 @@ class TesterEndTest(Origin, unittest.TestCase):
             trace.Status, trace.StatusCode = (lambda *a, **k: None), types.SimpleNamespace(ERROR="ERROR")
             mock.patch.dict(sys.modules, {"opentelemetry": types.ModuleType("opentelemetry"), "opentelemetry.trace": trace}).start()
 
-    def end(self, passes, files=None, cont_log=None, reports=True):
+    def end(self, passes, files=None, cont_log=None):
         """tester_end after a finished conversation: passes[0] is the first pass (already done by the
         caller's commit), each later one runs when a continuation is sent."""
         self.sent, self.spans = [], []
         passes = list(passes)
-        notes = Notes(reports)
+        notes = Notes()
 
         def cont(cid, text):
             self.sent.append(text)
@@ -277,7 +273,7 @@ class TesterEndTest(Origin, unittest.TestCase):
         with mock.patch("agent_run.poll", return_value=0), mock.patch("agent_run.continue_conversation", side_effect=cont), \
                 mock.patch("sys.stdout", new=io.StringIO()):
             end = agent_run.tester_end(self.env, "cid", self.base, dict(os.environ), notes, start)
-        self.notes, self.reported = notes.finals, notes.contracts
+        self.notes = notes.finals
         return end
 
     def pushed(self):
@@ -289,13 +285,6 @@ class TesterEndTest(Origin, unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertTrue(self.pushed())
         self.assertEqual(self.notes, ["contract_ready: t/test-name.sh"])
-        pushed = git(self.origin, "rev-parse", "agent/x")
-        self.assertEqual(self.reported, [(pushed, self.base)], "the pushed commit and its base reach room_contract")
-
-    def test_a_contract_the_broker_did_not_take_is_not_ready(self):
-        self.commit(self.RED)
-        self.assertEqual(self.end([], reports=False), "contract_not_red")
-        self.assertIn("could not be reported", self.notes[0])
 
     def test_a_vacuous_test_gets_one_continuation_then_not_red(self):
         self.commit(self.VACUOUS)

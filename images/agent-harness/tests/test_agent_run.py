@@ -433,8 +433,7 @@ class FakeMCP(http.server.BaseHTTPRequestHandler):
             return
         result = {}
         if body["method"] == "tools/list":
-            result = {"tools": [{"name": type(self).tool}, {"name": "room_read"}, {"name": type(self).judge_tool},
-                                {"name": "room-broker_room_contract"}]}
+            result = {"tools": [{"name": type(self).tool}, {"name": "room_read"}, {"name": type(self).judge_tool}]}
         if body["method"] == "tools/call":
             if type(self).limited:
                 type(self).limited -= 1
@@ -619,18 +618,6 @@ class ProgressNotesTest(unittest.TestCase):
         self.assertTrue(FakeMCP.harness and all(h == "1" for h in FakeMCP.harness), FakeMCP.harness)
         self.assertEqual(call["params"]["arguments"], {"verdict": "not_yet", "reason": "check:validate failed",
                                                        "evidence": ["check:validate", "diff"]})
-
-    def test_the_contract_commit_is_reported_through_room_contract(self):
-        # The factory adopts a contract only from this harness-only report: the model can push a lookalike.
-        self.assertTrue(self.notes.contract("a" * 40, "b" * 40))
-        [call] = [c for c in FakeMCP.calls if c.get("method") == "tools/call"]
-        self.assertEqual(call["params"]["name"], "room-broker_room_contract")
-        self.assertEqual(call["params"]["arguments"], {"commit": "a" * 40, "base": "b" * 40})
-        self.assertTrue(FakeMCP.harness and all(h == "1" for h in FakeMCP.harness), FakeMCP.harness)
-        FakeMCP.fail = 2  # the broker refuses twice: reported as not taken, never raised
-        with mock.patch("sys.stderr", new=io.StringIO()) as err:
-            self.assertFalse(self.notes.contract("a" * 40, "b" * 40))
-        self.assertIn("not reported", err.getvalue())
 
     def test_a_judge_verdict_is_best_effort_and_prefixed_names_are_found(self):
         FakeMCP.judge_tool = "room-broker_room_judge"
