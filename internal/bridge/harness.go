@@ -160,11 +160,29 @@ func (h *Harness) Ready(ctx context.Context) error {
 // Status is the conversation's execution_status (idle, running, paused,
 // waiting_for_confirmation, finished, error or stuck).
 func (h *Harness) Status(ctx context.Context) (string, error) {
+	c, err := h.Conversation(ctx)
+	return c.Status, err
+}
+
+// Conversation is what one read of the conversation tells the bridge.
+type Conversation struct {
+	Status string // execution_status
+	// Effort is the reasoning effort agent-run put in the conversation's tags; empty from an older
+	// agent-run, and unchecked: StatusTracker.Tell keeps only a valid one. No other tag is read: the
+	// agent can rewrite them, and the room takes the run's model from its claim.
+	Effort string
+}
+
+// Conversation reads the conversation's status and agent-run's effort tag.
+func (h *Harness) Conversation(ctx context.Context) (Conversation, error) {
 	var info struct {
 		ExecutionStatus string `json:"execution_status"`
+		Tags            struct {
+			Effort string `json:"effort"`
+		} `json:"tags"`
 	}
 	err := h.do(ctx, http.MethodGet, "", nil, &info)
-	return info.ExecutionStatus, err
+	return Conversation{Status: info.ExecutionStatus, Effort: info.Tags.Effort}, err
 }
 
 // Page reads up to 100 events from pageID, inclusive, and the id of the first

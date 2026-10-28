@@ -71,8 +71,12 @@ function nowLine(i: StripInput, t: number, onNow: (seq: number) => void): HTMLEl
   return lead ? [line, el("span", { className: "now-hint", textContent: "Start one under Session › Run" })] : [line];
 }
 
-function runText(r: NonNullable<Summary["status"]["run"]>, t: number): string {
-  return [r.role, r.id, r.startedAt ? since(r.startedAt, t) : ""].filter(Boolean).join(" · ");
+// runText is the run chip: role · id · model · effort · age. The model and effort are the run's own
+// (the present run's or the last's, matched by id), each left out when the log does not say it.
+function runText(st: Summary["status"], t: number): string {
+  const r = st.run!;
+  const m = [st.runModel, st.lastRunModel].find((x) => x?.run === r.id);
+  return [r.role, r.id, m?.model, m?.effort, r.startedAt ? since(r.startedAt, t) : ""].filter(Boolean).join(" · ");
 }
 
 function chip(cls: string, ...body: (string | Node)[]): HTMLElement {
@@ -101,7 +105,7 @@ function chips(i: StripInput, now: number): HTMLElement[] {
   if (st?.phase && i.phase) phase.title = `room: ${i.phase}`;
   if (phase.textContent) out.push(phase);
   // The facts' run outlives it: with no agent present, its age would keep counting.
-  if (st?.run && i.running !== false) out.push(chip("chip-run", runText(st.run, now)));
+  if (st?.run && i.running !== false) out.push(chip("chip-run", runText(st, now)));
   if (st?.budget) {
     const { usedTokens: used, limitTokens: limit } = st.budget;
     const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
@@ -178,7 +182,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         shown.head = headKey;
       } else if (st?.run) {
         const run = head.querySelector(".chip-run");
-        const r = runText(st.run, t);
+        const r = runText(st, t);
         if (run && run.textContent !== r) run.textContent = r;
       }
       if (needs > 0) {

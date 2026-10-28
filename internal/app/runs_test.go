@@ -325,3 +325,33 @@ func TestCountLiveRuns(t *testing.T) {
 		t.Fatalf("a deleted run is still counted:\n%s", body)
 	}
 }
+
+// rooms_run_info reads a run's model from its claim and keeps the run while it is live, or while
+// the watch has not synced and cannot tell; it drops the run once the watch knows it ended or was
+// deleted.
+func TestRunInfoReadsTheWatch(t *testing.T) {
+	w := runwatch.New()
+	withModel := runClaim("aaaaaaaa", "3kq7x2ma", "Running")
+	_ = unstructured.SetNestedField(withModel.Object, "agent-default", "spec", "model")
+	w.Upsert(t.Context(), withModel)
+	w.Upsert(t.Context(), runClaim("bbbbbbbb", "3kq7x2ma", "Succeeded"))
+	watch := runInfoWatch(w)
+	synced := false
+	w.SetSynced(func() bool { return synced })
+	for _, c := range []struct {
+		run       string
+		synced    bool
+		wantModel string
+		wantLive  bool
+	}{
+		{"aaaaaaaa", true, "agent-default", true},
+		{"bbbbbbbb", true, "", false},
+		{"cccccccc", false, "", true}, // not synced: unknown, kept
+		{"cccccccc", true, "", false}, // synced and absent: deleted
+	} {
+		synced = c.synced
+		if model, live := watch(c.run); model != c.wantModel || live != c.wantLive {
+			t.Errorf("watch(%s) synced=%v = %q, %v; want %q, %v", c.run, c.synced, model, live, c.wantModel, c.wantLive)
+		}
+	}
+}

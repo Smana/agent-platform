@@ -3,6 +3,7 @@
 package metrics
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -217,4 +218,102 @@ func TestNoopMeterWorks(t *testing.T) {
 	s.AppendFailed(t.Context())
 	s.ObserveRoom("3kq7x2ma", "Active", true, 0, time.Now())
 	s.ForgetRoom("3kq7x2ma")
+}
+
+// rooms_run_info{run, model, effort} = 1 for each live run whose harness reported an effort. The
+// model is the claim's spec.model, read from the watch at collection, never the harness's; the
+// effort is the harness's, an enum. A per-live-run series, its map capped.
+func TestRunInfo(t *testing.T) {
+	ctx := t.Context()
+	series := func(run, model, effort string) string {
+		return `rooms_run_info{effort="` + effort + `",model="` + model + `",run="` + run + `"} 1`
+	}
+	for _, c := range []struct {
+		name    string
+		runs    map[string]watchedRun // what the watch says; absent means live with no model
+		observe func(s *Set)
+		want    []string
+		absent  []string
+		count   int // series of rooms_run_info, when set
+	}{
+		{"the claim's model and the harness's effort", map[string]watchedRun{"aaaaaaaa": {"agent-default", true}}, func(s *Set) {
+			s.RunInfo(ctx, "aaaaaaaa", "high")
+		}, []string{series("aaaaaaaa", "agent-default", "high")}, nil, 1},
+		{"the latest effort wins", map[string]watchedRun{"aaaaaaaa": {"agent-default", true}}, func(s *Set) {
+			s.RunInfo(ctx, "aaaaaaaa", "high")
+			s.RunInfo(ctx, "aaaaaaaa", "low")
+		}, []string{series("aaaaaaaa", "agent-default", "low")}, []string{`effort="high"`}, 1},
+		{"a claim without a model", nil, func(s *Set) {
+			s.RunInfo(ctx, "aaaaaaaa", "max")
+		}, []string{series("aaaaaaaa", "", "max")}, nil, 1},
+		{"a run that is no longer live drops out", map[string]watchedRun{"aaaaaaaa": {"agent-default", false}}, func(s *Set) {
+			s.RunInfo(ctx, "aaaaaaaa", "high")
+			s.RunInfo(ctx, "bbbbbbbb", "low")
+		}, []string{series("bbbbbbbb", "", "low")}, []string{`run="aaaaaaaa"`}, 1},
+		{"at the cap, dead runs make room", deadRuns(maxRunInfo), func(s *Set) {
+			for i := range maxRunInfo {
+				s.RunInfo(ctx, fmt.Sprintf("r%07d", i), "high")
+			}
+			s.RunInfo(ctx, "newrun00", "low") // every held run has ended since: pruned, not dropped
+		}, []string{series("newrun00", "", "low")}, []string{"rooms_run_info_dropped_total "}, 1},
+		{"at the cap with every run live, a new one is dropped and counted", nil, func(s *Set) {
+			for i := range maxRunInfo + 5 {
+				s.RunInfo(ctx, fmt.Sprintf("r%07d", i), "high")
+			}
+			s.RunInfo(ctx, "r0000000", "low") // a known run still updates
+		}, []string{series("r0000000", "", "low"), "rooms_run_info_dropped_total 5"},
+			[]string{`run="r` + fmt.Sprintf("%07d", maxRunInfo) + `"`}, maxRunInfo},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			exp, err := NewExporter(BrokerBuildInfo, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = exp.Shutdown(ctx) }()
+			s, err := New(exp.Meter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.TrackRuns(func(run string) (string, bool) {
+				w, ok := c.runs[run]
+				if !ok {
+					return "", true
+				}
+				return w.model, w.live
+			})
+			c.observe(s)
+			body := scrape(t, exp.Handler())
+			for _, w := range c.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("missing %s", w)
+				}
+			}
+			for _, a := range c.absent {
+				if strings.Contains(body, a) {
+					t.Errorf("exposes %s", a)
+				}
+			}
+			if n := strings.Count(body, "\nrooms_run_info{"); c.count > 0 && n != c.count {
+				t.Errorf("%d rooms_run_info series, want %d", n, c.count)
+			}
+			if t.Failed() && len(body) < 4096 {
+				t.Log(body)
+			}
+		})
+	}
+}
+
+// watchedRun is what a test's watch says of a run.
+type watchedRun struct {
+	model string
+	live  bool
+}
+
+// deadRuns is a watch in which the first n runs of TestRunInfo's naming have ended.
+func deadRuns(n int) map[string]watchedRun {
+	out := make(map[string]watchedRun, n)
+	for i := range n {
+		out[fmt.Sprintf("r%07d", i)] = watchedRun{}
+	}
+	return out
 }

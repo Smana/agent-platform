@@ -173,6 +173,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	m.TrackRuns(runInfoWatch(rw.watch))
 	rc := &roomctrl.Reconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Store: logStore,
 		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom, Observe: roomObserver(m, rw.watch)}
 	withSuspend(rc, cfg.Suspend, mgr.GetClient(), logStore, log)

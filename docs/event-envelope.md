@@ -119,9 +119,9 @@ The payload shape of every `type`.
 | `kind` | Fields | Written by |
 |---|---|---|
 | `room_phase` | `phase: Open`, `owner`, `driver`, `dataClass`; or `phase: Closed`, `reason` (the seal) | Broker |
-| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#the-log)) | Broker (leader) |
+| `run_phase` | `phase`, and when it ended a `reason` (see [end reasons](concepts.md#the-log)); on `phase: Running`, `model?` (additive): the run's `AgentRun` `spec.model`, absent when the claim has none or one outside 1 to 64 of `A-Za-z0-9._:/@+-` starting with a letter or digit. The claim's, never the sandbox's | Broker (leader) |
 | `limit` | `events`, `bytes` (the seal of a full room); or `reason: concurrent_run`, `running` | Broker |
-| `harness_status` | `status`, `previous` (the harness's `execution_status`) | Bridge |
+| `harness_status` | `status`, `previous` (the harness's `execution_status`); `effort?` (additive): the reasoning effort the run sends the gateway, as agent-run set it in its conversation's `effort` tag, one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The agent can rewrite the tag, so it is the run's claim, bounded by that set: the bridge leaves out a value outside it, and the broker strips one after redaction (a secret redacted there included) and keeps the status. A `model` here is stripped: a run's model is its claim's, on `run_phase`. An older harness sends no effort | Bridge |
 | `harness_error` | `code`, `detail`: the harness's own error, or the bridge's stall on its log (`event_too_large`, `cursor_lost`, `next_page_unreadable`), told once per stall | Bridge |
 | `harness_paused` | — | Bridge |
 | `harness_end` | `reason`: `judge_impossible`, `stalled` or `not_met`, the loop policy's end of an implementer run, from agent-run's final read; recorded once per value | Bridge |
@@ -158,7 +158,7 @@ The bridge maps each OpenHands agent-server event to zero, one or two C4 items.
 | `InterruptEvent` | `state_changed{interrupted, runId}`; the status tracker ends the turn |
 | Any other kind | `state_changed{harness_event, harnessKind}` |
 | System prompt, token, condensation and completion-log events; streaming deltas | Dropped |
-| A change of `execution_status` | `state_changed{harness_status}`, plus `turn{started}` on entering `running`, and `turn{completed \| cancelled \| failed}` on leaving it |
+| A change of `execution_status` | `state_changed{harness_status}`, with the conversation's `effort` tag when agent-run set it, plus `turn{started}` on entering `running`, and `turn{completed \| cancelled \| failed}` on leaving it |
 
 ## One example per type
 

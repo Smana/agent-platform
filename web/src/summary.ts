@@ -10,6 +10,8 @@ import { api } from "./api";
 import type { RoomEvent } from "./conn";
 import { approvalAnchor, el } from "./controls";
 
+export interface RunModel { run: string; model?: string; effort?: string }
+
 export interface Summary {
   apiVersion: "summary/v1";
   room: string;
@@ -24,6 +26,11 @@ export interface Summary {
     lastVerdict: { by: string; verdict: string; at: string } | null;
     reason?: string; // why the task waits (#59)
     next?: string; // what happens or who acts next
+    // What a run runs on: model is its claim's spec.model, effort what its harness reported. The
+    // present run's, and the last run's (the one before the present run, or the last when none is
+    // present). Absent until the log says.
+    runModel?: RunModel;
+    lastRunModel?: RunModel;
   };
   // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
   runs?: { id: string; role: string }[]; // the task's run history, oldest first

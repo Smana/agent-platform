@@ -339,3 +339,43 @@ func TestSeqFor(t *testing.T) {
 		}
 	}
 }
+
+// A run tells its room its reasoning effort: every harness_status carries the effort the harness
+// reported when it is one of the envelope's set, and none from a harness that reported nothing.
+func TestHarnessStatusCarriesTheRunsEffort(t *testing.T) {
+	for name, tc := range map[string]struct {
+		told string
+		want string // "" means no effort field
+	}{
+		"an older harness tells nothing": {"", ""},
+		"an effort of the set":           {"high", `"effort":"high"`},
+		"a foreign effort is left out":   {"turbo", ""},
+		"markup is left out":             {"<b>high</b>", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var st StatusTracker
+			st.Tell(tc.told)
+			var statuses int
+			for _, it := range append(st.Observe("running", runID), st.Observe("finished", runID)...) {
+				assertStorable(t, it.Mapped, it.Seq)
+				p := string(it.Payload)
+				if !strings.Contains(p, `"harness_status"`) {
+					if strings.Contains(p, `"effort"`) {
+						t.Errorf("a turn carries the run's effort: %s", p)
+					}
+					continue
+				}
+				statuses++
+				if tc.want == "" && strings.Contains(p, `"effort"`) || tc.want != "" && !strings.Contains(p, tc.want) {
+					t.Errorf("payload %s, want effort %q", p, tc.want)
+				}
+				if strings.Contains(p, `"model"`) {
+					t.Errorf("a harness_status names a model: %s", p)
+				}
+			}
+			if statuses != 2 {
+				t.Fatalf("%d harness_status items, want 2", statuses)
+			}
+		})
+	}
+}

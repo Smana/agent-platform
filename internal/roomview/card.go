@@ -201,7 +201,7 @@ func prURL(p *envelope.PRFact) string {
 func (c *card) facts(s summary.Summary) {
 	var rows [][2]string
 	if r := s.Status.Run; r != nil {
-		rows = append(rows, [2]string{"Run", c.runFact(*r)})
+		rows = append(rows, [2]string{"Run", c.runFact(*r, runModel(s, r.ID))})
 	}
 	if v := c.spend(s); v != "" {
 		rows = append(rows, [2]string{"Spend", v})
@@ -301,10 +301,28 @@ func (c *card) answerLine(n summary.Need) (string, bool) {
 
 func digits(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 
-func (c *card) runFact(r envelope.RunFact) string {
+// runModel is the model and effort the run with this id told its room: the present run's or the
+// last's, nil when neither is that run's.
+func runModel(s summary.Summary, id string) *summary.RunModel {
+	for _, m := range []*summary.RunModel{s.Status.RunModel, s.Status.LastRunModel} {
+		if m != nil && m.Run == id {
+			return m
+		}
+	}
+	return nil
+}
+
+func (c *card) runFact(r envelope.RunFact, m *summary.RunModel) string {
 	s := c.text(r.Role, c.md()) + " " + c.token(r.ID, c.md())
 	if t := clean(r.Trigger); t != "" {
 		s += " (" + c.words(r.Trigger, triggerWords(r.Trigger), c.md()) + ")"
+	}
+	if m != nil {
+		for _, v := range []string{m.Model, m.Effort} {
+			if v != "" {
+				s += " · " + c.token(v, c.md())
+			}
+		}
 	}
 	switch {
 	case r.StartedAt.IsZero():
