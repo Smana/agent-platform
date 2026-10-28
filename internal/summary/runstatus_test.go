@@ -9,19 +9,21 @@ import (
 	"time"
 
 	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
 )
 
 type statusCase struct {
 	Name string `json:"name"`
 	In   struct {
-		State, Phase, Reason string
-		RunRole              string `json:"runRole"`
-		RunStartedAt         string `json:"runStartedAt"`
-		RunPresent           bool   `json:"runPresent"`
-		PR, Issue            int
-		Mine, Others         int
-		Step                 *Step
-		Now                  string
+		State, Phase string
+		ReasonCode   string `json:"reasonCode"`
+		RunRole      string `json:"runRole"`
+		RunStartedAt string `json:"runStartedAt"`
+		RunPresent   bool   `json:"runPresent"`
+		PR, Issue    int
+		Mine, Others int
+		Step         *Step
+		Now          string
 	} `json:"in"`
 	Want RunStatus `json:"want"`
 }
@@ -38,7 +40,7 @@ func TestStatusLineCases(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
-			in := StatusIn{State: c.In.State, Phase: c.In.Phase, RunRole: c.In.RunRole,
+			in := StatusIn{State: c.In.State, Phase: c.In.Phase, ReasonCode: c.In.ReasonCode, RunRole: c.In.RunRole,
 				RunPresent: c.In.RunPresent, PR: c.In.PR, Issue: c.In.Issue, Mine: c.In.Mine, Others: c.In.Others, Step: c.In.Step}
 			in.RunStart, _ = time.Parse(time.RFC3339, c.In.RunStartedAt)
 			in.Now, _ = time.Parse(time.RFC3339, c.In.Now)
@@ -61,5 +63,19 @@ func TestStatusOfReadsTheSummary(t *testing.T) {
 	s.NeedsYou = nil
 	if got := StatusOf(s, run.StartedAt.Add(4*time.Minute)); got.Words != "Running — implementer, 4 min" {
 		t.Errorf("the coarse state is read from the phase: %+v", got)
+	}
+}
+
+// The summary carries the factory's raw reason code beside its prose, so the status line reads the
+// code on every surface: the page, maku status and the room list.
+func TestViewCarriesTheReasonCode(t *testing.T) {
+	st := State{Facts: &envelope.TaskFacts{Phase: "Rejected", Reason: "ci_red"}, Pending: map[string]Approval{}}
+	v := View(st, "r", "u", policy.Subject{}, 0, time.Now())
+	if v.Status.ReasonCode != "ci_red" {
+		t.Fatalf("reasonCode = %q", v.Status.ReasonCode)
+	}
+	v.Status.State = StateFailed
+	if got := StatusOf(v, time.Now()); got.Words != "Failed — CI stayed red" {
+		t.Fatalf("StatusOf reads the code: %+v", got)
 	}
 }

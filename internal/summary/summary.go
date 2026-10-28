@@ -163,7 +163,10 @@ type Summary struct {
 		LastVerdict *Verdict             `json:"lastVerdict"`
 		LastJudge   *JudgeVerdict        `json:"lastJudge,omitempty"` // the completion judge's last answer (untrusted text)
 		Reason      string               `json:"reason,omitempty"`    // why the task waits, when it does (#59)
-		Next        string               `json:"next,omitempty"`      // what happens or who acts next
+		// ReasonCode is the factory's raw reason code from the last task facts, bounded: the key the
+		// status line reads on every surface, beside Reason's prose. Kept in a sealed room.
+		ReasonCode string `json:"reasonCode,omitempty"`
+		Next       string `json:"next,omitempty"` // what happens or who acts next
 		// Approvals is the live approvals the caller may decide and those only others may, as the
 		// status line counts them: set by the caller, which holds the room's four-eyes rule.
 		Approvals *ApprovalCounts `json:"approvals,omitempty"`
@@ -383,6 +386,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	}
 	s.Status.LastVerdict = st.Verdict
 	s.Status.LastJudge = st.Judge
+	s.Status.ReasonCode = ReasonCode(st.Facts)
 	s.Status.RunModel, s.Status.LastRunModel = runModels(st)
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
@@ -458,6 +462,20 @@ func viewStep(s Summary, reason, roomURL string, canDecide bool) *Step {
 		}
 	}
 	return StepFor(in)
+}
+
+// maxReasonCode bounds a reason code, in runes: the factory writes a short code.
+const maxReasonCode = 64
+
+// ReasonCode is the raw reason code of f, bounded; "" without facts.
+func ReasonCode(f *envelope.TaskFacts) string {
+	if f == nil {
+		return ""
+	}
+	if r := []rune(f.Reason); len(r) > maxReasonCode {
+		return string(r[:maxReasonCode])
+	}
+	return f.Reason
 }
 
 func factsReason(f *envelope.TaskFacts) string {

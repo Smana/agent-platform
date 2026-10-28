@@ -59,6 +59,10 @@ func (*fakeActLog) LastEventAt(context.Context, []string) (map[string]time.Time,
 	return nil, nil
 }
 
+func (*fakeActLog) TaskReasons(context.Context, map[string]int64) (map[string]string, error) {
+	return nil, nil
+}
+
 func (*fakeActLog) LastTaskState(context.Context, string, int64) (json.RawMessage, error) {
 	return nil, nil
 }

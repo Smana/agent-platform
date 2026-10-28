@@ -84,8 +84,9 @@ func TestRoomRowStatusIsTheStatusLine(t *testing.T) {
 		{shared: "done and merged", task: &v1alpha1.TaskStatus{Phase: "Done", PR: 189}},
 		{shared: "done with nothing to change", task: &v1alpha1.TaskStatus{Phase: "NoOp"}},
 		{shared: "failed rejected", task: &v1alpha1.TaskStatus{Phase: "Rejected"}},
+		{shared: "failed on the budget", task: &v1alpha1.TaskStatus{Phase: "Rejected"}, evs: facts("Rejected", "budget-task")},
 		{shared: "failed reverted", task: &v1alpha1.TaskStatus{Phase: "Reverted"}},
-		{shared: "failed with a reason says its phase", task: &v1alpha1.TaskStatus{Phase: "Rejected"}, evs: facts("Rejected", "ci_red")},
+		{shared: "failed with a reason says why", task: &v1alpha1.TaskStatus{Phase: "Rejected"}, evs: facts("Rejected", "ci_red")},
 		{shared: "stopped", task: &v1alpha1.TaskStatus{Phase: "Stopped"}},
 		{shared: "a sealed room without a state", room: "Sealed", task: &v1alpha1.TaskStatus{Phase: "Implementing"}},
 		{shared: "an unknown state says nothing", room: "Whatever"},
@@ -159,7 +160,8 @@ func TestRoomRowStatusIsTheSummarysStatus(t *testing.T) {
 		h         http.Header
 		want      string
 	}{
-		{name: "rejected for ci_red", phase: "Rejected", evs: []envelope.Event{fact(1, "Rejected", "ci_red")}, h: admin("boss"), want: "Failed — rejected"},
+		{name: "rejected for ci_red", phase: "Rejected", evs: []envelope.Event{fact(1, "Rejected", "ci_red")}, h: admin("boss"), want: "Failed — CI stayed red"},
+		{name: "rejected on the budget", phase: "Rejected", evs: []envelope.Event{fact(1, "Rejected", "budget-task")}, h: admin("boss"), want: "Failed — budget reached"},
 		{name: "escalated for budget-task", phase: "Escalated", evs: []envelope.Event{fact(1, "Escalated", "budget-task")}, h: admin("boss"), want: "Waiting — a maintainer decides"},
 		{name: "reverted", phase: "Reverted", evs: []envelope.Event{fact(1, "Reverted", "")}, h: admin("boss"), want: "Failed — the merge was reverted"},
 		{name: "an approval the viewer may decide", phase: "Implementing", evs: []envelope.Event{fact(1, "Implementing", ""), ask},
@@ -196,5 +198,33 @@ func TestRoomRowStatusIsTheSummarysStatus(t *testing.T) {
 				t.Fatalf("both say %q, want %q", page.Words, tc.want)
 			}
 		})
+	}
+}
+
+// The failed rows' reason codes come from one store read for the whole list, never one per row.
+func TestRoomRowsReadFailureCodesInOneCall(t *testing.T) {
+	var log *memLog
+	e := setup(t, func(s *Server, _ *fanout.Hub, v *hubView) {
+		log = v.memLog
+		a, b, c := repoRoom(roomID, "Smana/a"), repoRoom(roomB, "Smana/a"), repoRoom(roomC, "Smana/a")
+		a.Status.Task = &v1alpha1.TaskStatus{Phase: "Rejected"}
+		b.Status.Task = &v1alpha1.TaskStatus{Phase: "Reverted"}
+		c.Status.Task = &v1alpha1.TaskStatus{Phase: "Implementing"}
+		s.Rooms = roomClient(t, a, b, c)
+		v.evs = []envelope.Event{{V: 1, Seq: 1, RoomID: roomID, Type: envelope.StateChanged, TS: time.Now(),
+			Payload: envelope.TaskStatePayload(envelope.TaskFacts{Phase: "Rejected", Reason: "ci_red"})}}
+	})
+	rows := rowsFor(t, e, "", admin("boss"))
+	words := map[string]string{}
+	for _, r := range rows {
+		if r.Status != nil {
+			words[r.ID] = r.Status.Text
+		}
+	}
+	if words[roomID] != "Failed — CI stayed red" || words[roomB] != "Failed — the merge was reverted" {
+		t.Fatalf("statuses: %v", words)
+	}
+	if log.reasonReads != 1 || log.factsReads != 0 {
+		t.Fatalf("%d batch reads and %d per-room reads, want one batch and none per room", log.reasonReads, log.factsReads)
 	}
 }

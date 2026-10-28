@@ -12,13 +12,23 @@ export interface RunStatus { kind: StatusKind | ""; icon: string; words: string 
 
 export interface StatusIn {
   state?: string; phase?: string;
-  reason?: string; // not read: the summary's reason is prose, so no line depends on it
+  reasonCode?: string; // the factory's raw code (the summary's reasonCode), never the prose reason
   runRole?: string; runStartedAt?: string; runPresent?: boolean;
   pr?: number; issue?: number;
   mine?: number; others?: number; // live approvals the viewer may decide, and those only others may
   step?: { kind: string; label?: string } | null;
   now?: number; // ms since the epoch
 }
+
+// FAILURES is why a task failed, in words, by the factory's reason code.
+const FAILURES: Record<string, string> = {
+  "budget-task": "budget reached", resume_budget: "budget reached", ci_red: "CI stayed red",
+  ci_cancelled: "a check was cancelled", deadline: "time limit reached", agent_error: "the agent stopped on an error",
+  agent_stuck: "the agent was stuck", stuck: "no activity", stalled: "no progress",
+  not_met: "the acceptance checks are unmet", judge_impossible: "cannot be done as asked", pod_lost: "the sandbox was lost",
+  run_unschedulable: "no capacity for the run", secret_scan_red: "the secret scan failed",
+  review_rounds_exhausted: "the review did not settle", no_verdict: "no review verdict",
+};
 
 const ROLE = /^[a-z][a-z0-9-]{0,23}$/;
 
@@ -30,8 +40,11 @@ export function elapsed(fromMs: number, nowMs: number): string {
 
 export function statusLine(i: StatusIn): RunStatus {
   const s = (kind: StatusKind, icon: string, words: string): RunStatus => ({ kind, icon, words });
-  const fail = (): RunStatus =>
-    s("failed", "✗", i.phase === "Rejected" ? "Failed — rejected" : i.phase === "Reverted" ? "Failed — the merge was reverted" : "Failed");
+  const fail = (): RunStatus => {
+    const w = (i.reasonCode && Object.hasOwn(FAILURES, i.reasonCode) ? FAILURES[i.reasonCode] : "")
+      || (i.phase === "Rejected" ? "rejected" : i.phase === "Reverted" ? "the merge was reverted" : "");
+    return s("failed", "✗", w ? `Failed — ${w}` : "Failed");
+  };
   const mine = i.mine ?? 0, others = i.others ?? 0, pr = i.pr ?? 0, issue = i.issue ?? 0;
   if (i.state === "done") return s("done", "✓", i.phase === "NoOp" ? "Done — nothing to change" : pr > 0 ? "Done — merged" : "Done");
   if (i.state === "failed") return fail();

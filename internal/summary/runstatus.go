@@ -70,11 +70,10 @@ type RunStatus struct {
 // String is the line as text: "● Running — implementer, 4 min".
 func (s RunStatus) String() string { return s.Icon + " " + s.Words }
 
-// StatusIn is what StatusLine reads, all of it from the summary and the viewer's approvals. No
-// reason code: the room page reads the summary's reason as prose, so a line keyed on the code would
-// read differently there than in the list and maku status.
+// StatusIn is what StatusLine reads, all of it from the summary and the viewer's approvals.
 type StatusIn struct {
 	State, Phase string
+	ReasonCode   string    // the factory's raw reason code (the summary's reasonCode), never its prose
 	RunRole      string    // the run's role
 	RunStart     time.Time // zero when unknown
 	RunPresent   bool      // an agent is present now
@@ -85,6 +84,18 @@ type StatusIn struct {
 }
 
 var roleRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
+
+// failureWords is why a task failed, in words, by the factory's reason code.
+func failureWords() map[string]string {
+	return map[string]string{
+		"budget-task": "budget reached", "resume_budget": "budget reached", "ci_red": "CI stayed red",
+		"ci_cancelled": "a check was cancelled", "deadline": "time limit reached", "agent_error": "the agent stopped on an error",
+		"agent_stuck": "the agent was stuck", "stuck": "no activity", "stalled": "no progress",
+		"not_met": "the acceptance checks are unmet", "judge_impossible": "cannot be done as asked", "pod_lost": "the sandbox was lost",
+		"run_unschedulable": "no capacity for the run", "secret_scan_red": "the secret scan failed",
+		"review_rounds_exhausted": "the review did not settle", "no_verdict": "no review verdict",
+	}
+}
 
 // Elapsed is a duration at a glance: "<1 min", "4 min", "1 h 5 min".
 func Elapsed(from, now time.Time) string {
@@ -102,13 +113,18 @@ func Elapsed(from, now time.Time) string {
 func StatusLine(in StatusIn) RunStatus {
 	s := func(kind, icon, words string) RunStatus { return RunStatus{kind, icon, words} }
 	fail := func() RunStatus {
-		switch in.Phase {
-		case "Rejected":
-			return s(KindFailed, "✗", "Failed — rejected")
-		case "Reverted":
-			return s(KindFailed, "✗", "Failed — the merge was reverted")
+		w := failureWords()[in.ReasonCode]
+		switch {
+		case w != "":
+		case in.Phase == "Rejected":
+			w = "rejected"
+		case in.Phase == "Reverted":
+			w = "the merge was reverted"
 		}
-		return s(KindFailed, "✗", "Failed")
+		if w == "" {
+			return s(KindFailed, "✗", "Failed")
+		}
+		return s(KindFailed, "✗", "Failed — "+w)
 	}
 	switch {
 	case in.State == StateDone && in.Phase == "NoOp":
@@ -164,7 +180,7 @@ func StatusLine(in StatusIn) RunStatus {
 
 // StatusOf is the status of a summary, as the caller holds it: now is the clock the run's age reads.
 func StatusOf(s Summary, now time.Time) RunStatus {
-	in := StatusIn{State: s.Status.State, Phase: s.Status.Phase, Step: s.Step, Now: now}
+	in := StatusIn{State: s.Status.State, Phase: s.Status.Phase, ReasonCode: s.Status.ReasonCode, Step: s.Step, Now: now}
 	if in.State == "" {
 		in.State = Coarse(s.Status.Phase, s.Status.Phase, false)
 	}

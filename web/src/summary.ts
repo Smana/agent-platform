@@ -26,6 +26,7 @@ export interface Summary {
     issue: { number: number; url: string; title?: string; author?: string; labelledBy?: string } | null;
     lastVerdict: { by: string; verdict: string; at: string } | null;
     reason?: string; // why the task waits (#59)
+    reasonCode?: string; // the factory's raw reason code, the status line's key
     next?: string; // what happens or who acts next
     // What a run runs on: model is its claim's spec.model, effort what its harness reported. The
     // present run's, and the last run's (the one before the present run, or the last when none is

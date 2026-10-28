@@ -439,6 +439,8 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 	// repository, so rooms sharing an unreachable one cost one timeout, not one each.
 	readable := map[string]bool{}
 	out := []roomRow{}
+	var ins []summary.StatusIn   // each row's status line input, out's twin
+	failed := map[string]int64{} // the failed rows' fork points: their reason codes are read in one call
 	for i := range rooms.Items {
 		room := &rooms.Items[i]
 		repo := room.Spec.Repository
@@ -493,20 +495,23 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
 		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
-		row.Status = s.rowStatus(room, row, web, live, expired)
+		ins = append(ins, s.statusIn(room, row, web, live, expired))
+		if row.State == summary.StateFailed {
+			failed[row.ID] = roomctrl.ForkSeq(room)
+		}
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)
+	s.stampStatus(ctx, out, ins, failed)
 	return out, access, nil
 }
 
-// rowStatus is the row's status line, as the room's summary says it to the caller: the same
-// StatusLine over the row's projected data, with no store read of its own. approvals are the live
-// ones a decider's row read (nil for a viewer who cannot decide, whose every pending one is
-// others'); an unswept expired approval a non-decider's row cannot tell from a live one reads as
-// waiting on another approver until the sweep decides it. nil when the state is one this broker
-// does not know.
-func (s *Server) rowStatus(room *v1alpha1.Room, row roomRow, web policy.Subject, live []store.Approval, expired int) *rowStatus {
+// statusIn is the row's status line input, as the room's summary gives it to the caller: the
+// row's projected data, with no store read of its own; a failed row's reason code is stampStatus's.
+// live are the approvals a decider's row read, expired those it dropped (nil for a viewer who cannot decide, whose every
+// pending one is others'); an unswept expired approval a non-decider's row cannot tell from a live
+// one reads as waiting on another approver until the sweep decides it.
+func (s *Server) statusIn(room *v1alpha1.Room, row roomRow, web policy.Subject, live []store.Approval, expired int) summary.StatusIn {
 	in := summary.StatusIn{State: row.State, Phase: cmp.Or(row.Task, row.Phase), PR: row.PR, Issue: row.Issue,
 		Step: row.Step, Now: s.now()}
 	if row.Phase == "Closed" || row.Phase == "Sealed" {
@@ -529,11 +534,30 @@ func (s *Server) rowStatus(room *v1alpha1.Room, row roomRow, web policy.Subject,
 			}
 		}
 	}
-	st := summary.StatusLine(in)
-	if st.Kind == "" {
-		return nil
+	return in
+}
+
+// stampStatus sets each row's status line from its input, reading the failed rows' reason codes
+// (failed: their fork points) in one store read. An unread code leaves the phase's words.
+func (s *Server) stampStatus(ctx context.Context, rows []roomRow, ins []summary.StatusIn, failed map[string]int64) {
+	codes := map[string]string{}
+	if len(failed) > 0 {
+		c, err := s.Log.TaskReasons(ctx, failed)
+		if err != nil {
+			s.log().Warn("room list: failure reasons unread", "err", err)
+		} else {
+			codes = c
+		}
 	}
-	return &rowStatus{Kind: st.Kind, Icon: st.Icon, Text: st.Words}
+	for i := range rows {
+		in := ins[i]
+		if _, ok := failed[rows[i].ID]; ok {
+			in.ReasonCode = summary.ReasonCode(&envelope.TaskFacts{Reason: codes[rows[i].ID]})
+		}
+		if st := summary.StatusLine(in); st.Kind != "" {
+			rows[i].Status = &rowStatus{Kind: st.Kind, Icon: st.Icon, Text: st.Words}
+		}
+	}
 }
 
 // waits are the task phases whose rows carry a reason, as the summary's status does.

@@ -539,6 +539,10 @@ func (fakeRoomLog) LastEventAt(context.Context, []string) (map[string]time.Time,
 	return nil, nil
 }
 
+func (fakeRoomLog) TaskReasons(context.Context, map[string]int64) (map[string]string, error) {
+	return nil, nil
+}
+
 func (fakeRoomLog) LastTaskState(context.Context, string, int64) (json.RawMessage, error) {
 	return nil, nil
 }

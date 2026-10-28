@@ -15,7 +15,7 @@ describe("the run status", () => {
     });
   }
   it("never carries a word an agent wrote", () => {
-    const s = statusLine({ state: "failed", phase: "Rejected", reason: "__proto__" });
+    const s = statusLine({ state: "failed", phase: "Rejected", reasonCode: "__proto__" });
     expect(s.words).toBe("Failed — rejected");
   });
 });

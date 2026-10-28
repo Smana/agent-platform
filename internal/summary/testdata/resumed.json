@@ -43,6 +43,7 @@
         "url": "https://github.com/Smana/cloud-native-ref/issues/42"
       },
       "lastVerdict": null,
+      "reasonCode": "resumed after a human note",
       "lastRunModel": {
         "run": "bbbbbbbb",
         "model": "agent-default",

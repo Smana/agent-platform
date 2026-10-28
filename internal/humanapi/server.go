@@ -69,6 +69,9 @@ type Log interface {
 	LastTaskState(ctx context.Context, roomID string, after int64) (json.RawMessage, error)
 	// TaskStateAt is the task facts as they stood at seq upTo, above after: room_changes' baseline.
 	TaskStateAt(ctx context.Context, roomID string, after, upTo int64) (json.RawMessage, error)
+	// TaskReasons is the reason code of each room's last task facts above its bound, in one
+	// read: the room list's failed rows say why they failed.
+	TaskReasons(ctx context.Context, after map[string]int64) (map[string]string, error)
 	// LastEventAt is when each listed room's log last moved, for the room list.
 	LastEventAt(ctx context.Context, roomIDs []string) (map[string]time.Time, error)
 }
