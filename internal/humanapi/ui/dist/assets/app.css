@@ -612,3 +612,14 @@ table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collaps
   .rooms th:first-child { white-space: normal; } /* "Needs / you" on two lines, not a wide column */
   .rooms th, .rooms td { padding: 8px 10px; }
 }
+
+/* Approval card: the plain-words block leads, the raw command folds under details. */
+.approval-intent { margin: 0; font-weight: 500; }
+.approval-why, .approval-deadline, .approval-status { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.approval-outcomes { display: grid; gap: 2px; font-size: 14px; }
+.approval-outcomes p { margin: 0; }
+.approval-status[data-can="true"] { color: var(--foreground); font-weight: 500; }
+.approval-status[data-can="false"] { color: var(--muted-foreground); }
+.approval-details > summary { cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.approval-details > :not(summary) { margin-top: 6px; }
+.approvals-banner { font-weight: 500; }

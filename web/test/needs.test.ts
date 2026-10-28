@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../src/conn";
+import { RULES } from "../src/approval-help";
 import { approvalCard } from "../src/controls";
 import { mountNeeds } from "../src/needs";
 import { RoomState } from "../src/room-state";
@@ -226,5 +227,64 @@ describe("approval cards", () => {
     } finally {
       c.root.remove();
     }
+  });
+});
+
+describe("the approval card's guidance", () => {
+  const mk = (cls: string, who = you, extra: Record<string, unknown> = {}, four?: boolean) => {
+    const state = new RoomState(); state.reset({ driver: "human:a", driverEpoch: 1, approvals: [{ ...approval, class: cls, ...extra }] }, 20);
+    const root = document.createElement("section");
+    const needs = mountNeeds(root, { send: () => true }, state, () => who, { rowFor: () => undefined }, () => four);
+    needs.refresh();
+    return { root, needs };
+  };
+  it("says what it wants, why it stopped and what each answer does, per rule code", () => {
+    for (const [code, rule] of Object.entries(RULES)) {
+      const { root } = mk(code);
+      expect(root.querySelector(".approval-intent")?.textContent).toBe(rule.intent);
+      expect(root.querySelector(".approval-why")?.textContent).toBe(`Why it stopped: ${rule.why}`);
+      const out = [...root.querySelectorAll(".approval-outcomes p")].map((p) => p.textContent);
+      expect(out).toEqual([`If you approve: ${rule.approve}`, `If you deny: ${rule.deny}`]);
+    }
+  });
+  it("folds the raw command and action under details, and writes agent text as text", () => {
+    const evil = `<img src=x onerror=alert(1)>`;
+    const { root } = mk("forge.other", you, { action: { command: evil } });
+    const details = root.querySelector("details.approval-details")!;
+    expect(details.querySelector("summary")?.textContent).toBe("details");
+    expect(details.querySelector(".approval-command")?.textContent).toBe(evil);
+    expect(root.querySelector("img")).toBeNull();
+    expect(root.querySelector(".approval-intent")?.textContent).not.toContain("img");
+  });
+  it("shows the deadline, and none when the expiry is missing", () => {
+    const soon = new Date(Date.now() + 5 * 60_000 + 5000).toISOString();
+    expect(mk("forge.pr", you, { expiresAt: soon }).root.querySelector(".approval-deadline")?.textContent).toMatch(/^Decide by \d\d:\d\d \(in 5 min\); if nobody decides: the request expires/);
+    expect(mk("forge.pr", you, { expiresAt: "" }).root.querySelector(".approval-deadline")?.textContent).toBe("No deadline.");
+  });
+  it("says you can decide, with the buttons", () => {
+    const { root } = mk("forge.pr");
+    expect(root.querySelector(".approval-status")?.textContent).toBe("You can decide.");
+    expect(root.querySelector('button[data-act="approve"]')).not.toBeNull();
+  });
+  it("says only approvers decide, with no buttons", () => {
+    const { root, needs } = mk("forge.pr", { ...you, role: "collaborator", approver: false });
+    expect(root.querySelector(".approval-status")?.textContent).toContain("only approvers decide");
+    expect(root.querySelector("button")).toBeNull();
+    expect(needs.approvalCounts()).toEqual({ total: 1, mine: 0 });
+  });
+  it("explains four-eyes to the prompter and hides the buttons; others still decide", () => {
+    const { root, needs } = mk("forge.pr", you, { prompters: ["human:a"] }, true);
+    expect(root.querySelector(".approval-status")?.textContent).toBe("Waiting for another approver: you prompted this turn (four-eyes).");
+    expect(root.querySelector("button")).toBeNull();
+    expect(needs.count()).toBe(0);
+    const other = mk("forge.pr", { ...you, principal: "human:b" }, { prompters: ["human:a"] }, true);
+    expect(other.root.querySelector('button[data-act="approve"]')).not.toBeNull();
+  });
+  it("focuses the first card for the banner's link", () => {
+    const { root, needs } = mk("forge.pr");
+    document.body.append(root);
+    needs.focusFirst();
+    expect(document.activeElement).toBe(root.querySelector("li.approval"));
+    root.remove();
   });
 });

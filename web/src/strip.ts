@@ -7,6 +7,7 @@
 // be agent- or human-written: all of it enters the DOM as text.
 
 import type { Snapshot } from "./conn";
+import { bannerText } from "./approval-help";
 import { el, shortPrincipal } from "./controls";
 import { type Dashboard, expandDashboards } from "./dashboards";
 import type { Latest } from "./room-state";
@@ -23,6 +24,8 @@ export interface StripInput {
   roomId: string; snap?: Snapshot; phase: string; driver: string; sealedBy?: { who: string; at: string };
   sealed?: boolean; // the room is sealed, closer known (sealedBy) or not
   summary?: Summary; needs: number; connection: string;
+  // Pending approvals: all of them, and those the viewer may decide (needs.ts approvalCounts).
+  approvals?: { total: number; mine: number };
   now?: Latest; // the latest activity (RoomState.latest), for the Now line
   // Whether an agent is present now, and whether one ever was (RoomState.running, ran).
   // Undefined when nothing tracks it: the Now line then reads the latest activity as current.
@@ -161,6 +164,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
   head.append(title, row);
   let onNeeds = () => {};
   let onNow = (_seq: number) => {};
+  let onApprovals = () => {};
   pill.onclick = () => onNeeds();
   const shown = { head: "", now: "", tail: "" };
   return {
@@ -174,7 +178,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         title.title = text; // a phone clamps the title to two lines: the whole of it on hover
       }
       document.title = phase ? `${text} · ${phase} · Maku` : `${text} · Maku`;
-      const { now: latest, sealedBy, needs, connection, ...rest } = i;
+      const { now: latest, sealedBy, needs, connection, approvals: pend, ...rest } = i;
       const headKey = JSON.stringify(rest);
       if (headKey !== shown.head) {
         for (const c of [...row.querySelectorAll(":scope > .chip")]) c.remove();
@@ -201,12 +205,20 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         const n = nowText(latest, t, present);
         if (b && b.textContent !== n) b.textContent = n;
       }
-      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next, i.summary?.step]);
+      const tailKey = JSON.stringify([sealedBy, i.sealed, i.snap?.you.principal, st?.phase, i.phase, st?.reason, st?.next, i.summary?.step, pend?.total, pend?.mine]);
       if (tailKey !== shown.tail) {
         const lines: HTMLElement[] = [];
         if (sealedBy || i.sealed) lines.push(el("div", { className: "closed", textContent: sealedText(i) }));
         else if (st?.reason || st?.next) {
           lines.push(el("div", { className: "waiting", textContent: `Waiting: ${[st.reason, st.next].filter(Boolean).join(" → ")}` }));
+        }
+        // Nothing at the top said an approval waits: this line does, and takes you to its card.
+        const banner = sealedBy || i.sealed ? "" : bannerText(pend?.total ?? 0, pend?.mine ?? 0);
+        if (banner) {
+          const a = el("a", { className: "approvals-banner", href: "#needs-title", textContent: `${banner} — review` });
+          a.onclick = (e) => { e.preventDefault(); onApprovals(); };
+          lines.push(el("div", { className: "waiting approvals-line" }));
+          lines[lines.length - 1].append(a);
         }
         const step = i.summary?.step;
         if (step && !sealedBy && !i.sealed) {
@@ -222,6 +234,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
       }
     },
     onNeedsClick(f: () => void): void { onNeeds = f; },
+    onApprovalsClick(f: () => void): void { onApprovals = f; },
     onNowClick(f: (seq: number) => void): void { onNow = f; },
   };
 }

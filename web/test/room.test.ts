@@ -608,6 +608,16 @@ describe("the room page", () => {
       expect(panel.querySelector("#approval-01M4A .approval-command")?.textContent).toBe("git push");
     });
 
+    it("raises a banner in the strip and a four-eyes note on the card of whoever prompted the turn", () => {
+      const p = page();
+      p.join({ ...snapshot({ principal: "human:b", approver: true }), fourEyes: true }, 0,
+        event(1, "approval_requested", { approvalId: "01M4A", callId: "c1", class: "forge.pr", action: {}, expiresAt: "2099-01-01T00:00:00Z",
+          prompters: ["human:b"] }));
+      expect(p.app.querySelector("a.approvals-banner")?.textContent).toBe("⏳ 1 approval waits for another approver — review");
+      expect(p.app.querySelector("#approval-01M4A .approval-status")?.textContent).toContain("you prompted this turn (four-eyes)");
+      p.app.remove();
+    });
+
     // The pill and the panel agree: approver OR owner decides (policy Decide).
     it("counts an approval in the pill for an owner who is no approver, and not for a collaborator", () => {
       const o = page();

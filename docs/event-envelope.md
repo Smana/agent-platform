@@ -107,7 +107,7 @@ The payload shape of every `type`.
 | `turn` | `{runId, turnId, phase: started \| completed \| cancelled \| failed}` | The bridge's status tracker |
 | `tool_call` | `{callId, tool, args, class, risk, decidedBy: policy \| human \| null}` | The bridge |
 | `tool_result` | `{callId, status: ok \| error \| rejected, output, truncated, bytes}` | The bridge |
-| `approval_requested` | `{approvalId, callId, class, action, expiresAt}`. `action` is the raw call, redacted | The broker, from the bridge |
+| `approval_requested` | `{approvalId, callId, class, action, expiresAt, prompters}`. `action` is the raw call, redacted; `prompters` are the principals who prompted the turn (four-eyes: none of them decides) | The broker, from the bridge |
 | `approval_decided` | `{approvalId, decision: approved \| denied \| expired \| superseded, reason}`. `superseded`: the call already has a `tool_result`, or its run has ended, so nobody decides it | A human, or `system:room-broker` for an expiry or a supersede |
 | `participant` | `{principal, change: joined \| left \| role_changed, role, approver}` | The broker |
 | `driver` | `{from, to, epoch, reason: given \| requested \| taken: <the owner's reason, redacted> \| lease_expired}` | The broker |
