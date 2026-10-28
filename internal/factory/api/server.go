@@ -175,6 +175,9 @@ func (s *Server) Handler() http.Handler {
 	if len(s.Cfg.API.Sponsored)+len(s.Cfg.API.InternalPrincipals) > 0 { // F4, D4: off until a principal is declared
 		mux.HandleFunc("POST /v1/tasks", s.createTask)
 	}
+	if s.anyVerifies() { // RA11, D4: a 404 until an internal principal may send verdicts
+		mux.HandleFunc("POST /v1/tasks/{task}/verification", s.recordVerification)
+	}
 	return mux
 }
 

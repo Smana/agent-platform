@@ -77,6 +77,7 @@ type TaskForge interface {
 	Issue(ctx context.Context, number int) (forge.Issue, error)
 	CreateIssue(ctx context.Context, title, body string, labels []string) (forge.Issue, error)
 	IssuesLabelled(ctx context.Context, label string) ([]forge.Issue, error)
+	IssuesLabelledSince(ctx context.Context, label string, since time.Time) ([]forge.Issue, error)
 	AddSubIssue(ctx context.Context, parent int, childID int64) error
 	CloseIssue(ctx context.Context, number int) error
 }
@@ -87,6 +88,7 @@ type metrics interface {
 	PROpened(ctx context.Context)
 	PROutcome(ctx context.Context, class, outcome string)
 	MonitorVerdict(ctx context.Context, class, verdict string)
+	MonitorVerification(ctx context.Context, class, verdict string)
 	HumanWait(ctx context.Context, phase string, d time.Duration)
 	TaskTokens(ctx context.Context, tokens int64, tier, template, predictedClass string)
 	Intervention(ctx context.Context, kind string)

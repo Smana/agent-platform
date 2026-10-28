@@ -626,6 +626,23 @@ required). `Idempotency-Key` is the incident's trigger key.
 A sponsored principal's request refuses an `incident` (`bad_json`), and an internal principal's refuses
 everything a sponsored one's does beyond its own keys.
 
+### `POST /v1/tasks/{task}/verification`
+
+An internal principal with `verification: true` says whether the fix of its own proposal held. It serves
+on the same port, only while some internal principal has `verification: true` (otherwise `404`). `{task}`
+is the **fix** task, whose `spec.origin` names a task the caller created. The body is
+`verdict` (`resolved` or `persisting`), `alert` (`name`, `firingAtMerge`, `firingNow`), `checkedAt`
+(RFC 3339) and `evidence?` (at most 16 KiB, scanned for secrets); at most 32 KiB, unknown fields refused.
+
+| | |
+|---|---|
+| `201` | `{task, verdict, recordedAt}`: the verdict is `status.monitor.verification` of the fix task, which the [post-merge monitor](factory.md#the-post-merge-monitor) reads; the evidence is `status.published.evidence` of the origin task (internal: the origin room is closed by then) |
+| `200` | `{…, duplicate: true}`: the same verdict was already recorded |
+| `400` | `bad_json`, `bad_verdict`, `bad_evidence` |
+| `401`, `403` | `unauthenticated`; `not_permitted` (not an internal principal), `verification_not_allowed`, `not_own_task` (no origin, another principal's origin, or a class with no `monitor.verification`) |
+| `404`, `409` | `no_such_task`; `not_merged`, `window_closed` (past `monitor.verification.within` after the merge), `verdict_already_recorded` (another verdict) |
+| `503` | `tasks_unavailable` |
+
 `agent_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
 or internal principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
 `bad_*`, `max_cost_*`, `repository_*`, `invalid_draft`, the caps and the `503`s); any other value is

@@ -264,10 +264,6 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 			}
 			return c.gh
 		}}
-	runlore, ok := conns.get(cfg.RunLoreRepository())
-	if !ok {
-		return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
-	}
 	// The api intake and factory/publish scan what they publish, and both fail closed without it.
 	redactor, err := redact.New()
 	if err != nil {
@@ -292,19 +288,25 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		poller.Redact = redactor
 		runnables = append(runnables, poller)
 	}
+	if cfg.RunLore.Listen != "" { // R14: no runlore block, no intake; its port serves nothing
+		runlore, ok := conns.get(cfg.RunLoreRepository())
+		if !ok {
+			return fmt.Errorf("runlore.repository %s has no GitHub connection", cfg.RunLoreRepository())
+		}
+		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
+		// so the ExternalSecret's rotations need no restart (AGENTS.md).
+		runnables = append(runnables, &intake.RunLore{Forge: runlore.gh, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
+			Token: func() string {
+				b, _ := os.ReadFile(filepath.Clean(cfg.RunLore.TokenFile))
+				return strings.TrimSpace(string(b))
+			},
+			Stopped: stopped, Now: time.Now, Errors: m, Log: log})
+	}
 	for _, r := range append(runnables,
 		&intake.Scheduler{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		// MC10: off unless a class adopts; leader-only, through the Scheduler's connections.
 		&intake.Adopter{Clients: conns.schedule, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
-			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
-		// FA-8: RunLore pushes findings over the tailnet; the token file is re-read per request,
-		// so the ExternalSecret's rotations need no restart (AGENTS.md).
-		&intake.RunLore{Forge: runlore.gh, Owned: fenced.Owned, Client: mgr.GetClient(), Namespace: ns, Cfg: cfg,
-			Token: func() string {
-				b, _ := os.ReadFile(filepath.Clean(cfg.RunLore.TokenFile))
-				return strings.TrimSpace(string(b))
-			},
 			Stopped: stopped, Now: time.Now, Errors: m, Log: log},
 		&meter.Meter{Runs: rc, Source: vm, Every: cfg.Poll.Meter.Duration, OnRevoke: m.RunRevoked, Log: log,
 			OnCharge: m.Charged, OnCharges: m.RunCharges,

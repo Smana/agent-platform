@@ -844,7 +844,8 @@ func (c *Config) validatePrincipal(bad func(string, ...any), list string, s Spon
 // broker's room-visibility bound, so a revoked collaborator loses both within the same window.
 const MaxAccessTTL = 5 * time.Minute
 
-// RunLore is the intake of §1: findings become tasks when actionable, 5 a day (OD-9).
+// RunLore is the intake of §1: findings become tasks when actionable, 5 a day (OD-9). Optional
+// (R14): the zero value turns the intake off.
 type RunLore struct {
 	Listen        string  `json:"listen"`
 	TokenFile     string  `json:"tokenFile"`
@@ -1280,21 +1281,25 @@ func (c *Config) Validate() error {
 	}
 	c.validateSponsored(bad)
 	// §1's RunLore intake (FA-8): every replica serves it, like the API, so its block is as
-	// required as api's. OD-9: the bar is real and the cap is stated; 0 admits nothing.
-	if c.RunLore.Listen == "" {
-		bad("runlore.listen is required")
-	}
-	if c.RunLore.TokenFile == "" {
-		bad("runlore.tokenFile is required")
-	}
-	if c.RunLore.MinConfidence <= 0 || c.RunLore.MinConfidence > 1 {
-		bad("runlore.minConfidence must be in (0, 1] (OD-9)")
-	}
-	if c.RunLore.DailyCap < 0 {
-		bad("runlore.dailyCap must be 0 or more")
-	}
-	if r := c.RunLore.Repository; r != "" && c.listed(r) == nil {
-		bad("runlore.repository %q is not a listed repository", r)
+	// required as api's once it is there. OD-9: the bar is real and the cap is stated; 0 admits
+	// nothing. R14: absent altogether, the intake is off and serves nothing (RunLore reaches the
+	// factory through api.internalPrincipals instead).
+	if c.RunLore != (RunLore{}) {
+		if c.RunLore.Listen == "" {
+			bad("runlore.listen is required")
+		}
+		if c.RunLore.TokenFile == "" {
+			bad("runlore.tokenFile is required")
+		}
+		if c.RunLore.MinConfidence <= 0 || c.RunLore.MinConfidence > 1 {
+			bad("runlore.minConfidence must be in (0, 1] (OD-9)")
+		}
+		if c.RunLore.DailyCap < 0 {
+			bad("runlore.dailyCap must be 0 or more")
+		}
+		if r := c.RunLore.Repository; r != "" && c.listed(r) == nil {
+			bad("runlore.repository %q is not a listed repository", r)
+		}
 	}
 	if c.Tracing.OTLPEndpoint != "" && !hostPortRE.MatchString(c.Tracing.OTLPEndpoint) {
 		bad("tracing.otlpEndpoint %q is not host:port", c.Tracing.OTLPEndpoint)

@@ -105,47 +105,48 @@ var (
 
 // Set is the factory's instruments. Record through its methods, which fix each label set.
 type Set struct {
-	timeToPR        metric.Float64Histogram
-	prOutcomes      metric.Int64Counter
-	monitorVerdicts metric.Int64Counter
-	taskTokens      metric.Int64Histogram
-	budgetCap       metric.Float64Gauge
-	budgetRemaining metric.Float64Gauge
-	budgetSpent     metric.Float64Gauge
-	interventions   metric.Int64Counter
-	classMismatch   metric.Int64Counter
-	mergeDecisions  metric.Int64Counter
-	tierFit         metric.Int64Counter
-	intakeErrors    metric.Int64Counter
-	eventsTruncated metric.Int64Counter
-	revocations     metric.Int64Counter
-	githubRemaining metric.Int64Gauge
-	githubUp        metric.Int64Gauge
-	traceAbandoned  metric.Int64Counter
-	resumes         metric.Int64Counter
-	steeringReads   metric.Int64Counter
-	scoperRuns      metric.Int64Counter
-	splits          metric.Int64Counter
-	splitChildren   metric.Int64Counter
-	scopeBounces    metric.Int64Counter
-	loopRuns        metric.Int64Counter
-	roomsCapped     metric.Int64Counter
-	usageErrors     metric.Int64Counter
-	meterSuccess    metric.Int64Gauge
-	overshoot       metric.Int64Counter
-	runCost         metric.Float64Histogram
-	runBudgetUSD    metric.Float64Gauge
-	budgetFallbacks metric.Int64Counter
-	owned           metric.Int64Gauge
-	refusals        metric.Int64Counter
-	unpricedModels  metric.Int64Counter
-	excludesCache   metric.Int64Counter
-	modelCost       metric.Float64Counter
-	charged         metric.Float64Counter
-	prsOpened       metric.Int64Counter
-	humanWait       metric.Float64Counter
-	maxCost         metric.Float64Counter
-	apiIntake       metric.Int64Counter
+	timeToPR             metric.Float64Histogram
+	prOutcomes           metric.Int64Counter
+	monitorVerdicts      metric.Int64Counter
+	monitorVerifications metric.Int64Counter
+	taskTokens           metric.Int64Histogram
+	budgetCap            metric.Float64Gauge
+	budgetRemaining      metric.Float64Gauge
+	budgetSpent          metric.Float64Gauge
+	interventions        metric.Int64Counter
+	classMismatch        metric.Int64Counter
+	mergeDecisions       metric.Int64Counter
+	tierFit              metric.Int64Counter
+	intakeErrors         metric.Int64Counter
+	eventsTruncated      metric.Int64Counter
+	revocations          metric.Int64Counter
+	githubRemaining      metric.Int64Gauge
+	githubUp             metric.Int64Gauge
+	traceAbandoned       metric.Int64Counter
+	resumes              metric.Int64Counter
+	steeringReads        metric.Int64Counter
+	scoperRuns           metric.Int64Counter
+	splits               metric.Int64Counter
+	splitChildren        metric.Int64Counter
+	scopeBounces         metric.Int64Counter
+	loopRuns             metric.Int64Counter
+	roomsCapped          metric.Int64Counter
+	usageErrors          metric.Int64Counter
+	meterSuccess         metric.Int64Gauge
+	overshoot            metric.Int64Counter
+	runCost              metric.Float64Histogram
+	runBudgetUSD         metric.Float64Gauge
+	budgetFallbacks      metric.Int64Counter
+	owned                metric.Int64Gauge
+	refusals             metric.Int64Counter
+	unpricedModels       metric.Int64Counter
+	excludesCache        metric.Int64Counter
+	modelCost            metric.Float64Counter
+	charged              metric.Float64Counter
+	prsOpened            metric.Int64Counter
+	humanWait            metric.Float64Counter
+	maxCost              metric.Float64Counter
+	apiIntake            metric.Int64Counter
 
 	spendMu sync.Mutex
 	spend   map[string]map[string]float64 // the meter's last live spend, run then model
@@ -268,6 +269,9 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.monitorVerdicts, err = meter.Int64Counter("agent_factory_monitor_verdicts_total",
 		metric.WithDescription("Post-merge monitor verdicts (merge gate classes MC7), by class and verdict."))
+	check(err)
+	s.monitorVerifications, err = meter.Int64Counter("agent_factory_monitor_verifications_total",
+		metric.WithDescription("RunLore's verdict on a merged fix, as the monitor read it (RA11), by class and verdict: resolved, persisting or none."))
 	check(err)
 	s.taskTokens, err = meter.Int64Histogram("agent_factory_task_tokens",
 		metric.WithDescription("Tokens per finished task (§7)."), metric.WithExplicitBucketBoundaries(taskTokensBuckets...))
@@ -509,6 +513,13 @@ func (s *Set) PROutcome(ctx context.Context, class, outcome string) {
 func (s *Set) MonitorVerdict(ctx context.Context, class, verdict string) {
 	s.monitorVerdicts.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("verdict", oneOf(verdict, []string{"healthy", "regression", "inconclusive"})), s.repoOf(ctx)))
+}
+
+// MonitorVerification counts RunLore's verdict on a merged fix as the monitor read it (RA11):
+// resolved, persisting, or none when the window closed without one.
+func (s *Set) MonitorVerification(ctx context.Context, class, verdict string) {
+	s.monitorVerifications.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("verdict", oneOf(verdict, []string{"resolved", "persisting", "none"})), s.repoOf(ctx)))
 }
 
 // HumanWait adds the time a task waited in AwaitingHuman or Escalated, as it leaves the phase, to

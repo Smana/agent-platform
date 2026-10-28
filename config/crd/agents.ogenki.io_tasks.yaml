@@ -618,6 +618,10 @@ spec:
                       type: string
                     maxItems: 5
                     type: array
+                  followUpIssue:
+                    description: The follow-up issue filed when RunLore's verdict
+                      was persisting (RA12), filed once.
+                    type: integer
                   followUps:
                     description: Later pull requests that fixed this merge (MC8).
                     items:
@@ -657,6 +661,60 @@ spec:
                     format: date-time
                     type: string
                   verdict:
+                    enum:
+                    - ""
+                    - healthy
+                    - regression
+                    - inconclusive
+                    type: string
+                  verification:
+                    description: RunLore's verdict on this fix (RA11), recorded by
+                      POST /v1/tasks/{task}/verification.
+                    properties:
+                      alert:
+                        description: VerifiedAlert is the alert a verdict is about.
+                        properties:
+                          firingAtMerge:
+                            type: boolean
+                          firingNow:
+                            type: boolean
+                          name:
+                            maxLength: 256
+                            type: string
+                        required:
+                        - firingAtMerge
+                        - firingNow
+                        - name
+                        type: object
+                      by:
+                        description: The principal that sent it, system:<name>.
+                        maxLength: 64
+                        type: string
+                      checkedAt:
+                        description: When the principal checked.
+                        format: date-time
+                        type: string
+                      recordedAt:
+                        description: When the factory recorded it.
+                        format: date-time
+                        type: string
+                      verdict:
+                        enum:
+                        - resolved
+                        - persisting
+                        type: string
+                    required:
+                    - alert
+                    - by
+                    - checkedAt
+                    - recordedAt
+                    - verdict
+                    type: object
+                  verified:
+                    description: |-
+                      The verification signal: healthy for resolved, regression for persisting, inconclusive when
+                      the window closed with no verdict. Set only for a merge whose origin is an internal
+                      principal that verifies (R12).
                     enum:
                     - ""
                     - healthy

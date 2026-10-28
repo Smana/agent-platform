@@ -75,6 +75,7 @@ type Fake struct {
 	blameErr     map[string]error
 	subErr       error
 	createErr    error
+	listErr      error
 	closeErr     error
 	nextID       int64
 }
@@ -307,6 +308,25 @@ func (f *Fake) IssuesLabelled(_ context.Context, label string) ([]forge.Issue, e
 		}
 	}
 	return out, nil
+}
+
+// IssuesLabelledSince implements the forge's IssuesLabelledSince; the fake keeps no times, so it
+// answers as IssuesLabelled, unless FailLists made it fail.
+func (f *Fake) IssuesLabelledSince(ctx context.Context, label string, _ time.Time) ([]forge.Issue, error) {
+	f.mu.Lock()
+	err := f.listErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return f.IssuesLabelled(ctx, label)
+}
+
+// FailLists makes every IssuesLabelledSince fail with err.
+func (f *Fake) FailLists(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listErr = err
 }
 
 // AddSubIssue implements the forge's AddSubIssue: "sub-issue <parent> <id>" in Calls, or FailSubIssues' error.

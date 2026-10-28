@@ -19,6 +19,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/envelope"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/finding"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/rooms"
 	"github.com/Smana/agent-platform/internal/factory/runs"
@@ -613,6 +614,22 @@ func MonitorVerdict(t *v1alpha1.Task, n int, verdict string, why []string, contr
 		}
 	}
 	return Event{Key: key, Body: body}
+}
+
+// FollowUpMarker is the hidden line that lets the factory find the follow-up issue it filed for
+// task's fix, so a lost write or a timed-out create never files a second one.
+func FollowUpMarker(task string) string {
+	return fmt.Sprintf("<!-- agent-factory follow-up=%s -->", task)
+}
+
+// FollowUpIssue is the stub issue RunLore's persisting verdict files (RA12, R13): the merged pull
+// request, the alert and the origin room. It carries no evidence: the issue is public.
+func FollowUpIssue(task string, pr int, alert, originRoom, roomsURL string) (title, body string) {
+	a := finding.LabelSafe(alert)
+	body = fmt.Sprintf("RunLore reports that the fix in #%d did not hold: alert `%s` is still firing after the merge.\n\n"+
+		"The finding and its evidence stay in the room of the task that proposed it: %s/r/%s (tailnet only).",
+		pr, a, strings.TrimSuffix(roomsURL, "/"), originRoom) + "\n\n" + FollowUpMarker(task)
+	return fmt.Sprintf("RunLore: the fix in #%d did not hold (%s)", pr, a), body
 }
 
 // FollowUpFound says pull request later changed lines pull request m introduced, within the

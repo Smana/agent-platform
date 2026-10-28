@@ -3,6 +3,7 @@
 package reconciler
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/agent-platform/internal/factory/finding"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/intake"
 	"github.com/Smana/agent-platform/internal/factory/narrate"
@@ -136,6 +139,11 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 		m = &v1alpha1.MonitorStatus{Since: metav1.Time{Time: at}}
 		t.Status.Monitor = m
 	}
+	// The verification endpoint seeds Since from the Task's MergedAt (the factory's clock) when it
+	// records a verdict before the first pass: GitHub's merge time is the one every window counts from (L6).
+	if !pr.MergedAt.IsZero() && m.Since.Time.Equal(ref.MergedAt.Time) && !pr.MergedAt.Equal(m.Since.Time) {
+		m.Since = metav1.Time{Time: pr.MergedAt}
+	}
 	r.label(ctx, pr, MergedLabel(t.Spec.PredictedClass))
 	if m.Main == "" {
 		if m.Main, err = r.mainSignal(ctx, t); err != nil {
@@ -148,6 +156,20 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	if cl.Monitor.Flux != nil && m.Flux == "" {
 		m.Flux = r.fluxSignal(ctx, t, *cl.Monitor.Flux)
 	}
+	if vw := cl.Monitor.Verification; vw != nil && m.Verified == "" && r.verifiedBy(ctx, t) {
+		switch v := m.Verification; {
+		case v != nil && v.Verdict == "resolved":
+			m.Verified = "healthy"
+		case v != nil && v.Verdict == "persisting":
+			m.Verified = "regression"
+		case r.Now().Sub(m.Since.Time) >= vw.Within.Duration:
+			m.Verified = "inconclusive"
+		}
+		if m.Verified != "" {
+			class, verdict := t.Spec.PredictedClass, cmp.Or(map[string]string{"healthy": "resolved", "regression": "persisting"}[m.Verified], "none")
+			record(ctx, func(ctx context.Context) { r.Metrics.MonitorVerification(ctx, class, verdict) })
+		}
+	}
 	r.followUps(ctx, t, cl)
 	ended := r.Now().Sub(m.Since.Time) >= cl.Monitor.FollowUpWindow.Duration+searchLag
 	signals := []*string{&m.Main}
@@ -156,6 +178,9 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if cl.Monitor.Flux != nil {
 		signals = append(signals, &m.Flux)
+	}
+	if cl.Monitor.Verification != nil && m.Verified != "" {
+		signals = append(signals, &m.Verified)
 	}
 	var read []string
 	for _, s := range signals {
@@ -177,17 +202,20 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 	if m.Verdict == "regression" {
 		r.label(ctx, pr, RegressionLabel)
 	}
+	if m.Verified == "regression" && m.FollowUpIssue == 0 {
+		r.fileFollowUp(ctx, t)
+	}
 	if m.Verdict != "" && !m.Posted {
 		if first {
 			class, verdict := t.Spec.PredictedClass, m.Verdict
 			record(ctx, func(ctx context.Context) { r.Metrics.MonitorVerdict(ctx, class, verdict) })
 		}
 		demotes := r.repo(t).Merge.Breaker.MaxFollowUps > 0
-		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), false, demotes))
+		narrateOn(t, ref.Number, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, t.Spec.Origin, r.Cfg.RoomsURL), false, demotes))
 		if m.Verdict == "regression" {
 			// M2: its own key, or narrateOn drops it as the PR's comment already queued.
 			if n := r.controlIssue(t); n > 0 {
-				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m), true, demotes))
+				narrateOn(t, n, narrate.MonitorVerdict(t, ref.Number, m.Verdict, monitorWhy(m, t.Spec.Origin, r.Cfg.RoomsURL), true, demotes))
 			}
 		}
 		m.Posted = m.Verdict != "regression" || ended // a regression is posted at once and watched on for follow-ups
@@ -201,7 +229,7 @@ func (r *Reconciler) monitor(ctx context.Context, t *v1alpha1.Task) error {
 }
 
 // monitorWhy lists the signals the verdict read, for the comment.
-func monitorWhy(m *v1alpha1.MonitorStatus) []string {
+func monitorWhy(m *v1alpha1.MonitorStatus, origin, roomsURL string) []string {
 	out := []string{"main CI: " + cmpOpen(m.Main), fmt.Sprintf("follow_ups=%d", len(m.FollowUps))}
 	if m.Oracle != "" {
 		out = append(out, "detector: "+m.Oracle)
@@ -212,6 +240,10 @@ func monitorWhy(m *v1alpha1.MonitorStatus) []string {
 			out = append(out, fmt.Sprintf("not Ready since the merge: %v", m.FluxBlamed))
 		}
 	}
+	if v := m.Verification; v != nil && m.Verified != "" {
+		out = append(out, fmt.Sprintf("RunLore: %s, alert `%s`, %s/r/%s", v.Verdict, finding.LabelSafe(v.Alert.Name),
+			strings.TrimSuffix(roomsURL, "/"), origin))
+	}
 	if len(m.FollowUps) > 0 {
 		out = append(out, fmt.Sprintf("follow-up fixes: %v, counted by the breaker, not in this verdict", m.FollowUps))
 	}
@@ -219,6 +251,48 @@ func monitorWhy(m *v1alpha1.MonitorStatus) []string {
 		out = append(out, "follow-up reads incomplete")
 	}
 	return out
+}
+
+// verifiedBy: the merge's task came from an investigate task of an internal principal that
+// verifies (R12). Anything else (no origin, a sponsored principal, an unreadable origin) is no signal.
+func (r *Reconciler) verifiedBy(ctx context.Context, t *v1alpha1.Task) bool {
+	if t.Spec.Origin == "" {
+		return false
+	}
+	var o v1alpha1.Task
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: t.Spec.Origin}, &o); err != nil {
+		return false
+	}
+	ip := r.Cfg.InternalBy(o.Spec.Source.RequestedBy)
+	return ip != nil && ip.Verification
+}
+
+// fileFollowUp files RA12's stub once, on the pass that first reads persisting. A failed filing is
+// logged and tried again by the next pass; the record is the Task's status, written with the pass.
+func (r *Reconciler) fileFollowUp(ctx context.Context, t *v1alpha1.Task) {
+	m, ref := t.Status.Monitor, t.Status.PullRequest
+	title, body := narrate.FollowUpIssue(t.Name, ref.Number, m.Verification.Alert.Name, t.Spec.Origin, r.Cfg.RoomsURL)
+	// The issue may exist already (its status write was lost, or its create timed out): adopt it by its marker.
+	marker := narrate.FollowUpMarker(t.Name)
+	// Only issues updated since the merge are read: factory/proposed accumulates, and one page of all of
+	// them would stop filing for good. A listing that fails files anyway: a stray duplicate stub beats
+	// a verdict nobody is told about.
+	found, err := r.gh(ctx).IssuesLabelledSince(ctx, "factory/proposed", m.Since.Time)
+	if err != nil {
+		r.log().Warn("RunLore follow-up issue lookup failed; filing without it", "task.id", t.Name, "err", err)
+	}
+	for _, i := range found {
+		if forge.SameLogin(i.Author, r.Cfg.FactoryLogin) && strings.Contains(i.Body, marker) {
+			m.FollowUpIssue = i.Number
+			return
+		}
+	}
+	iss, err := r.gh(ctx).CreateIssue(ctx, title, body, []string{"factory/proposed"})
+	if err != nil {
+		r.log().Warn("RunLore follow-up issue not filed", "task.id", t.Name, "err", err)
+		return
+	}
+	m.FollowUpIssue = iss.Number
 }
 
 func cmpOpen(s string) string {
