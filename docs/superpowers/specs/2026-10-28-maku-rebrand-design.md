@@ -138,8 +138,9 @@ Kubernetes can't serve one kind under two groups, so the objects are copied, not
 | The other release session tags in between | Explicit tag coordination; no tags during either phase |
 | A forgotten old name | After each phase, a `git grep` gate (`room-broker`, `roomctl`, `agents.ogenki.io`, `rooms_`) in CI that allows only listed historical docs (plans, specs, the changelog) |
 
-## Open questions for the owner
+## Decisions recorded with the owner (2026-10-28)
 
-1. **ServiceAccounts and principals.** Keep `system:serviceaccount:agent-system:agent-factory` and similar names as they are (recommended: they are identities other configs pin), or rename them in a later phase 3?
-2. **JWT audiences** `room-broker` and `rooms-system`: keep them as legacy identifiers (recommended), or plan a token re-issue?
-3. **The Go module rename timing.** It is pure churn for anyone importing the module. There are no known external importers, so phase 1 is fine.
+1. **ServiceAccounts keep their names** (`agent-factory`, `room-broker`, …) through phases 1 and 2. Allowlists, RBAC and issuer subjects pin them. A later phase 3 may rename them.
+2. **The JWT audiences `room-broker` and `rooms-system` stay** as legacy wire identifiers, like the `room.*` event types.
+3. **The Go module moves in phase 1,** in the same release as the repository rename, so the two names never disagree.
+4. **Rooms-only login branding** (a ZITADEL organisation and project with private labeling) gets its own spec after phase 1. It changes the rooms client ids and the project id, and it needs a feature-branch cluster run before gcp-0.
