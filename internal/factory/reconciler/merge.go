@@ -113,6 +113,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 		in.Verifiers = verifiers(t)
+		if c := t.Status.Contract; c != nil {
+			// Row 2c: one compare per decision, read once CI is green. A head that is not the contract's
+			// descendant (a rebase), or too many files to list, changed every contract file: fail closed.
+			files, err := r.merger(ctx).ChangedFiles(ctx, c.Commit, pr.HeadSHA)
+			switch {
+			case errors.Is(err, forge.ErrNotDescendant), errors.Is(err, forge.ErrDiffTooLarge):
+				files = c.Files
+			case err != nil:
+				return err
+			}
+			in.Contract = ContractRead{Read: true, Changed: files}
+		}
 	}
 	d := DecideArm(in)
 	if (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||

@@ -40,6 +40,15 @@ type ArmInputs struct {
 	// Adoption is what an adopted class's author mode reads beyond the pull request (MC10): the
 	// commits' authors and who pushed the branch. Read is false until awaitingCI has read them.
 	Adoption Adoption
+	// Contract is what row 2c reads of a task with a contract: the files changed since the tester's
+	// commit. Read is false until awaitingCI has read them, and an unread one never passes.
+	Contract ContractRead
+}
+
+// ContractRead is the files a pull request changed since the tester's contract commit (row 2c).
+type ContractRead struct {
+	Read    bool
+	Changed []string
 }
 
 // Adoption is what an adopted class's author mode reads beyond the pull request (MC10).
@@ -183,6 +192,16 @@ func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
 		return ArmDecision{Verdict: "ci_cancelled", Reason: "ci_cancelled"}, true
 	case "PENDING":
 		return ArmDecision{Verdict: "wait", Reason: "ci_pending"}, true
+	}
+	// Row 2c (R21, F3-R9): the tests the tester wrote are the task's contract, and no pull request changes
+	// them. A person decides, never a fix run: it was the implementer's own change (TF8).
+	if c := in.Task.Status.Contract; c != nil {
+		if !in.Contract.Read {
+			return ArmDecision{Verdict: "wait", Reason: "contract_unread"}, true
+		}
+		if slices.ContainsFunc(c.Files, func(f string) bool { return slices.Contains(in.Contract.Changed, f) }) {
+			return ArmDecision{Verdict: "human", Reason: "contract_modified"}, true
+		}
 	}
 	if in.NotOwned {
 		return ArmDecision{Verdict: "human", Reason: "not_owned"}, true
