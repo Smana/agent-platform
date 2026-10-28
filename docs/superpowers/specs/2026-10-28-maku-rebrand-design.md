@@ -144,3 +144,20 @@ Kubernetes can't serve one kind under two groups, so the objects are copied, not
 2. **The JWT audiences `room-broker` and `rooms-system` stay** as legacy wire identifiers, like the `room.*` event types.
 3. **The Go module moves in phase 1,** in the same release as the repository rename, so the two names never disagree.
 4. **Rooms-only login branding** (a ZITADEL organisation and project with private labeling) gets its own spec after phase 1. It changes the rooms client ids and the project id, and it needs a feature-branch cluster run before gcp-0.
+
+## Corrections found while planning phase 1 (2026-10-28)
+
+The phase 1 plan (`docs/superpowers/plans/2026-10-28-maku-rebrand-phase1-plan.md`) found these gaps. They supersede the sections above where they disagree:
+
+1. **Every Kubernetes identity stays in phase 1**, not only the ServiceAccounts. That covers Deployment, Service and container names, `matchLabels`, the `app.kubernetes.io/name` labels that crossplane-configuration's network policies select, the broker's TLS SAN and Service DNS, and the leader-election ids. Renaming them breaks immutable selectors, policies and certificates. Images, binaries and charts get the new names; the objects that run them keep the old ones. This extends decision 1.
+2. **The consumer side ships in two waves, not one PR.** Wave 1 pins the v0.30.0 names. Wave 2 switches the dashboards, VMRules and alerts to `maku_*`, at least 24 h later, once no v0.29 pod is left and the longest rule window has passed. Otherwise renamed `absent(...)` alerts fire. A cloud-native-ref Renovate change lands first, because ai-native-ref's pins test reads it through `HOST_REF`.
+3. **The CI old-name gate matches artifact names only** (`room-broker:`, `roomctl-`, `charts/agent-factory`, the old module path), never `rooms_`, `agents.ogenki.io` or a bare `room-broker`. In phase 1 those strings still legitimately name metrics, Postgres roles, the MCP tool `rooms_list`, reason codes, the audience and the Service. There is no changelog to allowlist; plans and specs are allowlisted.
+4. **Metrics:** a renaming Prometheus Gatherer in `internal/metrics` emits each series under both names. It is not a second instrument set, so it also covers the bridge's instruments, and the two names can't drift apart. `fmetrics` gets the same test.
+5. **These stay as they are:**
+   - the `factory_slack_*` metrics;
+   - the third audience, `agent-factory`;
+   - the `/api/roomctl` and `/.well-known/roomctl` routes, and `human.roomctlClientIDFile` (wire names);
+   - crossplane-configuration's harness and bridge pins, and ai-native-ref's headroom pins, until their own next bump.
+6. **The Go package `internal/roomctl` becomes `internal/maku`,** following the codebase's one-binary-one-package convention.
+7. **The GitHub Pages demo** (`blog.ogenki.io/agent-platform/`) moves with the repository. Its links and README badge are updated in phase 1.
+8. **Precondition:** #165 (install anywhere) must be merged before phase 1 starts. The `agent-platform` umbrella chart and the quickstart exist only on that PR.
