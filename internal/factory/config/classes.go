@@ -22,6 +22,9 @@ type Class struct {
 	// Checks switches the repository's checks on for the class's public implementer and reviewer
 	// runs (v3 feature 3, RC8): the claim's spec.loop.checks and the repository's checks.egress.
 	Checks bool `json:"checks,omitempty"`
+	// TestFirst starts every public task of the class with a tester run that writes the failing
+	// tests first (v3 feature 4, TF1); needs Checks and the repository's merge.contractCheck.
+	TestFirst bool `json:"testFirst,omitempty"`
 	// AllowedFiles: every changed path matches one of these regular expressions.
 	AllowedFiles []string `json:"allowedFiles,omitempty"`
 	// ProtectedFiles: no changed path matches one of these.
@@ -145,6 +148,16 @@ func (c Class) ReadsDiff(name string) bool {
 func validateClass(name string, cl Class, bad func(string, ...any)) {
 	if cl.Live && cl.Shadow {
 		bad("class %s: live and shadow never together (R32)", name)
+	}
+	if cl.TestFirst && (name == "docs-links" || name == "revert") {
+		bad("class %s: testFirst is refused: no behaviour to test (TO4)", name)
+	}
+	if cl.TestFirst && !cl.Checks {
+		bad("class %s: testFirst needs checks: true, the red check runs the toolchain (R17)", name)
+	}
+	if name == "review" && (cl.Live || cl.Shadow || cl.ReadsDiff(name) || len(cl.HoldoutChecks) > 0 || cl.MaxPerDay > 0 ||
+		cl.Monitor != nil || cl.Author != nil || cl.ReleaseAgeCheck != "") {
+		bad("class review: review takes checks and testFirst only (R17)")
 	}
 	if m := cl.Monitor; m != nil {
 		if w := m.FollowUpWindow.Duration; w < time.Hour || w > 720*time.Hour {

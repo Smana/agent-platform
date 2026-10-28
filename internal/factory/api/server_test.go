@@ -241,6 +241,9 @@ func TestRefusals(t *testing.T) {
 			b["task"] = map[string]any{"text": "a", "url": "https://github.com/Smana/cloud-native-ref/issues/1"}
 		}, "alice", http.StatusBadRequest},
 		"unknown role": {func(b map[string]any) { b["role"] = "merger" }, "alice", http.StatusBadRequest},
+		// TO1: the factory starts the test writer; a person's tester run would have no contract stage behind it.
+		"tester, a member": {func(b map[string]any) { b["role"] = "tester" }, "alice", http.StatusBadRequest},
+		"tester, an admin": {func(b map[string]any) { b["role"] = "tester" }, "admin", http.StatusBadRequest},
 		// R37 (owner default): internal data and triagers are the admins'.
 		"internal, a member":         {func(b map[string]any) { b["dataClass"] = "internal" }, "alice", http.StatusForbidden},
 		"triager, a member":          {func(b map[string]any) { b["role"] = "triager" }, "alice", http.StatusForbidden},
@@ -258,6 +261,14 @@ func TestRefusals(t *testing.T) {
 
 // T4/T5 (identity design §2, §7): an internal run has no direct GitHub or profile egress. The
 // AgentRun XRD refuses the claim too; this answers the caller before a reservation is taken.
+func TestATesterRunIsFactoryOnly(t *testing.T) {
+	in := RunRequest{Role: "tester", DataClass: "public"}
+	in.Task.Text = "x"
+	if got := validate(in); got != "tester_is_factory_only" {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestInternalRunsTakeNoEgressProfiles(t *testing.T) {
 	for name, c := range map[string]struct {
 		class    string

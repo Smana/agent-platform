@@ -229,13 +229,14 @@ func TestRunsLine(t *testing.T) {
 			}
 		}
 	}
-	// A tester is a reviewer: no trigger, and its verdict in place of "succeeded"; a failed one says so.
+	// A tester writes the tests (TO1): shown as a writer, with its trigger and its outcome, not a verdict; a reviewer
+	// shows its verdict in place of "succeeded", and a failed one says so.
 	s.Runs = []envelope.RunFact{
 		{ID: "t1", Role: "tester", Trigger: "ci", Outcome: "succeeded", Verdict: "changes", StartedAt: at(0), EndedAt: at(1)},
 		{ID: "t2", Role: "reviewer", Outcome: "failed", Verdict: "approve", StartedAt: at(0), EndedAt: at(1)},
 	}
 	got = card1(t, s, textOpts(now))
-	if !strings.Contains(got, "tester changes requested · 1 min → reviewer failed · 1 min\n") {
+	if !strings.Contains(got, "tester (CI fix) succeeded · 1 min → reviewer failed · 1 min\n") {
 		t.Errorf("tester and failed reviewer:\n%s", got)
 	}
 }
@@ -596,7 +597,7 @@ func TestCardShowsTheLastJudgeVerdict(t *testing.T) {
 	s.Status.LastJudge = &summary.JudgeVerdict{Verdict: "not_yet", Reason: "validate fails # x", Evidence: []string{"check:validate"}, At: n}
 	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
 	txt := card1(t, s, Options{Format: Text, Now: n, Rooms: rooms})
-	for _, w := range []string{"Judge", "not yet", "validate fails"} {
+	for _, w := range []string{"Judge", "not yet", "validate fails", "reported by the run"} {
 		if !strings.Contains(md, w) || !strings.Contains(txt, w) {
 			t.Errorf("no %q:\n%s\n%s", w, md, txt)
 		}

@@ -49,7 +49,7 @@ func (s *Server) roomFork(ctx context.Context, p authn.Principal, args json.RawM
 	var a forkArgs
 	if mcpwire.DecodeArgs(args, &a) != nil || a.Room == "" || a.At < 1 {
 		return nil, toolError("invalid_arguments: room is a room id; at is the last seq to copy, 1 or more; " +
-			"role is implementer, reviewer, tester or triager; egress names pypi, npm, golang or crates")
+			"role is implementer, reviewer or triager; egress names pypi, npm, golang or crates")
 	}
 	ack, err := s.mcpAct(ctx, p, a.Room, Action{Kind: "fork", Seq: a.At, Role: a.Role, PRURL: a.PRURL, EgressProfiles: a.Egress, Note: a.Note})
 	if err != nil {

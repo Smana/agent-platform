@@ -49,6 +49,10 @@ func TestUnpostedVerdicts(t *testing.T) {
 	if _, _, err := s.Append(ctx, verdictDraft(5, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz", Role: "implementer"})); err != nil {
 		t.Fatal(err)
 	}
+	// The tester writes tests since v3 feature 4: room_verdict is the reviewer's alone.
+	if _, _, err := s.Append(ctx, verdictDraft(9, envelope.Actor{Kind: envelope.ActorAgent, ID: "agent:7f3cq2xz", Role: "tester"})); err != nil {
+		t.Fatal(err)
+	}
 	// Each filter alone: every other column looks like room_verdict's.
 	harness := verdictDraft(6, reviewer)
 	harness.Origin = envelope.OriginHarness

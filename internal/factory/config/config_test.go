@@ -367,7 +367,7 @@ func TestBadConfigsFail(t *testing.T) {
 		"control percent negative":   {"controlPercent: 10", "controlPercent: -1", "triage.controlPercent must be 0..100"},
 		"no docs-links class":        {"classes: {docs-links: {shadow: true}, revert: {shadow: true}", "classes: {revert: {shadow: true}", "class docs-links is required (OD-8)"},
 		"no revert class":            {"classes: {docs-links: {shadow: true}, revert: {shadow: true}, ", "classes: {docs-links: {shadow: true}, ", "class revert is required (OD-8)"},
-		"review declared as a class": {"classes: {docs-links:", "classes: {review: {}, docs-links:", "review is the implicit class of everything else"},
+		"review declared as a class": {"classes: {docs-links:", "classes: {review: {live: true}, docs-links:", "review takes checks and testFirst only"},
 		// R32: a class is decided live or held in shadow, never both.
 		"live and shadow": {"docs-links: {shadow: true}", "docs-links: {live: true, shadow: true}", "class docs-links: live and shadow never together"},
 		// §5.1's arming and §6.4's rollback: the merge block is the gate's own config.

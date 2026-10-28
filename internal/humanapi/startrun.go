@@ -20,7 +20,7 @@ import (
 
 // runRoles are the roles a human starts (§1); egressProfile a profile's name.
 var (
-	runRoles      = map[string]bool{"implementer": true, "reviewer": true, "tester": true, "triager": true}
+	runRoles      = map[string]bool{"implementer": true, "reviewer": true, "triager": true}
 	egressProfile = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 

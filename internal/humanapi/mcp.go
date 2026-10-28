@@ -124,7 +124,7 @@ func (s *Server) mcpTools(p authn.Principal) []mcpTool {
 			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","text"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"text":{"type":"string","minLength":1,"maxLength":16384}}}`)},
 		{name: "room_fork", call: s.roomFork,
 			description: "Fork a room at a seq into a room you own, with a first run when role is set, as roomctl fork does.",
-			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","at"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"at":{"type":"integer","minimum":1},"role":{"type":"string","enum":["implementer","reviewer","tester","triager"]},"prUrl":{"type":"string"},"egress":{"type":"array","maxItems":8,"items":{"type":"string","enum":["pypi","npm","golang","crates"]}},"note":{"type":"string","maxLength":900}}}`)},
+			schema:      json.RawMessage(`{"type":"object","additionalProperties":false,"required":["room","at"],"properties":{"room":{"type":"string","pattern":"^[a-z2-7]{8}$"},"at":{"type":"integer","minimum":1},"role":{"type":"string","enum":["implementer","reviewer","triager"]},"prUrl":{"type":"string"},"egress":{"type":"array","maxItems":8,"items":{"type":"string","enum":["pypi","npm","golang","crates"]}},"note":{"type":"string","maxLength":900}}}`)},
 		{name: "issue_draft", call: s.issueDraftTool,
 			description: "Check a factory issue draft: the title `<area>: <what is wrong>`, the body's sections ## What is wrong, ## What it should be, " +
 				"## Acceptance check, no secret; hidden characters are stripped. It files nothing: show the draft to the developer, then use issue_file.",

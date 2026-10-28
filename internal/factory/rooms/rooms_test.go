@@ -143,8 +143,8 @@ func TestLastVerdict(t *testing.T) {
 	}
 	tester := verdict(9, envelope.ActorAgent, "agent:tttttttt", "tttttttt", "approve", "Tests pass.")
 	tester.Actor.Role = "tester"
-	if v, ok := LastVerdict([]envelope.Event{tester}, "tttttttt"); !ok || v.Verdict != "approve" {
-		t.Fatal("a tester's verdict counts")
+	if _, ok := LastVerdict([]envelope.Event{tester}, "tttttttt"); ok || verifier("tester") {
+		t.Fatal("a tester writes tests since v3 feature 4: room_verdict is the reviewer's alone")
 	}
 	again := verdict(8, envelope.ActorAgent, "agent:rrrrrrrr", "rrrrrrrr", "approve", "Now it is tested.")
 	if v, _ := LastVerdict([]envelope.Event{agent, other, again}, "rrrrrrrr"); v.Verdict != "approve" || v.Seq != 8 {
@@ -173,7 +173,7 @@ func TestLastVerdictIsBoundToTheRunByTheBroker(t *testing.T) {
 		"a task_state": func(e *envelope.Event) {
 			e.Payload = envelope.Must(envelope.MessagePayload{Kind: envelope.KindTaskState, Verdict: "approve", Commit: "4be1c9d"})
 		},
-		// room_verdict serves reviewers and testers only; the role is the broker's, from the run.
+		// room_verdict serves reviewers only; the role is the broker's, from the run.
 		"an implementer's": func(e *envelope.Event) { e.Actor.Role = "implementer" },
 		"no role":          func(e *envelope.Event) { e.Actor.Role = "" },
 	} {

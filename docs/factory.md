@@ -68,10 +68,11 @@ stateDiagram-v2
   Received --> Rejected: text too long, daily task cap
   Received --> Triaged: tier, template, class, budget
   Triaged --> Queued: room created
-  Queued --> Implementing: implementer or triager run
-  Queued --> Reviewing: reviewer or tester run
+  Queued --> Implementing: tester, implementer or triager run
+  Queued --> Reviewing: reviewer run
   Queued --> AwaitingHuman: human commit, pull request ended
-  Implementing --> Queued: next verifier, lost sandbox resumed
+  Implementing --> Queued: tester ended, next verifier, lost sandbox resumed
+  Implementing --> Escalated: the tester's branch was not its alone (contract_invalid), the implementer disputes the contract (contract_disputed)
   Implementing --> AwaitingCI: solo template done
   Implementing --> AwaitingHuman: revision a maintainer asked for
   Implementing --> NoOp: no pull request, nothing to change
@@ -123,6 +124,61 @@ transition sets it: an auto-merge goes from `AutoMerging` to `Verifying`. A task
 `caps.activeTasks` while it is `Implementing`, `Reviewing`, `AwaitingCI`, `AutoMerging` or
 `Verifying`.
 
+### The tester stage
+
+A class with `testFirst: true` starts every public task with a **tester** run on `agent/<task>`,
+after the scoper if there is one and before the implementer. The tester writes failing tests only
+and never pushes: the harness checks that they fail on the current code, then pushes them as one
+commit that carries `Agent-Contract`, `Agent-Run`, an `Agent-Contract-File` per test file and an
+`Agent-Contract-Id` per test. It runs on the task's own model and caps, and on the task's own run
+slot, like the implementer. An internal task never starts one.
+
+```mermaid
+flowchart LR
+  scope["scoper (if any)"] --> tester["tester run"]
+  tester -->|"GitHub: one push, the agents App's, one creation"| read{"the commit's trailers<br/>name this run, files and ids"}
+  tester -->|"no push recorded"| none["no contract:<br/>the implementer works without one"]
+  read -->|yes| contract["status.contract"]
+  read -->|no| invalid["Escalated: contract_invalid"]
+  contract --> impl["implementer, every brief carries the contract"]
+  none --> impl
+  impl --> gate["merge gate: rows 2b and 2c"]
+```
+
+The factory reads the contract from GitHub alone and trusts nothing about who pushed it: the
+credential helper stays in the sandbox, so a push by the agents App may be the model's own, and
+the room (a note, a handoff, a commit subject) decides nothing. It adopts a commit only when GitHub
+records one branch creation by the agents App and the commit has the fixed subject
+`test: the test contract`, trailers naming this run, and a single parent that is on the default
+branch (an ancestor of its head: a parent the model crafted is not). Read at that parent, never at
+the change, `.github/agent-checks.yaml`'s `tests.paths` must hold every file of the commit, none may
+be under `tests.runner`, each must be a plain addition or edit (no delete, rename or copy), and the
+`Agent-Contract-File` trailers must be exactly those files. Anything else (a second push, a push by
+anyone else, a trailer naming another run) is `contract_invalid`. A contract of more than 50 files
+or ids, or one longer than 512 bytes, is `contract_too_large`: the Task records at most that, and
+never a truncated contract.
+
+The tester's end note only names a category (`contract_ready`, `not_testable`, `contract_not_red`,
+`contract_outside_tests`), a hint counted in `agent_factory_contracts_total`. With no push recorded
+the task has no contract: a `contract_ready` note waits up to five minutes for GitHub to record the
+push, and any other end (or a failed run) lets the implementer start without one. A lost sandbox
+resumes the tester; a person's stop or an exhausted budget escalates as for any run.
+
+That the tests are red on the base is not checked here. It stays proven at merge by the required
+contract check (row 2b, `merge.contractCheck`): a forged or vacuous contract costs one implementer
+run and then ends `ci_red` or with a maintainer.
+
+Every implementer brief of a task with a contract carries it (the first, each revision, each CI
+fix, a resumed run's): the commit, its files and up to 50 test ids between `CONTRACT-<nonce>` fence
+lines, the rule that the pull request may not change them, and the dispute path. An implementer
+that hands off to the `tester` role says the tests are wrong: the task escalates as
+`contract_disputed`, with no dispute round.
+
+The tester is not a verifier any more. A template that lists `tester` loads without it for one
+release and logs a warning; `room_verdict` is the reviewer's alone, and the run API and the human
+API refuse a `tester` run (`tester_is_factory_only`): the factory starts the test writer, never a
+person.
+
 ### When the factory waits for you
 
 The room page and `roomctl status` show the reason and the next step below; the factory's issue
@@ -144,6 +200,21 @@ starts once the room and the factory are free.
 | `waiting_room_busy` | Another run in the room is still going. Next step: end it, or wait for it |
 | `rereview_verdict_stale` | The head moved after the approval, so a new review run is queued |
 
+**Implementing:** a tester run ended and GitHub has not recorded its push yet: nothing to do.
+
+| Reason | Why |
+|---|---|
+| `contract_push_unrecorded` | The tester's harness said the contract was ready, and GitHub's activity does not show the push yet; the task waits up to five minutes, then goes on without a contract |
+
+**Escalated** by the tester stage: a maintainer reads the room, then decides whether to retry
+(`/factory retry`) or close it.
+
+| Reason | Why |
+|---|---|
+| `contract_invalid` | The tester's branch was not the tester's alone (another login, a second push, a history too long to read) or its contract commit was malformed (trailers naming another run, no file or id, over 50 files or ids) |
+| `contract_too_large` | The contract names more than 50 files or test ids, or a path or id over 512 bytes |
+| `contract_disputed` | The implementer handed off to the `tester` role: it says the tests are wrong |
+
 **AwaitingCI:** the merge gate reads the pull request. Next step: nothing to do.
 
 | Reason | Why |
@@ -154,6 +225,7 @@ starts once the room and the factory are free.
 | `reentered_head_reported` | Back from a `head_unreported` hand-off: the room now reports the head as a commit of the task's run |
 | `reentered_ci_green` | Back from a `ci_cancelled` hand-off: the required checks are now green on the same head |
 | `head_moved` | A commit landed after the decision; the new head is decided again |
+| `contract_unread` | The factory has not yet read which files changed since the test contract (row 2c) |
 
 **AwaitingHuman:** the pull request is a maintainer's. Next step, unless the row says otherwise:
 a maintainer reviews and merges it. The repository's ruleset blocks a plain merge, so a maintainer
@@ -195,6 +267,8 @@ with admin ticks "bypass rules" on the pull request, or runs
 | `not_owned` | The repository's `.github/agent-factory.yaml` does not name this factory ([the fence](#the-ownership-fence)) |
 | `shadow_would_arm` | Every check holds and the class is in shadow. Next step: merge or close it |
 | `ci_cancelled` | A required check was cancelled and re-running it did not settle it |
+| `contract_check_unset` | The task has a contract but `merge.contractCheck` is no longer set: nothing proves it, so a maintainer decides |
+| `contract_modified` | The pull request changes a test the tester wrote as the task's contract (row 2c): a maintainer reads the change, then merges it or sends the task back |
 
 A holdout's workflow file must be a gate path (policy-bot's gate paths cover it), otherwise a pull
 request can edit the workflow and post SUCCESS itself; the host's gate-coverage check enforces it.
@@ -278,7 +352,7 @@ classifier is called: every task takes the static `standard` tier. `triage.contr
 |---|---|
 | `light`, `standard`, `frontier` | `model` (a gateway logical name: `agent-default`, `tier-light`, `tier-standard`, `tier-frontier`), `runMinutes` (1–480), `runTokens` (1–5,000,000), `taskTokens` (at least `runTokens`), and `runUSD`, `taskUSD` |
 
-A template is a team: its roles (`implementer`, `reviewer`, `tester`, `triager`) run one after
+A template is a team: its roles (`implementer`, `reviewer`, `triager`) run one after
 another on one branch, and only the implementer writes. `templates.<name>.roles` and
 `maxReviewRounds` are config; the four names are fixed by the CRD.
 
@@ -289,6 +363,10 @@ another on one branch, and only the implementer writes. `templates.<name>.roles`
 | `pair` | Class `docs-links` at `frontier`, or any other class below `frontier` |
 | `trio` | Any other class at `frontier` |
 
+The `tester` role is the test writer of a `testFirst` class, started by the factory and never listed in
+a template (see [the tester stage](#the-tester-stage)). A template that still lists it loads without
+it, with a warning, for one release; `trio` is then the pair, and a later release refuses the file.
+
 A template whose only role is `triager` proposes and never writes: its proposal stays in the room
 until a maintainer publishes it as a new issue. The reviewer runs on the other tier than the
 implementer: `standard` after `frontier`, `frontier` otherwise. It takes that tier's caps and, unless
@@ -297,7 +375,7 @@ tier-frontier}` reviews every `pair` task on `tier-frontier` whatever the implem
 
 A class is the kind of change a task is predicted to make, from the issue's `class:<name>` label,
 a schedule's `class`, or else `review`. `classes` must declare `docs-links` and `revert`; `review`
-is implicit and never declared. Each class is `live` (auto-merges), `shadow` (decided, never
+is implicit, and declared only to give every other task `checks` and `testFirst` (it takes nothing else). Each class is `live` (auto-merges), `shadow` (decided, never
 merged), or neither (a label only).
 
 ## Budgets
@@ -603,6 +681,8 @@ shadow decision. With no class `live` or `shadow` it reads nothing and hands off
 | 1 | The secret scan (`merge.leakScanCheck`) is not red | Escalated, `secret_scan_red` |
 | 2a | The repository is this factory's ([the fence](#the-ownership-fence)) | `not_owned` |
 | 2 | Every `merge.requiredChecks` is green | Red: a fix run, up to `merge.fixRuns`, then `ci_red`. Cancelled: re-run, up to `merge.checkReruns`. Pending: wait |
+| 2b | A task with a contract: `merge.contractCheck` is green too, as a required check. On a task without one the job only reports | As row 2: red is a fix run, pending waits |
+| 2c | A task with a contract: no contract file changed since the tester's commit (GitHub's compare of that commit and the head; a head that is not its descendant, such as after a rebase, or more than 100 commits from it, counts every contract file as changed). Read once CI is green | Unread: wait, `contract_unread`. Changed: `contract_modified`, never a fix run |
 | 3 | `policy-bot: main` is green, posted by `merge.policyBotLogin` | `policy_absent`, `policy_pending`, `gate_path` |
 | 4 | The author is `agentsLogin`, and no maintainer approved it | `not_agent_authored`, `maintainer_approved` |
 | 5 | The class is `live` or `shadow` | `class_unarmed` |
@@ -1024,6 +1104,7 @@ creating it twice is the dedup. Source: `api/factory/v1alpha1/task_types.go`.
 | `status.nextTrigger`, `status.nextRole` | Why the next run exists; the verifier it is for |
 | `status.handled` | GitHub review and comment ids already acted on |
 | `status.configHash` | The config that triaged the task |
+| `status.contract` | `runId`, `commit` (40 hex), `files`, `ids` (1 to 50 each): the tester's commit as GitHub recorded it. Set once, when its push is read; every implementer run is held to it |
 | `status.scope` | `state` (`ready`, `question`, `assumed`, `missing`, `failed`) and `seq` (the scope's handoff): the scoper's outcome, kept when the task stops |
 | `status.split` | `state` (`proposed`, `approved`, `declined`, `superseded`, `expired`, `ignored`), `seq` (the split's handoff), `of`, `approvedBy` (`github:<login>`, every part's payer) and `children[]` (`index`, `issue`, `task`, `outcome`: `landed`, `dropped`, `reverted`) |
 | `status.lastActivity` | The running run's last room event, for stuck detection |
@@ -1074,9 +1155,9 @@ Each `repositories` entry:
 | `name` | `owner/name` | Required |
 | `maintainers` | GitHub logins that may label, retry and review on this repository; never a bot | Required |
 | `triggerLabel` | The start label, `factory/ready` | Required |
-| `classes` | `<name>: {live, shadow, checks, author: {adopt: {logins, branches}}, releaseAgeCheck, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `author.adopt` and the semver shapes: see [adopted classes](#adopted-classes); `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
+| `classes` | `<name>: {live, shadow, checks, testFirst, author: {adopt: {logins, branches}}, releaseAgeCheck, allowedFiles, protectedFiles, modifyOnly, maxPatchFiles, maxModifiedLines, diffShape, holdoutChecks, oracle: {probe: dead-links, workflow, maxFindings ≤ 16}, maxPerDay, monitor: {oracleRuns, flux: {source, within}, followUpWindow}}`; `oracle` needs `holdoutChecks`, `diffShape: links-only`, `modifyOnly: true`, a non-empty `allowedFiles`, and, when `maxModifiedLines` is set, `maxModifiedLines >= 2 x oracle.maxFindings` (a retarget changes two lines); `live` and `shadow` never both; `checks: true` runs the repository's checks on the class's public implementer and reviewer runs (`spec.loop.checks`); an absent condition is not checked; `allowedFiles` patterns anchored `^…$`; `author.adopt` and the semver shapes: see [adopted classes](#adopted-classes); `docs-links` and `revert` required and hold `diffShape: links-only` built in; `review` never declared | Required |
 | `checks` | `{egress: [profiles]}`: what a check-enabled run requests beyond `github`, at most 4 of `pypi`, `npm`, `golang`, `crates`. The repository's `.github/agent-checks.yaml` never names egress | None: github only |
-| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off) | Required |
+| `merge` | `requiredChecks`, `verifyChecks`, `leakScanCheck` (in both lists), `contractCheck` (the job that runs a task's test contract: not one of `requiredChecks`, and set whenever a class has `testFirst`), `policyBotLogin`, `mergerLogin` (bots), `autoMergesPerDay`, `fixRuns`, `checkReruns`, `verifyFor`, `revertWindow`, `awaitingCIFor`, `breaker: {window, maxReverts, maxFollowUps}` (`awaitingCIFor` and `maxFollowUps` optional, 0 is off) | Required |
 | `schedules` | `[{name, cron, class, text, dataClass?, probe?, probeAuthor?}]`; `probe` is `renovate-red` or `dead-links`, and `probeAuthor` the login whose open PRs it reads. `dead-links` needs its class to declare the oracle, finds nothing while the class is off or a task of the schedule is open, and reads the newest two runs of the oracle's workflow on `main`. Names are unique across every repository | None; `probeAuthor` defaults to `renovate[bot]` |
 
 `api.repositories`, the run-request API's allowlist, is the entries' names.

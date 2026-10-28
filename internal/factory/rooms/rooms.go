@@ -113,20 +113,20 @@ func runEnd(e envelope.Event, runID string) (RunEnd, bool) {
 	return RunEnd{}, false
 }
 
-// verifier is a role room_verdict serves: only a reviewer's or a tester's verdict counts.
-func verifier(role string) bool { return role == "reviewer" || role == "tester" }
+// verifier is a role room_verdict serves: only a reviewer's verdict counts (the tester writes tests since v3 feature 4).
+func verifier(role string) bool { return role == "reviewer" }
 
 // commitRE is room_verdict's own commit rule.
 var commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
-// Verdict is a reviewer or tester run's verdict. Text is the agent's, untrusted: a brief quotes it
+// Verdict is a reviewer run's verdict. Text is the agent's, untrusted: a brief quotes it
 // sanitised and fenced.
 type Verdict struct {
 	Verdict, Text, Commit, RunID string
 	Seq                          int64
 }
 
-// LastVerdict is what the factory acts on after a reviewer or tester run (§3): that run's own
+// LastVerdict is what the factory acts on after a reviewer run (§3): that run's own
 // newest verdict, recorded by the agent with room_verdict. Humans steer through GitHub reviews,
 // never through a verdict in the room (owner, 2026-09-27, R36). The run is bound by what the broker
 // stamps from the run's credential, never by the payload (ruling TB). A malformed newest verdict

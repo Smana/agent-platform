@@ -98,13 +98,13 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 		NotOwned: r.Owned == nil || !r.Owned(t.Spec.Repository)}
 	cl := gateOf(r.repo(t), t.Spec.PredictedClass)
 	adopted := cl.Adopted()
-	if adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+	if adopted && CIState(checks, requiredFor(r.repo(t), t)) == "SUCCESS" {
 		// Read once, before any decision that could arm or shadow: the evidence never passes unread.
 		if in.Adoption, err = r.adoption(ctx, t, pr, cl); err != nil {
 			return err
 		}
 	}
-	if !adopted && CIState(checks, r.repo(t).Merge.RequiredChecks) == "SUCCESS" {
+	if !adopted && CIState(checks, requiredFor(r.repo(t), t)) == "SUCCESS" {
 		// An adopted task has no room and no run (M12): the head is the pull request's, as read.
 		// R02/R03: the rule can only speak about a commit the room reported and the verifiers
 		// approved. Neither read matters while CI decides on its own, so they wait for green.
@@ -113,6 +113,18 @@ func (r *Reconciler) awaitingCI(ctx context.Context, t *v1alpha1.Task) error {
 			return err
 		}
 		in.Verifiers = verifiers(t)
+		if c := t.Status.Contract; c != nil {
+			// Row 2c: one compare per decision, read once CI is green. A head that is not the contract's
+			// descendant (a rebase), or too many files to list, changed every contract file: fail closed.
+			files, err := r.merger(ctx).ChangedFiles(ctx, c.Commit, pr.HeadSHA)
+			switch {
+			case errors.Is(err, forge.ErrNotDescendant), errors.Is(err, forge.ErrDiffTooLarge):
+				files = c.Files
+			case err != nil:
+				return err
+			}
+			in.Contract = ContractRead{Read: true, Changed: files}
+		}
 	}
 	d := DecideArm(in)
 	if (d.Verdict == "arm" || d.Verdict == "shadow") && (r.repo(t).Classes[t.Spec.PredictedClass].ReadsDiff(t.Spec.PredictedClass) ||
@@ -294,7 +306,7 @@ func (r *Reconciler) reenter(ctx context.Context, t *v1alpha1.Task, pr forge.PR)
 		return false, err
 	}
 	if why == "ci_cancelled" {
-		if CIState(c, r.repo(t).Merge.RequiredChecks) != "SUCCESS" {
+		if CIState(c, requiredFor(r.repo(t), t)) != "SUCCESS" {
 			return false, nil
 		}
 		r.backToGate(t, why, "reentered_ci_green", pr.HeadSHA)
@@ -576,12 +588,12 @@ func eventCommit(e envelope.Event) string {
 	return ""
 }
 
-// verifiers are the task's reviewer and tester run records, each carrying the head it was
+// verifiers are the task's reviewer run records, each carrying the head it was
 // given (R03's input to DecideArm).
 func verifiers(t *v1alpha1.Task) []v1alpha1.RunRecord {
 	var out []v1alpha1.RunRecord
 	for _, rec := range t.Status.Runs {
-		if rec.Role == "reviewer" || rec.Role == "tester" {
+		if rec.Role == "reviewer" {
 			out = append(out, rec)
 		}
 	}
@@ -605,7 +617,7 @@ func failing(c forge.Checks, required []string) []string {
 func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
 	var ids []int64
 	for _, x := range c.Runs {
-		if x.State == "CANCELLED" && slices.Contains(r.repo(t).Merge.RequiredChecks, x.Name) {
+		if x.State == "CANCELLED" && slices.Contains(requiredFor(r.repo(t), t), x.Name) {
 			ids = append(ids, x.ID)
 		}
 	}
@@ -640,7 +652,7 @@ func (r *Reconciler) rerunCancelled(ctx context.Context, t *v1alpha1.Task, pr fo
 
 // fixCI: two fix runs, then escalate with the failure on the PR (§6.3).
 func (r *Reconciler) fixCI(ctx context.Context, t *v1alpha1.Task, pr forge.PR, c forge.Checks) error {
-	names := failing(c, r.repo(t).Merge.RequiredChecks)
+	names := failing(c, requiredFor(r.repo(t), t))
 	if t.Status.FixRuns >= r.repo(t).Merge.FixRuns {
 		narrateOn(t, pr.Number, narrate.CIExhausted(t, names))
 		return r.end(ctx, t, v1alpha1.PhaseEscalated, "ci_red")
@@ -835,7 +847,7 @@ func (r *Reconciler) mergeGreenRevert(ctx context.Context, t *v1alpha1.Task, pr 
 		return false, nil
 	}
 	checks, err := r.merger(ctx).PullRequestChecks(ctx, pr.Number)
-	if err != nil || CIState(checks, rc.Merge.RequiredChecks) != "SUCCESS" {
+	if err != nil || CIState(checks, requiredFor(rc, t)) != "SUCCESS" {
 		return false, err
 	}
 	switch err := r.merger(ctx).Merge(ctx, pr.NodeID, pr.HeadSHA); {
