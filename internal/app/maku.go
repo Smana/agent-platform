@@ -104,15 +104,21 @@ type Maku struct {
 // RunMaku runs one maku command (SP2 §8), its files under maku.Dir, roomctl's imported there
 // once, and its egress through httpx.
 func RunMaku(ctx context.Context, args []string, stdout io.Writer) error {
+	return runMaku(ctx, args, stdout, os.Stderr)
+}
+
+// runMaku is RunMaku with its stderr injected. A failed import is a warning: roomctl's files are a
+// convenience, and a developer can always configure and log in again.
+func runMaku(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	dir, err := maku.Dir()
 	if err != nil {
 		return err
 	}
-	if _, err := maku.ImportLegacy(filepath.Dir(dir)); err != nil {
-		return err
+	if _, err := maku.ImportLegacy(filepath.Dir(dir), stderr); err != nil {
+		_, _ = fmt.Fprintf(stderr, "maku: roomctl's config was not imported (%s): run maku configure and maku login if maku asks\n", maku.OneLine(err.Error()))
 	}
 	stream := httpx.NewStreaming(makuTimeout, nil) // a watch lasts as long as the developer wants it
-	return Maku{Dir: dir, HC: httpx.New(makuTimeout, nil), Stream: stream, Out: stdout}.Run(ctx, args)
+	return Maku{Dir: dir, HC: httpx.New(makuTimeout, nil), Stream: stream, Out: stdout, Err: stderr}.Run(ctx, args)
 }
 
 // flags parses args with fs, flags anywhere among the positional arguments, as
@@ -184,13 +190,18 @@ func (r Maku) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		home, _, herr := r.homeAndCwd()
+		home, cwd, herr := r.homeAndCwd()
 		if herr != nil {
 			return herr
 		}
+		top, terr := repoTop(ctx, cwd)
+		if terr != nil {
+			top = "" // outside a repository: no project-scoped entry to check
+		}
 		return maku.Doctor{Config: cfg, HC: r.HC, TokenPath: tokPath,
 			SkillDirs: dirs, Version: version.Version,
-			OpenCodeConfigs: maku.OpenCodeConfigs(home), ServiceStart: opencodeServiceStart(ctx)}.Run(ctx, r.Out)
+			OpenCodeConfigs: maku.OpenCodeConfigs(home), ServiceStart: opencodeServiceStart(ctx),
+			LegacyMCP: maku.LegacyEntries(home, top)}.Run(ctx, r.Out)
 	}
 	if cmd == "mcp" {
 		return r.mcp(ctx, cfg, tokPath, args)

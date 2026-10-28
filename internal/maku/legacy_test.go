@@ -3,8 +3,10 @@
 package maku
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,7 +79,7 @@ func TestImportLegacy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
 			tc.setup(t, base)
-			got, err := ImportLegacy(base)
+			got, err := ImportLegacy(base, io.Discard)
 			if err != nil || got != tc.want {
 				t.Fatalf("ImportLegacy = %v, %v; want %v, nil", got, err, tc.want)
 			}
@@ -90,14 +92,49 @@ func TestImportLegacy(t *testing.T) {
 func TestImportLegacyRunsOnce(t *testing.T) {
 	base := t.TempDir()
 	putFile(t, filepath.Join(base, "roomctl", "config.json"), `{"url":"https://a"}`)
-	if ok, err := ImportLegacy(base); !ok || err != nil {
+	if ok, err := ImportLegacy(base, io.Discard); !ok || err != nil {
 		t.Fatalf("first import = %v, %v", ok, err)
 	}
 	putFile(t, filepath.Join(base, "roomctl", "config.json"), `{"url":"https://b"}`)
-	if ok, err := ImportLegacy(base); ok || err != nil {
+	if ok, err := ImportLegacy(base, io.Discard); ok || err != nil {
 		t.Fatalf("second import = %v, %v; want false, nil", ok, err)
 	}
 	if got := read(t, filepath.Join(base, "maku", "config.json")); got != `{"url":"https://a"}` {
 		t.Fatalf("config = %s, want the first import's", got)
+	}
+}
+
+// Two first runs at once: the one that loses the rename finds maku's directory full and reports
+// that nothing was imported, not an error.
+func TestImportLegacyLosesARaceCleanly(t *testing.T) {
+	base := t.TempDir()
+	putFile(t, filepath.Join(base, "roomctl", "config.json"), `{"url":"https://a"}`)
+	won := func() { putFile(t, filepath.Join(base, "maku", "config.json"), `{"url":"https://winner"}`) }
+	if ok, err := importLegacy(base, io.Discard, won); ok || err != nil {
+		t.Fatalf("losing import = %v, %v; want false, nil", ok, err)
+	}
+	if got := read(t, filepath.Join(base, "maku", "config.json")); got != `{"url":"https://winner"}` {
+		t.Fatalf("config = %s, want the winner's", got)
+	}
+}
+
+// A symlinked file is not followed: the developer is told it was not imported, so a second login
+// is no surprise.
+func TestImportLegacyNotesASkippedSymlink(t *testing.T) {
+	base := t.TempDir()
+	putFile(t, filepath.Join(base, "elsewhere", "token.json"), `{"refresh_token":"r"}`)
+	putFile(t, filepath.Join(base, "roomctl", "config.json"), `{}`)
+	if err := os.Symlink(filepath.Join(base, "elsewhere", "token.json"), filepath.Join(base, "roomctl", "token.json")); err != nil {
+		t.Fatal(err)
+	}
+	var note strings.Builder
+	if ok, err := ImportLegacy(base, &note); !ok || err != nil {
+		t.Fatalf("ImportLegacy = %v, %v", ok, err)
+	}
+	if _, err := os.Lstat(filepath.Join(base, "maku", "token.json")); !os.IsNotExist(err) {
+		t.Fatalf("the symlink was imported: %v", err)
+	}
+	if got := note.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, "token.json") || !strings.Contains(got, "symlink") {
+		t.Fatalf("note = %q, want one line naming token.json as a symlink", got)
 	}
 }

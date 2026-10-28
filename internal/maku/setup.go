@@ -34,6 +34,9 @@ type Agent struct {
 	// /factory; empty for an agent with none.
 	CommandDir, CommandProjectDir string
 	Note                          string // printed after setup: what the agent still needs
+	// Remove and RemoveProject drop the factory entry through the agent's CLI; nil means the
+	// developer deletes it from the config file.
+	Remove, RemoveProject []string
 }
 
 const (
@@ -69,9 +72,11 @@ const (
 //     (.github/skills, ~/.copilot/skills)
 var Agents = map[string]Agent{
 	"claude": {Name: "claude",
-		Add:        []string{"claude", "mcp", "add", "--scope", "user", "factory", "--", "{CMD}", "mcp"},
-		AddProject: []string{"claude", "mcp", "add", "--scope", "project", "factory", "--", "{CMD}", "mcp"},
-		Snippet:    mcpServersJSON, SnippetProject: mcpServersJSON,
+		Remove:        []string{"claude", "mcp", "remove", "--scope", "user", "factory"},
+		RemoveProject: []string{"claude", "mcp", "remove", "--scope", "project", "factory"},
+		Add:           []string{"claude", "mcp", "add", "--scope", "user", "factory", "--", "{CMD}", "mcp"},
+		AddProject:    []string{"claude", "mcp", "add", "--scope", "project", "factory", "--", "{CMD}", "mcp"},
+		Snippet:       mcpServersJSON, SnippetProject: mcpServersJSON,
 		SnippetPath: "~/.claude.json", SnippetProjectPath: ".mcp.json",
 		SkillDir: "~/.claude/skills", SkillProjectDir: ".claude/skills",
 		CommandDir: "~/.claude/commands", CommandProjectDir: ".claude/commands"},
@@ -83,14 +88,17 @@ var Agents = map[string]Agent{
 		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills",
 		CommandDir: "~/.config/opencode/commands", CommandProjectDir: ".opencode/commands"},
 	"codex": {Name: "codex",
+		Remove:  []string{"codex", "mcp", "remove", "factory"},
 		Add:     []string{"codex", "mcp", "add", "factory", "--", "{CMD}", "mcp"},
 		Snippet: codexTOML, SnippetProject: codexTOML,
 		SnippetPath: "~/.codex/config.toml", SnippetProjectPath: ".codex/config.toml",
 		SkillDir: "~/.agents/skills", SkillProjectDir: ".agents/skills"},
 	"gemini": {Name: "gemini",
-		Add:        []string{"gemini", "mcp", "add", "--scope", "user", "factory", "{CMD}", "mcp"},
-		AddProject: []string{"gemini", "mcp", "add", "--scope", "project", "factory", "{CMD}", "mcp"},
-		Snippet:    mcpServersJSON, SnippetProject: mcpServersJSON,
+		Remove:        []string{"gemini", "mcp", "remove", "--scope", "user", "factory"},
+		RemoveProject: []string{"gemini", "mcp", "remove", "--scope", "project", "factory"},
+		Add:           []string{"gemini", "mcp", "add", "--scope", "user", "factory", "{CMD}", "mcp"},
+		AddProject:    []string{"gemini", "mcp", "add", "--scope", "project", "factory", "{CMD}", "mcp"},
+		Snippet:       mcpServersJSON, SnippetProject: mcpServersJSON,
 		SnippetPath: "~/.gemini/settings.json", SnippetProjectPath: ".gemini/settings.json",
 		SkillDir: "~/.gemini/skills", SkillProjectDir: ".gemini/skills",
 		Note: "gemini connects a stdio server only in a trusted folder: accept its trust dialog the first time you run gemini there (saved in ~/.gemini/trustedFolders.json)."},
@@ -248,6 +256,9 @@ func (s Setup) Do(ctx context.Context) error {
 				return fmt.Errorf("%s: %w", strings.Join(argv, " "), err)
 			}
 			line = "the factory MCP server is already registered: " + strings.Join(argv, " ") + " refused a duplicate, which is fine"
+			if p := s.resolve(path); legacyCommand(p) {
+				line = LegacyEntry{Agent: a, Project: s.Project, Path: p}.Fix()
+			}
 		}
 		if _, err := fmt.Fprintln(s.Out, line); err != nil {
 			return err
@@ -428,3 +439,105 @@ func (s Setup) print(argv []string, snippet, path, skillDir, warn string) error 
 	_, err := fmt.Fprintf(s.Out, "\nsetup installs the factory-handoff skill in %s\n%s%s", skillDir, extra, s.notes(warn))
 	return errors.Join(append(errs, err)...)
 }
+
+// LegacyEntry is an agent's factory MCP entry that still runs roomctl. `maku setup` cannot replace
+// it, since the agent's CLI refuses a duplicate name, and it breaks once roomctl is gone.
+type LegacyEntry struct {
+	Agent   Agent
+	Project bool
+	Path    string // the config file that holds it
+}
+
+// Fix is one line: where the stale entry is, and the commands that replace it with maku's.
+func (e LegacyEntry) Fix() string {
+	rm := e.Agent.Remove
+	if e.Project {
+		rm = e.Agent.RemoveProject
+	}
+	step := "delete the factory entry from " + e.Path
+	if len(rm) > 0 {
+		step = "run " + strings.Join(rm, " ")
+	}
+	setup := "maku setup " + e.Agent.Name
+	if e.Project {
+		setup += " --project"
+	}
+	return fmt.Sprintf("%s: the factory MCP server still runs roomctl, maku's old name: %s, then %s", e.Path, step, setup)
+}
+
+// LegacyEntries is every agent config, under home and under the repository top dir (skipped when
+// empty), whose factory entry still runs roomctl.
+func LegacyEntries(home, dir string) []LegacyEntry {
+	var out []LegacyEntry
+	for _, k := range slices.Sorted(maps.Keys(Agents)) {
+		a := Agents[k]
+		for _, project := range []bool{false, true} {
+			p := a.SnippetPath
+			if project {
+				p = a.SnippetProjectPath
+			}
+			s := Setup{Home: home, Dir: dir}
+			if p == "" || (dir == "" && !strings.HasPrefix(p, "~/")) {
+				continue
+			}
+			if r := s.resolve(p); legacyCommand(r) {
+				out = append(out, LegacyEntry{Agent: a, Project: project, Path: r})
+			}
+		}
+	}
+	return out
+}
+
+// legacyCommand reports whether the agent config at path has a factory entry whose command is
+// roomctl, in any of the shapes setup writes: mcpServers.factory.command (claude, gemini, cursor,
+// copilot), mcp.servers.factory.command as an array (opencode), or [mcp_servers.factory] (codex).
+// A file it cannot read or parse (JSON with comments) is not one.
+func legacyCommand(path string) bool {
+	b, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	if strings.HasSuffix(path, ".toml") {
+		return legacyTOML(string(b))
+	}
+	var cfg map[string]any
+	if json.Unmarshal(b, &cfg) != nil {
+		return false
+	}
+	for _, f := range []map[string]any{mapAt(mapAt(cfg, "mcpServers"), "factory"), mapAt(mapAt(mapAt(cfg, "mcp"), "servers"), "factory")} {
+		switch c := f["command"].(type) {
+		case string:
+			if isRoomctl(c) {
+				return true
+			}
+		case []any:
+			if len(c) > 0 {
+				if s, ok := c[0].(string); ok && isRoomctl(s) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// legacyTOML reads `command` in codex's [mcp_servers.factory] table, the one shape setup writes.
+func legacyTOML(doc string) bool {
+	in := false
+	for line := range strings.SplitSeq(doc, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			in = line == "[mcp_servers.factory]"
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "="); in && ok && strings.TrimSpace(k) == "command" {
+			if c, err := strconv.Unquote(strings.TrimSpace(v)); err == nil {
+				return isRoomctl(c)
+			}
+		}
+	}
+	return false
+}
+
+// isRoomctl is whether cmd runs the roomctl binary, by name or by path.
+func isRoomctl(cmd string) bool { return filepath.Base(cmd) == legacyName }

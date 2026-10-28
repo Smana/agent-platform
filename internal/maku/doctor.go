@@ -162,6 +162,8 @@ type Doctor struct {
 	// background service started (false: none runs); nil ServiceStart skips the check.
 	OpenCodeConfigs []string
 	ServiceStart    func() (time.Time, bool)
+	// LegacyMCP are the agents' factory entries that still run roomctl (LegacyEntries).
+	LegacyMCP []LegacyEntry
 }
 
 // Run prints one line per check and returns an error if any failed.
@@ -233,6 +235,9 @@ func (d Doctor) Run(ctx context.Context, out io.Writer) error {
 	d.skill(report, skip)
 	d.opencode(report, warn)
 	d.opencodeCodeMode(warn)
+	for _, e := range d.LegacyMCP {
+		warn("mcp", e.Fix())
+	}
 	if failed {
 		return errors.New("doctor: a check failed, see the fix above")
 	}
