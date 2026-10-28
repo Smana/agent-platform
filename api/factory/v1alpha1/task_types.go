@@ -696,6 +696,40 @@ type MonitorStatus struct {
 	// The verdict comment is on the pull request.
 	// +optional
 	Posted bool `json:"posted,omitempty"`
+	// RunLore's verdict on this fix (RA11), recorded by POST /v1/tasks/{task}/verification.
+	// +optional
+	Verification *Verification `json:"verification,omitempty"`
+	// The verification signal: healthy for resolved, regression for persisting, inconclusive when
+	// the window closed with no verdict. Set only for a merge whose origin is an internal
+	// principal that verifies (R12).
+	// +kubebuilder:validation:Enum="";healthy;regression;inconclusive
+	// +optional
+	Verified string `json:"verified,omitempty"`
+	// The follow-up issue filed when RunLore's verdict was persisting (RA12), filed once.
+	// +optional
+	FollowUpIssue int `json:"followUpIssue,omitempty"`
+}
+
+// Verification is an internal principal's verdict on the fix its proposal led to (RA11).
+type Verification struct {
+	// +kubebuilder:validation:Enum=resolved;persisting
+	Verdict string        `json:"verdict"`
+	Alert   VerifiedAlert `json:"alert"`
+	// When the principal checked.
+	CheckedAt metav1.Time `json:"checkedAt"`
+	// When the factory recorded it.
+	RecordedAt metav1.Time `json:"recordedAt"`
+	// The principal that sent it, system:<name>.
+	// +kubebuilder:validation:MaxLength=64
+	By string `json:"by"`
+}
+
+// VerifiedAlert is the alert a verdict is about.
+type VerifiedAlert struct {
+	// +kubebuilder:validation:MaxLength=256
+	Name          string `json:"name"`
+	FiringAtMerge bool   `json:"firingAtMerge"`
+	FiringNow     bool   `json:"firingNow"`
 }
 
 // PullRequestRef is the task's pull request and what happened to it.
