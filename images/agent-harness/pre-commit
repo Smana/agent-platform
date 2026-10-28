@@ -1,0 +1,33 @@
+#!/agent-server/.venv/bin/python
+"""Refuses a commit that changes the test contract's files (v3 feature 4, TF6, R15). A courtesy: --no-verify
+skips it, and the merge gate's row 2c is what binds. agent-run writes the contract file when the run resumes a
+branch that holds a contract commit; without it, or unreadable, every commit passes."""
+import json
+import os
+import subprocess
+import sys
+
+PATH = os.environ.get("AGENT_CONTRACT_FILE", "/workspace/.agent-contract.json")
+
+
+def main() -> int:
+    try:
+        with open(PATH) as f:
+            contract = json.load(f)
+        files, commit = set(contract["files"]), contract["commit"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    staged = subprocess.run(["git", "diff", "--cached", "--name-only", "-z", "--no-renames"],
+                            capture_output=True, text=True).stdout.split("\0")
+    hit = sorted(files.intersection(p for p in staged if p))
+    if not hit:
+        return 0
+    print("pre-commit: these files are the test contract, written by the tester; they may not change: %s\n"
+          "Restore them: git restore --staged --worktree --source=%s -- %s\n"
+          "If the contract is wrong, hand off to tester with room_handoff and say why: a maintainer decides."
+          % (", ".join(hit), commit, " ".join(hit)), file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

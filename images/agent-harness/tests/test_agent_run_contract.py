@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -369,3 +370,112 @@ class TesterEndTest(Origin, unittest.TestCase):
             end = agent_run.tester_end(self.env, "cid", self.base, dict(os.environ))
         self.assertEqual(end, "contract_not_red")
         self.assertEqual(len(self.sent), 1)
+
+
+class Contracted(Origin):
+    """The origin's agent/x holds a signed contract commit; the clone is on it, as a resumed implementer's."""
+    RED = RedCheckTest.RED
+
+    def setUp(self):
+        super().setUp()
+        self.commit(self.RED)
+        _, res = agent_run.red_check(dict(os.environ), self.base, dict(os.environ))
+        self.signed = agent_run.sign(self.env, self.base, res)
+        self.assertIsNone(agent_run.push_contract(self.env, self.signed))
+        git(self.repo, "fetch", "-q", "origin")
+        git(self.repo, "checkout", "-q", "-B", "agent/x", "origin/agent/x")
+        self.env = {**self.env, "ROLE": "implementer"}
+
+
+class ImplementerContractTest(Contracted, unittest.TestCase):
+    def test_a_resumed_branch_with_a_contract_writes_the_file(self):
+        c = agent_run.load_contract(self.env, True, self.base)
+        self.assertEqual(c, {"commit": self.signed, "files": ["t/test-name.sh"], "ids": ["t/test-name.sh"], "base": self.base})
+        with open(agent_run.CONTRACT_FILE) as f:
+            self.assertEqual(json.load(f), c)
+        self.assertEqual(os.stat(agent_run.CONTRACT_FILE).st_mode & 0o777, 0o644)
+
+    def test_no_contract_or_a_fresh_branch_writes_nothing(self):
+        self.assertIsNone(agent_run.load_contract(self.env, False, self.base))
+        self.assertFalse(os.path.exists(agent_run.CONTRACT_FILE))
+        git(self.repo, "checkout", "-q", "-B", "agent/y", "origin/main")
+        self.assertIsNone(agent_run.load_contract(self.env, True, self.base))
+        self.assertFalse(os.path.exists(agent_run.CONTRACT_FILE))
+        self.assertIsNone(agent_run.load_contract({**self.env, "ROLE": "reviewer"}, True, self.base))
+
+    def test_the_rules_name_the_files_ids_and_the_hold(self):
+        c = agent_run.load_contract(self.env, True, self.base)
+        rules = agent_run.contract_rules(self.env, c, None)
+        for word in ("t/test-name.sh", "may not change", "test-contract hold", self.signed[:12]):
+            self.assertIn(word, rules)
+
+    def test_the_testers_rules_name_the_paths_and_never_the_push(self):
+        tests = {"paths": ["t/"], "select": ["t/test-*.sh"]}
+        rules = agent_run.contract_rules({"ROLE": "tester"}, None, tests)
+        for word in ("t/", "t/test-*.sh", "never push", "test-contract red"):
+            self.assertIn(word, rules)
+        self.assertEqual(agent_run.contract_rules({"ROLE": "tester"}, None, None), "")
+        self.assertEqual(agent_run.contract_rules({"ROLE": "implementer"}, None, tests), "")
+
+
+HOOK = os.path.join(HERE, "pre-commit")
+
+
+class HookTest(Contracted, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.hooks = os.path.join(self.d, "hooks")
+        os.makedirs(self.hooks)
+        with open(os.path.join(self.hooks, "pre-commit"), "w") as f:  # the image's shebang is not on this machine
+            f.write("#!/bin/sh\nexec %s %s\n" % (sys.executable, HOOK))
+        os.chmod(os.path.join(self.hooks, "pre-commit"), 0o755)
+        self.contract = agent_run.load_contract(self.env, True, self.base)
+        mock.patch.dict(os.environ, {"AGENT_CONTRACT_FILE": agent_run.CONTRACT_FILE}).start()
+
+    def hook(self):
+        return subprocess.run([sys.executable, HOOK], cwd=self.repo, capture_output=True, text=True)
+
+    def stage(self, files):
+        self.write(self.repo, files)
+        git(self.repo, "add", "-A")
+
+    def test_a_staged_contract_file_is_refused_and_named(self):
+        self.stage({"t/test-name.sh": "exit 0\n"})
+        p = self.hook()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("t/test-name.sh", p.stderr)
+        self.assertIn("git restore --staged --worktree --source=%s" % self.signed, p.stderr)
+
+    def test_another_file_passes(self):
+        self.stage({"bin/greet": "#!/usr/bin/env bash\necho hi\n"})
+        self.assertEqual(self.hook().returncode, 0)
+
+    def test_no_contract_file_passes(self):
+        os.remove(agent_run.CONTRACT_FILE)
+        self.stage({"t/test-name.sh": "exit 0\n"})
+        self.assertEqual(self.hook().returncode, 0)
+
+    def test_an_unreadable_contract_file_passes(self):
+        with open(agent_run.CONTRACT_FILE, "w") as f:
+            f.write("not json")
+        self.stage({"t/test-name.sh": "exit 0\n"})
+        self.assertEqual(self.hook().returncode, 0)
+
+    def test_a_real_commit_is_refused_and_no_verify_passes_it(self):
+        self.stage({"t/test-name.sh": "exit 0\n"})
+        p = subprocess.run(["git", "-C", self.repo, "-c", "core.hooksPath=" + self.hooks, "commit", "-qm", "x"], capture_output=True, text=True)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("test contract", p.stderr)
+        subprocess.run(["git", "-C", self.repo, "-c", "core.hooksPath=" + self.hooks, "commit", "-q", "--no-verify", "-m", "x"], check=True)
+
+    def test_a_checkpoint_leaves_the_contract_files_out_and_still_pushes(self):
+        git(self.repo, "config", "core.hooksPath", self.hooks)
+        self.commit({"bin/mine": "x\n"}, "agent work")
+        self.write(self.repo, {"t/test-name.sh": "exit 0\n", "bin/greet": "#!/usr/bin/env bash\necho dirty\n"})
+        result = agent_run.checkpoint(self.env, time.monotonic() + 60)
+        self.assertIn("pushed", result)
+        status = git(self.repo, "status", "--porcelain")
+        self.assertEqual(status, "M t/test-name.sh", "modified in the work tree, not staged")
+        self.assertEqual(git(self.origin, "show", "agent/x:bin/greet"), "#!/usr/bin/env bash\necho dirty")
+        self.assertEqual(git(self.origin, "show", "agent/x:bin/mine"), "x")
+        self.assertEqual(git(self.origin, "show", "agent/x:t/test-name.sh"), self.RED["t/test-name.sh"].strip())

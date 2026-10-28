@@ -892,6 +892,41 @@ def tester_end(env: dict, cid: str, base: str, tc_env: dict, notes=None, start_s
     return end
 
 
+CONTRACT_FILE = "/workspace/.agent-contract.json"  # the implementer's contract, for the hook and the hold (F1-R9)
+
+
+def load_contract(env: dict, resumed: bool, base: str) -> dict | None:
+    """R15, F1-R9: the contract commit on a resumed implementer branch, kept for the hook and the hold."""
+    if env.get("ROLE") != "implementer" or not resumed or not base:
+        return None
+    try:
+        found = contract_module().contract_of(REPO_DIR, base)
+    except Exception as exc:  # noqa: BLE001 -- no contract read is no contract held by the harness; the gate still holds it
+        print("agent-run: contract not read: %s" % _short(exc, 200), file=sys.stderr, flush=True)
+        return None
+    if not found:
+        return None
+    contract = {"commit": found["commit"], "files": found["files"], "ids": found["ids"], "base": base}
+    fd = os.open(CONTRACT_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(fd, "w") as f:
+        json.dump(contract, f)
+    return contract
+
+
+def contract_rules(env: dict, contract: dict | None, tests: dict | None) -> str:
+    """The rules' Test contract section: the tester's (where to write, how to check) or the implementer's."""
+    if test_first(env) and tests:
+        return ("\nTest contract:\n- Write tests only under %s, matching %s. Commit them on your branch; never push: "
+                "the platform checks that they fail on the base and pushes them.\n- `test-contract red` runs the same "
+                "check on your last commit.\n- Never change the code under test.\n" % (", ".join(tests["paths"]), ", ".join(tests["select"])))
+    if contract:
+        return ("\nTest contract:\n- The tester's commit %s holds failing tests, the task's contract: %s. You may not "
+                "change these files; a commit hook refuses it and the merge gate hands a change to a human.\n- Ids: %s.\n"
+                "- `test-contract hold` runs them at your HEAD. Make them pass by changing the code.\n"
+                % (contract["commit"][:12], ", ".join(contract["files"]), ", ".join(contract["ids"][:20])))
+    return ""
+
+
 def _load(path: str) -> dict | None:
     try:
         with open(path) as f:
@@ -1172,7 +1207,6 @@ def clone(env: dict) -> bool:
 # v3 feature 4 (the test-first tester): a tester run given task text, not a pull request, writes the
 # contract. A verifier tester always has the pull request's URL (R25) and runs as before (F1-R1).
 TESTER_PUSHURL = "disabled://the-tester-never-pushes"
-CONTRACT_FILE = "/workspace/.agent-contract.json"  # the implementer's contract, for the hook and the hold (F1-R9)
 
 
 def test_first(env: dict) -> bool:
@@ -1485,6 +1519,9 @@ def checkpoint(env: dict, deadline: float) -> str:
                               timeout=left, env=env)
 
     git("add", "-A")
+    held = (_load(CONTRACT_FILE) or {}).get("files")  # F1-R14: the hook would refuse the commit, and the push with it
+    if isinstance(held, list) and held:
+        git("reset", "-q", "--", *[f for f in held if isinstance(f, str)])
     staged = git("diff", "--cached", "--quiet").returncode == 1
     unfit = _unfit(git) if staged else None
     committed = staged and not unfit
@@ -1650,10 +1687,18 @@ def main() -> int:
                 prefetched = prefetch(child_spans(provider, span))
             except Exception as exc:  # noqa: BLE001 -- the run goes on without the prefetch
                 print("agent-run: checks prefetch not started: %s" % exc, file=sys.stderr, flush=True)
+        contract = load_contract(env, resumed, base)
         with open(env["TASK_FILE"]) as t, open(env["RULES_FILE"]) as r:
             task = t.read()
             search = search_on(env)
-            request = build_request(env, task, r.read() + checks_rules(env, decl) + search_rules(search), span, search)
+            tests = None
+            if test_first(env) and base:
+                try:
+                    tests = contract_module().declaration(REPO_DIR, base)
+                except Exception:  # noqa: BLE001 -- Undeclared or unreadable: no tests section, the end fails closed
+                    tests = None
+            request = build_request(env, task, r.read() + checks_rules(env, decl) + contract_rules(env, contract, tests)
+                                    + search_rules(search), span, search)
         policy = loop_for(env)
         # The start is read before the conversation runs: a resumed pod keeps its first pod's. With no
         # file to keep, StepLog's steps span the first pod too, so the stall rule is spent, not guessed.
