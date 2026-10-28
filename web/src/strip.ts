@@ -11,6 +11,7 @@ import { bannerText } from "./approval-help";
 import { el, shortPrincipal } from "./controls";
 import { type Dashboard, expandDashboards } from "./dashboards";
 import type { Latest } from "./room-state";
+import { type RunStatus, statusLine } from "./run-status";
 import { ago, safeLink, type Summary, when } from "./summary";
 
 export { shortPrincipal };
@@ -80,6 +81,19 @@ function runText(st: Summary["status"], t: number): string {
   const r = st.run!;
   const m = [st.runModel, st.lastRunModel].find((x) => x?.run === r.id);
   return [r.role, r.id, m?.model, m?.effort, r.startedAt ? since(r.startedAt, t) : ""].filter(Boolean).join(" · ");
+}
+
+// statusOf is the room's run status: the summary's own state, phase and facts, and the viewer's approvals.
+function statusOf(i: StripInput, t: number): RunStatus {
+  const st = i.summary?.status;
+  const run = st?.run;
+  return statusLine({
+    state: st?.state || (i.sealed || i.sealedBy ? "stopped" : undefined), phase: st?.phase || i.phase, reason: st?.reason,
+    runRole: run?.role, runStartedAt: run?.startedAt, runPresent: !!run && (i.running ?? !run.endedAt),
+    pr: st?.pr?.number, issue: st?.issue?.number,
+    mine: i.approvals?.mine ?? 0, others: Math.max(0, (i.approvals?.total ?? 0) - (i.approvals?.mine ?? 0)),
+    step: i.summary?.step, now: t,
+  });
 }
 
 function chip(cls: string, ...body: (string | Node)[]): HTMLElement {
@@ -154,7 +168,12 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
   const head = el("div", { className: "strip-head" });
   const nowRow = el("div", { className: "strip-now" });
   const tail = el("div", { className: "strip-tail" });
-  root.append(head, tail, nowRow);
+  // The status leads: icon, colour and words, the first thing the page says about the room.
+  const statusRow = el("div", { className: "run-status" });
+  statusRow.setAttribute("role", "status");
+  statusRow.setAttribute("aria-live", "polite");
+  statusRow.hidden = true;
+  root.append(statusRow, head, tail, nowRow);
   header.append(root);
   const title = el("h1", { className: "strip-title" });
   const row = el("div", { className: "strip-chips" });
@@ -166,7 +185,7 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
   let onNow = (_seq: number) => {};
   let onApprovals = () => {};
   pill.onclick = () => onNeeds();
-  const shown = { head: "", now: "", tail: "" };
+  const shown = { head: "", now: "", tail: "", status: "" };
   return {
     update(i: StripInput): void {
       const t = now();
@@ -195,6 +214,27 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
         if (!pill.isConnected || pill.nextElementSibling !== conn) conn.before(pill);
       } else pill.remove();
       if (conn.textContent !== connection) conn.textContent = connection;
+      const status = statusOf(i, t);
+      const step = i.summary?.step;
+      // A line that waits for an approval takes you to its card; one that waits for a PR links it.
+      const toCard = status.kind === "waiting-you" || status.kind === "waiting-other";
+      const prUrl = status.kind === "waiting-pr" && isGitHubUrl(step?.url) ? step!.url! : "";
+      const statusKey = JSON.stringify([status, prUrl]);
+      if (statusKey !== shown.status) {
+        statusRow.hidden = !status.kind;
+        statusRow.dataset.kind = status.kind;
+        const icon = el("span", { className: "run-status-icon", textContent: status.icon });
+        icon.setAttribute("aria-hidden", "true"); // the words say it all
+        let words: HTMLElement;
+        if (toCard) {
+          words = el("a", { className: "run-status-words", href: "#needs-title", textContent: status.words });
+          words.onclick = (e) => { e.preventDefault(); onApprovals(); };
+        } else if (prUrl) {
+          words = el("a", { className: "run-status-words", href: prUrl, textContent: status.words, rel: "noopener noreferrer", target: "_blank" });
+        } else words = el("span", { className: "run-status-words", textContent: status.words });
+        statusRow.replaceChildren(icon, " ", words); // the space keeps the copied text readable; the flex row ignores it
+        shown.status = statusKey;
+      }
       const present = i.running ?? !!latest;
       const nowKey = JSON.stringify([latest, i.running, i.ran || !!st?.run, i.snap?.you.role, i.snap?.you.driver]);
       if (nowKey !== shown.now) {
@@ -220,7 +260,6 @@ export function mountStrip(header: HTMLElement, now: () => number = Date.now) {
           lines.push(el("div", { className: "waiting approvals-line" }));
           lines[lines.length - 1].append(a);
         }
-        const step = i.summary?.step;
         if (step && !sealedBy && !i.sealed) {
           // A PR-held room has nothing to decide here: say where to act, and link it.
           const line = el("div", { className: "waiting", textContent: "Your move: " });

@@ -701,3 +701,13 @@ table.rooms { width: calc(100% - 32px); margin: 0 16px; border-collapse: collaps
 .approval-details > summary { cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
 .approval-details > :not(summary) { margin-top: 6px; }
 .approvals-banner { font-weight: 500; }
+
+/* The run status (strip.ts): the first line of the strip. Icon and words say it; the accent bar
+   is the colour cue, never the only one. Maku weights: 700 for the bold line. */
+.run-status { display: flex; gap: 8px; align-items: baseline; font-size: 16px; line-height: 1.4; font-weight: 700; font-variant-numeric: tabular-nums; padding-left: 10px; border-left: 4px solid var(--brand-header-foreground); }
+.run-status[hidden] { display: none; }
+.run-status[data-kind="running"] { border-left-color: var(--primary); }
+.run-status[data-kind="waiting-you"], .run-status[data-kind="waiting-other"], .run-status[data-kind="waiting-pr"], .run-status[data-kind="waiting"] { border-left-color: var(--warning); }
+.run-status[data-kind="finished"], .run-status[data-kind="done"] { border-left-color: var(--success); }
+.run-status[data-kind="failed"] { border-left-color: var(--destructive); }
+.run-status-icon { flex: none; }

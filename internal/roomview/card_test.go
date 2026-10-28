@@ -139,10 +139,11 @@ func TestCardOmitsAbsentLines(t *testing.T) {
 func TestCardNoIssue(t *testing.T) {
 	s, n := foldGolden(t, "no_facts")
 	for _, f := range []Format{Markdown, Text} {
-		first := strings.SplitN(card1(t, s, Options{Format: f, Now: n, Rooms: rooms}), "\n", 2)[0]
-		want := "### 26zfnuxm"
+		// The status line leads, then (in Markdown) a blank line, then the heading.
+		lines := strings.SplitN(card1(t, s, Options{Format: f, Now: n, Rooms: rooms}), "\n", 4)
+		first, want := lines[2], "### 26zfnuxm"
 		if f == Text {
-			want = "26zfnuxm"
+			first, want = lines[1], "26zfnuxm"
 		}
 		if first != want {
 			t.Errorf("format %d: heading %q, want %q", f, first, want)
@@ -273,7 +274,7 @@ func TestCardRealPhases(t *testing.T) {
 	for _, phase := range summary.TaskPhases() {
 		s := summary.Summary{Room: "r", URL: rooms + "/r/r"}
 		s.Status.Phase = phase
-		got := strings.Split(card1(t, s, textOpts(now)), "\n")[1]
+		got := strings.Split(card1(t, s, textOpts(now)), "\n")[2] // after the status line and the title
 		state := summary.Coarse(phase, phase, false)
 		if want := stateWord(state, false) + " · " + phaseWords(phase) + " · open the room (" + rooms + "/r/r)"; got != want {
 			t.Errorf("%s: state line %q, want %q", phase, got, want)
@@ -471,7 +472,7 @@ func TestCardHostileFields(t *testing.T) {
 func TestCardTextColorBoldsTheStateWord(t *testing.T) {
 	s, n := foldGolden(t, "normal")
 	got := card1(t, s, Options{Format: TextColor, Now: n, Rooms: rooms})
-	if !strings.HasPrefix(strings.SplitN(got, "\n", 3)[1], "\x1b[1mneeds you\x1b[0m · ") {
+	if !strings.HasPrefix(strings.SplitN(got, "\n", 4)[2], "\x1b[1mneeds you\x1b[0m · ") {
 		t.Errorf("the state word is bold on a terminal:\n%q", got)
 	}
 	if plain := card1(t, s, textOpts(n)); strings.Contains(plain, "\x1b") {
@@ -629,5 +630,20 @@ func TestCardRunRowNamesTheModelAndEffort(t *testing.T) {
 				t.Fatalf("want %q in\n%s", c.want, got)
 			}
 		})
+	}
+}
+
+// The status leads the card, ahead of the title, on both formats.
+func TestCardLeadsWithTheStatus(t *testing.T) {
+	s, n := foldGolden(t, "normal")
+	for _, f := range []Format{Markdown, Text} {
+		got := card1(t, s, Options{Format: f, Now: n, Rooms: rooms})
+		want := "⏳ Waiting for you — approve a pending action"
+		if f == Markdown {
+			want = "**" + want + "**"
+		}
+		if first := strings.SplitN(got, "\n", 2)[0]; first != want {
+			t.Errorf("format %d: first line %q, want %q", f, first, want)
+		}
 	}
 }

@@ -49,6 +49,8 @@ describe("Maku typography", () => {
     expect(rule(".strip-title")).toMatch(/font-size:\s*20px/);
     expect(rule(".strip-title")).toMatch(/line-height:\s*1\.3/);
     expect(rule(".strip-title")).toMatch(/font-weight:\s*700/);
+    expect(rule(".run-status")).toMatch(/font-size:\s*16px/);
+    expect(rule(".run-status")).toMatch(/font-weight:\s*700/);
     expect(rule(".msg-head")).toMatch(/font-size:\s*13px/);
     expect(rule(".chip, .pol")).toMatch(/font-size:\s*13px/);
     expect(rule(".t-cmd, .t-command, .approval-command, pre, code")).toMatch(/font:\s*14px\/1\.5\s+ui-monospace/);

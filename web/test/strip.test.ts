@@ -18,6 +18,62 @@ const mount = () => { const h = document.createElement("header"); return { h, st
 const input = (over: Partial<StripInput> = {}): StripInput =>
   ({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live", ...over });
 
+describe("the run status line", () => {
+  const state = (over: Partial<Summary["status"]>) => summary({ state: "running", ...over });
+  it("is the first element of the strip, a polite status", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: state({ run: { id: "r1", role: "implementer", startedAt: new Date(Date.now() - 4 * 60000).toISOString() } }), running: true }));
+    const first = h.querySelector(".strip")!.firstElementChild!;
+    expect(first.className).toBe("run-status");
+    expect(first.getAttribute("role")).toBe("status");
+    expect(first.getAttribute("aria-live")).toBe("polite");
+    expect(first.textContent).toBe("● Running — implementer, 4 min");
+    expect((first as HTMLElement).dataset.kind).toBe("running");
+    expect(first.querySelector(".run-status-icon")?.getAttribute("aria-hidden")).toBe("true");
+  });
+  it("links an approval wait to the card, and says another approver when the viewer cannot decide", () => {
+    const { h, strip } = mount();
+    let jumped = 0;
+    strip.onApprovalsClick(() => { jumped++; });
+    strip.update(input({ summary: state({}), approvals: { total: 1, mine: 1 } }));
+    const a = h.querySelector(".run-status a") as HTMLAnchorElement;
+    expect(a.textContent).toBe("Waiting for you — approve a pending action");
+    a.click();
+    expect(jumped).toBe(1);
+    strip.update(input({ summary: state({}), approvals: { total: 2, mine: 0 } }));
+    expect(h.querySelector(".run-status")?.textContent).toBe("⏳ Waiting for another approver");
+  });
+  it("links the PR to review, only on github.com", () => {
+    const { h, strip } = mount();
+    const sum = { ...state({ phase: "AwaitingHuman", state: "waiting_for_human", pr: { number: 42, url: "https://github.com/o/r/pull/42" } }),
+      step: { kind: "pr" as const, label: "review and merge or close PR #42", url: "https://github.com/o/r/pull/42" } };
+    strip.update(input({ summary: sum }));
+    const a = h.querySelector(".run-status a") as HTMLAnchorElement;
+    expect(a.textContent).toBe("Waiting — review and merge PR #42");
+    expect(a.href).toBe("https://github.com/o/r/pull/42");
+    strip.update(input({ summary: { ...sum, step: { ...sum.step, url: "https://evil.example/x" } } }));
+    expect(h.querySelector(".run-status a")).toBeNull();
+  });
+  it("reads done, failed and stopped, and a sealed room without a summary", () => {
+    const { h, strip } = mount();
+    const text = () => h.querySelector(".run-status")?.textContent;
+    strip.update(input({ summary: state({ state: "done", phase: "Done" }) }));
+    expect(text()).toBe("✓ Done — merged");
+    strip.update(input({ summary: state({ state: "waiting_for_human", phase: "Escalated", reason: "budget-task" }) }));
+    expect(text()).toBe("✗ Failed — budget reached");
+    strip.update(input({ summary: undefined, sealed: true }));
+    expect(text()).toBe("■ Stopped");
+  });
+  it("hides when nothing is known, and does not show agent text", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: undefined }));
+    expect((h.querySelector(".run-status") as HTMLElement).hidden).toBe(true);
+    strip.update(input({ summary: state({ state: "waiting_for_human", phase: "Escalated", reason: "<img src=x onerror=alert(1)>" }) }));
+    expect(h.querySelector(".run-status")?.textContent).toBe("⏳ Waiting — a maintainer decides");
+    expect(h.querySelector(".run-status img")).toBeNull();
+  });
+});
+
 describe("the title strip", () => {
   it("prints the Now line with a relative time and links to the row", () => {
     const { h, strip } = mount();
@@ -284,7 +340,7 @@ describe("the title strip", () => {
     const { h, strip } = mount();
     strip.update(input({ now: { seq: 1, text: "hi", status: "message", ts: new Date().toISOString() } }));
     const order = [...h.querySelector(".strip")!.children].map((c) => c.className);
-    expect(order).toEqual(["strip-head", "strip-tail", "strip-now"]);
+    expect(order).toEqual(["run-status", "strip-head", "strip-tail", "strip-now"]);
   });
   it("keeps the title, the chips and a focused pill in place when only the count or the connection moves", () => {
     const { h, strip } = mount();
