@@ -332,11 +332,22 @@ func command(text, bot string) string {
 	return ""
 }
 
-// whisper is an ephemeral answer, seen by the user alone: a link code never reaches the channel.
+// whisper answers the user alone, as a direct message from the bot (chat.postMessage with the
+// user's id as channel: chat:write only, no im:write): an ephemeral inside a thread is seen only
+// while that thread is open and vanishes on reload, so a link code would be lost. The thread gets
+// a short pointer, never the text. When the DM fails, an ephemeral in the channel itself (no
+// thread_ts) is the fallback.
 func (a *App) whisper(ctx context.Context, ev slackEvent, thread, text, outcome string) string {
-	if err := a.Slack.PostEphemeral(ctx, ev.Channel, ev.User, thread, text); err != nil {
-		a.log().Warn("slack ephemeral post failed", "channel", ev.Channel, "err", err)
-		return "error"
+	if _, err := a.Slack.Post(ctx, ev.User, "", text, nil); err != nil {
+		a.log().Warn("slack direct message failed, answering in the channel", "user", ev.User, "err", err)
+		if err := a.Slack.PostEphemeral(ctx, ev.Channel, ev.User, "", text); err != nil {
+			a.log().Warn("slack ephemeral post failed", "channel", ev.Channel, "err", err)
+			return "error"
+		}
+		return outcome
+	}
+	if _, err := a.Slack.Post(ctx, ev.Channel, thread, "<@"+ev.User+"> I've sent you the answer in a direct message.", nil); err != nil {
+		a.log().Warn("slack pointer post failed", "channel", ev.Channel, "err", err)
 	}
 	return outcome
 }
@@ -361,8 +372,9 @@ func (a *App) link(ctx context.Context, ev slackEvent, thread string) string {
 		a.log().Warn("slack_link_code failed", "err", err)
 		return a.whisper(ctx, ev, thread, "The link could not be made, mention me with `link` again.", "error")
 	}
-	return a.whisper(ctx, ev, thread, "<"+u+"|Link your Slack user to your rooms account>: it works once, within 10 minutes, "+
-		"after you sign in. Keep it to yourself and never send it to anyone: whoever confirms it is who your :white_check_mark: files as.", "link")
+	return a.whisper(ctx, ev, thread, "Open the link page: <"+u+"|link your Slack user>\n"+u+"\n"+
+		"It works once, within 10 minutes, after you sign in. Keep it to yourself and never send it to anyone: "+
+		"whoever confirms it is who your :white_check_mark: files as.", "link")
 }
 
 // unlink answers `@factory unlink`: this Slack user's self-serve link goes.

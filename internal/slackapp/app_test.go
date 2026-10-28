@@ -222,6 +222,19 @@ func (f *fakeSlack) UserName(_ context.Context, user string) (string, string, er
 	return "", "", errors.New("missing_scope")
 }
 
+// dms is the posts whose channel is the user's id: direct messages from the bot.
+func (f *fakeSlack) dms(user string) []post {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []post
+	for _, p := range f.posts {
+		if p.channel == user {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (f *fakeSlack) whispers() []ephemeral {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -244,9 +244,9 @@ form{display:inline;margin-left:.5rem}button{font:inherit;padding:.3rem .9rem;cu
 
 // slackLinkRoutes adds /link/slack's routes.
 func (s *Server) slackLinkRoutes(mux *http.ServeMux) {
-	mux.Handle("GET /link/slack", withCSP(http.HandlerFunc(s.linkGet)))
-	mux.Handle("POST /link/slack", withCSP(http.HandlerFunc(s.linkConfirm)))
-	mux.Handle("POST /link/slack/unlink", withCSP(http.HandlerFunc(s.linkUnlink)))
+	mux.Handle("GET /link/slack", withCSP(sameOriginReferrer(http.HandlerFunc(s.linkGet))))
+	mux.Handle("POST /link/slack", withCSP(sameOriginReferrer(http.HandlerFunc(s.linkConfirm))))
+	mux.Handle("POST /link/slack/unlink", withCSP(sameOriginReferrer(http.HandlerFunc(s.linkUnlink))))
 	mux.Handle("GET /link/slack.css", withCSP(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = io.WriteString(w, linkCSS)
@@ -267,6 +267,18 @@ func (s *Server) linkHuman(w http.ResponseWriter, r *http.Request) (authn.Princi
 		return p, false
 	}
 	return p, true
+}
+
+// sameOriginReferrer overrides the server-wide `Referrer-Policy: no-referrer` on the link routes.
+// By the Fetch spec a browser serialises a request's Origin as "null" when its referrer policy is
+// no-referrer, so the page's form POST would carry `Origin: null` and sameOrigin would refuse it.
+// With same-origin the browser sends the real Origin, and the code (in the page's URL) is never
+// sent as a Referer to another site. sameOrigin stays strict: "null" is still refused.
+func sameOriginReferrer(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "same-origin")
+		h.ServeHTTP(w, r)
+	})
 }
 
 // origin is u's scheme://host[:port], the default port dropped, as a browser sends Origin.

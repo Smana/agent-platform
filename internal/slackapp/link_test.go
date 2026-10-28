@@ -15,13 +15,22 @@ func TestLinkCommands(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.slack.names = map[string][2]string{"U02DEF": {"dana.h", "dana"}}
 	rig.mention("C03", "1729.0001", "<@U0BOT>  Link ")
-	w := rig.slack.whispers()
-	if len(w) != 1 || w[0].user != "U02DEF" || w[0].channel != "C03" || w[0].thread != "1729.0001" ||
-		!strings.Contains(w[0].text, "<https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz|") || !strings.Contains(w[0].text, "Keep it to yourself") {
-		t.Fatalf("%+v", w)
+	// The code goes in a direct message (the user's id as channel); the thread gets a pointer only.
+	dms := rig.slack.dms("U02DEF")
+	if len(dms) != 1 || dms[0].thread != "" || !strings.HasPrefix(dms[0].text, "Open the link page: <https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz|link your Slack user>\nhttps://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz\nIt works once") ||
+		!strings.Contains(dms[0].text, "Keep it to yourself") {
+		t.Fatalf("%+v", dms)
 	}
-	if len(rig.posts()) != 0 || len(rig.broker.links) != 1 || rig.broker.links[0] != "T01ABC/U02DEF/dana.h/dana" {
-		t.Fatalf("a link posted in the channel or drafted: %d posts, %v", len(rig.posts()), rig.broker.links)
+	for _, p := range rig.posts() {
+		if p.channel == "U02DEF" {
+			continue
+		}
+		if p.channel != "C03" || p.thread != "1729.0001" || strings.Contains(p.text, "code=") || strings.Contains(p.text, "rooms.example") || !strings.Contains(p.text, "direct message") {
+			t.Fatalf("channel post is not a bare pointer: %+v", p)
+		}
+	}
+	if len(rig.slack.whispers()) != 0 || len(rig.broker.links) != 1 || rig.broker.links[0] != "T01ABC/U02DEF/dana.h/dana" {
+		t.Fatalf("an ephemeral or a draft: %v", rig.broker.links)
 	}
 	if rig.metrics.count("events", "link") != 1 {
 		t.Fatal("uncounted")
@@ -29,18 +38,18 @@ func TestLinkCommands(t *testing.T) {
 	rig.broker.unlinked["T01ABC/U02DEF"] = true
 	rig.mention("C03", "1729.0002", "<@U0BOT> unlink")
 	rig.mention("C03", "1729.0003", "<@U0BOT> unlink")
-	w = rig.slack.whispers()
+	w := rig.slack.dms("U02DEF")
 	if len(w) != 3 || !strings.HasPrefix(w[1].text, "Unlinked:") || !strings.HasPrefix(w[2].text, "Nothing to unlink") {
 		t.Fatalf("%+v", w)
 	}
 	rig.broker.linkErr = ErrUnknownTool
 	rig.mention("C03", "1729.0004", "<@U0BOT> link")
-	if w := rig.slack.whispers(); !strings.Contains(w[len(w)-1].text, "not turned on here") {
+	if w := rig.slack.dms("U02DEF"); !strings.Contains(w[len(w)-1].text, "not turned on here") {
 		t.Fatalf("off: %+v", w[len(w)-1])
 	}
 	rig.broker.linkErr = Refused("too_many_codes: too many links are waiting")
 	rig.mention("C03", "1729.0005", "<@U0BOT> link")
-	if w := rig.slack.whispers(); !strings.HasPrefix(w[len(w)-1].text, "Link refused: too_many_codes") {
+	if w := rig.slack.dms("U02DEF"); !strings.HasPrefix(w[len(w)-1].text, "Link refused: too_many_codes") {
 		t.Fatalf("refused: %+v", w[len(w)-1])
 	}
 	// "link" inside a title is a draft, never the command.
@@ -152,4 +161,21 @@ func TestNoSilentCheckMark(t *testing.T) {
 	rig.slack.msgErr = errors.New("message_not_found")
 	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
 	silent("an unreadable message: no thread to answer in")
+}
+
+// A failed DM falls back to an ephemeral in the channel itself, without thread_ts, and no post
+// in the channel carries the URL.
+func TestLinkDMFailureFallsBackToChannelEphemeral(t *testing.T) {
+	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+	rig.slack.failPosts = 1
+	rig.mention("C03", "1729.0001", "<@U0BOT> link")
+	w := rig.slack.whispers()
+	if len(w) != 1 || w[0].channel != "C03" || w[0].thread != "" || w[0].user != "U02DEF" || !strings.Contains(w[0].text, "code=") {
+		t.Fatalf("%+v", w)
+	}
+	for _, p := range rig.posts() {
+		if strings.Contains(p.text, "code=") {
+			t.Fatalf("the URL reached a post: %+v", p)
+		}
+	}
 }

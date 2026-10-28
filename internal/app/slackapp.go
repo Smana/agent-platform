@@ -229,7 +229,7 @@ func newSlackApp(cfg slackapp.Config, cl client.Client, rec slackapp.Recorder, l
 		return cc.Token(context.WithValue(ctx, oauth2.HTTPClient, hc))
 	}}
 	return &slackapp.App{
-		Slack:    &slackapp.SlackClient{Token: func() string { return fileValue(cfg.BotTokenFile) }, HC: hc},
+		Slack:    &slackapp.SlackClient{Token: func() string { return fileValue(cfg.BotTokenFile) }, HC: hc, Logger: log},
 		Broker:   slackapp.Broker{URL: cfg.BrokerURL, Tokens: tokens, HC: hc},
 		Threads:  slackapp.ConfigMapThreads{C: cl, Namespace: cfg.Namespace, Now: time.Now, Logger: log},
 		Verifier: slackapp.Verifier{Secret: func() string { return fileValue(cfg.SigningSecretFile) }, Now: time.Now},
