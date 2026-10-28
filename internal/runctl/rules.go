@@ -5,7 +5,7 @@ package runctl
 import (
 	"fmt"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 // Rules is the run's rules.md: the composition's _rulesFor without the lines that name

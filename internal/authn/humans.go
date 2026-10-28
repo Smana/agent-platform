@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // ForwardedAccessHeader carries the JWT access token oauth2-proxy forwards beside
@@ -17,7 +17,7 @@ const ForwardedAccessHeader = "X-Forwarded-Access-Token"
 
 // Humans re-validates what oauth2-proxy forwards (§3, S5): the ID token in
 // Authorization and the JWT access token in X-Forwarded-Access-Token, same sub.
-// The broker never trusts a header oauth2-proxy merely asserts. roomctl sends its
+// The broker never trusts a header oauth2-proxy merely asserts. maku sends its
 // own access token as a bearer, which oauth2-proxy passes through (phase 6).
 type Humans struct {
 	v *Verifier
@@ -25,14 +25,14 @@ type Humans struct {
 	// (Ruling AS-a), and a rotation must need no restart.
 	projectID func() string
 	web       func() string
-	roomctl   func() string // "" until phase 6
+	maku      func() string // "" until phase 6
 	origin    string
 }
 
 // NewHumans authenticates the humans of one ZITADEL project. The id functions
 // are called on every request; an unreadable id returns "", which refuses.
 func NewHumans(v *Verifier, projectID, webClientID, roomctlClientID func() string, origin string) *Humans {
-	return &Humans{v: v, projectID: projectID, web: webClientID, roomctl: roomctlClientID, origin: origin}
+	return &Humans{v: v, projectID: projectID, web: webClientID, maku: roomctlClientID, origin: origin}
 }
 
 // VerifyHuman checks a ZITADEL ID token (Ruling AS). Its aud holds the project id
@@ -56,7 +56,7 @@ func (h *Humans) verify(ctx context.Context, raw string, client func(*Claims) st
 	if err != nil {
 		return nil, err
 	}
-	clients := slices.DeleteFunc([]string{h.web(), h.roomctl()}, func(s string) bool { return s == "" })
+	clients := slices.DeleteFunc([]string{h.web(), h.maku()}, func(s string) bool { return s == "" })
 	if cli := client(c); cli == "" || !slices.Contains(clients, cli) || !slices.Contains(c.Audience, cli) {
 		return nil, fmt.Errorf("%w: not issued to a rooms client", ErrWrongAudience)
 	}
@@ -68,7 +68,7 @@ func (h *Humans) verify(ctx context.Context, raw string, client func(*Claims) st
 
 // Authenticate maps a viewer's request to a human principal. A foreign Origin is
 // ErrForbidden; every other refusal wraps ErrUnauthenticated. ClientID says which
-// client the session came through, so callers can tell the web UI from roomctl
+// client the session came through, so callers can tell the web UI from maku
 // (ruling P18).
 func (h *Humans) Authenticate(r *http.Request) (Principal, error) {
 	// T9: a browser always sends Origin on a WebSocket upgrade; another site's page must not ride the cookie.
@@ -79,9 +79,9 @@ func (h *Humans) Authenticate(r *http.Request) (Principal, error) {
 	if err != nil {
 		return Principal{}, err
 	}
-	// roomctl sends its own access token as the bearer (phase 6). An id equal to
+	// maku sends its own access token as the bearer (phase 6). An id equal to
 	// the web UI's would make that bearer a web session (review M5).
-	if cli := h.roomctl(); cli != "" && cli != h.web() {
+	if cli := h.maku(); cli != "" && cli != h.web() {
 		if ac, err := h.VerifyHumanAccess(r.Context(), raw); err == nil && ac.ClientID == cli {
 			return Principal{Kind: envelope.ActorHuman, ID: "human:" + ac.Subject, Sub: ac.Subject, Groups: ac.GroupNames(),
 				ClientID: cli, Expiry: ac.ExpiresAt.Time, AccessToken: raw}, nil

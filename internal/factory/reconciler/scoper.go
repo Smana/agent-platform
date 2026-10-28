@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/narrate"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/narrate"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // scoperDue: the task's mode is scoper and its scoper has not ended (scoper plan S13). A resumed or

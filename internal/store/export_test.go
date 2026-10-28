@@ -5,7 +5,7 @@ package store
 import (
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // Exported to package store_test only, where the fan-out hub runs against a real

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/config"
 )
 
 // TC5: each token day a file still writes is named at startup, with the key that replaced it.

@@ -5,7 +5,7 @@ package runs
 import (
 	"cmp"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // The kinds of a charge (spend per identity SI2): a run of a Task, or one started through

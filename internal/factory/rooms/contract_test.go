@@ -17,14 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/bridgeapi"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/bridgeapi"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // memLog is the part of the store the system API uses, in memory: append with the store's

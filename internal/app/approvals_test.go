@@ -19,15 +19,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/bridgeapi"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/bridgeapi"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // fakeApproval is one pending approval the fake log holds: answered by a result already

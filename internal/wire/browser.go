@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // The browser's frame types (Appendix B): one JSON object per WebSocket text frame.
@@ -21,7 +21,7 @@ const (
 	FrameTransient = "transient"
 )
 
-// ClientFrame is a frame from a browser or roomctl: hello first, then acts and pings.
+// ClientFrame is a frame from a browser or maku: hello first, then acts and pings.
 type ClientFrame struct {
 	Type        string          `json:"type"`
 	RoomID      string          `json:"roomId,omitempty"`

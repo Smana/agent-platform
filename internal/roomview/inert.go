@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // maxText bounds the text a view quotes, in runes.

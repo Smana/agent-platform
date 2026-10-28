@@ -17,7 +17,7 @@ import (
 const (
 	project   = "project-1"
 	webClient = "web-client"
-	cliClient = "roomctl-client"
+	cliClient = "maku-client"
 	uiOrigin  = "https://rooms.example.test"
 )
 
@@ -53,9 +53,9 @@ func (s signer) azpOnlyToken(t *testing.T, sub string, aud []string, azp string)
 	})
 }
 
-func (s signer) humans(projectID, roomctl string) *Humans {
+func (s signer) humans(projectID, maku string) *Humans {
 	return NewHumans(s.verifier(), func() string { return projectID },
-		func() string { return webClient }, func() string { return roomctl }, uiOrigin)
+		func() string { return webClient }, func() string { return maku }, uiOrigin)
 }
 
 func TestVerifyHuman(t *testing.T) {
@@ -65,16 +65,16 @@ func TestVerifyHuman(t *testing.T) {
 		name       string
 		token      string
 		projectID  string
-		roomctl    string
+		maku       string
 		wantErr    error // nil: accepted
 		wantClient string
 	}{
 		{"a web ID token", s.humanToken(t, "2918", web, webClient, nil, time.Hour), project, "", nil, webClient},
-		{"a roomctl token once its client is set",
+		{"a maku token once its client is set",
 			s.humanToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, cliClient, nil, cliClient},
 		{"another project app lists our client in aud, but azp names it",
 			s.humanToken(t, "2918", []string{"other-app", webClient, project}, "other-app", nil, time.Hour), project, "", ErrWrongAudience, ""},
-		{"a roomctl token before roomctl has a client",
+		{"a maku token before maku has a client",
 			s.humanToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
 		{"an aud without the project id",
 			s.humanToken(t, "2918", []string{webClient}, webClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
@@ -95,7 +95,7 @@ func TestVerifyHuman(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := s.humans(c.projectID, c.roomctl).VerifyHuman(t.Context(), c.token)
+			got, err := s.humans(c.projectID, c.maku).VerifyHuman(t.Context(), c.token)
 			if c.wantErr == nil {
 				if err != nil || got.AuthorizedParty != c.wantClient {
 					t.Fatalf("got %+v, %v; want accepted for %s", got, err, c.wantClient)
@@ -118,15 +118,15 @@ func TestVerifyHumanAccess(t *testing.T) {
 		name       string
 		token      string
 		projectID  string
-		roomctl    string
+		maku       string
 		wantErr    error // nil: accepted
 		wantClient string
 	}{
 		{"a web access token", s.accessToken(t, "2918", web, webClient, nil, time.Hour), project, "", nil, webClient},
-		{"a roomctl access token once its client is set",
+		{"a maku access token once its client is set",
 			s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, cliClient, nil, cliClient},
 		{"azp but no client_id, a shape ZITADEL never mints", s.azpOnlyToken(t, "2918", web, webClient), project, "", ErrWrongAudience, ""},
-		{"a roomctl access token before roomctl has a client",
+		{"a maku access token before maku has a client",
 			s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), project, "", ErrWrongAudience, ""},
 		{"a client outside the allowlist",
 			s.accessToken(t, "2918", []string{"other-app", webClient, project}, "other-app", nil, time.Hour), project, "", ErrWrongAudience, ""},
@@ -137,7 +137,7 @@ func TestVerifyHumanAccess(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := s.humans(c.projectID, c.roomctl).VerifyHumanAccess(t.Context(), c.token)
+			got, err := s.humans(c.projectID, c.maku).VerifyHumanAccess(t.Context(), c.token)
 			if c.wantErr == nil {
 				if err != nil || got.ClientID != c.wantClient {
 					t.Fatalf("got %+v, %v; want accepted for %s", got, err, c.wantClient)
@@ -181,7 +181,7 @@ func TestHumansAuthenticate(t *testing.T) {
 		want               want
 	}{
 		{"a web session from our origin", id, access, uiOrigin, want{client: webClient, accessToken: access}},
-		{"a roomctl bearer", cli, "", "", want{client: cliClient, accessToken: cli}},
+		{"a maku bearer", cli, "", "", want{client: cliClient, accessToken: cli}},
 		{"a cross-site WebSocket (T9)", id, access, "https://evil.example", want{err: ErrForbidden}},
 		{"an opaque origin (Origin: null)", id, access, "null", want{err: ErrForbidden}},
 		{"our host over another scheme", id, access, "http://rooms.example.test", want{err: ErrForbidden}},
@@ -189,11 +189,11 @@ func TestHumansAuthenticate(t *testing.T) {
 		{"an access token for another sub", id, s.accessToken(t, "9999", web, webClient, nil, time.Hour), "", want{err: ErrUnauthenticated}},
 		{"an access token with azp but no client_id (review C1)", id, s.azpOnlyToken(t, "2918", web, webClient), "",
 			want{err: ErrUnauthenticated}},
-		{"a roomctl bearer with azp but no client_id", s.azpOnlyToken(t, "2918", []string{cliClient, project}, cliClient), "", "",
+		{"a maku bearer with azp but no client_id", s.azpOnlyToken(t, "2918", []string{cliClient, project}, cliClient), "", "",
 			want{err: ErrUnauthenticated}},
 		{"no access token", id, "", "", want{err: ErrUnauthenticated}},
 		{"the ID token in both headers, a bearer oauth2-proxy let through (review M16)", id, id, "", want{err: ErrUnauthenticated}},
-		{"an access token issued to roomctl", id, s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), "",
+		{"an access token issued to maku", id, s.accessToken(t, "2918", []string{cliClient, project}, cliClient, nil, time.Hour), "",
 			want{err: ErrUnauthenticated}},
 		{"a token for another ZITADEL app", s.humanToken(t, "2918", []string{"other-app", project}, "other-app", nil, time.Hour), access, "",
 			want{err: ErrUnauthenticated}},
@@ -230,9 +230,9 @@ func TestHumansAuthenticate(t *testing.T) {
 			t.Fatalf("expiry %v, %v", p.Expiry, err)
 		}
 	})
-	// A misconfiguration that mounts the web UI's id as roomctl's must not let a
+	// A misconfiguration that mounts the web UI's id as maku's must not let a
 	// bearer pass as a web session, which may steer and decide (ruling P18).
-	t.Run("a roomctl client id equal to the web UI's (review M5)", func(t *testing.T) {
+	t.Run("a maku client id equal to the web UI's (review M5)", func(t *testing.T) {
 		same := s.humans(project, webClient)
 		bearer := s.accessToken(t, "2918", web, webClient, []string{"agents-member"}, time.Hour)
 		if p, err := same.Authenticate(request(t, bearer)); !errors.Is(err, ErrUnauthenticated) {

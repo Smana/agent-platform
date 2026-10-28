@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func roomClient(t *testing.T, objs ...client.Object) client.Client {
@@ -63,7 +63,7 @@ func TestEnsureRefusesARoomItDidNotMake(t *testing.T) {
 	for name, room := range map[string]*v1alpha1.Room{
 		"a human's room":        theirs(func(s *v1alpha1.RoomSpec) { s.Owner = "human:291847362183" }),
 		"another data class":    theirs(func(s *v1alpha1.RoomSpec) { s.DataClass = "internal" }),
-		"another repository":    theirs(func(s *v1alpha1.RoomSpec) { s.Repository = "Smana/agent-platform" }),
+		"another repository":    theirs(func(s *v1alpha1.RoomSpec) { s.Repository = "Smana/maku" }),
 		"an attended room":      theirs(func(s *v1alpha1.RoomSpec) { s.Approvals.Profile = "attended" }),
 		"another system's room": theirs(func(s *v1alpha1.RoomSpec) { s.Owner = "system:room-broker" }),
 	} {

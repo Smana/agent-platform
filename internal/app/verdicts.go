@@ -13,11 +13,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/github"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/verdictpost"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/github"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/verdictpost"
 )
 
 // githubAPI is shared with the factory (factory.go); the poster keeps its own timeout.

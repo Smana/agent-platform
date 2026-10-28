@@ -7,8 +7,8 @@ package triage
 import (
 	"context"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
 )
 
 // Decision is what triage fixes on a task: its template, predicted class, data class and budget.

@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // The write tools' arguments.
@@ -29,8 +29,8 @@ type (
 	}
 )
 
-// room_queue queues text for the room's next run, as roomctl post --queue does: an act through
-// the MCP client, so the text is stored wrapped (F8) and the standing is roomctl's (P18).
+// room_queue queues text for the room's next run, as maku post --queue does: an act through
+// the MCP client, so the text is stored wrapped (F8) and the standing is maku's (P18).
 func (s *Server) roomQueue(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a queueArgs
 	if mcpwire.DecodeArgs(args, &a) != nil || a.Room == "" || a.Text == "" {
@@ -44,7 +44,7 @@ func (s *Server) roomQueue(ctx context.Context, p authn.Principal, args json.Raw
 }
 
 // room_fork forks the room at a seq into one the caller owns, with an optional first run, as
-// roomctl fork does.
+// maku fork does.
 func (s *Server) roomFork(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a forkArgs
 	if mcpwire.DecodeArgs(args, &a) != nil || a.Room == "" || a.At < 1 {

@@ -1,8 +1,8 @@
-# agent-platform: contributor and agent guide
+# maku: contributor and agent guide
 
-The Go services behind SP2 collaboration rooms: `room-broker` (the log of record, its API and
-the `Room` controller) and `room-bridge` (the sidecar that mirrors a run's harness into its
-room); and SP3's `agent-factory` (the `Task` reconciler that turns an issue label into a
+The Go services behind SP2 collaboration rooms: `maku-broker` (the log of record, its API and
+the `Room` controller) and `maku-bridge` (the sidecar that mirrors a run's harness into its
+room); and SP3's `maku-factory` (the `Task` reconciler that turns an issue label into a
 narrated run, the issue poller and the run meter). Architecture and ports: [README](README.md) and [docs/architecture.md](docs/architecture.md). Prerequisites, commits, migrations and
 releases: `CONTRIBUTING.md`.
 
@@ -20,7 +20,7 @@ task check      # exit 0, or it is not done
 | `vuln` | `go run …/govulncheck@v1.8.0 ./...` | a known vulnerability reachable from our code, stdlib included |
 | `test` | `go test -race -count=1 ./...` | a failing test or a data race; never cached |
 | `crd:check` | `crd:gen`, then `git diff --exit-code -- config/crd api charts` | a committed CRD, deepcopy or the chart's CRD copy that differs from what the types generate |
-| `chart:check` | `helm lint --strict`, `charts/agent-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
+| `chart:check` | `helm lint --strict`, `charts/maku-factory/tests/render.sh` | the factory chart losing a property the platform relies on |
 | `migrations` | `atlas migrate validate --dir file://internal/store/migrations`, offline | an `atlas.sum` that no longer matches the migrations: re-hash with `atlas migrate hash` |
 | `docs` | `hack/docs.sh` | a reader page with a per-row status tag, or a dead relative link or anchor |
 | `scripts` | `scripts/*_test.sh` | an operator script, such as `shadow-merge-tally.sh`, no longer reading GitHub's shapes as its test fakes them |
@@ -113,7 +113,11 @@ packages that need a newer one.
 - **Metrics:** the OpenTelemetry metric API with the Prometheus exporter on `:9090`. Every name
   starts `rooms_` (the SP2 §9 set, e.g. `rooms_events_appended_total`), or `agent_factory_` in
   the factory (SP3 §7, `internal/factory/fmetrics`); counters end `_total`,
-  durations `_seconds`. Buckets per histogram family sit on real thresholds (SC-12: fan-out p95
+  durations `_seconds`.
+  Until `v0.31.0` drops them, the exporter also serves each `rooms_*` and `agent_factory_*` family as
+  `maku_rooms_*` and `maku_factory_*` (`metrics.MakuName`, `metrics.makuNames` in each config, on by
+  default). A new instrument still takes the old prefix, and its twin follows on its own.
+  Buckets per histogram family sit on real thresholds (SC-12: fan-out p95
   under 0.5 s). Instruments hang off an injected set that works with a no-op provider in tests.
   Label values are bounded: never a payload field; `room` only on the per-Active-room gauge and
   on per-live-run series such as `agent_factory_run_charge_info`, whose `run` label already makes
@@ -145,11 +149,11 @@ flowchart LR
 
 | Stage | Package | Contract |
 |---|---|---|
-| Entry | `cmd/room-broker` | `serve` and `retention` subcommands |
-| Entry | `cmd/room-bridge` | the sidecar binary |
-| Entry | `cmd/factory-slack-app`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
-| Entry | `cmd/roomctl`, `internal/roomctl` | the human CLI and its client; `roomctl mcp`, the stdio relay to `/mcp` |
-| Entry | `internal/roomctl/skill` | the embedded factory-handoff Agent Skill, released with roomctl; `roomctl skill install` writes it |
+| Entry | `cmd/maku-broker` | `serve` and `retention` subcommands |
+| Entry | `cmd/maku-bridge` | the sidecar binary |
+| Entry | `cmd/maku-slack`, `internal/slackapp` | the factory's Slack App: intake from a thread, webhooks to the thread (docs/slack.md) |
+| Entry | `cmd/maku`, `internal/maku` | the human CLI and its client; `maku mcp`, the stdio relay to `/mcp` |
+| Entry | `internal/maku/skill` | the embedded factory-handoff Agent Skill, released with maku; `maku skill install` writes it |
 | Entry | `internal/app` | wiring per binary, the only importer of every adapter |
 | Entry | `internal/config` | the broker's config file: strict decode, defaults, validation |
 | Entry | `internal/logging` | a binary's `*slog.Logger`: JSON or text, level by env |
@@ -172,18 +176,18 @@ flowchart LR
 | API | `internal/prpattern` | a repository's pull-request URL patterns, compiled once per repository in a bounded cache |
 | Viewers | `internal/fanout` | LISTEN/NOTIFY hub: coalesced per-room reads, a 1 s poll while the listener is down |
 | Viewers | `internal/policy` | the §1 permission matrix |
-| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `roomctl status` render |
+| Viewers | `internal/summary` | the pure fold of a room's log into `summary/v1`, the one object the room page and `maku status` render |
 | Viewers | `internal/ghidentity`, `internal/repoaccess` | D7: a member's GitHub login from their ZITADEL link; whether it may read a room's repository, cached, failing closed |
 | Viewers | `internal/humanapi` + `ui/dist/` | `:8080` WebSocket, room list, actions, embedded UI; `POST /mcp`, the humans' MCP server |
 | Viewers | `web/` | TypeScript UI and its vitest suite |
-| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter room-broker serves |
+| Ops | `internal/metrics` | the §9 metric set and the Prometheus exporter maku-broker serves |
 
 The factory (SP3), by the same stages. Its wiring is `internal/app/factory.go`; its chart,
-`charts/agent-factory`, ships the `Task` CRD.
+`charts/maku-factory`, ships the `Task` CRD.
 
 | Stage | Package | Contract |
 |---|---|---|
-| Entry | `cmd/agent-factory` | the binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
+| Entry | `cmd/maku-factory` | the binary; `FACTORY_CONFIG`, `POD_NAMESPACE` |
 | Entry | `internal/factory/config` | the factory's config file: strict decode, defaults, validation, its hash |
 | Intake | `internal/factory/intake` | the issue poller: maintainer labels, snapshots, dedup, stop labels |
 | Intake | `internal/factory/sanitize`, `internal/factory/taskid` | untrusted text defused to a fixpoint; C2 task names and ids |

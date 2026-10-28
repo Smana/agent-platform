@@ -8,8 +8,9 @@ Maku — a controlled stage for delegated agent work.
 What it is, before what the name means: Maku runs coding agents on your Kubernetes cluster without
 trusting them. Every run is sandboxed, supervised by people and policy, and kept on the record.
 
-This page records the name and the reasoning behind it. Repository, package, image, API and other
-technical renames are separate work: nothing in the codebase changes because of this page.
+This page records the name and the reasoning behind it. The repository is maku: since v0.30.0 the
+repository, the Go module, the binaries, the images, the charts and the CLI carry the name, see
+[technical names](#technical-names).
 
 ## What the word means
 
@@ -145,3 +146,27 @@ secondary text on Ink only, never on a light theme.
 ### Type
 
 Wordmark: Space Grotesk 700, lowercase `maku`, tracking −3%. Body: Space Grotesk 400 for message prose, 500 for the UI chrome, or system sans.
+
+## Technical names
+
+Since v0.30.0 every artifact carries the name; identities that other systems key on keep theirs.
+The technical renames come in two phases: phase 1, the artifacts below, is done; phase 2, the CRD
+group, is pending.
+
+| What | Before v0.30.0 | Since v0.30.0 |
+|---|---|---|
+| Repository, module | `Smana/agent-platform`, `github.com/Smana/agent-platform` | `Smana/maku`, `github.com/Smana/maku` |
+| Binaries and images | `room-broker`, `room-bridge`, `agent-factory`, `run-controller`, `factory-slack-app`, `agent-harness` | `maku-broker`, `maku-bridge`, `maku-factory`, `maku-run-controller`, `maku-slack`, `maku-harness` |
+| CLI | `roomctl` | `maku` (formerly `roomctl`; its config directory is imported once) |
+| Charts | `agent-platform`, `agent-factory` | `maku`, `maku-factory` |
+| Metrics | `rooms_*`, `agent_factory_*` | `maku_rooms_*`, `maku_factory_*`; v0.30.0 serves both |
+| Signer | `Smana/agent-platform/.github/workflows/release.yaml` | `Smana/maku/.github/workflows/release.yaml` |
+| Live demo | `blog.ogenki.io/agent-platform/` | `blog.ogenki.io/maku/` |
+
+Unchanged, because issuers, allowlists, network policies or older clients key on them: the
+ServiceAccounts, Deployments and Services (`room-broker`, `agent-factory`), the JWT audiences
+`room-broker`, `rooms-system` and `agent-factory`, the leader-election leases, the routes
+`/api/roomctl` and `/.well-known/roomctl`, the config key `human.roomctlClientIDFile`, the CRD group
+`agents.ogenki.io`, the `room.*` event types and the web host `rooms.<domain>`. The
+[rebrand design](superpowers/specs/2026-10-28-maku-rebrand-design.md) schedules the CRD group
+for phase 2.

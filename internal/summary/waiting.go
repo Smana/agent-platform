@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
 )
 
 // maxReason bounds a reason shown as the factory wrote it, in runes.

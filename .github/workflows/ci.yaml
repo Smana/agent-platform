@@ -37,7 +37,7 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: images/agent-harness
+          context: images/maku-harness
           target: test
           push: false
 
@@ -65,16 +65,16 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: images/agent-harness
+          context: images/maku-harness
           load: true
           push: false
-          tags: agent-harness:checks
+          tags: maku-harness:checks
       - name: The run's token, a file as the run-controller mounts it
         env:
           GH_TOKEN: ${{ github.token }}
         run: install -m 0644 /dev/null "$RUNNER_TEMP/token" && printf '%s' "$GH_TOKEN" > "$RUNNER_TEMP/token"
-      - run: images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/ai-native-ref golang,pypi "$RUNNER_TEMP/token"
-      - run: images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/cloud-native-ref pypi "$RUNNER_TEMP/token"
+      - run: images/maku-harness/tests/checks/run.sh maku-harness:checks Smana/ai-native-ref golang,pypi "$RUNNER_TEMP/token"
+      - run: images/maku-harness/tests/checks/run.sh maku-harness:checks Smana/cloud-native-ref pypi "$RUNNER_TEMP/token"
 
   # One throwaway image per PR push, tagged v<next-patch>-pr<N>.<sha8>: it sorts after
   # the last release and before the next, and each push is its own immutable tag.
@@ -90,14 +90,14 @@ jobs:
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     # The harness's multi-arch build under QEMU runs 22-28 min cold; the Go images fit in 30.
-    timeout-minutes: ${{ matrix.image == 'agent-harness' && 60 || 30 }}
+    timeout-minutes: ${{ matrix.image == 'maku-harness' && 60 || 30 }}
     permissions:
       contents: read
       packages: write
       id-token: write # keyless cosign signing
     strategy:
       matrix:
-        image: [room-broker, room-bridge, agent-factory, agent-harness, run-controller, factory-slack-app]
+        image: [maku-broker, maku-bridge, maku-factory, maku-harness, maku-run-controller, maku-slack]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -124,7 +124,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           # The Go images build from the module root; the harness from its own directory.
-          context: ${{ matrix.image == 'agent-harness' && 'images/agent-harness' || '.' }}
+          context: ${{ matrix.image == 'maku-harness' && 'images/maku-harness' || '.' }}
           file: images/${{ matrix.image }}/Dockerfile
           # The sandbox pool mixes c/m gen 6+ families, Graviton included.
           platforms: linux/amd64,linux/arm64
@@ -194,11 +194,11 @@ jobs:
           sha8="$(printf '%.8s' "${HEAD_SHA}")"
           v="${next}.g${sha8}"
           printf '%s' "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
-          helm package charts/agent-factory --version "$v" --app-version "v${next}.${sha8}"
-          out="$(helm push "agent-factory-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
+          helm package charts/maku-factory --version "$v" --app-version "v${next}.${sha8}"
+          out="$(helm push "maku-factory-${v}.tgz" oci://ghcr.io/smana/charts 2>&1)"; echo "$out"
           digest="$(sed -n 's/^Digest: //p' <<<"$out")"
           [ -n "$digest" ] || { echo "helm push printed no digest" >&2; exit 1; }
           # Signs the digest, never the version, as the images do.
-          cosign sign --yes "ghcr.io/smana/charts/agent-factory@${digest}"
-          echo "### chart agent-factory" >> "$GITHUB_STEP_SUMMARY"
-          echo "oci://ghcr.io/smana/charts/agent-factory:${v}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          cosign sign --yes "ghcr.io/smana/charts/maku-factory@${digest}"
+          echo "### chart maku-factory" >> "$GITHUB_STEP_SUMMARY"
+          echo "oci://ghcr.io/smana/charts/maku-factory:${v}@${digest}" >> "$GITHUB_STEP_SUMMARY"

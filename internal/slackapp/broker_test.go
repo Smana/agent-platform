@@ -20,8 +20,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/sponsored"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/sponsored"
 )
 
 type rpc struct {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/ghidentity"
+	"github.com/Smana/maku/internal/ghidentity"
 )
 
 // stateWorld is one ZITADEL user whose state the test flips, counting state reads.

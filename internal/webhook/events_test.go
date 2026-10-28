@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // fact is a task_state entry in the log's real shape: the facts flat beside kind (B2).

@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/summary"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.json want fields from the current fold")

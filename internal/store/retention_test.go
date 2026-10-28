@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // OD-17: the retention job purges exactly the sealed rooms past their retention,

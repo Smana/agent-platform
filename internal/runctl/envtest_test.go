@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 // podBlind reads every pod as NotFound, like an informer cache that is behind.

@@ -18,15 +18,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/prpattern"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/prpattern"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // ActLog is the part of the store the actions write; *store.Store implements it.
@@ -184,7 +184,7 @@ var deliveries = map[string]policy.Action{"none": policy.Chat, "queued": policy.
 // it again under the room's row lock.
 var fenced = map[string]bool{"steering": true, "promote_queued": true, "interrupt": true, "driver_give": true}
 
-// Handle serves one act frame of p in room, through the web UI or roomctl (ruling
+// Handle serves one act frame of p in room, through the web UI or maku (ruling
 // P18), on the connection session, and returns its ack.
 func (a *Actor) Handle(ctx context.Context, p authn.Principal, webUI bool, session string, room *v1alpha1.Room, f wire.ClientFrame) wire.ServerFrame {
 	via := ViaRoomctl

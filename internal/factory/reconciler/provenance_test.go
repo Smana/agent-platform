@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/meter"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/meter"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // R10: the record takes what the run ran on from its claim as each fact appears, never changes a
@@ -17,7 +17,7 @@ import (
 func TestARunRecordsWhatItRanOn(t *testing.T) {
 	g := newRig(t, issueTask("3buqdlot", 7, "x"))
 	g.reconcile(t, "3buqdlot", 3)
-	image := "ghcr.io/smana/agent-harness@sha256:" + strings.Repeat("c", 64)
+	image := "ghcr.io/smana/maku-harness@sha256:" + strings.Repeat("c", 64)
 	r := g.runs.runs[rid(0)]
 	r.Phase, r.FactoryVersion, r.CompositionRevision = "Running", "v0.16.0", "xagentruns.cloud.ogenki.io-41b6efe"
 	g.runs.runs[rid(0)] = r
@@ -32,7 +32,7 @@ func TestARunRecordsWhatItRanOn(t *testing.T) {
 	r.HarnessImage = image
 	g.runs.runs[rid(0)] = r
 	g.reconcile(t, "3buqdlot", 1)
-	r.CompositionRevision, r.HarnessImage = "xagentruns.cloud.ogenki.io-9f00d1e", "ghcr.io/smana/agent-harness@sha256:"+strings.Repeat("d", 64)
+	r.CompositionRevision, r.HarnessImage = "xagentruns.cloud.ogenki.io-9f00d1e", "ghcr.io/smana/maku-harness@sha256:"+strings.Repeat("d", 64)
 	g.runs.runs[rid(0)] = r
 	costs[rid(0)] = meter.Cost{MicroUSD: 20, Served: []string{"claude-opus-5-5", "glm-5.3"}}
 	p = g.reconcile(t, "3buqdlot", 1).Status.Runs[0].Provenance

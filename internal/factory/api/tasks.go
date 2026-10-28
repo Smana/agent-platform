@@ -20,15 +20,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/fmetrics"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/sponsored"
+	factoryv1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/fmetrics"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/taskid"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/sponsored"
 )
 
 // IssueFiler files an issue as the factory App: RunLore's CreateIssue, whose answer is a

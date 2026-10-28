@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -316,4 +318,108 @@ func deadRuns(n int) map[string]watchedRun {
 		out[fmt.Sprintf("r%07d", i)] = watchedRun{}
 	}
 	return out
+}
+
+// series maps each sample line of a scrape, "name{labels}", to its value.
+func series(body string) map[string]string {
+	out := map[string]string{}
+	for _, l := range strings.Split(body, "\n") {
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		i := strings.LastIndexByte(l, ' ')
+		out[l[:i]] = l[i+1:]
+	}
+	return out
+}
+
+func TestMakuName(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"rooms", "maku_rooms"},
+		{"rooms_events_appended_total", "maku_rooms_events_appended_total"},
+		{"rooms_build_info", "maku_rooms_build_info"},
+		{"agent_factory_tasks", "maku_factory_tasks"},
+		{"agent_factory_build_info", "maku_factory_build_info"},
+		{"factory_slack_build_info", ""},
+		{"roomsx", ""},
+		{"go_goroutines", ""},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := MakuName(tc.in); got != tc.want {
+				t.Fatalf("MakuName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// v0.30.0 serves every rooms series twice, the second under maku_ (the rebrand): dashboards switch
+// names while both carry the same values. Off, only the old names.
+func TestMakuNamesMirrorEveryRoomsSeries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		on   bool
+	}{{"on serves both names with equal values", true}, {"off serves the old names only", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			exp, err := NewExporter(BrokerBuildInfo, "v0.30.0", WithMakuNames(tc.on))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = exp.Shutdown(ctx) }()
+			s, err := New(exp.Meter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Appended(ctx, "message", "harness", []string{"jwt"})
+			s.AppendTook(ctx, 3*time.Millisecond)
+			s.ObserveRoom("3kq7x2ma", "Active", true, 2, time.Unix(1_700_000_000, 0))
+			s.BridgeStalled(ctx, "cursor_lost")
+			got := series(scrape(t, exp.Handler()))
+			n := 0
+			for k, v := range got {
+				if !strings.HasPrefix(k, "rooms_") && !strings.HasPrefix(k, "rooms{") {
+					continue
+				}
+				n++
+				m, ok := got["maku_"+k]
+				switch {
+				case tc.on && (!ok || m != v):
+					t.Errorf("%s = %s, maku_%s = %q (present %v)", k, v, k, m, ok)
+				case !tc.on && ok:
+					t.Errorf("maku_%s served with the switch off", k)
+				}
+			}
+			if n < 6 {
+				t.Fatalf("scraped %d rooms series, want at least 6", n)
+			}
+			if _, ok := got[`maku_rooms_build_info{version="v0.30.0"}`]; ok != tc.on {
+				t.Errorf("maku_rooms_build_info present = %v, want %v", ok, tc.on)
+			}
+		})
+	}
+}
+
+// A family whose maku_ name is already a real family keeps only the real one: never two families
+// of one name in a scrape, which Prometheus would reject.
+func TestMakuGathererSkipsATwinThatIsAlreadyReal(t *testing.T) {
+	fam := func(name string, v float64) *dto.MetricFamily {
+		typ := dto.MetricType_GAUGE
+		return &dto.MetricFamily{Name: &name, Type: &typ, Metric: []*dto.Metric{{Gauge: &dto.Gauge{Value: &v}}}}
+	}
+	g := makuGatherer{reg: prometheus.GathererFunc(func() ([]*dto.MetricFamily, error) {
+		return []*dto.MetricFamily{fam("rooms_x", 1), fam("maku_rooms_x", 2), fam("rooms_y", 3)}, nil
+	})}
+	mfs, err := g.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]float64{}
+	for _, mf := range mfs {
+		got[mf.GetName()] = append(got[mf.GetName()], mf.GetMetric()[0].GetGauge().GetValue())
+	}
+	for name, want := range map[string]float64{"rooms_x": 1, "maku_rooms_x": 2, "rooms_y": 3, "maku_rooms_y": 3} {
+		if v := got[name]; len(v) != 1 || v[0] != want {
+			t.Errorf("%s = %v, want [%v]", name, v, want)
+		}
+	}
 }

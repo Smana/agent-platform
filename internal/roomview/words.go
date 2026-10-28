@@ -2,7 +2,7 @@
 
 package roomview
 
-import "github.com/Smana/agent-platform/internal/summary"
+import "github.com/Smana/maku/internal/summary"
 
 // word is the phrase a vocabulary has for v, else v cleaned: a value this broker does not know is
 // still untrusted text.

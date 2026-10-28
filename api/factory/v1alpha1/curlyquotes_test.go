@@ -11,7 +11,7 @@ import (
 // gofmt's doc-comment reformatting turns two apostrophes into a typographic quote, which is invalid CEL in a
 // marker: neither the types file nor a generated CRD may carry one.
 func TestNoTypographicQuotesInRulesOrCRDs(t *testing.T) {
-	for _, f := range []string{"task_types.go", "../../../config/crd/agents.ogenki.io_tasks.yaml", "../../../charts/agent-factory/crds/agents.ogenki.io_tasks.yaml"} {
+	for _, f := range []string{"task_types.go", "../../../config/crd/agents.ogenki.io_tasks.yaml", "../../../charts/maku-factory/crds/agents.ogenki.io_tasks.yaml"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)

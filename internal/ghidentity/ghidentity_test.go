@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/ghidentity"
+	"github.com/Smana/maku/internal/ghidentity"
 )
 
 func TestLoginFollowsTheGitHubLink(t *testing.T) {

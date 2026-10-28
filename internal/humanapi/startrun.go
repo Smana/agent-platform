@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/brief"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/runrequest"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/brief"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/runrequest"
 )
 
 // runRoles are the roles a human starts (§1); egressProfile a profile's name.

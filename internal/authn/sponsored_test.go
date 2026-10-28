@@ -15,7 +15,7 @@ func TestSponsored(t *testing.T) {
 	sg := newSigner(t)
 	id := "345@platform"
 	s := &Sponsored{V: sg.verifier(), Clients: []SponsoredClient{{Name: "slack-app", ClientID: func() string { return id }}},
-		Exclude: func() []string { return []string{"web-1", "roomctl-1"} }, Audience: func() string { return "proj" }}
+		Exclude: func() []string { return []string{"web-1", "maku-1"} }, Audience: func() string { return "proj" }}
 	tok := func(client, sub string) string {
 		return sg.accessToken(t, sub, []string{"proj"}, client, nil, time.Hour)
 	}
@@ -26,7 +26,7 @@ func TestSponsored(t *testing.T) {
 	other := sign(t, jwt.SigningMethodRS256, sg.key, "", Claims{RegisteredClaims: jwt.RegisteredClaims{Issuer: "https://evil.example",
 		Subject: "345", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}, ClientID: id})
 	for name, raw := range map[string]string{
-		"another client": tok("roomctl-1", "345"),
+		"another client": tok("maku-1", "345"),
 		"no subject":     tok(id, ""),
 		"another issuer": other,
 	} {
@@ -41,8 +41,8 @@ func TestSponsored(t *testing.T) {
 	if _, err := s.Authenticate(t.Context(), rogue); err == nil {
 		t.Fatal("a token from an untrusted key was admitted")
 	}
-	id = "roomctl-1" // a rotation that lands on a human client's id must refuse, never admit roomctl's tokens
-	if _, err := s.Authenticate(t.Context(), tok("roomctl-1", "345")); err == nil {
+	id = "maku-1" // a rotation that lands on a human client's id must refuse, never admit maku's tokens
+	if _, err := s.Authenticate(t.Context(), tok("maku-1", "345")); err == nil {
 		t.Fatal("a principal sharing a human client id was admitted")
 	}
 	id = "" // an unreadable file refuses

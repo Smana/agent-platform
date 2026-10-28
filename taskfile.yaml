@@ -14,6 +14,7 @@ tasks:
       - task: quickstart:check
       - task: migrations
       - task: docs
+      - task: names
       - task: scripts
       - task: ui:test
       - task: ui:check
@@ -38,6 +39,12 @@ tasks:
     cmds:
       - bash hack/docs_test.sh
       - bash hack/docs.sh
+
+  names:
+    desc: No artifact name from before the maku rebrand outside the historical docs (hack/names.sh).
+    cmds:
+      - bash hack/names_test.sh
+      - bash hack/names.sh
 
   scripts:
     desc: The operator scripts under scripts/, against fakes.
@@ -75,10 +82,10 @@ tasks:
           { printf '// SPDX-License-Identifier: Apache-2.0\n\n'; cat "$f"; } > "$f.tmp" && mv "$f.tmp" "$f"
         done
       # The factory chart ships the Task CRD: Tasks are runtime objects, never in Git.
-      - cp config/crd/agents.ogenki.io_tasks.yaml charts/agent-factory/crds/
+      - cp config/crd/agents.ogenki.io_tasks.yaml charts/maku-factory/crds/
       # The umbrella chart ships the broker's two: Rooms and the AgentRuns it watches.
-      - mkdir -p charts/agent-platform/crds
-      - cp config/crd/agents.ogenki.io_rooms.yaml config/crd/agents.ogenki.io_agentruns.yaml charts/agent-platform/crds/
+      - mkdir -p charts/maku/crds
+      - cp config/crd/agents.ogenki.io_rooms.yaml config/crd/agents.ogenki.io_agentruns.yaml charts/maku/crds/
 
   crd:check:
     desc: The committed CRD is exactly what the types generate.
@@ -89,14 +96,14 @@ tasks:
   chart:check:
     desc: Lint and render the factory and umbrella charts.
     cmds:
-      - helm lint --strict charts/agent-factory --set image.tag='v0.0.0@sha256:0000'
-      - bash charts/agent-factory/tests/render.sh
-      - helm lint --strict charts/agent-platform -f charts/agent-platform/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000' --set runController.images.harness.tag='v0.0.0@sha256:0000' --set runController.images.bridge.tag='v0.0.0@sha256:0000'
-      - bash charts/agent-platform/tests/render.sh
+      - helm lint --strict charts/maku-factory --set image.tag='v0.0.0@sha256:0000'
+      - bash charts/maku-factory/tests/render.sh
+      - helm lint --strict charts/maku -f charts/maku/values-quickstart.yaml --set broker.image.tag='v0.0.0@sha256:0000' --set runController.image.tag='v0.0.0@sha256:0000' --set runController.images.harness.tag='v0.0.0@sha256:0000' --set runController.images.bridge.tag='v0.0.0@sha256:0000'
+      - bash charts/maku/tests/render.sh
       - git diff --exit-code -- config/crd api
 
   quickstart:
-    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart + roomctl (Linux, docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
+    desc: kind + Cilium + gVisor + cert-manager + CNPG + the chart + maku (Linux, docker; MODEL_API_KEY, GITHUB_TOKEN, REPO)
     cmds:
       - hack/quickstart/up.sh
 
@@ -113,14 +120,14 @@ tasks:
   harness:test:
     desc: The agent harness image's test stage (needs docker; kept out of check, which does not)
     cmds:
-      - docker build --target test images/agent-harness
+      - docker build --target test images/maku-harness
 
   harness:checks:
     desc: "v3 feature 3, offline proof 4: the harness under runsc runs both repositories' checks behind an allowlist proxy (docker with runsc; TOKEN_FILE=<a GitHub token file>)"
     cmds:
-      - docker build -t agent-harness:checks images/agent-harness
-      - images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/ai-native-ref golang,pypi {{.TOKEN_FILE}}
-      - images/agent-harness/tests/checks/run.sh agent-harness:checks Smana/cloud-native-ref pypi {{.TOKEN_FILE}}
+      - docker build -t maku-harness:checks images/maku-harness
+      - images/maku-harness/tests/checks/run.sh maku-harness:checks Smana/ai-native-ref golang,pypi {{.TOKEN_FILE}}
+      - images/maku-harness/tests/checks/run.sh maku-harness:checks Smana/cloud-native-ref pypi {{.TOKEN_FILE}}
 
   # web/ builds on the nodejs mise.toml pins, from package-lock.json only (npm ci).
   ui:build:

@@ -24,12 +24,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/version"
 )
 
 // The headers agent-router sets on every request it forwards: the key the
@@ -232,7 +232,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		mcpwire.Write(w, req.ID, map[string]any{"protocolVersion": v,
 			"capabilities": map[string]any{"tools": map[string]bool{"listChanged": false}},
-			"serverInfo":   map[string]string{"name": "room-broker", "version": version.Version}}, nil)
+			"serverInfo":   map[string]string{"name": "maku-broker", "version": version.Version}}, nil)
 	case "ping":
 		mcpwire.Write(w, req.ID, map[string]any{}, nil)
 	case "tools/list":

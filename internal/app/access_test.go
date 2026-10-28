@@ -19,13 +19,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/github"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/github"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 // fakeZitadel serves one user's IdP links and state to the bearer of pat only, like ZITADEL's

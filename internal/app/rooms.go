@@ -15,14 +15,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
 )
 
 const (

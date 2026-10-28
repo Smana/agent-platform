@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 var (

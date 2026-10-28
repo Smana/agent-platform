@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/store"
 )
 
 // Appender is the part of the store Events writes through: broker-origin events

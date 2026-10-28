@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/config"
 
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // AutoMergedLabel marks a pull request the merger App merged, by class (v2 D1): with

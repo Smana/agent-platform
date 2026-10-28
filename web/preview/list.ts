@@ -22,7 +22,7 @@ const rows: RoomRow[] = [
 
 const params = new URLSearchParams(location.search);
 const cli = params.get("cli");
-const roomctl: Record<string, object> = {
+const maku: Record<string, object> = {
   oidc: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "293847561029384756@agents", projectID: "293847560192837465", version: "v0.9.0" },
   local: { url: "http://localhost:8080", humanMode: "local", version: "v0.9.0" },
   none: { url: "https://rooms.priv.cloud.ogenki.io", issuer: "https://auth.cloud.ogenki.io", clientID: "" },
@@ -30,7 +30,7 @@ const roomctl: Record<string, object> = {
 
 const get = (async (url: string) => {
   if (url.startsWith("/api/roomctl")) {
-    return cli && roomctl[cli] ? new Response(JSON.stringify(roomctl[cli])) : new Response(JSON.stringify({}), { status: 404 });
+    return cli && maku[cli] ? new Response(JSON.stringify(maku[cli])) : new Response(JSON.stringify({}), { status: 404 });
   }
   const q = new URL(url, location.origin).searchParams;
   return new Response(JSON.stringify(rows.filter((r) => (!q.has("needs_me") || (r.needsYou ?? 0) > 0) && (!q.get("repo") || r.repository === q.get("repo")))));

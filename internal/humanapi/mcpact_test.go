@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/store"
 )
 
 // actorOn gives the server an actor over l, with the test redactor.
@@ -19,7 +19,7 @@ func actorOn(l *actLog) option {
 	}
 }
 
-// F8: a note queued through MCP is stored wrapped, under the caller's standing as roomctl's.
+// F8: a note queued through MCP is stored wrapped, under the caller's standing as maku's.
 func TestMCPRoomQueue(t *testing.T) {
 	l := &actLog{st: store.RoomState{ID: roomID, Driver: "system:factory", DriverEpoch: 3}}
 	e := setup(t, mcpOn, actorOn(l))
@@ -38,7 +38,7 @@ func TestMCPRoomQueue(t *testing.T) {
 	}
 }
 
-// room_fork is roomctl fork's act through MCP: its note is stored wrapped (F8).
+// room_fork is maku fork's act through MCP: its note is stored wrapped (F8).
 func TestMCPRoomFork(t *testing.T) {
 	a, l, _, _ := forkFixture(t, nil)
 	e := setup(t, mcpOn, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Actor, s.Rooms = a, a.Rooms })

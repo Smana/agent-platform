@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/store"
 )
 
 // memLinks is the store's link tables, kept to the store's rules (store/slacklinks_test.go proves
@@ -206,8 +206,8 @@ func TestSlackLinkConfirmAndUnlink(t *testing.T) {
 		"another Origin": header("dana", "Origin", "https://evil.example"),
 		// A browser under Referrer-Policy: no-referrer sends this; it must stay refused.
 		"a null Origin": header("dana", "Origin", "null"),
-		// P18: roomctl's bearer (a local agent's) can forge any Origin, so it never links.
-		"a roomctl token": header("dana", "Origin", linkOrigin, "X-Test-Client", "roomctl"),
+		// P18: maku's bearer (a local agent's) can forge any Origin, so it never links.
+		"a maku token": header("dana", "Origin", linkOrigin, "X-Test-Client", "maku"),
 	} {
 		if status, _ := linkReq(t, e, http.MethodPost, "/link/slack", h, form); status != http.StatusForbidden {
 			t.Fatalf("%s: %d", name, status)
@@ -231,10 +231,10 @@ func TestSlackLinkConfirmAndUnlink(t *testing.T) {
 		links.linkedTo("T01ABC", "U02DEF") != "dana" {
 		t.Fatalf("a link moved: %s", page)
 	}
-	// Someone else cannot unlink it, nor a roomctl token; its own web session can.
+	// Someone else cannot unlink it, nor a maku token; its own web session can.
 	unlink := url.Values{"team": {"T01ABC"}, "user": {"U02DEF"}}
-	if status, _ := linkReq(t, e, http.MethodPost, "/link/slack/unlink", header("dana", "Origin", linkOrigin, "X-Test-Client", "roomctl"), unlink); status != http.StatusForbidden {
-		t.Fatalf("a roomctl unlink: %d", status)
+	if status, _ := linkReq(t, e, http.MethodPost, "/link/slack/unlink", header("dana", "Origin", linkOrigin, "X-Test-Client", "maku"), unlink); status != http.StatusForbidden {
+		t.Fatalf("a maku unlink: %d", status)
 	}
 	if _, page := linkReq(t, e, http.MethodPost, "/link/slack/unlink", header("eve", "Origin", linkOrigin), unlink); !strings.Contains(page, "Nothing to unlink") ||
 		links.linkedTo("T01ABC", "U02DEF") != "dana" {

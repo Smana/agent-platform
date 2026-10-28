@@ -24,11 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/repoaccess"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/repoaccess"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // gitHubWorld is the D7 gate the tests run under: each principal's Sub is linked to the GitHub

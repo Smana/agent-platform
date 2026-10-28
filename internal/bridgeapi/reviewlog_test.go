@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/maku/internal/authn"
 )
 
 type failingAuth struct{ err error }

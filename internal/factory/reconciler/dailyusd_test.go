@@ -5,9 +5,9 @@ package reconciler
 import (
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/triage"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/triage"
 )
 
 // TC7: a factory run reserves its USD run cap in the day ledger; a tier capped in tokens reserves

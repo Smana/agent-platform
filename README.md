@@ -1,3 +1,5 @@
+# maku
+
 <a href="docs/naming.md">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/png/maku-lockup-horizontal-dark.png">
@@ -5,7 +7,7 @@
   </picture>
 </a>
 
-Maku is the product name; `agent-platform` stays the name of the repository, module, binaries, images and APIs ([naming](docs/naming.md)).
+Maku is the product, the repository, the module and the CLI (`maku`); its components are `maku-*`. Kubernetes identities (ServiceAccounts, Services, audiences) keep their earlier names ([naming](docs/naming.md#technical-names)).
 
 **Run coding agents on your Kubernetes cluster without trusting them.**
 
@@ -13,11 +15,11 @@ Maku is the product name; `agent-platform` stays the name of the repository, mod
 - **Supervised:** approvals, steering and the merge gate sit outside the sandbox, with humans.
 - **On the record:** every run streams into a room that nobody can rewrite, the agent included.
 
-<a href="https://blog.ogenki.io/agent-platform/">
+<a href="https://blog.ogenki.io/maku/">
   <img alt="A live factory room during a review: the run chip with its role, model and reasoning effort, the budget, PR, issue and Dashboards chips, the Now line, the folded factory brief and the composer" src="docs/assets/room-light.png" width="800">
 </a>
 
-**[Watch a run in the live demo →](https://blog.ogenki.io/agent-platform/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
+**[Watch a run in the live demo →](https://blog.ogenki.io/maku/)** · [How it works](#how-it-works) · [What's a room?](#whats-a-room)
 
 **[Try it on your laptop →](docs/quickstart.md)** · one command, Linux and Docker, no cloud.
 
@@ -71,7 +73,7 @@ platform's [status page](https://github.com/Smana/cloud-native-ref/blob/main/web
 |---|---|
 | New here | [Concepts](docs/concepts.md), then [Architecture](docs/architecture.md) |
 | A maintainer with a factory issue or PR | [The factory](docs/factory.md) |
-| A developer who wants the CLI | [roomctl](docs/roomctl.md) |
+| A developer who wants the CLI | [maku](docs/cli.md) |
 | Operating a cluster | [Integration](docs/integration.md), then [Operations](docs/operations.md) |
 | Changing the code | [AGENTS.md](AGENTS.md), then [Development](docs/development.md) |
 

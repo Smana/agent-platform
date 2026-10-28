@@ -14,7 +14,7 @@
     "status": {"phase": "Open", "run": null, "budget": null, "pr": null, "issue": null, "lastVerdict": null},
     "needsYou": [],
     "actions": [
-      {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"}
+      {"kind":"queue","what":"queue a note for the next run","cli":"maku post 26zfnuxm --queue '<text>'"}
     ],
     "notes": {"untrusted": true, "items": []},
     "cursor": "seq:2"

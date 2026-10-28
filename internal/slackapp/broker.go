@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 const (

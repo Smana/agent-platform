@@ -16,11 +16,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/killswitch"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/tracing"
+	factoryv1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/factory/killswitch"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/tracing"
 )
 
 func TestRunFactoryRefuses(t *testing.T) {

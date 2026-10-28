@@ -267,7 +267,7 @@
       {
         "kind": "queue",
         "what": "queue a note for the next run",
-        "cli": "roomctl post 26zfnuxm --queue '<text>'"
+        "cli": "maku post 26zfnuxm --queue '<text>'"
       },
       {
         "kind": "steer",

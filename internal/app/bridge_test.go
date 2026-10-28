@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/bridge"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func writeCA(t *testing.T, dir string) string {

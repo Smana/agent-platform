@@ -15,8 +15,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 // claims behaves like runs.Client for what the API reads: one claim per id, a replayed Create

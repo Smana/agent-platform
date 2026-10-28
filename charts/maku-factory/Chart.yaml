@@ -1,0 +1,7 @@
+apiVersion: v2
+name: maku-factory
+description: "maku's factory: Tasks, triggers, the run meter. Its objects keep the agent-factory names (ServiceAccount, Deployment, labels)."
+type: application
+# Set by `helm package --version` from the tag (release) or the PR pre-release (R20).
+version: 0.0.0
+appVersion: "0.0.0"

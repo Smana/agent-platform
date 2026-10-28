@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 type fakeUnfinished struct {

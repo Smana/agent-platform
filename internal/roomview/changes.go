@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // defaultChangesLimit is how many milestones a page shows: view 4 is 30 lines, then "N more".

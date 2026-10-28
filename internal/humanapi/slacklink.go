@@ -21,10 +21,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/store"
 )
 
 // The Slack self-serve link (docs/superpowers/specs/2026-10-28-slack-self-serve-link-design.md):
@@ -254,7 +254,7 @@ func (s *Server) slackLinkRoutes(mux *http.ServeMux) {
 }
 
 // linkHuman is the signed-in human behind a link page, or the refusal written. Only a web UI
-// session links or unlinks (ruling P18): a roomctl or MCP bearer can set any Origin, so a local
+// session links or unlinks (ruling P18): a maku or MCP bearer can set any Origin, so a local
 // agent on the developer's token must never confirm a link in their name.
 func (s *Server) linkHuman(w http.ResponseWriter, r *http.Request) (authn.Principal, bool) {
 	p, ok := s.principal(w, r)

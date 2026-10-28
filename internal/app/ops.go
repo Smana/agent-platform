@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/version"
 )
 
 // probeTimeout bounds each probe's check, under the kubelet's default 1 s timeout

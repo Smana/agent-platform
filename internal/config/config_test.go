@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 const valid = `
@@ -433,8 +433,8 @@ func TestHumanLocalModeRefusesMCP(t *testing.T) {
 		t.Fatalf("an empty mcp block: %v", err)
 	}
 	// OIDC mode keeps validating /mcp as before: the refusal is local mode's alone.
-	roomctl := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
-	if _, err := Load(write(t, roomctl+"  mcp:\n    enabled: true\n")); err != nil {
+	maku := strings.Replace(valid, "  projectIDFile:", "  roomctlClientIDFile: /etc/room-broker/roomctl/client-id\n  projectIDFile:", 1)
+	if _, err := Load(write(t, maku+"  mcp:\n    enabled: true\n")); err != nil {
 		t.Fatalf("oidc mode with /mcp on: %v", err)
 	}
 }
@@ -561,5 +561,29 @@ func TestLoadSlackLink(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, c.want)
 			}
 		})
+	}
+}
+
+func TestLoadMetrics(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"unset is on", valid, true},
+		{"true is on", valid + "metrics:\n  makuNames: true\n", true},
+		{"false is off", valid + "metrics:\n  makuNames: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(write(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Metrics.MakuNamesOn(); got != tc.want {
+				t.Fatalf("MakuNamesOn() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if _, err := Load(write(t, valid+"metrics:\n  makuName: true\n")); err == nil {
+		t.Fatal("a misspelt metrics key loaded")
 	}
 }

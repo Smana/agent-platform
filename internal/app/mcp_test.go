@@ -19,12 +19,12 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcp"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcp"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 type fakeToolLog struct{ drafts []envelope.Draft }

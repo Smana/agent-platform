@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
 // The clients a human's act comes through (factory interfaces F8). Only the web UI's standing may
 // steer and decide (ruling P18), and only its text is stored as typed: a local agent can drive
-// roomctl and the MCP server on its human's token.
+// maku and the MCP server on its human's token.
 const (
 	ViaWeb     = "web"
 	ViaRoomctl = "roomctl"

@@ -1,0 +1,13 @@
+add this to .cursor/mcp.json (maku setup never edits a config):
+
+{
+  "mcpServers": {
+    "factory": {
+      "type": "stdio",
+      "command": "maku",
+      "args": ["mcp"]
+    }
+  }
+}
+
+setup installs the factory-handoff skill in .cursor/skills

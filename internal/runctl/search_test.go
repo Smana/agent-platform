@@ -5,7 +5,7 @@ package runctl
 import (
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 func bridgeEnv(t *testing.T, r *v1alpha1.AgentRun) map[string]string {

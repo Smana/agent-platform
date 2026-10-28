@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func agentDraft(n int64, typ envelope.Type, payload any) envelope.Draft {

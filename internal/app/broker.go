@@ -26,25 +26,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/bridgeapi"
-	"github.com/Smana/agent-platform/internal/config"
-	fconfig "github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/humanapi/ui"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/suspend"
-	"github.com/Smana/agent-platform/internal/version"
-	"github.com/Smana/agent-platform/internal/webhook"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/bridgeapi"
+	"github.com/Smana/maku/internal/config"
+	fconfig "github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/humanapi/ui"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/suspend"
+	"github.com/Smana/maku/internal/version"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 // The broker's listeners and bounds (§9 ports; GP-18 for :8443).
@@ -154,7 +154,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
-	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, version.Version)
+	exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, version.Version, metrics.WithMakuNames(cfg.Metrics.MakuNamesOn()))
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}

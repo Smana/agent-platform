@@ -23,7 +23,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 const (
@@ -263,7 +263,7 @@ func (a *App) do(ctx context.Context, api *url.URL, method, path, query, bearer 
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "room-broker")
+	req.Header.Set("User-Agent", "maku-broker")
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

@@ -11,7 +11,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")

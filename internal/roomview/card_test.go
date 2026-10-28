@@ -13,9 +13,9 @@ import (
 
 	"github.com/yuin/goldmark/ast"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/summary"
 )
 
 var cardGoldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts", "runs_and_spend", "hostile"}
@@ -54,7 +54,7 @@ func card1(t *testing.T, s summary.Summary, o Options) string {
 	return b.String()
 }
 
-// body is a summary/v1 body decoded, as roomctl status decodes the broker's answer.
+// body is a summary/v1 body decoded, as maku status decodes the broker's answer.
 func body(t *testing.T, raw string) summary.Summary {
 	t.Helper()
 	var s summary.Summary
@@ -282,17 +282,17 @@ func TestCardRealPhases(t *testing.T) {
 	}
 }
 
-// summaryBody is the broker's answer the roomctl tests use.
+// summaryBody is the broker's answer the maku tests use.
 const summaryBody = `{"apiVersion":"summary/v1","room":"26zfnuxm","url":"https://rooms.example/r/26zfnuxm",` +
 	`"status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},"budget":{"usedTokens":189093,"limitTokens":1500000},` +
 	`"pr":{"number":2239,"url":"https://github.com/Smana/a/pull/2239"},"issue":null,"lastVerdict":{"by":"reviewer","verdict":"changes_requested\u001b[31m","at":"2026-10-08T19:00:00Z"}},` +
 	`"needsYou":[{"kind":"approval","id":"01M4","what":"git push to agent/26zfnuxm","deadline":"2026-10-08T14:00:00Z","url":"https://rooms.example/r/26zfnuxm#01M4"}],` +
-	`"actions":[{"kind":"queue","what":"queue a message","cli":"roomctl post 26zfnuxm --queue <text>"},{"kind":"steer","what":"steer the run"}],` +
+	`"actions":[{"kind":"queue","what":"queue a message","cli":"maku post 26zfnuxm --queue <text>"},{"kind":"steer","what":"steer the run"}],` +
 	`"notes":{"untrusted":true,"items":[{"at":"2026-10-08T19:14:00Z","run":"cf4ato2x","text":"found both versions\u001b[2J on line 12-13, fixing"}]},"cursor":"seq:142"}`
 
 var cardNow = time.Date(2026, 10, 8, 19, 30, 0, 0, time.UTC)
 
-// Ported from roomctl's RenderSummary tests: each case keeps its point on the card's own lines.
+// Ported from maku's RenderSummary tests: each case keeps its point on the card's own lines.
 func TestCardPortedFromRenderSummary(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -306,7 +306,7 @@ func TestCardPortedFromRenderSummary(t *testing.T) {
 				`approve "git push to agent/26zfnuxm" by 14:00 UTC → https://rooms.example/r/26zfnuxm#01M4`,
 				`19:14 UTC cf4ato2x "found both versions[2J on line 12-13, fixing"`,
 				"PR    #2239 (https://github.com/Smana/a/pull/2239) · reviewer changes_requested[31m at 19:00 UTC"},
-			[]string{"\x1b", "roomctl approve", "cursor"}},
+			[]string{"\x1b", "maku approve", "cursor"}},
 		{"the task leads and the budget reads as the page does",
 			`{"room":"r","url":"u","status":{"phase":"Implementing","run":{"id":"cf4ato2x","role":"implementer"},"budget":{"usedTokens":189093,"limitTokens":1500000},` +
 				`"issue":{"number":74,"url":"https://github.com/o/r/issues/74","title":"Chat view: pair tool calls"}},"notes":{"items":[]}}`, cardNow,

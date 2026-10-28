@@ -18,12 +18,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // Fork is the store's, over the fake's one log: events 1..upTo exist when the
@@ -97,7 +97,7 @@ func forkFixture(t *testing.T, funcs *interceptor.Funcs) (*Actor, *actLog, *v1al
 }
 
 // forkAs sends fork as who, an agents member with no standing of their own in
-// the room (a watcher), through roomctl unless web.
+// the room (a watcher), through maku unless web.
 func forkAs(a *Actor, room *v1alpha1.Room, who string, web bool, action Action) wire.ServerFrame {
 	return forkIn(a, room, who, "agents-member", web, action)
 }
@@ -126,7 +126,7 @@ func forkedSpec(t *testing.T, a *Actor, room *v1alpha1.Room, f wire.ServerFrame)
 	return child.Spec
 }
 
-// SC-7, offline: a watcher forks from roomctl (ruling P18 allows it) into a room
+// SC-7, offline: a watcher forks from maku (ruling P18 allows it) into a room
 // they own and drive, with the source's policy, and its first run starts on the
 // new room's branch from the commit at the fork point, on their own token.
 func TestForkCreatesTheForkersRoomAndItsRun(t *testing.T) {

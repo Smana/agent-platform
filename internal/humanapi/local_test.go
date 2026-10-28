@@ -14,11 +14,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // A local-mode server end to end: the principal must pass Server.principal (a zero Expiry is
@@ -124,7 +124,7 @@ func TestLocalHumanOriginPolicy(t *testing.T) {
 		t.Fatalf("local discovery: %s", body)
 	}
 
-	// OIDC: no every-route gate, and discovery says which mode roomctl is talking to.
+	// OIDC: no every-route gate, and discovery says which mode maku is talking to.
 	o := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) {
 		s.PublicURL, s.Issuer, s.HumanMode = "https://rooms.example", "https://auth.example", config.HumanModeOIDC
 		s.RoomctlClient, s.ProjectID, s.UI = func() string { return "cli" }, func() string { return "proj" }, index

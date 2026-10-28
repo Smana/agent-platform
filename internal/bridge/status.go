@@ -5,7 +5,7 @@ package bridge
 import (
 	"fmt"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // StatusItem is one item of the status stream and its seq there.

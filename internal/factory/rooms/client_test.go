@@ -24,9 +24,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // broker is the system API of internal/bridgeapi (roomEvents, roomMessage) as it answers: the

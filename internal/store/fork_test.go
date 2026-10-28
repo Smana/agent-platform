@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // SC-7, offline: the fork copies 1..N with their seq, as the broker's own role,

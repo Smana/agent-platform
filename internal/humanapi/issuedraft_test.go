@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 func TestMCPIssueDraft(t *testing.T) {

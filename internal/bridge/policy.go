@@ -2,7 +2,7 @@
 
 package bridge
 
-import "github.com/Smana/agent-platform/internal/wire"
+import "github.com/Smana/maku/internal/wire"
 
 // The §6 table. egress.new is never approvable: the path is a fork with extra egressProfiles (S9).
 var profiles = map[string]map[Class]Verdict{

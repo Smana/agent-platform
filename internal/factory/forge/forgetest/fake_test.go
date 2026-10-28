@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // api is the method set the factory's consumers declare (narrate, intake, reconciler): the

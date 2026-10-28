@@ -28,8 +28,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"sigs.k8s.io/yaml"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/sponsored"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/sponsored"
 )
 
 const (
@@ -131,6 +131,7 @@ type Config struct {
 	Resume    Resume              `json:"resume"`
 	Meter     Meter               `json:"meter"`
 	Tracing   Tracing             `json:"tracing"`
+	Metrics   Metrics             `json:"metrics,omitzero"`
 	API       API                 `json:"api"`
 	RunLore   RunLore             `json:"runlore"`
 	Sandbox   Sandbox             `json:"sandbox,omitzero"`
@@ -581,6 +582,14 @@ type Tracing struct {
 	OTLPEndpoint string `json:"otlpEndpoint"`
 }
 
+// Metrics tunes what /metrics serves beyond the §7 instruments.
+type Metrics struct {
+	// MakuNames also serves every agent_factory_* series as maku_factory_* and every rooms_* one
+	// as maku_rooms_* (metrics.MakuName; the maku rebrand, one release of both names). On unless
+	// the file sets it false.
+	MakuNames bool `json:"makuNames"`
+}
+
 // Schedule starts a task from config (§1). The config is a gate path, so its text is trusted.
 type Schedule struct {
 	Name      string `json:"name"`
@@ -607,7 +616,7 @@ type API struct {
 	Repositories []string `json:"repositories"` // OD-6: cloud-native-ref only
 	HumanIssuer  string   `json:"humanIssuer"`
 	HumanJWKS    string   `json:"humanJWKS"`
-	// Files holding the rooms-proxy and roomctl client ids (from agents-secrets).
+	// Files holding the rooms-proxy and maku client ids (from agents-secrets).
 	ClientIDFiles []string `json:"clientIDFiles"`
 	// ProjectIDFile holds the ZITADEL project id a sponsored token's aud must hold, as the broker's
 	// human.projectIDFile pins the human path; required while api.sponsored is non-empty.
@@ -933,7 +942,7 @@ func Parse(raw []byte) (*Config, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(j))
 	dec.DisallowUnknownFields()
-	c := Config{Budgets: Budgets{EnforceTask: true}} // decoding keeps a default the file omits
+	c := Config{Budgets: Budgets{EnforceTask: true}, Metrics: Metrics{MakuNames: true}} // decoding keeps a default the file omits
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
@@ -1283,7 +1292,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if len(c.API.ClientIDFiles) == 0 {
-		bad("api.clientIDFiles is empty: the rooms-proxy and roomctl client ids name the human callers")
+		bad("api.clientIDFiles is empty: the rooms-proxy and maku client ids name the human callers")
 	}
 	if (c.API.SystemIssuer == "") != (c.API.SystemJWKS == "") {
 		bad("api.systemIssuer and api.systemJWKS are both set or both empty (R23)")

@@ -158,7 +158,7 @@ func TestCreateRefusesWhatItCannotVouchFor(t *testing.T) {
 		"a query":             func(s *Spec) { s.SourceURL = issue + "?x=1" },
 		"a fragment":          func(s *Spec) { s.SourceURL = issue + "#issuecomment-1" },
 		"a trailing slash":    func(s *Spec) { s.SourceURL = issue + "/" },
-		"another repository":  func(s *Spec) { s.SourceURL = "https://github.com/Smana/agent-platform/issues/2112" },
+		"another repository":  func(s *Spec) { s.SourceURL = "https://github.com/Smana/maku/issues/2112" },
 		"not an issue or PR":  func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/commit/2112" },
 		"no number":           func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/" },
 		"number zero":         func(s *Spec) { s.SourceURL = "https://github.com/Smana/cloud-native-ref/issues/0" },

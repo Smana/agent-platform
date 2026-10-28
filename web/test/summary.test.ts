@@ -14,7 +14,7 @@ const base = (): Summary => ({
     lastVerdict: { by: "agent:rev", verdict: "approve", at: "2026-10-08T10:05:00Z" },
   },
   needsYou: [{ kind: "approval", id: "ap1", what: "run kubectl apply", deadline: "2026-10-08T12:00:00Z", url: "https://rooms.example/r/3kq7x2ma#ap1" }],
-  actions: [{ kind: "steer", what: "Steer the running agent" }, { kind: "message", what: "Write to the room", cli: "roomctl say 3kq7x2ma hi" }],
+  actions: [{ kind: "steer", what: "Steer the running agent" }, { kind: "message", what: "Write to the room", cli: "maku say 3kq7x2ma hi" }],
   notes: { untrusted: true, items: [{ at: "2026-10-08T10:01:00Z", run: "run-1", text: "reading the repo" }] },
   cursor: "seq:9",
 });

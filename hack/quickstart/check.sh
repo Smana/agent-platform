@@ -12,8 +12,8 @@ bash -n hack/quickstart/*.sh
 shellcheck -x hack/quickstart/*.sh
 
 qs=hack/quickstart
-vals=charts/agent-platform/values.yaml
-qvals=charts/agent-platform/values-quickstart.yaml
+vals=charts/maku/values.yaml
+qvals=charts/maku/values-quickstart.yaml
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 # ---- sources of truth ----
@@ -37,7 +37,7 @@ for m in ca-issuer cnpg-cluster; do cat "$qs/manifests/$m.yaml.tmpl" >"$tmp/$m.y
 
 # ---- the chart as up.sh installs it ----
 dg='v0.0.0@sha256:0000'
-out=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRunsNamespace=false \
+out=$(helm template ap charts/maku -n "$ns" -f "$qvals" --set createRunsNamespace=false \
   --set broker.image.tag="$dg" --set runController.image.tag="$dg" \
   --set runController.images.harness.tag="$dg" --set runController.images.bridge.tag="$dg")
 q() { yq ea "[select(.kind == \"$1\")] | $2" - <<<"$out"; }
@@ -97,8 +97,8 @@ grep -q "@rooms-rw.\${ns}.svc" "$qs/db.sh" || bad "db.sh does not point the brok
 {
 grep -qF 'deploy/room-broker $LOCAL_PORT:8080' "$qs/up.sh" || bad "up.sh port-forward command"
 grep -qF 'broker.publicURL=http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh does not set publicURL from LOCAL_PORT"
-grep -qF 'roomctl configure --url http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh's configure line does not use LOCAL_PORT"
-grep -qF 'roomctl run --repo $REPO' "$qs/up.sh" || bad "up.sh does not print roomctl run"
+grep -qF 'maku configure --url http://localhost:$LOCAL_PORT' "$qs/up.sh" || bad "up.sh's configure line does not use LOCAL_PORT"
+grep -qF 'maku run --repo $REPO' "$qs/up.sh" || bad "up.sh does not print maku run"
 grep -qF 'qs_platform_ok "$(uname -s)"' "$qs/up.sh" || bad "up.sh does not stop on an unproven platform"
 }
 [[ $(q ConfigMap '.[] | select(.metadata.name=="room-broker-config") | .data."config.yaml" | from_yaml | .publicURL') == http://localhost:8080 ]] || bad "default publicURL is not http://localhost:8080"
@@ -107,7 +107,7 @@ qs_skew_ok "$(sed -n 's/^kubectl = "1\.\([0-9]*\)\..*"/\1/p' mise.toml)" "$(qs_n
 grep -qF 'qs_skew_ok' "$qs/up.sh" || bad "up.sh has no kubectl skew preflight"
 
 # ALLOW_UNSANDBOXED=1: the three overrides really yield an unsandboxed config
-un=$(helm template ap charts/agent-platform -n "$ns" -f "$qvals" --set createRunsNamespace=false \
+un=$(helm template ap charts/maku -n "$ns" -f "$qvals" --set createRunsNamespace=false \
   --set runController.allowUnsandboxed=true --set runController.runtimeClassName= --set runController.createRuntimeClass=false \
   --set broker.image.tag="$dg" --set runController.image.tag="$dg" --set runController.images.harness.tag="$dg" --set runController.images.bridge.tag="$dg")
 grep -q 'kind: RuntimeClass' <<<"$un" && bad "unsandboxed render still has a RuntimeClass"

@@ -1,0 +1,16 @@
+with claude on the PATH, setup runs:
+  claude mcp add --scope project factory -- maku mcp
+
+otherwise: add this to .mcp.json (maku setup never edits a config):
+
+{
+  "mcpServers": {
+    "factory": {
+      "command": "maku",
+      "args": ["mcp"]
+    }
+  }
+}
+
+setup installs the factory-handoff skill in .claude/skills
+and the /factory command (handoff, status, inbox) in .claude/commands

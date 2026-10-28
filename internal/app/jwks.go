@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
 )
 
 const (
@@ -161,8 +161,8 @@ func authenticators(ctx context.Context, cfg config.Config, m *metrics.Set, buil
 		for _, sp := range h.MCP.Sponsored {
 			clients = append(clients, authn.SponsoredClient{Name: sp.Name, ClientID: idFile(sp.ClientIDFile)})
 		}
-		web, roomctl := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile)
-		sponsored = &authn.Sponsored{V: hv, Clients: clients, Exclude: func() []string { return []string{web(), roomctl()} },
+		web, maku := idFile(h.ClientIDFile), idFile(h.RoomctlClientIDFile)
+		sponsored = &authn.Sponsored{V: hv, Clients: clients, Exclude: func() []string { return []string{web(), maku()} },
 			Audience: idFile(h.ProjectIDFile)}
 	}
 	return auth{runs: runs, systems: authn.NewSystems(sys, cfg.SystemPrincipals), humans: humans, verifiers: all,

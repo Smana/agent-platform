@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 // writePair writes a self-signed pair for 127.0.0.1 with the given serial, dated

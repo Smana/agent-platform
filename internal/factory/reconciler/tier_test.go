@@ -5,8 +5,8 @@ package reconciler
 import (
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
 )
 
 // R47: the tier on the claim is the tier the run runs on, fixed for the run.

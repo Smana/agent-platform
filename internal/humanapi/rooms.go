@@ -20,17 +20,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/summary"
-	"github.com/Smana/agent-platform/internal/version"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/summary"
+	"github.com/Smana/maku/internal/version"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func roleName(r policy.Role) string {
@@ -132,12 +132,12 @@ func createStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// roomctlSetup is GET /api/roomctl: the values of `roomctl configure` and the broker's
-// version, whose roomctl release the UI's CLI setup view installs. clientID is "" while the broker has no roomctl client.
-// roomctl asks for the project's audience with projectID: ZITADEL adds the
+// roomctlSetup is GET /api/roomctl: the values of `maku configure` and the broker's
+// version, whose maku release the UI's CLI setup view installs. clientID is "" while the broker has no maku client.
+// maku asks for the project's audience with projectID: ZITADEL adds the
 // project to aud only then, and the broker refuses a token without it (ruling AS).
 // It also carries the room page's dashboard templates, unfilled: not secrets, but of no use to
-// roomctl configure, so the unauthenticated route leaves them out.
+// maku configure, so the unauthenticated route leaves them out.
 func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.principal(w, r); !ok {
 		return
@@ -145,7 +145,7 @@ func (s *Server) roomctlSetup(w http.ResponseWriter, r *http.Request) {
 	s.writeSetup(w, s.Dashboards)
 }
 
-// publicSetup is GET /.well-known/roomctl: the same values with no sign-in, so `roomctl
+// publicSetup is GET /.well-known/roomctl: the same values with no sign-in, so `maku
 // configure --url` needs nothing else (#48). The issuer, the client id and the project id are
 // public by design (a native app has no secret) and the CLI setup view shows them to any member.
 // The proxy in front must let this path through unauthenticated.
@@ -171,8 +171,8 @@ func (s *Server) writeSetup(w http.ResponseWriter, dashboards []Dashboard) {
 		ClientID  string `json:"clientID"`
 		ProjectID string `json:"projectID"`
 		Version   string `json:"version"`
-		// HumanMode says whether roomctl needs an IdP and a token. Additive: a broker without the
-		// field, and a roomctl that ignores it, read each other as before (OIDC).
+		// HumanMode says whether maku needs an IdP and a token. Additive: a broker without the
+		// field, and a maku that ignores it, read each other as before (OIDC).
 		HumanMode string `json:"humanMode"`
 		// Dashboards are the templates, absent when none is configured.
 		Dashboards []Dashboard `json:"dashboards,omitempty"`

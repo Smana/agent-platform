@@ -14,7 +14,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 func TestManifestIsAValidClaim(t *testing.T) {

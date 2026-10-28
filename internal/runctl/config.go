@@ -18,9 +18,9 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 // Config is the run-controller's file, from the chart.

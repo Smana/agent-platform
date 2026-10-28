@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/redact"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/redact"
 )
 
 // githubPAT is a fresh token-shaped secret: random, since gitleaks' rule checks

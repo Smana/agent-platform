@@ -5,7 +5,7 @@ package runs
 import (
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // Spend per identity SI1: one payer per run, the person it is charged to beside the fleet, else its

@@ -17,8 +17,8 @@ import (
 	"github.com/yuin/goldmark/ast"
 	extast "github.com/yuin/goldmark/extension/ast"
 
-	"github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/summary"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.md and testdata/*.txt from the current views")
@@ -313,11 +313,11 @@ func TestOverviewNeedPhrasesAndDatedDeadline(t *testing.T) {
 // terminal, the tool's argument in the Markdown an agent reads.
 func TestOverviewFooterByFormat(t *testing.T) {
 	rows := overviewRows()
-	if out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms}); !strings.Contains(out, "`roomctl rooms --all`") && !strings.Contains(out, "roomctl rooms --all shows it") {
+	if out := render(t, rows, Options{Format: Text, Now: now, Rooms: rooms}); !strings.Contains(out, "`maku rooms --all`") && !strings.Contains(out, "maku rooms --all shows it") {
 		t.Errorf("Text footer:\n%s", out)
 	}
 	out := render(t, rows, Options{Format: Markdown, Now: now, Rooms: rooms})
-	if !strings.Contains(out, "1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") || strings.Contains(out, "roomctl") {
+	if !strings.Contains(out, "1 room ended more than 7 days ago: call `rooms_list` with `all: true` to see it.\n") || strings.Contains(out, "maku") {
 		t.Errorf("Markdown footer:\n%s", out)
 	}
 }

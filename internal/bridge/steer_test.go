@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func TestSteeringReachesTheHarnessOnceAndIsAcknowledged(t *testing.T) {

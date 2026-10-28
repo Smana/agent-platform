@@ -14,7 +14,7 @@ import (
 	"net/http"
 )
 
-// The tools the broker's /mcp and roomctl mcp share by name: roomctl mcp serves RoomWait and
+// The tools the broker's /mcp and maku mcp share by name: maku mcp serves RoomWait and
 // RoomCheckout itself, and the broker's instructions and prompts name them (one spelling, so the
 // two cannot drift).
 const (

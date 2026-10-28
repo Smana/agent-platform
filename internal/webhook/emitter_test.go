@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // R17, R18, M5, B3: an event goes to each subscriber of its repository and type, signed; a room

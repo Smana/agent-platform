@@ -7,13 +7,13 @@ import (
 	"regexp"
 	"slices"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/filefence"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/mdlinks"
-	"github.com/Smana/agent-platform/internal/factory/semverdiff"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/filefence"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/mdlinks"
+	"github.com/Smana/maku/internal/factory/semverdiff"
 )
 
 // Condition is one condition a class declares in its config (merge gate classes MC1): Declared

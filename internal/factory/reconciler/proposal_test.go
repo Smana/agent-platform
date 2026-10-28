@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func handoffEvent(seq int64, run, actor string, origin envelope.Origin, summary string) envelope.Event {

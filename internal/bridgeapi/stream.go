@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // stream is the bridge's one downstream channel (C4 r5: SSE, sandbox-initiated).

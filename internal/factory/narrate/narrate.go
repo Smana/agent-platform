@@ -17,17 +17,17 @@ import (
 	"strings"
 	"time"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/finding"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
-	"github.com/Smana/agent-platform/internal/github"
-	summ "github.com/Smana/agent-platform/internal/summary"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/finding"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/taskid"
+	"github.com/Smana/maku/internal/github"
+	summ "github.com/Smana/maku/internal/summary"
 )
 
 // MaxNarrated is status.narrated's maxItems in the Task CRD: Post trims the oldest keys past it.

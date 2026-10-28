@@ -8,7 +8,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/maku/internal/authn"
 )
 
 // tokenReviewClient is how authenticators obtains the apiserver's TokenReview client. It is called

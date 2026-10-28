@@ -11,11 +11,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/sponsored"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/sponsored"
 )
 
 // TaskCreator is the factory's intake api, as the broker reaches it with the caller's own token.

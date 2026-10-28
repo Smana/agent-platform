@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllertest"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/store"
 )
 
 func claim(name, room, phase, revoked string) *unstructured.Unstructured {

@@ -27,16 +27,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/repoaccess"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/repoaccess"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
 )
 
 // Listener bounds. WriteTimeout is 0 for the WebSocket's sake: every other
@@ -99,7 +99,7 @@ type Server struct {
 
 	Humans Authenticator
 	Groups policy.Groups
-	// HumanMode is the human listener's mode ("oidc", "local"), which roomctl's discovery reports so
+	// HumanMode is the human listener's mode ("oidc", "local"), which maku's discovery reports so
 	// `configure --url` knows whether an IdP and a token are needed. Empty reads as OIDC: the
 	// deployment every broker before local mode carried.
 	HumanMode string
@@ -111,7 +111,7 @@ type Server struct {
 	// WebClient is the web UI's client id, read at use (Ruling AS-a): a session
 	// through it is the web UI, which may steer and decide (ruling P18).
 	WebClient func() string
-	// PublicURL, Issuer, RoomctlClient and ProjectID are what `roomctl
+	// PublicURL, Issuer, RoomctlClient and ProjectID are what `maku
 	// configure` needs (GET /api/roomctl); the ids are read at use like WebClient.
 	PublicURL     string
 	Issuer        string
@@ -136,7 +136,7 @@ type Server struct {
 	// Dashboards are the room page's link templates (human.dashboards), served on GET
 	// /api/roomctl; none shows no group.
 	Dashboards []Dashboard
-	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
+	// MCP serves POST /mcp, the MCP server maku mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
 	// SlackLink is the Slack self-serve link (human.slackLink): its two tools for the Slack App and
 	// the /link/slack page. Nil serves neither.
@@ -223,7 +223,7 @@ func (s *Server) Routes() http.Handler {
 
 // sameOrigin refuses a request another site's page sent, before the route runs: local mode has no
 // token, so nothing else stands between a foreign page and the user's port-forward. A request with
-// no Origin (curl, roomctl, a same-origin GET) passes, and so does the configured origin's own.
+// no Origin (curl, maku, a same-origin GET) passes, and so does the configured origin's own.
 func sameOrigin(origins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if o := r.Header.Get("Origin"); o != "" && !slices.Contains(origins, o) {

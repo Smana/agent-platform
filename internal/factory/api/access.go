@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
+	factoryv1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
 )
 
 // GitHubAccess is v2 D4's WriteChecker: the principal's GitHub login from their ZITADEL link (the

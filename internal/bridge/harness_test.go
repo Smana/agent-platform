@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 const conv = "0b3c6f0e-5d1a-4b8e-9f41-2a7c3e9d8b10"

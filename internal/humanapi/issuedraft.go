@@ -8,14 +8,14 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
-// issueDraft is issue_draft's result: what roomctl mcp's issue_file shows the developer, then files.
+// issueDraft is issue_draft's result: what maku mcp's issue_file shows the developer, then files.
 type issueDraft struct {
 	Repo  string `json:"repo"`
 	Title string `json:"title"`
@@ -29,7 +29,7 @@ type issueDraft struct {
 }
 
 // issue_draft validates a factory issue in the skill's shape: hidden characters stripped, the
-// template's title and sections, no secret. It files nothing: issue_file, roomctl mcp's own tool,
+// template's title and sections, no secret. It files nothing: issue_file, maku mcp's own tool,
 // files it with the developer's gh after they confirm (F3).
 func (s *Server) issueDraftTool(ctx context.Context, p authn.Principal, args json.RawMessage) (any, error) {
 	var a struct {

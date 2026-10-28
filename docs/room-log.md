@@ -168,7 +168,7 @@ receives `410 sealed` stops mirroring.
 ## Retention
 
 A daily CronJob, `room-broker-retention` (03:17, `concurrencyPolicy: Forbid`), runs
-`room-broker retention` as `rooms_retention`. It deletes the events, then the row, of every room
+`maku-broker retention` as `rooms_retention`. It deletes the events, then the row, of every room
 closed longer ago than its own retention, one room per transaction, each under its own
 `statement_timeout` of 10 minutes (`SET LOCAL`; the broker's sessions keep 15 s). The purged room is
 sealed and expired, so a long `DELETE` blocks no writer. The CronJob's `activeDeadlineSeconds`, if

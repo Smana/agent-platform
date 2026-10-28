@@ -23,9 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/version"
 )
 
 // POST /api/rooms: an agents member creates a room they own and drive, in the
@@ -55,7 +55,7 @@ func TestCreateRoom(t *testing.T) {
 		return rec
 	}
 
-	rec := post("alice", `{"dataClass":"internal","repository":"Smana/agent-platform"}`)
+	rec := post("alice", `{"dataClass":"internal","repository":"Smana/maku"}`)
 	var out struct{ ID string }
 	if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &out) != nil || !envelope.ValidID(out.ID) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
@@ -64,11 +64,11 @@ func TestCreateRoom(t *testing.T) {
 	if err := rooms.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: out.ID}, &room); err != nil {
 		t.Fatal(err)
 	}
-	if s := room.Spec; s.Owner != "human:alice" || s.Driver != "human:alice" || s.DataClass != "internal" || s.Repository != "Smana/agent-platform" ||
+	if s := room.Spec; s.Owner != "human:alice" || s.Driver != "human:alice" || s.DataClass != "internal" || s.Repository != "Smana/maku" ||
 		len(s.Members) != 0 {
 		t.Fatalf("%+v", s)
 	}
-	const public = `{"dataClass":"public","repository":"Smana/agent-platform"}`
+	const public = `{"dataClass":"public","repository":"Smana/maku"}`
 	for _, c := range []struct {
 		name, user, body string
 		err              error
@@ -76,12 +76,12 @@ func TestCreateRoom(t *testing.T) {
 	}{
 		{"not authenticated", "", public, nil, http.StatusUnauthorized},
 		{"not in an agents group", "stranger", public, nil, http.StatusForbidden},
-		{"no data class", "alice", `{"repository":"Smana/agent-platform"}`, nil, http.StatusBadRequest},
-		{"another data class", "alice", `{"dataClass":"secret","repository":"Smana/agent-platform"}`, nil, http.StatusBadRequest},
+		{"no data class", "alice", `{"repository":"Smana/maku"}`, nil, http.StatusBadRequest},
+		{"another data class", "alice", `{"dataClass":"secret","repository":"Smana/maku"}`, nil, http.StatusBadRequest},
 		// D7: a room is its repository's, so it names one.
 		{"no repository", "alice", `{"dataClass":"public"}`, nil, http.StatusBadRequest},
 		{"a malformed repository", "alice", `{"dataClass":"public","repository":"../etc"}`, nil, http.StatusBadRequest},
-		{"an unknown field", "alice", `{"dataClass":"public","repository":"Smana/agent-platform","driver":"human:mallory"}`, nil, http.StatusBadRequest},
+		{"an unknown field", "alice", `{"dataClass":"public","repository":"Smana/maku","driver":"human:mallory"}`, nil, http.StatusBadRequest},
 		{"not JSON", "alice", `dataClass=public`, nil, http.StatusBadRequest},
 		// Review 4.4 M4: the fake client runs no CRD pattern, so the handler's own check is what refuses it.
 		{"a principal the CRD would refuse", "a b", public, nil, http.StatusBadRequest},
@@ -142,7 +142,7 @@ func TestCreateRoomErrorsAreLoggedAndMapped(t *testing.T) {
 			Logger: slog.New(slog.NewJSONHandler(&buf, nil))}
 		w0().gate(srv)
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/rooms",
-			strings.NewReader(`{"dataClass":"public","repository":"Smana/agent-platform"}`))
+			strings.NewReader(`{"dataClass":"public","repository":"Smana/maku"}`))
 		req.Header.Set("X-Test-User", "alice")
 		rec := httptest.NewRecorder()
 		srv.Routes().ServeHTTP(rec, req)
@@ -151,13 +151,13 @@ func TestCreateRoomErrorsAreLoggedAndMapped(t *testing.T) {
 		}
 		var line struct{ Level, Room, Repository, Err string }
 		if err := json.Unmarshal(buf.Bytes(), &line); err != nil || line.Level != "WARN" || !envelope.ValidID(line.Room) ||
-			line.Repository != "Smana/agent-platform" || line.Err != c.err.Error() {
+			line.Repository != "Smana/maku" || line.Err != c.err.Error() {
 			t.Errorf("%s: logged %s", c.name, buf.Bytes())
 		}
 	}
 }
 
-// #48: the same values, with no sign-in, for `roomctl configure --url`. None is a secret.
+// #48: the same values, with no sign-in, for `maku configure --url`. None is a secret.
 func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
 	srv := &Server{Humans: headerAuth{}, Groups: groups, PublicURL: "https://rooms.priv.example", Issuer: "https://auth.example",
 		RoomctlClient: func() string { return "3434@agents" }, ProjectID: func() string { return "29184" }}
@@ -172,8 +172,8 @@ func TestRoomctlSetupIsPublicToConfigure(t *testing.T) {
 	}
 }
 
-// GET /api/roomctl: what `roomctl configure` needs, and the broker's version for the
-// install snippet to pin roomctl's release, for any agents member. The
+// GET /api/roomctl: what `maku configure` needs, and the broker's version for the
+// install snippet to pin maku's release, for any agents member. The
 // client id is read at use, like the web client's: the IdP mints it per build.
 func TestRoomctlSetup(t *testing.T) {
 	id := "3434@agents"
@@ -203,7 +203,7 @@ func TestRoomctlSetup(t *testing.T) {
 	}
 	id = ""
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" {
-		t.Fatalf("no roomctl client yet: %d %v", code, out)
+		t.Fatalf("no maku client yet: %d %v", code, out)
 	}
 	srv.RoomctlClient, srv.ProjectID = nil, nil
 	if code, out := get("alice"); code != http.StatusOK || out["clientID"] != "" || out["projectID"] != "" {
@@ -213,7 +213,7 @@ func TestRoomctlSetup(t *testing.T) {
 
 // GET /api/roomctl carries the room page's dashboard templates (human.dashboards) to any member,
 // unfilled: the page fills each room's ids. Absent, the field is left out. The unauthenticated
-// /.well-known/roomctl never carries them: roomctl configure has no use for them.
+// /.well-known/roomctl never carries them: maku configure has no use for them.
 func TestRoomctlSetupDashboards(t *testing.T) {
 	links := []Dashboard{{Label: "Room metrics", URL: "https://grafana.example.com/d/agent-room/x?var-room={room}"},
 		{Label: "Run", URL: "https://grafana.example.com/d/agent-run/x?var-run={run}"}}

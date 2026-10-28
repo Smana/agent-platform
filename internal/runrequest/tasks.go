@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 // TaskRequest is one api task to create: the factory's POST /v1/tasks fields, the caller's own

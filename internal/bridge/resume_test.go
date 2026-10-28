@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // A suspended run comes back as a new pod on the same PVC (v2 suspend, plan

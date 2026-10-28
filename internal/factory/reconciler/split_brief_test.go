@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // partTask is part 1 of 2 of #7, issue 501, triaged from its parent.
@@ -43,7 +43,7 @@ func TestAPartsFirstBrief(t *testing.T) {
 	if sp > st || st > sn {
 		t.Fatalf("order steering %d scope %d snapshot %d", st, sp, sn)
 	}
-	golden := filepath.Join("..", "..", "..", "images", "agent-harness", "tests", "testdata", "split_child_brief.txt")
+	golden := filepath.Join("..", "..", "..", "images", "maku-harness", "tests", "testdata", "split_child_brief.txt")
 	if os.Getenv("UPDATE_GOLDEN") != "" {
 		if err := os.WriteFile(golden, []byte(b), 0o644); err != nil { //nolint:gosec // a test fixture
 			t.Fatal(err)

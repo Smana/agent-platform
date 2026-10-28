@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/github"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/github"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 // zitadelTimeout bounds one ZITADEL link read.

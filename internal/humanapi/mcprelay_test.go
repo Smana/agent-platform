@@ -14,31 +14,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/roomctl"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/maku"
+	"github.com/Smana/maku/internal/store"
 )
 
-// bearerAuth is headerAuth for roomctl's bearer: "Bearer <user>" is <user> through roomctl's client.
+// bearerAuth is headerAuth for maku's bearer: "Bearer <user>" is <user> through maku's client.
 type bearerAuth struct{}
 
 func (bearerAuth) Authenticate(r *http.Request) (authn.Principal, error) {
 	who, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	c := r.Clone(r.Context())
-	c.Header = header(who, "X-Test-Client", "roomctl")
+	c.Header = header(who, "X-Test-Client", "maku")
 	return headerAuth{}.Authenticate(c)
 }
 
-// The design's live proof 1, offline: an agent on roomctl mcp lists, reads, queues (wrapped),
+// The design's live proof 1, offline: an agent on maku mcp lists, reads, queues (wrapped),
 // tails as a task, and files a draft only once its developer accepts it.
-func TestRoomctlMCPAgainstTheBroker(t *testing.T) {
+func TestMakuMCPAgainstTheBroker(t *testing.T) {
 	l := &actLog{st: store.RoomState{ID: roomID, Driver: "system:factory", DriverEpoch: 3}}
 	e := setup(t, mcpOn, actorOn(l), func(s *Server, _ *fanout.Hub, _ *hubView) { s.Humans = bearerAuth{} })
 	var mu sync.Mutex
 	var filed []string
 	polled := make(chan struct{}, 8)
-	relay := &roomctl.Relay{URL: e.ts.URL, HC: e.ts.Client(),
+	relay := &maku.Relay{URL: e.ts.URL, HC: e.ts.Client(),
 		Token: func(context.Context) (string, error) { return "own", nil },
 		File: func(_ context.Context, repo, title, body string) (string, error) {
 			mu.Lock()

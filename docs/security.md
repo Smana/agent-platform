@@ -25,8 +25,8 @@ The design's threats, the controls against each, and the package or mechanism th
 | T11 | Denial of service | Size and rate limits; byte budgets per connection; authentication before subscription; gateway budgets bound agent loops | Payload and batch limits (`internal/envelope`, `internal/bridgeapi`); connection and rate limits (`internal/humanapi`) | A tailnet member can load the broker |
 | T12 | Broker compromise | No harness keys (events are pushed); cannot rewrite history; its own CNP; runs only through the factory API, under a live human's token and budget | The database's grants and triggers ([room log](room-log.md#the-guarantees)); the broker's RBAC | Reads every room; can request runs as a connected human; can decide pending approvals, since the triggers bind each approval row to its events, not each `approval_decided` event to a human's act, and a row check would stop nobody holding the broker's credential. Its room-access reader PAT reads the whole ZITADEL organization, users and their IdP links included (`ORG_OWNER_VIEWER` is org-wide, if read-only), and the factory App's metadata reads answer any login's permission on the App's repositories |
 | T13 | Untrusted issue text reaching a prompt | Every text written outside the platform is defused before an agent reads it: invisible and control characters removed, images and raw HTML defused, fence look-alikes replaced, repeated until nothing changes | `internal/factory/sanitize`: a text whose markup does not settle is replaced whole by `Withheld`, failing closed | It is a filter, not a boundary: egress policy and the merge gate's paths are the controls |
-| T14 | A forged `Agent-Run` trailer | Trailers are provenance hints, never authorisation; the merge gate binds commits to the agents App by push identity: every push to the branch must be the agents App's in GitHub's repository activity | The merge gate; [`images/agent-harness/README.md`](../images/agent-harness/README.md) | The binding is to the App, not the task: any implementer run can push as the bot. Commits are not signed |
-| T15 | Theft or misuse of the merger key | One workload mounts it; the repository's ruleset lets only that App, and a repository admin, bypass a plain merge | The chart's `mergerSecret` (`charts/agent-factory/values.yaml`); the ruleset | Whoever holds the key can merge |
+| T14 | A forged `Agent-Run` trailer | Trailers are provenance hints, never authorisation; the merge gate binds commits to the agents App by push identity: every push to the branch must be the agents App's in GitHub's repository activity | The merge gate; [`images/maku-harness/README.md`](../images/maku-harness/README.md) | The binding is to the App, not the task: any implementer run can push as the bot. Commits are not signed |
+| T15 | Theft or misuse of the merger key | One workload mounts it; the repository's ruleset lets only that App, and a repository admin, bypass a plain merge | The chart's `mergerSecret` (`charts/maku-factory/values.yaml`); the ruleset | Whoever holds the key can merge |
 | T16 | Work started on a repository by someone who may not change it, or through another repository's room or branch | A room's runs act on its `spec.repository`, a resumed branch on its last run's; every human run needs `write` on the repository on GitHub, admins included, failing closed; a label counts only from that repository's maintainers with `write`; each repository has its own GitHub connections | `internal/factory/api` (`admitRoom`, `admitResume`, `mayWrite`), `internal/repoaccess`, `internal/factory/intake`; [factory](factory.md#who-may-start-work-on-a-repository) | A permission revoked inside the 5-minute cache |
 | T17 | Two factories (a rebuilt cluster on a stale pin, a second cloud) acting on one repository | The repository's default branch names its one factory in `.github/agent-factory.yaml`, a gate path; a factory it does not name takes no intake, schedules or API runs and merges nothing; an unread fence ages out to not owned | `internal/factory/fence`; [factory](factory.md#the-ownership-fence) | Up to 15 minutes of a stale answer while GitHub is unreachable |
 
@@ -88,7 +88,7 @@ The permission matrix, enforced by the broker (`internal/policy`, tested row by 
 
 - **Never an agent approves**: one injected transcript would otherwise approve another's
   action.
-- **Never from `roomctl`**: a token issued to the `roomctl` client cannot decide, steer,
+- **Never from `maku`**: a token issued to the CLI's ZITADEL client (formerly `roomctl`) cannot decide, steer,
   interrupt or move the driver token, because a local agent could run it. `POST /mcp` takes only
   that client's tokens, so the same holds there, and the text of both is stored as machine-sent.
 - **Four-eyes** (off by default, per room): the humans in the triggering turn's `causedBy`
@@ -108,7 +108,7 @@ claim except the client that issued it.
 
 | Bound | What holds it |
 |---|---|
-| Identity | The token's `client_id` equals the principal's `clientIDFile`, read at each use, and its audience holds the project (empty or missing: refused). The client must be a machine client: every subject of it is `system:<name>`. Never the web UI's or `roomctl`'s client |
+| Identity | The token's `client_id` equals the principal's `clientIDFile`, read at each use, and its audience holds the project (empty or missing: refused). The client must be a machine client: every subject of it is `system:<name>`. Never the web UI's or `maku`'s client |
 | Sponsor | A maintainer of the repository, from the config (or the `onBehalfOf` link map), checked at load and again at each request; recorded as `spec.source.sponsor` |
 | Day | `dailyUSD`, held by the run-time reservation under `system:<name>`, enforced whatever `enforcePrincipal` says. The intake's check is advisory. A principal removed from the config is no longer held, and its tasks escalate `principal_unknown` |
 | Ceiling | `max_cost` is mandatory and at most `maxCostUSD`; the task is capped at it and each run at a third, by the meter |
@@ -232,7 +232,7 @@ secret, never in the config. The key file is re-read at each delivery.
 
 ## The Slack App
 
-The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is the only component with a public route: `POST /slack/events`, matched exactly. The invariants, each held by a named test:
+The factory's Slack App (`cmd/maku-slack`, [docs/slack.md](slack.md)) is the only component with a public route: `POST /slack/events`, matched exactly. The invariants, each held by a named test:
 
 | # | Invariant | Test |
 |---|---|---|
@@ -243,16 +243,16 @@ The factory's Slack App (`cmd/factory-slack-app`, [docs/slack.md](slack.md)) is 
 
 - **One workspace.** `teamID` is required; an event from any other workspace is dropped.
 - **A check mark files only when** the reacting user is linked, in the factory's `onBehalfOf.slack` or by a self-serve link, the message is the bot's own draft (its user is the bot's, and its metadata hash matches), and the channel is configured. A second check mark on the same draft is a duplicate and files nothing.
-- **A self-serve link is proved on both sides** ([design and threat model](superpowers/specs/2026-10-28-slack-self-serve-link-design.md)): Slack proves the Slack user (a signed mention, answered ephemerally), ZITADEL the account (the rooms web UI's session only, never a roomctl or MCP token, and a same-origin POST). A link never moves to another account silently. The code is single use, 10 minutes, stored as its sha256 only, for the App's one workspace. The record names a ZITADEL account, read by `system:factory` alone; the factory resolves the account's current GitHub login itself and still holds it to the maintainers, and the Filed line names the sponsor. The App can mint codes and unlink, never create or read a link.
+- **A self-serve link is proved on both sides** ([design and threat model](superpowers/specs/2026-10-28-slack-self-serve-link-design.md)): Slack proves the Slack user (a signed mention, answered ephemerally), ZITADEL the account (the rooms web UI's session only, never a maku or MCP token, and a same-origin POST). A link never moves to another account silently. The code is single use, 10 minutes, stored as its sha256 only, for the App's one workspace. The record names a ZITADEL account, read by `system:factory` alone; the factory resolves the account's current GitHub login itself and still holds it to the maintainers, and the Filed line names the sponsor. The App can mint codes and unlink, never create or read a link.
 - **Secrets stay in the App.** The bot token and the client-credentials secret are mounted files, read at use. Neither reaches the broker or a run: the broker gets a ZITADEL access token, never Slack's, and a run never sees either.
-- **The App's token** is a client-credentials grant with the project-audience scope, the same scope `roomctl` uses. The factory proves the principal itself from that token and the `on_behalf_of` it names.
+- **The App's token** is a client-credentials grant with the project-audience scope, the same scope `maku` uses. The factory proves the principal itself from that token and the `on_behalf_of` it names.
 - **A key problem is not a bad signature.** A webhook key the App cannot read answers `503 no_key`, counted apart from `bad_signature`. It is not a hold: the broker retries after 10s, 1m and 5m, then counts a failure, and three given-up deliveries disable the subscriber until its `generation` is bumped, so events are lost meanwhile ([recovery](slack.md#state)).
 - **Redelivery.** Slack events and broker webhooks are deduplicated in memory (one replica). Two concurrent redeliveries of one id can both pass the check before either finishes; the worst case is one duplicate thread line.
 
-## roomctl on the developer's machine
+## maku on the developer's machine
 
-`roomctl mcp` and `roomctl checkout` run as the developer, beside a local coding agent that room
-text and a branch can try to steer ([roomctl](roomctl.md#the-mcp-server)).
+`maku mcp` and `maku checkout` run as the developer, beside a local coding agent that room
+text and a branch can try to steer ([maku](cli.md#the-mcp-server)).
 
 - **The start form.** The factory starts only from a form field that defaults to no, in `issue_file`.
   The model can call the tool but cannot answer the form. The factory still takes only a
@@ -262,12 +262,12 @@ text and a branch can try to steer ([roomctl](roomctl.md#the-mcp-server)).
   calls "advice, not a control".
 - **Checking out an agent's branch (R15).** A sandboxed agent can commit agent or editor config,
   hooks or mise files that run when a tool opens the folder or when the developer commits.
-  `room_checkout` and `roomctl checkout` therefore fetch only `agent/<room>` from an `origin`
+  `room_checkout` and `maku checkout` therefore fetch only `agent/<room>` from an `origin`
   verified to be the room's repository, run git with an argument list and `core.hooksPath=/dev/null`
   (no hook runs during the fetch or the worktree creation), confine the new worktree beside the
   repository, refuse an existing path, and confirm the changed files that run code, in a form that
   defaults to no or with `y/N` on a terminal. Without either they refuse, naming the files.
-  `roomctl checkout` asks on a terminal only. An agent whose shell runs in a pseudo-terminal can
+  `maku checkout` asks on a terminal only. An agent whose shell runs in a pseudo-terminal can
   answer `y` itself; that agent can also run `git worktree add` directly, so the question is
   advice, not a control.
   The residual: a developer who confirms, then opens the folder or commits there, runs what the
@@ -293,15 +293,18 @@ Verify an image before you pin it. **The default accepts only images built by th
 from a `v*` tag:**
 
 ```bash
-IMAGE=ghcr.io/smana/room-broker@sha256:<digest>
+IMAGE=ghcr.io/smana/maku-broker@sha256:<digest>
 
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/release\.yaml@refs/tags/v'
+  --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/release\.yaml@refs/tags/v'
 
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .SBOM }}'        # SPDX SBOM per platform
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}'  # SLSA provenance
 ```
+
+Releases and pre-releases before v0.30.0 carry the `Smana/agent-platform` identity, so each regexp
+accepts both repository names.
 
 **PR pre-releases are not release-grade: they run unreviewed branch code. Use them for integration
 testing only.** To verify one, accept the PR workflow instead:
@@ -309,10 +312,10 @@ testing only.** To verify one, accept the PR workflow instead:
 ```bash
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/ci\.yaml@'
+  --certificate-identity-regexp '^https://github\.com/Smana/(agent-platform|maku)/\.github/workflows/ci\.yaml@'
 ```
 
 ## Reporting a vulnerability
 
-Privately, through [GitHub security advisories](https://github.com/Smana/agent-platform/security/advisories/new),
+Privately, through [GitHub security advisories](https://github.com/Smana/maku/security/advisories/new),
 never a public issue. See [SECURITY.md](../SECURITY.md).

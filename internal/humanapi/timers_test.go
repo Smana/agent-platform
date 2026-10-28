@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/maku/internal/fanout"
 )
 
 // fakeTimers is a Server.Timer the test steps by hand: a timer of the ping period lands on

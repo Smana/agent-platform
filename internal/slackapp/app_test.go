@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/sponsored"
-	"github.com/Smana/agent-platform/internal/webhook"
+	"github.com/Smana/maku/internal/sponsored"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 // F9, R22–R24, invariants 6–8, live proof 5 offline: a mention drafts; a ✅ from a linked

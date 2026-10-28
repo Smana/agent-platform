@@ -8,11 +8,11 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/bridgeapi"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/bridge"
+	"github.com/Smana/maku/internal/bridgeapi"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/store"
 )
 
 // appends are the store's two writes of an event.

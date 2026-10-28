@@ -5,7 +5,7 @@ package triage
 import (
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // I-2: a ceiling too small for the integer division never turns a cap off (0 reads as unset): every

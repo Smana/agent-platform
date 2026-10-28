@@ -240,20 +240,20 @@ export async function listRooms(app: HTMLElement, get: typeof fetch = fetch, fil
 
 export const roomId = /^[a-z2-7]{8}$/;
 
-// installRoomctl downloads the roomctl release for this machine, checks it against the
-// release's checksums and installs it: the broker's own release, or the latest when the
-// broker is not a release build. The version lands in a pasted shell block: only a whole
-// semver passes. macOS has shasum, not always sha256sum.
-function installRoomctl(version?: string): string {
+// installMaku downloads the maku release for this machine, checks it against the release's
+// checksums and installs it: the broker's own release, or the latest when the broker is not a
+// release build. The version lands in a pasted shell block: only a whole semver passes. macOS
+// has shasum, not always sha256sum.
+function installMaku(version?: string): string {
   const base = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")
-    ? `https://github.com/Smana/agent-platform/releases/download/${version}`
-    : "https://github.com/Smana/agent-platform/releases/latest/download";
+    ? `https://github.com/Smana/maku/releases/download/${version}`
+    : "https://github.com/Smana/maku/releases/latest/download";
   return [
     `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
     `base=${base}`,
-    `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
+    `curl -fsSLO "$base/maku-$os-$arch" && curl -fsSLO "$base/maku.sha256"`,
     `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
-    `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
+    `grep " maku-$os-$arch$" maku.sha256 | $sum -c - && sudo install -m 0755 "maku-$os-$arch" /usr/local/bin/maku`,
   ].join("\n");
 }
 
@@ -269,23 +269,23 @@ function continued(cmd: string, flags: [string, string][]): string {
 interface SetupStep { title: string; code: string; before?: (string | { code: string })[]; after?: (string | { code: string })[] }
 
 // setupSteps is what the fold shows for GET /api/roomctl's answer: a local broker's own
-// steps, an OIDC broker's three, or, with no roomctl client, nothing.
+// steps, an OIDC broker's three, or, with no maku client, nothing.
 function setupSteps(c: { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string; humanMode?: string }): SetupStep[] | undefined {
   const installStep: SetupStep = {
-    title: "Install", code: installRoomctl(c.version),
+    title: "Install", code: installMaku(c.version),
     before: ["linux and macOS · amd64 and arm64 · checked against the release's sha256"],
   };
   if (c.humanMode === "local") {
     return [installStep,
-      { title: "Point it at this broker", code: continued("roomctl configure", [["--url", `${c.url}`]]) },
-      { title: "Start a run", code: continued("roomctl run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }];
+      { title: "Point it at this broker", code: continued("maku configure", [["--url", `${c.url}`]]) },
+      { title: "Start a run", code: continued("maku run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }];
   }
   if (!c.clientID) return;
   return [installStep,
-    { title: "Point it at this broker", code: continued("roomctl configure",
+    { title: "Point it at this broker", code: continued("maku configure",
       [["--url", `${c.url}`], ["--issuer", `${c.issuer}`], ["--client-id", c.clientID], ["--project-id", `${c.projectID}`]]) },
-    { title: "Sign in", code: "roomctl login",
-      after: ["Then: ", { code: "roomctl status" }, " · ", { code: "roomctl mcp" }, " for your agent's tools"] }];
+    { title: "Sign in", code: "maku login",
+      after: ["Then: ", { code: "maku status" }, " · ", { code: "maku mcp" }, " for your agent's tools"] }];
 }
 
 // copiedFor is how long a Copy button says Copied before it reverts.
@@ -343,14 +343,14 @@ function stepItem(step: SetupStep, n: number, live: HTMLElement): HTMLLIElement 
   return li;
 }
 
-// cliSetup is the CLI setup view: roomctl's install, its configure line for this broker,
+// cliSetup is the CLI setup view: maku's install, its configure line for this broker,
 // then signing in (or, on a local broker, a first run), as numbered steps each with its
 // own Copy button, read from GET /api/roomctl the first time it opens.
 export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
   const d = document.createElement("details");
   d.className = "cli-setup";
   const summary = document.createElement("summary");
-  summary.textContent = "Use roomctl from your terminal";
+  summary.textContent = "Use maku from your terminal";
   const card = document.createElement("div");
   card.className = "cli-card";
   const live = document.createElement("span");
@@ -372,7 +372,7 @@ export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
       const r = await api("/api/roomctl", {}, get);
       const c = (await r.json()) as Parameters<typeof setupSteps>[0];
       const steps = r.ok ? setupSteps(c) : undefined;
-      if (!steps) return say("roomctl is not set up on this broker: it has no roomctl client.");
+      if (!steps) return say("maku is not set up on this broker: it has no maku client.");
       const ol = document.createElement("ol");
       ol.className = "cli-steps";
       ol.append(...steps.map((s, i) => stepItem(s, i + 1, live)));

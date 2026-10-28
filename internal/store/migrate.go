@@ -15,7 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Smana/agent-platform/internal/store/migrations"
+	"github.com/Smana/maku/internal/store/migrations"
 )
 
 // migrateLock is the advisory lock id room-broker migrate holds: two replicas' init

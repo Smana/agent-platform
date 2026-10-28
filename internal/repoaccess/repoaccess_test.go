@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 func TestCanReadFollowsGitHub(t *testing.T) {

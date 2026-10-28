@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 const (

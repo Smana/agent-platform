@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // FinalReadResult is what a final read reached: the harness events read so far, the items still

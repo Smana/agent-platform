@@ -14,9 +14,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/prpattern"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/prpattern"
+	"github.com/Smana/maku/internal/store"
 )
 
 // MaxBytes bounds a brief: the AgentRun task.text maximum is 16 KiB.

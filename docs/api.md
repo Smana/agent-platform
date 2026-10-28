@@ -4,13 +4,13 @@ The broker serves four listeners. Every body is JSON.
 
 | Port | Who calls it | Authentication |
 |---|---|---|
-| `:8443` (TLS) | `room-bridge` in each run pod; system callers such as the factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) |
+| `:8443` (TLS) | The bridge (container `room-bridge`, an identity that keeps its pre-maku name, see [naming](naming.md#technical-names)) in each run pod; system callers such as the factory | Offline JWT: run tokens (audience `room-broker`) or system tokens (audience `rooms-system`) |
 | `:9090` | kubelet, `vmagent` | None: probes and metrics only |
 | `:8080` | Humans, through oauth2-proxy | ZITADEL ID token and access token |
 | `:8090` | Agents' `room_*` tools, through the `agent-router` Gateway only | Injected key plus the gateway's verified `x-ar-agent` |
 | `:8085` (bridge) | kubelet | None |
 
-`room-broker serve` serves `:8443`, `:9090`, `:8080` and `:8090`.
+`maku-broker serve` serves `:8443`, `:9090`, `:8080` and `:8090`.
 
 ## `:8443` — bridge and system API
 
@@ -310,7 +310,7 @@ harness answered once and has been unreachable for more than 60 s: as a native s
 probe gates the harness container, so it must never wait for the harness. It never
 checks the broker, so a broker outage cannot mark sandboxes unready.
 
-It also serves `GET /admission`, read by `room-bridge gate` on loopback:
+It also serves `GET /admission`, read by `maku-bridge gate` on loopback:
 
 | Status | Body | When |
 |---|---|---|
@@ -335,7 +335,7 @@ both from oauth2-proxy.
 | `Origin` | Must match the room host: no cross-site WebSocket |
 | Lifetime | A connection lasts `min(token expiry, 1 h)`, then closes for re-authentication |
 
-`roomctl` presents a bearer token from its own native ZITADEL client; oauth2-proxy lets it
+`maku` presents a bearer token from its own native ZITADEL client; oauth2-proxy lets it
 through with `skip-jwt-bearer-tokens`. Such a token can read, post, queue and fork, but the broker
 refuses `decide`, `message{steering}`, `interrupt` and every `driver_*` action from it. Its text is
 [machine-sent](#machine-sent-text).
@@ -348,14 +348,14 @@ Errors before a WebSocket upgrade are plain-text HTTP errors.
 | `GET /api/rooms` | One row per room the caller may read (room access, then their role): id, `url` (the room's page), phase, `state` (the [coarse state](#the-coarse-state)), owner, driver, data class, last `seq`, `lastEventAt` (when the log last moved; omitted when the room has no events or the time could not be read), `repository`, the task (`issue`, `title`, `task` phase, `pr`; absent when the room has none), `reason` (the task's wait code from its last facts, while its phase is `Queued`, `AwaitingCI`, `AwaitingHuman` or `Escalated`; absent otherwise or when it cannot be read), `needsYou` (how many things wait for the caller), `needsMe` (`needsYou` > 0: an approval is pending that the caller could decide in the web UI, or the factory's task is held on the room and the caller is its driver or owner — the summary's `kind: hold`, or a PR waits for the caller's merge — `kind: merge`, or an Escalated task waits for its issue's author and the caller owns the room — `kind: answer`; an approval past its deadline that the sweep has not decided yet counts for neither `needsYou` nor `need`, as the summary drops it), `need` (the first of those things, in the summary's order: the pending approval with the lowest id, then a hold, then a merge, then an answer; the same `kind`, `id`, `what`, `deadline?` and `url` as a `needsYou` item; absent when nothing waits for the caller), and the caller's own role. A room whose access cannot be verified is left out, with no error. The `X-Rooms-Access` header says why a list may be short, about the caller only: `unlinked` (not an admin, and no GitHub link on their ZITADEL user), `unverified` (a check failed past the cache, or none is configured), else `ok`. Filters, applied after the access and role checks so none reveals an unreadable room: `?repo=owner/name`; `?mine=1`, rooms whose task's issue the caller filed or labelled or whose PR they authored or review, matched on their linked GitHub login; `?needs_me=1`, rows with `needsMe` |
 | `GET /api/rooms/{id}/summary` | The room's [`summary/v1`](#get-apiroomsidsummary): status, what needs the caller, what they can do, the agents' notes |
 | `GET /v1/ws?room=<id>` | The live room, over WebSocket |
-| `POST /mcp` | The [MCP server](#post-mcp) `roomctl mcp` relays, when `human.mcp.enabled`; else `404` |
+| `POST /mcp` | The [MCP server](#post-mcp) `maku mcp` relays, when `human.mcp.enabled`; else `404` |
 | `POST /api/rooms` | `{"dataClass": "public", "repository": "Smana/cloud-native-ref"}` → `201 {"id": "…"}`: a new room owned and driven by the caller, any agents member, on a `repository` they can read (room access). `400` for another data class, a missing or malformed repository, an unknown field or a principal the Room CRD would refuse, `404` for a repository the caller cannot read or the factory App cannot see (missing, or the App not installed), `409` when a Room of the generated id exists, `429` past the caller's action budget (10/s, burst 20, shared with acts), `500` when the Room is refused for any other reason, such as the broker lacking `create` on rooms (logged at WARN), `503` when the API server is unreachable, overloaded or times out, or `access_unverified` when the caller's access cannot be checked. The `SameSite=Strict` cookie and the `Origin` check stop a cross-site post |
-| `GET /.well-known/roomctl` | The same `{url, issuer, clientID, projectID, version, humanMode}` with no sign-in, for `roomctl configure --url`; none of it is a secret. `humanMode` is `oidc` or `local` (`local`: no IdP, no token, and the `roomctl` values are empty). The proxy in front must let this path through unauthenticated |
-| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version, humanMode}` for the room list's CLI setup view, any agents member: the values of `roomctl configure`, and the broker's version, whose roomctl release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no roomctl client. roomctl asks for the project's audience scope with `projectID`. `dashboards?` (`[{label, url}]`): the room page's link templates from [`human.dashboards`](integration.md#the-brokers-configuration), unfilled; the page fills `{room}`, `{run}` and `{task}` per room. Absent when none is configured. They are not secrets, so any member gets them; `/.well-known/roomctl` leaves them out, since `roomctl configure` has no use for them |
+| `GET /.well-known/roomctl` | The same `{url, issuer, clientID, projectID, version, humanMode}` with no sign-in, for `maku configure --url`; none of it is a secret. `humanMode` is `oidc` or `local` (`local`: no IdP, no token, and the `maku` values are empty). The proxy in front must let this path through unauthenticated |
+| `GET /api/roomctl` | `{url, issuer, clientID, projectID, version, humanMode}` for the room list's CLI setup view, any agents member: the values of `maku configure`, and the broker's version, whose maku release the view's install block downloads (the latest when it is not a `v*` build). `clientID` is `""` while the broker has no maku client. maku asks for the project's audience scope with `projectID`. `dashboards?` (`[{label, url}]`): the room page's link templates from [`human.dashboards`](integration.md#the-brokers-configuration), unfilled; the page fills `{room}`, `{run}` and `{task}` per room. Absent when none is configured. They are not secrets, so any member gets them; `/.well-known/roomctl` leaves them out, since `maku configure` has no use for them |
 
 ### `GET /api/rooms/{id}/summary`
 
-The room's top layer, folded from its log, which the room page and `roomctl status` render. It is a
+The room's top layer, folded from its log, which the room page and `maku status` render. It is a
 room read: the same room access and role check as `GET /v1/ws`. Query: `after=N` (default `0`)
 keeps only the notes after `seq` N; pass back the number of the previous answer's `cursor`.
 
@@ -373,7 +373,7 @@ keeps only the notes after `seq` N; pass back the number of the previous answer'
 | `status` | `state`: the [coarse state](#the-coarse-state), from the log's task phase, else the room's. `reason` and `next` (absent unless the task waits: `Queued`, `AwaitingCI`, `AwaitingHuman`, `Escalated`; absent in a sealed room): why, and what happens or who acts next. `issue.title` is the issue's title, bounded. `phase`: the task's, else the room's, and `Closed` or `Sealed` once the log is sealed. `task`: the room's Task, which the factory names as the room, so the room id; absent in a room without task facts. `run`, `budget`, `pr`, `issue`, `lastVerdict`: the factory's latest facts and the latest review verdict, each `null` when absent. `spend` (`usedMicroUSD`, `limitMicroUSD?`): the task's dollars, in millionths of a dollar, beside `budget`'s tokens; absent until the factory reports it. Empty fields inside them are left out, such as a PR's `reviewers` before anyone reviews. `runModel` and `lastRunModel` (`{run, model?, effort?}`): what a run runs on. `model` is its `AgentRun` `spec.model`, from the broker's `run_phase{Running, model}`; `effort` is the reasoning effort its harness reported on `harness_status`, the run's claim, bounded to seven values. `runModel` is the run in the room now, `lastRunModel` the run before it, or the last run when none is in the room. Each absent until the log says. The model that served the run is the gateway's `gen_ai_request_model` |
 | `runs` | The task's run history, oldest first, at most 20, from the factory's latest facts: `id`, `role`, `trigger?`, `startedAt?`, `endedAt?`, `outcome?` (`succeeded`, `failed`, `budget_exhausted`, `revoked`, `lost` or `ended`; absent while the run goes on), `verdict?` (at most 32 bytes), `microUSD?` (the run's dollars). Absent when the task has none. Kept in a sealed room, like `status.spend`: they are facts, not needs |
 | `needsYou` | `kind: merge` (owners; `id` is the PR number): the task is `AwaitingHuman` on a PR; `what` says how to merge under the repository ruleset (the bypass box, or `gh pr merge N --squash --admin --repo owner/name`), `url` is the PR. `[{kind: approval, id, what, deadline, url}]`: the pending approvals the caller could decide in the web UI. Each carries a link to its card in the room, never a command. `kind: answer` (owners; `id` is the issue number): an Escalated task waits for its issue's author (`needs_author`); `author?` is the author's GitHub login, `url` the issue. `kind: hold` (no `deadline`): the factory's task is `Queued` behind a hold on the room (a person driving it, or another run in it), listed for its driver and owner; `id` is the wait (`waiting_human_driver`, `waiting_room_busy`), `what` says what releases it, `url` is the room. It goes with the factory's next facts |
-| `actions` | What the caller may do now, by their standing: `queue` and `stop` carry a `cli` line (every `gh` command passes `--repo owner/name`); `steer`, for the driver and only while an agent is in the room (it joined and has not left), carries none, since `roomctl` never steers |
+| `actions` | What the caller may do now, by their standing: `queue` and `stop` carry a `cli` line (every `gh` command passes `--repo owner/name`); `steer`, for the driver and only while an agent is in the room (it joined and has not left), carries none, since `maku` never steers |
 | `notes` | `{untrusted: true, items: [{at, run, text}]}`: the last 20 progress notes after `after`. `untrusted` is always `true`: they are the agents' claims, rendered as text |
 | `queued` | `{untrusted: true, items: [{ref, author, text}]}`: the notes still queued for the next run, oldest first, redacted; absent when none wait or the room is sealed. The card lists them under "Queued for the next run" |
 | `cursor` | `seq:N`, the last `seq` folded |
@@ -453,7 +453,7 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 | `invite` | `principal`, `memberRole`, `approver` | Owner. At most 20 members; never demotes the driver-token holder below collaborator (`bad_action`): the holder hands the token over first |
 | `close` | `reason?` | Owner |
 | `decide` | `approvalId`, `decision: approved \| denied`, `reason?` (at most 1 KiB, redacted; the agent reads it) | Approver, owner, from the web UI. The first valid decision wins (`already_decided` for every later one, a supersede included). The deadline is checked on the database clock in the transaction that would record the decision: one past it closes the approval as `expired` and is refused `approval_expired`, whether or not the sweep has run, as is any decision on an expired approval. With `approvals.fourEyes`, nobody who prompted the run decides (`four_eyes`). A replayed `clientSeq` acks the stored decision |
-| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s), `approvals?: attended \| unattended` | Watcher and up; also from `roomctl`. A sealed room forks only for its owner or an `agents-admin` (`sealed`). A new room owned and driven by the forker, with the source's data class, repository and retention and none of its members. Its approvals ask by default: for the source's owners (owner, owner members, `agents-admin`) `attended`, with the source's `ttl`, `fourEyes` and every override but `allow`, so an unattended factory room does not make a human's own fork run unasked; `approvals: unattended` keeps the source's approvals as they are (an attended source stays attended; `bad_action` for any other value). Anyone else, whatever they ask, gets, class by class, the stricter of the source's and a new room's (`attended`), so an `unattended` or `allow` override never carries over to a watcher: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. The source's queue as it stood at `seq` comes along: each message queued by then and not yet promoted, removed or consumed by then is queued again in the fork (one consumed through `POST /v1/rooms/{id}/queue/consume` leaves no event to date it, so it comes along only while still queued). With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica |
+| `fork` | `seq`, `note?` (at most 1 KiB, redacted), `role?`, `prUrl?`, `egressProfiles?` (as `start_run`'s), `approvals?: attended \| unattended` | Watcher and up; also from `maku`. A sealed room forks only for its owner or an `agents-admin` (`sealed`). A new room owned and driven by the forker, with the source's data class, repository and retention and none of its members. Its approvals ask by default: for the source's owners (owner, owner members, `agents-admin`) `attended`, with the source's `ttl`, `fourEyes` and every override but `allow`, so an unattended factory room does not make a human's own fork run unasked; `approvals: unattended` keeps the source's approvals as they are (an attended source stays attended; `bad_action` for any other value). Anyone else, whatever they ask, gets, class by class, the stricter of the source's and a new room's (`attended`), so an `unattended` or `allow` override never carries over to a watcher: events `1..seq` copied with their `seq`, then `state_changed{forked_from}`. The source's queue as it stood at `seq` comes along: each message queued by then and not yet promoted, removed or consumed by then is queued again in the fork (one consumed through `POST /v1/rooms/{id}/queue/consume` leaves no event to date it, so it comes along only while still queued). With a `role`, the new room's first run, on `agent/<new room>` from the latest agent commit at or before `seq`, on the forker's token and budget. The ack's `seq` is the new room's `forked_from`; its `result` is `{roomId, run?, runError?}`: `run` is the `start_run` claim or `null`, `runError` its rejection. A failed run leaves the fork made. A prefix over 5,000 events or 32 MiB is `too_large`; a principal forks 3 times at once, then once a minute, per replica |
 
 | `rejected` | Meaning |
 |---|---|
@@ -477,11 +477,11 @@ close frame. So is a peer that does not take a frame within 10 s (`write_timeout
 
 ### Machine-sent text
 
-Text that comes through `roomctl` or `POST /mcp`, a message's `text` and a fork's `note`, is
+Text that comes through `maku` or `POST /mcp`, a message's `text` and a fork's `note`, is
 machine-sent (factory interfaces F8): a local agent can drive either on its human's token. The
 broker sanitises it as the factory does an issue (hidden and control characters out, NFKC, fence
-look-alikes, images and raw HTML defused), then stores it between two lines, `via` being `roomctl`
-or `mcp`:
+look-alikes, images and raw HTML defused), then stores it between two lines: `machine-sent via roomctl` from the CLI (a stored value
+that keeps its pre-maku name, see [naming](naming.md#technical-names)), `machine-sent via mcp` from `POST /mcp`:
 
 ```text
 ⟦machine-sent via mcp: a client wrote this on a human's token⟧
@@ -496,10 +496,10 @@ token stays the prompter for four-eyes.
 
 ### `POST /mcp`
 
-An MCP server for a developer's local coding agent, through [`roomctl mcp`](roomctl.md#the-mcp-server):
+An MCP server for a developer's local coding agent, through [`maku mcp`](cli.md#the-mcp-server):
 streamable HTTP on this listener (factory interfaces F2). It is off unless the broker's config sets
 `human.mcp.enabled` ([integration](integration.md)); off, `/mcp` is `404`. Every check of the table
-above applies first. Then it takes the `roomctl` client's tokens only, so nothing here carries the
+above applies first. Then it takes tokens from the CLI's ZITADEL client (formerly `roomctl`) only, so nothing here carries the
 web UI's standing: any other token is `403 mcp_needs_roomctl`, counted in
 `rooms_rejected_actions_total`.
 
@@ -520,15 +520,15 @@ notification is `202`. Each person makes 10 requests a second, burst 20, per rep
 | `room_changes` | a reader of the room | `room`, `cursor?` (`seq:N`) | What changed since a cursor, as a list of milestones (run started and ended, notes, handoffs, approvals asked and decided, verdicts, the PR opened or merged, holds, the budget) in the text, and `{room, url, since, items, more, cursor, untrusted: true}` as `structuredContent`. Without a cursor, the last 24 hours. A call scans at most 2,000 events: `more > 0` says there is more to read (milestones left out, or events past that bound), and `cursor` is the last event it covered: pass it back. A cursor past the room's last event is clamped to it, so the cursor returned can be lower. A fork's copied events are not its own milestones |
 | `room_queue` | collaborator | `room`, `text` | `{room, queued}`: the message's `seq`. Its text is machine-sent |
 | `room_fork` | as the `fork` action | `room`, `at`, `role?`, `prUrl?`, `egress?`, `note?` | `{room, url, run?, runError?}`. The note is machine-sent |
-| `issue_draft` | any member | `repo`, `title`, `body` | `{repo, title, body, stripped, canStart, canStartWhy?}`: the draft with hidden and control characters stripped (`stripped` counts them). `canStart` is true when `repo` is in `human.mcp.sessionStart` and the caller writes to it on GitHub; else `canStartWhy` is `off` (not listed, no GitHub check wired, or a sponsored caller), `not_linked`, `no_write` (read only, or the GitHub App cannot see the repository) or `unverified` (the check failed). Refused unless the title reads `<area>: <what is wrong>` (at most 256 characters), the body holds `## What is wrong`, `## What it should be` and `## Acceptance check` in that order (at most 16 KiB), and the redactor finds no secret. It files nothing: `roomctl mcp`'s `issue_file` does |
+| `issue_draft` | any member | `repo`, `title`, `body` | `{repo, title, body, stripped, canStart, canStartWhy?}`: the draft with hidden and control characters stripped (`stripped` counts them). `canStart` is true when `repo` is in `human.mcp.sessionStart` and the caller writes to it on GitHub; else `canStartWhy` is `off` (not listed, no GitHub check wired, or a sponsored caller), `not_linked`, `no_write` (read only, or the GitHub App cannot see the repository) or `unverified` (the check failed). Refused unless the title reads `<area>: <what is wrong>` (at most 256 characters), the body holds `## What is wrong`, `## What it should be` and `## Acceptance check` in that order (at most 16 KiB), and the redactor finds no secret. It files nothing: `maku mcp`'s `issue_file` does |
 
 The view tools (`rooms_list`, `room_summary`, `room_changes`) return their text as `content` and their JSON as `structuredContent`, with an `outputSchema`; the JSON is not repeated in the text. `run_create`'s and `room_tail`'s task results stay JSON text, as `tasks/result` returns them.
 
 `prompts/list` and `prompts/get` serve the prompts `handoff` (`what`), `status` (`room`) and `inbox`: canned
 messages the client offers as slash commands. A sponsored principal's list is empty. The prompts start nothing: the `handoff` prompt only drafts an issue.
 
-No tool approves, steers or stops, and none labels or starts factory work by itself: only the developer's answer to `issue_file`'s form, which `roomctl` serves where `issue_draft` says `canStart`, can apply `factory/ready` with the developer's own `gh`. The two write tools are acts through
-the `roomctl` client: the [actions](#actions)' rules, limits and rejections apply. Arguments are
+No tool approves, steers or stops, and none labels or starts factory work by itself: only the developer's answer to `issue_file`'s form, which `maku` serves where `issue_draft` says `canStart`, can apply `factory/ready` with the developer's own `gh`. The two write tools are acts through
+the CLI's ZITADEL client (formerly `roomctl`): the [actions](#actions)' rules, limits and rejections apply. Arguments are
 strict: an unknown field is refused. Every string an agent wrote comes back under `untrusted: true`,
 as the summary's notes do. A refused call is a tool result with `isError: true` whose text starts
 with its reason: `invalid_arguments`, `invalid_draft`, `rejected: <the act's rejection>`, `no such
@@ -547,7 +547,7 @@ room's reader, on any replica, from the log.
 | Method | Answers |
 |---|---|
 | `tasks/get` | `completed` once an event of the task's `kinds` follows its cursor, its room is `done`, `failed` or `stopped`, or the wait is over; `failed` with `no such room` when the room cannot be read; else `working`, the room's state in `statusMessage`. `pollInterval` is 5 s |
-| `tasks/result` | A terminal task's page, as `room_tail` returns it, with `_meta["io.modelcontextprotocol/related-task"]`. A `working` task is `-32600 task_working`: it does not block, since every request must end inside the proxy's 30 s. `roomctl mcp` polls `tasks/get` and blocks for its client |
+| `tasks/result` | A terminal task's page, as `room_tail` returns it, with `_meta["io.modelcontextprotocol/related-task"]`. A `working` task is `-32600 task_working`: it does not block, since every request must end inside the proxy's 30 s. `maku mcp` polls `tasks/get` and blocks for its client |
 
 Another person's task id, or a malformed one, is `-32602 no such task`. A room read that fails for
 a while is `-32603`: poll again. There is no `tasks/list` or `tasks/cancel` (`-32601`), and no task

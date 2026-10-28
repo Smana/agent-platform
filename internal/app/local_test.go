@@ -13,12 +13,12 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
 )
 
 func TestHumanListenAddr(t *testing.T) {
@@ -66,7 +66,7 @@ func TestAuthenticatorsLocal(t *testing.T) {
 }
 
 // Local mode tells the listener what serves it: the fixed groups, the origin the every-route CSRF
-// gate compares against, and the mode roomctl's discovery reports. OIDC keeps the configured groups
+// gate compares against, and the mode maku's discovery reports. OIDC keeps the configured groups
 // and leaves the gate off.
 func TestHumanServerModes(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)

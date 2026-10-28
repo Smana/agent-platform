@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 func vmServer(t *testing.T, code int, body string) *VM {

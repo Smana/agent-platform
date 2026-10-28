@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // R10: the room's summary shows the current run's provenance as the factory posted it.

@@ -21,7 +21,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 // Bounds on what an issuer may make us hold. Real issuers publish a handful of
