@@ -68,6 +68,7 @@ COPY --chmod=0755 agent_run.py agent_checks.py test_contract.py git_credential_a
 COPY --chmod=0755 site /opt/agent/site
 COPY --chmod=0755 gh /usr/local/bin/gh
 COPY --chmod=0755 commit-msg /etc/agent/git-hooks/commit-msg
+COPY --chmod=0755 pre-commit /etc/agent/git-hooks/pre-commit
 COPY gitconfig /etc/gitconfig
 RUN ln -s /opt/agent/agent_run.py /usr/local/bin/agent-run \
  && ln -s /opt/agent/agent_checks.py /usr/local/bin/agent-checks \
