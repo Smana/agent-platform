@@ -678,6 +678,30 @@ class ProgressNotes:
             print("agent-run: judge verdict not posted: %s" % exc, file=sys.stderr, flush=True)
 
 
+    def contract(self, sha: str, base: str) -> bool:
+        """Reports the contract commit the harness pushed, and the base it sits on, through room_contract: the
+        one tool the factory adopts a contract from, harness-only like room_judge (the model holds the
+        credential helper and can push a lookalike). True when the broker took it."""
+        try:
+            self.traceparent = None
+            for attempt in range(2):
+                try:
+                    name = self.find_tool("room_contract")
+                    if name is None:
+                        raise RuntimeError("room_contract is not exposed to this run")
+                    result = self.rpc("tools/call", {"name": name, "arguments": {"commit": sha, "base": base}})
+                    if result.get("isError"):
+                        raise RuntimeError(_text({"content": result.get("content")})[:200])
+                    return True
+                except urllib.error.HTTPError as exc:  # an expired session redoes the handshake once
+                    if attempt or not 400 <= exc.code < 500:
+                        raise
+                    self.names, self.tool, self.session = None, None, None
+        except Exception as exc:  # noqa: BLE001 -- the end then says the contract was not reported
+            print("agent-run: contract commit not reported: %s" % exc, file=sys.stderr, flush=True)
+        return False
+
+
 # v3 feature 3: the repository's checks in the sandbox, on a check-enabled run only (AGENT_CHECKS=1,
 # set by the composition from the claim's spec.loop.checks). agent-checks sits beside this file.
 CHECKS_TOOL = "/usr/local/bin/agent-checks"
@@ -896,9 +920,13 @@ def tester_end(env: dict, cid: str, base: str, tc_env: dict, notes=None, start_s
                 break
             end = res["result"]
             if end == "contract_ready":
-                why = push_contract(env, sign(env, base, res))
+                sha = sign(env, base, res)
+                why = push_contract(env, sha)
                 if why:
                     end, res = "contract_not_red", {**res, "why": "the push was refused (%s)" % why}
+                elif notes and not notes.contract(sha, base):
+                    # The factory adopts only a commit the harness reported: unreported, the push is not the contract.
+                    end, res = "contract_not_red", {**res, "why": "the contract commit could not be reported"}
                 break
             could_not_run = code in (contract_module().COULD_NOT_RUN, contract_module().UNDECLARED)
             if attempt == 2 or end not in CONTINUABLE or could_not_run:
