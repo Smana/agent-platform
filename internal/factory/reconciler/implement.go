@@ -179,7 +179,7 @@ func (r *Reconciler) reserveFactoryDay(ctx context.Context, t *v1alpha1.Task, li
 }
 
 // sponsored is whether the task's runs are charged to a declared sponsored principal.
-func (r *Reconciler) sponsored(t *v1alpha1.Task) bool { return r.Cfg.SponsoredBy(r.person(t)) != nil }
+func (r *Reconciler) sponsored(t *v1alpha1.Task) bool { return r.Cfg.PrincipalBy(r.person(t)) != nil }
 
 // runMicroUSD is what one run of the task may spend, as the day ledger reserves it: its USD run
 // cap, or its token cap at the reference rate for a tier capped in tokens (TC7).

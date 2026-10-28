@@ -139,6 +139,9 @@ type TaskFacts struct {
 	Runs  []RunFact  `json:"runs,omitempty"`
 	Issue *IssueFact `json:"issue,omitempty"`
 	PR    *PRFact    `json:"pr,omitempty"`
+	// Origin is the room of the investigate task this task's issue was published from (RunLore
+	// agent-to-agent RA10), a C2 id; the webhook tracker repeats it on every event of the room.
+	Origin string `json:"origin,omitempty"`
 }
 
 // MaxRuns bounds TaskFacts.Runs.
@@ -273,6 +276,8 @@ func (f TaskFacts) Validate() error {
 		return errors.New("task facts: the issue URL is a github.com issue")
 	case f.PR != nil && !githubURL.MatchString(f.PR.URL):
 		return errors.New("task facts: the PR URL is a github.com pull request")
+	case f.Origin != "" && !ValidID(f.Origin):
+		return errors.New("task facts: the origin is a room id")
 	}
 	if f.Run != nil {
 		if err := f.Run.validate(); err != nil {

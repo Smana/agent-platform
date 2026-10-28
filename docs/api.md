@@ -586,9 +586,9 @@ from its creation, then `failed` (`no such room`). A slow triage can flip a `fai
 
 ### `POST /v1/tasks`
 
-It serves on the factory's `api.listen`, only while `api.sponsored` is non-empty
-(otherwise `404`). It takes sponsored tokens only: a human or a system caller gets
-`403 sponsored_only`. (`POST /v1/runs` refuses a sponsored caller the other way round, with
+It serves on the factory's `api.listen`, only while `api.sponsored` or `api.internalPrincipals` is
+non-empty (otherwise `404`). It takes sponsored and [internal](#an-internal-principals-request) tokens
+only: a human or a system caller gets `403 sponsored_only`. (`POST /v1/runs` refuses a sponsored caller the other way round, with
 `403 sponsored_only_tasks`: a sponsored principal starts tasks, never runs.) The broker's
 `run_create` calls it with the caller's own token. Model and
 limits: [sponsored principals](factory.md#sponsored-principals).
@@ -605,8 +605,29 @@ limits: [sponsored principals](factory.md#sponsored-principals).
 | `409`, `429` | `repository_not_owned`, `idempotency_conflict`; `principal_task_cap`, `principal_budget_exhausted` (advisory: the hard limit is the run-time reservation) |
 | `503` | `kill_switch`, `meter_unpriced`, `tasks_unavailable`, `ledger_unavailable`, `intake_failed` |
 
+#### An internal principal's request
+
+An [internal principal](factory.md#internal-principals) (RunLore) sends the same route with a finding,
+and gets `investigate` on internal data, never a title or a link to another user. The body is
+`repository`, `text` (the finding), `dataClass: internal`, `maxCostUSD` and `incident`, all required:
+`incident` is `{alert, resource, severity, cluster, verdict, confidence}` (`alert` and `resource`
+required). `Idempotency-Key` is the incident's trigger key.
+
+| | |
+|---|---|
+| `201` | `{task, room, issue}`: an `investigate` task and a public stub issue labelled `factory/proposed`; it names the alert, resource and room, never the finding |
+| `200` | `{task, room, issue, duplicate: true}`: a task of the key is still open. Once it ended, the same key is a new generation |
+| `202` | `{accepted: false, reason: below_threshold}`: the verdict is not `action_required` or `action_suggested`, or `confidence` is under `minConfidence` |
+| `400` | `bad_json`, `idempotency_key_required`, `title_not_allowed`, `on_behalf_of_not_allowed`, `bad_ref`, `bad_data_class` (anything but `internal`), `incident_required`, `max_cost_required`, `max_cost_over_principal`, `max_cost_over_class` |
+| `403`, `409` | `repository_not_allowed`, `repository_not_owned` |
+| `429` | `principal_daily_tasks` (the principal's tasks created this UTC day, whatever their kind), `principal_task_cap`, `principal_budget_exhausted` |
+| `503` | as above |
+
+A sponsored principal's request refuses an `incident` (`bad_json`), and an internal principal's refuses
+everything a sponsored one's does beyond its own keys.
+
 `agent_factory_api_intake_total{principal, outcome}` counts the requests of an authenticated sponsored
-principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
+or internal principal: `admitted`, `duplicate`, or the code of any refusal after that point (`kill_switch`,
 `bad_*`, `max_cost_*`, `repository_*`, `invalid_draft`, the caps and the `503`s); any other value is
 `other`. The `unauthenticated`, `not_permitted` and `sponsored_only` refusals come before the
 principal is known and are **not counted**.
@@ -634,6 +655,10 @@ ids and closed codes only: never room text, a title, a branch or a message.
 A task event fires on a change of phase only: the factory rewrites a phase's facts (budget, run,
 pull request) without a new event. `repo` is on `task_received` and `task_triaged` only.
 `verdict_posted` is sent once GitHub accepted the comment, not when it was attempted.
+
+`origin` is on **every** event of a room whose task was started from an issue the factory published
+(see [`factory/publish`](factory.md#internal-principals)): the room id of the investigate task. It is
+absent on any other room's events.
 
 `reason`, `limit` and `state` are clipped to closed lists (`webhook.Reasons`, `webhook.Limits`,
 `webhook.States`); anything else is sent as `other`. The factory's room escalations `foreign_room`,

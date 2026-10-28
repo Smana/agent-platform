@@ -210,3 +210,33 @@ func TestClassifyWithoutAClassifierURLMakesNoCall(t *testing.T) {
 		t.Fatalf("%+v", d.Classification)
 	}
 }
+
+// RA4, R3: an internal principal's task takes investigate on internal data whatever its issue says;
+// a sponsored principal's task, and an api task of a principal the config does not declare, do not.
+func TestInternalPrincipalTasksInvestigate(t *testing.T) {
+	cfg := testCfg()
+	cfg.Repositories = []config.Repository{{Name: "Smana/cloud-native-ref", Maintainers: []string{"Smana"}, Classes: cfg.Classes}}
+	cfg.API.Sponsored = []config.Sponsored{{Name: "slack-app"}}
+	cfg.API.InternalPrincipals = []config.InternalPrincipal{{Sponsored: config.Sponsored{Name: "runlore"}}}
+	for name, c := range map[string]struct {
+		by                  string
+		template, class, dc string
+	}{
+		"an internal principal":   {"system:runlore", "investigate", "review", "internal"},
+		"a sponsored principal":   {"system:slack-app", "pair", "docs", "public"},
+		"an undeclared principal": {"system:ghost", "pair", "docs", "public"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := forgetest.NewFake()
+			f.SetIssue(forge.Issue{Number: 7, Labels: []string{"class:docs"}})
+			f.SetEvents(7, forge.LabelEvent{Actor: "Smana", Label: "class:docs", At: time.Now()})
+			tk := &v1alpha1.Task{ObjectMeta: metav1.ObjectMeta{Name: "3buqdlot"},
+				Spec: v1alpha1.TaskSpec{Source: v1alpha1.Source{Kind: "api", RequestedBy: c.by}, Repository: "Smana/cloud-native-ref",
+					Issue: 7, Text: "x", DataClass: "public"}}
+			d, err := Classify{Cfg: cfg, C: &fakeC7{resp: C7Response{Tier: "standard", Confidence: 0.9}}, Forge: f}.Triage(t.Context(), tk)
+			if err != nil || d.Template != c.template || d.PredictedClass != c.class || d.DataClass != c.dc {
+				t.Fatalf("%+v %v", d, err)
+			}
+		})
+	}
+}

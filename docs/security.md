@@ -194,6 +194,23 @@ These policies live in cloud-native-ref. Default deny everywhere; one allow per 
 On gcp-0 the identity-provider rule is `toEntities: [all]` without ports: a port-scoped rule to the
 cluster's own gateway hairpins through the socket load balancer and is dropped.
 
+## Internal principals and publishing
+
+An internal principal is an authentication surface: a token whose client is declared in
+`api.internalPrincipals` is a sponsored principal that may also carry internal data, and nothing else.
+`POST /v1/runs` refuses it as it refuses any sponsored token. Its request refuses a `title`, an
+`onBehalfOf`, a `ref`, public data, a repository or ceiling outside its entry, and a body past its
+`minConfidence`, `dailyTasks`, `maxOpenTasks` and day. The investigate template is forced by the
+principal, so alert text it sends reaches a public implementer only through a maintainer. A sponsored
+principal is never allowed `internal`, and its request refuses an `incident`.
+
+`factory/publish` is the one place internal text becomes public, and a maintainer's label starts it.
+The proposal is the triager run's own handoff, never another writer's. It is held to the issue
+template, made inert (`sanitize.Public`: no link, raw HTML, image or hidden character survives; URLs,
+addresses, @mentions and issue references are kept in code spans, so none pings or links), and scanned by the redactor; a hit publishes nothing. The
+factory files it once, with no trigger label, and records it on the task. An origin is that record, never
+issue text.
+
 ## Webhooks
 
 An event carries ids and closed codes only, never room text: `reason`, `limit` and `state` are

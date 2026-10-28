@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -25,6 +24,7 @@ import (
 	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
 	"github.com/Smana/agent-platform/internal/authn"
 	"github.com/Smana/agent-platform/internal/factory/config"
+	findingfmt "github.com/Smana/agent-platform/internal/factory/finding"
 	"github.com/Smana/agent-platform/internal/factory/fmetrics"
 	"github.com/Smana/agent-platform/internal/factory/forge"
 	"github.com/Smana/agent-platform/internal/factory/sanitize"
@@ -34,7 +34,7 @@ import (
 // LabelSourceKey carries taskid.Name of a finding's dedup key on every task made from that key
 // (§1): tasks of one key share the label, so a replay finds the open one and a new generation
 // starts after the last task ends.
-const LabelSourceKey = "agents.ogenki.io/source-key"
+const LabelSourceKey = findingfmt.LabelSourceKey
 
 // Finding is what FR-9's notify.templated template renders from RunLore's payload.
 type Finding struct {
@@ -173,13 +173,6 @@ func (h *RunLore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reply(w, code, body)
 }
 
-// labelSafe transposes every character outside the label charset ([A-Za-z0-9_.:/-]) to "_",
-// so no markdown or HTML trigger reaches the public issue. See its use in intake for why this
-// filter, not sanitize.Text, guards those fields (TW6).
-var labelUnsafe = regexp.MustCompile(`[^A-Za-z0-9_.:/-]`)
-
-func labelSafe(s string) string { return labelUnsafe.ReplaceAllString(s, "_") }
-
 // intake dedups the finding while a task for its key is open (SC-9), holds OD-9's daily cap,
 // then creates the task before the issue: the task's name is the key's hash, so a replay racing
 // on the other replica loses on AlreadyExists and opens no second issue.
@@ -208,8 +201,7 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 	if today >= h.Cfg.RunLore.DailyCap {
 		return http.StatusTooManyRequests, map[string]string{"error": "runlore_daily_cap"}, nil
 	}
-	text := fmt.Sprintf("# %s\n\nRunLore verdict %s (confidence %.2f) on %s, alert %s, severity %s, cluster %s.\n\n%s",
-		f.Title, f.Verdict, f.Confidence, f.ResourceRef, f.AlertName, f.Severity, f.Cluster, f.Text)
+	text := findingfmt.Text(f.Title, f.Verdict, f.Confidence, f.ResourceRef, f.AlertName, f.Severity, f.Cluster, f.Text)
 	sum := sha256.Sum256([]byte(text))
 	text, _ = sanitize.Text(text) // G2, R43: alert and log text are written outside the platform too
 	if len(text) > h.Cfg.Caps.MaxTextBytes && h.Cfg.Caps.MaxTextBytes > 0 {
@@ -234,22 +226,10 @@ func (h *RunLore) intake(ctx context.Context, f Finding) (int, any, error) {
 	} else if err != nil {
 		return 0, nil, err
 	}
-	// The issue is public: alert, resource, verdict and the room, never the finding (R33). The
-	// attacker-influenced identifiers reach it transposed to the label charset (TW6): they are
-	// still there, but no markup can form around them.
-	//
-	// Chosen over sanitize.Text deliberately: that defuses images, "]:" definitions and raw HTML
-	// but leaves an inline link — "[click](javascript:alert(1))" — intact, and these fields are
-	// identifiers whose natural charset is [A-Za-z0-9_.:/-] (alert names, resource refs,
-	// severities). Transposing everything else to "_" costs nothing they legitimately hold while
-	// removing every markdown and HTML trigger character ("!", "[", "]", "(", "<", "`", space)
-	// and every invisible code point. Verdict is already a closed set and Confidence a float.
-	alert, ref, sev := labelSafe(f.AlertName), labelSafe(f.ResourceRef), labelSafe(f.Severity)
-	body := fmt.Sprintf("RunLore reported **%s** on `%s` (alert `%s`, verdict `%s`, confidence %.2f).\n\n"+
-		"Agent factory task `%s` investigates it. The finding and the work stay in its room: %s/r/%s (tailnet only).\n\n"+
-		"Apply `factory/stop` to stop it.", sev, ref, alert, f.Verdict, f.Confidence,
-		name, strings.TrimSuffix(h.Cfg.RoomsURL, "/"), name)
-	iss, err := h.Forge.CreateIssue(ctx, fmt.Sprintf("RunLore: %s on %s", alert, ref), body, []string{"factory/proposed"})
+	// The issue is public: alert, resource, verdict and the room, never the finding (R33); the
+	// identifiers reach it through finding.LabelSafe (TW6).
+	title, body := findingfmt.StubIssue(f.AlertName, f.ResourceRef, f.Severity, f.Verdict, f.Confidence, name, h.Cfg.RoomsURL)
+	iss, err := h.Forge.CreateIssue(ctx, title, body, []string{"factory/proposed"})
 	if err != nil {
 		return 0, nil, err
 	}

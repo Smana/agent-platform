@@ -51,6 +51,7 @@ type TaskList struct {
 
 // TaskSpec is what the task was asked to do, fixed at admission.
 // +kubebuilder:validation:XValidation:rule="has(self.parent) == has(oldSelf.parent) && (!has(self.parent) || self.parent == oldSelf.parent)",message="spec.parent is fixed at creation"
+// +kubebuilder:validation:XValidation:rule="has(self.origin) == has(oldSelf.origin)",message="spec.origin is fixed at creation"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.scope) || (has(self.scope) && self.scope == oldSelf.scope)",message="spec.scope never changes once set"
 // +kubebuilder:validation:XValidation:rule="self.source.kind != 'api' || (has(self.maxMicroUSD) && self.maxMicroUSD > 0)",message="an api task carries maxMicroUSD"
 // +kubebuilder:validation:XValidation:rule="self.source.kind != 'api' || !has(self.budget) || (has(self.maxMicroUSD) && (!has(self.budget.runMicroUSD) || self.budget.runMicroUSD <= self.maxMicroUSD) && (!has(self.budget.taskMicroUSD) || self.budget.taskMicroUSD <= self.maxMicroUSD))",message="an api task's budget stays under its ceiling"
@@ -122,6 +123,36 @@ type TaskSpec struct {
 	// This child's part of its parent's task (SL5): one scope of the approved split, fixed once set.
 	// +optional
 	Scope *TaskScope `json:"scope,omitempty"`
+	// Origin is the investigate task whose published issue this task was started from (RunLore
+	// agent-to-agent RA9): set by the issue poller from that task's status.published, never from
+	// issue text, so nothing a person or an agent writes can forge one.
+	// +kubebuilder:validation:Pattern=`^[a-z2-7]{8}$`
+	// +kubebuilder:validation:MaxLength=8
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="origin never changes"
+	// +optional
+	Origin string `json:"origin,omitempty"`
+}
+
+// Published records the issue the factory filed from an investigate task's proposal (RA9): once
+// per task, by a maintainer's factory/publish.
+type Published struct {
+	// The number of the issue the factory created.
+	// +kubebuilder:validation:Minimum=1
+	Issue int `json:"issue"`
+	// The maintainer login whose label asked for it, lowercased.
+	// +kubebuilder:validation:MaxLength=64
+	By string `json:"by"`
+	// When the issue was filed.
+	At metav1.Time `json:"at"`
+	// The verdict evidence of the fix task named by EvidenceFor, internal like this task (R11).
+	// +kubebuilder:validation:MaxLength=16384
+	// +optional
+	Evidence string `json:"evidence,omitempty"`
+	// The fix task the evidence is for.
+	// +kubebuilder:validation:Pattern=`^[a-z2-7]{8}$`
+	// +kubebuilder:validation:MaxLength=8
+	// +optional
+	EvidenceFor string `json:"evidenceFor,omitempty"`
 }
 
 // Finding is one dead external link two consecutive detector runs on main reported (MC5).
@@ -329,6 +360,9 @@ type TaskStatus struct {
 	// reading and the verdict, the worst of them. Unset until the task ends merged.
 	// +optional
 	Monitor *MonitorStatus `json:"monitor,omitempty"`
+	// The issue the factory filed from this investigate task's proposal (RA9), once.
+	// +optional
+	Published *Published `json:"published,omitempty"`
 	// +optional
 	Usage Usage `json:"usage,omitempty"`
 	// The task's usage has settled (R49): the meter's late readings have had their window, and

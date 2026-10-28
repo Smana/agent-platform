@@ -14,6 +14,9 @@ import (
 type SponsoredClient struct {
 	Name     string
 	ClientID func() string
+	// Internal marks an internal principal's client (RunLore agent-to-agent RA2): the principal it
+	// yields is a sponsored one that may also ask for internal data.
+	Internal bool
 }
 
 // Sponsored authenticates a sponsored principal (factory interfaces F4, R2): a ZITADEL service
@@ -67,7 +70,7 @@ func (s *Sponsored) Authenticate(ctx context.Context, raw string) (Principal, er
 			continue
 		}
 		return Principal{Kind: envelope.ActorSystem, ID: "system:" + c.Name, Sub: cl.Subject, ClientID: id,
-			Expiry: cl.ExpiresAt.Time, AccessToken: raw, Sponsored: true}, nil
+			Expiry: cl.ExpiresAt.Time, AccessToken: raw, Sponsored: true, Internal: c.Internal}, nil
 	}
 	return Principal{}, refused
 }
