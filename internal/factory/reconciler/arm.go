@@ -117,7 +117,9 @@ func DecideArm(in ArmInputs) ArmDecision {
 		return human("changes_requested", class)
 	}
 	if !cl.Live && !cl.Shadow {
-		return human("class_mismatch", "live") // the diff matched a live class the triage did not predict
+		// The predicted class is one the factory never merges (docs, review): a maintainer merges it.
+		// Not a mismatch: no class was matched, so none is counted.
+		return human("class_unarmed", "")
 	}
 	if cl.Adopted() {
 		if reason := adoptEvidence(in, cl); reason != "" {
