@@ -30,12 +30,12 @@ The App is one workspace's: create it from this manifest, install it, and put th
   "display_information": { "name": "Factory" },
   "features": { "bot_user": { "display_name": "factory", "always_online": true } },
   "oauth_config": {
-    "scopes": { "bot": ["app_mentions:read", "chat:write", "reactions:read", "channels:history", "groups:history"] }
+    "scopes": { "bot": ["app_mentions:read", "chat:write", "reactions:read", "channels:history", "groups:history", "users:read"] }
   },
   "settings": {
     "event_subscriptions": {
       "request_url": "https://factory-slack.<domain>/slack/events",
-      "bot_events": ["app_mention", "reaction_added"]
+      "bot_events": ["app_mention", "reaction_added", "message.channels", "message.groups"]
     },
     "interactivity": { "is_enabled": false },
     "org_deploy_enabled": false,
@@ -44,7 +44,9 @@ The App is one workspace's: create it from this manifest, install it, and put th
 }
 ```
 
-No interactivity and no slash command.
+No interactivity and no slash command. `chat:write` also covers `chat.postEphemeral`, which the [self-serve link](#self-serve-link) answers with. `users:read` is optional: with it the link page names the Slack user by their handle, then their display name (`users.info`), without it by their id only; an App created from an earlier copy adds it under OAuth & Permissions and reinstalls.
+
+Draft editing needs the `message.channels` (and, for private channels, `message.groups`) bot events: an App created from an earlier copy of this manifest must add them under Event Subscriptions in the Slack console and reinstall. The scopes (`channels:history`, `groups:history`) are already there. Without the events, mentions and check marks work as before and replies are never seen.
 
 ## Config
 
@@ -62,7 +64,7 @@ No interactivity and no slash command.
 | `webhooksAddr` `:8081` | The broker's webhooks, `POST /webhooks`: cluster only |
 | `opsAddr` `:9090` | Metrics and the probes |
 
-The App's token is a client-credentials grant with the project-audience scope (`openid` and `urn:zitadel:iam:org:project:id:<project id>:aud`). The factory must list the Slack users it will serve in `onBehalfOf.slack` ([The factory](factory.md)).
+The App's token is a client-credentials grant with the project-audience scope (`openid` and `urn:zitadel:iam:org:project:id:<project id>:aud`). The factory serves a Slack user listed in its `onBehalfOf.slack`, or, with `onBehalfOf.slackLinks`, one who linked themselves ([self-serve link](#self-serve-link), [The factory](factory.md#sponsored-principals)).
 
 The broker needs one `webhooks` entry for the App ([operations](operations.md#webhooks)):
 
@@ -101,7 +103,39 @@ Acceptance: docs/runbooks/18.md gains one line naming the Secret.
 
 A one-line mention is a complete draft. A malformed line 1 (no repository where the channel serves several) is refused with a `Try:` line built from the user's own text (the channel's repository in front of it; with several repositories the first, plus the list), shown inert like every refusal. The composed issue is posted in the thread, so the check mark files what is shown. The broker's `issue_draft` judges it against the template and a refusal is posted back as is. A good draft is posted in the thread by the bot with metadata `{repo, title, body, sha256}`. When that metadata would exceed 8 KiB (well under Slack's cap) nothing is posted as a draft: the thread gets a short line saying the draft is too long to file from Slack, with none of its text, and the request counts as `too_large`.
 
-**File.** A `white_check_mark` files the task only when all of these hold: the user is linked in `onBehalfOf.slack` (and the linked login is a maintainer); the message is the bot's own draft, re-read from Slack (a `conversations.replies` call on the message `ts` with `limit=1`; the message's user is the bot's) with a matching hash; the channel is configured. A second check mark on the same draft is a duplicate and files nothing. The App then calls `run_create` with `on_behalf_of: slack:<team>/<user>`, the draft, the channel's `maxCostUSD` and `ref: slack/<team>/<channel>/<thread_ts>`. The thread map records the room.
+**Edit.** A reply in the draft's thread by the Slack user who wrote the mention amends the pending draft, and the App posts the result as a new draft reply (the earlier one stays as history, and a ✅ on it is answered "react on the latest draft"). A reply is read as the mention's free text: `Title: …` replaces the title (the area prefix rule applies again), `Should: …` or `Expected: …` replaces "What it should be", `Acceptance: …`, `Done when: …` or `Check: …` replaces the acceptance check (several lines allowed), anything else is appended to "What is wrong". The draft goes through the broker's `issue_draft` again. A reply that is only a ✅ files the latest draft as a reaction does, and never edits. Other replies from anyone else, in a thread with no draft, after the draft is filed, or that start with a mention of the App are ignored without a word; a reply the broker refuses is answered "Change refused: …". At most 20 drafts per thread, each reply is capped at 4000 characters, and the draft stays under the metadata cap. The state is the draft message's metadata (`author`, `rev`), read back with `conversations.replies`; the App's "Filed" line carries a `factory_filed` metadata marker that ends editing. Nothing is stored beyond what the App kept already.
+
+The draft is shown in Slack's mrkdwn (an intro line, then `*What is wrong*`, `*What it should be*` and `*Acceptance check*` on their own lines with the text below, and a hint to reply or ✅); the issue body keeps the `##` template.
+
+**File.** A `white_check_mark` files the task only when all of these hold: the message is the thread's latest draft; the user is linked, in `onBehalfOf.slack` or by a [self-serve link](#self-serve-link) (and the linked login is a maintainer); the message is the bot's own draft, re-read from Slack (a `conversations.replies` call on the message `ts` with `limit=1`; the message's user is the bot's) with a matching hash; the channel is configured. The idempotency key is the thread (`<team>/<channel>/<thread_ts>`): a second check mark in the thread, on any revision, is a duplicate and files nothing. A thread too long to read (over 5 pages) fails closed: nothing is edited or filed. The App then calls `run_create` with `on_behalf_of: slack:<team>/<user>`, the draft, the channel's `maxCostUSD` and `ref: slack/<team>/<channel>/<thread_ts>`. The thread map records the room, and the Filed line names the sponsor (`Filed #12 for @dana, sponsored by GitHub @smana`), so a wrong link shows at its first use.
+
+**No silent check mark.** Every refusal on the check-mark path (reaction or ✅ reply) is one thread line naming the reason and its fix, said once per draft, user and reason (in memory, like the event dedup), so re-adding the ✅ does not repeat it:
+
+| Case | Line |
+|---|---|
+| The channel no longer lists the draft's repository | `Not filed: <repo> isn't served in this channel; ask an operator to add it to the channel's repositories.` |
+| The channel is no longer served | `Not filed: this channel is no longer served; ask an operator to add it to the Slack App's channels.` |
+| The draft's hash fails | `Not filed: this draft no longer matches its check; start a new one with a mention.` |
+| A replaced draft, a thread too long | `react on the latest draft`; `start a new one with a mention` |
+| `not_linked` | `Not filed: @u is not linked to a GitHub account here; mention me with link to link it, then react again.` |
+| `not_a_maintainer` | `Not filed: @u's GitHub account is not a maintainer of <repo>; a maintainer must react.` |
+| `repository_not_allowed`, `repository_not_owned` | `ask an operator to add it to the Slack App's repositories` |
+| `principal_budget_exhausted` | `the Slack App's budget for today is spent; react again tomorrow` |
+| Any other code | `Not filed: <the broker's refusal>` |
+
+A passing failure (`kill_switch`, `principal_task_cap`, `link_unverified`, `ledger_unavailable`, `tasks_unavailable`, `intake_failed`, `meter_unpriced`, the factory or Slack unreachable) says to react again, at most once per 5 minutes per draft, user and reason. **Silent on purpose:** a ✅ on a message that is not the App's draft, a malformed id, the App's own user, a bot's event, another workspace, an event already seen, and a message Slack cannot return (no thread is known to answer in; logged and counted `error`).
+
+### Self-serve link
+
+A Slack user links themselves instead of waiting for an `onBehalfOf.slack` entry in git ([design](superpowers/specs/2026-10-28-slack-self-serve-link-design.md)):
+
+1. `@factory link` in a served channel. The App calls the broker's `slack_link_code` with its team and user id (and handle and display name, with `users:read`) and answers **ephemerally** (only that user sees it; it says never to send it to anyone) with `https://rooms.<domain>/link/slack?code=<code>`: single use, 10 minutes, replacing their earlier code.
+2. The user opens it, signs in to the rooms UI (ZITADEL), and sees `Link Slack user @handle (<id>) in workspace <team> to your account (GitHub: @login)?`, the display name below it marked as set by that user, and "never confirm a link someone sent you". **Link** posts the form, from the web UI's session only (a roomctl or MCP token is refused); the broker records `slack(team/user) → the ZITADEL account`.
+3. From then on their ✅ files sponsored by that account's **current** GitHub login, still held to the repository's maintainers: a link grants nothing a maintainer did not have.
+
+`@factory unlink` removes the user's self-serve link (never a config entry); the page, opened without a code, lists the account's links with an Unlink button each. Refusals on the page: the code expired or was used, the code is for another workspace, the account has no GitHub link, it holds 5 Slack users already, or the Slack user is linked to another account (it unlinks first: a link never moves silently). With the broker's `human.slackLink` off, both commands answer that self-serve linking is not turned on. `link` and `unlink` are the whole mention; a draft whose title holds the word is a draft.
+
+Both sides must opt in: the broker's `human.slackLink` (principal, team, repository; [integration](integration.md)) and the factory's `onBehalfOf.slackLinks` ([The factory](factory.md#sponsored-principals)). A user in `onBehalfOf.slack` keeps that entry whatever they link: **the config wins**.
 
 **Follow.** The broker's webhooks name a room; the App finds its thread in the map and posts a fixed line: the issue and PR numbers, the coarse state, a closed reason code and the room's URL (`<roomsURL>/r/<room>`).
 
@@ -110,12 +144,14 @@ A one-line mention is a complete draft. A malformed line 1 (no repository where 
 - The thread map is the ConfigMap `factory-slack-threads`, the only object the App's Role names. Entries older than 30 days are pruned on write, and the encoded map is bounded near 900 KiB (a ConfigMap holds 1 MiB).
 - One replica. Slack events (on `event_id`) and webhooks (on `webhook-id`) are deduplicated in an in-memory LRU, so a restart can post one duplicate line. Two concurrent redeliveries of one id can both pass the check before either finishes (known race): the worst case is one duplicate thread line.
 - A webhook key the App cannot read answers `503 no_key`. That is not a hold: the broker retries a receiver's non-2xx after 10s, 1m and 5m, then counts a failure, and three given-up deliveries disable the subscriber until its `generation` is bumped. A rotated or missing key, or a Slack outage that makes the App answer `502`, therefore loses those events and can disable the subscriber. **Recovery:** fix the key (or wait for Slack), bump `generation` on the broker's `webhooks` entry and restart the broker (a `webhooks` change applies only at restart); the events of the disabled window are not replayed, and a room's page still shows its state.
-- Series: `factory_slack_requests_total{route, outcome}` (`events`, `webhooks`; the closed list is `drafted`, `refused`, `filed`, `duplicate`, `posted`, `ignored`, `bad_signature`, `no_key`, `too_large` and `error`).
+- Series: `factory_slack_requests_total{route, outcome}` (`events`, `webhooks`; the closed list is `drafted`, `edited`, `refused`, `filed`, `duplicate`, `posted`, `link`, `unlinked`, `ignored`, `bad_signature`, `no_key`, `too_large` and `error`).
+- A refusal said once is remembered in memory (at most 4096): a restart can say it once more.
 - `factory_slack_build_info{version}`: the running build, constant 1.
 
 ## What it never does
 
-- Answer an approval, steer or stop a run, or read a thread reply as a command.
+- Answer an approval, steer or stop a run, or read a thread reply as a command. It reads replies in a draft's thread for one purpose only: the mention's author amends that draft while it is unfiled (see Edit). A reply that is only a ✅, from anyone, files the latest draft as a reaction does (the same checks, the same lines); any other reply from anyone else, or after the draft is filed, is dropped unread.
+- Post a link code where anyone but its user sees it, or trust a GitHub login from Slack.
 - Post room text or anything an agent wrote.
 - Answer a slash command.
 - Serve another workspace, an unlisted channel or a draft it did not post.

@@ -66,9 +66,21 @@ type State struct {
 	LastSeq   int64
 	RoomPhase string
 	Agents    map[string]bool // agent principals that joined and have not left: the runs present now
+	// LLM is the model and effort of the latest run the log told them of; PrevLLM, the run's before
+	// it. The model is the broker's run_phase{Running, model}, the effort the run's harness_status.
+	LLM, PrevLLM *RunModel
 }
 
-// Verdict is the latest reviewer or tester verdict.
+// RunModel is what a run runs on: Model is its claim's spec.model, from the broker's
+// run_phase{Running}; Effort is the reasoning effort its harness reported on harness_status, an
+// enum. Neither is the model that served it, which the gateway reports.
+type RunModel struct {
+	Run    string `json:"run"`
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+}
+
+// Verdict is the latest reviewer verdict.
 type Verdict struct {
 	By      string    `json:"by"`
 	Verdict string    `json:"verdict"`
@@ -151,6 +163,10 @@ type Summary struct {
 		LastJudge   *JudgeVerdict        `json:"lastJudge,omitempty"` // the completion judge's last answer (untrusted text)
 		Reason      string               `json:"reason,omitempty"`    // why the task waits, when it does (#59)
 		Next        string               `json:"next,omitempty"`      // what happens or who acts next
+		// RunModel is the present run's model and effort; LastRunModel, the run's before it, or the
+		// last run's when none is present. Each absent until a run tells them.
+		RunModel     *RunModel `json:"runModel,omitempty"`
+		LastRunModel *RunModel `json:"lastRunModel,omitempty"`
 	} `json:"status"`
 	// Runs is the task's run history, oldest first: the factory's facts, so a sealed room keeps it.
 	Runs     []envelope.RunFact `json:"runs,omitempty"`
@@ -251,6 +267,14 @@ func foldState(st *State, ev envelope.Event) {
 		if json.Unmarshal(ev.Payload, &f) == nil {
 			st.Facts = &f
 		}
+	case "run_phase":
+		// The broker's run_phase{Running} names the claim's spec.model, which no sandbox writes.
+		var p struct {
+			Model string `json:"model"`
+		}
+		if ev.Origin == envelope.OriginBroker && k.Phase == "Running" && json.Unmarshal(ev.Payload, &p) == nil && envelope.ValidModel(p.Model) {
+			st.tell(ev.RunID, RunModel{Model: p.Model})
+		}
 	case "room_phase":
 		st.RoomPhase = k.Phase
 		// store.CloseRoom seals with room_phase{Closed}.
@@ -263,11 +287,60 @@ func foldState(st *State, ev envelope.Event) {
 		if k.Events != nil && st.Sealed == "" {
 			st.Sealed = "Sealed"
 		}
+	case envelope.HarnessStatus:
+		// The effort is the harness's: an enum, so bounded even if the sandbox chose it. A model
+		// here is never read: the agent can rewrite what its harness reports.
+		var p struct {
+			Effort string `json:"effort"`
+		}
+		if ev.Origin == envelope.OriginHarness && json.Unmarshal(ev.Payload, &p) == nil && envelope.ValidEffort(p.Effort) {
+			st.tell(ev.RunID, RunModel{Effort: p.Effort})
+		}
 	case "forked_from":
 		// What came before is the source's log, copied (store.Fork): its task, approvals, verdict
 		// and notes are not the fork's, and its seal, if any, did not close the new room.
 		*st = State{Pending: map[string]Approval{}, Agents: map[string]bool{}, LastSeq: st.LastSeq, RoomPhase: "Open"}
 	}
+}
+
+// tell folds what the log says a run runs on into the latest run's entry, or the run's before it:
+// a new run moves the latest to the one before. A field already known stays unless told again.
+func (st *State) tell(run string, m RunModel) {
+	if run == "" {
+		return
+	}
+	var cur *RunModel
+	switch {
+	case st.LLM != nil && st.LLM.Run == run:
+		cur = st.LLM
+	case st.PrevLLM != nil && st.PrevLLM.Run == run:
+		cur = st.PrevLLM // a late word of the run before
+	default:
+		st.PrevLLM, st.LLM = st.LLM, &RunModel{Run: run}
+		cur = st.LLM
+	}
+	if m.Model != "" {
+		cur.Model = m.Model
+	}
+	if m.Effort != "" {
+		cur.Effort = m.Effort
+	}
+}
+
+// runModels is the present run's model and the last one before it; with no run present, the last
+// run's alone. Copies, not the fold state's.
+func runModels(st State) (current, last *RunModel) {
+	cp := func(m *RunModel) *RunModel {
+		if m == nil {
+			return nil
+		}
+		c := *m
+		return &c
+	}
+	if st.LLM != nil && st.Agents["agent:"+st.LLM.Run] {
+		return cp(st.LLM), cp(st.PrevLLM)
+	}
+	return nil, cp(st.LLM)
 }
 
 // describe is an approval's one line: the redacted call's command, else its class.
@@ -306,6 +379,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	}
 	s.Status.LastVerdict = st.Verdict
 	s.Status.LastJudge = st.Judge
+	s.Status.RunModel, s.Status.LastRunModel = runModels(st)
 	s.NeedsYou, s.Actions = []Need{}, []Action{}
 	s.Notes.Untrusted, s.Notes.Items = true, []Note{}
 	for _, n := range st.Notes {

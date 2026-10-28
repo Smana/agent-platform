@@ -257,32 +257,129 @@ function installRoomctl(version?: string): string {
   ].join("\n");
 }
 
-// cliSetup is the CLI setup view: roomctl's install, then its configure line for this
-// broker, read from GET /api/roomctl the first time it opens.
+// continued is a command with each flag on its own line, continued with a backslash, so a
+// long one reads at any width and still pastes and runs as is. One flag stays on its line.
+function continued(cmd: string, flags: [string, string][]): string {
+  const parts = flags.map(([f, v]) => `${f} ${v}`);
+  return parts.length > 1 ? [cmd, ...parts.map((p) => `  ${p}`)].join(" \\\n") : [cmd, ...parts].join(" ");
+}
+
+// A setup step: its title, its command, and a muted note before or after it. A note is
+// text and inline code, never markup.
+interface SetupStep { title: string; code: string; before?: (string | { code: string })[]; after?: (string | { code: string })[] }
+
+// setupSteps is what the fold shows for GET /api/roomctl's answer: a local broker's own
+// steps, an OIDC broker's three, or, with no roomctl client, nothing.
+function setupSteps(c: { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string; humanMode?: string }): SetupStep[] | undefined {
+  const installStep: SetupStep = {
+    title: "Install", code: installRoomctl(c.version),
+    before: ["linux and macOS · amd64 and arm64 · checked against the release's sha256"],
+  };
+  if (c.humanMode === "local") {
+    return [installStep,
+      { title: "Point it at this broker", code: continued("roomctl configure", [["--url", `${c.url}`]]) },
+      { title: "Start a run", code: continued("roomctl run", [["--repo", "<owner/name>"], ["--task", "'<what the run should do>'"]]) }];
+  }
+  if (!c.clientID) return;
+  return [installStep,
+    { title: "Point it at this broker", code: continued("roomctl configure",
+      [["--url", `${c.url}`], ["--issuer", `${c.issuer}`], ["--client-id", c.clientID], ["--project-id", `${c.projectID}`]]) },
+    { title: "Sign in", code: "roomctl login",
+      after: ["Then: ", { code: "roomctl status" }, " · ", { code: "roomctl mcp" }, " for your agent's tools"] }];
+}
+
+// copiedFor is how long a Copy button says Copied before it reverts.
+const copiedFor = 1500;
+
+function note(parts: (string | { code: string })[]): HTMLElement {
+  const p = document.createElement("p");
+  p.className = "cli-note";
+  p.append(...parts.map((x) => {
+    if (typeof x === "string") return x;
+    const c = document.createElement("code");
+    c.textContent = x.code;
+    return c;
+  }));
+  return p;
+}
+
+// stepItem renders one step: the command in its block, with a Copy button that writes the
+// block's exact text. The label says Copied only once the clipboard took it; with no
+// clipboard (an insecure origin) or a refused write it stays Copy, and the reader selects.
+function stepItem(step: SetupStep, n: number, live: HTMLElement): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "cli-step";
+  const title = document.createElement("h3");
+  title.className = "cli-step-title";
+  title.id = `cli-step-${n}`;
+  title.textContent = step.title;
+  const pre = document.createElement("pre");
+  pre.textContent = step.code;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "cli-copy";
+  copy.textContent = "Copy";
+  copy.setAttribute("aria-describedby", title.id);
+  let revert: ReturnType<typeof setTimeout> | undefined;
+  copy.onclick = () => {
+    const write = navigator.clipboard?.writeText(step.code);
+    write?.then(() => {
+      clearTimeout(revert);
+      copy.textContent = "Copied ✓";
+      live.textContent = `Copied: ${step.title}`;
+      revert = setTimeout(() => {
+        copy.textContent = "Copy";
+        if (live.textContent === `Copied: ${step.title}`) live.textContent = "";
+      }, copiedFor);
+    }, () => {});
+  };
+  const block = document.createElement("div");
+  block.className = "cli-code";
+  block.append(copy, pre); // the button floats top-right: the command's lines flow past it
+  li.append(title);
+  if (step.before) li.append(note(step.before));
+  li.append(block);
+  if (step.after) li.append(note(step.after));
+  return li;
+}
+
+// cliSetup is the CLI setup view: roomctl's install, its configure line for this broker,
+// then signing in (or, on a local broker, a first run), as numbered steps each with its
+// own Copy button, read from GET /api/roomctl the first time it opens.
 export function cliSetup(get: typeof fetch = fetch): HTMLDetailsElement {
   const d = document.createElement("details");
   d.className = "cli-setup";
   const summary = document.createElement("summary");
-  summary.textContent = "CLI setup";
-  const out = document.createElement("pre");
-  d.append(summary, out);
+  summary.textContent = "Use roomctl from your terminal";
+  const card = document.createElement("div");
+  card.className = "cli-card";
+  const live = document.createElement("span");
+  live.className = "cli-live";
+  live.setAttribute("role", "status");
+  live.setAttribute("aria-live", "polite");
+  d.append(summary, card, live);
+  const say = (msg: string) => {
+    const p = document.createElement("p");
+    p.className = "cli-message";
+    p.textContent = msg;
+    card.replaceChildren(p);
+  };
   let asked = false;
   d.addEventListener("toggle", async () => {
     if (!d.open || asked) return;
     asked = true;
     try {
       const r = await api("/api/roomctl", {}, get);
-      const c = (await r.json()) as { url?: string; issuer?: string; clientID?: string; projectID?: string; version?: string; humanMode?: string };
-      out.textContent = !r.ok
-        ? "roomctl is not set up on this broker: it has no roomctl client."
-        : c.humanMode === "local"
-          ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url}\nroomctl run --repo <owner/name> --task '<what the run should do>'`
-          : c.clientID
-            ? `${installRoomctl(c.version)}\nroomctl configure --url ${c.url} --issuer ${c.issuer} --client-id ${c.clientID} --project-id ${c.projectID}\nroomctl login`
-            : "roomctl is not set up on this broker: it has no roomctl client.";
+      const c = (await r.json()) as Parameters<typeof setupSteps>[0];
+      const steps = r.ok ? setupSteps(c) : undefined;
+      if (!steps) return say("roomctl is not set up on this broker: it has no roomctl client.");
+      const ol = document.createElement("ol");
+      ol.className = "cli-steps";
+      ol.append(...steps.map((s, i) => stepItem(s, i + 1, live)));
+      card.replaceChildren(ol);
     } catch (err) {
       asked = false;
-      if (!(err instanceof SignInRequired)) out.textContent = `CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`;
+      if (!(err instanceof SignInRequired)) say(`CLI setup unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
   return d;

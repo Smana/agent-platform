@@ -10,20 +10,28 @@ import { api } from "./api";
 import type { RoomEvent } from "./conn";
 import { approvalAnchor, el } from "./controls";
 
+export interface RunModel { run: string; model?: string; effort?: string }
+
 export interface Summary {
   apiVersion: "summary/v1";
   room: string;
   url: string;
   status: {
     phase: string; // a task phase, or Closed/Sealed
+    state?: string; // the coarse state (queued, running, waiting_for_human, done, failed, stopped)
     task?: string; // the room's Task, named as the room; absent without one
-    run: { id: string; role: string; trigger?: string; startedAt?: string } | null;
+    run: { id: string; role: string; trigger?: string; startedAt?: string; endedAt?: string } | null;
     budget: { usedTokens: number; limitTokens: number } | null;
     pr: { number: number; url: string; author?: string; reviewers?: string[] } | null;
     issue: { number: number; url: string; title?: string; author?: string; labelledBy?: string } | null;
     lastVerdict: { by: string; verdict: string; at: string } | null;
     reason?: string; // why the task waits (#59)
     next?: string; // what happens or who acts next
+    // What a run runs on: model is its claim's spec.model, effort what its harness reported. The
+    // present run's, and the last run's (the one before the present run, or the last when none is
+    // present). Absent until the log says.
+    runModel?: RunModel;
+    lastRunModel?: RunModel;
   };
   // A hold (N3): a factory task waits on the viewer's hold on this room; id is its wait reason.
   runs?: { id: string; role: string }[]; // the task's run history, oldest first

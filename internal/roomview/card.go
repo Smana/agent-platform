@@ -111,6 +111,7 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 		c.over = true
 	}
 	needs := len(s.NeedsYou) > 0
+	c.status(s)
 	c.title(s)
 	c.stateLine(s, needs)
 	c.step(s)
@@ -123,6 +124,23 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 	c.actions(s)
 	_, err := io.WriteString(w, strings.TrimRight(c.b.String(), "\n")+"\n")
 	return err
+}
+
+// status is the room's status at first sight: the line the page's strip leads with, from the same
+// function (summary.StatusLine). Fixed words and numbers only, so it needs no escaping.
+func (c *card) status(s summary.Summary) {
+	st := summary.StatusOf(s, c.o.Now)
+	if st.Kind == "" {
+		return
+	}
+	line := st.String()
+	if c.md() {
+		line = c.bold(line)
+		c.line(line)
+		c.line("")
+		return
+	}
+	c.line(c.bold(line))
 }
 
 // title leads with the task, `#42 title`, as a developer names a room, and ends with the room id.
@@ -201,7 +219,7 @@ func prURL(p *envelope.PRFact) string {
 func (c *card) facts(s summary.Summary) {
 	var rows [][2]string
 	if r := s.Status.Run; r != nil {
-		rows = append(rows, [2]string{"Run", c.runFact(*r)})
+		rows = append(rows, [2]string{"Run", c.runFact(*r, runModel(s, r.ID))})
 	}
 	if v := c.spend(s); v != "" {
 		rows = append(rows, [2]string{"Spend", v})
@@ -211,7 +229,7 @@ func (c *card) facts(s summary.Summary) {
 	}
 	if j := s.Status.LastJudge; j != nil {
 		rows = append(rows, [2]string{"Judge", c.words(j.Verdict, judgeWords(j.Verdict), c.md()) + " " + c.quoted(j.Reason, c.md()) +
-			" (the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
+			" (reported by the run: the completion judge's reading, at " + stamp(j.At, c.o.Now) + ")"})
 	}
 	if s.Status.Next != "" {
 		rows = append(rows, [2]string{"Next", c.broker(s.Status.Next)})
@@ -301,10 +319,28 @@ func (c *card) answerLine(n summary.Need) (string, bool) {
 
 func digits(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 
-func (c *card) runFact(r envelope.RunFact) string {
+// runModel is the model and effort the run with this id told its room: the present run's or the
+// last's, nil when neither is that run's.
+func runModel(s summary.Summary, id string) *summary.RunModel {
+	for _, m := range []*summary.RunModel{s.Status.RunModel, s.Status.LastRunModel} {
+		if m != nil && m.Run == id {
+			return m
+		}
+	}
+	return nil
+}
+
+func (c *card) runFact(r envelope.RunFact, m *summary.RunModel) string {
 	s := c.text(r.Role, c.md()) + " " + c.token(r.ID, c.md())
 	if t := clean(r.Trigger); t != "" {
 		s += " (" + c.words(r.Trigger, triggerWords(r.Trigger), c.md()) + ")"
+	}
+	if m != nil {
+		for _, v := range []string{m.Model, m.Effort} {
+			if v != "" {
+				s += " · " + c.token(v, c.md())
+			}
+		}
 	}
 	switch {
 	case r.StartedAt.IsZero():
@@ -426,7 +462,7 @@ func (c *card) runs(s summary.Summary) {
 // outcome the factory set without an end (a stopped task's last run) is that outcome, never
 // running, and has no time to count.
 func (c *card) runPhrase(r envelope.RunFact) string {
-	reviews := r.Role == "reviewer" || r.Role == "tester"
+	reviews := r.Role == "reviewer" // a tester writes tests: shown as a writer (TO1)
 	s := c.text(r.Role, false)
 	if !reviews && clean(r.Trigger) != "" {
 		s += " (" + c.words(r.Trigger, triggerWords(r.Trigger), false) + ")"

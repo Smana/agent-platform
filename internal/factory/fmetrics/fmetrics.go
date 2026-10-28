@@ -83,7 +83,7 @@ func humanPhases() []string { return []string{v1alpha1.PhaseAwaitingHuman, v1alp
 func apiOutcomes() []string {
 	return []string{"admitted", "kill_switch", "bad_json", "idempotency_key_required", "bad_data_class", "bad_ref",
 		"repository_not_allowed", "repository_not_owned", "meter_unpriced", "max_cost_required", "max_cost_over_principal",
-		"max_cost_over_class", "not_linked", "not_a_maintainer", "invalid_draft", "bad_text", "tasks_unavailable",
+		"max_cost_over_class", "not_linked", "link_unverified", "not_a_maintainer", "invalid_draft", "bad_text", "tasks_unavailable",
 		"principal_task_cap", "ledger_unavailable", "principal_budget_exhausted", "intake_failed", "duplicate", "idempotency_conflict"}
 }
 
@@ -130,6 +130,8 @@ type Set struct {
 	splitChildren        metric.Int64Counter
 	scopeBounces         metric.Int64Counter
 	loopRuns             metric.Int64Counter
+	contracts            metric.Int64Counter
+	noHoldout            metric.Int64Gauge
 	roomsCapped          metric.Int64Counter
 	usageErrors          metric.Int64Counter
 	meterSuccess         metric.Int64Gauge
@@ -333,6 +335,12 @@ func New(meter metric.Meter, tasks client.Reader, ns string, leader func() bool)
 	check(err)
 	s.resumes, err = meter.Int64Counter("agent_factory_resumes_total",
 		metric.WithDescription("Runs the factory resumed on its own after their pod was disrupted or lost, by the AgentRun's reason."))
+	check(err)
+	s.contracts, err = meter.Int64Counter("agent_factory_contracts_total",
+		metric.WithDescription("Tester runs as they end, by class and end: ready, not_testable, contract_not_red, contract_outside_tests, contract_invalid or unreported (test-first tester R23)."))
+	check(err)
+	s.noHoldout, err = meter.Int64Gauge("agent_factory_class_without_holdout",
+		metric.WithDescription("1 for a live class that declares no holdoutChecks: refused from the next minor (test-first tester TO5)."))
 	check(err)
 	s.loopRuns, err = meter.Int64Counter("agent_factory_loop_runs_total",
 		metric.WithDescription("Implementer runs under the loop policy, by class and how they ended: judge_impossible, stalled, not_met, finished or other (loops design L2, L3)."))
@@ -765,6 +773,18 @@ func (s *Set) Resumed(ctx context.Context, reason string) {
 func (s *Set) LoopRun(ctx context.Context, class, end string) {
 	s.loopRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
 		attribute.String("end", oneOf(end, []string{"judge_impossible", "stalled", "not_met", "finished"})), s.repoOf(ctx)))
+}
+
+// ContractEnd counts a tester run's end once the factory has read it (R23).
+func (s *Set) ContractEnd(ctx context.Context, class, end string) {
+	s.contracts.Add(ctx, 1, metric.WithAttributes(attribute.String("class", class),
+		attribute.String("end", oneOf(end, []string{"ready", "not_testable", "contract_not_red", "contract_outside_tests", "contract_invalid", "contract_too_large", "unreported"})), s.repoOf(ctx)))
+}
+
+// ClassWithoutHoldout sets agent_factory_class_without_holdout to 1 for a live class with no holdoutChecks (TO5).
+func (s *Set) ClassWithoutHoldout(ctx context.Context, repository, class string) {
+	s.noHoldout.Record(ctx, 1, metric.WithAttributes(attribute.String("repository", s.repository(repository)),
+		attribute.String("class", class)))
 }
 
 // SteeringRead counts a task's steering note read at triage, in a scope mode other than off.

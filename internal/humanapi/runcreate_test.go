@@ -236,3 +236,14 @@ func (c tokenCheck) CreateTask(ctx context.Context, r runrequest.TaskRequest) (r
 	}
 	return c.f.CreateTask(ctx, r)
 }
+
+// run_create's answer names the sponsor the factory chose, so the Slack App can say who files.
+func TestRunCreateNamesTheSponsor(t *testing.T) {
+	f := &fakeTaskFactory{answer: runrequest.TaskResult{Task: roomID, Room: roomID, Issue: 42, Sponsor: "smana"}}
+	e := setup(t, mcpOn, actorOn(&actLog{}), withSponsored(sponsoredP), withTaskFactory(f), sponsoredRooms(t, world(nil)))
+	got := call(t, e, bearer("slack-app"), "run_create", map[string]any{"repo": "Smana/ai-native-ref", "title": "docs(x): y",
+		"text": runDraft, "dataClass": "public", "max_cost": 2, "on_behalf_of": "slack:T01ABC/U02DEF"})
+	if got.isError || !strings.Contains(string(got.structured), `"sponsor":"smana"`) {
+		t.Fatalf("%+v", got)
+	}
+}

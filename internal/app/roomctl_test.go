@@ -189,6 +189,7 @@ func TestRoomctlPostAndFork(t *testing.T) {
 		{"post", "3kq7x2ma", "--queue", "address", "L42"}, // a flag after the room, as the usage shows it
 		{"post", "3kq7x2ma", "looks good"},
 		{"fork", "3kq7x2ma", "--at", "12", "--role", "implementer", "--egress", "pypi,npm", "--note", "try uv"},
+		{"fork", "3kq7x2ma", "--at", "12", "--approvals", "unattended"},
 	} {
 		if err := r.Run(t.Context(), args); err != nil {
 			t.Fatalf("%v: %v", args, err)
@@ -200,6 +201,7 @@ func TestRoomctlPostAndFork(t *testing.T) {
 		`{"delivery":"queued","kind":"message","text":"address L42"}`,
 		`{"delivery":"none","kind":"message","text":"looks good"}`,
 		`{"egressProfiles":["pypi","npm"],"kind":"fork","note":"try uv","role":"implementer","seq":12}`,
+		`{"approvals":"unattended","kind":"fork","seq":12}`, // asked for: sent; left out, the broker's default is attended
 	}
 	for i, w := range want {
 		if got, _ := json.Marshal(b.acts[i]); string(got) != w || b.bearer[i] != "Bearer tok-dev" {
@@ -211,7 +213,7 @@ func TestRoomctlPostAndFork(t *testing.T) {
 			t.Errorf("the output lacks %q:\n%s", s, out)
 		}
 	}
-	for _, bad := range [][]string{{"fork", "3kq7x2ma"}, {"post", "3kq7x2ma"}, {"watch"}, {"fork", "3kq7x2ma", "--at", "0"}} {
+	for _, bad := range [][]string{{"fork", "3kq7x2ma"}, {"post", "3kq7x2ma"}, {"watch"}, {"fork", "3kq7x2ma", "--at", "0"}, {"fork", "3kq7x2ma", "--at", "1", "--approvals", "yolo"}} {
 		if err := r.Run(t.Context(), bad); err == nil {
 			t.Errorf("%v: accepted", bad)
 		}

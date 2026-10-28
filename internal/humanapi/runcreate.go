@@ -114,5 +114,9 @@ func (s *Server) redactCheck(ctx context.Context, text string) error {
 
 // runCreated is run_create's answer without a task: the factory's, and the room page.
 func (s *Server) runCreated(r runrequest.TaskResult) map[string]any {
-	return map[string]any{"task": r.Task, "room": r.Room, "issue": r.Issue, "duplicate": r.Duplicate, "url": s.PublicURL + "/r/" + r.Room}
+	out := map[string]any{"task": r.Task, "room": r.Room, "issue": r.Issue, "duplicate": r.Duplicate, "url": s.PublicURL + "/r/" + r.Room}
+	if r.Sponsor != "" {
+		out["sponsor"] = r.Sponsor
+	}
+	return out
 }

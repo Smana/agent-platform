@@ -11,7 +11,7 @@ export interface Latest { seq: number; text: string; status: "running" | "ok" | 
 // A pending approval: its card. action is the raw, redacted call (T3).
 // A human member as the log's participant events last named them.
 export interface Member { principal: string; role: string; approver: boolean }
-export interface Approval { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }
+export interface Approval { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number; prompters?: string[] }
 
 // What the controls need: the state frame's projection of the log (driver, queue,
 // seal), then the log's events past its mark (§1).
@@ -124,7 +124,8 @@ export class RoomState {
         // At or below the mark the snapshot decides: it holds the request unless it was decided.
         if (ev.seq > this.through && typeof p.approvalId === "string") {
           this.pending.set(p.approvalId, { approvalId: p.approvalId, runId: ev.runId ?? "", callId: String(p.callId ?? ""),
-            class: String(p.class ?? ""), action: p.action, expiresAt: String(p.expiresAt ?? ""), seq: ev.seq });
+            class: String(p.class ?? ""), action: p.action, expiresAt: String(p.expiresAt ?? ""), seq: ev.seq,
+            prompters: Array.isArray(p.prompters) ? p.prompters.filter((x: unknown): x is string => typeof x === "string") : undefined });
         }
         break;
       case "approval_decided":

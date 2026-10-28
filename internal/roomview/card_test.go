@@ -139,10 +139,11 @@ func TestCardOmitsAbsentLines(t *testing.T) {
 func TestCardNoIssue(t *testing.T) {
 	s, n := foldGolden(t, "no_facts")
 	for _, f := range []Format{Markdown, Text} {
-		first := strings.SplitN(card1(t, s, Options{Format: f, Now: n, Rooms: rooms}), "\n", 2)[0]
-		want := "### 26zfnuxm"
+		// The status line leads, then (in Markdown) a blank line, then the heading.
+		lines := strings.SplitN(card1(t, s, Options{Format: f, Now: n, Rooms: rooms}), "\n", 4)
+		first, want := lines[2], "### 26zfnuxm"
 		if f == Text {
-			want = "26zfnuxm"
+			first, want = lines[1], "26zfnuxm"
 		}
 		if first != want {
 			t.Errorf("format %d: heading %q, want %q", f, first, want)
@@ -229,13 +230,14 @@ func TestRunsLine(t *testing.T) {
 			}
 		}
 	}
-	// A tester is a reviewer: no trigger, and its verdict in place of "succeeded"; a failed one says so.
+	// A tester writes the tests (TO1): shown as a writer, with its trigger and its outcome, not a verdict; a reviewer
+	// shows its verdict in place of "succeeded", and a failed one says so.
 	s.Runs = []envelope.RunFact{
 		{ID: "t1", Role: "tester", Trigger: "ci", Outcome: "succeeded", Verdict: "changes", StartedAt: at(0), EndedAt: at(1)},
 		{ID: "t2", Role: "reviewer", Outcome: "failed", Verdict: "approve", StartedAt: at(0), EndedAt: at(1)},
 	}
 	got = card1(t, s, textOpts(now))
-	if !strings.Contains(got, "tester changes requested · 1 min → reviewer failed · 1 min\n") {
+	if !strings.Contains(got, "tester (CI fix) succeeded · 1 min → reviewer failed · 1 min\n") {
 		t.Errorf("tester and failed reviewer:\n%s", got)
 	}
 }
@@ -272,7 +274,7 @@ func TestCardRealPhases(t *testing.T) {
 	for _, phase := range summary.TaskPhases() {
 		s := summary.Summary{Room: "r", URL: rooms + "/r/r"}
 		s.Status.Phase = phase
-		got := strings.Split(card1(t, s, textOpts(now)), "\n")[1]
+		got := strings.Split(card1(t, s, textOpts(now)), "\n")[2] // after the status line and the title
 		state := summary.Coarse(phase, phase, false)
 		if want := stateWord(state, false) + " · " + phaseWords(phase) + " · open the room (" + rooms + "/r/r)"; got != want {
 			t.Errorf("%s: state line %q, want %q", phase, got, want)
@@ -470,7 +472,7 @@ func TestCardHostileFields(t *testing.T) {
 func TestCardTextColorBoldsTheStateWord(t *testing.T) {
 	s, n := foldGolden(t, "normal")
 	got := card1(t, s, Options{Format: TextColor, Now: n, Rooms: rooms})
-	if !strings.HasPrefix(strings.SplitN(got, "\n", 3)[1], "\x1b[1mneeds you\x1b[0m · ") {
+	if !strings.HasPrefix(strings.SplitN(got, "\n", 4)[2], "\x1b[1mneeds you\x1b[0m · ") {
 		t.Errorf("the state word is bold on a terminal:\n%q", got)
 	}
 	if plain := card1(t, s, textOpts(n)); strings.Contains(plain, "\x1b") {
@@ -596,10 +598,52 @@ func TestCardShowsTheLastJudgeVerdict(t *testing.T) {
 	s.Status.LastJudge = &summary.JudgeVerdict{Verdict: "not_yet", Reason: "validate fails # x", Evidence: []string{"check:validate"}, At: n}
 	md := card1(t, s, Options{Format: Markdown, Now: n, Rooms: rooms})
 	txt := card1(t, s, Options{Format: Text, Now: n, Rooms: rooms})
-	for _, w := range []string{"Judge", "not yet", "validate fails"} {
+	for _, w := range []string{"Judge", "not yet", "validate fails", "reported by the run"} {
 		if !strings.Contains(md, w) || !strings.Contains(txt, w) {
 			t.Errorf("no %q:\n%s\n%s", w, md, txt)
 		}
 	}
 	assertInert(t, md, rooms, []string{"# x"})
+}
+
+// The Run row names the model and effort the run told its room, the present run's or the last's,
+// only when they are that run's, and as tokens: a run's claim is never markup.
+func TestCardRunRowNamesTheModelAndEffort(t *testing.T) {
+	for name, c := range map[string]struct {
+		current, last *summary.RunModel
+		want          string
+	}{
+		"the present run's": {&summary.RunModel{Run: "cf4ato2x", Model: "agent-default", Effort: "high"}, nil,
+			"Run   implementer cf4ato2x (human review) · agent-default · high · started 19:11 UTC, 18 min ago\n"},
+		"the last run's, when it is the facts' run": {nil, &summary.RunModel{Run: "cf4ato2x", Model: "agent-default", Effort: "low"},
+			"Run   implementer cf4ato2x (human review) · agent-default · low · started"},
+		"an effort alone": {&summary.RunModel{Run: "cf4ato2x", Effort: "max"}, nil,
+			"Run   implementer cf4ato2x (human review) · max · started"},
+		"another run's is not this run's": {&summary.RunModel{Run: "zzzzzzzz", Model: "agent-default", Effort: "high"}, nil,
+			"Run   implementer cf4ato2x (human review) · started"},
+		"an older harness told nothing": {nil, nil, "Run   implementer cf4ato2x (human review) · started"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, n := foldGolden(t, "normal")
+			s.Status.RunModel, s.Status.LastRunModel = c.current, c.last
+			if got := card1(t, s, textOpts(n)); !strings.Contains(got, c.want) {
+				t.Fatalf("want %q in\n%s", c.want, got)
+			}
+		})
+	}
+}
+
+// The status leads the card, ahead of the title, on both formats.
+func TestCardLeadsWithTheStatus(t *testing.T) {
+	s, n := foldGolden(t, "normal")
+	for _, f := range []Format{Markdown, Text} {
+		got := card1(t, s, Options{Format: f, Now: n, Rooms: rooms})
+		want := "⏳ Waiting for you — approve a pending action"
+		if f == Markdown {
+			want = "**" + want + "**"
+		}
+		if first := strings.SplitN(got, "\n", 2)[0]; first != want {
+			t.Errorf("format %d: first line %q, want %q", f, first, want)
+		}
+	}
 }

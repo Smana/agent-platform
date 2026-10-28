@@ -34,13 +34,20 @@ const maxNote = 1 << 10
 // (§5): the log prefix with its seqs, then state_changed{forked_from} with the
 // commit at that seq, then, for a role, the new room's first run, on its own
 // branch and the forker's token. Nothing is written to the source room, so a
-// sealed one forks too, for its owners. The source's approvals carry over for
-// its owners; anyone else gets, class by class, the stricter of them and a new
-// room's (ruling M2). The ack's result is {roomId, run?, runError?}: a run that
+// sealed one forks too, for its owners. A fork asks by default: its owner gets the
+// attended profile, the source's ttl and fourEyes and the source's overrides but
+// an allow, so a factory room's unattended policy never makes a human's own fork
+// run unasked. act.Approvals "unattended" keeps the source's approvals as they
+// are (a fork is never weaker than its source: an attended source stays
+// attended). Anyone else gets, class by class, the stricter of the source's and
+// a new room's (ruling M2), whatever they ask. The ack's result is {roomId, run?, runError?}: a run that
 // fails leaves the fork made.
 func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v1alpha1.Room, act Action, d envelope.Draft) (envelope.Event, json.RawMessage, string) {
 	fail := func(reason string) (envelope.Event, json.RawMessage, string) { return envelope.Event{}, nil, reason }
 	note := strings.TrimSpace(act.Note)
+	if act.Approvals != "" && act.Approvals != "attended" && act.Approvals != "unattended" {
+		return fail(rejectBadAction)
+	}
 	if act.Seq < 1 || len(note) > maxNote || (act.Role != "" && !a.validRun(room, act)) || !memberPrincipal.MatchString(p.ID) {
 		return fail(rejectBadAction) // the owner must be one the Room CRD admits
 	}
@@ -76,10 +83,23 @@ func (a *Actor) fork(ctx context.Context, p authn.Principal, owner bool, room *v
 		return fail(rejectLogUnavailable)
 	}
 	approvals := *room.Spec.Approvals.DeepCopy()
-	if !owner {
+	switch {
+	case !owner:
 		// A new room's policy is the CRD's default: createRoom sets none.
 		s := bridge.Stricter(wire.ApprovalPolicy{Profile: approvals.Profile, Overrides: approvals.Overrides}, wire.ApprovalPolicy{})
 		approvals.Profile, approvals.Overrides = s.Profile, s.Overrides
+	case act.Approvals != "unattended":
+		// The owner's own fork asks: attended, keeping the source's ttl and fourEyes and every
+		// override that does not loosen the gate.
+		approvals.Profile, approvals.Overrides = "attended", nil
+		for class, v := range room.Spec.Approvals.Overrides {
+			if v != "allow" {
+				if approvals.Overrides == nil {
+					approvals.Overrides = map[string]string{}
+				}
+				approvals.Overrides[class] = v
+			}
+		}
 	}
 	child := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: id, Namespace: room.Namespace,
 		Annotations: map[string]string{ForkedFrom: fmt.Sprintf("%s@%d", room.Name, act.Seq)}},

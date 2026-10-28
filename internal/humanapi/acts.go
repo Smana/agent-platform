@@ -81,6 +81,7 @@ type Action struct {
 	Decision       string   `json:"decision,omitempty"`   // decide: approved | denied
 	Seq            int64    `json:"seq,omitempty"`        // fork: the last event copied
 	Note           string   `json:"note,omitempty"`       // fork
+	Approvals      string   `json:"approvals,omitempty"`  // fork: attended (the default) | unattended
 }
 
 // Actor serves humans' act frames: every write a human makes to a room. Log,

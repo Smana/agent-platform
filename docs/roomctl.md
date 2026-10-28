@@ -57,7 +57,7 @@ roomctl doctor                                   # check the setup
 | `post <room> [--queue] <text>` | Posts a chat message and prints its `seq`. With `--queue` the text is kept for the next run's brief instead. The broker stores it labelled as [machine-sent](api.md#machine-sent-text), as any text from roomctl |
 | `skill install [--dir .agents/skills]` | Writes the factory-handoff skill. Needs no config or login |
 | `mcp` | Serves the factory's MCP tools on stdio, for a local coding agent ([below](#the-mcp-server)) |
-| `fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]` | A room of your own from events 1 to `SEQ`, with an optional run. `--role`: `implementer`, `reviewer`, `tester` or `triager`; `--pr`: the reviewer's pull request; `--egress`: extra profiles (`pypi`, `npm`, `golang`, `crates`); `--note`: why you fork, under 1 KiB once labelled as machine-sent (about 900 bytes). Prints the new room's URL |
+| `fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT] [--approvals attended\|unattended]` | A room of your own from events 1 to `SEQ`, with an optional run. `--role`: `implementer`, `reviewer`, `tester` or `triager`; `--pr`: the reviewer's pull request; `--egress`: extra profiles (`pypi`, `npm`, `golang`, `crates`); `--note`: why you fork, under 1 KiB once labelled as machine-sent (about 900 bytes); `--approvals`: `attended` by default, so the fork asks before risky actions even when the source is an unattended factory room, `unattended` keeps an unattended source's policy (an attended source stays attended). Prints the new room's URL |
 
 Flags may come before or after the positional arguments. Source: `internal/app/roomctl.go`.
 

@@ -16,7 +16,7 @@ func TestCreateTask(t *testing.T) {
 	var auth, key, path string
 	var body map[string]any
 	var rawBody string
-	status, answer := http.StatusCreated, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":false}`
+	status, answer := http.StatusCreated, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":false,"sponsor":"smana"}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, key, path = r.Header.Get("Authorization"), r.Header.Get("Idempotency-Key"), r.URL.Path
 		raw, _ := io.ReadAll(r.Body)
@@ -29,23 +29,23 @@ func TestCreateTask(t *testing.T) {
 	f := Factory{URL: srv.URL}
 	req := TaskRequest{Repository: "Smana/x", Text: "t", DataClass: "public", MaxCostUSD: 2, AccessToken: "tok", IdempotencyKey: "k1"}
 	res, err := f.CreateTask(t.Context(), req)
-	if err != nil || res.Task != "abcd2345" || res.Room != "abcd2345" || res.Issue != 42 || res.Duplicate ||
+	if err != nil || res.Task != "abcd2345" || res.Room != "abcd2345" || res.Issue != 42 || res.Duplicate || res.Sponsor != "smana" ||
 		auth != "Bearer tok" || key != "k1" || path != "/v1/tasks" || body["maxCostUSD"] != float64(2) || body["repository"] != "Smana/x" {
 		t.Fatal(res, err, auth, key, path, body)
 	}
 	if strings.Contains(rawBody, "tok") || strings.Contains(rawBody, "k1") {
 		t.Fatalf("the token and key are never in the body: %s", rawBody)
 	}
-	status, answer = http.StatusOK, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":true}`
-	if res, err = f.CreateTask(t.Context(), req); err != nil || !res.Duplicate {
-		t.Fatal(res, err)
+	status, answer = http.StatusOK, `{"task":"abcd2345","room":"abcd2345","issue":42,"duplicate":true,"sponsor":"<@U1> x"}`
+	if res, err = f.CreateTask(t.Context(), req); err != nil || !res.Duplicate || res.Sponsor != "" {
+		t.Fatal("a sponsor that is not a login is dropped:", res, err)
 	}
 	for _, c := range []struct {
 		status int
 		body   string
 		reason string
 	}{
-		{403, `{"error":"not_linked"}`, "not_linked"}, {409, `{"error":"idempotency_conflict"}`, "idempotency_conflict"},
+		{403, `{"error":"not_linked"}`, "not_linked"}, {503, `{"error":"link_unverified"}`, "link_unverified"}, {409, `{"error":"idempotency_conflict"}`, "idempotency_conflict"},
 		{503, `{"error":"tasks_unavailable"}`, "tasks_unavailable"}, {400, `{"error":"leak: secret"}`, "refused"},
 		{401, `{"error":"unauthenticated"}`, "unauthenticated"}, {403, `{"error":"not_permitted"}`, "not_permitted"},
 		{500, `not json`, "refused"}, {403, `{"error":"admitted"}`, "refused"},

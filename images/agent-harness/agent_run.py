@@ -87,8 +87,9 @@ INTERRUPT_TIMEOUT_S = 10
 SEARCH_TOOL, SEARCH_MODULE = "search", "agent_search"
 SEARCH_LEDGER = "/workspace/.agent-search.jsonl"
 SEARCH_STARTED = ("complete", "budget", "error", "interrupted")
-SEARCH_RULE = ("To find your way in the repository, prefer `search` with one self-contained question over many "
-               "reads; verify what it returns by reading the files it names.")
+SEARCH_RULE = ("For any question about where something is in the repository, or which file, runbook or doc covers a "
+               "topic, call `search` FIRST, with one self-contained question, before grep, find or cat; use grep only "
+               "to confirm what it returned, by reading the files it names. Skip it when the task needs no lookup.")
 
 
 @functools.cache
@@ -285,6 +286,7 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.tools.preset.default import get_default_agent
 
+    effort = env.get("LLM_REASONING_EFFORT", "high")
     llm = LLM(
         model="openai/" + env["MODEL"],
         base_url=env["LLM_BASE_URL"],
@@ -299,7 +301,7 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
         # know (`agent-default`), even with capability_overrides. Unsent, GLM-5.3 falls back
         # to maximum thinking: measured 150 s and 1,238 reasoning tokens for a reply that
         # takes 10.8 s at "high", so every step took minutes and some hit the 300 s timeout.
-        litellm_extra_body={"reasoning_effort": env.get("LLM_REASONING_EFFORT", "high")},
+        litellm_extra_body={"reasoning_effort": effort},
         # Internal runs reach Anthropic, where an uncached turn re-sends the whole context at the
         # full input price. The SDK only knows `agent-default` is a Claude model when told; its
         # markers are rewritten for the gateway in site/sitecustomize.py. Public runs reach Z.ai
@@ -333,6 +335,10 @@ def build_request(env: dict, task: str, rules: str, span=None, search: bool = Fa
         "max_iterations": 500,
         # Each auto-title is an extra model call that spends the run's budget.
         "autotitle": False,
+        # The effort this run sends the gateway, for its room: the bridge reads the tag back into
+        # harness_status{effort}. Not the model: the room takes it from the claim's spec.model,
+        # since the agent can rewrite these tags over loopback.
+        "tags": {"effort": effort},
     })
     return json.loads(request.model_dump_json(exclude_none=True, context=plain))
 
@@ -1333,6 +1339,16 @@ def wait_checks(env: dict, sha: str, clock=time.monotonic, sleep=time.sleep) -> 
         sleep(CHECKS_POLL_S)
 
 
+def path_facts(checks: str, sha: str) -> list[tuple[str, str, bool]]:
+    """(path, mode, exists at the head) for each repository path the acceptance names. Unknown (no head,
+    or git failing) names nothing: the judge is never handed a guess."""
+    tree = _git("ls-tree", "--name-only", sha) if sha else None
+    if tree is None:
+        return []
+    named = loop_policy.named_paths(checks, {n for n in tree.split("\n") if n})
+    return [(p, mode, _git("cat-file", "-e", "%s:%s" % (sha, p)) is not None) for p, mode in named]
+
+
 def evidence(env: dict, task: str) -> tuple[str, set[str]]:
     """The judge's user message and the ids it may cite: the acceptance checks, the diff against the
     base and the head's check runs. Redacted: the diff is the agent's."""
@@ -1340,8 +1356,9 @@ def evidence(env: dict, task: str) -> tuple[str, set[str]]:
     merge_base = (_git("merge-base", base_ref(env), "HEAD") or "").strip() or base_ref(env)
     files = [f for f in (_git("diff", "--name-only", merge_base, "HEAD") or "").split("\n") if f]
     diff = _git("diff", "--no-color", "--no-ext-diff", "--no-textconv", merge_base, "HEAD")
-    text, offered = loop_policy.judge_input(loop_policy.acceptance(task), sha, files,
-                                            "(diff unavailable)" if diff is None else diff, wait_checks(env, sha))
+    checks = loop_policy.acceptance(task)
+    text, offered = loop_policy.judge_input(checks, sha, files, "(diff unavailable)" if diff is None else diff,
+                                            wait_checks(env, sha), path_facts(checks, sha))
     return redact(text), offered  # every part is the agent's: file names, check titles, the diff
 
 

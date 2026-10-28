@@ -56,6 +56,10 @@ type Run struct {
 	// runwatch to see Running first, the idempotent step would omit it and only the state
 	// frame would say so.
 	Unsandboxed bool
+	// Model is spec.model, the C5 logical model the run was given: the claim's, never the
+	// sandbox's, so the room and rooms_run_info may name it. Empty when unset or outside
+	// envelope.ValidModel.
+	Model string
 }
 
 // Terminal reports whether an AgentRun phase is final.
@@ -103,6 +107,9 @@ func FromUnstructured(u *unstructured.Unstructured) (Run, bool) {
 	r.ResumedAt, _ = time.Parse(time.RFC3339, ann[ResumedAtAnnotation])
 	r.ResourceVersion = u.GetResourceVersion()
 	r.Unsandboxed = conditionTrue(u, "Unsandboxed")
+	if m := str("spec", "model"); envelope.ValidModel(m) {
+		r.Model = m
+	}
 	return r, true
 }
 

@@ -581,13 +581,14 @@ func (v *viewer) snapshot(you wire.You, st store.RoomState) (*wire.Snapshot, err
 	}
 	snap := &wire.Snapshot{RoomID: v.id, Phase: v.room.Status.Phase, Driver: st.Driver, DriverEpoch: st.DriverEpoch,
 		DataClass: v.room.Spec.DataClass, You: you, Runs: []wire.RunView{}, Queue: []wire.QueuedView{}, Sealed: st.Sealed,
-		Approvals: []wire.ApprovalView{}}
+		Approvals: []wire.ApprovalView{}, FourEyes: v.room.Spec.Approvals.FourEyes}
 	for _, q := range queued {
 		snap.Queue = append(snap.Queue, wire.QueuedView{Ref: q.Ref, Author: q.Author, Text: q.Text})
 	}
 	for _, a := range pending {
 		snap.Approvals = append(snap.Approvals, wire.ApprovalView{ApprovalID: a.ID, RunID: a.RunID, CallID: a.CallID,
-			Class: a.Class, Action: a.Action, ExpiresAt: a.ExpiresAt.UTC(), Seq: a.RequestedSeq})
+			Class: a.Class, Action: a.Action, ExpiresAt: a.ExpiresAt.UTC(), Seq: a.RequestedSeq,
+			Prompters: append([]string{}, a.Prompters...)})
 	}
 	for _, run := range v.s.Runs.InRoom(v.id) {
 		snap.Runs = append(snap.Runs, wire.RunView{ID: run.ID, Role: run.Role, Phase: run.Phase, Unsandboxed: run.Unsandboxed})

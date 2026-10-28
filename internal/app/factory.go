@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -106,6 +108,24 @@ func warnIgnored(log *slog.Logger, cfg *config.Config) {
 	}
 }
 
+// warnConfig logs each sentence the config loaded with (a later release refuses it) and sets the
+// gauge of a live class that declares no holdoutChecks (TO5).
+func warnConfig(log *slog.Logger, cfg *config.Config, m *fmetrics.Set) {
+	for _, w := range cfg.Warnings {
+		log.Warn("config warning", "warning", w)
+	}
+	if m == nil {
+		return
+	}
+	for _, r := range cfg.Repos() {
+		for _, name := range slices.Sorted(maps.Keys(r.Classes)) {
+			if cl := r.Classes[name]; cl.Live && len(cl.HoldoutChecks) == 0 {
+				m.ClassWithoutHoldout(context.Background(), r.Name, name)
+			}
+		}
+	}
+}
+
 func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) string) error {
 	cfgPath, ns, err := factoryEnv(getenv)
 	if err != nil {
@@ -156,6 +176,7 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 		return err
 	}
 	m.ListRepositories(conns.names()...)
+	warnConfig(log, cfg, m)
 	m.ChargePeople(cfg.Budgets.PerPerson.Enabled)
 	sponsors := map[string]string{}
 	for _, sp := range cfg.API.Sponsored {
@@ -254,8 +275,13 @@ func runFactory(ctx context.Context, log *slog.Logger, getenv func(string) strin
 				return strings.TrimSpace(string(b))
 			}}
 	}
+	// The self-serve link: the broker's records, and the same ZITADEL resolver api.access reads.
+	var logins api.LoginResolver
+	if ga, ok := access.(api.GitHubAccess); ok {
+		logins = ga.Identity
+	}
 	apiSrv := &api.Server{Auth: auth, Log: log,
-		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped,
+		Cfg: cfg, Groups: groups, Runs: rc, Rooms: live, Namespace: ns, Stopped: stopped, SlackLinks: broker, Logins: logins,
 		NewRunID: taskid.Random, Now: time.Now, Metrics: m, Access: access, People: people, Owned: fenced.Owned,
 		Forges: func(repo string) api.IssueFiler {
 			c, ok := conns.get(repo)

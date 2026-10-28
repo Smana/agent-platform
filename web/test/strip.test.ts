@@ -18,6 +18,62 @@ const mount = () => { const h = document.createElement("header"); return { h, st
 const input = (over: Partial<StripInput> = {}): StripInput =>
   ({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 0, connection: "live", ...over });
 
+describe("the run status line", () => {
+  const state = (over: Partial<Summary["status"]>) => summary({ state: "running", ...over });
+  it("is the first element of the strip, a polite status", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: state({ run: { id: "r1", role: "implementer", startedAt: new Date(Date.now() - 4 * 60000).toISOString() } }), running: true }));
+    const first = h.querySelector(".strip")!.firstElementChild!;
+    expect(first.className).toBe("run-status");
+    expect(first.getAttribute("role")).toBe("status");
+    expect(first.getAttribute("aria-live")).toBe("polite");
+    expect(first.textContent).toBe("● Running — implementer, 4 min");
+    expect((first as HTMLElement).dataset.kind).toBe("running");
+    expect(first.querySelector(".run-status-icon")?.getAttribute("aria-hidden")).toBe("true");
+  });
+  it("links an approval wait to the card, and says another approver when the viewer cannot decide", () => {
+    const { h, strip } = mount();
+    let jumped = 0;
+    strip.onApprovalsClick(() => { jumped++; });
+    strip.update(input({ summary: state({}), approvals: { total: 1, mine: 1 } }));
+    const a = h.querySelector(".run-status a") as HTMLAnchorElement;
+    expect(a.textContent).toBe("Waiting for you — approve a pending action");
+    a.click();
+    expect(jumped).toBe(1);
+    strip.update(input({ summary: state({}), approvals: { total: 2, mine: 0 } }));
+    expect(h.querySelector(".run-status")?.textContent).toBe("⏳ Waiting for another approver");
+  });
+  it("links the PR to review, only on github.com", () => {
+    const { h, strip } = mount();
+    const sum = { ...state({ phase: "AwaitingHuman", state: "waiting_for_human", pr: { number: 42, url: "https://github.com/o/r/pull/42" } }),
+      step: { kind: "pr" as const, label: "review and merge or close PR #42", url: "https://github.com/o/r/pull/42" } };
+    strip.update(input({ summary: sum }));
+    const a = h.querySelector(".run-status a") as HTMLAnchorElement;
+    expect(a.textContent).toBe("Waiting — review and merge PR #42");
+    expect(a.href).toBe("https://github.com/o/r/pull/42");
+    strip.update(input({ summary: { ...sum, step: { ...sum.step, url: "https://evil.example/x" } } }));
+    expect(h.querySelector(".run-status a")).toBeNull();
+  });
+  it("reads done, failed and stopped, and a sealed room without a summary", () => {
+    const { h, strip } = mount();
+    const text = () => h.querySelector(".run-status")?.textContent;
+    strip.update(input({ summary: state({ state: "done", phase: "Done" }) }));
+    expect(text()).toBe("✓ Done — merged");
+    strip.update(input({ summary: state({ state: "waiting_for_human", phase: "Escalated", reason: "budget-task" }) }));
+    expect(text()).toBe("✗ Failed — budget reached");
+    strip.update(input({ summary: undefined, sealed: true }));
+    expect(text()).toBe("■ Stopped");
+  });
+  it("hides when nothing is known, and does not show agent text", () => {
+    const { h, strip } = mount();
+    strip.update(input({ summary: undefined }));
+    expect((h.querySelector(".run-status") as HTMLElement).hidden).toBe(true);
+    strip.update(input({ summary: state({ state: "waiting_for_human", phase: "Escalated", reason: "<img src=x onerror=alert(1)>" }) }));
+    expect(h.querySelector(".run-status")?.textContent).toBe("⏳ Waiting — a maintainer decides");
+    expect(h.querySelector(".run-status img")).toBeNull();
+  });
+});
+
 describe("the title strip", () => {
   it("prints the Now line with a relative time and links to the row", () => {
     const { h, strip } = mount();
@@ -160,6 +216,42 @@ describe("the title strip", () => {
     strip.update(input());
     expect(h.querySelector(".chip-run")?.textContent).toBe("implementer · ikely2yk · 4 min");
   });
+  it("names the run's model (its claim's) and effort (its harness's)", () => {
+    const at = () => Date.parse("2026-10-04T14:12:30Z");
+    const chipFor = (over: Partial<Summary["status"]>) => {
+      const h = document.createElement("header");
+      mountStrip(h, at).update(input({ summary: summary(over) }));
+      return h.querySelector(".chip-run")?.textContent;
+    };
+    expect(chipFor({ runModel: { run: "ikely2yk", model: "agent-default", effort: "high" } }))
+      .toBe("implementer · ikely2yk · agent-default · high · 12 min");
+    // The last run's, when the facts' run is that one (the agent left, the chip still shows).
+    expect(chipFor({ lastRunModel: { run: "ikely2yk", model: "agent-default", effort: "low" } }))
+      .toBe("implementer · ikely2yk · agent-default · low · 12 min");
+    expect(chipFor({ runModel: { run: "ikely2yk", effort: "max" } })).toBe("implementer · ikely2yk · max · 12 min");
+    // Another run's model is not this run's; with neither known the chip is as before.
+    expect(chipFor({ runModel: { run: "zzzzzzzz", model: "agent-default", effort: "high" } })).toBe("implementer · ikely2yk · 12 min");
+    expect(chipFor({})).toBe("implementer · ikely2yk · 12 min");
+  });
+  it("keeps the model and effort when the run's age moves in place", () => {
+    let t = Date.parse("2026-10-04T14:04:30Z");
+    const h = document.createElement("header");
+    const strip = mountStrip(h, () => t);
+    const i = input({ summary: summary({ runModel: { run: "ikely2yk", model: "agent-default", effort: "high" } }) });
+    strip.update(i);
+    const chip = h.querySelector(".chip-run");
+    t += 60_000;
+    strip.update(i);
+    expect(h.querySelector(".chip-run")).toBe(chip);
+    expect(chip?.textContent).toBe("implementer · ikely2yk · agent-default · high · 5 min");
+  });
+  it("puts a run's model in as text", () => {
+    const { h, strip } = mount();
+    const evil = "<img src=x onerror=alert(1)>";
+    strip.update(input({ summary: summary({ runModel: { run: "ikely2yk", model: evil, effort: evil } }) }));
+    expect(h.querySelector("img")).toBeNull();
+    expect(h.querySelector(".chip-run")?.textContent).toContain(evil);
+  });
   it("names another driver short, the full id as a title, and your role", () => {
     const { h, strip } = mount();
     strip.update(input({ driver: "human:999999999999" }));
@@ -248,7 +340,7 @@ describe("the title strip", () => {
     const { h, strip } = mount();
     strip.update(input({ now: { seq: 1, text: "hi", status: "message", ts: new Date().toISOString() } }));
     const order = [...h.querySelector(".strip")!.children].map((c) => c.className);
-    expect(order).toEqual(["strip-head", "strip-tail", "strip-now"]);
+    expect(order).toEqual(["run-status", "strip-head", "strip-tail", "strip-now"]);
   });
   it("keeps the title, the chips and a focused pill in place when only the count or the connection moves", () => {
     const { h, strip } = mount();
@@ -298,6 +390,8 @@ describe("the broker's golden summaries in the strip", () => {
     expect(h.querySelector(".chip-phase")?.textContent).toBe(want.status.phase);
     if (want.status.pr) expect(h.textContent).toContain(`#${want.status.pr.number}`);
     if (want.status.issue) expect(h.textContent).toContain(`#${want.status.issue.number}`);
+    const told = [want.status.runModel, want.status.lastRunModel].find((m) => m && m.run === want.status.run?.id);
+    if (told?.model) expect(h.querySelector(".chip-run")?.textContent).toContain(` · ${told.model} · `);
     expect(h.textContent).not.toMatch(/undefined|null|NaN|Invalid Date/);
   });
 });
@@ -411,5 +505,34 @@ describe("the strip's dashboards", () => {
     const { h, strip } = mount();
     strip.update(input({ dashboards: [{ label: "Plain", url: "http://grafana.example.com/?r={room}" }] }));
     expect(h.querySelector(".chip-dashboards")).toBeNull();
+  });
+});
+
+describe("the approvals banner", () => {
+  const banner = (h: HTMLElement) => h.querySelector<HTMLAnchorElement>("a.approvals-banner");
+  it("counts the approvals waiting for you, and links to the cards", () => {
+    const { h, strip } = mount();
+    let clicked = 0;
+    strip.onApprovalsClick(() => { clicked++; });
+    strip.update(input({ approvals: { total: 2, mine: 2 } }));
+    expect(banner(h)?.textContent).toBe("⏳ 2 approvals wait for you — review");
+    banner(h)!.click();
+    expect(clicked).toBe(1);
+  });
+  it("says another approver when the viewer cannot decide any", () => {
+    const { h, strip } = mount();
+    strip.update(input({ approvals: { total: 1, mine: 0 } }));
+    expect(banner(h)?.textContent).toBe("⏳ 1 approval waits for another approver — review");
+  });
+  it("is hidden when none wait, when the room is sealed, and leaves with the last approval", () => {
+    const { h, strip } = mount();
+    strip.update(input());
+    expect(banner(h)).toBeNull();
+    strip.update(input({ approvals: { total: 1, mine: 1 } }));
+    expect(banner(h)).not.toBeNull();
+    strip.update(input({ approvals: { total: 0, mine: 0 } }));
+    expect(banner(h)).toBeNull();
+    strip.update(input({ approvals: { total: 1, mine: 1 }, sealed: true }));
+    expect(banner(h)).toBeNull();
   });
 });

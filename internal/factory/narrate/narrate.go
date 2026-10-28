@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -178,6 +179,13 @@ func reasons() map[string]string {
 		"stalled":                   "the run made no commit within its step limit, or two continuations in a row added none",
 		"not_met":                   "the completion judge still found the acceptance checks unmet after the last continuation",
 		"needs_author":              "the scoper needs an answer from the issue's author before any code is written",
+		"contract_invalid":          "the tester's branch was not the tester's alone, or its contract commit was malformed",
+		"contract_disputed":         "the implementer says the tester's tests are wrong; a maintainer decides",
+		"contract_too_large":        "the tester's contract names more files or test ids than a task records, or one of them is too long",
+		"contract_check_unset":      "the task has a test contract but the repository no longer names merge.contractCheck",
+		"contract_modified":         "the pull request changes a test the tester wrote as the task's contract",
+		"contract_unread":           "the factory has not yet read which files changed since the test contract",
+		"contract_push_unrecorded":  "GitHub has not yet recorded the tester's push",
 		"split_proposed":            "the scoper proposes to split the task into parts, and a maintainer decides",
 		"budget-family":             "the cap of the task and its parts has no room left for another part's run",
 		"children_merged":           "every part of the split merged",
@@ -472,14 +480,53 @@ func Retrying(t *v1alpha1.Task, by, after string) Event {
 }
 
 // Resuming says the factory resumes a run its sandbox lost, on its own, n of limit (disruption
-// design §4). A reviewer's or tester's new run uses no review round.
+// design §4). A reviewer's new run uses no review round.
 func Resuming(t *v1alpha1.Task, runID, role string, n, limit int) Event {
 	body := fmt.Sprintf("Agent factory task `%s`: run `%s` stopped because %s; resuming automatically (%d/%d).",
 		t.Name, runID, Reason("pod_lost"), n, limit)
-	if role == "reviewer" || role == "tester" {
+	if role == "reviewer" {
 		body += " The new review run uses no review round."
 	}
 	return Event{Key: fmt.Sprintf("resume-%d", n), Body: body}
+}
+
+// safePath is a contract file the narration may name: the tester wrote the trailer, so anything
+// but a plain path is withheld (a narration carries the factory's own words and ids only).
+var safePath = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+// ContractReady says the tester left a contract (test-first tester F3-R5): how many tests, and the
+// files that hold them, at most five, each a plain path.
+func ContractReady(t *v1alpha1.Task, c *v1alpha1.ContractStatus) Event {
+	var files []string
+	for _, f := range c.Files {
+		switch {
+		case len(files) == 5:
+		case safePath.MatchString(f):
+			files = append(files, "`"+f+"`")
+		default:
+			files = append(files, "⟦a path withheld⟧")
+		}
+	}
+	more := ""
+	if len(c.Files) > len(files) {
+		more = fmt.Sprintf(" and %d more", len(c.Files)-len(files))
+	}
+	return Event{Key: "contract", Body: fmt.Sprintf("Agent factory task `%s`. The tester wrote a contract of %d tests: %s%s. "+
+		"The implementer works to it, and the pull request may not change it.", t.Name, len(c.IDs), strings.Join(files, ", "), more)}
+}
+
+// NoContract says the tester left none, by its end's category only, and that the implementer
+// works without one (TO3).
+func NoContract(t *v1alpha1.Task, end string) Event {
+	return Event{Key: "contract", Body: fmt.Sprintf("Agent factory task `%s`. The tester left no contract (%s): the implementer works without one.", t.Name, oneWord(end))}
+}
+
+// oneWord is an end's category when it is the word it should be, "unreported" otherwise.
+func oneWord(s string) string {
+	if regexp.MustCompile(`^[a-z_]{1,40}$`).MatchString(s) {
+		return s
+	}
+	return "unreported"
 }
 
 // PROpened announces the task's pull request.
@@ -824,7 +871,7 @@ func PartReverted(t *v1alpha1.Task, revert int, parentClosed bool) Event {
 // USD is a micro-USD amount as people read it, to the cent: $8.50.
 func USD(micro int64) string { return fmt.Sprintf("$%.2f", float64(micro)/1e6) }
 
-// NoVerdict says a reviewer or tester run ended without a verdict the factory can act on, and that
+// NoVerdict says a reviewer run ended without a verdict the factory can act on, and that
 // a new review run starts (why is one of verdict_missing, verdict_stale, room_log_too_long). Once
 // per run.
 func NoVerdict(t *v1alpha1.Task, runID, why string) Event {

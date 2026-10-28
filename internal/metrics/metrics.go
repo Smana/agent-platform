@@ -116,6 +116,9 @@ type Set struct {
 	// MCPCalls is rooms_human_mcp_calls_total{tool, outcome}: the /mcp tool calls, ok, refused or
 	// error (factory interfaces F2). tool is one of the server's own names.
 	MCPCalls metric.Int64Counter
+	// SlackLinks is rooms_slack_links_total{outcome}: the Slack self-serve link's steps and
+	// refusals, from humanapi's closed list.
+	SlackLinks metric.Int64Counter
 
 	meter             metric.Meter
 	appended          metric.Int64Counter
@@ -129,7 +132,15 @@ type Set struct {
 
 	mu    sync.Mutex
 	rooms map[string]roomGauge
+	runs  map[string]string // run -> the effort its harness reported
+	// watch is the claim's model of a run and whether it is still live (TrackRuns).
+	watch          func(run string) (model string, live bool)
+	runInfoDropped metric.Int64Counter
 }
+
+// maxRunInfo caps the runs rooms_run_info holds: far above the live runs a cluster schedules, so
+// it only bounds a fault.
+const maxRunInfo = 1024
 
 type roomGauge struct {
 	phase   string
@@ -143,7 +154,7 @@ func New(meter metric.Meter) (*Set, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter(scope)
 	}
-	s := &Set{meter: meter, rooms: map[string]roomGauge{}}
+	s := &Set{meter: meter, rooms: map[string]roomGauge{}, runs: map[string]string{}}
 	var errs []error
 	check := func(err error) { errs = append(errs, err) }
 	var err error
@@ -178,6 +189,8 @@ func New(meter metric.Meter) (*Set, error) {
 	check(err)
 	s.MCPCalls, err = meter.Int64Counter("rooms_human_mcp_calls_total", metric.WithDescription("Tool calls on the human MCP server, by tool and outcome."))
 	check(err)
+	s.SlackLinks, err = meter.Int64Counter("rooms_slack_links_total", metric.WithDescription("Slack self-serve link steps and refusals, by outcome."))
+	check(err)
 	// Ruling AP: counted by the broker from the events bridges append, since
 	// nothing dials into a sandbox to scrape a bridge.
 	s.bridgeStalls, err = meter.Int64Counter("rooms_bridge_harness_stalls_total",
@@ -193,6 +206,10 @@ func New(meter metric.Meter) (*Set, error) {
 		metric.WithDescription("1 while a webhook subscriber is disabled."))
 	check(err)
 	check(s.registerRoomGauges())
+	s.runInfoDropped, err = meter.Int64Counter("rooms_run_info_dropped_total",
+		metric.WithDescription("Runs rooms_run_info left out: its cap was full of live runs."))
+	check(err)
+	check(s.registerRunInfo())
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("metrics: %w", err)
 	}
@@ -233,6 +250,72 @@ func (s *Set) registerRoomGauges() error {
 		return nil
 	}, phases, pending, last)
 	return err
+}
+
+// registerRunInfo exposes rooms_run_info{run, model, effort} = 1 for each run RunInfo recorded
+// that is still live. Each label's source: run, the AgentRun the watch holds; model, that claim's
+// spec.model (runwatch.Run.Model, bounded by envelope.ValidModel), never the sandbox's; effort, the
+// run's harness, through its bridge's harness_status: agent-controlled, but one of the seven
+// envelope.Efforts. A run's series sits on the replica its bridge appended to, and a bridge that
+// reconnects may append to another, so dashboards aggregate with max by (run, model, effort).
+func (s *Set) registerRunInfo() error {
+	info, err := s.meter.Int64ObservableGauge("rooms_run_info",
+		metric.WithDescription("1 for each live run, labelled with its claim's model and the reasoning effort its harness reported."))
+	if err != nil {
+		return err
+	}
+	_, err = s.meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.pruneRuns()
+		for run, effort := range s.runs {
+			model := ""
+			if s.watch != nil {
+				model, _ = s.watch(run)
+			}
+			o.ObserveInt64(info, 1, metric.WithAttributes(attribute.String("run", run),
+				attribute.String("model", model), attribute.String("effort", effort)))
+		}
+		return nil
+	}, info)
+	return err
+}
+
+// pruneRuns drops the runs the watch says are no longer live. The caller holds s.mu.
+func (s *Set) pruneRuns() {
+	if s.watch == nil {
+		return
+	}
+	for run := range s.runs {
+		if _, live := s.watch(run); !live {
+			delete(s.runs, run)
+		}
+	}
+}
+
+// RunInfo records the reasoning effort a run's harness reported, the latest winning. The caller
+// passes one of envelope.Efforts, never a raw payload field. At the cap, the runs no longer live
+// make room; with every held run live, a new one is left out and counted.
+func (s *Set) RunInfo(ctx context.Context, run, effort string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, known := s.runs[run]; !known && len(s.runs) >= maxRunInfo {
+		s.pruneRuns()
+		if len(s.runs) >= maxRunInfo {
+			s.runInfoDropped.Add(ctx, 1)
+			return
+		}
+	}
+	s.runs[run] = effort
+}
+
+// TrackRuns installs the watch rooms_run_info reads: a run's claim model, and whether it is still
+// live. A run the watch says has ended drops out at the next collection, or when the cap is full.
+// Without it, a run is never dropped and has no model.
+func (s *Set) TrackRuns(watch func(run string) (model string, live bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.watch = watch
 }
 
 // ObserveRoom records a reconciled room: its phase, whether a run of it is

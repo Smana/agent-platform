@@ -228,6 +228,23 @@ type Parent struct {
 	Of int32 `json:"of"`
 }
 
+// ContractStatus is the tester's commit, its files and the test ids it names.
+type ContractStatus struct {
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runId"`
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	// +kubebuilder:validation:MaxLength=40
+	Commit string `json:"commit"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MaxLength=512
+	Files []string `json:"files"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MaxLength=512
+	IDs []string `json:"ids"`
+}
+
 // TaskScope mirrors envelope.Scope, with its bounds, in state ready (a part never asks): the CRD
 // cannot import the envelope.
 type TaskScope struct {
@@ -434,6 +451,11 @@ type TaskStatus struct {
 	// carries the scope (0 for none). Unset: no scoper ran, or it has not ended.
 	// +optional
 	Scope *ScopeStatus `json:"scope,omitempty"`
+	// The test contract (v3 feature 4, TF4, R14): the tester run's commit on agent/<task> as GitHub
+	// recorded it, its test files and ids. Set once, when the tester's push is read; every implementer
+	// run is held to it and the merge gate requires merge.contractCheck (rows 2b, 2c).
+	// +optional
+	Contract *ContractStatus `json:"contract,omitempty"`
 	// The split's record on its parent (splitter design SL14): set when the scoper hands one off.
 	// +optional
 	Split *SplitStatus `json:"split,omitempty"`

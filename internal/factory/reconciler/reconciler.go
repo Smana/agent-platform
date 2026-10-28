@@ -71,6 +71,8 @@ type TaskForge interface {
 	PullRequest(ctx context.Context, number int) (forge.PR, error)
 	PullRequestCommits(ctx context.Context, number int) ([]forge.Commit, error)
 	BranchActivity(ctx context.Context, branch string) ([]forge.Push, error)
+	// Commit reads one commit by sha: the tester never opens a pull request (R14).
+	Commit(ctx context.Context, sha string) (forge.Commit, error)
 	ClosePR(ctx context.Context, number int) error
 	RemoveLabel(ctx context.Context, number int, label string) error
 	DefaultBranchFile(ctx context.Context, path string) (text, sha string, found bool, err error)
@@ -103,6 +105,7 @@ type metrics interface {
 	MergeDecision(ctx context.Context, class, verdict, reason string)
 	Resumed(ctx context.Context, reason string)
 	LoopRun(ctx context.Context, class, end string)
+	ContractEnd(ctx context.Context, class, end string)
 	RoomClosedAtCap(ctx context.Context, reason string)
 	SteeringRead(ctx context.Context, class, read string)
 	ScoperRun(ctx context.Context, class, outcome string)
@@ -991,6 +994,9 @@ func (r *Reconciler) queued(ctx context.Context, t *v1alpha1.Task) error {
 	}
 	if scoperDue(t) {
 		return r.startScoper(ctx, t)
+	}
+	if r.testerDue(t) { // after the scoper: its scope belongs in the tester's brief (F3-R1)
+		return r.startTester(ctx, t)
 	}
 	s, refs, trigger, err := r.nextImplementer(ctx, t)
 	if err != nil {

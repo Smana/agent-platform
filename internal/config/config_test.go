@@ -516,6 +516,7 @@ func TestLoadLocalHuman(t *testing.T) {
 			{"origin", "  origin: http://localhost:18080\n", "human.origin"},
 			{"groups", "  groups:\n    admin: a\n    member: b\n", "human.groups"},
 			{"access", "  access:\n    readerFile: /etc/room-broker/access/reader\n", "human.access"},
+			{"slackLink", "  slackLink:\n    principal: slack-app\n    teamID: T01ABC\n    repository: Smana/ai-native-ref\n", "human.slackLink"},
 			{"mcp", "  mcp:\n    enabled: true\n", "human.mcp.enabled"},
 			{"sponsored", "  mcp:\n    sponsored:\n      - name: slack-app\n        clientIDFile: /etc/room-broker/sponsored/slack-app\n", "human.mcp.sponsored"},
 		} {
@@ -530,4 +531,35 @@ func TestLoadLocalHuman(t *testing.T) {
 			t.Fatalf("an unknown mode: %v", err)
 		}
 	})
+}
+
+// slackLink is human.slackLink with what it needs: the GitHub check and the App as a sponsored
+// principal of an enabled /mcp.
+const slackLink = access + "  roomctlClientIDFile: /etc/room-broker/oidc/roomctl\n  mcp:\n    enabled: true\n" +
+	"    sponsored: [{name: slack-app, clientIDFile: /etc/slack/client-id}]\n" +
+	"  slackLink:\n    principal: slack-app\n    teamID: T01ABC\n    repository: Smana/ai-native-ref\n"
+
+// The Slack self-serve link: off by default; on, it names a declared sponsored principal and the
+// App's one workspace, and needs the GitHub check, since the page shows the account's login.
+func TestLoadSlackLink(t *testing.T) {
+	if c, err := Load(write(t, valid)); err != nil || c.Human.SlackLink != nil {
+		t.Fatalf("off by default: %+v %v", c.Human.SlackLink, err)
+	}
+	c, err := Load(write(t, valid+slackLink+"factoryURL: http://agent-factory.agent-system.svc.cluster.local:8080\n"))
+	if err != nil || c.Human.SlackLink == nil || c.Human.SlackLink.Principal != "slack-app" || c.Human.SlackLink.TeamID != "T01ABC" {
+		t.Fatalf("%+v %v", c.Human.SlackLink, err)
+	}
+	for name, c := range map[string]struct{ body, want string }{
+		"an undeclared principal": {strings.Replace(slackLink, "principal: slack-app", "principal: other", 1), "human.slackLink.principal"},
+		"a bad team":              {strings.Replace(slackLink, "teamID: T01ABC", "teamID: x", 1), "human.slackLink.teamID"},
+		"no repository":           {strings.Replace(slackLink, "    repository: Smana/ai-native-ref\n", "", 1), "human.slackLink.repository"},
+		"no GitHub check":         {strings.Replace(slackLink, access, "", 1), "human.slackLink needs human.access"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(write(t, valid+c.body+"factoryURL: http://agent-factory.agent-system.svc.cluster.local:8080\n"))
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+		})
+	}
 }

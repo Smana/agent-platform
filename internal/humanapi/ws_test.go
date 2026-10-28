@@ -1312,7 +1312,7 @@ func TestSnapshotApprovals(t *testing.T) {
 	e.log.mu.Unlock()
 	c := dial(t, e, "dev", hello(nil, 0))
 	b, _ := json.Marshal(read(t, c).Snapshot.Approvals)
-	if want := `[{"approvalId":"ap1","runId":"7f3cq2xz","callId":"c1","class":"forge.pr","action":{"command":"gh pr create"},"expiresAt":"2026-10-01T10:30:00Z","seq":3}]`; string(b) != want {
+	if want := `[{"approvalId":"ap1","runId":"7f3cq2xz","callId":"c1","class":"forge.pr","action":{"command":"gh pr create"},"expiresAt":"2026-10-01T10:30:00Z","seq":3,"prompters":["human:own"]}]`; string(b) != want {
 		t.Fatalf("approvals %s", b)
 	}
 	e.log.mu.Lock()
@@ -1537,5 +1537,29 @@ func TestRefusedConnectionIsNotAParticipant(t *testing.T) {
 	if out := scrape(t, e); strings.Contains(out, `rooms_participants{kind="human"} 1`) ||
 		strings.Contains(out, `rooms_participants{kind="human"} -1`) {
 		t.Fatalf("a refused connection was counted:\n%s", out)
+	}
+}
+
+// fourEyesRooms reads every Room with four-eyes on.
+type fourEyesRooms struct{ client.Reader }
+
+func (f fourEyesRooms) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := f.Reader.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if r, ok := obj.(*v1alpha1.Room); ok {
+		r.Spec.Approvals.FourEyes = true
+	}
+	return nil
+}
+
+// The state frame says whether the room is four-eyes, so the card can say who may decide.
+func TestSnapshotFourEyes(t *testing.T) {
+	if s := read(t, dial(t, setup(t), "dev", hello(nil, 0))).Snapshot; s.FourEyes {
+		t.Fatal("four-eyes is off by default")
+	}
+	e := setup(t, func(s *Server, _ *fanout.Hub, _ *hubView) { s.Rooms = fourEyesRooms{s.Rooms} })
+	if s := read(t, dial(t, e, "dev", hello(nil, 0))).Snapshot; !s.FourEyes {
+		t.Fatal("four-eyes is on")
 	}
 }

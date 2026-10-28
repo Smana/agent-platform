@@ -63,6 +63,7 @@ func TestSponsoredConfig(t *testing.T) {
 		"an infinite ceiling":             {"maxCostUSD: 5", "maxCostUSD: .inf", "unsupported value: +Inf"},
 		"a repository twice":              {"repositories: [Smana/cloud-native-ref]", "repositories: [Smana/cloud-native-ref, Smana/cloud-native-ref]", `"Smana/cloud-native-ref" is listed twice`},
 		"a malformed Slack id":            {`"T01ABC/U02DEF"`, `"alice"`, `"alice" is not <team>/<user>`},
+		"self-serve links without access": {`smana}}`, `smana}, slackLinks: true}`, "onBehalfOf.slackLinks needs api.access"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := withSponsored(strings.Replace(slackApp, c.from, c.to, 1))
@@ -70,6 +71,10 @@ func TestSponsoredConfig(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, c.want)
 			}
 		})
+	}
+	links := strings.Replace(withSponsored(strings.Replace(slackApp, `smana}}`, `smana}, slackLinks: true}`, 1)), "api:\n", "api:\n  access: {readerFile: /r, ttl: 5m}\n", 1)
+	if cfg, err := Parse([]byte(links)); err != nil || !cfg.SponsoredBy("system:slack-app").OnBehalfOf.SlackLinks {
+		t.Fatalf("self-serve links with access: %v", err)
 	}
 	twice := withSponsored(slackApp + strings.Replace(slackApp, "  sponsored:\n", "", 1))
 	if _, err := Parse([]byte(twice)); err == nil || !strings.Contains(err.Error(), "declared twice") {

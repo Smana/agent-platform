@@ -140,7 +140,9 @@
  "secrets": {},
  "secrets_encrypted": false,
  "stuck_detection": true,
- "tags": {},
+ "tags": {
+  "effort": "high"
+ },
  "tool_module_qualnames": {},
  "workspace": {
   "kind": "LocalWorkspace",

@@ -30,7 +30,7 @@ annotated-types==0.7.0
 anthropic==0.75.0
 anyio==4.14.2
 attrs==25.3.0
-authlib==1.6.12
+authlib==1.9.1
 backoff==2.2.1
 beartype==0.22.9
 beautifulsoup4==4.14.2
@@ -57,7 +57,7 @@ cython==3.1.4
 deprecation==2.1.0
 distlib==0.4.0
 distro==1.9.0
-dnspython==2.8.0
+dnspython==2.9.0
 docker==7.1.0
 docstring-parser==0.17.0
 docutils==0.22.2
@@ -124,7 +124,7 @@ k8s-agent-sandbox==0.5.1
 keyring==25.7.0
 kubernetes==36.0.0
 libtmux==0.53.0
-litellm==1.93.2
+litellm==1.100.4
 lmnr-claude-code-proxy==0.1.23
 lmnr==0.7.60
 lupa==2.8

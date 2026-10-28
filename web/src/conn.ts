@@ -13,7 +13,8 @@ export interface Snapshot {
   runs?: { id: string; role: string; phase: string; unsandboxed?: boolean }[];
   queue?: { ref: number; author: string; text: string }[];
   sealed?: boolean;
-  approvals?: { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number }[];
+  approvals?: { approvalId: string; runId: string; callId: string; class: string; action: unknown; expiresAt: string; seq: number; prompters?: string[] }[];
+  fourEyes?: boolean;
 }
 export interface Frame { type: string; throughSeq?: number; fromSeq?: number; snapshot?: Snapshot; event?: RoomEvent;
   clientSeq?: number; seq?: number; rejected?: string; result?: unknown }

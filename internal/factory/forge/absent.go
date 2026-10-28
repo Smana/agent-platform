@@ -44,6 +44,11 @@ func (Absent) FileAt(context.Context, string, string) (string, error) { return "
 // Diff implements the Merger's Diff and fails closed.
 func (Absent) Diff(context.Context, string, string) (Diff, error) { return Diff{}, ErrNoMerger }
 
+// ChangedFiles implements the Merger's ChangedFiles and fails closed.
+func (Absent) ChangedFiles(context.Context, string, string) ([]string, error) {
+	return nil, ErrNoMerger
+}
+
 // Merge implements the Merger's Merge and fails closed.
 func (Absent) Merge(context.Context, string, string) error { return ErrNoMerger }
 

@@ -67,8 +67,10 @@ const roomctlUsage = `usage: roomctl <command>
   setup <claude|opencode|codex|gemini|cursor|copilot> [--project] [--print] [--restart-service]
                                   register roomctl mcp with that agent (through its own CLI, else the
                                   snippet to paste) and install the factory-handoff skill; --print writes nothing
-  fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT]
-                                  a room of your own from events 1..SEQ, with an optional run
+  fork <room> --at SEQ [--role R] [--pr URL] [--egress pypi,npm] [--note TEXT] [--approvals attended|unattended]
+                                  a room of your own from events 1..SEQ, with an optional run; the
+                                  fork asks before risky actions (attended) unless you pass --approvals
+                                  unattended and its source is unattended too
   run --repo owner/name --task TEXT [--role implementer|tester|triager]
                                   quickstart only (a local broker): create a room, queue TEXT as the run's
                                   task, start the run, apply its claim with your kubectl, follow it to the end
@@ -636,16 +638,20 @@ func (r Roomctl) post(ctx context.Context, c roomctl.Client, args []string) erro
 func (r Roomctl) fork(ctx context.Context, c roomctl.Client, base string, args []string) error {
 	fs := flag.NewFlagSet("fork", flag.ContinueOnError)
 	at := fs.Int64("at", 0, "the last seq to copy")
-	role := fs.String("role", "", "request a run in the new room: implementer, reviewer, tester or triager")
+	role := fs.String("role", "", "request a run in the new room: implementer, reviewer or triager")
 	pr := fs.String("pr", "", "the reviewer's pull request")
 	egress := fs.String("egress", "", "extra egress profiles for that run: pypi,npm,golang,crates")
 	note := fs.String("note", "", "why you fork")
+	approvals := fs.String("approvals", "", "attended (the default): the fork asks before risky actions; unattended keeps an unattended source's policy")
 	pos, err := flags(fs, args)
+	if err == nil && *approvals != "" && *approvals != "attended" && *approvals != "unattended" {
+		err = errors.New("--approvals is attended or unattended")
+	}
 	if err != nil || len(pos) != 1 || *at < 1 {
 		return fmt.Errorf("fork <room> --at SEQ: %w", errors.Join(err, errors.New("one room and a seq of 1 or more")))
 	}
 	action := map[string]any{"kind": "fork", "seq": *at}
-	for k, v := range map[string]string{"role": *role, "prUrl": *pr, "note": *note} {
+	for k, v := range map[string]string{"role": *role, "prUrl": *pr, "note": *note, "approvals": *approvals} {
 		if v != "" {
 			action[k] = v
 		}

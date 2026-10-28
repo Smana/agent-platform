@@ -275,6 +275,54 @@ func TestBridgeSignals(t *testing.T) {
 	}
 }
 
+// A bridge's harness_status names the effort its run told: the broker records it for
+// rooms_run_info. A model in it is never a label: the claim's, from the watch, is. The watch here
+// knows the run as live with the model agent-default.
+func TestRunInfoFromTheRoom(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		origin  envelope.Origin
+		payload string
+		want    string // "" means no series
+	}{
+		{"a harness_status with an effort", envelope.OriginHarness,
+			`{"kind":"harness_status","status":"running","previous":"","effort":"high"}`,
+			`rooms_run_info{effort="high",model="agent-default",run="7f3cq2xz"} 1`},
+		{"a model the harness names is not the label", envelope.OriginHarness,
+			`{"kind":"harness_status","status":"running","model":"forged","effort":"low"}`,
+			`rooms_run_info{effort="low",model="agent-default",run="7f3cq2xz"} 1`},
+		{"an older harness tells no effort", envelope.OriginHarness, `{"kind":"harness_status","status":"running","previous":""}`, ""},
+		{"an effort outside the set is never a label", envelope.OriginHarness,
+			`{"kind":"harness_status","status":"running","effort":"turbo"}`, ""},
+		{"another kind", envelope.OriginHarness, `{"kind":"harness_error","code":"x","effort":"high"}`, ""},
+		{"only bridges' events count", envelope.OriginBroker, `{"kind":"harness_status","status":"running","effort":"high"}`, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			exp, err := metrics.NewExporter(metrics.BrokerBuildInfo, "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := metrics.New(exp.Meter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.TrackRuns(func(string) (string, bool) { return "agent-default", true })
+			ev := envelope.Event{Type: envelope.StateChanged, Origin: c.origin, RunID: "7f3cq2xz", Payload: json.RawMessage(c.payload)}
+			l := &meteredLog{appends: fakeAppends{ev: ev}, m: m, now: time.Now}
+			if _, _, err := l.AppendAsBridge(t.Context(), "7f3cq2xz", envelope.Draft{}); err != nil {
+				t.Fatal(err)
+			}
+			body := scrape(t, exp.Handler())
+			if c.want == "" && strings.Contains(body, "rooms_run_info{") {
+				t.Errorf("a series from %s:\n%s", c.payload, body)
+			}
+			if c.want != "" && !strings.Contains(body, c.want+"\n") {
+				t.Errorf("missing %s:\n%s", c.want, body)
+			}
+		})
+	}
+}
+
 func TestLeader(t *testing.T) {
 	for _, c := range []struct {
 		name   string

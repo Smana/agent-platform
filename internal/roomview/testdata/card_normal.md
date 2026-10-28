@@ -1,3 +1,5 @@
+**⏳ Waiting for you — approve a pending action**
+
 ### #42 · 26zfnuxm
 **needs you** · an agent is coding · Smana/cloud-native-ref · [open the room](https://rooms.example/r/26zfnuxm)
 
@@ -5,7 +7,7 @@
 
 | | |
 |---|---|
-| Run | implementer cf4ato2x (human review) · started 19:11 UTC, 18 min ago |
+| Run | implementer cf4ato2x (human review) · agent-default · high · started 19:11 UTC, 18 min ago |
 | Spend | 189 k of 1.5 M tokens (13 %) |
 | PR | [#2239](https://github.com/Smana/cloud-native-ref/pull/2239) · reviewer approved at 18:49 UTC |
 

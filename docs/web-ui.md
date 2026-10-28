@@ -58,9 +58,10 @@ drive, then opens it.
 | Data class | `internal` or `public`, no default. It cannot change once the room exists: it sets the model route, the tools and the egress its runs get. It does not change who can read the room |
 | Repository | `owner/name`, required. Anyone who can read it on GitHub can read the room. You must be able to read it yourself |
 
-A `CLI setup` fold under the list prints the one block that installs roomctl and configures it
-for this broker ([roomctl](roomctl.md)); on a local broker it configures by URL alone and shows
-`roomctl run` instead of a login.
+A `Use roomctl from your terminal` fold under the list sets up [roomctl](roomctl.md) for this
+broker in numbered steps (install, point it at this broker, sign in), each command in its own
+block with a Copy button that copies it exactly as shown. On a local broker the steps configure
+by URL alone and end with `roomctl run` instead of a sign-in.
 
 ## The room page
 
@@ -85,7 +86,14 @@ Scrolling a finished factory room, from the strip down through its turns and too
 
 <img alt="Scrolling down a factory room's conversation: the triager's scope, folded tool calls with their status, state changes folded into turns" src="assets/web-ui/room-scroll.gif" width="800">
 
-On a phone the strip stacks above the conversation:
+A factory brief folded under `Show more`, with the `Dashboards` chip at the end of the strip:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/web-ui/room-fold-dark.png">
+  <img alt="A factory room whose task brief shows its first lines under a fade and a Show more link; the strip ends with a Dashboards chip linking Room metrics and Run" src="assets/web-ui/room-fold-light.png" width="800">
+</picture>
+
+On a phone the strip stays compact above the conversation:
 
 <img alt="The same room on a phone, light theme" src="assets/web-ui/room-phone-light.png" width="260"> <img alt="The same room on a phone, dark theme" src="assets/web-ui/room-phone-dark.png" width="260">
 
@@ -140,15 +148,17 @@ where it is decided; the raw events show the same request, read-only.
 
 | Part | Rule |
 |---|---|
-| The card | The command the call would run first (else its class), then the class, the run, when it expires, and the **raw action** as redacted text behind a toggle. Never an agent's description of it. A link takes you to the call's row while the page holds it. `approve` and `deny` with an optional reason; the card leaves once the log records a decision, whoever made it |
-| Who decides | An owner, or a member with the approver flag, in the web UI. Others see the request but no buttons |
+| The banner | When approvals are pending, the title strip says so under the phase: `⏳ 2 approvals wait for you — review`, or `… wait for another approver` when you may decide none of them. The link scrolls to the first card and focuses it. Absent when none wait, and in a sealed room |
+| The card | Read top to bottom: **what the agent wants** (plain words), **why it stopped** (the rule that raised it), **if you approve / if you deny** (what each answer does), **the deadline** (`Decide by 14:30 (in 22 min); if nobody decides: the request expires and the agent is told no`, or `No deadline.`), and **whether you may decide**. Then, behind `details`, the raw command, the class, the run and the **raw action** as redacted text. All of the plain prose is fixed per rule code; the agent's words are never the reason. A link takes you to the call's row while the page holds it. `approve` and `deny` with an optional reason; the card leaves once the log records a decision, whoever made it |
+| The rules | The broker names the rule by the approval's class: `forge.push` (a push to the forge), `forge.pr` (a pull request opened or changed), `forge.other` (a command outside the allowlist of shapes the broker can read as safe), `mcp.write` (an MCP tool not on the read-only list), `shell.high` (a command its harness flagged high risk), `egress.new` (a destination outside the egress profiles). Any other code reads as a generic policy stop. Denying, or letting the deadline pass, always tells the agent no and nothing of it runs |
+| Who decides | An owner, or a member with the approver flag, in the web UI. The card says which case you are in: `You can decide`, `only approvers decide`, or, under four-eyes, `Waiting for another approver: you prompted this turn`. Others see the request but no buttons |
 | First decision wins | The first valid decision stands; every later one, and a superseded request, answers `already_decided`. One that reaches the broker after the deadline answers `approval_expired`, even before the sweep has closed it |
 | Four-eyes | When the room requires it, nobody who prompted the turn may decide it: not whoever requested the run, steered it, or wrote a queued message it consumed |
 | Reason | Optional, up to 1 KiB, redacted. The agent reads it |
 | Expiry | 30 minutes in an `attended` room; the room's configured delay (default 4 hours) in an `unattended` one. An expired request is denied |
 | Superseded | A request whose call already ran, or whose run has left, is closed without a decision |
 
-Sources: `docs/api.md` (approvals, `decide`), `web/src/controls.ts` (`approvalCard`), `web/src/needs.ts`.
+Sources: `docs/api.md` (approvals, `decide`), `web/src/controls.ts` (`approvalCard`), `web/src/needs.ts`, `web/src/approval-help.ts` (the prose per rule code).
 
 ## Forks
 

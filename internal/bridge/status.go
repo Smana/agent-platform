@@ -18,9 +18,19 @@ type StatusItem struct {
 // items (§3: state events → turn/state_changed), numbered on the status stream.
 // The zero value starts the stream at seq 1; it is not safe for concurrent use.
 type StatusTracker struct {
-	last string
-	seq  int64
-	turn string
+	last   string
+	seq    int64
+	turn   string
+	effort string
+}
+
+// Tell records the reasoning effort the harness reported, for every harness_status after it. A
+// value outside envelope.Efforts is left out, so a bad tag costs that field, never the item.
+func (t *StatusTracker) Tell(effort string) {
+	t.effort = ""
+	if envelope.ValidEffort(effort) {
+		t.effort = effort
+	}
 }
 
 // Resume continues the status stream after afterSeq, the log's cursor at hello.
@@ -35,15 +45,20 @@ func (t *StatusTracker) Emit(m Mapped) StatusItem {
 }
 
 // Observe records one polled status. An unchanged status yields nothing; a
-// change yields a harness_status item, and a turn item when it starts or ends a
-// turn. waiting_for_confirmation stays inside the turn it interrupts.
+// change yields a harness_status item, with the effort Tell recorded,
+// and a turn item when it starts or ends a turn. waiting_for_confirmation stays
+// inside the turn it interrupts.
 func (t *StatusTracker) Observe(status, runID string) []StatusItem {
 	if status == "" || status == t.last {
 		return nil
 	}
 	prev := t.last
 	t.last = status
-	out := []StatusItem{t.Emit(state("harness_status", map[string]string{"status": status, "previous": prev}))}
+	fields := map[string]string{"status": status, "previous": prev}
+	if t.effort != "" {
+		fields["effort"] = t.effort
+	}
+	out := []StatusItem{t.Emit(state(envelope.HarnessStatus, fields))}
 	turn := func(phase string) StatusItem {
 		it := t.Emit(Mapped{})
 		// A bridge restarted mid-turn ends a turn it never saw start: it still

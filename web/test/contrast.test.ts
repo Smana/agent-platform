@@ -58,6 +58,13 @@ const pairs = (t: Tokens) => [
   // The room list: a hovered row's tint, the page title on the header, the phase chip.
   ["the list's page title on the header", t["--muted-foreground"], t["--brand-header"], 4.5],
   ["muted text on a hovered room row", t["--muted-foreground"], mix(t["--primary"], t["--card"], 0.06), 4.5],
+  // The room list's CLI setup card: its commands on their inset block, the Copy button on
+  // that block, the step notes and their inline code, and a step's number on its tint.
+  ["a CLI setup command on its block", t["--foreground"], t["--muted"], 4.5],
+  ["a CLI setup Copy label on its button", t["--card-foreground"], t["--card"], 4.5],
+  ["a CLI setup step's note on the card", t["--muted-foreground"], t["--card"], 4.5],
+  ["a CLI setup note's inline command on the card", t["--card-foreground"], t["--card"], 4.5],
+  ["a CLI setup step's number on its tint", t["--primary"], mix(t["--primary"], t["--card"], 0.12), 4.5],
   ["a task link on a hovered room row", t["--link"], mix(t["--primary"], t["--card"], 0.06), 4.5],
   ["the phase chip's text on a hovered room row", t["--card-foreground"], mix(t["--primary"], t["--card"], 0.06), 4.5],
   ["the phase chip's border on a card", mix(t["--card-foreground"], t["--card"], 0.5), t["--card"], 3],

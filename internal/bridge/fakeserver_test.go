@@ -21,6 +21,7 @@ type fakeAgentServer struct {
 	mu          sync.Mutex
 	events      []map[string]any
 	status      string
+	tags        map[string]string // the conversation's tags: agent-run puts its model and effort there
 	sent        []string
 	responses   []bool
 	reasons     []string // the reason of each response
@@ -155,7 +156,7 @@ func (f *fakeAgentServer) start(t *testing.T, conv string) *httptest.Server {
 		if f.flap {
 			f.status = map[string]string{"running": "paused", "paused": "running"}[f.status]
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": conv, "execution_status": f.status})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": conv, "execution_status": f.status, "tags": f.tags})
 		if f.parkAfterRead && f.status == "running" {
 			// The running step ends right after this read and asks to park.
 			f.parkAfterRead = false

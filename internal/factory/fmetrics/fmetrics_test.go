@@ -317,3 +317,24 @@ func TestMonitorVerificationsAreCounted(t *testing.T) {
 		}
 	}
 }
+
+// R23, TO5: the contracts counter is by class, end and repository (an unknown end reads other); the
+// class-without-holdout gauge is 1 per live class.
+func TestContractEndsAndClassesWithoutHoldoutAreExposed(t *testing.T) {
+	ctx := WithRepository(t.Context(), "Smana/cloud-native-ref")
+	s, scrape := rig(t, fake.NewClientBuilder().WithScheme(scheme()).Build(), func() bool { return false })
+	s.ListRepositories("Smana/cloud-native-ref")
+	s.ContractEnd(ctx, "scripts", "ready")
+	s.ContractEnd(ctx, "scripts", "bogus")
+	s.ClassWithoutHoldout(ctx, "Smana/cloud-native-ref", "docs-links")
+	body := scrape()
+	for _, want := range []string{
+		`agent_factory_contracts_total{class="scripts",end="ready",repository="Smana/cloud-native-ref"} 1`,
+		`agent_factory_contracts_total{class="scripts",end="other",repository="Smana/cloud-native-ref"} 1`,
+		`agent_factory_class_without_holdout{class="docs-links",repository="Smana/cloud-native-ref"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s\n%s", want, body)
+		}
+	}
+}

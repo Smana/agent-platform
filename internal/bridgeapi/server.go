@@ -120,6 +120,10 @@ type Server struct {
 	Limits Limits
 	// Queue serves the system queue routes (SP3 R9); nil answers them 501.
 	Queue QueueStore
+	// SlackLinks serves GET /v1/links/slack to SlackLinkReader alone (the factory, system:factory);
+	// either unset refuses it.
+	SlackLinks      SlackLinks
+	SlackLinkReader string
 	// Now is the limits' clock; nil means time.Now. Deadlines handed to the
 	// runtime (a context's, a connection's) stay on its own clock: a fake one
 	// there would expire a request before it starts, or never.
@@ -146,6 +150,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/rooms/{id}/queue", s.bounded(maxMessageBytes, s.queueRoute(s.enqueue)))
 	mux.HandleFunc("GET /v1/rooms/{id}/queue", s.bounded(0, s.queueRoute(s.listQueue)))
 	mux.HandleFunc("POST /v1/rooms/{id}/queue/consume", s.bounded(maxConsumeBytes, s.queueRoute(s.consume)))
+	mux.HandleFunc("GET /v1/links/slack", s.bounded(0, s.slackLink))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Every response, the mux's own 404 and 405 included, has a write deadline;
 		// the stream replaces it with one per write.

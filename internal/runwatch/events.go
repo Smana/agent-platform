@@ -86,6 +86,9 @@ func (e *Events) Observe(ctx context.Context, r Run) error {
 		if r.Unsandboxed { // the room says so: the controller set the condition when it created the pod
 			running["unsandboxed"] = true
 		}
+		if r.Model != "" { // the claim's model, which the summary shows beside the run
+			running["model"] = r.Model
+		}
 		if err := put(stepRunning, envelope.StateChanged, envelope.StatePayload("run_phase", running)); err != nil {
 			return err
 		}

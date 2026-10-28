@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,12 +27,12 @@ func TestReactionFlow(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.mention("C03", "1729.0001", "<@U0BOT> Smana/ai-native-ref docs(agents): the link is dead\n## What is wrong\nx\n## What it should be\ny\n## Acceptance check\nz")
 	draft := rig.lastPost()
-	if draft.meta == nil || draft.meta.EventType != "factory_draft" || !strings.Contains(draft.text, "a maintainer reacts :white_check_mark:") {
+	if draft.meta == nil || draft.meta.EventType != "factory_draft" || !strings.Contains(draft.text, "a maintainer replies :white_check_mark: or reacts :white_check_mark:") {
 		t.Fatalf("%+v", draft)
 	}
 	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
 	rig.react("C03", draft.ts, "U09XYZ", "white_check_mark")
-	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "not_linked") {
+	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "is not linked to a GitHub account here; mention me with `link`") {
 		t.Fatal("an unlinked user's ✅ filed, or its refusal went unsaid")
 	}
 	if refused := rig.broker.refusedCalls(); len(refused) != 1 || refused[0].OnBehalfOf != "slack:T01ABC/U09XYZ" {
@@ -193,10 +194,38 @@ type post struct {
 }
 
 type fakeSlack struct {
-	mu        sync.Mutex
-	posts     []post
-	msgs      map[string]Message
-	failPosts int // the next n Posts fail
+	mu         sync.Mutex
+	posts      []post
+	ephemerals []ephemeral
+	msgs       map[string]Message
+	failPosts  int // the next n Posts fail
+	threadErr  error
+	msgErr     error
+	names      map[string][2]string // user -> handle, display name
+}
+
+type ephemeral struct{ channel, user, thread, text string }
+
+func (f *fakeSlack) PostEphemeral(_ context.Context, channel, user, threadTS, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ephemerals = append(f.ephemerals, ephemeral{channel, user, threadTS, text})
+	return nil
+}
+
+func (f *fakeSlack) UserName(_ context.Context, user string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n, ok := f.names[user]; ok {
+		return n[0], n[1], nil
+	}
+	return "", "", errors.New("missing_scope")
+}
+
+func (f *fakeSlack) whispers() []ephemeral {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ephemeral(nil), f.ephemerals...)
 }
 
 func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta *Metadata) (string, error) {
@@ -215,11 +244,30 @@ func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, meta
 func (f *fakeSlack) Message(_ context.Context, _, ts string) (Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.msgErr != nil {
+		return Message{}, f.msgErr
+	}
 	m, ok := f.msgs[ts]
 	if !ok {
 		return Message{}, errors.New("message_not_found")
 	}
 	return m, nil
+}
+
+func (f *fakeSlack) Thread(_ context.Context, _, threadTS string) ([]Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.threadErr != nil {
+		return nil, f.threadErr
+	}
+	var out []Message
+	for _, m := range f.msgs {
+		if m.TS == threadTS || m.ThreadTS == threadTS {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TS < out[j].TS })
+	return out, nil
 }
 
 func (f *fakeSlack) seed(m Message) { f.mu.Lock(); f.msgs[m.TS] = m; f.mu.Unlock() }
@@ -233,6 +281,33 @@ type stubBroker struct {
 	keys     map[string]bool
 	draftErr error
 	room     string // run_create's room, "aaaaaaaa" when empty
+	sponsor  string // run_create's sponsor
+	runErr   error  // run_create's error, before deny
+	linkErr  error
+	links    []string // team/user/name of each slack_link_code
+	unlinked map[string]bool
+}
+
+func (b *stubBroker) SlackLinkCode(_ context.Context, team, user, handle, name string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.links = append(b.links, team+"/"+user+"/"+handle+"/"+name)
+	if b.linkErr != nil {
+		return "", b.linkErr
+	}
+	return "https://rooms.example/link/slack?code=abcdefghijklmnopqrstuvwxyz", nil
+}
+
+func (b *stubBroker) SlackUnlink(_ context.Context, team, user string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.linkErr != nil {
+		return false, b.linkErr
+	}
+	key := team + "/" + user
+	was := b.unlinked[key]
+	b.unlinked[key] = false
+	return was, nil
 }
 
 func (b *stubBroker) refuse(onBehalfOf, text string) {
@@ -255,6 +330,9 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, c)
+	if b.runErr != nil {
+		return RunResult{}, b.runErr
+	}
 	if text, ok := b.deny[c.OnBehalfOf]; ok {
 		b.refused = append(b.refused, c)
 		return RunResult{}, Refused(text)
@@ -266,10 +344,11 @@ func (b *stubBroker) RunCreate(_ context.Context, c RunCreate) (RunResult, error
 	if room == "" {
 		room = "aaaaaaaa"
 	}
-	return RunResult{Room: room, Issue: 42, Duplicate: dup}, nil
+	return RunResult{Room: room, Issue: 42, Duplicate: dup, Sponsor: b.sponsor}, nil
 }
 
-func (b *stubBroker) created() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.accepted) }
+func (b *stubBroker) newIssues() int { b.mu.Lock(); defer b.mu.Unlock(); return len(b.keys) }
+func (b *stubBroker) created() int   { b.mu.Lock(); defer b.mu.Unlock(); return len(b.accepted) }
 func (b *stubBroker) runCreates() []RunCreate {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -357,7 +436,7 @@ func newAppRig(t *testing.T, ch Channel) *appRig {
 	t.Helper()
 	r := &appRig{t: t, now: time.Unix(1_790_000_000, 0), key: []byte("0123456789abcdef0123456789abcdef"),
 		slack:   &fakeSlack{msgs: map[string]Message{"1729.0001": {TS: "1729.0001", User: "U02DEF", Text: "a human"}}},
-		broker:  &stubBroker{deny: map[string]string{}, keys: map[string]bool{}},
+		broker:  &stubBroker{deny: map[string]string{}, keys: map[string]bool{}, unlinked: map[string]bool{}},
 		threads: &fakeThreads{m: map[string]Thread{}}, metrics: &fakeMetrics{n: map[string]int{}}}
 	r.app = &App{Slack: r.slack, Broker: r.broker, Threads: r.threads,
 		Verifier:    Verifier{Secret: func() string { return rigSecret }, Now: func() time.Time { return r.now }},
@@ -554,8 +633,8 @@ func TestDraftPostIsInert(t *testing.T) {
 			t.Fatalf("%s survived: %q", bad, p.text)
 		}
 	}
-	if strings.Count(p.text, "```") != 2 {
-		t.Fatalf("a fence in the body closed the block early: %q", p.text)
+	if strings.Contains(p.text, "```") {
+		t.Fatalf("a fence from the body survived: %q", p.text)
 	}
 	if p.meta == nil || !strings.Contains(p.meta.EventPayload.Title, "<!channel>") {
 		t.Fatal("the metadata must keep the draft as the broker returned it")
@@ -627,7 +706,275 @@ func TestSingleLineMentionPostsTheComposedDraft(t *testing.T) {
 	rig := newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
 	rig.mention("C03", "1729.0001", "<@U0BOT> docs: fix a dead link")
 	p := rig.lastPost().text
-	if !strings.HasPrefix(p, "Draft for ") || !strings.Contains(p, "## What is wrong\ndocs: fix a dead link") || !strings.Contains(p, "## Acceptance check\nNone given in Slack") {
+	if !strings.HasPrefix(p, "Draft for ") || !strings.Contains(p, "\n\n*What is wrong*\ndocs: fix a dead link\n") || !strings.Contains(p, "*Acceptance check*\nNone given in Slack") || strings.Contains(p, "##") {
 		t.Fatalf("%q", p)
+	}
+}
+
+// ---- draft editing in the thread ----
+
+func (r *appRig) reply(user, text string) {
+	r.t.Helper()
+	r.seq++
+	r.event(`{"type":"message","channel":"C03","user":"` + user + `","thread_ts":"1729.0001","ts":"1729.9` + strconv.Itoa(100+r.seq) + `","text":` + jsonString(text) + `}`)
+}
+
+func editRig(t *testing.T) *appRig {
+	t.Helper()
+	return newAppRig(t, Channel{Repositories: []string{"Smana/ai-native-ref"}, MaxCostUSD: 2})
+}
+
+func (r *appRig) payload(p post) DraftPayload { return p.meta.EventPayload }
+
+// Today's case: a one-line mention, then a reply that adds the acceptance check.
+func TestReplyAddsTheAcceptanceCheck(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends without a pointer")
+	first := rig.lastPost()
+	if !strings.Contains(first.text, "*Acceptance check*\n"+noAcceptance) {
+		t.Fatalf("%q", first.text)
+	}
+	rig.reply("U02DEF", "Acceptance: the runbook ends with a See also line to runbook 20")
+	if len(rig.posts()) != 2 {
+		t.Fatalf("%d posts", len(rig.posts()))
+	}
+	second := rig.lastPost()
+	p := rig.payload(second)
+	if !strings.Contains(p.Body, "## Acceptance check\nthe runbook ends with a See also line to runbook 20") ||
+		!strings.Contains(p.Body, "## What is wrong\ndocs: runbook 18 ends without a pointer") ||
+		p.Author != "U02DEF" || p.Rev != 2 || p.SHA256 != draftHash(p.Repo, p.Title, p.Body) {
+		t.Fatalf("%+v", p)
+	}
+	if rig.metrics.count("events", "edited") != 1 {
+		t.Fatal("the edit went uncounted")
+	}
+}
+
+func TestReplyKinds(t *testing.T) {
+	for _, tc := range []struct{ name, reply, want, wantTitle string }{
+		{"title", "Title: runbook 18 gets a see also", "", "docs: runbook 18 gets a see also"},
+		{"title, doc word in the body", "Title: fix the thing", "", "docs: fix the thing"},
+		{"should", "Should: end with a pointer", "## What it should be\nend with a pointer\n", ""},
+		{"expected", "Expected: a pointer", "## What it should be\na pointer\n", ""},
+		{"done when", "Done when: line one\nline two", "## Acceptance check\nline one\nline two", ""},
+		{"check", "Check: it ends with a link", "## Acceptance check\nit ends with a link", ""},
+		{"free text", "also the table is wrong", "## What is wrong\nalso the table is wrong\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := editRig(t)
+			rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+			rig.reply("U02DEF", tc.reply)
+			p := rig.payload(rig.lastPost())
+			if rig.payload(rig.posts()[0]).SHA256 == p.SHA256 {
+				t.Fatal("nothing changed")
+			}
+			if tc.want != "" && !strings.Contains(p.Body, tc.want) {
+				t.Fatalf("%q", p.Body)
+			}
+			if tc.wantTitle != "" && p.Title != tc.wantTitle {
+				t.Fatalf("%q", p.Title)
+			}
+		})
+	}
+}
+
+func TestReplyAppendsToWhatIsWrong(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18\nthe pointer is missing")
+	rig.reply("U02DEF", "and the table is stale")
+	if !strings.Contains(rig.payload(rig.lastPost()).Body, "## What is wrong\nthe pointer is missing\n\nand the table is stale\n") {
+		t.Fatalf("%q", rig.payload(rig.lastPost()).Body)
+	}
+}
+
+func TestReplyIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U07GHI", "Acceptance: someone else's") // not the author
+	rig.reply("U02DEF", "   ")                        // nothing to apply
+	rig.reply("U0BOT", "Acceptance: the bot's own")
+	rig.event(`{"type":"message","subtype":"message_changed","channel":"C03","user":"U02DEF","thread_ts":"1729.0001","ts":"1729.9","text":"Acceptance: x"}`)
+	rig.event(`{"type":"message","channel":"C03","user":"U02DEF","ts":"1729.7","text":"Acceptance: top level"}`)
+	rig.event(`{"type":"message","channel":"C99","user":"U02DEF","thread_ts":"1729.0001","ts":"1729.8","text":"Acceptance: other channel"}`)
+	rig.reply("U02DEF", "<@U0BOT> a mention in a reply is the mention flow's")
+	if n := len(rig.posts()); n != 1 { // the draft alone: no reply, no note
+		t.Fatalf("%d posts: %+v", n, rig.posts())
+	}
+}
+
+func TestReplyAfterFilingIsIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	draft := rig.lastPost()
+	rig.react("C03", draft.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 1 || rig.lastPost().meta == nil || rig.lastPost().meta.EventType != "factory_filed" {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+	before := len(rig.posts())
+	rig.reply("U02DEF", "Acceptance: too late")
+	if len(rig.posts()) != before {
+		t.Fatal("a filed draft was edited")
+	}
+	rig.react("C03", draft.ts, "U07GHI", "white_check_mark") // a second ✅ on the filed draft is still a duplicate
+	if !strings.Contains(rig.lastPost().text, "Already filed") {
+		t.Fatalf("%q", rig.lastPost().text)
+	}
+}
+
+func TestReactionOnASupersededDraftIsIgnored(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	old := rig.lastPost()
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	latest := rig.lastPost()
+	rig.react("C03", old.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 0 || !strings.Contains(rig.lastPost().text, "latest draft") {
+		t.Fatalf("a superseded draft was filed or the note is missing: %q", rig.lastPost().text)
+	}
+	rig.react("C03", latest.ts, "U02DEF", "white_check_mark")
+	calls := rig.broker.runCreates()
+	if len(calls) != 1 || !strings.Contains(calls[0].Body, "a see also line") {
+		t.Fatalf("%+v", calls)
+	}
+}
+
+func TestReplyRevisionCap(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	for i := range maxRevisions + 3 {
+		rig.reply("U02DEF", fmt.Sprintf("more %d", i))
+	}
+	drafts := 0
+	for _, p := range rig.posts() {
+		if p.meta != nil {
+			drafts++
+		}
+	}
+	if drafts != maxRevisions {
+		t.Fatalf("%d drafts", drafts)
+	}
+	if !strings.Contains(rig.lastPost().text, "most it can be") {
+		t.Fatalf("%q", rig.lastPost().text)
+	}
+}
+
+func TestReplyIsInertAndRefusalsAreSaid(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U02DEF", "Acceptance: ping <!channel> and <@U07GHI> ```x```")
+	txt := rig.lastPost().text
+	if strings.Contains(txt, "<!channel>") || strings.Contains(txt, "<@U07GHI>") || !strings.Contains(txt, "&lt;!channel&gt;") {
+		t.Fatalf("%q", txt)
+	}
+	rig.broker.draftErr = Refused("rejected: bad")
+	n := len(rig.posts())
+	rig.reply("U02DEF", "Should: x")
+	if len(rig.posts()) != n+1 || !strings.HasPrefix(rig.lastPost().text, "Change refused: rejected: bad") || rig.lastPost().meta != nil {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+}
+
+func TestSlackDraftIsMrkdwn(t *testing.T) {
+	d := Draft{Repo: "Smana/ai-native-ref", Title: "docs: fix", Body: composeBody("docs: fix", "wrong *thing*\nShould: right\nAcceptance: done")}
+	got := slackDraft(d)
+	for _, want := range []string{
+		"Draft for Smana/ai-native-ref: *docs: fix*\n\n*What is wrong*\nwrong *thing*\n\n",
+		"*What it should be*\nright\n\n", "*Acceptance check*\ndone\n\n", "Reply in this thread", ":white_check_mark:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "##") {
+		t.Fatalf("a raw heading in Slack: %q", got)
+	}
+}
+
+// One issue per thread: a failed "Filed" post, an edit and a check mark on the newer draft do not file twice.
+func TestRefilingAfterAFailedFiledPostIsADuplicate(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	d1 := rig.lastPost()
+	rig.slack.failPosts = 1 // the "Filed" line is lost
+	rig.react("C03", d1.ts, "U02DEF", "white_check_mark")
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	rig.react("C03", rig.lastPost().ts, "U02DEF", "white_check_mark")
+	calls := rig.broker.runCreates()
+	if len(calls) != 2 || calls[0].Key != calls[1].Key || rig.broker.created() != 2 || !strings.Contains(rig.lastPost().text, "Already filed") {
+		t.Fatalf("%+v", calls)
+	}
+	if n := rig.broker.newIssues(); n != 1 {
+		t.Fatalf("%d issues", n)
+	}
+}
+
+func TestLongThreadFailsClosed(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	d := rig.lastPost()
+	rig.slack.threadErr = ErrThreadTooLong
+	n := len(rig.posts())
+	rig.reply("U02DEF", "Acceptance: x")
+	rig.react("C03", d.ts, "U02DEF", "white_check_mark")
+	if rig.broker.created() != 0 || len(rig.posts()) != n+2 || !strings.Contains(rig.lastPost().text, "too long") {
+		t.Fatalf("%d %q", rig.broker.created(), rig.lastPost().text)
+	}
+}
+
+// ---- a check mark typed as a reply ----
+
+func TestCheckMarkReplyFilesTheLatestDraft(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.reply("U02DEF", "Acceptance: a see also line")
+	n := len(rig.posts())
+	rig.reply("U07GHI", " :white_check_mark: ")
+	calls := rig.broker.runCreates()
+	if len(calls) != 1 || calls[0].OnBehalfOf != "slack:T01ABC/U07GHI" || calls[0].Key != "T01ABC/C03/1729.0001" ||
+		calls[0].Ref != "slack/T01ABC/C03/1729.0001" || !strings.Contains(calls[0].Body, "a see also line") {
+		t.Fatalf("%+v", calls)
+	}
+	if len(rig.posts()) != n+1 || rig.lastPost().meta == nil || rig.lastPost().meta.EventType != "factory_filed" ||
+		!strings.Contains(rig.lastPost().text, "Filed #42") {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+	for _, text := range []string{"✅", ":heavy_check_mark:"} { // on the filed thread: a duplicate, one issue
+		rig.reply("U02DEF", text)
+		if !strings.Contains(rig.lastPost().text, "Already filed") {
+			t.Fatalf("%q", rig.lastPost().text)
+		}
+	}
+	if rig.broker.newIssues() != 1 {
+		t.Fatal("a second issue was filed")
+	}
+}
+
+func TestCheckMarkReplyByANonMaintainerIsRefused(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.broker.refuse("slack:T01ABC/U09XYZ", "rejected: not_linked")
+	n := len(rig.posts())
+	rig.reply("U09XYZ", "✅")
+	if rig.broker.newIssues() != 0 || len(rig.posts()) != n+1 || rig.lastPost().meta != nil ||
+		!strings.Contains(rig.lastPost().text, "A maintainer reacts :white_check_mark: to file it") {
+		t.Fatalf("%+v", rig.lastPost())
+	}
+}
+
+func TestCheckMarkReplyIsNeverDraftText(t *testing.T) {
+	rig := editRig(t)
+	rig.mention("C03", "1729.0001", "<@U0BOT> docs: runbook 18 ends badly")
+	rig.broker.refuse("slack:T01ABC/U02DEF", "rejected: not_linked")
+	rig.reply("U02DEF", ":white_check_mark:")
+	for _, p := range rig.posts() {
+		if p.meta != nil && p.meta.EventPayload.Rev > 1 {
+			t.Fatalf("the check mark was appended: %+v", p.meta.EventPayload)
+		}
+	}
+	// no draft in the thread: nothing at all
+	rig2 := editRig(t)
+	rig2.reply("U02DEF", "✅")
+	if len(rig2.posts()) != 0 || len(rig2.broker.all()) != 0 {
+		t.Fatal("a check mark in a thread without a draft did something")
 	}
 }

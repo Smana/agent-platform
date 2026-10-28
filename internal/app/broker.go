@@ -187,6 +187,7 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	if err != nil {
 		return fmt.Errorf("room-broker: %w", err)
 	}
+	m.TrackRuns(runInfoWatch(rw.watch))
 	rc := &roomctrl.Reconciler{Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Store: logStore,
 		Runs: rw.watch, Ends: events, Log: log, Forget: m.ForgetRoom, Observe: roomObserver(m, rw.watch)}
 	withSuspend(rc, cfg.Suspend, mgr.GetClient(), logStore, log)
@@ -213,6 +214,10 @@ func serveBroker(ctx context.Context, log *slog.Logger, getenv func(string) stri
 	}
 	if a.sponsored != nil { // only a non-nil value: the interface is never a typed nil
 		humans.Sponsored = a.sponsored
+	}
+	if l := cfg.Human.SlackLink; l != nil { // the self-serve link: the App mints, a human confirms, the factory reads
+		humans.SlackLink = &humanapi.SlackLinker{Store: st, Principal: "system:" + l.Principal, TeamID: l.TeamID, Repository: l.Repository}
+		api.SlackLinks, api.SlackLinkReader = st, fconfig.PrincipalFactory
 	}
 	if len(cfg.Human.MCP.Sponsored) > 0 { // the factory's URL is the config's, never a request's
 		humans.Tasks = runrequest.Factory{URL: cfg.FactoryURL, HC: httpx.New(factoryTimeout, nil)}

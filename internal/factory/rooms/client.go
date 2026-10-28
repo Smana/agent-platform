@@ -334,13 +334,44 @@ func (c *Client) Consume(ctx context.Context, room string, refs []int64, runID s
 	return nil
 }
 
+// slackLinkRoute is the broker's self-serve link read (system:factory only).
+const slackLinkRoute = "/v1/links/slack"
+
+var (
+	slackTeamRE = regexp.MustCompile(`^T[A-Z0-9]{2,20}$`)
+	slackUserRE = regexp.MustCompile(`^[UW][A-Z0-9]{2,20}$`)
+)
+
+// SlackLink is the ZITADEL sub a Slack user linked through the broker's self-serve link; found is
+// false when they linked none. The broker answers a sub, never a GitHub login.
+func (c *Client) SlackLink(ctx context.Context, team, user string) (string, bool, error) {
+	if !slackTeamRE.MatchString(team) || !slackUserRE.MatchString(user) {
+		return "", false, fmt.Errorf("rooms: %q/%q is not a Slack team and user", team, user)
+	}
+	var out struct {
+		Sub string `json:"sub"`
+	}
+	q := "?" + url.Values{"team": {team}, "user": {user}}.Encode()
+	err := c.do(ctx, http.MethodGet, slackLinkRoute, "", q, nil, maxReplyOverhead, &out)
+	var api *APIError
+	switch {
+	case errors.As(err, &api) && api.Status == http.StatusNotFound && api.Reason == wire.ReasonNotLinked:
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case out.Sub == "":
+		return "", false, errors.New("rooms: the broker's link names no account")
+	}
+	return out.Sub, true, nil
+}
+
 // spanReason bounds a refusal's reason, which the peer's reply body sets, to the system API's
 // vocabulary: anything else is "other" on a span.
 func spanReason(r string) string {
 	switch r {
 	case wire.ReasonBadRoom, wire.ReasonBadMessage, wire.ReasonUnauthenticated, wire.ReasonNotPermitted,
 		wire.ReasonNoRoom, wire.ReasonSealed, wire.ReasonRateLimited, wire.ReasonLogUnavailable, wire.ReasonTimedOut,
-		wire.ReasonBadStream, wire.ReasonBadConsume, wire.ReasonNoQueue:
+		wire.ReasonBadStream, wire.ReasonBadConsume, wire.ReasonNoQueue, wire.ReasonNotLinked, wire.ReasonBadSlackUser:
 		return r
 	}
 	return "other"

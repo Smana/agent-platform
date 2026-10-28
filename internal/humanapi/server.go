@@ -138,6 +138,9 @@ type Server struct {
 	Dashboards []Dashboard
 	// MCP serves POST /mcp, the MCP server roomctl mcp relays (human.mcp.enabled). Off, /mcp is a 404.
 	MCP bool
+	// SlackLink is the Slack self-serve link (human.slackLink): its two tools for the Slack App and
+	// the /link/slack page. Nil serves neither.
+	SlackLink *SlackLinker
 
 	// Connection bounds; zero takes the default.
 	HelloWait time.Duration // the first frame must arrive within it (10 s)
@@ -192,6 +195,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/roomctl", s.roomctlSetup)
 	mux.HandleFunc("GET /.well-known/roomctl", s.publicSetup)
 	mux.HandleFunc("GET /v1/ws", s.ws)
+	if s.SlackLink != nil {
+		s.slackLinkRoutes(mux)
+	}
 	if s.MCP {
 		mux.HandleFunc("POST /mcp", s.mcp)
 		mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {

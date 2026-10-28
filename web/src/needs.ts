@@ -7,6 +7,7 @@
 // (already_decided) leaves no dead button. Every string here may be agent-written: all
 // of it enters the DOM as text.
 
+import { decideStatus, deadlineText, ruleFor } from "./approval-help";
 import { focusRow } from "./chat";
 import type { Snapshot } from "./conn";
 import { act, approvalAnchor, approvalCard, button, el, keyed, named, type Sender } from "./controls";
@@ -16,7 +17,8 @@ import { needsItems, type Summary } from "./summary";
 // mountNeeds renders the panel into root. you reads the viewer as the latest state frame
 // has it; chat finds a call's row for the card's link.
 export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, you: () => Snapshot["you"] | undefined,
-  chat: { rowFor(callId: string): HTMLElement | undefined }): { refresh(): void; setSummary(s: Summary): void; count(): number } {
+  chat: { rowFor(callId: string): HTMLElement | undefined }, fourEyes: () => boolean | undefined = () => undefined):
+  { refresh(): void; setSummary(s: Summary): void; count(): number; approvalCounts(): { total: number; mine: number }; focusFirst(): void } {
   root.classList.add("needs");
   root.setAttribute("aria-labelledby", "needs-title");
   const approvals = el("ul", { className: "approvals" });
@@ -25,16 +27,32 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
   root.replaceChildren(title, approvals, other);
   root.hidden = true; // until something needs showing: never an empty heading
   const rows = keyed(approvals);
-  // Approvers and owners decide (policy Decide); a sealed room answers every act sealed.
-  // The broker still checks four-eyes and who decided first.
-  const canDecide = () => { const y = you(); return !!y && !state.sealed && (y.approver || y.role === "owner"); };
+  // Approvers and owners decide (policy Decide); a sealed room answers every act sealed;
+  // with four-eyes, whoever prompted the turn waits for another. The card says which, and
+  // the broker still checks four-eyes and who decided first.
+  type Approval = ReturnType<RoomState["approvals"]>[number];
+  const standing = (a: Approval) => decideStatus({ you: you(), sealed: state.sealed, fourEyes: fourEyes(), prompters: a.prompters });
   let others = 0;
 
-  const card = (a: ReturnType<RoomState["approvals"]>[number], decide: boolean) => {
+  const card = (a: Approval, st: { can: boolean; text: string }) => {
     const li = approvalCard(a, "li");
     li.id = approvalAnchor(a.approvalId);
     const command = li.querySelector<HTMLElement>(".approval-command")!;
     command.id = `${li.id}-command`;
+    // What it wants, why it stopped, what each answer does, by when, who may: fixed prose
+    // per class. The agent's own command and raw action sit folded under "details".
+    const rule = ruleFor(a.class);
+    const intent = el("p", { className: "approval-intent", id: `${li.id}-intent`, textContent: rule.intent });
+    const why = el("p", { className: "approval-why", textContent: `Why it stopped: ${rule.why}` });
+    const outcomes = el("div", { className: "approval-outcomes" });
+    outcomes.append(el("p", { textContent: `If you approve: ${rule.approve}` }), el("p", { textContent: `If you deny: ${rule.deny}` }));
+    const deadline = el("p", { className: "approval-deadline", textContent: deadlineText(a.expiresAt) });
+    deadline.dataset.expires = a.expiresAt;
+    const status = el("p", { className: "approval-status", textContent: st.text });
+    status.dataset.can = String(st.can);
+    const details = el("details", { className: "approval-details" });
+    details.append(el("summary", { textContent: "details" }), ...Array.from(li.children));
+    li.replaceChildren(intent, why, outcomes, deadline, status, details);
     // A same-page link to the call's row, shown while the chat holds that row; refresh
     // names it by the row's seq, which also tells two cards' links apart.
     const link = el("a", { className: "approval-call", href: "#" });
@@ -44,8 +62,8 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
       const row = chat.rowFor(a.callId);
       if (row) focusRow(row); // the row, and any fold around it, opened and focused
     };
-    li.querySelector(".approval-meta")!.after(link);
-    if (!decide) return li;
+    details.before(link);
+    if (!st.can) return li;
     const reason = named(el("input", { name: "decisionReason", maxLength: 1024, placeholder: "reason (optional)" }), "reason for the decision (optional)");
     const send = (decision: string) => () => {
       const action: Record<string, unknown> = { kind: "decide", approvalId: a.approvalId, decision };
@@ -60,15 +78,19 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
     for (const e of [reason, approve, deny]) e.setAttribute("aria-describedby", command.id);
     const bar = el("div", { className: "approval-decide" });
     bar.append(reason, approve, deny);
-    li.append(bar);
+    details.before(bar);
     return li;
   };
 
   const panel = {
     refresh(): void {
-      const decide = canDecide();
       const pending = state.approvals();
-      rows(pending.map((a) => ({ key: a.approvalId, sig: String(decide), build: () => card(a, decide) })));
+      rows(pending.map((a) => { const st = standing(a); return { key: a.approvalId, sig: st.text, build: () => card(a, st) }; }));
+      // The deadline counts down without a rebuild, which would drop a reason being typed.
+      for (const d of approvals.querySelectorAll<HTMLElement>("p.approval-deadline")) {
+        const text = deadlineText(d.dataset.expires ?? "");
+        if (d.textContent !== text) d.textContent = text;
+      }
       // A call's row comes and goes (it leaves at the chat's cap): the link follows it
       // without a rebuild, which would drop a reason being typed.
       for (const l of approvals.querySelectorAll<HTMLAnchorElement>("a.approval-call")) {
@@ -90,7 +112,21 @@ export function mountNeeds(root: HTMLElement, conn: Sender, state: RoomState, yo
       panel.refresh();
     },
     // count is what needs this viewer: the approvals it may decide, then merges and holds.
-    count(): number { return (canDecide() ? state.approvals().length : 0) + others; },
+    count(): number { return panel.approvalCounts().mine + others; },
+    // approvalCounts: the pending approvals, and those this viewer may decide.
+    approvalCounts(): { total: number; mine: number } {
+      if (state.sealed) return { total: 0, mine: 0 };
+      const all = state.approvals();
+      return { total: all.length, mine: all.filter((a) => standing(a).can).length };
+    },
+    // focusFirst takes the reader, and the keyboard focus, to the first card.
+    focusFirst(): void {
+      const li = approvals.querySelector<HTMLElement>("li.approval");
+      if (!li) return;
+      li.tabIndex = -1;
+      li.scrollIntoView?.({ block: "start" });
+      li.focus({ preventScroll: true });
+    },
   };
   return panel;
 }

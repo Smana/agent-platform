@@ -572,6 +572,28 @@ func TestAStatusChangeReadsTheLogToItsEnd(t *testing.T) {
 	}
 }
 
+// The effort tag agent-run sets reaches the room on its harness_status; no other tag does, the
+// model included: the agent can rewrite the tags, and the room takes the model from the claim.
+func TestTheRunsEffortReachesTheRoom(t *testing.T) {
+	f := &fakeAgentServer{status: "running", tags: map[string]string{"model": "forged", "effort": "medium", "other": "x"}}
+	fb := &fakeBroker{}
+	r := newRig(t, NewHarness(f.start(t, conv).URL, conv), fb)
+	ctx, stop := r.run(t)
+	eventually(ctx, t, "the status is mirrored", func() bool { return len(fb.stored(wire.StreamStatus)) > 0 })
+	stop()
+	got := string(fb.stored(wire.StreamStatus)[0].Payload)
+	for _, w := range []string{`"kind":"harness_status"`, `"effort":"medium"`} {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %s in %s", w, got)
+		}
+	}
+	for _, no := range []string{`"other"`, `"model"`, `forged`} {
+		if strings.Contains(got, no) {
+			t.Errorf("%s reached the room: %s", no, got)
+		}
+	}
+}
+
 // F11: the SIGTERM drain reads what the log has left to its end, not one poll's
 // worth, and positions a cursor the loop never could.
 func TestTheSIGTERMDrainReadsTheLogToItsEnd(t *testing.T) {

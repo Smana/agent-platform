@@ -16,7 +16,7 @@ import (
 // ArmInputs is everything §5.1's rule decides on. ReportedHead, Verifiers and Files serve the
 // amendment (external reviews R02, R03; ruling R52): ReportedHead is the commit of the
 // latest handoff or final room event whose broker-stamped actor is one of the task's implementer
-// runs ("" when none named one); Verifiers are the task's reviewer and tester run records, each
+// runs ("" when none named one); Verifiers are the task's reviewer run records, each
 // carrying the head it was given; Files is the forge.Diff read of the pull request's diff.
 type ArmInputs struct {
 	PR           forge.PR
@@ -40,6 +40,15 @@ type ArmInputs struct {
 	// Adoption is what an adopted class's author mode reads beyond the pull request (MC10): the
 	// commits' authors and who pushed the branch. Read is false until awaitingCI has read them.
 	Adoption Adoption
+	// Contract is what row 2c reads of a task with a contract: the files changed since the tester's
+	// commit. Read is false until awaitingCI has read them, and an unread one never passes.
+	Contract ContractRead
+}
+
+// ContractRead is the files a pull request changed since the tester's contract commit (row 2c).
+type ContractRead struct {
+	Read    bool
+	Changed []string
 }
 
 // Adoption is what an adopted class's author mode reads beyond the pull request (MC10).
@@ -158,6 +167,15 @@ func gateOf(rc *config.Repository, class string) config.Class {
 	return cl
 }
 
+// requiredFor is row 2's list (R21, F3-R8): merge.requiredChecks, and merge.contractCheck on a task whose
+// tester wrote a contract. Every reader of the required checks calls this, never the config's list.
+func requiredFor(rc *config.Repository, t *v1alpha1.Task) []string {
+	if t == nil || t.Status.Contract == nil || rc.Merge.ContractCheck == "" {
+		return rc.Merge.RequiredChecks
+	}
+	return append(slices.Clone(rc.Merge.RequiredChecks), rc.Merge.ContractCheck)
+}
+
 // baseChecks are the base's rows before any class is read: the secret scan, CI, the fence and
 // policy-bot. done is false when all of them hold.
 func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
@@ -167,13 +185,28 @@ func baseChecks(in ArmInputs, rc *config.Repository) (ArmDecision, bool) {
 		in.Checks.Runs[i].State == "FAILURE" {
 		return ArmDecision{Verdict: "escalate", Reason: "secret_scan_red"}, true
 	}
-	switch CIState(in.Checks, rc.Merge.RequiredChecks) {
+	// A task holding a contract while the repository no longer names merge.contractCheck has nothing that
+	// proves the contract: fail closed to a human, never drop row 2b.
+	if in.Task.Status.Contract != nil && rc.Merge.ContractCheck == "" {
+		return ArmDecision{Verdict: "human", Reason: "contract_check_unset"}, true
+	}
+	switch CIState(in.Checks, requiredFor(rc, in.Task)) {
 	case "FAILURE":
 		return ArmDecision{Verdict: "ci_red", Reason: "ci_red"}, true
 	case "CANCELLED":
 		return ArmDecision{Verdict: "ci_cancelled", Reason: "ci_cancelled"}, true
 	case "PENDING":
 		return ArmDecision{Verdict: "wait", Reason: "ci_pending"}, true
+	}
+	// Row 2c (R21, F3-R9): the tests the tester wrote are the task's contract, and no pull request changes
+	// them. A person decides, never a fix run: it was the implementer's own change (TF8).
+	if c := in.Task.Status.Contract; c != nil {
+		if !in.Contract.Read {
+			return ArmDecision{Verdict: "wait", Reason: "contract_unread"}, true
+		}
+		if slices.ContainsFunc(c.Files, func(f string) bool { return slices.Contains(in.Contract.Changed, f) }) {
+			return ArmDecision{Verdict: "human", Reason: "contract_modified"}, true
+		}
 	}
 	if in.NotOwned {
 		return ArmDecision{Verdict: "human", Reason: "not_owned"}, true
@@ -208,7 +241,7 @@ func agentEvidence(in ArmInputs) string {
 	// approve predates the head the room just reported, the approval was pulled out from under.
 	for i := len(in.Verifiers) - 1; i >= 0; i-- {
 		r := in.Verifiers[i]
-		if r.Verdict != "approve" || (r.Role != "reviewer" && r.Role != "tester") {
+		if r.Verdict != "approve" || r.Role != "reviewer" {
 			continue
 		}
 		if r.HeadSHA != in.PR.HeadSHA {

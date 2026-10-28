@@ -92,6 +92,9 @@ type HumanConfig struct {
 	// Dashboards are the room page's links out, such as Grafana's, filled with the room's ids.
 	// None by default: the page then shows no group at all.
 	Dashboards []DashboardConfig `json:"dashboards,omitempty"`
+	// SlackLink turns on the Slack self-serve link: the Slack App mints one-time codes, and a
+	// signed-in human confirms one on /link/slack. Off unless set.
+	SlackLink *SlackLinkConfig `json:"slackLink,omitempty"`
 }
 
 // EffectiveMode is the mode the broker serves: an empty mode is the OIDC deployment every existing
@@ -112,6 +115,18 @@ func (h HumanConfig) EffectiveGroups() GroupsConfig {
 	}
 	return h.Groups
 }
+
+// SlackLinkConfig is human.slackLink: the sponsored principal (one of human.mcp.sponsored, the
+// Slack App) that may mint link codes, the one Slack workspace a code may be for, and the
+// repository whose GitHub App installation names the account's login on the page.
+type SlackLinkConfig struct {
+	Principal  string `json:"principal"`
+	TeamID     string `json:"teamID"`
+	Repository string `json:"repository"`
+}
+
+// slackTeamRE is a Slack workspace id, as the App's.
+var slackTeamRE = regexp.MustCompile(`^T[A-Z0-9]{2,20}$`)
 
 // MCPConfig switches the human listener's MCP server.
 type MCPConfig struct {
@@ -463,6 +478,7 @@ func (h HumanConfig) validate(system []string) []error {
 			{"human.roomctlClientIDFile", h.RoomctlClientIDFile != "", "there is no roomctl client"},
 			{"human.projectIDFile", h.ProjectIDFile != "", "no token carries a project audience"},
 			{"human.access", h.Access != nil, "the local user is an admin, and D7 gates members only"},
+			{"human.slackLink", h.SlackLink != nil, "a link code names a sponsored principal and a GitHub link, neither of which mode local has"},
 		} {
 			if f.refused {
 				errs = append(errs, fmt.Errorf("%s: mode local takes no %s: %s", f.name, strings.TrimPrefix(f.name, "human."), f.why))
@@ -543,6 +559,20 @@ func (h HumanConfig) validate(system []string) []error {
 		listed[key] = true
 	}
 	errs = append(errs, validateDashboards(h.Dashboards)...)
+	if l := h.SlackLink; l != nil {
+		if !slices.ContainsFunc(h.MCP.Sponsored, func(sp SponsoredConfig) bool { return sp.Name == l.Principal }) {
+			errs = append(errs, fmt.Errorf("human.slackLink.principal: %q is not one of human.mcp.sponsored", l.Principal))
+		}
+		if !slackTeamRE.MatchString(l.TeamID) {
+			errs = append(errs, fmt.Errorf("human.slackLink.teamID: %q is not a Slack workspace id", l.TeamID))
+		}
+		if !repositoryRE.MatchString(l.Repository) {
+			errs = append(errs, fmt.Errorf("human.slackLink.repository: %q is not owner/name", l.Repository))
+		}
+		if h.Access == nil {
+			errs = append(errs, errors.New("human.slackLink needs human.access: a link is to the account's GitHub link"))
+		}
+	}
 	if a := h.Access; a != nil {
 		if a.ReaderFile == "" {
 			errs = append(errs, errors.New("human.access.readerFile: is required"))

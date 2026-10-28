@@ -323,69 +323,42 @@ func TestAHumanRevisionSkipsTheReviewer(t *testing.T) {
 	}
 }
 
-// trio is [implementer, tester, reviewer] (§3): the tester's approve queues the reviewer, on the
-// same head; the reviewer's approve is ready.
-func TestTrioRunsTheReviewerAfterTheTester(t *testing.T) {
+// The tester is the test writer since v3 feature 4 (TO1): a template that lists it (a hand-built
+// config skips Parse's drop) still has the reviewer alone as its verifier, which approves into ready.
+func TestATemplateListingTheTesterHasTheReviewerAloneAsVerifier(t *testing.T) {
 	g := teamRig(t, "trio", nil)
-	if s := g.runs.specs[rid(1)]; s.Role != "tester" || s.BaseRef != "agent/3buqdlot" {
-		t.Fatalf("the first verifier: %+v", s)
+	if s := g.runs.specs[rid(1)]; s.Role != "reviewer" || s.BaseRef != "agent/3buqdlot" {
+		t.Fatalf("the verifier: %+v", s)
 	}
-	g.log.verdict(rid(1), "approve", head1, "Tests pass.")
+	g.log.verdict(rid(1), "approve", head1, "LGTM")
 	g.finish(rid(1), "Succeeded", "agent_finished")
-	tk := g.reconcile(t, "3buqdlot", 2)
-	s := g.runs.specs[rid(2)]
-	if tk.Status.Phase != v1alpha1.PhaseReviewing || s.Role != "reviewer" || tk.Status.Runs[2].HeadSHA != head1 || tk.Status.NextRole != "" {
-		t.Fatalf("%s %+v", tk.Status.Phase, s)
+	if tk := g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" || len(g.runs.specs) != 2 {
+		t.Fatalf("%s %s %d runs", tk.Status.Phase, tk.Status.Verdict, len(g.runs.specs))
 	}
-	g.log.verdict(rid(2), "approve", head1, "LGTM")
-	g.finish(rid(2), "Succeeded", "agent_finished")
-	if tk = g.reconcile(t, "3buqdlot", 2); tk.Status.Phase != v1alpha1.PhaseAwaitingCI || tk.Status.Verdict != "approve" {
-		t.Fatalf("%s %s", tk.Status.Phase, tk.Status.Verdict)
-	}
-	// A reviewer without a verdict is run again, as a reviewer, on the head the tester approved.
+	// A reviewer without a verdict is run again, as a reviewer, on the same head.
 	g = teamRig(t, "trio", nil)
-	g.log.verdict(rid(1), "approve", head1, "Tests pass.")
-	g.finish(rid(1), "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 2)
-	g.finish(rid(2), "Failed", "agent_error")
-	if tk = g.reconcile(t, "3buqdlot", 2); g.runs.specs[rid(3)].Role != "reviewer" || tk.Status.ReviewRounds != 1 {
-		t.Fatalf("%d %+v", tk.Status.ReviewRounds, g.runs.specs[rid(3)])
+	g.finish(rid(1), "Failed", "agent_error")
+	if tk := g.reconcile(t, "3buqdlot", 2); g.runs.specs[rid(2)].Role != "reviewer" || tk.Status.ReviewRounds != 1 {
+		t.Fatalf("%d %+v", tk.Status.ReviewRounds, g.runs.specs[rid(2)])
 	}
-	if got := g.r.nextVerifier(tk, "triager"); got != "" {
+	if got := g.r.nextVerifier(g.task(t), "implementer"); got != "reviewer" {
+		t.Fatalf("next verifier %q", got)
+	}
+	if got := g.r.nextVerifier(g.task(t), "triager"); got != "" {
 		t.Fatalf("a role outside the template has no next verifier: %q", got)
 	}
 }
 
-// I2: the verifiers of one chain approve one head. A push during the second verifier makes its
-// approve stale, and the chain starts again from the first verifier on the new head: a ready task
-// never holds an approve of a head another verifier did not see.
-func TestTrioApproveIsNotCarriedToAMovedHead(t *testing.T) {
-	g := teamRig(t, "trio", nil) // tester rid(1) on head1
-	g.log.verdict(rid(1), "approve", head1, "Tests pass.")
-	g.finish(rid(1), "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 2) // reviewer rid(2) on head1
-	g.f.SetPR(pr12At(head2))      // a push during the reviewer
-	g.log.verdict(rid(2), "approve", head1, "LGTM")
-	g.finish(rid(2), "Succeeded", "agent_finished")
-	tk := g.reconcile(t, "3buqdlot", 2)
-	if s := g.runs.specs[rid(3)]; s.Role != "tester" || tk.Status.Runs[3].HeadSHA != head2 || tk.Status.Phase != v1alpha1.PhaseReviewing {
-		t.Fatalf("the chain starts again from the tester on head2: %+v %+v", s, tk.Status.Runs)
-	}
-	g.log.verdict(rid(3), "approve", head2, "Tests pass.")
-	g.finish(rid(3), "Succeeded", "agent_finished")
-	tk = g.reconcile(t, "3buqdlot", 2)
-	if s := g.runs.specs[rid(4)]; s.Role != "reviewer" || tk.Status.Phase != v1alpha1.PhaseReviewing {
-		t.Fatalf("then the reviewer, on head2: %+v %s", s, tk.Status.Phase)
-	}
-	// The head moves between the tester's approve and the reviewer's start: the tester again.
-	g = teamRig(t, "trio", nil)
-	g.log.verdict(rid(1), "approve", head1, "Tests pass.")
-	g.finish(rid(1), "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+// A push during the reviewer makes its approve stale: the reviewer runs again on the new head, so a
+// ready task never holds an approve of a head the reviewer did not see.
+func TestAReviewersApproveIsNotCarriedToAMovedHead(t *testing.T) {
+	g := pairRig(t) // reviewer rid(1) on head1
 	g.f.SetPR(pr12At(head2))
-	tk = g.reconcile(t, "3buqdlot", 1)
-	if s := g.runs.specs[rid(2)]; s.Role != "tester" || tk.Status.Runs[2].HeadSHA != head2 {
-		t.Fatalf("a verifier never starts on a head the one before did not approve: %+v", s)
+	g.log.verdict(rid(1), "approve", head1, "LGTM")
+	g.finish(rid(1), "Succeeded", "agent_finished")
+	tk := g.reconcile(t, "3buqdlot", 2)
+	if s := g.runs.specs[rid(2)]; s.Role != "reviewer" || tk.Status.Runs[2].HeadSHA != head2 || tk.Status.Phase != v1alpha1.PhaseReviewing {
+		t.Fatalf("the reviewer starts again on head2: %+v %+v", s, tk.Status.Runs)
 	}
 }
 
@@ -637,10 +610,9 @@ func TestARecordedVerifierKeepsItsHead(t *testing.T) {
 			}
 			return cl.SubResource(sub).Update(ctx, o, opts...)
 		}}).Build()
-	g := teamRig(t, "trio", c) // tester rid(1) on head1
-	g.log.verdict(rid(1), "approve", head1, "Tests pass.")
-	g.finish(rid(1), "Succeeded", "agent_finished")
-	g.reconcile(t, "3buqdlot", 1) // → Queued for the reviewer
+	g := teamRig(t, "pair", c)                      // reviewer rid(1) on head1
+	g.finish(rid(1), "Succeeded", "agent_finished") // no verdict: the same role runs again
+	g.reconcile(t, "3buqdlot", 1)                   // → Queued for the second reviewer
 	lose = true
 	if _, err := g.r.Reconcile(t.Context(), reqFor("3buqdlot")); err == nil {
 		t.Fatal("the lost write is returned")

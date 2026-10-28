@@ -39,6 +39,14 @@ class SwitchTest(unittest.TestCase):
             self.assertEqual(request(env, on), golden, env)
         self.assertEqual(agent_run.search_rules(False), "")
 
+    def test_the_rule_makes_search_the_first_move_for_lookups_and_is_bounded(self):
+        rule = agent_run.search_rules(True)
+        for text in ("call `search` FIRST", "before grep, find or cat", "which file, runbook or doc", "Skip it when the task needs no lookup"):
+            self.assertIn(text, rule)
+        for on in (True, False):  # present only when search is on
+            body = agent_run.build_request(ENV, "t", "r" + agent_run.search_rules(on), None, on)
+            self.assertEqual("FIRST" in body["agent_launch_additions"]["system_message_suffix_append"], on)
+
     def test_a_reviewer_is_told_why(self):
         self.assertEqual(self.on({**ENV, "AGENT_SEARCH": "1", "ROLE": "reviewer"}), (False, "agent-run: search off: the reviewer role has none\n"))
 

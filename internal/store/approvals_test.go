@@ -151,7 +151,7 @@ func TestRequestApprovalIsIdempotentPerEvent(t *testing.T) {
 	}
 	var p envelope.ApprovalRequestedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil || p.ApprovalID != "ap1" || p.CallID != "c1" || p.Class != "forge.pr" ||
-		string(p.Action) != `{"command":"gh pr create"}` || !p.ExpiresAt.Equal(first.ExpiresAt) {
+		string(p.Action) != `{"command":"gh pr create"}` || !p.ExpiresAt.Equal(first.ExpiresAt) || !slices.Equal(p.Prompters, []string{"human:own"}) {
 		t.Fatalf("payload %s, %v", ev.Payload, err)
 	}
 	restarted, err := Open(ctx, broker)

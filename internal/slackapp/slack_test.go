@@ -5,6 +5,7 @@ package slackapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -89,5 +90,66 @@ func TestSlackNotOKIsError(t *testing.T) {
 	}
 	if _, err := c.Message(context.Background(), "C03", "1.0"); err == nil {
 		t.Fatal("Message: ok:false accepted")
+	}
+}
+
+func TestSlackThreadFollowsTheCursor(t *testing.T) {
+	var cursors []string
+	c := slackServer(t, func(_ string, r *http.Request, _ []byte) string {
+		cur := r.URL.Query().Get("cursor")
+		cursors = append(cursors, cur)
+		if cur == "" {
+			return `{"ok":true,"messages":[{"ts":"1729.0001","user":"U02DEF","text":"parent"}],"response_metadata":{"next_cursor":"c2"}}`
+		}
+		return `{"ok":true,"messages":[{"ts":"1729.0002","thread_ts":"1729.0001","user":"U0BOT","text":"d",
+		 "metadata":{"event_type":"factory_draft","event_payload":{"repo":"a/b","author":"U02DEF","rev":2}}}]}`
+	})
+	msgs, err := c.Thread(context.Background(), "C03", "1729.0001")
+	if err != nil || len(msgs) != 2 || len(cursors) != 2 || cursors[1] != "c2" ||
+		msgs[1].Metadata == nil || msgs[1].Metadata.EventPayload.Author != "U02DEF" || msgs[1].Metadata.EventPayload.Rev != 2 {
+		t.Fatalf("%v %v %+v", err, cursors, msgs)
+	}
+}
+
+func TestSlackThreadPastTheLastPageFailsClosed(t *testing.T) {
+	c := slackServer(t, func(string, *http.Request, []byte) string {
+		return `{"ok":true,"messages":[{"ts":"1729.0001","user":"U02DEF","text":"p"}],"response_metadata":{"next_cursor":"more"}}`
+	})
+	if _, err := c.Thread(context.Background(), "C03", "1729.0001"); !errors.Is(err, ErrThreadTooLong) {
+		t.Fatalf("%v", err)
+	}
+}
+
+// The link's two Slack calls: chat.postEphemeral to the one user, and users.info's display name,
+// else its real name; missing_scope is an error the App shrugs off.
+func TestSlackEphemeralAndUserName(t *testing.T) {
+	var got map[string]any
+	answer := `{"ok":true,"user":{"name":"dana.h","profile":{"display_name":"","real_name":"Dana H"}}}`
+	c := slackServer(t, func(path string, r *http.Request, body []byte) string {
+		switch path {
+		case "/api/chat.postEphemeral":
+			_ = json.Unmarshal(body, &got)
+			return `{"ok":true,"message_ts":"1729.0003"}`
+		case "/api/users.info":
+			if r.URL.Query().Get("user") != "U02DEF" {
+				t.Errorf("users.info %s", r.URL.RawQuery)
+			}
+			return answer
+		}
+		t.Errorf("path %s", path)
+		return `{"ok":false}`
+	})
+	if err := c.PostEphemeral(context.Background(), "C03", "U02DEF", "1729.0001", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got["channel"] != "C03" || got["user"] != "U02DEF" || got["thread_ts"] != "1729.0001" || got["text"] != "hi" {
+		t.Fatalf("%+v", got)
+	}
+	if h, n, err := c.UserName(context.Background(), "U02DEF"); err != nil || h != "dana.h" || n != "Dana H" {
+		t.Fatalf("%q %q %v", h, n, err)
+	}
+	answer = `{"ok":false,"error":"missing_scope"}`
+	if _, n, err := c.UserName(context.Background(), "U02DEF"); err == nil || n != "" {
+		t.Fatalf("missing_scope: %q %v", n, err)
 	}
 }
