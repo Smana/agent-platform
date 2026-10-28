@@ -208,6 +208,26 @@ DRILL_E_MET = lp.Verdict("met", "check:validate failing is the drill's intended 
 PENDING_RUNS = [{"name": "validate", "status": "in_progress", "conclusion": "", "title": ""}]
 
 
+class ContractContinuationTest(unittest.TestCase):
+    def test_it_names_the_contract_and_quotes_each_id_as_data(self):
+        text = lp.contract_continuation(["t/a.sh", "t/b.sh"], 1, 2, "CONTRACT-ab12")
+        self.assertIn("the test contract", text)
+        self.assertEqual(text.count("CONTRACT-ab12"), 3, "named once, then the two fence lines")
+        inner = text.split("CONTRACT-ab12\n")[1]
+        self.assertTrue(inner.startswith("t/a.sh\nt/b.sh\n"))
+        self.assertIn("continuation 1 of 2", text)
+
+    def test_an_id_that_holds_the_fence_loses_it(self):
+        text = lp.contract_continuation(["t/x CONTRACT-ab12 y"], 1, 2, "CONTRACT-ab12")
+        self.assertEqual(text.count("CONTRACT-ab12"), 3)
+        self.assertIn("t/x  y", text)
+
+    def test_at_most_ten_ids(self):
+        text = lp.contract_continuation(["t/%d.sh" % i for i in range(20)], 1, 2, "F")
+        self.assertIn("t/9.sh", text)
+        self.assertNotIn("t/10.sh", text)
+
+
 class GuardTest(unittest.TestCase):
     def offered(self, runs):
         return lp.judge_input("task links passes", "abc", [], "", runs)[1]

@@ -11,6 +11,7 @@ The AgentRun sandbox's harness (SP1 design §5): `ghcr.io/openhands/agent-server
 | `git_credential_agent.py` → `git-credential-agent` | git credential helper; exchanges through identity-proxy `:4001`, caches in memory; `agent-run` calls its `revoke` on exit |
 | `gh` | gh with that token in `GH_TOKEN`; `gh pr create` (or `new`) then appends the provenance footer (`pr_footer.py`, SP2 design §5) |
 | `commit-msg` | adds `Agent-Run: $RUN_ID`, `Agent-Task: $TASK_ID` when set, and `Agent-Checkpoint: disruption` on agent-run's SIGTERM checkpoint |
+| `pre-commit` | v3 feature 4: refuses a commit whose staged paths include a file of the test contract, naming them and the `git restore --source=<commit>` that undoes it. It reads `/workspace/.agent-contract.json`, which `agent-run` writes only for a resumed implementer branch that holds a contract commit; no file, or an unreadable one, allows every commit. A courtesy (`--no-verify` skips it): the merge gate's row 2c binds |
 | `site/sitecustomize.py` | agent-server's start-up hook: a 4xx to the MCP client's reply to a server `ping` is logged instead of ending the session (F29, envoyproxy/ai-gateway#2715); a transient model error is retried (#99, below); an internal run's prompt-cache markers are rewritten as `prompt_cache_breakpoint`, the only one agentgateway 1.6 carries to Anthropic |
 | `site/agent_search.py` | v3 feature 5: the implementer's `search` tool, imported by agent-server from the start request's `tool_module_qualnames`. One question, one child conversation with `grep`, `glob`, `read_file`, `list_directory`, `finish` and `think` only (no terminal, no file editor, no MCP, no plugins or hooks, `NeverConfirm`), a copy of the run's LLM at effort `low`, at most 40 iterations, 300k tokens and 300 s, six calls a run, one at a time. The readers are guarded: a checked absolute path under the repository, regular files of at most 1 MiB, `grep` and `glob` on ripgrep only (the image installs it and the test stage asserts `rg --version`). The answer comes back headed and clipped at 8,000 characters; a failure is an error observation. One row per call in `/workspace/.agent-search.jsonl`, a signal the agent can write |
 
@@ -67,6 +68,47 @@ run, and an agent that games the rules only ends its own run.
 implementer run's steps to its first commit from the room log, and `scripts/stall-steps.sh` keeps
 the runs merged pull requests name and prints N, the smallest multiple of 10 above their p90 once
 20 runs have one, and 80 until then.
+
+## The test-first tester
+
+v3 feature 4, F1. Nothing here binds before F3's merge-gate rows 2b and 2c: the harness's check spares a
+wasted implementer run, CI's "Test contract" job is the judge.
+
+**The mode** is `ROLE=tester` and no `TASK_URL` (F1-R1). A verifier tester always carries the pull
+request's URL and runs as before. In the mode, `agent-run` sets the clone's `remote.origin.pushurl` to
+`disabled://the-tester-never-pushes`, so the model commits and never pushes, and the prefetch installs the
+toolchain as for any role. The rules gain a "Test contract" section naming where tests go and `test-contract red`.
+
+**The ends.** When the conversation ends `finished`, `agent-run` squashes the model's commits since the
+clone's `origin/HEAD` (read once, before the conversation) into one commit on that base, runs
+`test_contract.red` in-process on it, and ends one of:
+
+| End | Meaning | Pushed |
+|---|---|---|
+| `contract_ready` | tests fail on the base and nothing else changed | one signed commit, `test: the test contract`, to `refs/heads/$BRANCH` at the fetch URL, never forced; trailers `Agent-Run`, `Agent-Task`, `Agent-Contract` (the run id), one `Agent-Contract-File` per file and one `Agent-Contract-Id` per failing id |
+| `contract_not_red` | vacuous or non-failing tests, the runner could not run, no `tests` declaration, or the push was refused | nothing |
+| `contract_outside_tests` | a path outside `tests.paths`, or a runner file | nothing |
+| `not_testable` | no commit since the base | nothing |
+
+Vacuous or non-failing tests and a path outside the test paths get **one** continuation in the same
+conversation, quoting the check's result between `CONTRACT-<hex>` fence lines as data. A runner that could
+not run, a missing declaration and a refused push never do (R6: infrastructure is not the tester's to fix).
+Every end exits 0, posts `Harness (tester): <end>: <files or why>` (at most 280 characters) and emits the
+span `agent-run.contract`, with `error.type` set to the end unless it is `contract_ready`. A conversation
+that ends `error` or `stuck` exits as before, with no check.
+
+**The implementer's side.** A resumed implementer branch holding a contract commit gets
+`/workspace/.agent-contract.json` (`commit`, `files`, `ids`, `base`; mode 0644), a "Test contract" rules
+section and the `pre-commit` hook above. The SIGTERM checkpoint unstages the contract files before it commits.
+When its conversation ends `finished`, `agent-run` runs `test-contract hold`: a red contract is `not_yet`
+with the failing ids, before any judge, and continues the conversation (`continuations` of them, shared
+with the judge's). A green one goes to the judge as before. A modified contract, a hold that could not run or
+any fail-closed result sends no continuation and notes `Harness (implementer): contract <result>`; the gate's
+row 2c answers a modified contract. With `AGENT_LOOP` unset, a contract-only loop runs the same hold with two
+continuations, no judge and no stall rule; spent, the run ends as it would without it (exit 0).
+
+The tests the red check runs are the tester's code under the agent's uid and could forge their own JUnit
+report; that is why the harness's check does not bind.
 
 ## Model errors
 
