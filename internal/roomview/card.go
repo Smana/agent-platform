@@ -113,6 +113,7 @@ func Card(w io.Writer, s summary.Summary, o Options) error {
 	needs := len(s.NeedsYou) > 0
 	c.title(s)
 	c.stateLine(s, needs)
+	c.step(s)
 	c.facts(s)
 	c.needs(s)
 	c.runs(s)
@@ -157,6 +158,21 @@ func (c *card) stateLine(s summary.Summary, needs bool) {
 		parts = append(parts, c.url("open the room", s.URL))
 	}
 	c.line(strings.Join(parts, " · "))
+}
+
+// step is the one thing the caller does for a waiting room, and the link to do it.
+func (c *card) step(s summary.Summary) {
+	st := s.Step
+	if st == nil {
+		return
+	}
+	label := c.url(st.Label, st.URL)
+	if c.md() {
+		c.line("") // its own paragraph: a Markdown line break would join it to the state line
+		c.line(c.bold("Your move:") + " " + label)
+		return
+	}
+	c.line("Your move: " + label)
 }
 
 // cardState is the coarse state the summary carries, else the one its phase gives.

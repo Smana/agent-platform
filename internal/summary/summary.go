@@ -152,8 +152,11 @@ type Summary struct {
 	// Runs is the task's run history, oldest first: the factory's facts, so a sealed room keeps it.
 	Runs     []envelope.RunFact `json:"runs,omitempty"`
 	NeedsYou []Need             `json:"needsYou"`
-	Actions  []Action           `json:"actions"`
-	Notes    struct {
+	// Step is the one thing a human does for this room and where (approve here, or merge or close
+	// the PR on GitHub): absent when nothing waits for them.
+	Step    *Step    `json:"step,omitempty"`
+	Actions []Action `json:"actions"`
+	Notes   struct {
 		Untrusted bool   `json:"untrusted"`
 		Items     []Note `json:"items"`
 	} `json:"notes"`
@@ -333,6 +336,7 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 	if n, ok := Answer(st.Facts, sub); ok {
 		s.NeedsYou = append(s.NeedsYou, n)
 	}
+	s.Step = viewStep(s, factsReason(st.Facts), url, policy.Allowed(web, policy.Decide))
 	// Review requests are not needs here: GitHub already notifies them (spec D6).
 	if policy.Allowed(sub, policy.Queue) {
 		s.Actions = append(s.Actions, Action{Kind: "queue", What: "queue a note for the next run",
@@ -351,4 +355,32 @@ func View(st State, room, url string, sub policy.Subject, after int64, now time.
 		}
 	}
 	return s
+}
+
+// viewStep is the summary's step: an approval it lists, else a merge or an answer need it lists.
+// Those needs are listed only for a caller who may close, so they carry the standing.
+func viewStep(s Summary, reason, roomURL string, canDecide bool) *Step {
+	in := StepIn{RoomURL: roomURL, Phase: s.Status.Phase, Reason: reason}
+	if p := s.Status.PR; p != nil {
+		in.PR, in.PRURL = p.Number, p.URL
+	}
+	if i := s.Status.Issue; i != nil {
+		in.Issue, in.IssueURL = i.Number, i.URL
+	}
+	for _, n := range s.NeedsYou {
+		switch n.Kind {
+		case "approval":
+			in.Approvals = canDecide
+		case "merge", "answer":
+			in.CanClose = true
+		}
+	}
+	return StepFor(in)
+}
+
+func factsReason(f *envelope.TaskFacts) string {
+	if f == nil {
+		return ""
+	}
+	return f.Reason
 }

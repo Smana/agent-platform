@@ -262,6 +262,7 @@
         "url": "https://rooms.example/r/26zfnuxm#01M4A"
       }
     ],
+    "step": {"kind": "approve", "label": "approve here", "url": "https://rooms.example/r/26zfnuxm"},
     "actions": [
       {
         "kind": "queue",

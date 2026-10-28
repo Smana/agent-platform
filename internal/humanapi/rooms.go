@@ -188,6 +188,9 @@ type roomRow struct {
 	NeedsYou int    `json:"needsYou"` // how many things wait for this caller
 	// Need is the first of them, in the summary's order: absent when none waits.
 	Need *summary.Need `json:"need,omitempty"`
+	// Step is the one thing to do for the room and where: approve on its page, or merge or close
+	// the PR on GitHub. Absent when nothing waits for a human.
+	Step *summary.Step `json:"step,omitempty"`
 	You  wire.You      `json:"you"`
 }
 
@@ -270,6 +273,26 @@ func answer(room *v1alpha1.Room, sub policy.Subject, facts factsFn) (summary.Nee
 	return summary.Answer(facts(), sub)
 }
 
+// rowStep is the row's step for the caller: a merge or an answer needs the right to close, as
+// the summary's needs do; a sealed room has none.
+func rowStep(room *v1alpha1.Room, sub policy.Subject, row roomRow, repo string, approvals bool) *summary.Step {
+	in := summary.StepIn{Phase: row.Task, Reason: row.Reason, PR: row.PR, PRURL: prURLOf(repo, row.PR), Issue: row.Issue,
+		Approvals: approvals, CanClose: policy.Allowed(sub, policy.Close), RoomURL: row.URL,
+		Sealed: room.Status.Phase == "Closed" || room.Status.Phase == "Sealed"}
+	if repo != "" && row.Issue > 0 {
+		in.IssueURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, row.Issue)
+	}
+	return summary.StepFor(in)
+}
+
+// prURLOf is the pull request's URL in repo, "" when either is unknown.
+func prURLOf(repo string, n int) string {
+	if repo == "" || n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", repo, n)
+}
+
 // prNeed is the summary's merge need for sub, from the projected task: the Room status holds the
 // PR's number, not its facts, so the URL is built from the room's repository.
 func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
@@ -277,10 +300,7 @@ func prNeed(room *v1alpha1.Room, sub policy.Subject) (summary.Need, bool) {
 	if t == nil || t.PR <= 0 {
 		return summary.Need{}, false
 	}
-	pr := &envelope.PRFact{Number: int(t.PR)}
-	if repo := room.Spec.Repository; repo != "" {
-		pr.URL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, t.PR)
-	}
+	pr := &envelope.PRFact{Number: int(t.PR), URL: prURLOf(room.Spec.Repository, int(t.PR))}
 	return summary.Merge(&envelope.TaskFacts{Phase: t.Phase, PR: pr}, sub)
 }
 
@@ -446,6 +466,7 @@ func (s *Server) roomRows(ctx context.Context, p authn.Principal, f *roomFilter)
 			row.Reason = waitReason(facts)
 		}
 		row.Need = firstNeed(room, sub, row.URL, live, facts)
+		row.Step = rowStep(room, sub, row, repo, len(live) > 0)
 		out = append(out, row)
 	}
 	s.stampLastEvent(ctx, out)

@@ -112,6 +112,22 @@ describe("the title strip", () => {
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary({ reason: undefined, next: undefined }), needs: 0, connection: "live" });
     expect(h.querySelector(".waiting")).toBeNull();
   });
+  it("names the one step and links the PR for a room held on GitHub", () => {
+    const { h, strip } = mount();
+    const step = { kind: "pr" as const, label: "review and merge or close PR #77", url: "https://github.com/o/r/pull/77" };
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step }, needs: 0, connection: "live" });
+    const line = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
+    expect(line.textContent).toBe("Your move: review and merge or close PR #77");
+    expect(line.querySelector("a")?.getAttribute("href")).toBe(step.url);
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: { ...summary(), step: { kind: "approve", label: "approve here" } }, needs: 1, connection: "live" });
+    expect(h.textContent).toContain("Your move: approve here, in Needs you below");
+    // An off-GitHub URL is not linked, only said.
+    strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, needs: 0, connection: "live",
+      summary: { ...summary(), step: { kind: "answer", label: "answer the question on issue #3", url: "https://evil.example/x" } } });
+    const bad = [...h.querySelectorAll(".waiting")].find((d) => d.textContent?.startsWith("Your move"))!;
+    expect(bad.querySelector("a")).toBeNull();
+    expect(bad.textContent).toBe("Your move: answer the question on issue #3");
+  });
   it("shows a needs-you pill only when something does, and a closed line when sealed", () => {
     const { h, strip } = mount();
     strip.update({ roomId: "3kq7x2ma", snap, phase: "Active", driver: snap.driver, summary: summary(), needs: 2, connection: "live" });

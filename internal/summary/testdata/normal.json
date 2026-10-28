@@ -34,6 +34,7 @@
     "needsYou": [
       {"kind":"approval","id":"01M4A","what":"git push to agent/26zfnuxm","deadline":"2026-10-07T19:45:00Z","url":"https://rooms.example/r/26zfnuxm#01M4A"}
     ],
+    "step": {"kind": "approve", "label": "approve here", "url": "https://rooms.example/r/26zfnuxm"},
     "actions": [
       {"kind":"queue","what":"queue a note for the next run","cli":"roomctl post 26zfnuxm --queue '<text>'"},
       {"kind":"steer","what":"steer the running agent"},
