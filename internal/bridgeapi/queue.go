@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // QueueStore is the room queue (SP2 phase 4) as system callers reach it: SP3's

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // SponsoredClient is one sponsored principal's ZITADEL client, its id read at use (Ruling AS-a).

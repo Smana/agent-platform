@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/ghidentity"
+	"github.com/Smana/maku/internal/ghidentity"
 )
 
 const pat = "zitadel-pat-s3cret"

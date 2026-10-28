@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/meter"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/meter"
 )
 
 type fakeCosts map[string]meter.Cost

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // ItemsPerEvent is how many seqs each harness event owns: event i (1-based) owns

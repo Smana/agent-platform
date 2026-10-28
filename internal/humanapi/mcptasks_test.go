@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/fanout"
 )
 
 // F3: the tools mirror roomctl's standing; none labels, approves, steers, stops or starts work.

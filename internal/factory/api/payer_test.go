@@ -11,8 +11,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/Smana/agent-platform/internal/factory/fmetrics"
-	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/maku/internal/factory/fmetrics"
+	"github.com/Smana/maku/internal/metrics"
 )
 
 // scraped gives s a Set on a real exporter and returns its scrape.

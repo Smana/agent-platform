@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func shell(cmd string) json.RawMessage {

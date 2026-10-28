@@ -20,17 +20,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/summary"
-	"github.com/Smana/agent-platform/internal/version"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/summary"
+	"github.com/Smana/maku/internal/version"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func roleName(r policy.Role) string {

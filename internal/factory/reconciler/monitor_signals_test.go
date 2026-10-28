@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/fluxwatch"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/fluxwatch"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // fakeFlux serves a source and the objects that turned not Ready, each at its time; NotReadySince

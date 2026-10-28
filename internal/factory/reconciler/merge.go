@@ -17,11 +17,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/narrate"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/narrate"
 )
 
 // awaitingCI is §4's merge gate: §5.1's rule decides the pull request, and a decided "arm"

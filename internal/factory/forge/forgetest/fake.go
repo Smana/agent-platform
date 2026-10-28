@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // The fake has the Merger's method set too.

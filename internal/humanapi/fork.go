@@ -12,15 +12,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/brief"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/bridge"
+	"github.com/Smana/maku/internal/brief"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // ForkedFrom annotates a forked Room with <source room>@<seq>; roomctrl owns it, since the

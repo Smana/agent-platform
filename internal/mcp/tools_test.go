@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 type memLog struct {

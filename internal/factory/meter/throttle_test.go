@@ -5,8 +5,8 @@ package meter
 import (
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // The gateway charges B1 a priced call at the meter's own prices, in reference tokens

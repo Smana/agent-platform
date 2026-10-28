@@ -13,10 +13,10 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/redact"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/redact"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // Approvals is the part of the store the approval route writes; *store.Store implements it.

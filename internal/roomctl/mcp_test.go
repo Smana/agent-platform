@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/maku/internal/mcpwire"
 )
 
 // mcpBroker is a fake broker /mcp: it records each request and answers by method.

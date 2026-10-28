@@ -25,12 +25,12 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"golang.org/x/term"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/roomctl"
-	"github.com/Smana/agent-platform/internal/roomctl/skill"
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/summary"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/roomctl"
+	"github.com/Smana/maku/internal/roomctl/skill"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/summary"
+	"github.com/Smana/maku/internal/version"
 )
 
 // roomctlTimeout bounds one call to the broker or the IdP; actTimeout one act.

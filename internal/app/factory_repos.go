@@ -10,16 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/factory/api"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/intake"
-	"github.com/Smana/agent-platform/internal/factory/reconciler"
-	"github.com/Smana/agent-platform/internal/factory/triage"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/repoaccess"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/factory/api"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/intake"
+	"github.com/Smana/maku/internal/factory/reconciler"
+	"github.com/Smana/maku/internal/factory/triage"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/repoaccess"
+	"github.com/Smana/maku/internal/version"
 )
 
 // repoConn is one repository's two GitHub connections (v2 D8): the factory App's and the merger's.

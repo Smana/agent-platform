@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 // maxC7Reply bounds the classifier's reply: a verdict is a few hundred bytes.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // Review C1: a message sent with run:true confirms every pending action, so

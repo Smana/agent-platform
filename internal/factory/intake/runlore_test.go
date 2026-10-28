@@ -19,10 +19,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 func runlore(t *testing.T) (*RunLore, client.Client, *forgetest.Fake) {

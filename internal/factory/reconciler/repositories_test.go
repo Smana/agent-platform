@@ -8,10 +8,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
 )
 
 const (

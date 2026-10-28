@@ -24,7 +24,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // reply is one scripted broker answer; the zero value is not used.

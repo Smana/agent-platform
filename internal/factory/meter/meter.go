@@ -29,12 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/api"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/fmetrics"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/api"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/fmetrics"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 // Revocation reasons (C5). The composition turns each into its own BudgetExhausted variant,

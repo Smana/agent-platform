@@ -16,17 +16,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/api"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/narrate"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
-	"github.com/Smana/agent-platform/internal/factory/tracing"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/api"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/narrate"
+	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/taskid"
+	"github.com/Smana/maku/internal/factory/tracing"
 )
 
 // runEndGrace is how long a finished run waits for the room's end reason before falling back to

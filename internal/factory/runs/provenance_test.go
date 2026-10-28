@@ -8,7 +8,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/version"
 )
 
 // R10: every claim names the factory build that created it, CREATE only; a read takes the

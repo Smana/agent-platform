@@ -11,10 +11,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // roomState says whether an ended task's room is to be closed now (#56), and when to look again

@@ -14,9 +14,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/version"
 )
 
 // The MCP server for a human's local agent (factory interfaces F2, F3): POST /mcp, streamable

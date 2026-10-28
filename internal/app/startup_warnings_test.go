@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/fmetrics"
-	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/fmetrics"
+	"github.com/Smana/maku/internal/metrics"
 )
 
 // Offline proof 4, startup: the deployed config lists the tester in `trio` and two live classes without

@@ -14,10 +14,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 const (

@@ -10,9 +10,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/Smana/agent-platform/internal/factory/api"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/api"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
 )
 
 // v2 per-person caps D4 (G1): a labeller whose day is spent is refused at intake: a comment naming

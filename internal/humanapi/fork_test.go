@@ -18,12 +18,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // Fork is the store's, over the fake's one log: events 1..upTo exist when the

@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // M10, R39: an adopt Task, with no sponsor, no ceiling and no template, passes the Source rules,

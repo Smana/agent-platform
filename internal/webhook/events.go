@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // types are R19's eleven events, in the design's order.

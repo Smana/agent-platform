@@ -87,7 +87,7 @@ qs_fetch_roomctl() {
   aarch64 | arm64) arch=arm64 ;;
   *) echo "no roomctl release for $(uname -m)" >&2; return 1 ;;
   esac
-  base="https://github.com/Smana/agent-platform/releases/download/$1"
+  base="https://github.com/Smana/maku/releases/download/$1"
   tmp=$(mktemp -d)
   if ! {
     curl -fsSL -o "$tmp/roomctl-linux-$arch" "$base/roomctl-linux-$arch" &&

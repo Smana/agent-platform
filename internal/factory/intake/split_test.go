@@ -9,10 +9,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 func stopOf(t *testing.T, p *IssuePoller, name string) string {

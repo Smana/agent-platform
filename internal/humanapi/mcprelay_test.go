@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/roomctl"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/roomctl"
+	"github.com/Smana/maku/internal/store"
 )
 
 // bearerAuth is headerAuth for roomctl's bearer: "Bearer <user>" is <user> through roomctl's client.

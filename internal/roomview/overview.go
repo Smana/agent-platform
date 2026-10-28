@@ -12,7 +12,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // Row is one room of GET /api/rooms, the fields the overview reads.

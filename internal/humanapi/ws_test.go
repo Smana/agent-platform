@@ -25,16 +25,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/humanapi/ui"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/humanapi/ui"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 const (
@@ -261,7 +261,7 @@ func setup(t *testing.T, opts ...option) env {
 		t.Fatal(err)
 	}
 	room := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: roomID, Namespace: namespace},
-		Spec:   v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public", Repository: "Smana/agent-platform"},
+		Spec:   v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public", Repository: "Smana/maku"},
 		Status: v1alpha1.RoomStatus{Phase: "Active", LastSeq: 10, Driver: "system:factory"}}
 	elsewhere := &v1alpha1.Room{ObjectMeta: metav1.ObjectMeta{Name: "9zz9zz9z", Namespace: "other"},
 		Spec: v1alpha1.RoomSpec{Owner: "human:own", Driver: "system:factory", DataClass: "public"}}
@@ -996,7 +996,7 @@ func TestRoomList(t *testing.T) {
 		t.Fatalf("%d %v", code, err)
 	}
 	want := `[{"dataClass":"public","driver":"system:factory","id":"3kq7x2ma","lastSeq":10,"needsMe":false,"needsYou":0,"owner":"human:own","phase":"Active",` +
-		`"repository":"Smana/agent-platform","state":"running","url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
+		`"repository":"Smana/maku","state":"running","url":"/r/3kq7x2ma","you":{"approver":false,"driver":false,"principal":"human:dev","role":"watcher","webUI":true}}]`
 	if b, _ := json.Marshal(rows); string(b) != want {
 		t.Fatalf("rows %s\nwant %s", b, want)
 	}

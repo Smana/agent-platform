@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/runctl"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/runctl"
 )
 
 func main() {

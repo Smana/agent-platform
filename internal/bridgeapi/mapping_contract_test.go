@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/bridge"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // An honest harness never trips the broker's accept rules: every item the

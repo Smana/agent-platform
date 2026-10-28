@@ -13,8 +13,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/fanout"
 )
 
 // The real authenticator on the upgrade (2.2): a web session is an ID token in

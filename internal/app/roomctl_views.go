@@ -12,8 +12,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/roomctl"
-	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/maku/internal/roomctl"
+	"github.com/Smana/maku/internal/roomview"
 )
 
 // viewFormat is the --format value as a view format: md, text, or "" for what w is (a terminal

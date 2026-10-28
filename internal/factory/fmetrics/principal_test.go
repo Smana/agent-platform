@@ -10,7 +10,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // Spend per identity SI4 and SI5: the series a principal's page reads carry the payer the context

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // Re-review C1, probe P1: the bridge's view lags the harness, so steering asks

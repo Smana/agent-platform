@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 func TestRulesImplementer(t *testing.T) {

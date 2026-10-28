@@ -24,15 +24,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/api"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/fmetrics"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/killswitch"
-	"github.com/Smana/agent-platform/internal/factory/narrate"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/api"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/fmetrics"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/killswitch"
+	"github.com/Smana/maku/internal/factory/narrate"
+	"github.com/Smana/maku/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 // LabelStop asks the factory to stop the task of the issue or PR carrying it (§6.1).

@@ -23,9 +23,9 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"golang.org/x/oauth2"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/wire"
 )
 
 func TestLineIsOneReadableRow(t *testing.T) {

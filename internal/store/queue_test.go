@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // Review 4.1: a queue row's author is its event's actor, and its text the event's.

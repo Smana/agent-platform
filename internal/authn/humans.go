@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // ForwardedAccessHeader carries the JWT access token oauth2-proxy forwards beside

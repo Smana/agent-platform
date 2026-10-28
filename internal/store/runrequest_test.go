@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func runDraft(n int64) envelope.Draft {

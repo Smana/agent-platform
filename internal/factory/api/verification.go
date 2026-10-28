@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
+	factoryv1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
 )
 
 const (

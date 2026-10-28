@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // R10: the served models are the model labels with tokens in a typed reading; a reading without

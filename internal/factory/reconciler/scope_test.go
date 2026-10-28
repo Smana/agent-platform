@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
 )
 
 const reviewNote = "# Steering: review\n\n## Verify\n- `task check` (CI: check): every gate passes.\n"

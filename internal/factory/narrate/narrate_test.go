@@ -14,12 +14,12 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/wire"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/wire"
 )
 
 const bot = "ogenki-agent-factory[bot]" // forgetest.Fake's author, config.factoryLogin

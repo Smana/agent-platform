@@ -65,4 +65,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/Smana/agent-platform
+        - github.com/Smana/maku

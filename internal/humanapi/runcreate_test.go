@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/runrequest"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/runrequest"
 )
 
 // fakeTaskFactory answers CreateTask as the factory would, and keeps every request.

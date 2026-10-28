@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/wire"
 )
 
 type fakeApprovals struct {

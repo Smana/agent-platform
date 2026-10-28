@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // maxScope is a valid scope at the 4096-byte bound.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // partTask is part 1 of 2 of #7, issue 501, triaged from its parent.

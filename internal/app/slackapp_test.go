@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/slackapp"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/slackapp"
 )
 
 const slackTeam = "T01ABC"

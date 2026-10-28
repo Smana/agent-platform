@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // room_wait's bounds. A wait is bounded: timeout defaults to waitDefault seconds and never exceeds

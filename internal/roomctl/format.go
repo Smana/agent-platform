@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // maxText bounds the text a line quotes, in runes.

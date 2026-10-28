@@ -18,10 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/verdictpost"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/verdictpost"
 )
 
 // The loop runs its job on every tick while it leads, and says so: the poster

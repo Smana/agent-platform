@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // The issues of the 2026-10-27 gcp-0 drills: neither states an acceptance check.

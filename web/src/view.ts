@@ -246,8 +246,8 @@ export const roomId = /^[a-z2-7]{8}$/;
 // semver passes. macOS has shasum, not always sha256sum.
 function installRoomctl(version?: string): string {
   const base = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")
-    ? `https://github.com/Smana/agent-platform/releases/download/${version}`
-    : "https://github.com/Smana/agent-platform/releases/latest/download";
+    ? `https://github.com/Smana/maku/releases/download/${version}`
+    : "https://github.com/Smana/maku/releases/latest/download";
   return [
     `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
     `base=${base}`,

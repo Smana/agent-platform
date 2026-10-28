@@ -23,10 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/version"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/version"
 )
 
 // The claim's labels, annotations, principal and queues. The namespace and AnnRevoked are the

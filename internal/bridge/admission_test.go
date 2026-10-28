@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // F15: the gate holds the harness on Admission, so the first hello decides

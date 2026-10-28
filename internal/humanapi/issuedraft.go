@@ -8,11 +8,11 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 // issueDraft is issue_draft's result: what roomctl mcp's issue_file shows the developer, then files.

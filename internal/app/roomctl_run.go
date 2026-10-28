@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/roomctl"
+	"github.com/Smana/maku/internal/roomctl"
 )
 
 const runUsage = "run --repo owner/name --task TEXT [--role implementer|tester|triager]"

@@ -5,7 +5,7 @@ package store
 import (
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // Loop policy part 2: the run's last harness_end, read the way runwatch reads its harness_status.

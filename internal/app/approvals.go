@@ -12,11 +12,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/bridgeapi"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/bridgeapi"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/wire"
 )
 
 const (

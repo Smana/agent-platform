@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/maku/internal/mcpwire"
 )
 
 // issueFileTool is roomctl mcp's own tool: the broker never files an issue (F3).

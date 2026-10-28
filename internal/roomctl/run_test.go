@@ -18,9 +18,9 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/wire"
 )
 
 const testClaim = `{"apiVersion":"agents.ogenki.io/v1alpha1","kind":"AgentRun","metadata":{"name":"run-a2b3c4d5","namespace":"agents"},"spec":{"role":"implementer"}}`

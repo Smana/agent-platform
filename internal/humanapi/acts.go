@@ -18,15 +18,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/prpattern"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/prpattern"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // ActLog is the part of the store the actions write; *store.Store implements it.

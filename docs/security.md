@@ -297,7 +297,7 @@ IMAGE=ghcr.io/smana/room-broker@sha256:<digest>
 
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/release\.yaml@refs/tags/v'
+  --certificate-identity-regexp '^https://github\.com/Smana/maku/\.github/workflows/release\.yaml@refs/tags/v'
 
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .SBOM }}'        # SPDX SBOM per platform
 docker buildx imagetools inspect "$IMAGE" --format '{{ json .Provenance }}'  # SLSA provenance
@@ -309,10 +309,10 @@ testing only.** To verify one, accept the PR workflow instead:
 ```bash
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/Smana/agent-platform/\.github/workflows/ci\.yaml@'
+  --certificate-identity-regexp '^https://github\.com/Smana/maku/\.github/workflows/ci\.yaml@'
 ```
 
 ## Reporting a vulnerability
 
-Privately, through [GitHub security advisories](https://github.com/Smana/agent-platform/security/advisories/new),
+Privately, through [GitHub security advisories](https://github.com/Smana/maku/security/advisories/new),
 never a public issue. See [SECURITY.md](../SECURITY.md).

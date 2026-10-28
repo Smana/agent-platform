@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // pageItemBytes is the most one poll adds to the buffer: maxPages pages of

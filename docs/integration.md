@@ -9,7 +9,7 @@ release, or a PR pre-release for an integration branch.
 
 ```mermaid
 flowchart LR
-  subgraph ap["Smana/agent-platform"]
+  subgraph ap["Smana/maku"]
     bimg["ghcr.io/smana/room-broker"]
     brimg["ghcr.io/smana/room-bridge"]
     fimg["ghcr.io/smana/agent-factory"]

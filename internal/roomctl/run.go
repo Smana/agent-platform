@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // QuickstartRoles are the roles roomctl run starts: a reviewer needs a pull request, and a new

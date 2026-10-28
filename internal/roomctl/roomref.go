@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomview"
 )
 
 // A room is named the way a developer says it (O7): its id, `#<issue>`, `PR #<n>` or a bare number,

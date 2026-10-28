@@ -155,7 +155,7 @@ Trailers and footer are provenance hints, never authorisation (SP3 ruling TB). A
 or rewrite the hook, `gh api` or a later `gh pr edit` bypasses the footer, and run IDs are public, so anyone
 can copy a trailer. The factory still reads `Agent-Run` as a claim: it catches an unstamped human commit, not
 a deliberate forgery. What binds commits to the factory is push identity
-([#76](https://github.com/Smana/agent-platform/issues/76), [#82](https://github.com/Smana/agent-platform/issues/82)): before a CI-fixed pull request is reviewed again, and before the merge gate arms or shadows any pull request, every
+([#76](https://github.com/Smana/maku/issues/76), [#82](https://github.com/Smana/maku/issues/82)): before a CI-fixed pull request is reviewed again, and before the merge gate arms or shadows any pull request, every
 push to its branch since the branch's creation must be the agents App's in GitHub's repository activity. A human
 cannot push as the App without access to the agents namespace or the App key. The binding is to the App, not the
 task: the implementer octo-sts trust policy (cloud-native-ref `.github/chainguard/agent-implementer.sts.yaml`) is

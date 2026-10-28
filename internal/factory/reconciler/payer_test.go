@@ -11,9 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/killswitch"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/killswitch"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // Spend per identity SI8: a task leaving Escalated adds the time since its phaseSince to its

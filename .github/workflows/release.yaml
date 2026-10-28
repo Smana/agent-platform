@@ -130,7 +130,7 @@ jobs:
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${target%/*}" arch="${target#*/}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
-              -ldflags "-s -w -X github.com/Smana/agent-platform/internal/version.Version=${VERSION}" \
+              -ldflags "-s -w -X github.com/Smana/maku/internal/version.Version=${VERSION}" \
               -o "roomctl-${os}-${arch}" ./cmd/roomctl
           done
           sha256sum roomctl-* > roomctl.sha256

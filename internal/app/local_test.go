@@ -13,12 +13,12 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
 )
 
 func TestHumanListenAddr(t *testing.T) {

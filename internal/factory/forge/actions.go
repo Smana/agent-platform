@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/go-github/v92/github"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 // maxArtifactBytes bounds an artifact's zip and the file read out of it.

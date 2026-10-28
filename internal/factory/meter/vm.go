@@ -12,8 +12,8 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 // maxVMReply bounds a query reply: one series per live or recent run, a few hundred bytes each.

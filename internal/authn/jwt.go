@@ -23,7 +23,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // The audiences this broker accepts.

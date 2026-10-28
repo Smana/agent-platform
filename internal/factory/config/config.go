@@ -28,8 +28,8 @@ import (
 	"github.com/robfig/cron/v3"
 	"sigs.k8s.io/yaml"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/sponsored"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/sponsored"
 )
 
 const (

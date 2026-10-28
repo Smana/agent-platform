@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/summary"
 )
 
 func TestStateWord(t *testing.T) {

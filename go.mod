@@ -1,4 +1,4 @@
-module github.com/Smana/agent-platform
+module github.com/Smana/maku
 
 go 1.27.3
 

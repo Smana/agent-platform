@@ -5,8 +5,8 @@ package filefence
 import (
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 func TestRefusal(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 func TestHTTPClassifier(t *testing.T) {

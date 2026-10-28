@@ -13,9 +13,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	roomv1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	roomv1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/factory/rooms"
 )
 
 // R5, R8, C1: the CRD installs with its new CEL rules, an api task needs its sponsor and ceiling,

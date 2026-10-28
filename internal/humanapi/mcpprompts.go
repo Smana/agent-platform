@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/mcpwire"
 )
 
 // promptArg is one optional prompt argument.

@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // R10: the real API server keeps a run's provenance through a status write, and bounds its models.

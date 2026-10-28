@@ -25,7 +25,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/maku/internal/roomctl/skill"
 )
 
 // #48: each failure the runbook met names its cause and its fix.

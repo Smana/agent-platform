@@ -1,6 +1,6 @@
 # Roadmap
 
-What shipped is the [releases page](https://github.com/Smana/agent-platform/releases); what is
+What shipped is the [releases page](https://github.com/Smana/maku/releases); what is
 proven live, and the hardening and expansions ahead, is the platform's
 [status page](https://github.com/Smana/cloud-native-ref/blob/main/website/content/docs/platform/ai-platform/status.md).
 This page lists what this repository still owes.

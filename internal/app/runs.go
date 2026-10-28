@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 // informerSource is the one cache method the watch needs; a manager's cache has it.

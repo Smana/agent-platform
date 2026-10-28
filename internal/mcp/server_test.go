@@ -20,9 +20,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
 )
 
 const sub = "system:serviceaccount:agents:xplane-run-7f3cq2xz"

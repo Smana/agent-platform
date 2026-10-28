@@ -14,8 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Smana/agent-platform/internal/app"
-	"github.com/Smana/agent-platform/internal/logging"
+	"github.com/Smana/maku/internal/app"
+	"github.com/Smana/maku/internal/logging"
 )
 
 func main() { os.Exit(run()) }

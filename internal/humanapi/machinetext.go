@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
 // The clients a human's act comes through (factory interfaces F8). Only the web UI's standing may

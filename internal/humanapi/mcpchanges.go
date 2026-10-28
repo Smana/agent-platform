@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomctrl"
-	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomctrl"
+	"github.com/Smana/maku/internal/roomview"
 )
 
 // changesWindow is how far back room_changes looks without a cursor.

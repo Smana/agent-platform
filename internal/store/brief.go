@@ -8,7 +8,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // briefSourcesSQL reads the room's latest agent handoff and latest agent

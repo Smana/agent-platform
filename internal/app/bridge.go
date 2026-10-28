@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/bridge"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/version"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/bridge"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/version"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // The bridge's defaults (docs/integration.md, "The bridge's environment").

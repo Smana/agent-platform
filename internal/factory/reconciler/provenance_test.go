@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/meter"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/meter"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // R10: the record takes what the run ran on from its claim as each fact appears, never changes a

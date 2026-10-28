@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/wire"
 )
 
 type linkTable map[string]string

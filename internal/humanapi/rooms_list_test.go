@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/store"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/store"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // #50: the list carries what a person needs to tell the rows apart — the issue, its title, the

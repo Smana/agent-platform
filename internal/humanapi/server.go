@@ -27,16 +27,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/ghidentity"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/repoaccess"
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/ghidentity"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/repoaccess"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
 )
 
 // Listener bounds. WriteTimeout is 0 for the WebSocket's sake: every other

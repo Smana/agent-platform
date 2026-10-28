@@ -9,8 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/config"
 )
 
 // M5: a room's repository comes from its Room; a Room not in the cache is "" (held), not an error.

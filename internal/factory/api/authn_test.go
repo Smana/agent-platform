@@ -16,8 +16,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/policy"
 )
 
 type signer struct{ key *rsa.PrivateKey }

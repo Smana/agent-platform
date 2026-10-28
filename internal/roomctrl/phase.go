@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/store"
 )
 
 const (

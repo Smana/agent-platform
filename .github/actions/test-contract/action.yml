@@ -1,7 +1,7 @@
 # test-contract in CI (v3 feature 4, TF7): the same script the harness runs for the tester's red
 # check, so the sandbox and the CI agree.
 #
-# Use it ONLY as   uses: Smana/agent-platform/.github/actions/test-contract@<40-hex sha>
+# Use it ONLY as   uses: Smana/maku/.github/actions/test-contract@<40-hex sha>
 # and never from the pull request's own tree (`uses: ./...`): the change under judgement would then
 # bring the judge. Pin it by commit.
 #
@@ -11,7 +11,7 @@
 name: test-contract
 description: >-
   Every test a pull request adds fails on the base plus the tests and passes at the head. Use it as
-  Smana/agent-platform/.github/actions/test-contract@<sha>, never from the pull request's own tree; check out
+  Smana/maku/.github/actions/test-contract@<sha>, never from the pull request's own tree; check out
   with fetch-depth 0 and persist-credentials false.
 inputs:
   base:

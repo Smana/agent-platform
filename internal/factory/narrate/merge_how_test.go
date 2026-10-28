@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	summ "github.com/Smana/agent-platform/internal/summary"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	summ "github.com/Smana/maku/internal/summary"
 )
 
 // waitReasons are the reasons a task waits or hands off with (merge gate, run end, queue holds):

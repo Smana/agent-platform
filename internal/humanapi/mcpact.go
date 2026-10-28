@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/runrequest"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/runrequest"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // The write tools' arguments.

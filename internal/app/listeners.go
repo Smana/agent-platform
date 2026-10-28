@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/maku/internal/config"
 )
 
 // ListenFunc opens one listener. Production passes net.ListenConfig.Listen; tests pass a fake that

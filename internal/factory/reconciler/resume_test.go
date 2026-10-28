@@ -10,11 +10,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/rooms"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/rooms"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // Disruption design §4: a run lost to its infrastructure resumes on its own, capped and inside the

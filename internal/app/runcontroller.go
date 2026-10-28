@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/runctl"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/runctl"
 )
 
 const defaultRunControllerConfig = "/etc/run-controller/config.yaml"

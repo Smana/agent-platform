@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func humanDraft(who string, n int64) envelope.Draft {

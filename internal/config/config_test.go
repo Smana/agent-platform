@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 const valid = `

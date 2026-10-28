@@ -22,7 +22,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/Smana/agent-platform/internal/httpx"
+	"github.com/Smana/maku/internal/httpx"
 )
 
 var b64 = base64.RawURLEncoding.EncodeToString

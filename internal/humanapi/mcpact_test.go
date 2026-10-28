@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/store"
 )
 
 // actorOn gives the server an actor over l, with the test redactor.

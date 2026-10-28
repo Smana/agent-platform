@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // LocalPrincipal is the one human of a local-mode broker (adoption 3b): whoever reaches the

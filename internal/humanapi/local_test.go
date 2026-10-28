@@ -14,11 +14,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // A local-mode server end to end: the principal must pass Server.principal (a zero Expiry is

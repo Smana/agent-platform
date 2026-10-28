@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // room_tail as an MCP Task (F5): it waits for the room's next events. The broker keeps no task:

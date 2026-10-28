@@ -9,7 +9,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/config"
+	"github.com/Smana/maku/internal/config"
 )
 
 // stubListener records its close, so a test can prove an already-opened listener is not leaked.

@@ -10,7 +10,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 const goodConfig = `

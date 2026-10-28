@@ -8,7 +8,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // R10 across a failover: a run that ended before the switch is lifted by L1, its late reading is charged

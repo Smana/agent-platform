@@ -5,8 +5,8 @@ package reconciler
 import (
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // declaredClass is a class declaring every PR 1 condition, as dead-links will (MC1).

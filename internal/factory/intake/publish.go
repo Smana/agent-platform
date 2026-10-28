@@ -17,10 +17,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/narrate"
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/narrate"
+	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
 // LabelPublish asks the factory to file an investigate task's proposal as a new issue (RunLore

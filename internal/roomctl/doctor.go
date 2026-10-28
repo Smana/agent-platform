@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/roomctl/skill"
 )
 
 // setupPath is the broker's unauthenticated endpoint for the values `roomctl configure` needs.

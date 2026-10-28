@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 // Throttled names the runs a gateway answered with a rate-limit 429 lately; VL implements it

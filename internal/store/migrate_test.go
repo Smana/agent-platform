@@ -13,7 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Smana/agent-platform/internal/store/migrations"
+	"github.com/Smana/maku/internal/store/migrations"
 )
 
 // A database that has never been migrated reaches the current head, every file's checksum and

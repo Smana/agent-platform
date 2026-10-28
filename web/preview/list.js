@@ -299,7 +299,7 @@ async function listRooms(app, get2 = fetch, filters = {}, theme2) {
 }
 var roomId = /^[a-z2-7]{8}$/;
 function installRoomctl(version) {
-  const base2 = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "") ? `https://github.com/Smana/agent-platform/releases/download/${version}` : "https://github.com/Smana/agent-platform/releases/latest/download";
+  const base2 = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "") ? `https://github.com/Smana/maku/releases/download/${version}` : "https://github.com/Smana/maku/releases/latest/download";
   return [
     `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
     `base=${base2}`,

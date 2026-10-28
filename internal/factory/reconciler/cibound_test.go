@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
 )
 
 // #182: a wait verdict past merge.awaitingCIFor hands the task to a human, naming what never

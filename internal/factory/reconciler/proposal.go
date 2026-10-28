@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // ErrNoProposal is returned by Proposal when the triager made no proposal.

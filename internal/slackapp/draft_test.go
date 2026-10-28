@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/sanitize"
+	"github.com/Smana/maku/internal/factory/sanitize"
 )
 
 // R22: line 1 after the mention is <owner/repo> <title>; the rest is the body, as typed.

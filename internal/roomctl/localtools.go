@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // The local tools roomctl mcp serves beside the broker's, named once by mcpwire so the broker's

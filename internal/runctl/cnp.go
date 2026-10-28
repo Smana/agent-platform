@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/v1alpha1"
+	v1alpha1 "github.com/Smana/maku/api/v1alpha1"
 )
 
 // NetworkPolicy is the run's default-deny CNP: DNS for its names only, the broker on 8443,

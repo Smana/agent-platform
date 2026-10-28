@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // The tail's bounds: a page is what one tools/call returns.

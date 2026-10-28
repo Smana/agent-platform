@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/fanout"
+	"github.com/Smana/maku/internal/fanout"
 )
 
 // mcpOn serves /mcp, roomctl's client id being "roomctl".

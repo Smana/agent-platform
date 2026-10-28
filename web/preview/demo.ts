@@ -44,7 +44,7 @@ async function run() {
 
   const banner = document.createElement("div");
   banner.className = "banner demo-banner";
-  const about = Object.assign(document.createElement("a"), { href: "https://github.com/Smana/agent-platform#readme", textContent: "What is this?" });
+  const about = Object.assign(document.createElement("a"), { href: "https://github.com/Smana/maku#readme", textContent: "What is this?" });
   banner.append("Demo: a recorded run, replayed. Nothing here reaches a cluster. ", about);
   page.header.after(banner);
 

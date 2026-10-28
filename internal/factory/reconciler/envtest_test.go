@@ -21,11 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/forge/forgetest"
-	"github.com/Smana/agent-platform/internal/factory/runs"
-	"github.com/Smana/agent-platform/internal/factory/tracing"
-	"github.com/Smana/agent-platform/internal/factory/triage"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/forge/forgetest"
+	"github.com/Smana/maku/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/tracing"
+	"github.com/Smana/maku/internal/factory/triage"
 )
 
 // Against a real API server: the status subresource, resourceVersions, the AgentRun watch.

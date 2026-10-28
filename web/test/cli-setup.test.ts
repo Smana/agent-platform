@@ -6,7 +6,7 @@ import { cliSetup } from "../src/view";
 const oidc = { url: "https://rooms.priv.example", issuer: "https://auth.example", clientID: "3434@agents", projectID: "29184", version: "v0.7.0" };
 const install = [
   `os=$(uname -s | tr A-Z a-z); arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac`,
-  `base=https://github.com/Smana/agent-platform/releases/download/v0.7.0`,
+  `base=https://github.com/Smana/maku/releases/download/v0.7.0`,
   `curl -fsSLO "$base/roomctl-$os-$arch" && curl -fsSLO "$base/roomctl.sha256"`,
   `command -v sha256sum >/dev/null && sum=sha256sum || sum="shasum -a 256"`,
   `grep " roomctl-$os-$arch$" roomctl.sha256 | $sum -c - && sudo install -m 0755 "roomctl-$os-$arch" /usr/local/bin/roomctl`,

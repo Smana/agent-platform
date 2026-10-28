@@ -8,9 +8,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/repoaccess"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/repoaccess"
 )
 
 // accessWait bounds one request's GitHub checks inside routeTimeout, so a slow GitHub still

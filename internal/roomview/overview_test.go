@@ -17,8 +17,8 @@ import (
 	"github.com/yuin/goldmark/ast"
 	extast "github.com/yuin/goldmark/extension/ast"
 
-	"github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/summary"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/*.md and testdata/*.txt from the current views")

@@ -23,12 +23,12 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/factory/killswitch"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/factory/killswitch"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
-const scope = "github.com/Smana/agent-platform/internal/factory"
+const scope = "github.com/Smana/maku/internal/factory"
 
 // collectTimeout bounds the cache reads of one scrape.
 const collectTimeout = 5 * time.Second

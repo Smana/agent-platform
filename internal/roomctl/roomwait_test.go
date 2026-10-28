@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/roomview"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/roomview"
+	"github.com/Smana/maku/internal/summary"
 )
 
 func TestHit(t *testing.T) {

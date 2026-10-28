@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/roomctl"
+	"github.com/Smana/maku/internal/roomctl"
 )
 
 func TestRoomctlRunFlags(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 var triager = Caller{Run: runwatch.Run{ID: "7f3cq2xz", Room: "3kq7x2ma", Role: "triager", Branch: "agent/3kq7x2ma"}}

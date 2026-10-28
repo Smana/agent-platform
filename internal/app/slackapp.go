@@ -26,11 +26,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/metrics"
-	"github.com/Smana/agent-platform/internal/slackapp"
-	"github.com/Smana/agent-platform/internal/version"
-	"github.com/Smana/agent-platform/internal/webhook"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/metrics"
+	"github.com/Smana/maku/internal/slackapp"
+	"github.com/Smana/maku/internal/version"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 const (

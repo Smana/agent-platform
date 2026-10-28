@@ -8,9 +8,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	v1alpha1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
+	v1alpha1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
 )
 
 func investigateRig(t *testing.T) *rig {

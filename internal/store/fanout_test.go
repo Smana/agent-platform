@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/fanout"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/fanout"
+	"github.com/Smana/maku/internal/store"
 )
 
 // Ruling AT end to end, on a real PostgreSQL: appends reach a viewer through

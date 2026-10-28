@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/webhook"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 const (

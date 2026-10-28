@@ -6,9 +6,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Smana/agent-platform/api/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/api/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 // The group names are config (the Seams rule); these stand in for ZITADEL's.

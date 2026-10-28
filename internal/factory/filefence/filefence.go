@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
 )
 
 // Compile builds patterns once per decision. A pattern that does not compile is dropped, so an

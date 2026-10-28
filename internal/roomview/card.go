@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/summary"
 )
 
 // maxCardNotes is how many of the agents' notes the card quotes.

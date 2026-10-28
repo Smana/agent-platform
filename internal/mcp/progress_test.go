@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/runwatch"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/runwatch"
 )
 
 func TestProgressIsAOneLineNote(t *testing.T) {

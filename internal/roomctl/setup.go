@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Smana/agent-platform/internal/roomctl/skill"
+	"github.com/Smana/maku/internal/roomctl/skill"
 )
 
 // Agent is one coding agent roomctl setup knows: how to register `roomctl mcp` with it, and where

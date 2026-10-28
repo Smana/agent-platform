@@ -24,9 +24,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/wire"
 )
 
 const (
@@ -124,7 +124,7 @@ func New(rawURL, tokenFile string, hc *http.Client, tp trace.TracerProvider) (*C
 		tp = noop.NewTracerProvider()
 	}
 	u.Path = ""
-	return &Client{base: u, tokenFile: tokenFile, hc: hc, tracer: tp.Tracer("github.com/Smana/agent-platform/internal/factory/rooms")}, nil
+	return &Client{base: u, tokenFile: tokenFile, hc: hc, tracer: tp.Tracer("github.com/Smana/maku/internal/factory/rooms")}, nil
 }
 
 // LoadCA reads the broker's CA bundle (broker.caFile, Secret openbao-ca) for httpx.New. It is read

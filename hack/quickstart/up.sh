@@ -41,7 +41,7 @@ if [[ ${UP_HELM_ARGS:-} != *image*tag* ]]; then
   step "release images"
   docker buildx version >/dev/null 2>&1 || { echo "the docker buildx plugin is required (it resolves image digests)" >&2; exit 1; }
   if [[ -z ${AP_VERSION:-} ]]; then
-    AP_VERSION=$(curl -fsSL https://api.github.com/repos/Smana/agent-platform/releases/latest | yq -p=json '.tag_name') ||
+    AP_VERSION=$(curl -fsSL https://api.github.com/repos/Smana/maku/releases/latest | yq -p=json '.tag_name') ||
       { echo "could not read the latest release from the GitHub API (unauthenticated limit: 60 requests/hour); set AP_VERSION=<release tag>" >&2; exit 1; }
     [[ -n $AP_VERSION && $AP_VERSION != null ]] || { echo "no release found; set AP_VERSION=<release tag>" >&2; exit 1; }
   fi

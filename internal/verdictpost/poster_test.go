@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/github"
-	"github.com/Smana/agent-platform/internal/store"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/github"
+	"github.com/Smana/maku/internal/store"
 )
 
 type fakeLog struct {

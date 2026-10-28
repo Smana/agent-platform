@@ -12,12 +12,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	factoryv1 "github.com/Smana/agent-platform/api/factory/v1alpha1"
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/finding"
-	"github.com/Smana/agent-platform/internal/factory/taskid"
+	factoryv1 "github.com/Smana/maku/api/factory/v1alpha1"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/finding"
+	"github.com/Smana/maku/internal/factory/taskid"
 )
 
 var runlore = authn.Principal{Kind: envelope.ActorSystem, ID: "system:runlore", Sponsored: true, Internal: true, AccessToken: "t"}

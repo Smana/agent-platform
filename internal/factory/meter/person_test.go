@@ -9,8 +9,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/runs"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/runs"
 )
 
 // v2 per-person caps G4: a run charged to a person settles its cost to the fleet and to that

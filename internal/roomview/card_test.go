@@ -13,9 +13,9 @@ import (
 
 	"github.com/yuin/goldmark/ast"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
-	"github.com/Smana/agent-platform/internal/summary"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
+	"github.com/Smana/maku/internal/summary"
 )
 
 var cardGoldens = []string{"normal", "resumed", "expired_approval", "sealed", "no_facts", "runs_and_spend", "hostile"}

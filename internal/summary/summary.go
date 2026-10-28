@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/envelope"
-	"github.com/Smana/agent-platform/internal/policy"
+	"github.com/Smana/maku/internal/envelope"
+	"github.com/Smana/maku/internal/policy"
 )
 
 // APIVersion is the contract roomctl and the web page render against.

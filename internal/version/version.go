@@ -4,5 +4,5 @@
 package version
 
 // Version is "dev" unless the build sets it:
-// -ldflags "-X github.com/Smana/agent-platform/internal/version.Version=v0.1.0".
+// -ldflags "-X github.com/Smana/maku/internal/version.Version=v0.1.0".
 var Version = "dev"

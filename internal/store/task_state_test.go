@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/envelope"
+	"github.com/Smana/maku/internal/envelope"
 )
 
 func TestLastTaskStateIsTheHighestSeq(t *testing.T) {

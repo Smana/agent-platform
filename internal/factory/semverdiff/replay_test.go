@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/factory/forge"
-	"github.com/Smana/agent-platform/internal/factory/reconciler"
-	"github.com/Smana/agent-platform/internal/factory/semverdiff"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/factory/forge"
+	"github.com/Smana/maku/internal/factory/reconciler"
+	"github.com/Smana/maku/internal/factory/semverdiff"
 )
 
 // A replay case is one merged Renovate PR of the host, as hack/renovate-replay.sh writes it.

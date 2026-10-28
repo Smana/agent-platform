@@ -463,7 +463,7 @@ the entries it learned, for a write its predecessor lost. That write carries the
 `resourceVersion`, so a late one conflicts; across midnight the meter first updates the failed
 write's ledger to the same end, and a new leader does so for the days its first read of the run
 showed, today's, and, in the first ten minutes of a day, the day before
-([#166](https://github.com/Smana/agent-platform/issues/166)). A run is charged once across a
+([#166](https://github.com/Smana/maku/issues/166)). A run is charged once across a
 failover, a ledger that cannot be read, a failed write, landed or not, and midnight, with three
 bounded exceptions:
 

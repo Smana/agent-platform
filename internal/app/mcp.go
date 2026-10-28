@@ -13,9 +13,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/mcp"
-	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/mcp"
+	"github.com/Smana/maku/internal/metrics"
 )
 
 const (

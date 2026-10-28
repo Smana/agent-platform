@@ -16,8 +16,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Smana/agent-platform/internal/mcpwire"
-	"github.com/Smana/agent-platform/internal/roomview"
+	"github.com/Smana/maku/internal/mcpwire"
+	"github.com/Smana/maku/internal/roomview"
 )
 
 // flagged are the paths whose content a developer's tools run on open or on the next commit: a

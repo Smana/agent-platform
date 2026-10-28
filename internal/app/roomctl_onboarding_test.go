@@ -20,8 +20,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"github.com/Smana/agent-platform/internal/roomctl"
-	"github.com/Smana/agent-platform/internal/wire"
+	"github.com/Smana/maku/internal/roomctl"
+	"github.com/Smana/maku/internal/wire"
 )
 
 // #48: `configure --url` alone reads the rest from the broker, so configure and login are the

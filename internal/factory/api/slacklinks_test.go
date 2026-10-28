@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/factory/config"
-	"github.com/Smana/agent-platform/internal/ghidentity"
+	"github.com/Smana/maku/internal/factory/config"
+	"github.com/Smana/maku/internal/ghidentity"
 )
 
 // brokerLinks is the broker's link records as the factory reads them: team/user -> sub.

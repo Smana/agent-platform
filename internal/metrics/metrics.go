@@ -29,7 +29,7 @@ import (
 )
 
 // scope names the instrumentation scope; WithoutScopeInfo keeps it off the series.
-const scope = "github.com/Smana/agent-platform"
+const scope = "github.com/Smana/maku"
 
 // Bucket bounds sit on the thresholds that matter: SC-12's 0.5 s fan-out p95,
 // and the approval timeouts (15 min alert, 30 min attended, 4 h unattended).

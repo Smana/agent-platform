@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Smana/agent-platform/internal/authn"
-	"github.com/Smana/agent-platform/internal/config"
-	"github.com/Smana/agent-platform/internal/humanapi"
-	"github.com/Smana/agent-platform/internal/metrics"
+	"github.com/Smana/maku/internal/authn"
+	"github.com/Smana/maku/internal/config"
+	"github.com/Smana/maku/internal/humanapi"
+	"github.com/Smana/maku/internal/metrics"
 )
 
 const (

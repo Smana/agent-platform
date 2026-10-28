@@ -19,8 +19,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/Smana/agent-platform/internal/httpx"
-	"github.com/Smana/agent-platform/internal/mcpwire"
+	"github.com/Smana/maku/internal/httpx"
+	"github.com/Smana/maku/internal/mcpwire"
 )
 
 // The relay's bounds.

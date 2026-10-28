@@ -21,9 +21,9 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/Smana/agent-platform/internal/runwatch"
-	"github.com/Smana/agent-platform/internal/sponsored"
-	"github.com/Smana/agent-platform/internal/webhook"
+	"github.com/Smana/maku/internal/runwatch"
+	"github.com/Smana/maku/internal/sponsored"
+	"github.com/Smana/maku/internal/webhook"
 )
 
 // The :8443 key pair's defaults: cert-manager's Certificate room-broker-tls (GP-18).

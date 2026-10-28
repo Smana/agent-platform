@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Smana/agent-platform/internal/authn"
+	"github.com/Smana/maku/internal/authn"
 )
 
 type logins map[string]string // sub → GitHub login
