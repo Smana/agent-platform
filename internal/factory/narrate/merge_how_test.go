@@ -20,6 +20,7 @@ var waitReasons = []string{
 	"no_pr", "waiting_human_driver", "waiting_room_busy", "waiting_run_slot", "waiting_active_tasks", "waiting_review_wip",
 	"release_age_pending", "release_age_red", "push_unrecorded", "changes_requested", "fork_pull_request",
 	"not_adopted_author", "branch_not_allowed", "adoption_unread", "ci_cancelled", "adopted_head_moved", "adopt_ref_invalid",
+	"contract_invalid", "contract_disputed", "contract_modified", "contract_unread", "contract_push_unrecorded",
 	"waiting_daily_budget", "waiting_room_log", "waiting_broker_permission", "holdout_pending", "split_proposed", "budget-family",
 }
 
