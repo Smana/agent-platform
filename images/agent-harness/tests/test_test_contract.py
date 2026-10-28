@@ -290,6 +290,16 @@ class ShellTest(Fixture, unittest.TestCase):
         code, res = self.ci()
         self.assertEqual((code, res["result"]), (tc.OK, "green"), res)
 
+    def test_a_test_that_only_greps_a_readme_is_not_testable(self):
+        self.commit({"t/test-readme.sh": 'grep -q "sourced, not run" scripts/README.md\n'})
+        code, res = self.red()
+        self.assertEqual((code, res["result"]), (tc.NOT_OK, "not_testable"), res)
+        self.assertIn("documentation", res["why"])
+
+    def test_a_test_that_runs_the_code_and_reads_a_doc_is_still_a_contract(self):
+        self.commit({"t/test-doc.sh": 'out="$(bash bin/greet)"; [ "$out" = hi ] && grep -q greet README.md\n'})
+        self.assertEqual(self.red()[1]["result"], "contract_ready")
+
     def test_a_suite_that_exits_77_is_a_skip_and_never_a_pass(self):
         self.commit({"t/test-later.sh": "exit 77\n"})
         self.assertEqual(self.red()[1]["result"], "contract_not_red")

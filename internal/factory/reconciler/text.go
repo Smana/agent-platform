@@ -237,7 +237,9 @@ func TesterBrief(t *v1alpha1.Task, nonce string, sc *Scoped) string {
 		"asks for, before anyone changes the code: they must fail on the current code and pass once the task is done. "+
 		"Write them only under the paths your rules' Test contract section names, commit them on your branch and "+
 		"never push: the platform checks that they fail and pushes them. Never change the code under test. If the task "+
-		"has no behaviour a test can pin down, commit nothing and say why in the room with room_post, then finish.\n",
+		"has no behaviour a test can pin down, commit nothing and say why in the room with room_post, then finish. "+
+		"A change with no behaviour (docs, comments, README prose, formatting) is not testable: never write a test "+
+		"that greps documentation text.\n",
 		t.Name, t.Spec.Repository)
 	return fit(head, scopeBlock(sc, nonce), snapshotBlock(t, "TASK-DATA-"+nonce), t)
 }

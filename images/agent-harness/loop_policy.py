@@ -86,6 +86,10 @@ PATH_TOKEN = re.compile(r"(?<![\w:/.@-])((?:[\w.-]+/)+[\w.-]*\w)(?![\w:@])")
 FORBID = re.compile(r"\b(?:must not|do not|don't|never|should not|shall not|not be created|no new|without creating|"
                     r"not to create|not create)\b", re.I)
 LINK = re.compile(r"\b(?:links?|linking|linked|references?|points? to|pointing|mentions?|href|cites?)\b", re.I)
+# Across lines: CREATE_FORBID says a path is not to be created; NEEDS_LINK is a check that follows links.
+CREATE_FORBID = re.compile(r"\b(?:is not created|are not created|must not be created|should not be created|"
+                           r"do not create|don't create|not be created|without creating)\b", re.I)
+NEEDS_LINK = re.compile(r"\btask links\b|\blink[- ]?check|\bcheck(?:s)? (?:the )?links\b", re.I)
 GONE = re.compile(r"\b(?:remove[sd]?|delete[sd]?|drop(?:ped)?|renam\w+|moved?|no longer|absent|must not exist|"
                   r"does not exist|doesn't exist)\b", re.I)
 
@@ -110,7 +114,17 @@ def named_paths(checks: str, toplevel: set[str]) -> list[tuple[str, str]]:
                 mode = "required"
             out[path] = mode
             if len(out) >= PATHS_MAX:
-                return list(out.items())
+                break
+    # Across lines: a path one line forbids creating, while any line asks for a link to it or for a
+    # link check, can never be satisfied.
+    lines = checks.splitlines()
+    wants_link = any(NEEDS_LINK.search(ln) for ln in lines)
+    for path in out:
+        if out[path] != "required":
+            continue
+        mine = [ln for ln in lines if path in ln]
+        if any(CREATE_FORBID.search(ln) for ln in mine) and (wants_link or any(LINK.search(ln) for ln in mine)):
+            out[path] = "unmakeable"
     return list(out.items())
 
 JUDGE_SYSTEM = """You judge whether a coding agent finished its task. You have no tools: you see only the \

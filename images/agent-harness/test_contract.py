@@ -25,6 +25,7 @@ import contextlib
 import fnmatch
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -276,6 +277,32 @@ def judge(base_r: dict, over: dict, head_r: dict | None) -> list[dict]:
             for i in sorted(names)]
 
 
+DOC_REF = re.compile(r"[\w./-]*\.(?:md|mdx|markdown|rst|txt)\b", re.I)
+CODE_REF = re.compile(r"[\w./-]+\.(?:sh|bash|py|go|js|mjs|ts|rb|yaml|yml|json|toml|tf|cue|rs|java)\b", re.I)
+PATH_REF = re.compile(r"(?<![\w:/.-])[\w.-]+(?:/[\w.-]+)+")
+PY_IMPORT = re.compile(r"^\s*(?:import|from)\s+([A-Za-z_]\w*)", re.M)
+
+
+def reads_only_docs(repo: str, commit: str, files: list[str]) -> bool:
+    """A contract whose every file only greps or reads documentation: it names a *.md file, and no code
+    file (a script, a module) other than itself, and imports nothing outside the standard library. Such a
+    test pins prose, not behaviour: the change is not testable."""
+    if not files:
+        return False
+    for f in files:
+        try:
+            text = git(repo, "show", "%s:%s" % (commit, f))
+        except Exception:  # noqa: BLE001 -- unreadable: no verdict
+            return False
+        own = os.path.basename(f)
+        refs = {os.path.basename(m.group(0)) for m in CODE_REF.finditer(text)} - {own}
+        refs |= {m.group(0) for m in PATH_REF.finditer(text) if not DOC_REF.fullmatch(m.group(0)) and m.group(0) != f}
+        mods = set(PY_IMPORT.findall(text)) - set(sys.stdlib_module_names) - {"pytest", "unittest"}
+        if not DOC_REF.search(text) or refs or mods:
+            return False
+    return True
+
+
 def red(repo: str, commit: str, env: dict, say, base: str | None = None) -> tuple[int, dict]:
     """TF5: every changed path a test path, the runner ran, at the overlay one id fails and no new id passes.
     base is the harness's (the sha it read at startup); without it, the local origin/HEAD."""
@@ -292,6 +319,9 @@ def red(repo: str, commit: str, env: dict, say, base: str | None = None) -> tupl
                          % ", ".join(decl["paths"])}
     if not p["selected"]:
         return NOT_OK, {**res, "result": "contract_not_red", "why": "no changed file is a test file (%s)" % ", ".join(decl["select"])}
+    if reads_only_docs(repo, commit, p["selected"]):
+        return NOT_OK, {**res, "result": "not_testable",
+                        "why": "the contract only greps or reads documentation: a change with no behaviour is not testable"}
     b = at_base(repo, decl, base, p["selected"], env, say)
     with tree(repo, base, commit, p["files"]) as where:
         o = run(where, decl, p["selected"], env, "overlay", say)
