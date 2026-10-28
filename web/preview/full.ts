@@ -35,6 +35,13 @@ async function run() {
   for (const e of events) page.apply(e);
   page.setStatus(`live · ${events.length} events (offline fixture)`);
   page.settle();
+  // ?stress: a long Now line and a 64-hex digest in a message, the two phone bugs this fixture shows.
+  if (new URLSearchParams(location.search).has("stress")) {
+    const now = document.querySelector(".now-link");
+    if (now) now.textContent = "Bash: rc=${PIPESTATUS[0]} ; if [ \"$rc\" -ne 0 ]; then echo failed with a long command line that keeps going and going past two lines of a phone strip so the clamp has to cut it, and then a third line keeps going on";
+    const md = document.querySelector(".bubble .md");
+    if (md) md.append(document.createTextNode(" sha256 401a9043056621bfce8b6261112f74236f83c0d5e7a9b1c2d3e4f5061728394a5b6c7d8"));
+  }
 }
 
 run().catch((e) => { document.body.textContent = `preview failed: ${e instanceof Error ? e.message : e}`; });
